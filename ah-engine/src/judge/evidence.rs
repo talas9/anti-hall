@@ -5,9 +5,10 @@
 //! without text is written back with `JSON.stringify`; a line that parser cannot represent exactly is a [`Defer`].
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::text::slice16_lossy;
 use crate::checks::replykit::Defer;
-use crate::checks::replykit::json::{self, Oj, ParseError, js_number};
+use crate::checks::replykit::json::{self, Oj, ParseError};
 use crate::defaults;
 use regex::Regex;
 
@@ -31,7 +32,7 @@ fn js_string(v: Option<&Oj>) -> String {
         None => "undefined".to_string(),
         Some(Oj::Null) => "null".to_string(),
         Some(Oj::Bool(b)) => b.to_string(),
-        Some(Oj::Num(n)) => js_number(*n),
+        Some(Oj::Num(n)) => to_js_string(*n),
         Some(Oj::Str(s)) => s.clone(),
         Some(Oj::Arr(a)) => a.iter().map(|x| if matches!(x, Oj::Null) { String::new() } else { js_string(Some(x)) }).collect::<Vec<_>>().join(","),
         Some(Oj::Obj(_)) => "[object Object]".to_string(),

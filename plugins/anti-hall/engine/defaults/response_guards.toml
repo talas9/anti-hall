@@ -107,6 +107,34 @@ value = [
   '\bmy hunch\b',
 ]
 
+[speculation_guard.cite_token_re]
+doc = "Regex source (JavaScript, no flags) of the words of a reply that may name a specific found in tool output (a path, version, number or identifier)."
+value = '[A-Za-z0-9_./-]+'
+
+[speculation_guard.cite_specific_re]
+doc = "Regex source a word must match to count as a specific rather than a common word: it holds a dot, slash, underscore, hyphen or digit."
+value = '[./_0-9-]'
+
+[speculation_guard.cite_min_len]
+doc = "The shortest word that can count as a cited specific."
+value = 6
+unit = "chars"
+min = 3
+max = 40
+
+[speculation_guard.cite_min_hits]
+doc = "How many distinct specifics of the reply must appear in the tool output of the same turn for the hedge to count as evidenced (tool results since the last human prompt are the citation)."
+value = 2
+min = 1
+max = 20
+
+[speculation_guard.cite_output_max_chars]
+doc = "The most tool-output text of the current turn searched for cited specifics, newest first."
+value = 200000
+unit = "chars"
+min = 1000
+max = 5000000
+
 [speculation_guard.modal_markers]
 doc = "Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own."
 value = ["must be", "should be"]
@@ -287,7 +315,7 @@ value = "jev"
 
 [speculation_judge.summary]
 doc = "One-line description of the speculation-judge check in the generated reference."
-value = "Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js)."
+value = "Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process; an Anthropic API call, and the call inside the daemon (which defers it to the dispatcher), stay with Node (port of speculation-judge.js)."
 
 [speculation_judge.guard_name]
 doc = "The guard id this check answers to in skip.json."

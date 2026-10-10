@@ -120,7 +120,7 @@ impl OVal {
         match self {
             OVal::Null => out.push_str("null"),
             OVal::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            OVal::Num(n) => out.push_str(&js_number_text(*n)),
+            OVal::Num(n) => out.push_str(&crate::checks::jsport::num::to_js_string(*n)),
             OVal::Str(s) => out.push_str(&serde_json::to_string(s).unwrap_or_default()),
             OVal::Arr(a) => {
                 out.push('[');
@@ -163,28 +163,6 @@ fn array_index(k: &str) -> Option<u32> {
 /// Whether `k` is a canonical array index, the keys a JavaScript object lists first.
 pub fn is_array_index_key(k: &str) -> bool {
     array_index(k).is_some()
-}
-
-/// `String(n)` for a finite number.
-pub fn js_number_text(n: f64) -> String {
-    if n == 0.0 || !n.is_finite() {
-        return if n.is_nan() {
-            "NaN".into()
-        } else if n.is_infinite() {
-            if n > 0.0 { "Infinity".into() } else { "-Infinity".into() }
-        } else {
-            "0".into()
-        };
-    }
-    let a = n.abs();
-    if !(1e-6..1e21).contains(&a) {
-        let e = format!("{n:e}");
-        return match e.split_once('e') {
-            Some((m, x)) if !x.starts_with('-') => format!("{m}e+{x}"),
-            _ => e,
-        };
-    }
-    format!("{n}")
 }
 
 struct V;

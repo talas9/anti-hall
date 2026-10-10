@@ -65,6 +65,10 @@ test('background-scratch: a tmp/scratchpad script runs in the background', () =>
     'node probe.js',                              // relative to the payload cwd
     'bash ' + shFile,
     'python3 ' + pyFile + ' > ' + path.join(dir, 'out.log'),
+    // valueless interpreter flags before the script (field: python3 -I probe.py > probe.out 2>&1)
+    'python3 -I ' + pyFile + ' > ' + path.join(dir, 'probe.out') + ' 2>&1',
+    'python3 -I -B ' + pyFile,
+    'node --no-warnings ' + jsFile,
   ];
   const wrong = cmds.filter((c) => run(c).status === 2);
   assert.deepStrictEqual(wrong, []);
@@ -95,6 +99,12 @@ test('background-scratch: negatives stay blocked even with run_in_background', (
     'node ' + jsFile + ' > /nonexistent-anti-hall-dir/out.log',
     'node ' + jsFile + ' < /etc/hosts',
     'node ' + jsFile + ' # trailing',
+    // interpreter flags that load/run code or change which file runs stay refused
+    'python3 -c "print(1)" ' + pyFile,
+    'python3 -m http.server ' + pyFile,
+    'python3 -W error ' + pyFile,
+    'node --require ' + jsFile + ' ' + jsFile,
+    'node --import ' + jsFile + ' ' + jsFile,
     // 0.113 P3 (mirrors 0.112 F1): anti-hall scripts and --confirmed never qualify.
     'node ' + pluginScript + ' set safety.commandGuard false',
     'node ' + pluginLink,
@@ -121,8 +131,28 @@ test('background-scratch: script chained with bounded read sinks passes in the b
   ];
   const wrong = cmds.filter((c) => run(c).status === 2);
   assert.deepStrictEqual(wrong, []);
-  // Foreground keeps its verdict.
-  assert.strictEqual(run(cmds[0], { bg: false }).status, 2);
+  // Foreground: an unredirected script keeps its verdict; the redirected, bounded chain passes (below).
+  assert.strictEqual(run(cmds[2], { bg: false }).status, 2);
+  assert.strictEqual(run(cmds[1], { bg: false }).status, 2);
+});
+
+// Dogfood 2026-10-09: stdout redirected to a scratch file + bounded reads floods nothing, foreground or not.
+test('foreground scratch script with stdout redirected and bounded reads passes; the unbounded shapes stay blocked', () => {
+  const out = path.join(dir, 'out.tsv');
+  const ok = [
+    'python3 -I ' + pyFile + ' > ' + out + '; wc -l ' + out + '; sed -n 1,5p ' + out + ' | head',
+    'python3 ' + pyFile + ' > ' + out + ' 2>&1 && wc -l ' + out,
+    'python3 ' + pyFile + ' > ' + out + '; grep -c USER ' + out,
+  ];
+  assert.deepStrictEqual(ok.filter((c) => run(c, { bg: false }).status === 2), []);
+  const bad = [
+    'python3 ' + pyFile + '; wc -l ' + out,                                  // stdout not redirected
+    'python3 ' + pyFile + ' > /Users/x/repo/out.tsv; wc -l ' + out,          // redirect target outside scratch
+    'python3 ' + pyFile + ' > ' + out + '; sed -n 1,5p /etc/passwd',        // read of a non-scratch file
+    'python3 ' + pyFile + ' > ' + out + '; sed -n 1,5p ' + out + ' > /Users/x/f', // second redirect outside scratch
+    'python3 ' + pyFile + ' > ' + out + '; cat ' + out,                      // unbounded read
+  ];
+  assert.deepStrictEqual(bad.filter((c) => run(c, { bg: false }).status !== 2), []);
 });
 
 test('background-scratch: a sink with a file operand outside scratch or an unknown flag stays blocked', () => {
@@ -170,6 +200,17 @@ test('timeout-wrapped anti-hall devswarm.js read verbs pass; heavy stays blocked
     'timeout 30 npm run build -- node scripts/devswarm.js list',
   ];
   assert.deepStrictEqual(bad.filter((c) => run(c, { bg: false }).status !== 2), []);
+});
+
+// CodeQL js/redos: TIMEOUT_PREFIX_RE backtracked exponentially on a
+// `timeout` followed by many `-k\t-!\t` pairs (24 pairs took ~0.4 s, each
+// extra pair doubling it). The classifier must stay linear on that shape.
+test('timeout prefix regex does not backtrack exponentially (CodeQL js/redos)', () => {
+  const { isHeavyCommand } = require('../../plugins/anti-hall/hooks/command-guard.js');
+  const evil = 'timeout\t' + '-k\t-!\t'.repeat(40) + '!';
+  const t0 = Date.now();
+  isHeavyCommand(evil);
+  assert.ok(Date.now() - t0 < 1000, 'classification of a pathological timeout prefix must be fast');
 });
 
 // L33: a scratch script run DIRECTLY (shebang + exec bit), background only,

@@ -8,8 +8,10 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - text that does not parse is the unrecognised shape (Node: `catch (_) { return { messages: [], recognized: false } }`)
 // - a field that is absent is the empty string in the hash (Node: `x != null ? String(x) : ''`)
-use crate::checks::guardkit::ojson::{OVal, js_number_text};
+use crate::checks::guardkit::ojson::OVal;
+use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::date::{Parsed, parse as date_parse};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::idlock;
 use crate::meshw::store::{MeshStore, hex};
@@ -54,7 +56,7 @@ pub fn js_string(v: &OVal) -> String {
     match v {
         OVal::Null => "null".to_string(),
         OVal::Bool(b) => b.to_string(),
-        OVal::Num(n) => js_number_text(*n),
+        OVal::Num(n) => to_js_string(*n),
         OVal::Str(s) => s.clone(),
         OVal::Arr(a) => a.iter().map(|x| if matches!(x, OVal::Null) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
         OVal::Obj(_) => defaults::text("devswarm_ingest.js_object_text").to_string(),
@@ -108,6 +110,8 @@ pub struct Row {
     pub hash: String,
     /// `Date.parse(createdAt)`, else the import time.
     pub ts: i64,
+    /// The registered workspace checked out under the message's branch (`fromBranch`), `None` when unknown or ambiguous.
+    pub sender: Option<String>,
     /// The time came from the import clock because `createdAt` was absent, unparseable, or a form whose `Date.parse` the engine
     /// does not reproduce.
     pub ts_fallback: bool,
@@ -129,8 +133,50 @@ pub fn rows(workspace_id: &str, batch: &Batch, now: i64) -> Vec<Row> {
                 Parsed::Unknown => (now, true),
                 _ => (now, false),
             };
-            Row { workspace_id: workspace_id.to_string(), body, hash: message_hash(workspace_id, m), ts, ts_fallback }
+            Row { workspace_id: workspace_id.to_string(), body, hash: message_hash(workspace_id, m), ts, sender: None, ts_fallback }
         })
+        .collect()
+}
+
+/// The checkout directory name DevSwarm gives a branch (`fix/foo` -> `fix-foo`).
+fn branch_dir(branch: &str) -> String {
+    branch.replace(defaults::text("devswarm_ingest.branch_dir_from"), defaults::text("devswarm_ingest.branch_dir_to"))
+}
+
+/// `resolveBranchSender(registry, branch)`: the one registered workspace whose checkout directory is the branch's directory
+/// name; `None` when there is none or more than one (never a guess). `registry` is `(id, worktree path)` pairs.
+pub fn branch_sender(registry: &[(String, String)], branch: &str) -> Option<String> {
+    let branch = js_trim(branch);
+    if branch.is_empty() {
+        return None;
+    }
+    let want = branch_dir(branch);
+    let mut hits: Vec<&String> =
+        registry.iter().filter(|(_, wt)| Path::new(wt).file_name().is_some_and(|n| n.to_string_lossy() == want.as_str())).map(|(id, _)| id).collect();
+    hits.sort();
+    hits.dedup();
+    if hits.len() == 1 { Some(hits[0].clone()) } else { None }
+}
+
+/// `branchOfDoneBody(body)`: the branch a `DONE: <branch> ...` body names (the word after the prefix, which must be followed by
+/// whitespace), else `None`.
+pub fn done_branch(body: &str) -> Option<String> {
+    let rest = body.strip_prefix(defaults::text("devswarm_ingest.done_body_prefix"))?;
+    let after_ws = rest.trim_start_matches(|c: char| c.is_whitespace());
+    if after_ws.len() == rest.len() {
+        return None; // the prefix must be followed by whitespace
+    }
+    let end = after_ws.find(|c: char| c.is_whitespace())?;
+    (end > 0).then(|| after_ws[..end].to_string())
+}
+
+/// The `(id, worktree path)` pairs of a store's registry.
+pub fn registry_pairs(reader: &crate::mesh::MeshReader) -> Vec<(String, String)> {
+    reader
+        .roster()
+        .unwrap_or_default() // keep: an unreadable registry attributes nobody (the sender stays NULL, as before)
+        .iter()
+        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["worktreePath"].as_str()?.to_string())))
         .collect()
 }
 
@@ -163,7 +209,14 @@ pub struct Imported {
 /// `ingestPayload(s, raw, {workspaceId, home, now})`.
 pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &str, now: i64) -> Result<Imported, Refused> {
     let batch = parse_batch(raw);
-    let rows = rows(workspace_id, &batch, now);
+    let mut rows = rows(workspace_id, &batch, now);
+    if !rows.is_empty() {
+        // sender: the registry row checked out under the message's branch (a native message names only its branch)
+        let registry = registry_pairs(store.reader());
+        for (r, m) in rows.iter_mut().zip(&batch.messages) {
+            r.sender = field(m, defaults::text("devswarm_ingest.from_branch_key")).and_then(|b| branch_sender(&registry, &b));
+        }
+    }
     let mut inserted = 0;
     if !rows.is_empty() {
         // the partition door: its lock, then "still registered here", then the rows; any refusal writes nothing
@@ -174,7 +227,7 @@ pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &
             }
             let mut n = 0;
             for r in &rows {
-                if store.append_message(&r.workspace_id, r.ts, Some(&r.hash), &r.body).map_err(|e| Refused::Store(e.to_string()))? {
+                if store.append_message_from(&r.workspace_id, r.ts, Some(&r.hash), &r.body, r.sender.as_deref()).map_err(|e| Refused::Store(e.to_string()))? {
                     n += 1;
                 }
             }
@@ -186,4 +239,57 @@ pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &
     }
     let lossy = rows.is_empty() && !raw.trim().is_empty() && !batch.recognized;
     Ok(Imported { total: rows.len(), inserted, duplicate: rows.len() - inserted, lossy, rows })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::store::RegistryRow;
+
+    fn pairs() -> Vec<(String, String)> {
+        vec![
+            ("c1".into(), "/x/repos/0/ab/fix-skydart-pdf-and-tests".into()),
+            ("c2".into(), "/x/repos/0/cd/chore-find-new-website".into()),
+            ("dupA".into(), "/x/a/same-dir".into()),
+            ("dupB".into(), "/y/b/same-dir".into()),
+        ]
+    }
+
+    #[test]
+    fn the_sender_is_the_one_workspace_checked_out_under_the_branch() {
+        let r = pairs();
+        assert_eq!(branch_sender(&r, "fix/skydart-pdf-and-tests").as_deref(), Some("c1"));
+        assert_eq!(branch_sender(&r, "chore/find-new-website").as_deref(), Some("c2"));
+        assert_eq!(branch_sender(&r, "nope/unknown"), None);
+        assert_eq!(branch_sender(&r, "same-dir"), None, "two rows share the directory: never a guess");
+        assert_eq!(branch_sender(&r, "  "), None);
+    }
+
+    #[test]
+    fn a_done_body_names_its_branch() {
+        assert_eq!(done_branch("DONE: fix/skydart-pdf-and-tests \u{2014} skydart@main@acd48aad").as_deref(), Some("fix/skydart-pdf-and-tests"));
+        assert_eq!(done_branch("hello DONE: a/b x"), None);
+        assert_eq!(done_branch("DONE:a/b x"), None, "the prefix must be followed by whitespace");
+        assert_eq!(done_branch("DONE: a/b"), None, "the branch must be followed by whitespace");
+    }
+
+    #[test]
+    fn an_ingested_done_notice_carries_its_sender() {
+        let dir = std::env::temp_dir().join(format!("ah-import-sender-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = MeshStore::open(&dir.join("devswarm.db")).unwrap();
+        for (id, wt) in [("p", "/w/main"), ("c1", "/x/repos/0/ab/fix-foo")] {
+            let row = RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+            st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        }
+        let raw = r#"[{"fromBranch":"fix/foo","message":"DONE: fix/foo - r@main@1","createdAt":"2026-01-01T00:00:00Z"},{"fromBranch":"fix/ghost","message":"DONE: fix/ghost - r@main@2","createdAt":"2026-01-01T00:00:01Z"}]"#;
+        let done = ingest_payload(&st, &dir, "p", raw, 1).unwrap();
+        assert_eq!(done.inserted, 2);
+        let rows = st.reader().last_messages("p", 5).unwrap();
+        let sender = |needle: &str| rows.iter().find(|m| m["body"].as_str().is_some_and(|b| b.contains(needle))).map(|m| m["sender"].clone());
+        assert_eq!(sender("fix/foo"), Some(serde_json::json!("c1")));
+        assert_eq!(sender("fix/ghost"), Some(serde_json::Value::Null), "an unregistered branch stays unattributed");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
 }

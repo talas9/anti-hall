@@ -1,5 +1,5 @@
 'use strict';
-// spec item 3 (fold gate) + item 6 (FIELD SCENARIO E2E) — the SkyCrew
+// spec item 3 (fold gate) + item 6 (FIELD SCENARIO E2E) — the DemoApp
 // ground-truth defect: two registry rows for ONE worktree realpath, a DEAD
 // slug row refreshed by an unidentified --session-less heartbeat caller
 // (FRESHER updatedAt, sessionId set to the sibling row's OWN registry id — a

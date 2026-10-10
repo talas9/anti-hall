@@ -10,6 +10,7 @@ pub mod disk;
 pub mod host;
 pub mod orphan;
 pub mod resource;
+pub mod table;
 #[cfg(test)]
 mod tests;
 
@@ -166,7 +167,19 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
 
     // ---- report ----
     let modes: serde_json::Map<String, Value> = cfg.classes.iter().map(|c| (c.name.clone(), json!(c.mode.name()))).collect();
-    let listed: Vec<Value> = sw.orphans.iter().take(cfg.max_listed).map(|f| finding_json(f, chars)).collect();
+    // each listed orphan carries the directory it runs in when the host can tell (the project that owns it)
+    let listed: Vec<Value> = sw
+        .orphans
+        .iter()
+        .take(cfg.max_listed)
+        .map(|f| {
+            let mut j = finding_json(f, chars);
+            if let Some(c) = host.cwd(f.pid) {
+                j["cwd"] = json!(c.to_string_lossy());
+            }
+            j
+        })
+        .collect();
     let warns: Vec<Value> = sw
         .warns
         .iter()

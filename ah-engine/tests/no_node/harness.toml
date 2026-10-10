@@ -1,0 +1,89 @@
+# Settings of the "no Node installed" acceptance harness (tests/no_node, v1.0 lane L01). Test data only: nothing here is read
+# by the engine. Every list the harness walks is either generated from the plugin (the fallback lists, the skill files) or
+# kept here, so a later lane edits data, not code.
+
+[path]
+# The PATH of every run is ONE directory of symlinks to the executables of these system directories, minus `exclude`, with
+# the recording `node` shim placed before it. Nothing else is on PATH: no package-manager prefix, no version manager.
+system_dirs = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+# Never linked: Node itself (the point of the harness), and every tool that would reach outside the scratch HOME (a real
+# GitHub account, the user's launchd/systemd session, the DevSwarm app, the network, another agent CLI).
+exclude = [
+  "node", "nodejs", "npm", "npx", "corepack", "yarn", "pnpm", "bun", "deno",
+  "gh", "hivecontrol", "devswarm", "claude", "codex",
+  "launchctl", "systemctl", "crontab", "osascript", "open", "xdg-open", "loginctl",
+  "curl", "wget", "ssh", "scp", "sftp", "rsync", "nc",
+  "sudo", "su", "shutdown", "reboot", "halt", "kill", "killall", "pkill",
+]
+# `kill` is excluded from the tool dir but is a shell builtin of every sh the wrappers use, so the wrappers keep it.
+
+[shim]
+# Exit code of the recording shim: 127 is what a shell reports for a command that is not installed.
+exit = 127
+stderr = "node: not installed (anti-hall no-node harness shim)"
+
+[env]
+# Set on every run (after the environment is cleared). These keep the run inside the scratch HOME: no process-watch kill,
+# no SessionEnd reaper sweep of the machine's processes, no DevSwarm ingest action, no scheduled process sampling.
+ANTIHALL_PROCWATCH = "0"
+AH_ENGINE_PROCWATCH_MS = "0"
+ANTIHALL_SESSION_END_REAPER = "0"
+ANTIHALL_INGEST_DRY_RUN = "1"
+LANG = "C"
+LC_ALL = "C"
+
+[passthrough]
+# Variables of the test process handed on when set (CI gives the script CPU limit headroom on a loaded runner).
+names = ["AH_ENGINE_SCRIPT_TIME_MS"]
+
+[home]
+# Files the host itself creates in a HOME it is installed in (Claude Code writes its settings file); nothing of anti-hall.
+files = { ".claude/settings.json" = "{}\n" }
+
+[timeouts]
+# Wall-clock bound of one hook call, one call-site run and one statusline render (a hang is a failure, never a skip).
+hook_s = 60
+callsite_s = 60
+statusline_s = 10
+# How long a monitor command may run before the harness stops it (monitors are long-running watchers).
+monitor_s = 3
+# How long the harness waits after the last run for Node work the runs left in the background (a detached witness).
+settle_ms = 2000
+# How long the harness waits for its daemon to answer before the first case (a cold start on a heavily loaded machine was
+# measured above 20 s).
+daemon_ready_s = 90
+
+[hooks]
+# Events whose call fell back to the wrapper's Node path because the engine did not answer in time (a loaded machine) are
+# timing, not backlog: they are reported, left out of the expected-failure comparison, and capped per host. More than this
+# fails the run as inconclusive. 0 on a quiet machine.
+max_fallback_cases = 3
+
+[callsites]
+# Directories (relative to the plugin root) whose Markdown files are scanned for command lines: both skill trees and agents.
+roots = ["skills", "codex/skills", "agents", "codex/agents"]
+# How a skill spells the plugin root; each is replaced with the scratch plugin copy before a line runs. Longest first.
+root_spellings = [
+  "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall",
+  "${CLAUDE_PLUGIN_ROOT}",
+  "$CLAUDE_PLUGIN_ROOT",
+  "${PLUGIN_ROOT}",
+  "$ANTI_HALL_ROOT",
+  "<plugin-root>",
+  "<plugin>",
+  "plugins/anti-hall",
+]
+# A launcher line containing any of these is a template, not a runnable command: it is inventoried, not executed.
+placeholder_markers = ["<", "[", "|", "...", "…", "\\", "$(", "`", "&&", "--days N"]
+# A launcher line whose verb or first argument is here is inventoried, never executed: it mutates something outside the
+# scratch HOME (a GitHub issue) or has no meaning without one.
+never_run = ["defect report", "defect backfill"]
+
+[statusline]
+# The installer the skill runs, and the host session JSON the rendered command reads on stdin ({cwd} is the scratch project).
+install_args = ["install-statusline", "--user"]
+session = '{"session_id":"no-node","cwd":"{cwd}","workspace":{"current_dir":"{cwd}","project_dir":"{cwd}"},"model":{"id":"no-node","display_name":"no-node"},"transcript_path":"{transcript}","version":"0.0.0","output_style":{"name":"default"},"cost":{"total_cost_usd":0,"total_duration_ms":0}}'
+
+[units]
+# Where launchd and systemd user units land under HOME; any file there that runs node is a Node path.
+dirs = ["Library/LaunchAgents", ".config/systemd/user"]

@@ -6,13 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.300.1 (2026-10-10)
+
+Docs, site and repo patch. No engine or hook behavior changes.
+
+- **Docs site**: neutral near-black dark background with a faint teal hero glow (#125); new "How it works" section linked to the settings page (#127).
+- **Docs**: the Rust `ah-engine` is presented as the core component everywhere (README, GUIDE, HOOK-LATENCY, docs index, skills in both ports); the Node hooks are a temporary fallback removed in v1.0, never an option or mode (#127, #129).
+
+## 0.300.0 (2026-10-09)
 
 ### Highlights
 
 - **Optional `ah-engine` (Rust) answers hook calls without starting Node per call.** One thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node, never weaker than Node. Claude and Codex ports alike. macOS and Linux; Windows is not supported yet.
 - **Everything tunable lives in plugin files** (`plugins/anti-hall/engine/`), read at run time with hot reload, layered failover and self-heal. Nothing is compiled into the binary.
 - **Local-only telemetry**: `ah-engine telemetry summary`.
+- **Released separately.** The engine has its own version and GitHub Release (`ah-engine-v0.1.0`, six targets, build-provenance attested); the plugin pins it by sha256 in `ah-engine.lock`. A plugin without the binary, offline or on an unsupported platform runs the Node hooks exactly as before.
 
 ### Added
 
@@ -22,19 +30,107 @@ the update.
 - **Shadow and rollback.** Per-entry `mode = "shadow"` runs an engine check beside its Node hook (Node decides) and logs `dispatch_shadow`; `mode = "off"` skips the engine's check. Whole rollback: `ah-engine stop`, delete the binary, `AH_ENGINE_BOOTSTRAP=0`.
 - **Telemetry** (`ah-engine telemetry summary|events|rollup`): per hook and check, the event, outcome, latency histogram and bytes injected into context, identifiers only, stored in `~/.anti-hall/ah-engine/`, never uploaded. `telemetry.enabled`, `telemetry.retention_days`.
 - **Docs**: new "Install, go-live and rollback", "What still runs on Node" and "Measured results (pre-release)" sections in `docs/AH-ENGINE.md`; engine notes in the READMEs (both ports), GUIDE, CONTRACT-1.0, DEVELOPMENT, llms.txt and the system-briefing and settings skills (both ports); PRIVACY.md now lists the binary download, the local telemetry and the background process.
+- **DevSwarm engine paths.** The engine runs the DevSwarm gates and guards natively (parent and child gates, comms guard, reply tracker, child drain, codex nudge, task tracker, verify-first), with a new `engine-devswarm-supervisor` skill and its own settings area.
+- **Reconcile and sweep behind a switch.** The supervisor reconcile and sweep tail run natively only when `devswarm_sup.reconcile_mode` (engine file) and `devswarm.sweepTailMode` (setting) are set; both default to `node`, so nothing changes until you opt in.
+- **Faster startup.** The engine no longer links the macOS IOKit, CoreFoundation and CoreServices frameworks , and transcript-scanning Stop/prompt checks have their own script time limit so they no longer defer on real transcripts.
+- **Skills call the engine with a Node fallback.** Skills run through `scripts/ah-run.sh`, which uses the engine when it is installed and healthy and falls back to the Node script otherwise.
+- **Command guard parity.** The engine command check ports the read-only chain units and background-script safe flags from the Node guard (a `gcloud` read inside a read-only chain and `python3 -I` scratch scripts are not treated as heavy).
 
 ### Changed
 
 - **PRIVACY and README wording**: "no telemetry" became "no analytics, nothing reported to anyone", because the engine keeps local-only counters; two requests are on by default (update check, one-time engine download).
 - **Documented model default**: `jev.judgeModel` is the alias `haiku` (the docs still said a pinned version).
 
+### Repo automation
+
+These changes affect the GitHub repository only, not the installed plugin.
+
+- Copilot CLI install fix: the Copilot slot now always checks out its lockfile folder, so `npm ci` works when tools are `none`.
+- Claude and Copilot error diagnostics: each failing slot writes its own error line to the job summary.
+- Force-model dispatch: `community.yml` takes a `force-model` input that bypasses the daily cap for a test run.
+- `AI_DAILY_CAP` now counts actual model calls per day (a marker artifact is recorded when a slot answers), not workflow runs.
+- PR alerts in `pr-check`, and `triage.yml` folded into `community` and `pr-check`.
+- Docs-drift check plus a release docs review.
+- Discussions participation: announcements, Q&A follow-up, idea to issue conversion, and the `/triage` and `/explain` commands.
+- The weekly digest now posts privately to the project board.
+- Full board reconcile with Last update and Progress fields.
+- Dependabot auto-merge for patch and minor updates into `dev`.
+
 ### Still on Node
 
 DevSwarm mesh writes and daemons (ingest, supervisor, reaper), every call that consults a Jev integration, the semantic judge's model call, the statusline, and the blocking branch of several guards (the engine answers the quiet cases and defers any case that could block).
 
-### Pre-release measurements
+### Measurements before release
 
 From one replay of 2113 recorded payloads against the exact go-live bundle and the same-version Node hooks (not a field result): 0 of 68 blocks weaker than Node, 2059 identical outputs, 87.0 percent of hook rows answered natively, about 35.5 ms CPU per call for the engine against 158.2 ms for the Node hooks. Known gaps are listed in `docs/AH-ENGINE.md`.
+
+## 0.203.3 (2026-10-10)
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin (#87).
+
+- Model steps use two Claude credentials with immediate failover from the first to the second, then Copilot, then rules-only. Each job's summary names the slot used.
+- Per-job model routing: each automation job picks its own model from the config.
+- `privacy-scan` checks commit identity (author and committer) on pull requests.
+- The moderation sanitizer fix: model output is cleaned correctly before it is posted.
+- Leaner pull-request CI: Node 24 only on pull requests; the full matrix runs on tags, `main` and weekly. A nightly job runs the parity and bench tests.
+- Realtime board sync: the roadmap board and stale check update on pushes to `dev`/`main`, pull-request close and issue events (rules only, no model); the digest stays weekly.
+- Dev skills: every agent and lane brief names its issue and keeps it updated.
+
+## 0.203.2 (2026-10-09)
+
+### Security
+
+- command-guard: the `timeout` prefix regex (`TIMEOUT_PREFIX_RE`) had two overlapping flag alternatives, so a `timeout` followed by many `-k -x` pairs made the PreToolUse classifier backtrack exponentially (CodeQL `js/redos`). The alternatives are now disjoint; every real `timeout` form strips to the same body. A regression test runs the CodeQL witness string (#56).
+
+### Repo
+
+These changes affect the GitHub repository only, not the installed plugin.
+
+- Issue forms with priority, area and estimate fields; discussion category forms for ideas, Q&A, show-and-tell and general; saved replies and a release notes template.
+- Rules-first automation for triage, moderation and research briefs on issues and discussions, PR checks, and a weekly roadmap digest, each with an optional Claude or Copilot model step that falls back to rules only.
+- Privacy scan on pull requests (gitleaks plus repository rules for private paths and identifiers).
+- Roadmap board automation, PR path labels, PR title check, stale handling, dependency review, job timeouts, PR concurrency and SHA-pinned actions.
+- CodeQL via default setup (the advanced workflow is manual-only), OpenSSF Scorecard, and release drafter.
+- Docs site built with MkDocs and published on GitHub Pages at https://talas9.github.io/anti-hall/, plus the wiki; `docs/REPO-PIPELINES.md` lists every workflow and policy, and `SUPPORT.md` says where to ask.
+- Dev-only skills under `.claude/skills/` (dogfood, gh-work, release, engine-lane, repo-hygiene); they are not part of the shipped plugin.
+- Dependabot bumps for GitHub Actions (checkout, setup-node, configure-pages, deploy-pages, claude-code-action), now targeting `dev`.
+
+## 0.203.1 (2026-10-09)
+
+### Fixed
+
+- api-guard: the Python probe now runs with `-I` (isolated mode) instead of `-s`. With `-s` the probe's current directory (the temp dir) led `sys.path`, so Python listed the whole temp dir on its first import (40-73 s on a machine with about 490k temp entries) and a `json.py` placed in the temp dir would run inside the probe.
+
+### Security
+
+- On Linux the temp dir is the shared `/tmp`, so another local user could plant a `json.py` there and have it execute inside the api-guard probe. `-I` removes the current directory and user site from `sys.path` and ignores `PYTHON*` environment variables, closing that path.
+
+## 0.203.0 (2026-10-09)
+
+### Highlights
+
+- **Leaner injected context.** The SubagentStart worker core, the task-tracker reminder and the DevSwarm workspace table all re-send less (measured per-turn and per-spawn reductions below).
+- **Accurate limit advisory.** The limit-conservation text no longer claims a Claude model has its own weekly bucket.
+- **Language-agnostic.** The Flutter-specific `flutter-debug` skill and agent are removed.
+- **Alias-based model routing.** The Jev judge and all plugin code route by model alias, never a pinned model version.
+- **Guard and DevSwarm fixes.** git-guard heredoc handling and self-credit messages, command-guard read-only chains, one canonical DevSwarm workspace-id resolver, spawn-time submodule fetch, and auto-archive records that no longer stay pending.
+
+### Changed
+
+- git-guard: a data heredoc is no longer vetoed by read-only neighbouring commands or a literal `$VAR` target, and the self-credit block names the command that carries the credit.
+- command-guard: a `gcloud` read inside a read-only chain and `python3 -I` scratch scripts are no longer treated as heavy.
+- edit-guard: a handover written outside the project gets a specific redirect to the project path.
+- Jev judge and plugin code route models by alias (haiku/sonnet/opus), with a guard test against pinned slugs.
+- DevSwarm: one canonical workspace-id resolver (meshId/uuid/prefix) across unarchive, send, gate and the other id-taking verbs; spawn fetches a missing pinned submodule commit before create and surfaces every submodule failure in warnings; an auto-archive record without `doneHead` no longer stays pending forever (already-written entries are repaired).
+- limit-conserve: reset time renders at minute precision so emit-dedupe matches across jitter; turn-gate pruning uses the correct `tg` family; jev-report keeps triage-derived rows out of Jev totals; eval trace extraction counts assistant usage once per message id.
+
+- Fixed the limit-conservation advisory (`limit-conserve-inject.js`, Codex `anti-hall-context-conserve` skill) claiming Sonnet draws on a "SEPARATE weekly bucket" or that a downshift preserves a "flagship weekly bucket". Per-model weekly buckets are not documented, and the usage screen shows only "All models" and "Fable only". The text now says only that Codex has its own limit and that cheaper models or fewer agents use less of the shared Claude pool, and makes no claim about Fable's relation to "All models". A test fails if the advisory ever again calls Sonnet, Opus or Haiku a separate bucket.
+- Removed the Flutter-specific `flutter-debug` skill and agent; anti-hall is language-agnostic. The removed code remains in git history.
+- The DevSwarm workspace table (parent inbox) is no longer re-sent when only a row's unread count changes; unread already arrives per turn in the inbox segments. Status/finish/risk changes still re-send it, and the keepalive now follows `guards.injectionRepeatEvery` instead of a fixed 10. Measured on a 3-workspace fixture over 16 delivered turns: 286 -> 198 injected chars per turn on average (the COMMS OVERRIDE line was already once-per-session plus keepalive).
+- SubagentStart (`verify-first-subagent.js`, default `context.protocolLevel=compact`) now emits a worker-only short core: iron law, stop-and-verify triggers, done/scope/autonomy/skip rules, the PROTOCOL.md pointer and WORKER. Measured per spawn: 3,564 -> 2,518 chars compact (7,701 under `protocolLevel=full`, unchanged). Main sessions keep the existing session core. The subagent size caps in `verify-first-subagent-compact.test.js` dropped to 2,800/3,100 to pin it.
+- The task-tracker SHORT reminder line is no longer injected on every prompt: it follows `guards.injectionRepeatEvery` (first turn after the FULL primer or a compaction, then every N delivered turns; 0 = every turn). The per-turn open-tasks / DISPATCH NOW note is unchanged, and the hook no longer emits an empty context block when nothing applies. Measured over 12 delivered turns with no open tasks: 1,896 -> 546 chars (158 -> 45 per prompt).
 
 ## 0.202.0 (2026-10-04)
 
@@ -1171,7 +1267,7 @@ Jev logging:
   emitted commands fell through to the generic `node <file>.js`
   HEAVY_PATTERN and was blocked in coordinator context — breaking every
   Primary's cron tick and inline mesh command that used the launcher form
-  (peer-reported by the SkyCrew Primary). Added
+  (peer-reported by the downstream Primary). Added
   `anchoredAntiHallStableLauncher()`, a home-anchored carve-out (accepts
   `~`, `$HOME`, `"${HOME}"`, and the resolved absolute home directory
   immediately followed by `/.anti-hall/bin/devswarm.js` or
@@ -1362,7 +1458,7 @@ Jev logging:
   changed or ignored entries. New setting `guards.projectEditAllow` (default `true`).
   Codex registers no Edit-family hooks, so this is Claude-only. The Codex settings skill
   documents the trust command.
-- **`inbox tick --quiet`** (peer ask, SkyCrew/tf3 Primaries 2026-09-26). `inbox tick`'s
+- **`inbox tick --quiet`** (peer ask, downstream Primaries 2026-09-26). `inbox tick`'s
   JSON carries duplicate legacy+new field names (`unread`/`unreadTotal`,
   `cursor`/`cursorNdjson`, `storeCursor`/`cursorStore`), which made a cron-prompt
   directive eyeballing raw JSON error-prone. `--quiet` prints one line: `tick <id>:
@@ -1381,7 +1477,7 @@ Jev logging:
 
 ### Fixes
 
-- **DevSwarm wake-cron default moved off :00/:30** (peer ask, SkyCrew/tf3 Primaries
+- **DevSwarm wake-cron default moved off :00/:30** (peer ask, downstream Primaries
   2026-09-26). `WAKE_CRON_DEFAULT` was `*/30 * * * *`, which fires exactly on `:00`/`:30`
   — every other machine's `*/N` cron piles onto the same wall-clock instant. Now
   `7,37 * * * *`: same 30-minute cadence, off-minute offset. The MAILBOX WAKE
@@ -1795,7 +1891,7 @@ case blocks again (or more strictly than 0.110.0).
   update the printed command pointed at an old (sometimes deleted) version
   directory and showed a stale version number in the text itself — forcing a
   manual recreate of every cron/Monitor and a handover edit on every release
-  (peer report: SkyCrew Primary). Fixed by installing two tiny, self-
+  (peer report: downstream Primary). Fixed by installing two tiny, self-
   contained launchers under `~/.anti-hall/bin/` (`devswarm.js`,
   `wake-watch.js`) that resolve the CURRENTLY REGISTERED anti-hall install
   (`installed_plugins.json` -> the marketplace clone -> the path baked in at
@@ -2535,7 +2631,7 @@ restore.
   A child the Primary had already sent `archive-request` to kept triggering the CHILD NOT
   DRAINING nag and the cooldown'd ARCHIVE-READY reminder every turn, even hours later, even
   while the child's session was still live — the child was simply waiting on its own user,
-  not neglected (field report: SkyCrew, 399105fe/e75cade3). Both are now suppressed while
+  not neglected (field report: a downstream project, 399105fe/e75cade3). Both are now suppressed while
   `computeSummary`'s `archive_request_only_unread` is true, resuming automatically once the
   request is answered/drained or the child resumes other work, or after a new
   `devswarm.archiveRequestRenagHours` settings key (default 24h) elapses. The dead-session
@@ -4090,7 +4186,7 @@ re-investigated:
   sqlite backend hard-deletes the row, the JSONL backend appends an
   unconditional `remove` op that a later upsert simply outraces), so migration
   reviving the row was a genuine resurrection, not a no-op. A field report
-  (SkyCrew) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
+  (a downstream project) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
   false` after the 0.99.0 update, re-entering the parent-inbox table and
   parent gate. Root cause: a still-running child terminal can recreate
   `workspaces/<id>.json` for an already-archived id via the explicit
@@ -4147,7 +4243,7 @@ re-investigated:
   re-adopt a group sibling the migration correctly refuses.
   **Field aftermath, forward hygiene:** an install that already ran the
   pre-fix migration once is left holding the resurrected rows regardless (one
-  SkyCrew install measured ~43 legacy-slug rows across a whole retired
+  a downstream project install measured ~43 legacy-slug rows across a whole retired
   worktree-group family). `scripts/devswarm.js`'s new
   `reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any
   unread mail into a same-worktree archived id, then remove ONLY the
@@ -4565,7 +4661,7 @@ re-investigated:
   different id.
 
 - **Added: a subagent inside a DevSwarm child workspace can no longer touch
-  the shared mailbox** (defect f0958b13fe2b, field-measured by SkyCrew
+  the shared mailbox** (defect f0958b13fe2b, field-measured by a downstream project
   2026-09-08 — 155 executions across 120 subagent transcripts in one
   workspace ran `devswarm.js inbox pull/ack` directly, each advancing the
   shared cursor and causing the workspace's own main thread to silently miss
@@ -4841,7 +4937,7 @@ re-investigated:
   `false` (an absent field still counts as known, so older `count` shapes are
   unaffected), `inbox tick` records `known` in the wake-tick marker, and the
   child gate refuses to treat a `known: false` zero as a genuine no-op.
-  Reported by the SkyCrew fleet (c37ff1269685).
+  Reported by the downstream fleet (c37ff1269685).
 
 ## 0.97.0 (2026-09-06)
 
@@ -6194,7 +6290,7 @@ Known limitations:
 
 ## 0.73.0 (2026-08-07)
 
-- **DevSwarm child inbox-neglect, fixed (SkyCrew field incident).** Root cause
+- **DevSwarm child inbox-neglect, fixed (a downstream project field incident).** Root cause
   had three parts: (1) `send --to` writes ONLY to the store — never the
   durable NDJSON inbox — so any reader checking NDJSON alone (liveness's
   unread backlog, the child/parent Stop gates) was blind to a mesh-direct

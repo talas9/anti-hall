@@ -138,6 +138,14 @@ pub struct Laid {
     pub vmask: Vec<String>,
 }
 
+/// The case's home lives in the temp dir: it goes with the laid-out case, or every run would leave one per case behind (the
+/// live6 replay found ~390,000 such dirs, and a Python probe that lists the temp dir then took tens of seconds).
+impl Drop for Laid {
+    fn drop(&mut self) {
+        crate::discard::harmless(std::fs::remove_dir_all(&self.home)); // keep: cleanup of a scratch directory
+    }
+}
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn lay(case: &Value) -> Laid {
@@ -368,7 +376,31 @@ pub fn repeat_of(case: &Value) -> usize {
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
+pub fn regen_defers_local(check: &str) {
+    if std::env::var("AH_REGEN_DEFERS").is_err() {
+        return;
+    }
+    let mut out = String::new();
+    for c in load(check) {
+        let mut c = c;
+        if c["expect"]["v"] == "defer" {
+            let l = lay(&c);
+            let got = run_case(check, &l, repeat_of(&c)).unwrap();
+            c["expect"] = verdict_json(&got, &l);
+            if c.get("watch").is_some() {
+                c["writes"] = watched_all(&c, &l);
+            }
+            crate::discard::harmless(std::fs::remove_dir_all(&l.home));
+            crate::discard::harmless(std::fs::remove_dir_all(&l.real));
+        }
+        out.push_str(&serde_json::to_string(&c).unwrap());
+        out.push('\n');
+    }
+    std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
 pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
+    regen_defers_local(check);
     let mut kinds = BTreeMap::new();
     let cases = load(check);
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
@@ -415,4 +447,19 @@ pub fn regenerate(check: &str, compiled: &dyn Fn(&Laid) -> Option<Verdict>) {
         crate::discard::harmless(std::fs::remove_dir_all(&l.real)); // keep: the canonical directory behind a symlinked home
     }
     std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
+#[test]
+fn a_laid_case_takes_its_temp_home_with_it() {
+    // the leak check: every laid-out case used to leave its home in the temp dir
+    let homes: Vec<String> = (0..3)
+        .map(|i| {
+            let l = lay(&serde_json::json!({"files": {"{HOME}/.anti-hall/x.json": format!("{{\"n\":{i}}}")}}));
+            assert!(Path::new(&l.home).join(".anti-hall/x.json").is_file(), "the case is laid out");
+            l.home.clone()
+        })
+        .collect();
+    for h in homes {
+        assert!(!Path::new(&h).exists(), "{h} outlived its case");
+    }
 }

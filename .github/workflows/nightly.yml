@@ -1,0 +1,105 @@
+name: nightly
+
+# Suites that are gated out of the per-PR run:
+#   ANTIHALL_PARITY_TESTS=1  Node-side duplicates of the engine node_parity tests
+#   ANTIHALL_BENCH=1         wall/CPU timing assertions (flaky on a shared PR runner)
+#   hardening                engine hardening bar (#58): load, crash loop, breaker, 50k-call memory soak (never a PR check)
+# On failure ONE issue titled "Nightly test failure" is opened or commented on.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    name: gated parity suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: parity tests
+        run: |
+          node --test \
+            tests/hooks/command-guard-bash-edit-parity.test.js \
+            tests/hygiene/devswarm-wake-stable-launcher-parity.test.js
+        env:
+          ANTIHALL_PARITY_TESTS: '1'
+
+  bench:
+    name: gated timing suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: timing tests
+        run: node --test tests/hooks/command-guard-scratch-work.test.js
+        env:
+          ANTIHALL_BENCH: '1'
+
+  hardening:
+    name: engine hardening bar
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine
+      - name: hardening bar (scripts/soak.sh)
+        run: ./scripts/soak.sh target/hardening/report.md
+      - name: bar report
+        if: always()
+        run: cat target/hardening/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: hardening-report
+          path: ah-engine/target/hardening/report.md
+
+  report:
+    name: nightly failure issue
+    needs: [parity, bench, hardening]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PARITY: ${{ needs.parity.result }}
+          BENCH: ${{ needs.bench.result }}
+          HARDENING: ${{ needs.hardening.result }}
+        run: |
+          title="Nightly test failure"
+          body="Run: ${RUN_URL}"$'\n'"parity: ${PARITY}"$'\n'"bench: ${BENCH}"$'\n'"hardening: ${HARDENING}"
+          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+                --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$n" ]; then
+            printf '%s' "$body" | ./.github/scripts/bot-comment.sh "$n" ci-failure
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

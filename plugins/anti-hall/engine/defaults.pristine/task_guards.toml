@@ -209,8 +209,8 @@ value = 1048576
 min = 4096
 
 [taskstate.backfill_exact_bytes]
-doc = "How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped."
-value = 8388608
+doc = "How far back the backfill scans before the engine hands the call to Node: Node's own byte cap (64 MiB). Node also stops after 150 ms of wall clock; the engine scans a fixed number of bytes instead so its answer never depends on machine speed. Where Node's clock would have stopped it short on a slow machine, the engine finds the subjects Node missed (a fuller note, never a missing one); past this bound it defers rather than guess where Node would have stopped."
+value = 67108864
 min = 4096
 
 [taskstate.backfill_prefix_scan_bytes]
@@ -314,6 +314,13 @@ value = "blocks"
 [task_guard.pending_status]
 doc = "The status (lowercase) of a task that can be dispatched now."
 value = "pending"
+
+[task_guard.owner_match_min]
+doc = "The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block."
+value = 4
+unit = "chars"
+min = 1
+max = 40
 
 [task_guard.coordinator_owner_re]
 doc = "JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned."
@@ -721,6 +728,18 @@ value = '\/dev\/null'
 [workdetect.heredoc_delimiter]
 doc = "Regex source of a heredoc operator and its delimiter word, which may be partly quoted or escaped; group 1 is the word."
 value = '''^<<-?\s*((?:[^\s;&|()<>'"\\]|'[^'\n]*'|"[^"\n]*"|\\[^\n])+)'''
+
+[workdetect.request_path_re]
+doc = "Regex source (global) of a path named in a user request: an absolute, `~`, `./` or `../` path (group 1), or a relative one with at least one `/` (group 2). A write under such a path in a session with exactly ONE user request is the requested output, not untracked work."
+value = '''(?:^|[\s"'`(=:,<>])(?:((?:~|\.{1,2})?\/[\w.@+~-]+(?:\/[\w.@+~-]+)*)|([\w.@+-]+(?:\/[\w.@+~-]+)+))'''
+
+[workdetect.request_skip_prefixes]
+doc = "A user-role transcript entry whose text starts with one of these is not a user request (a task notification, an injected reminder, a command echo, an interrupt marker); it neither counts as a request nor names an output path."
+value = ["<task-notification", "<system-reminder", "<command-", "<local-command", "Caveat:", "[Request interrupted"]
+
+[workdetect.request_path_trim]
+doc = "Characters stripped from the end of a path found in a user request (sentence punctuation)."
+value = ".,;:)>`'\""
 
 [workdetect.never_work_tools]
 doc = "Tools that start or schedule work and never change a file themselves."

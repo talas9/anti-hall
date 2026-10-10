@@ -74,7 +74,12 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
         write_seen(path.as_deref()?, mark, now)?;
     }
-    ans.get("advise").and_then(Value::as_str).map(str::to_string)
+    let nag = crate::dsact::nag::take_pending(state_dir);
+    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
+    match (advise, nag) {
+        (Some(a), Some(n)) => Some(format!("{a}\n{n}")),
+        (a, n) => a.or(n),
+    }
 }
 
 fn write_seen(path: &Path, gen_now: u64, now: i64) -> Option<()> {

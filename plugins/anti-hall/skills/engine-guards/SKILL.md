@@ -24,6 +24,7 @@ What the automatic guards check and how to read a block.
 - `inbox-read-guard`: Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is...
 - `verify-first`: UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node (port of...
 - `api-guard`: Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target...
+- `broad-kill-guard`: PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or...
 
 ## Switches
 
@@ -47,7 +48,18 @@ What the automatic guards check and how to read a block.
 - `guards.modelRouting` = "strict": Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then...
 - `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)
 - `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)
+- `guards.broadKill` = true: Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills
+- `statusline.devswarm.enabled` = true: Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace...
+- `statusline.devswarm.format` = "ws {parts}": The segment text
+- `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
+- `statusline.devswarm.stale_ms` = 180000: A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead of a guess
 - `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
+- `devswarm_sup.dryRun.retention` = false: Dry run of the native retention: it plans and compares with Node's planner, logs what it would tombstone and writes nothing (no archive,...
+- `devswarm_sup.dryRun.verdicts` = false: Dry run of the native liveness sweep: it computes every verdict and reports what it would write, but writes nothing and starts no Node work
+- `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node: ANTIHALL_DEVSWARM_RETENTION_BUDGET_MS)
+- `devswarm_sup.retention.requireWitness` = true: Tombstone only when Node's planner ran and agreed, whenever a Node is installed: a Node that fails or disagrees holds the store back
 - `devswarm_sup.witness` = "on": Run the non-acting Node witness for the native supervisor duties: on | off
+- `devswarm.inlineWorkNudge` = true: Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)
+- `devswarm.inlineWorkNudgeThreshold` = 5: Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

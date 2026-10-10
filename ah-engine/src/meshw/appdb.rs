@@ -35,6 +35,8 @@ pub struct State {
     pub worktree: Option<String>,
     /// `builderType`.
     pub builder_type: Option<String>,
+    /// `branchName` (read from the database only; a cache file does not hold it).
+    pub branch: Option<String>,
 }
 
 /// The cache file the verb writes after its own commit point.
@@ -72,7 +74,7 @@ pub struct Found {
     pub cache: Option<CacheWrite>,
 }
 
-fn col_set(conn: &rusqlite::Connection, table: &str) -> Option<Vec<String>> {
+pub(crate) fn col_set(conn: &rusqlite::Connection, table: &str) -> Option<Vec<String>> {
     let q = format!("{}{table}{}", crate::sql::MESHW_APP_TABLE_INFO_OPEN, crate::sql::MESHW_APP_TABLE_INFO_CLOSE);
     let mut st = conn.prepare(&q).ok()?;
     let cols: Vec<String> = st.query_map([], |r| r.get::<_, String>(1)).ok()?.collect::<Result<_, _>>().ok()?;
@@ -80,7 +82,7 @@ fn col_set(conn: &rusqlite::Connection, table: &str) -> Option<Vec<String>> {
 }
 
 /// `selectPresent`'s select list: the SCHEMA columns the table has, the prompt column as its length.
-fn select_for(table: &str, schema: &[&str], have: &[String]) -> Option<String> {
+pub(crate) fn select_for(table: &str, schema: &[&str], have: &[String]) -> Option<String> {
     let q = crate::sql::MESHW_APP_QUOTE;
     let list: Vec<String> = schema
         .iter()
@@ -121,13 +123,13 @@ fn text_of(v: ValueRef<'_>) -> R<Option<String>> {
         ValueRef::Null => Ok(None),
         ValueRef::Integer(i) if (i as f64).abs() <= defaults::num("mesh_write.app_max_exact_int") as f64 => Ok(Some(i.to_string())),
         ValueRef::Integer(_) | ValueRef::Blob(_) => defer("app-db-column-type"),
-        ValueRef::Real(f) => Ok(Some(crate::checks::guardkit::ojson::js_number_text(f))),
+        ValueRef::Real(f) => Ok(Some(crate::checks::jsport::num::to_js_string(f))),
         ValueRef::Text(t) => Ok(Some(String::from_utf8_lossy(t).into_owned())),
     }
 }
 
 /// `normPath(p)`: a relative path resolves against the cwd, which the engine does not reproduce.
-fn norm_path(p: &str) -> R<Option<String>> {
+pub(crate) fn norm_path(p: &str) -> R<Option<String>> {
     if p.is_empty() {
         return Ok(None);
     }
@@ -192,6 +194,7 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         idx(defaults::text("mesh_write.app_col_worktree")),
         idx(defaults::text("mesh_write.app_col_builder_type")),
     );
+    let i_branch = idx(defaults::text("mesh_write.app_col_branch"));
     let (Some(i_id), Some(i_active)) = (i_id, i_active) else { return Ok(None) };
     let Ok(mut st) = conn.prepare(&q) else { return Ok(None) };
     let Ok(mut rows) = st.query([]) else { return Ok(None) };
@@ -225,7 +228,11 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
             Some(i) => text_of(get(i)?)?,
             None => None,
         };
-        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type };
+        let branch = match i_branch {
+            Some(i) => text_of(get(i)?)?,
+            None => None,
+        };
+        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type, branch };
         match at.get(&id) {
             Some(&p) => out[p] = st,
             None => {
@@ -316,7 +323,7 @@ fn read_cache(home: &Path, file: &str, sig: &Sig, now: i64) -> R<Option<Vec<Stat
             OVal::Arr(_) => return defer("app-cache-shape"),
             _ => continue, // `!v || typeof v !== 'object'`
         };
-        let st = State { id: id.clone(), active, archived, worktree, builder_type };
+        let st = State { id: id.clone(), active, archived, worktree, builder_type, branch: None };
         match at_ix.get(id) {
             Some(&p) => out[p] = st,
             None => {

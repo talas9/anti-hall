@@ -97,14 +97,14 @@ unit = "ms"
 
 [schedule.actions]
 doc = "Actions a job may name; anything else in a user override is refused and logged."
-value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "devswarm_supervisor", "noop"]
+value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rollup", "jev_sweep", "handovers", "procwatch", "agent_tick", "gh_poll", "devswarm_reconcile", "devswarm_supervisor", "refresh", "mcp_reaper", "engine_update", "noop"]
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
-value = ["maintain", "backup", "jev_sweep", "handovers", "agent_tick", "gh_poll"]
+value = ["maintain", "backup", "jev_sweep", "handovers", "agent_tick", "gh_poll", "refresh", "mcp_reaper", "engine_update"]
 
 [schedule.action_args]
 doc = "The command line (after the program name, before --json) of a subprocess action whose command is not just its name."
-value = { handovers = ["handovers", "index", "--registered"] }
+value = { handovers = ["handovers", "index", "--registered"], mcp_reaper = ["mcp-reaper", "run"], engine_update = ["engine-update", "--auto"] }
 
 [schedule.test_sleep_argv]
 doc = "Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts."

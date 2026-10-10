@@ -32,15 +32,11 @@ function segPick(s) { return ah.cfg('merge_side_pick.pick_tails').some(function 
 function segTest(s) { return ah.cfg('merge_side_pick.test_patterns').some(function (src) { return ah.re.test(src, '', s); }); }
 function segPush(s) { return ah.re.test(gitRe(ah.cfg('merge_side_pick.push_tail')), '', s) && !ah.re.test(ah.cfg('merge_side_pick.dry_run'), '', s); }
 
-// A side-pick segment as stored and shown: white space collapsed, cut to the configured length. null when the cut would
-// split a surrogate pair (the text then cannot be handled exactly: Node decides).
+// A side-pick segment as stored and shown: white space collapsed, cut to the configured length in UTF-16 units, as Node cuts
+// it (a cut through a surrogate pair keeps the lone half; JSON.stringify escapes it the same way in both interpreters).
 function keep(s) {
   var t = s.replace(/\s+/g, ' ').trim === undefined ? s : s.replace(/[\s᠎]+/g, ' ');
-  var n = ah.cfgNum('merge_side_pick.cmd_keep');
-  if (t.length <= n) return t;
-  var hi = t.charCodeAt(n - 1), lo = t.charCodeAt(n);
-  if (hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF) return null;
-  return t.slice(0, n);
+  return t.slice(0, ah.cfgNum('merge_side_pick.cmd_keep'));
 }
 
 // One session's record, coerced as the Node guard coerces whatever the file holds.
@@ -52,24 +48,20 @@ function load(raw) {
 }
 
 function record(ns, key, cmd) {
-  if (key === '') return true;
+  if (key === '') return;
   var segs = segments(cmd);
-  if (!segs.some(function (s) { return segPick(s) || segTest(s); })) return true;
-  var failed = false;
+  if (!segs.some(function (s) { return segPick(s) || segTest(s); })) return;
   ah.sessionState.update(ns, key, function (cur) {
     var st = load(cur);
     for (var i = 0; i < segs.length; i++) {
       var s = segs[i];
       if (segPick(s)) {
         st.seq += 1; st.pickSeq = st.seq;
-        var k = keep(s);
-        if (k === null) { failed = true; return null; }
-        st.cmd = k;
+        st.cmd = keep(s);
       } else if (segTest(s)) { st.seq += 1; st.testSeq = st.seq; }
     }
     return JSON.stringify({ seq: st.seq, pickSeq: st.pickSeq, testSeq: st.testSeq, cmd: st.cmd });
   });
-  return !failed;
 }
 
 function pending(ns, key) {
@@ -79,12 +71,12 @@ function pending(ns, key) {
   return '';
 }
 
-// The side-pick command to warn about when `cmd` pushes with an untested side-pick; '' for none; null to defer.
+// The side-pick command to warn about when `cmd` pushes with an untested side-pick; '' for none.
 function pushCheck(ns, key, cmd) {
   var pend = pending(ns, key), segs = segments(cmd);
   for (var i = 0; i < segs.length; i++) {
     var s = segs[i];
-    if (segPick(s)) { pend = keep(s); if (pend === null) return null; }
+    if (segPick(s)) pend = keep(s);
     else if (segTest(s)) pend = '';
     else if (segPush(s) && pend !== '') return pend;
   }
@@ -93,18 +85,20 @@ function pushCheck(ns, key, cmd) {
 
 function decide(p, opts, event) {
   var bash = isObj(p) && p.tool_name === 'Bash';
-  if (!ah.sessionState.homeOk()) return bash ? 'defer' : null;
+  // no home for the state files: the request carries HOME (one without it never reaches a script), so only an empty value is
+  // left, where the Node guard has no state either; advisory-only, so nothing is recorded or said
+  if (!ah.sessionState.homeOk()) { if (bash) ah.log('merge_side_pick_no_home', ''); return bash ? 'allow' : null; }
   var ns = ah.cfg('merge_side_pick.state_ns');
   var ti = bash ? p.tool_input : null;
   var cmd = isObj(ti) && typeof ti.command === 'string' ? ti.command : '';
   var sid = isObj(p) && typeof p.session_id === 'string' ? p.session_id.trim() : '';
   var key = ah.sessionState.key(sid);
-  if (sid !== '' && !ah.sessionState.probe(ns, key)) return 'defer';
+  // a state file only Node would read differently (not UTF-8): read here as corrupt, a fresh record, and logged
+  if (sid !== '' && !ah.sessionState.probe(ns, key)) ah.log('merge_side_pick_state_unsure', key);
   if (!bash || cmd === '' || sid === '') return 'allow';
   if (!ah.settings.bool('merge_side_pick.setting') || ah.settings.skipped(ah.cfg('merge_side_pick.guard_name'))) return 'allow';
-  if (event === 'PostToolUse' || p.hook_event_name === 'PostToolUse') return record(ns, key, cmd) ? 'allow' : 'defer';
+  if (event === 'PostToolUse' || p.hook_event_name === 'PostToolUse') { record(ns, key, cmd); return 'allow'; }
   var pick = pushCheck(ns, key, cmd);
-  if (pick === null) return 'defer';
   if (pick === '') return 'allow';
   var what = text.render(ah.cfg('merge_side_pick.msg_what'), { pick: pick });
   var t = text.message('warn', ah.cfg('merge_side_pick.guard_name'), { what: what, why: ah.cfg('merge_side_pick.msg_why'), instead: ah.cfg('merge_side_pick.msg_instead') });

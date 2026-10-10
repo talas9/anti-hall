@@ -123,4 +123,20 @@ function isChildWorkspaceCorroborated(env, home, cwd) {
   }
 }
 
-module.exports = { isChildWorkspace, isChildWorkspaceCorroborated };
+// isChildWorker(env, home, cwd) — a DevSwarm CHILD workspace session that is
+// corroborated on disk (descriptor or ~/.devswarm/repos cwd) AND on a live
+// DevSwarm install. A child is a WORKER on its own branch, not the main-thread
+// orchestrator: the delegation guards (edit-guard, Bash edit parity, the plain
+// git commit/push carve-out of command-guard) do not apply to it. Fail-closed
+// (false) on any doubt, so a Primary or a spoofed env stays gated.
+function isChildWorker(env, home, cwd) {
+  try {
+    const e = env || process.env;
+    if (!require('./devswarm-detect.js').isDevswarmActive(e)) return false;
+    return isChildWorkspaceCorroborated(e, home, cwd);
+  } catch (_) {
+    return false;
+  }
+}
+
+module.exports = { isChildWorkspace, isChildWorkspaceCorroborated, isChildWorker };

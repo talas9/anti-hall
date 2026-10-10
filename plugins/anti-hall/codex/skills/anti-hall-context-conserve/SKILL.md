@@ -31,7 +31,7 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 Project-local hooks are installed by `anti-hall-activate`:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
 ```
 
 The installer registers `hooks/limit-conserve-inject.js` on `UserPromptSubmit` so conservation instructions are injected when active.
@@ -54,7 +54,7 @@ node "$ANTI_HALL_ROOT/codex/scripts/limit-conserve-status.js"
 
 When conservation is active and the **main/coordinator** agent is on the
 **frontier** category, switch it to the **workhorse** category's
-1M-context variant to preserve the flagship weekly bucket — resolve both
+1M-context variant to use less of the shared pool — resolve both
 from the live catalog (`anti-hall-model-policy`), don't hardcode either slug.
 
 - **Target**: the **workhorse** category's 1M-context model — same context window, lower cost.

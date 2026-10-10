@@ -25,11 +25,12 @@
 // throw) on any error/non-zero/signal.
 
 const { spawnSync } = require('child_process');
+const { readOnlyGitEnv } = require('../../hooks/lib/git-env.js');
 
 const GIT_TIMEOUT_MS = 4000;
 
 function runGit(worktreePath, args) {
-  return spawnSync('git', ['-C', String(worktreePath), ...args], { encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
+  return spawnSync('git', ['-C', String(worktreePath), ...args], { encoding: 'utf8', timeout: GIT_TIMEOUT_MS, env: readOnlyGitEnv() });
 }
 
 // gitPushState(worktreePath) -> { noUpstream: boolean, unpushed: number|null } | null.

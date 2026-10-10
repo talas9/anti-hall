@@ -137,7 +137,7 @@ impl Js {
         match self {
             Js::Null => out.push_str("null"),
             Js::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            Js::Num(n) if n.is_finite() => out.push_str(&number_to_string(*n)),
+            Js::Num(n) if n.is_finite() => out.push_str(&crate::checks::jsport::num::to_js_string(*n)),
             Js::Num(_) => out.push_str("null"),
             Js::Str(s) => quote(s, out),
             Js::Arr(v) => {
@@ -208,37 +208,6 @@ pub fn quote(s: &str, out: &mut String) {
         }
     }
     out.push('"');
-}
-
-/// `String(n)` for a double (ECMAScript `Number::toString`, radix 10).
-pub fn number_to_string(x: f64) -> String {
-    if x.is_nan() {
-        return "NaN".into();
-    }
-    if x == 0.0 {
-        return "0".into();
-    }
-    if x.is_infinite() {
-        return if x < 0.0 { "-Infinity".into() } else { "Infinity".into() };
-    }
-    let sign = if x < 0.0 { "-" } else { "" };
-    let sci = format!("{:e}", x.abs());
-    let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let n = exp.parse::<i32>().unwrap_or(0) + 1;
-    let k = digits.len() as i32;
-    let body = if k <= n && n <= 21 {
-        format!("{digits}{}", "0".repeat((n - k) as usize))
-    } else if 0 < n && n <= 21 {
-        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
-    } else if -6 < n && n <= 0 {
-        format!("0.{}{digits}", "0".repeat((-n) as usize))
-    } else {
-        let e = n - 1;
-        let es = if e < 0 { format!("-{}", -e) } else { format!("+{e}") };
-        if k == 1 { format!("{digits}e{es}") } else { format!("{}.{}e{es}", &digits[..1], &digits[1..]) }
-    };
-    format!("{sign}{body}")
 }
 
 /// `Number(s)` after the string has been trimmed: NaN when the text is not a numeric literal. Covers decimal literals,
@@ -472,7 +441,7 @@ pub fn js_to_string(v: &Value) -> String {
     match v {
         Value::Null => "null".into(),
         Value::Bool(b) => b.to_string(),
-        Value::Number(n) => number_to_string(n.as_f64().unwrap_or(f64::NAN)),
+        Value::Number(n) => crate::checks::jsport::num::to_js_string(n.as_f64().unwrap_or(f64::NAN)),
         Value::String(s) => s.clone(),
         Value::Array(a) => a.iter().map(|x| if x.is_null() { String::new() } else { js_to_string(x) }).collect::<Vec<_>>().join(","),
         Value::Object(_) => "[object Object]".into(),

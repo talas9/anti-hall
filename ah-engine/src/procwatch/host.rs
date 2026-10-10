@@ -1,14 +1,15 @@
 //! The machine behind the process watch: one interface ([`Host`]), one real implementation per operating system family, and pure
 //! parsers for the text the system hands back, so both families are tested from fixtures on either operating system.
 //!
-//! The process table, CPU and the environment of a process come from `sysinfo` (macOS: libproc and `KERN_PROCARGS2`, own user only;
-//! Linux: `/proc`); on Linux the environment is read straight from `/proc/<pid>/environ` (cheaper than a per-pid refresh). Free
-//! disk space is `statvfs`. What a crate cannot give is done here behind `cfg(target_os)`: the macOS physical footprint
-//! (`proc_pid_rusage`) and memory pressure level (`sysctlbyname`), and Linux's pressure file (PSI).
+//! The process table, CPU, command line, environment and working directory of a process come from [`super::table`] (macOS: libproc and
+//! `KERN_PROCARGS2`, own user only; Linux: `/proc`), swap from the same module. Free disk space is `statvfs`. Done here behind
+//! `cfg(target_os)`: the macOS physical footprint (`proc_pid_rusage`) and memory pressure level (`sysctlbyname`), and Linux's
+//! pressure file (PSI).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - a process that vanished, or whose data the system will not give, is the absent value (fail-safe: nothing is done to it)
 // A failure that must be seen goes through `crate::discard` instead.
 
+use super::table::{Row, Table};
 use crate::defaults;
 use std::path::Path;
 
@@ -111,12 +112,8 @@ pub fn env_get<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
 
 /// The real machine.
 pub struct RealHost {
-    sys: sysinfo::System,
+    table: Table,
     own_pid: u32,
-}
-
-fn kind() -> sysinfo::ProcessRefreshKind {
-    sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory().with_cmd(sysinfo::UpdateKind::OnlyIfNotSet)
 }
 
 impl Default for RealHost {
@@ -128,22 +125,12 @@ impl Default for RealHost {
 impl RealHost {
     /// A host with an empty process table; the first [`Host::procs`] fills it (CPU readings start at the second).
     pub fn new() -> RealHost {
-        RealHost { sys: sysinfo::System::new(), own_pid: std::process::id() }
+        RealHost { table: Table::new(), own_pid: std::process::id() }
     }
+}
 
-    fn row(&self, p: &sysinfo::Process) -> ProcRow {
-        let pid = p.pid().as_u32();
-        let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect();
-        let cmd = if cmd.is_empty() { p.name().to_string_lossy().into_owned() } else { cmd.join(" ") };
-        ProcRow {
-            pid,
-            ppid: p.parent().map_or(0, sysinfo::Pid::as_u32),
-            start_s: p.start_time(),
-            cpu_pct: p.cpu_usage(),
-            mem_bytes: footprint(pid).unwrap_or_else(|| p.memory()),
-            cmd,
-        }
-    }
+fn row(r: Row) -> ProcRow {
+    ProcRow { pid: r.pid, ppid: r.ppid, start_s: r.start_s, cpu_pct: r.cpu_pct, mem_bytes: footprint(r.pid).unwrap_or(r.rss), cmd: r.cmd }
 }
 
 /// macOS: the physical footprint of a process (what Activity Monitor shows, compressed pages included); `None` elsewhere and for
@@ -185,54 +172,24 @@ impl Host for RealHost {
     }
 
     fn procs(&mut self) -> Vec<ProcRow> {
-        self.sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, kind());
-        self.sys.processes().values().map(|p| self.row(p)).collect()
+        self.table.list().into_iter().map(row).collect()
     }
 
     fn proc_row(&mut self, pid: u32) -> Option<ProcRow> {
-        let p = sysinfo::Pid::from_u32(pid);
-        self.sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[p]), true, kind());
-        self.sys.process(p).map(|p| self.row(p))
+        self.table.one(pid).map(row)
     }
 
     fn environ(&mut self, pid: u32) -> Option<Vec<(String, String)>> {
-        #[cfg(target_os = "linux")]
-        {
-            let bytes = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-            let env = parse_environ_block(&bytes);
-            (!env.is_empty()).then_some(env)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let p = sysinfo::Pid::from_u32(pid);
-            let k = sysinfo::ProcessRefreshKind::nothing().with_environ(sysinfo::UpdateKind::Always);
-            self.sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[p]), false, k);
-            let env: Vec<(String, String)> = self
-                .sys
-                .process(p)?
-                .environ()
-                .iter()
-                .filter_map(|e| {
-                    let s = e.to_string_lossy();
-                    let (k, v) = s.split_once('=')?;
-                    Some((k.to_string(), v.to_string()))
-                })
-                .collect();
-            // an empty list is a process the system would not show (a protected binary, another user), not an empty environment
-            (!env.is_empty()).then_some(env)
-        }
+        // an empty list is a process the system would not show (a protected binary, another user), not an empty environment
+        Some(self.table.environ(pid)).filter(|e| !e.is_empty())
     }
 
     fn cwd(&mut self, pid: u32) -> Option<std::path::PathBuf> {
-        let p = sysinfo::Pid::from_u32(pid);
-        let k = sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always);
-        self.sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[p]), false, k);
-        self.sys.process(p)?.cwd().map(Path::to_path_buf)
+        self.table.cwd(pid)
     }
 
     fn mem(&mut self) -> MemInfo {
-        self.sys.refresh_memory_specifics(sysinfo::MemoryRefreshKind::nothing().with_swap());
-        MemInfo { swap_used: self.sys.used_swap(), pressure: pressure() }
+        MemInfo { swap_used: self.table.swap_used(), pressure: pressure() }
     }
 
     fn space(&self, path: &Path) -> Option<Space> {

@@ -264,7 +264,10 @@ fn the_role_note_names_the_role_lists_only_what_it_may_use_and_points_at_the_mai
     assert!(main.contains("restore") && main.contains("jev-setup"));
     assert!(!sub.contains("restore") && !sub.contains("proj") && sub.contains("status"), "{sub}");
     assert!(!ws.contains("restore") && ws.contains("proj") && ws.contains("mesh"), "{ws}");
-    assert!(main.contains("/anti-hall:engine") && !main.contains("engine-"), "points at the main skill only: {main}");
+    assert!(
+        main.contains("/anti-hall:engine") && !main.replace("engine-update", "").contains("engine-"),
+        "points at the main skill only (the engine-update verb is named in the verb list): {main}"
+    );
     assert!(sub.contains("/anti-hall:engine"));
     assert!(codex.contains("$anti-hall-engine") && !codex.contains("/anti-hall:"), "{codex}");
 }
@@ -330,6 +333,18 @@ fn the_guard_reads_quoted_text_as_text_and_a_quoted_script_as_a_call() {
     ] {
         assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
     }
+    // dogfood: a docs edit whose heredoc body names an owner-level call is text for `cat`/`tee`, not a call
+    for cmd in [
+        "cat > docs/x.md <<'EOF'\nrun ah-engine devswarm archive --id 1 to archive\nEOF",
+        "cat >> docs/x.md <<EOF\nuse ah-engine devswarm archive\nEOF",
+        "tee docs/x.md <<'EOF'\n`ah-engine devswarm archive`\nEOF",
+    ] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 0, "{cmd}");
+    }
+    // ... but an unquoted heredoc that expands a substitution, or one a shell reads, still runs it
+    for cmd in ["cat <<EOF\n$(ah-engine devswarm archive --id 1)\nEOF", "sh <<'EOF'\nah-engine devswarm archive --id 1\nEOF"] {
+        assert_eq!(guard(cmd, sub.clone(), &[]).0, 2, "{cmd}");
+    }
 }
 
 #[test]
@@ -349,4 +364,31 @@ fn the_role_checks_are_in_the_dispatch_table_for_both_hosts() {
             && has("claude", "PreToolUse", "engine-role-guard")
     );
     assert!(has("codex", "SessionStart", "engine-role-note") && has("codex", "PreToolUse", "engine-role-guard"));
+}
+
+/// Dogfood 2026-10-09: every key of the plugin's engine defaults is listed by `settings tunables`, from the shipped files
+/// alone (a key added to a defaults file shows up with no registry edit).
+#[test]
+fn settings_tunables_lists_every_shipped_default_key() {
+    let bin = env!("CARGO_BIN_EXE_ah-engine");
+    let go = |a: &[&str]| {
+        let o = Command::new(bin).args(a).env("AH_ENGINE_PLUGIN_ROOT", plugin()).env_remove("AH_ENGINE_STATE_DIR").output().unwrap();
+        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let (code, json) = go(&["settings", "tunables", "--json"]);
+    assert_eq!(code, 0);
+    let rows: Vec<Value> = serde_json::from_str(&json).unwrap();
+    let keys: Vec<&str> = rows.iter().filter_map(|r| r["key"].as_str()).collect();
+    assert!(keys.len() > 1000, "{} keys", keys.len());
+    for k in ["github_rt.enabled", "ops.tunable_verb", "devswarm_act.hc_timeout_ms"] {
+        assert!(keys.contains(&k), "{k} listed");
+    }
+    assert!(rows.iter().all(|r| r["description"].as_str().is_some_and(|d| !d.is_empty()) && r["category"].is_string()), "description + category on every key");
+    let (_, table) = go(&["settings", "tunables", "github_rt.poll_"]);
+    assert!(table.contains("| github_rt.poll_running_ms |") && !table.contains("devswarm_act"), "{table}");
+    let (code, _) = go(&["settings", "tunables", "no_such_category"]);
+    assert_eq!(code, 1);
+    let (code, one) = go(&["settings", "get", "github_rt.enabled"]);
+    assert_eq!(code, 0);
+    assert!(one.contains("github_rt.enabled"), "{one}");
 }

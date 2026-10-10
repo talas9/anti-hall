@@ -266,6 +266,30 @@ fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
 
 // ---- the script-failure policy (D88 condition b) ----
 
+/// Load: a call still running when its request's client stops waiting is cut there and defers to its own Node hook. It is not a
+/// script failure (no error is counted, and an engine-only advisory defers instead of taking its failure verdict, allow).
+#[test]
+fn a_call_past_its_request_deadline_is_cut_and_defers_without_counting_an_error() {
+    let h = home("cut");
+    put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
+    let e = env(&h);
+    let go = || super::run_forced("sibling-sweep", &json!({}), &Value::Null, "Stop", &e);
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(0); // the client no longer waits
+    crate::telemetry::emit::take_queued();
+    let t = Instant::now();
+    let v = go();
+    let took = t.elapsed();
+    let evs = crate::telemetry::emit::take_queued();
+    crate::deadline::end();
+    assert_eq!(v, Some(Some(Verdict::Defer)), "cut at the client's deadline: its Node hook answers");
+    assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
+    assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
+    // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
+    assert_eq!(go(), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 #[test]
 fn a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event() {
     for event in ["PreToolUse", "Stop", "SessionStart", "UserPromptSubmit", "PostToolUse"] {
@@ -335,13 +359,19 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
 #[test]
 fn api_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("api-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 50, "a corpus that exercises both answers: {kinds:?}");
+    // the corpus pins no interpreter (PATH names none), so every case answers without a probe and none defers (lane L07); the
+    // probes themselves are compared with Node by the node_parity api-guard harness
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"), "a corpus that answers every case: {kinds:?}");
 }
 
 #[test]
 fn orch_on_spawn_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("orch-on-spawn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
+    // a pending marker is answered (it wins the claim and sends the rules); only the retry slot and an unusable home defer
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("advisory").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) >= 1,
+        "allow, advisory and the remaining deferrals: {kinds:?}"
+    );
 }
 
 #[test]
@@ -394,13 +424,15 @@ fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
 #[test]
 fn ship_it_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("ship-it-guard");
-    for k in ["allow", "defer", "block", "advisory"] {
+    for k in ["allow", "block", "advisory"] {
         assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
     }
+    assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
 pub(super) fn golden_report(check: &str, limit: usize) {
+    golden::regen_defers_local(check);
     let cases = golden::load(check);
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
@@ -449,6 +481,13 @@ fn sibling_sweep_script_matches_the_compiled_port() {
 #[test]
 fn ask_guard_script_matches_the_compiled_port() {
     golden_report("ask-guard", 12);
+}
+
+/// broad-kill-guard is engine-only (issue #38): its corpus is hand-judged, every case's verdict was checked against the decision
+/// table in tests/it/broad_kill.rs, then recorded here with the exact block text for both hosts and every caller.
+#[test]
+fn broad_kill_guard_script_matches_its_golden_corpus() {
+    golden_report("broad-kill-guard", 12);
 }
 
 #[test]
@@ -612,6 +651,50 @@ mod swarm {
         assert!(advisory(call(&h, &no_transcript, T0 + 100_000, Some(8.0 * GB), 16.0 * GB)).is_none());
     }
 
+    // lane L12: Node reads the default window of the transcript (`runningAgents`); an agent launched further back is not seen, so the
+    // note stays silent where a widened read would have found it
+    #[test]
+    fn the_shared_tree_note_reads_only_the_default_window_of_the_transcript() {
+        let h = swarm_home("sw-window");
+        let t = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "transcript_path": t, "cwd": h});
+        assert!(advisory(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB)).is_some(), "the running writer is inside the window");
+        let pad = "{\"type\":\"system\",\"content\":\"padding padding padding padding padding padding padding padding\"}\n";
+        let mut body = std::fs::read_to_string(&t).unwrap();
+        body.push_str(&pad.repeat(defaults::num("agent_scan.tail_bytes") as usize / pad.len() + 100));
+        std::fs::write(&t, body).unwrap();
+        assert!(advisory(call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB)).is_none(), "a launch before the default window is not seen");
+    }
+
+    // issue #55: a brief that names its own clone or working directory outside the session's tree shares no tree
+    #[test]
+    fn a_brief_naming_another_clone_shares_no_tree() {
+        let h = swarm_home("sw-named");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str, t: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": t, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        for p in [
+            "Base: create a clone ~/work/wt-lane3 from origin/dev, branch lane3. Fix hooks/foo.js and commit.",
+            "cd /opt/build/other-checkout && fix hooks/foo.js, then commit.",
+            "Your working directory is the clone at $HOME/work/wt-x. Edit and commit there.",
+        ] {
+            assert!(note(p, &busy).is_none(), "named outside clone: {p}");
+        }
+        assert!(note("cd ~/proj/sub && fix hooks/foo.js and commit.", &busy).is_some(), "a path inside the session tree still warns");
+        assert!(note("git clone /srv/mirror.git for reference, then fix hooks/foo.js and commit.", &busy).is_some(), "a clone source is no tree");
+        assert!(note("Use the clone ~/work/wt-ref for reading; edit hooks/foo.js in the repo in place.", &busy).is_some(), "in place still warns");
+        // (transcript() rewrites the one transcript file: the running agent's brief changes last)
+        let other = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "Base: create a clone ~/work/wt-a from origin/dev; fix and commit."}));
+        assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");
@@ -772,7 +855,9 @@ mod sibling {
                 let took = started.elapsed();
                 assert!(is_adv(&v), "{tag} {event}: the reminder, not a script failure (which fails open): {v:?}");
                 if !cfg!(debug_assertions) {
-                    assert!(took.as_millis() < u128::from(defaults::num("script.time_limit_ms")), "{tag} {event}: {took:?}");
+                    // wall time, not CPU time: a loaded CI runner stretches it, so CI sets AH_TEST_TIME_SCALE (default 1)
+                    let scale: u128 = std::env::var("AH_TEST_TIME_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+                    assert!(took.as_millis() < u128::from(defaults::num("script.time_limit_ms")) * scale, "{tag} {event}: {took:?} (scale {scale})");
                 }
             }
         }
@@ -1020,7 +1105,10 @@ mod sibling {
 #[test]
 fn compact_declaration_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("compact-declaration-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && !kinds.contains_key("defer"),
+        "both answers, no deferral: {kinds:?}"
+    );
 }
 
 #[test]
@@ -1060,14 +1148,16 @@ fn jev_review_reminder_script_matches_the_compiled_port() {
 #[test]
 fn repair_on_reload_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("repair-on-reload");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 10 && kinds.get("defer").copied().unwrap_or(0) > 10, "both answers: {kinds:?}");
+    // L06: a due repair is asked of the refresh job (allow); only the undecidable shapes (no home, no plugin root, a version
+    // that is not a plain three-part one) still defer
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
 }
 
 #[test]
 fn merge_side_pick_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-side-pick");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }
@@ -1087,6 +1177,7 @@ fn scan_throttle_script_matches_the_compiled_port() {
         return;
     }
     let mut kinds = std::collections::BTreeMap::new();
+    golden::regen_defers_local("scan-throttle");
     for c in golden::load("scan-throttle") {
         let l = golden::lay(&c);
         let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
@@ -1103,14 +1194,14 @@ fn scan_throttle_script_matches_the_compiled_port() {
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0usize) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
-    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && kinds["defer"] > 100, "every answer: {kinds:?}");
+    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && !kinds.contains_key("defer"), "every answer, no deferral: {kinds:?}");
 }
 
 #[test]
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }
@@ -1201,4 +1292,24 @@ fn tail_entries_projects_parsed_lines_and_hands_back_what_its_parser_refused() {
     assert_eq!(r["lines"].as_array().unwrap().len(), 3);
     assert_eq!((r["dropped"].as_u64(), r["droppedUnread"].as_u64()), (Some(4), Some(1)));
     assert!(super::host::tail_entries(&p, 0.0, 120.0, "{}", 0.0).is_none(), "keep must be a list of paths");
+}
+
+/// The transcript-scanning Stop-time and prompt-time checks carry their own CPU-time limit in `script.time_limit_by_check`: a
+/// real transcript tail made the default limit interrupt them and defer a decision the script makes identically given the time.
+#[test]
+fn stop_time_checks_have_their_own_time_limit() {
+    let by = defaults::raw("script.time_limit_by_check");
+    for name in [
+        "tasklist-guard",
+        "task-guard",
+        "silent-agent-nudge",
+        "stale-agent-stop-note",
+        "auto-handover",
+        "auto-handover-pause-nag",
+        "compact-advice-guard",
+        "limit-conserve-inject",
+        "idle-agent-sweep",
+    ] {
+        assert!(by.get(name).and_then(defaults::V::as_integer).is_some_and(|ms| ms >= 500), "{name}");
+    }
 }

@@ -75,6 +75,9 @@ function tlScanWork(path, progressAbs, cx) {
   var out = { work: 0, lastWork: 0, lastProgressWrite: 0 };
   var lines = rp.lines(path, tlN('window_bytes'));
   if (lines === null) return out;
+  // a session with ONE user request: a write under a path that request names is the requested output (workdetect.request_path_re)
+  var size = ah.fs.size(path);
+  cx.requested = wd.requestedPaths(lines, cx, size !== null && size <= tlN('window_bytes'));
   for (var i = 0; i < lines.length; i++) {
     // only an entry that holds a tool use (or an escape that could spell one), and a bare `null`, can matter to the work count
     var raw = lines[i];
@@ -156,15 +159,15 @@ function tlEvidenceEntry(e) {
   return false;
 }
 
-// `hasEvidence(transcriptPath)`: some line of the last 16 MB proves the session has task tools. null defers.
+// `hasEvidence(transcriptPath)`: some line of the last 16 MB proves the session has task tools. null defers. The host picks the lines
+// that name a task tool (a 16 MB window is far past the script's time limit line by line); the entries are read here.
 function tlHasEvidence(path) {
-  var lines = rp.lines(path, tlN('wide_window_bytes'));
-  if (lines === null) return false;
   var pre = tlT('evidence_names');
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    if (!pre.some(function (p) { return line.indexOf(p) >= 0; })) continue;
-    var r = jx.parse(line.trim());
+  var g = ah.transcript.grep(path, tlN('wide_window_bytes'), [], pre.map(function (p) { return p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('|'), '');
+  if (g === null) return false;
+  if (g.unsure) return null;
+  for (var i = 0; i < g.lines.length; i++) {
+    var r = jx.parse(g.lines[i].trim());
     if (r.unsure) return null;
     if (!r.invalid && tlEvidenceEntry(r.v)) return true;
   }

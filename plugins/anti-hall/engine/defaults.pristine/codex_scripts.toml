@@ -1,0 +1,37 @@
+# ah-engine shipped defaults for the two Codex-only helper scripts as engine verbs (v1.0 lane L16): `codex-limit-status` (port of
+# codex/scripts/limit-conserve-status.js) and `codex-activate` (port of codex/scripts/write-activation-sentinel.js). Format: see
+# the header of engine.toml. The logic is the plugin script `engine/logic/rules/codex-scripts.js`; the bucket fields, the usage
+# cache path, the account files and the snapshot-age bound it reads are the ctxbudget.* keys of ctxbudget.toml.
+
+[cmd.codex-limit-status]
+doc = "Print whether limit conservation is active, as JSON (active, reason, weekly, fiveHour, sonnetWeekly, source, stale, resetsAt): the Codex skill anti-hall-context-conserve runs it instead of codex/scripts/limit-conserve-status.js. Same decision as the limit-conserve-inject hook: the limitConserve.mode setting (on, off, auto), else the OMC usage cache with the threshold, the reset-aware and snapshot-age rules and the account-switch guard. Read-only apart from the account-switch state file the hook keeps current. Fail-open: an unreadable cache is inactive."
+value = { args = "", read_only = true, status = "implemented" }
+
+[cmd.codex-activate]
+doc = "Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the anti-hall-activate skill leaves after installing the hooks; it changes no real configuration and deleting it is harmless. Replaces codex/scripts/write-activation-sentinel.js."
+value = { args = "", read_only = false, status = "implemented" }
+
+[codex_scripts.script]
+doc = "The plugin script that holds the logic of both verbs (`script::call_fn`): its name and the entry function of each verb."
+value = { script = "rules/codex-scripts", status = "limitStatus", activate = "activate" }
+
+[codex_scripts.stale_ms]
+doc = "A usage-cache snapshot older than this is reported stale (hooks/limit-conserve.js STALE_MS); the reading is still evaluated."
+value = 900000
+unit = "ms"
+
+[codex_scripts.sentinel_rel]
+doc = "The activation marker, relative to the home directory (under the state directory)."
+value = ".anti-hall/codex-activated.json"
+
+[codex_scripts.err_script]
+doc = "Printed when the plugin script cannot answer (scripts off or missing)."
+value = "{verb}: the plugin script is not available"
+
+[codex_scripts.err_write]
+doc = "Printed when the activation marker cannot be written."
+value = "codex-activate: cannot write {path}"
+
+[codex_scripts.activated_line]
+doc = "Printed after the marker was written; {path} is the file."
+value = "wrote {path}"

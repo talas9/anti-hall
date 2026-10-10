@@ -43,6 +43,7 @@ impl Env {
             "ship-it-guard",
             "procwatch-advisory",
             "engine-role-guard",
+            "broad-kill-guard",
         ];
         let m: serde_json::Map<String, serde_json::Value> =
             ids.iter().map(|id| (id.to_string(), outs.iter().find(|(k, _)| k == id).map_or("true".to_string(), |(_, c)| c.to_string()).into())).collect();
@@ -197,17 +198,19 @@ fn bash(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "e2e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
 }
 
-/// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
-/// tests replace with shell stand-ins: an auto-merge command that names a code file and also writes one with a verifiable
-/// reference (api-guard answers a Bash command natively unless its text could carry one), with the gate switched on in the
-/// test home and a RELATIVE transcript path (Node resolves it against its own working directory, so the engine's merge-gate
-/// always leaves it to the Node hook; the gate's other deferrals went native with the Jev port).
+/// A Bash payload on which the `merge-gate` and `api-guard` entries run their Node hooks, which these tests replace with shell
+/// stand-ins. The scripted checks answer almost every payload now (v1.0 lane L07), so the entries are switched to Node the way
+/// an operator reverts one check: `mode = "off"` in the state directory's config.toml turns off only the engine's check of a
+/// guard entry and leaves the Node hook as its decider.
 fn node_only_bash(e: &Env) -> String {
     let home = e.dir.join("home");
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
+    std::fs::create_dir_all(e.state()).unwrap();
+    std::fs::write(e.state().join("config.toml"), "[entries.\"PreToolUse/merge-gate\"]\nmode = \"off\"\n[entries.\"PreToolUse/api-guard\"]\nmode = \"off\"\n")
+        .unwrap();
     let tp = "hedged.jsonl";
-    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9}"}, "transcript_path": tp})
+    serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9} $(true)"}, "transcript_path": tp})
         .to_string()
 }
 
@@ -467,7 +470,7 @@ fn a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node() 
 
 #[test]
 fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_node() {
-    // SessionEnd: its only hook (the MCP reaper) has no built-in check, so a missing script is skipped and logged there
+    // SessionEnd: its only hook (the MCP reaper) sweeps natively now (L10b: no Node companion needed) but defers when the home is not an absolute path (HOME below), so the missing script is skipped and logged there
     let e = Env::new("missing-script-nonguard");
     let mark = e.dir.join("fake-node-ran");
     let body = format!(r#": > {}; echo MODULE_NOT_FOUND >&2; exit 1"#, mark.display());
@@ -480,7 +483,7 @@ fn a_non_guard_event_with_missing_node_scripts_skips_and_logs_without_spawning_n
         true,
         &p,
         false,
-        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap())],
+        &[("CLAUDE_PLUGIN_ROOT", empty_root.to_str().unwrap()), ("PATH", bin.to_str().unwrap()), ("HOME", "relative-home")],
     );
 
     assert_eq!((code, out.as_str()), (0, ""), "{err}");
@@ -616,10 +619,59 @@ fn a_join_over_the_host_cap_on_a_guard_event_keeps_the_decision() {
     assert_eq!(e.run_with(&args, true, &relative_cwd, true, &main_thread).0, 0);
 }
 
-/// An event that cannot block still hands an over-cap join back to the wrapper with `dispatch.defer_exit`.
+/// A SessionStart whose joined context is over the host's cap is spilled natively: whole contexts that fit stay inline, the
+/// rest is in a private file named by a pointer line, and no Node hook is handed the event (no exit 75).
 #[test]
-fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() {
-    let e = Env::new("overcap-open");
+fn a_join_over_the_host_cap_on_another_event_is_spilled_to_a_file() {
+    let (e, p, map) = overcap_session("overcap-spill");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run(&args, true, &p, true);
+    assert_eq!((code, err.as_str()), (0, ""), "{out}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one JSON object");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.chars().count() <= 10000, "{}", ctx.chars().count());
+    assert!(ctx.starts_with(&format!("{}\n\n{}", "a".repeat(4000), "b".repeat(4000))), "the contexts that fit stay whole and in order");
+    let path = ctx.rsplit_once("Read it with the Read tool: ").unwrap().1.trim_end_matches(']');
+    assert!(path.starts_with(e.state().to_str().unwrap()), "{path}");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "c".repeat(4000), "nothing cut: the rest is in the file");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert_eq!(log.matches("dispatch_context_spilled").count(), 1, "{log}");
+}
+
+/// With the spill off the previous answer stands (Node still exists): the event is handed back with `dispatch.defer_exit`;
+/// with no Node (`dispatch.defer_to_node` 0) the join is delivered for the host to spill.
+#[test]
+fn with_the_spill_off_an_over_cap_join_is_handed_back_or_delivered() {
+    let (e, p, map) = overcap_session("overcap-off");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, true, &p, true, &[("AH_ENGINE_SPILL_OVER_CAP", "0")]);
+    assert_eq!((code, out.as_str()), (75, ""), "{err}");
+    assert!(err.contains("over the 10000"), "{err}");
+    let (code, out, _) = e.run_with(&args, true, &p, true, &[("AH_ENGINE_SPILL_OVER_CAP", "0"), ("AH_ENGINE_DEFER_TO_NODE", "0")]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["additionalContext"].as_str().map(|c| c.chars().count()), Some(3 * 4000 + 2 * 2));
+}
+
+/// With no Node (`dispatch.defer_to_node` 0) a path that used to hand the event to Node answers by itself: a guard event
+/// follows its failure mode (an unreadable map: `infra`, closed).
+#[test]
+fn without_node_an_infra_fault_follows_the_failure_mode_instead_of_exit_75() {
+    let e = Env::new("no-node-infra");
+    let no_node = [("AH_ENGINE_DEFER_TO_NODE", "0")];
+    let missing = e.dir.join("missing-map.json");
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", missing.to_str().unwrap()];
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &[]);
+    assert_eq!((code, out.as_str()), (75, ""), "Node still exists: it decides: {err}");
+    let (code, out, err) = e.run_with(&args, true, &node_only_bash(&e), true, &no_node);
+    assert_eq!((code, out.as_str()), (2, ""), "no Node, infra is closed: {err}");
+    assert!(err.contains("blocked rather than allowed"), "{err}");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("dispatch_no_node_closed"), "{log}");
+}
+
+fn overcap_session(name: &str) -> (Env, String, PathBuf) {
+    let e = Env::new(name);
     let big = |n: &str| {
         format!(r#"printf '{{"hookSpecificOutput":{{"hookEventName":"SessionStart","additionalContext":"%s"}}}}\n' "$(head -c 4000 /dev/zero | tr '\0' {n})""#)
     };
@@ -629,10 +681,7 @@ fn a_join_over_the_host_cap_on_another_event_is_handed_back_to_run_separately() 
     let map = e.dir.join("map.json");
     std::fs::write(&map, serde_json::json!({ "SessionStart": m }).to_string()).unwrap();
     let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
-    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
-    let (code, out, err) = e.run(&args, true, &p, true);
-    assert_eq!((code, out.as_str()), (75, ""), "{err}");
-    assert!(err.contains("over the 10000"), "{err}");
+    (e, p, map)
 }
 
 #[test]
@@ -1547,4 +1596,59 @@ fn a_reminder_the_gate_cuts_is_no_output_not_an_empty_context() {
     e.stop();
     assert!(context_of(&first.1).contains(short_reminder()), "{first:?}");
     assert_eq!(second, (0, String::new(), String::new()), "a suppressed reminder prints nothing, not an empty additionalContext");
+}
+
+/// L11 (#69): the speculation judge's model call. The daemon cannot wait seconds for a model, so it defers the check; the
+/// dispatcher process, which can, runs it itself before any Node hook, in process and through the daemon alike. The Node hook
+/// mapped here must never run, the fake `claude` must be called once, and the block is the check's own.
+#[test]
+fn the_dispatcher_makes_the_speculation_judge_call_itself_after_the_daemon_deferred_it() {
+    let e = Env::new("judgecall");
+    let home = e.dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::write(home.join(".anti-hall/settings.json"), r#"{"jev":{"semanticJudge":true,"judgeBackend":"cli"}}"#).unwrap();
+    let bin = e.dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nd=\"$FAKE_CLAUDE_LOG/call-$$\"\nmkdir -p \"$d\"\ncat > \"$d/stdin\"\ncat \"$FAKE_CLAUDE_REPLY\"\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let reply = e.dir.join("reply.txt");
+    let answer = serde_json::json!({"is_error": false, "result": r#"{"decision":"block","claim":"the cache is stale"}"#}).to_string();
+    std::fs::write(&reply, answer).unwrap();
+    let transcript = e.dir.join("t.jsonl");
+    std::fs::write(&transcript, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "why is it slow?"}}))).unwrap();
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), if id == "speculation-judge" { "printf NODE-RAN >&2; exit 0" } else { "true" }.into())).collect();
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let path = format!("{}:{}", bin.display(), path_without_codex());
+    let log = e.dir.join("calls");
+    let calls = || std::fs::read_dir(&log).map(|d| d.count()).unwrap_or(0);
+    let env = [("PATH", path.as_str()), ("FAKE_CLAUDE_LOG", log.to_str().unwrap()), ("FAKE_CLAUDE_REPLY", reply.to_str().unwrap())];
+    let payload = |session: &str| {
+        serde_json::json!({"session_id": session, "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": transcript, "last_assistant_message": "The cause is the stale cache."})
+            .to_string()
+    };
+    // in process
+    let (code, out, err) = e.run_with(&args, true, &payload("jc-1"), true, &env);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(out.contains("\"decision\":\"block\"") && out.contains("the cache is stale"), "{out:?} {err:?}");
+    assert!(!err.contains("NODE-RAN"), "the Node hook must not run: {err:?}");
+    assert_eq!(calls(), 1);
+    // through the daemon: its first call is answered through Node (D5), the later ones by the daemon, which defers this check
+    let mut last = (0, String::new(), String::new());
+    for i in 0..50 {
+        last = e.run_with(&args, false, &payload(&format!("jc-d{i}")), true, &env);
+        if !last.2.contains("NODE-RAN") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    e.stop();
+    assert!(last.1.contains("\"decision\":\"block\"") && last.1.contains("the cache is stale") && !last.2.contains("NODE-RAN"), "{last:?}");
+    assert!(calls() >= 2, "the dispatcher made the call for the daemon-deferred check: {}", calls());
+    let tel = std::fs::read_to_string(home.join(".anti-hall/logs/judge-calls.ndjson")).unwrap();
+    assert!(tel.lines().all(|l| l.contains("\"integration\":\"speculation\"") && l.contains("\"decision\":\"block\"")) && tel.lines().count() >= 2, "{tel}");
 }

@@ -6,12 +6,30 @@ fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-fn settings(pairs: &[(&str, &str)]) -> Settings {
-    let home = std::env::temp_dir().join(format!("ah-spawnctx-unit-{}", std::process::id()));
+/// Settings over a scratch home that is removed when they drop (a home left in the temp dir per test run piled up there).
+struct Scratch(Settings);
+
+impl std::ops::Deref for Scratch {
+    type Target = Settings;
+    fn deref(&self) -> &Settings {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        crate::discard::harmless(std::fs::remove_dir_all(&self.0.home)); // keep: cleanup of a scratch directory
+    }
+}
+
+fn settings(pairs: &[(&str, &str)]) -> Scratch {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = std::env::temp_dir().join(format!("ah-spawnctx-unit-{}-{n}", std::process::id()));
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     let mut e = env(pairs);
     e.insert("HOME".into(), home.to_string_lossy().to_string());
-    Settings { home: home.to_string_lossy().to_string(), env: e }
+    Scratch(Settings { home: home.to_string_lossy().to_string(), env: e })
 }
 
 #[test]
@@ -64,4 +82,13 @@ fn a_judge_child_is_recognized_only_by_the_exact_value() {
     assert!(judge_child(&env(&[("ANTIHALL_JUDGE_CHILD", "1")])));
     assert!(!judge_child(&env(&[("ANTIHALL_JUDGE_CHILD", "0")])));
     assert!(!judge_child(&env(&[])));
+}
+
+#[test]
+fn a_scratch_home_goes_with_its_settings() {
+    let s = settings(&[]);
+    let home = std::path::PathBuf::from(&s.home);
+    assert!(home.join(".anti-hall").is_dir());
+    drop(s);
+    assert!(!home.exists(), "{} outlived its test", home.display());
 }

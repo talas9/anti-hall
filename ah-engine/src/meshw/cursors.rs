@@ -144,7 +144,7 @@ fn provably_ended(reader: &str, table: &ProcTable) -> bool {
     }
 }
 
-fn is_retired(r: &CursorRow) -> bool {
+pub(crate) fn is_retired(r: &CursorRow) -> bool {
     r.retired_line.is_some_and(|l| r.value <= l)
 }
 
@@ -264,7 +264,12 @@ pub fn ack_for(st: &MeshStore, home: &Path, partition: &str, ns: &str, reader: O
 }
 
 fn read_rows(st: &MeshStore, partition: &str) -> Result<Vec<CursorRow>, String> {
-    let v = st.reader().reader_cursors(partition).map_err(|e| e.to_string())?;
+    rows_from_reader(st.reader(), partition)
+}
+
+/// The rows of a partition through a read-only handle.
+pub fn rows_from_reader(rd: &crate::mesh::MeshReader, partition: &str) -> Result<Vec<CursorRow>, String> {
+    let v = rd.reader_cursors(partition).map_err(|e| e.to_string())?;
     Ok(v.iter()
         .map(|r| CursorRow {
             ns: r["ns"].as_str().unwrap_or("").to_string(),
@@ -282,7 +287,7 @@ pub fn rows_of(st: &MeshStore, partition: &str) -> Result<Vec<CursorRow>, String
 }
 
 /// `legacySafeId(id)`: safe, and not one of the names the legacy cursor files reserve.
-fn legacy_safe(id: &str) -> bool {
+pub(crate) fn legacy_safe(id: &str) -> bool {
     is_safe_id(id) && !defaults::list("mesh_write.legacy_cursor_forbidden").iter().any(|x| id.contains(x))
 }
 
@@ -311,7 +316,7 @@ pub fn read_cursor(p: &Path) -> f64 {
 }
 
 /// `ackTo(path, n)` without an inbox clamp: raise the cursor file to `n` (never lower it) with a staged write.
-fn ack_to(p: &Path, target: f64) -> std::io::Result<()> {
+pub(crate) fn ack_to(p: &Path, target: f64) -> std::io::Result<()> {
     let target = if target.is_finite() && target >= 0.0 { target.floor() } else { 0.0 };
     let t = target.max(read_cursor(p));
     if let Some(d) = p.parent() {
@@ -320,7 +325,7 @@ fn ack_to(p: &Path, target: f64) -> std::io::Result<()> {
     let mut tmp = p.as_os_str().to_os_string();
     tmp.push(defaults::text("mesh_write.tmp_suffix"));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, crate::checks::guardkit::ojson::js_number_text(t))?;
+    std::fs::write(&tmp, crate::checks::jsport::num::to_js_string(t))?;
     std::fs::rename(&tmp, p)
 }
 
@@ -380,7 +385,7 @@ pub fn short_nonce(nonce: &str) -> String {
 }
 
 /// `cursorLogPath(home, repoKey)`.
-fn log_path(home: &Path, repo_key: Option<&str>) -> PathBuf {
+pub(crate) fn log_path(home: &Path, repo_key: Option<&str>) -> PathBuf {
     let key = match repo_key {
         Some(k) if !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) => k,
         _ => defaults::text("mesh_write.cursor_log_unknown_key"),

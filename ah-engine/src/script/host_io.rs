@@ -9,7 +9,7 @@
 //! | `kind(path)` | `"file"`, `"dir"`, `"link"` (not followed) or `null` |
 //! | `mtimeMs(path)` | the modification time with its fraction, or `null` |
 //! | `listDir(path)` | the names in a directory sorted by bytes (as `fs.readdirSync`), or `null` |
-//! | `fileOp(root, rel, text, op)` | `op` `write`, `after_reply`, `append`, `mkdir`, `remove`, `rename`: see [`super::host::scoped`] |
+//! | `fileOp(root, rel, text, op)` | `op` `write`, `after_reply`, `append`, `mkdir`, `remove`, `rename`, `create` (only when absent), `touch`: see [`super::host::scoped`] |
 //! | `settingGet(key, dfltJson, pluginRoot)` | `get(section, key, dflt)` of the settings chain: `[status, valueJson]`, status 0 = a value, 1 = nothing, 2 = undecidable |
 use super::host::{Op, err, scoped, with_settings};
 use crate::checks::guardkit::settings;
@@ -22,9 +22,11 @@ fn op_of(s: &str) -> rquickjs::Result<Op> {
         "write" => Op::Write,
         "after_reply" => Op::WriteAfterReply,
         "append" => Op::Append,
+        "rename" => Op::Rename,
         "mkdir" => Op::Mkdir,
         "remove" => Op::Remove,
-        "rename" => Op::Rename,
+        "create" => Op::Create,
+        "touch" => Op::Touch,
         _ => return Err(err("fileOp", defaults::render("script.msg_unknown_op", &[("op", &s)]))),
     })
 }

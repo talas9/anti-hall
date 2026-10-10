@@ -823,6 +823,10 @@ function tickInner(state, snapshot) {
 
   if (moved1) st.lastTotal = total;
   if (moved2) st.lastTotal2 = total2;
+  // The inbound count (inboundTotalOf) is a different metric from the raw total an older seen-file recorded, and can
+  // legitimately read lower: resync DOWN silently (never a wake) so the next genuinely new inbound message still fires.
+  if (total !== null && total < st.lastTotal) st.lastTotal = total;
+  if (total2 !== null && total2 < st.lastTotal2) st.lastTotal2 = total2;
 
   // BROADCAST CHANNEL (closes the v1 "broadcasts not covered" gap, defect #10
   // field report) — a THIRD, fully independent observation, never merged into
@@ -967,6 +971,24 @@ function resolveIdentity(env, cwd, io) {
             }
           } catch (_) { /* fall through to the child label below */ }
         }
+        // A descriptor on the repo's MAIN checkout under any other id is the DevSwarm app's own "primary builder"
+        // row for the Primary's checkout (not a child: a child lives in a linked worktree). Resolving it as a
+        // child put this watcher's lock under THAT id (`wake-watch-<app id>.lock`) while `inbox tick <primary id>`
+        // looked under the Primary's id, so a running Monitor read `watcherArmed false`, the cron cue sent the
+        // agent to re-arm, and the re-arm met its own lock ("REFUSED TO ARM: lock-held"). The Primary is the
+        // Primary: take the id its tick, ingest and roster all use.
+        try {
+          const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
+          const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
+          const main = /^primary-/.test(String(d.id)) ? null : resolveMainWorktree(wd, ioo.gitIo); // a primary-* record was settled above
+          if (main) {
+            const mainForms = realFormsOf(main, F);
+            let isMain = false;
+            for (const f of dForms) { if (mainForms.has(f)) { isMain = true; break; } }
+            const primaryId = isMain ? primaryWorkspaceId(main) : null;
+            if (primaryId) return { role: 'primary', id: primaryId, home, cwd: wd, mainWorktree: main };
+          }
+        } catch (_) { /* fall through to the child label below */ }
         return { role: 'child', id: d.id, home, cwd: wd, descriptor: d };
       }
     }
@@ -1126,6 +1148,13 @@ function resolveChildHashes(cwd, childId, io) {
 // (total: null), NEVER as "zero messages" (readSummaryForHash already returns
 // null for an absent/unparseable file; this function must not coerce that into
 // 0, or the first real message would look like a fabricated delta from zero).
+// inboundTotalOf(row) -> the monotonic count wake-watch edge-triggers on: the summary's `directTotalFromOthers` (rows the
+// workspace's own identity family did NOT send) when the writer published it, else the raw `total` (an older writer's
+// summary). A Primary must not be woken by its own sends, which `total` deliberately includes.
+function inboundTotalOf(row) {
+  return Number.isFinite(row.directTotalFromOthers) ? row.directTotalFromOthers : row.total;
+}
+
 function readPrimarySnapshot(home, hashes, primaryId, io) {
   const ioo = io || {};
   const readSummaryForHash = ioo.readSummaryForHash || store.readSummaryForHash;
@@ -1135,11 +1164,11 @@ function readPrimarySnapshot(home, hashes, primaryId, io) {
     }
     const a = hashes.repoKey ? readSummaryForHash(home, hashes.repoKey, ioo.fs) : null;
     const wa = a && a.workspaces && a.workspaces[primaryId];
-    if (wa && Number.isFinite(wa.total)) return { ok: true, error: null, total: wa.total };
+    if (wa && Number.isFinite(wa.total)) return { ok: true, error: null, total: inboundTotalOf(wa) };
 
     const b = hashes.fallbackHash ? readSummaryForHash(home, hashes.fallbackHash, ioo.fs) : null;
     const wb = b && b.workspaces && b.workspaces[primaryId];
-    if (wb && Number.isFinite(wb.total)) return { ok: true, error: null, total: wb.total };
+    if (wb && Number.isFinite(wb.total)) return { ok: true, error: null, total: inboundTotalOf(wb) };
 
     return { ok: true, error: null, total: null }; // no data yet, never zero
   } catch (e) {
@@ -1444,6 +1473,45 @@ function claimUpdateAnnouncement(home, id, version, fsi) {
 
 function lockPathFor(home, id) {
   return path.join(devswarmRoot(home), 'locks', 'wake-watch-' + String(id) + '.lock');
+}
+
+// watcherLockLive(home, id, now, io) -> bool. The ONE definition of "a live Monitor wake-watch holds the lock for this
+// id right now": a lock whose `ts` is fresher than WATCH_LOCK_STALE_MS and whose pid is not provably dead. A missing,
+// unreadable or malformed lock reads false (fail CLOSED on this one signal). `inbox tick` and the wake-coverage read
+// both use it.
+function watcherLockLive(home, id, now, io) {
+  const ioo = io || {};
+  const F = ioo.fs || fs;
+  try {
+    const lock = JSON.parse(F.readFileSync(lockPathFor(home, id), 'utf8'));
+    const ts = lock && Number(lock.ts);
+    const fresh = Number.isFinite(ts) && ((Number.isFinite(now) ? now : Date.now()) - ts) <= WATCH_LOCK_STALE_MS;
+    const pid = lock && Number.isInteger(lock.pid) ? lock.pid : null;
+    const alive = pid != null ? (ioo.pidIsAlive || require('./liveness.js').pidIsAlive)(pid) : null;
+    return !!(fresh && alive !== false);
+  } catch (_) { return false; }
+}
+
+// watcherLiveForWorkspace(home, id, now, io) -> bool. watcherLockLive for `id`, or for ANY other registered row on the
+// SAME checkout: a Monitor armed before the identity fix (resolveIdentity) holds its lock under the DevSwarm app's
+// own row id for the Primary's checkout, and it is still the live watcher covering this workspace.
+function watcherLiveForWorkspace(home, id, now, io) {
+  const ioo = io || {};
+  if (watcherLockLive(home, id, now, ioo)) return true;
+  try {
+    const F = ioo.fs || fs;
+    const descriptors = (ioo.readDescriptors || supervisor.readDescriptors)(home, F) || [];
+    const own = descriptors.find((d) => d && String(d.id) === String(id));
+    if (!own || !own.worktreePath) return false;
+    const ownForms = realFormsOf(own.worktreePath, F);
+    for (const d of descriptors) {
+      if (!d || !d.id || !d.worktreePath || String(d.id) === String(id)) continue;
+      let same = false;
+      for (const f of realFormsOf(d.worktreePath, F)) { if (ownForms.has(f)) { same = true; break; } }
+      if (same && watcherLockLive(home, d.id, now, ioo)) return true;
+    }
+  } catch (_) { /* fail-open: the id's own lock answer stands */ }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1999,6 +2067,8 @@ module.exports = {
   loadSeenState,
   saveSeenState,
   lockPathFor,
+  watcherLockLive,
+  watcherLiveForWorkspace,
   DEFAULT_POLL_MS,
   POLL_ENV_VAR,
   readInstalledPluginVersion,

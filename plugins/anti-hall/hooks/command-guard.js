@@ -1506,6 +1506,27 @@ function isGitPullFetchSegment(segment) {
   return sub === 'pull' || sub === 'fetch';
 }
 
+// isChildGitSyncChain(command) -> true iff every segment is a `git ...` (or a
+// leading `cd`) and the only HEAVY ones are push/pull/fetch. A DevSwarm CHILD
+// workspace commits and pushes its own branch (and submodule) as its normal
+// output step; the output is a few lines, and force-push/AI-credit checks stay
+// with git-guard. Anything that is not plain git (a `sh -c`, an interpreter, a
+// build) is not covered, so a nested heavy command cannot ride along.
+function isChildGitSyncChain(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const segs = splitSegments(command).map((x) => x.trim()).filter(Boolean);
+  if (!segs.length) return false;
+  let sawSync = false;
+  for (const seg of segs) {
+    const verb = effectiveVerb(seg);
+    if (verb === 'cd') continue;
+    if (verb !== 'git') return false;
+    if (isGitPushSegment(seg) || isGitPullFetchSegment(seg)) { sawSync = true; continue; }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return sawSync;
+}
+
 // isSafeSqliteReadonly(segment) -> true iff this is a `sqlite3` invocation
 // with `-readonly` present as its OWN argv token before the db path, and the
 // SQL/args after the db path contain none of sqlite3's dangerous dot-commands
@@ -1614,8 +1635,9 @@ const GCLOUD_BOOLEAN_FLAGS = new Set(['--quiet', '--uri']);
 // `--limit 5`). Closed list: any other `--k v` stays refused (a separated
 // value could otherwise pose as the verb or a second positional). The value
 // must be one non-dash token. Only honoured when the caller passes
-// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command is
-// validated there; the per-segment exemptions keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
+// sepValues=true, i.e. from isWholeCommandReadOnlyForm (the whole command, or one
+// `;`/`&&`-joined unit of a chain, is validated there; the per-segment exemptions
+// keep the strict `--k=v` grammar). `--format`/`--filter` are NOT on the list: the
 // narrow shape-B carve-out requires the `--format=<json|yaml|value(..)>` form.
 const GCLOUD_VALUE_FLAGS = new Set([
   '--project', '--region', '--zone', '--location', '--limit', '--freshness',
@@ -1754,6 +1776,46 @@ function isWholeCommandReadOnlyForm(command) {
   return true;
 }
 
+// readOnlyFormUnits(split) -> Set of segment indexes that belong to a chain UNIT which is, on its
+// own, exactly one isWholeCommandReadOnlyForm. A chain is cut into units at `;` / `&&` only (a unit is
+// its pipe-joined segments). The exemption applies ONLY when EVERY unit of the chain is read-only on
+// its face: a whole read-only form, or one plain read-only git segment (a safe `git fetch`, or
+// `git rev-parse|status|log|show` in the plain-chain shapes). Any other unit (`rm -rf x`, `which x`,
+// an unclosed sink, an expansion, `||`, `&`, newline, group, heredoc) leaves the set empty, so the
+// line is judged segment by segment exactly as before. Why: `git fetch -q origin main && git rev-parse
+// origin/main && gcloud run services describe svc --project p | head -2` is three light reads, but the
+// gcloud segment's space-separated read flags are only accepted when its unit is validated whole, and
+// the whole-line test never reaches a unit inside a chain.
+function readOnlyFormUnits(split) {
+  const none = new Set();
+  const out = new Set();
+  const { segments, delims } = split;
+  if (segments.length < 2 || !delims.some((x) => x === '&&' || x === ';')) return none;
+  let start = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const last = i === segments.length - 1;
+    const cut = last || delims[i] === '&&' || delims[i] === ';';
+    if (!cut) { if (delims[i] !== '|') return none; continue; }
+    let text = '';
+    for (let j = start; j <= i; j++) text += (j > start ? ' | ' : '') + segments[j].trim();
+    if (isWholeCommandReadOnlyForm(text)) {
+      for (let j = start; j <= i; j++) out.add(j);
+    } else if (!(start === i && isPlainReadGitSegment(segments[i].trim()))) {
+      return none;
+    }
+    start = i + 1;
+  }
+  return out;
+}
+
+// One plain read-only git segment: a fetch that isSafeGitFetch accepts, or a log/status/show/rev-parse in
+// the exact shapes classifyPlainGitChainSegment recognises (no redirect, no expansion, no extra flags).
+function isPlainReadGitSegment(segment) {
+  if (isSafeGitFetch(segment)) return !hasUnquotedRedirectChar(segment) && !hasShellExpansionAnywhere(segment);
+  const cls = classifyPlainGitChainSegment(segment);
+  return !!cls && (cls.kind === 'log' || cls.kind === 'status' || cls.kind === 'show' || cls.kind === 'revparse');
+}
+
 // isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
 // stdin-only sink shapes (no file operand, no unknown flag; only used by
 // isWholeCommandReadOnlyForm AND isBoundedSinkSegment, so every sink that
@@ -1815,6 +1877,25 @@ const GH_MUTATING_SUBCOMMANDS = {
 };
 const GH_API_MUTATING_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
+// One-line remote state changes (dogfood 2026-10-09): `gh pr merge 12`, `gh issue close 5`, `gh api -X PATCH repos/o/r/pulls/3 -f
+// state=closed` print a line or two and flood nothing, so forcing a subagent for them is noise. They are light when the whole
+// command is one short plain line (no newline, substitution or heredoc). `gh secret set` and `gh label create/edit` print a line too
+// (issue #55). Creation with a body, releases, repos, secret deletion, workflow
+// runs, graphql and DELETE stay heavy.
+const GH_ONELINER_SUBCOMMANDS = {
+  pr: new Set(['merge', 'close', 'edit', 'review', 'comment', 'ready', 'reopen']),
+  issue: new Set(['close', 'edit', 'comment', 'reopen']),
+  secret: new Set(['set']), // `gh secret set X < file` prints one line (issue #55); delete stays heavy
+  label: new Set(['create', 'edit']),
+};
+const GH_ONELINER_API_METHODS = new Set(['POST', 'PATCH', 'PUT']);
+// git subcommands that are light in a clone outside the session's tree (isAllowedScratchCloneSync; engine command.scratch_clone_sync_subs).
+const SCRATCH_CLONE_SYNC_SUBS = new Set(['pull', 'fetch']);
+const GH_ONELINER_MAX_CHARS = 600;
+function isOneLineCommand(command) {
+  return typeof command === 'string' && command.length <= GH_ONELINER_MAX_CHARS && !/[\n\r`]|\$\(|<<|<\(|>\(/.test(command);
+}
+
 // isReadOnlyGhGraphql(tokens, ghIdx) -> true only for a provably read-only
 // `gh api graphql` call (closed read set; anything unknown => false):
 // endpoint `graphql`|`/graphql`, fields only as separated -f/-F/--field/
@@ -1862,7 +1943,7 @@ function isReadOnlyGhGraphql(tokens, ghIdx) {
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment, command) {
+function isHeavyGhSegment(segment, command, strict) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -1870,6 +1951,8 @@ function isHeavyGhSegment(segment, command) {
   const group = (tokens[ghIdx + 1] || '').toLowerCase();
   const sub = (tokens[ghIdx + 2] || '').toLowerCase();
   if (group === 'workflow' && sub === 'run') return true;
+  const oneLine = !strict && isOneLineCommand(command); // inline code (strict) is never a plain one-liner
+  if (oneLine && GH_ONELINER_SUBCOMMANDS[group] && GH_ONELINER_SUBCOMMANDS[group].has(sub)) return false;
   if (GH_MUTATING_SUBCOMMANDS[group] && GH_MUTATING_SUBCOMMANDS[group].has(sub)) return true;
   if (group === 'api') {
     // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
@@ -1877,6 +1960,17 @@ function isHeavyGhSegment(segment, command) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => /^\/?graphql$/i.test(t))) return true;
+    if (oneLine) {
+      // an explicit POST/PATCH/PUT (or the implicit POST of a field flag) on one short line is light; DELETE and a body file are not
+      let method = '', body = false;
+      for (let i = ghIdx + 2; i < tokens.length; i++) {
+        const t = tokens[i];
+        if ((t === '-X' || t === '--method') && tokens[i + 1] !== undefined) method = tokens[i + 1].toUpperCase();
+        else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
+        if (t === '--input' || /^--input=/.test(t)) body = true;
+      }
+      if (!body && (method === '' || GH_ONELINER_API_METHODS.has(method))) return false;
+    }
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
@@ -1932,7 +2026,10 @@ function isFlaggedInterpreterScript(segment) {
 // anti-hall CLI exemptions must still see the wrapped `node <dir>/devswarm.js
 // roster` as the segment's own verb (field report: the `timeout N node ...
 // roster | head` form blocked while the same line without `timeout` passed).
-const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-\S+\s+)*\d+[smhd]?\s+/;
+// The two flag alternatives are kept disjoint (`-k`/`-s` + whitespace only
+// matches the first) so a run of `-k -x -k -x ...` cannot backtrack
+// exponentially (CodeQL js/redos).
+const TIMEOUT_PREFIX_RE = /^\s*timeout\s+(?:-[ks]\s+\S+\s+|-(?![ks]\s)\S+\s+)*\d+[smhd]?\s+/;
 
 // A shell control keyword that merely introduces the next command
 // (`for t in a b; do <cmd>`, `then <cmd>`, `if <cmd>`) is not part of that
@@ -2076,7 +2173,11 @@ function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
-  for (const seg of splitSegments(command)) {
+  const split = splitSegmentsDetailed(command);
+  const exempt = d === 0 ? readOnlyFormUnits(split) : null;
+  for (let si = 0; si < split.segments.length; si++) {
+    if (exempt && exempt.has(si)) continue;
+    const seg = split.segments[si];
     if (isHeavySegment(seg, command)) return true;
     if (d < 3) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
@@ -3118,6 +3219,86 @@ function sinkPathHasSymlink(target, payload) {
   } catch (_) { return true; }
 }
 
+// isAllowedScratchCloneSync(command, payload) -> bool (issue #55). `git pull` / `git fetch` (SCRATCH_CLONE_SYNC_SUBS) run in a git
+// checkout OUTSIDE the session's own tree, named by `git -C <abs|~ dir>` or by one leading `cd <abs|~ dir>`, chained with && or ;
+// only to light segments (a `sed -n` range, a `gh … list`), with at most one final `| tail/head -N`: such a sync prints a few lines,
+// and the "raw output floods" rationale is for unbounded runners and builds. One plain line only (no newline, substitution or
+// heredoc), no global git option but -C, no shell expansion. Fails closed. git-guard's push/force checks are separate and untouched.
+function scratchSyncHome() { try { return io.homeOf(guardEnv) || ''; } catch (_) { return ''; } }
+function scratchSyncDir(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let p = raw;
+  if (p === '~' || p.startsWith('~/')) { const h = scratchSyncHome(); if (!h) return null; p = h + p.slice(1); }
+  return path.isAbsolute(p) ? path.resolve(p) : null;
+}
+// The git checkout `dir` belongs to, when it is a checkout outside the session's tree (cwd and its toplevel, real paths); else null.
+function scratchSyncOtherClone(dir, cwd) {
+  let real;
+  try { real = fs.realpathSync(dir); } catch (_) { return null; }
+  const id = require('../companion/lib/identity.js');
+  let top = null;
+  try { top = id.resolveContext(real, { missingPath: 'ancestor' }).toplevel || null; } catch (_) { top = null; }
+  if (!top) return null;
+  const inside = (a, d) => { const rel = path.relative(d, a); return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)); };
+  const session = [];
+  try { session.push(fs.realpathSync(cwd)); } catch (_) { return null; }
+  try { const t = id.resolveContext(cwd, { missingPath: 'ancestor' }).toplevel; if (t) session.push(fs.realpathSync(t)); } catch (_) { return null; }
+  if (session.some((s) => inside(real, s) || inside(s, real))) return null;
+  return top;
+}
+function scratchSyncGit(seg) {
+  if (effectiveVerb(seg) !== 'git') return null;
+  if (hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg.replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return null;
+  const tokens = tokenizeQuoted(seg);
+  if (!tokens.length || tokens[0] !== 'git') return null;
+  let i = 1, cdir = null;
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    if (tokens[i] !== '-C' || tokens[i + 1] === undefined) return null; // only -C: no -c/--git-dir/--work-tree
+    cdir = tokens[i + 1];
+    i += 2;
+  }
+  const sub = (tokens[i] || '').toLowerCase();
+  return SCRATCH_CLONE_SYNC_SUBS.has(sub) ? { sub, cdir } : null;
+}
+function isAllowedScratchCloneSync(command, payload) {
+  if (typeof command !== 'string' || !command.trim() || !SCRATCH_CLONE_SYNC_SUBS.size || !isOneLineCommand(command)) return false;
+  const split = splitSegmentsDetailed(command);
+  const segments = split.segments.slice();
+  const delims = split.delims.slice();
+  if (!segments.length) return false;
+  if (segments.length >= 2 && delims[delims.length - 1] === 'end' && delims[delims.length - 2] === '|' &&
+      PLAIN_OUTPUT_FILTER_RE.test(segments[segments.length - 1].trim())) {
+    segments.pop();
+    delims.pop();
+    delims[delims.length - 1] = 'end';
+  }
+  for (let i = 0; i < delims.length; i++) {
+    if (i === delims.length - 1 ? delims[i] !== 'end' : (delims[i] !== '&&' && delims[i] !== ';')) return false;
+  }
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let dir = null, saw = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (!seg) return false;
+    const t = tokenizeQuoted(seg);
+    if (i === 0 && t[0] === 'cd') {
+      if (t.length !== 2 || hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg)) return false;
+      dir = scratchSyncDir(t[1]);
+      if (!dir) return false;
+      continue;
+    }
+    const g = scratchSyncGit(seg);
+    if (g) {
+      const target = g.cdir !== null ? scratchSyncDir(g.cdir) : dir;
+      if (!target || !scratchSyncOtherClone(target, cwd)) return false;
+      saw = true;
+      continue;
+    }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return saw;
+}
+
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
 function isAllowedPlainPushChain(command, cwd, payload) {
   if (typeof command !== 'string' || !command.trim()) return false;
@@ -3391,6 +3572,15 @@ function isAllowedGcloudReadCommand(command) {
 // ---------------------------------------------------------------------------
 const BACKGROUND_SCRIPT_INTERPRETERS = new Set(['python3', 'node', 'sh', 'bash']);
 const BACKGROUND_CHAIN_DELIMS = new Set([';', '&&', '|', 'end']);
+// Valueless interpreter flags that may sit between the interpreter and the
+// script (`python3 -I probe.py`). Closed per interpreter: none of these takes a
+// value, loads code (-c/-m/-W/--require/--import and friends are NOT here) or
+// changes which file runs, so `<interp> <flags> <scratch script>` is the same
+// script run the bare form is. Any other leading flag keeps the segment refused.
+const BACKGROUND_SCRIPT_SAFE_FLAGS = {
+  python3: new Set(['-I', '-B', '-u', '-E', '-s', '-S', '-O', '-OO', '-q']),
+  node: new Set(['--no-warnings', '--trace-warnings', '--enable-source-maps']),
+};
 
 // One `<python3|node|sh|bash> <script file> [args…]` segment, script inside
 // the scratchpad/tmp (realpath'd), no --confirmed, not an anti-hall plugin script.
@@ -3402,7 +3592,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   // `VAR=…` token is not a path, so env-prefix assignments stay refused.
   const direct = tokens.length >= 1 && tokens[0].includes('/') && !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]);
   if (!direct && (tokens.length < 2 || !BACKGROUND_SCRIPT_INTERPRETERS.has(tokens[0]))) return false;
-  const script = direct ? tokens[0] : tokens[1];
+  let scriptIdx = direct ? 0 : 1;
+  if (!direct) {
+    const safe = BACKGROUND_SCRIPT_SAFE_FLAGS[tokens[0]];
+    while (safe && scriptIdx < tokens.length && safe.has(tokens[scriptIdx])) scriptIdx++;
+  }
+  const script = tokens[scriptIdx];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;
@@ -3428,12 +3623,25 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   return true;
 }
 
+// `sed -n 'N,Mp' <scratch file>`: a bounded line range of a scratch/tmp file, read only (no -i, no w/e command).
+function isScratchSedRangeSegment(segment, ctx) {
+  if (effectiveVerb(segment) !== 'sed') return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim());
+  if (t.length !== 4 || t[0] !== 'sed' || t[1] !== '-n') return false;
+  return /^(?:\d+)(?:,\d+)?p$/.test(t[2]) && !t[3].startsWith('-') && isScratchpadOrTmpPath(t[3], ctx);
+}
+
 // The command is one or more segments joined by `;`/`&&`/`|`, each either a
 // scratch-script segment or a bounded read sink (tail/head/wc/grep -c|-m N) —
 // the exact remedy shape the block text suggests (`script > out; wc -l out`).
 // At least one scratch-script segment is required; anything else refuses.
 function isBackgroundScratchScript(command, payload) {
-  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (!payload || !payload.tool_input) return false;
+  // Foreground too (dogfood 2026-10-09): `python3 -I scan.py > out.tsv; wc -l out.tsv; sed -n 1,5p out.tsv | head` floods nothing, because the
+  // script's stdout goes to a scratch file and every read is bounded. A foreground chain must redirect each script's stdout; a background
+  // one keeps the original, looser rule.
+  const background = payload.tool_input.run_in_background === true;
   if (typeof command !== 'string' || !command.trim()) return false;
   if (/#/.test(neutralizeQuotedContents(command))) return false;
   if (hasShellExpansionAnywhere(command)) return false;
@@ -3448,8 +3656,10 @@ function isBackgroundScratchScript(command, payload) {
     if (!BACKGROUND_CHAIN_DELIMS.has(delims[i])) return false;
     const seg = segments[i].trim();
     if (!seg) return false;
-    if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
+    if (isBackgroundScratchScriptSegment(seg, ctx)) {
+      if (!background && !/(^|[^0-9&<>])>>?\s*\S/.test(neutralizeQuotedContents(seg).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false; // foreground: stdout must go to a file
+      sawScript = true;
+    } else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx) && !isScratchSedRangeSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
@@ -4054,7 +4264,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
       cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
     }
-    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c, true))) return { precise: true };
   }
   const sp = require('./lib/scratchpad.js');
   // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.
@@ -4413,6 +4623,13 @@ function main(payload, env) {
     return io.decision(0);
   }
 
+  // A DevSwarm CHILD workspace is a worker on its own branch (peer report,
+  // SkyCrew child, 2026-10-09): its Bash writes are its job (edit parity does
+  // not apply) and its own git commit/push/fetch of the branch or a submodule
+  // runs inline. Builds/tests stay delegated. Fail-closed to the gate.
+  let childWorker = false;
+  try { childWorker = require('./lib/devswarm-role.js').isChildWorker(env, undefined, (payload && payload.cwd) || ''); } catch (_) { childWorker = false; }
+
   // Bash edit parity (F3): a main-thread Bash write (sed -i/perl -i/tee/cp/mv/
   // redirect, a literal open-for-write path in python -c / node -e, and the same
   // inside sh -c, eval, $(…) or a heredoc fed to a shell) into a file edit-guard would block for the Edit tool gets the
@@ -4420,7 +4637,7 @@ function main(payload, env) {
   // an edit-guard skip; a trusted (redirect-free) project command-allow match
   // passes. Both hosts (a Codex main thread is detected). Fail-open.
   try {
-    if (settingsGet('guards', 'bashEditParity') !== false
+    if (!childWorker && settingsGet('guards', 'bashEditParity') !== false
       && require('./lib/settings.js').enabled('safety', 'editGuard', settingsOpts())
       && !isSkipped('edit-guard')
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
@@ -4442,6 +4659,8 @@ function main(payload, env) {
   if (!isHeavyCommand(command)) {
     return io.decision(0);
   }
+
+  try { if (childWorker && isChildGitSyncChain(command)) return io.decision(0); } catch (_) { /* gated */ }
 
   // Narrow allow (owner-approved 2026-09-26): a bounded, single-target
   // read-only verification command is let through even though it classified
@@ -4489,6 +4708,13 @@ function main(payload, env) {
         return io.decision(0);
       }
     }
+  } catch (_) {
+    // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
+  }
+
+  // A pull/fetch in a clone outside the session's tree, chained only with light segments (issue #55). Fail-closed on any error.
+  try {
+    if (isAllowedScratchCloneSync(command, payload)) return io.decision(0);
   } catch (_) {
     // fail-closed: never let a bug in this carve-out bypass the heavy-command gate.
   }

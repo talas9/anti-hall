@@ -22,8 +22,9 @@ use super::settings::{Route, anthropic_key_visible, integration_backend, route};
 use super::{cli, telemetry};
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::text::js_trim;
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::jsport::text::slice16_lossy;
-use crate::checks::replykit::json::{js_number, quote};
+use crate::checks::replykit::json::quote;
 use crate::defaults;
 use crate::jev::cascade;
 use crate::jev::client::{Answer, JevClient};
@@ -61,7 +62,7 @@ impl Label {
             parts.push(format!("\"kind\":{}", quote(k)));
         }
         parts.push(format!("\"backend\":{}", quote(&self.backend)));
-        parts.push(format!("\"ms\":{}", js_number(self.ms as f64)));
+        parts.push(format!("\"ms\":{}", to_js_string(self.ms as f64)));
         if let Some(t) = &self.transport {
             parts.push(format!("\"transport\":{}", quote(t)));
         }
@@ -120,7 +121,7 @@ fn ask_jev(ctx: &Ctx, client: &JevClient, text: &str, out: &mut Label) {
         let valid: Vec<String> = kinds().into_iter().map(|(k, _)| k).collect();
         for (key, ans) in &r.answers {
             let Ok((answer, c)) = ans else { continue };
-            conf.push(format!("{}:{}", quote(key), js_number(*c)));
+            conf.push(format!("{}:{}", quote(key), to_js_string(*c)));
             match answer {
                 Answer::Label(l) if key == kk && *c >= ctx.jev.confidence_threshold && valid.contains(l) => out.kind = Some(l.clone()),
                 // Jev over-flags urgent: an urgent answer needs the stricter urgent threshold, a normal one the ordinary one

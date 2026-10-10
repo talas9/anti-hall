@@ -517,7 +517,7 @@ fn js_str(v: ValueRef<'_>) -> Option<String> {
     match v {
         ValueRef::Null => None,
         ValueRef::Integer(i) => Some(i.to_string()),
-        ValueRef::Real(f) => Some(crate::checks::guardkit::ojson::js_number_text(f)),
+        ValueRef::Real(f) => Some(crate::checks::jsport::num::to_js_string(f)),
         ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
         ValueRef::Blob(_) => None,
     }
@@ -650,7 +650,7 @@ fn ppid_table() -> Option<HashMap<i64, i64>> {
 }
 
 /// `processStartMs(pid)`: `Date.parse` of `ps -o lstart= -p <pid>` (local time), or None.
-fn process_start_ms(pid: i64) -> Option<f64> {
+pub(crate) fn process_start_ms(pid: i64) -> Option<f64> {
     let out = std::process::Command::new(defaults::text("mesh_write.ps_bin"))
         .args(defaults::list("mesh_write.ps_lstart_args"))
         .arg(pid.to_string())
@@ -737,7 +737,7 @@ pub fn reader_nonce(home: &Path) -> Option<String> {
                     Some(OVal::Num(n)) if n.is_finite() => *n,
                     _ => since.unwrap_or(0.0),
                 };
-                return Some(format!("{}{pid}:{}", defaults::text("mesh_write.nonce_prefix"), crate::checks::guardkit::ojson::js_number_text(start)));
+                return Some(format!("{}{pid}:{}", defaults::text("mesh_write.nonce_prefix"), crate::checks::jsport::num::to_js_string(start)));
             }
         }
         let t = table.get_or_insert_with(ppid_table);

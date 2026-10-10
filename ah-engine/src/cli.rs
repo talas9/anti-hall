@@ -78,15 +78,26 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("mesh", crate::mesh::run_cmd),
         ("settings", crate::ops::cmd_settings),
         ("defect", crate::ops::cmd_defect),
+        ("jev-report", crate::jev::report::run_cmd),
+        ("auto-handover-config", crate::ops::cmd_auto_handover_config),
+        ("dispatch-report", crate::ops::cmd_dispatch_report),
+        ("finding-dedup", crate::ops::cmd_finding_dedup),
+        ("coordinator-work-baseline", crate::ops::cmd_coordinator_work_baseline),
         ("statusline", crate::ops::cmd_statusline),
         ("phase", crate::ops::cmd_phase),
         ("install-statusline", crate::ops::cmd_install_statusline),
         ("uninstall-statusline", crate::ops::cmd_uninstall_statusline),
         ("shadow-compare", crate::ops::cmd_shadow_compare),
         ("update", crate::operator::update::run),
+        ("engine-update", crate::operator::engine_update::run),
         ("install-codex", crate::operator::install_codex::run),
+        ("codex-limit-status", crate::ops::cmd_codex_limit_status),
+        ("codex-activate", crate::ops::cmd_codex_activate),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
+        ("refresh", crate::refresh::run_cmd),
+        ("units", crate::setup::units::cmd_units),
+        ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
     ]
 }
 
@@ -215,6 +226,10 @@ pub fn run(args: &[String]) -> i32 {
         if p.json && !p.command.is_empty() {
             println!("{}", json!({"error": defaults::render("msg.cli_unknown", &[("command", &p.command)]), "usage": usage}));
         } else {
+            // what was typed and why it failed, then the usage line as the hint (a bare `ah-engine` just prints the usage)
+            if !p.command.is_empty() {
+                eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &p.command)]));
+            }
             eprintln!("{usage}");
         }
         return 64;
@@ -284,7 +299,8 @@ fn cmd_status(p: &Parsed) -> i32 {
     let v = client::status_value();
     // `--memory`: just the memory breakdown (live heap against RSS, and the size of every long-lived in-memory structure)
     let v = if p.rest.iter().any(|a| a == "--memory") {
-        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"]})
+        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"],
+            "latest_snapshot": crate::memdiag::latest_snapshot(), "mem_log": crate::memdiag::summary()})
     } else {
         v
     };

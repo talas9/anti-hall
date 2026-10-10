@@ -1,0 +1,60 @@
+# ah-engine shipped defaults for memory diagnostics (issue #21). Format: see the header of engine.toml.
+#
+# Two files in the state directory answer "where does the daemon's memory go": a per-request NDJSON log (resident set and allocator
+# figures before and after each request) and one snapshot written when the resident-set cap trips. `ah-engine status --memory`
+# prints the latest snapshot and a summary of the log. Nothing here changes what a hook decides.
+
+[diagnostics.mem_log]
+doc = "Append one NDJSON line per served request to the memory log: time, request kind, event, the checks that ran, resident set and allocator figures before and after, and the size of the transcript file. Costs a few microseconds and one small append per request; turn it off once the memory question is closed."
+value = true
+
+[diagnostics.mem_log_max_bytes]
+doc = "Size at which the memory log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so the log never holds more than twice this."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[diagnostics.mem_snapshot]
+doc = "When the resident-set cap trips, write one snapshot before the daemon exits: allocator figures, thread count, the interpreters and caches of every worker, and the platform's own memory map of the process."
+value = true
+
+[diagnostics.mem_snapshot_max_bytes]
+doc = "Largest the snapshot file may be; the platform memory-map text is cut to fit."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[diagnostics.mem_snapshot_wait_ms]
+doc = "Longest the snapshot waits for every worker to report its interpreter and caches (a busy worker reports after its request); workers that have not reported by then are listed as missing."
+value = 3000
+min = 0
+unit = "ms"
+
+[diagnostics.mem_snapshot_probe]
+doc = "Command whose output goes into the snapshot as the platform's memory map of the daemon (macOS: vmmap summary); the program, then its arguments with `{pid}` substituted. Where /proc/<pid>/smaps_rollup exists it is used instead. An empty list or a missing program leaves the field empty."
+value = ["vmmap", "--summary", "{pid}"]
+
+[diagnostics.mem_snapshot_probe_ms]
+doc = "Longest the memory-map command may run."
+value = 4000
+min = 1
+unit = "ms"
+
+[diagnostics.summary_top]
+doc = "Rows shown per ranking (events, checks) in the memory summary of `ah-engine status --memory`."
+value = 10
+min = 1
+
+[diagnostics.summary_read_bytes]
+doc = "Most of the memory log (newest part) `status --memory` reads to build its summary."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[files.mem_log]
+doc = "Per-request memory log file name (state directory)."
+value = "mem.ndjson"
+
+[files.mem_snapshot]
+doc = "Cap-trip memory snapshot file name (state directory)."
+value = "mem-snapshot.json"

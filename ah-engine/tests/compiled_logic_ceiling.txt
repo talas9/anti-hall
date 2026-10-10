@@ -11,4 +11,5 @@
 # The dswire lane's devswarm-rt-advisory decides in a script (no net change).
 # Lane d88e (batch 7) moved stale-agent-stop-note, claim-ledger, idle-agent-sweep, auto-handover-pause-nag, compact-advice-guard and
 # session-end-mcp-reaper to scripts: 13 (the number the gate measures).
-13
+# Lane d88f (live7) moved the last 13 (verify-first, verify-first-orch, verify-first-orch-codex, task-tracker, the DevSwarm gates and the three codex checks) to scripts: 0.
+0

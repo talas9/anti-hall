@@ -573,7 +573,18 @@ pub fn run(ctx: &Ctx) -> Vec<Row> {
     store_fix(ctx, &mut rows, step("recover"));
     heal_registry_rows(ctx, &mut rows);
     sweeps::all(ctx, &mut rows);
+    statusline_upgrade(ctx, &mut rows);
     rows
+}
+
+/// Engine only (Node's repair pass has no such step): a status line command that anti-hall installed in the Node-only form runs
+/// the engine first from now on. A row is reported only when a file is changed (or would be, on a dry run, or could not be), so a
+/// home with nothing to upgrade reports exactly what Node reports.
+fn statusline_upgrade(ctx: &Ctx, rows: &mut Vec<Row>) {
+    let id = step("statusline");
+    for u in crate::ops::slcfg::upgrade_commands(&ctx.home, &ctx.cwd, &ctx.env, ctx.dry_run) {
+        rows.push(Row::new(id, id, u.status, u.msg));
+    }
 }
 
 /// The report `doctor.js --repair --migrations-only` prints: `{ok, action, version, error, repairs}`.

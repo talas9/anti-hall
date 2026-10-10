@@ -29,13 +29,13 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 1. Install project-local Codex hooks:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js"
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
 ```
 
 2. For global Codex hooks instead:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
+sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
 ```
 
 3. Verify:

@@ -5,6 +5,7 @@
 //! their process); see docs/DEVELOPMENT.md.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+mod broad_kill;
 #[path = "../common/mod.rs"]
 mod common;
 mod replies;
@@ -13,7 +14,10 @@ mod transcript_support;
 
 mod agent_cli;
 mod agent_controls_parity;
+mod agent_scan_kept;
 mod cascade_judge;
+mod codex_apply_patch_e2e;
+mod codex_scripts_parity;
 mod compiled_logic_gate;
 mod ctxbudget_e2e;
 mod defaults_failover;
@@ -33,15 +37,21 @@ mod docs_coverage;
 mod doctor_parity;
 mod doctor_scenarios;
 mod dssup;
+mod dssup_appsync;
+mod dssup_deferred;
 mod dssup_ingest;
 mod dssup_kill;
+mod dssup_liveness;
+mod dssup_retention;
 mod durability;
 mod e2e;
+mod engine_update;
 mod fail_closed_matrix;
 mod fallback_read;
 mod flip_parity;
 mod gitcache_parity;
 mod gitcheck;
+mod goldens_unit;
 mod handover_codex_e2e;
 mod handover_hygiene;
 mod hooks_files;
@@ -49,8 +59,13 @@ mod inject_gate_parity;
 mod jev_cache_parity;
 mod jev_integrations_parity;
 mod jev_keep_parity;
+mod jev_report_parity;
 mod jev_scrub_reload;
+mod js_number_printers;
 mod judge_parity;
+mod l03_cli_parity;
+mod launcher_parity;
+mod mcp_reaper_job;
 mod mcp_reaper_parity;
 mod memory_soak;
 mod mesh_parity;
@@ -78,7 +93,9 @@ mod spool;
 mod task_checks_e2e;
 mod task_tracker_parity;
 mod telemetry;
+mod temp_leaks;
 mod template_drift;
 mod transcript_index;
 mod transcript_parity;
 mod update_parity;
+mod wake_watch_parity;

@@ -432,6 +432,7 @@ pub(crate) fn run_fx(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
     for m in mism.iter().take(12) {
         summary.push_str(&format!("  MISMATCH {m}\n"));
     }
+    summary.push_str(&timing::line(o.name));
     drop(scratch);
     Report { stats, summary }
 }

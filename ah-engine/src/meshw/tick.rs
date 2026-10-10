@@ -40,6 +40,8 @@ use std::path::{Path, PathBuf};
 struct Form {
     /// `main()` prints the one-line rendering (`--quiet` without `--json`).
     line: bool,
+    /// `--child`: the tick first pulls the native queue (see [`crate::meshw::pull`]).
+    child: bool,
 }
 
 fn tick_form(a: &Args) -> R<Form> {
@@ -51,11 +53,12 @@ fn tick_form(a: &Args) -> R<Form> {
         }
     };
     let (quiet, json) = (bare(defaults::text("mesh_write.flag_quiet"))?, bare(defaults::text("mesh_write.flag_json"))?);
-    let known = [defaults::text("mesh_write.flag_quiet"), defaults::text("mesh_write.flag_json")];
+    let child = bare(defaults::text("mesh_write.flag_child"))?;
+    let known = [defaults::text("mesh_write.flag_quiet"), defaults::text("mesh_write.flag_json"), defaults::text("mesh_write.flag_child")];
     if a.flags.keys().any(|k| !known.contains(&k.as_str())) {
         return defer("flags");
     }
-    Ok(Form { line: quiet && !json })
+    Ok(Form { line: quiet && !json, child })
 }
 
 /// The `devswarm.tickRosterEvery` setting might be set anywhere Node reads it (the environment, `~/.anti-hall/settings.json`,
@@ -72,7 +75,7 @@ fn roster_setting_possible(inv: &Inv) -> bool {
 /// `devswarm-read-wal.js` `health()` reports an alert (or something this port cannot judge): then the tick carries
 /// `walAlerts` and Node prints it. Defer on any pending batch, spilled batch or last-resort batch; a log with every batch
 /// closed (the normal state) is quiet.
-fn wal_is_quiet(inv: &Inv) -> R<()> {
+fn wal_is_quiet(inv: &Inv, own: Option<&Path>) -> R<()> {
     let root = devswarm_root(&inv.home);
     let suffix = defaults::text("mesh_write.wal_suffix");
     if let Ok(rd) = std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal"))) {
@@ -100,12 +103,20 @@ fn wal_is_quiet(inv: &Inv) -> R<()> {
                     _ => {}
                 }
             }
-            if opened.iter().any(|b| !closed.contains(b)) {
+            // a `--child` tick's own log is replayed and closed by the pull before the health report
+            if opened.iter().any(|b| !closed.contains(b)) && own != Some(e.path().as_path()) {
                 return defer("wal-pending");
             }
         }
     }
-    if std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal_spill"))).is_ok_and(|mut d| d.next().is_some()) {
+    // a spill directory holds the preflight's probe file once any pull has run; only a spilled batch (`*.json`) is an alert
+    let json = defaults::text("mesh_write.json_suffix");
+    let spilled = std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal_spill")))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().ends_with(json)));
+    if spilled {
         return defer("wal-spill");
     }
     let tmp = defaults::list("mesh_write.env_tmpdir")
@@ -476,10 +487,17 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         return defer("roster-setting");
     }
     // ---- reads: everything that can defer happens before the first write ----
-    let Some(desc) = ident::read_descriptor(&inv.home, id) else { return defer("no-descriptor") };
-    let counted = count_mail(inv, id, &desc, form.line)?;
-    let unread = counted.unread;
-    wal_is_quiet(inv)?;
+    let found = ident::read_descriptor(&inv.home, id);
+    if found.is_none() && !form.child {
+        return defer("no-descriptor");
+    }
+    // a `--child` tick pulls first: the ensure completes the descriptor (or registers the workspace) the count then reads
+    let prepared = if form.child { Some(crate::meshw::pull::prepare(inv, id, found.as_ref())?) } else { None };
+    let Some(desc) = prepared.as_ref().map(|p| p.ensured().clone()).or(found) else { return defer("no-descriptor") };
+    // a `--child` tick's pre-count only proves the count can be answered: the pull pre-creates the inbox and cursor files that
+    // make it known, and the count that is printed is taken after it
+    let counted = count_mail(inv, id, &desc, form.line || form.child)?;
+    wal_is_quiet(inv, prepared.as_ref().map(|p| p.wal_path()))?;
     let marker_file =
         devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let seq = previous_seq(&marker_file)?;
@@ -489,9 +507,29 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         // the idle, archived and limit skips and the re-arm cue are Node's
         return defer("watcher-not-armed");
     }
+    // the pull's plan settles every remaining deferral (the lock, the delivery log, the native count) before any write
+    let pull_plan = match prepared {
+        Some(p) => Some(p.finish(inv, counted.store_unread, form.line)?),
+        None => None,
+    };
     // ---- writes ----
-    crate::meshw::mark_committed();
-    write_marker(inv, id, unread, counted.known, seq);
+    let (counted, wal_blocked) = match pull_plan {
+        Some(p) => {
+            // `execute` takes the workspace's lock first and defers only while nothing is written; it marks the commit point itself
+            let out = crate::meshw::pull::execute(inv, p)?;
+            // the count runs after the pull, over what the pull left (a failure here is a committed failure: exit 70)
+            let after = ident::read_descriptor(&inv.home, id).unwrap_or(desc);
+            (count_mail(inv, id, &after, form.line)?, out.wal_blocked)
+        }
+        None => {
+            crate::meshw::mark_committed();
+            (counted, false)
+        }
+    };
+    let unread = counted.unread;
+    // a pull refused because its delivery log is unwritable: mail may be waiting that this count cannot see, so it is UNKNOWN
+    let known = counted.known && !wal_blocked;
+    write_marker(inv, id, unread, known, seq);
     write_heartbeat(inv, id, &beat);
     if unread > 0 && lock_file.exists() {
         write_cron_found_mail(inv, id, unread);
@@ -518,6 +556,9 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         );
     }
     if !form.line {
+        if wal_blocked {
+            return defer("wal-blocked-json");
+        }
         return Ok(Answer { code: 0, stdout: format!("{}\n", count_json(inv, id, &counted)?), effect: Effect::None });
     }
     let line = defaults::render(
@@ -525,7 +566,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         &[
             ("id", &id),
             ("unread", &unread),
-            ("known", &if counted.known { defaults::text("mesh_write.js_true") } else { defaults::text("mesh_write.js_false") }),
+            ("known", &if known { defaults::text("mesh_write.js_true") } else { defaults::text("mesh_write.js_false") }),
             ("gap", &defaults::text("mesh_write.js_false")),
             ("armed", &defaults::text("mesh_write.js_true")),
         ],

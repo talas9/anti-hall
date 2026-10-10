@@ -7,7 +7,7 @@
 # doctor's exact finding text (a test compares them). What it checks: the engine binary (kind, mode, header, OS, architecture,
 # Rosetta, quarantine, digest vs the bootstrap's marker, version vs the plugin's lock, whether `version` runs), the state directory,
 # the daemon's files (socket, lock, run marker, cooldowns), the plugin's defaults and pristine copy, the thin hooks files, HOME,
-# PATH, the tools, git and Node. The repairs and everything that needs the engine (live guard tests, migrations) stay with
+# PATH, the tools, git and (as optional) Node. The repairs and everything that needs the engine (live guard tests, migrations) stay with
 # `ah-engine doctor`.
 # Test-only knobs (honored ONLY with AH_WRAPPER_TEST=1): AH_BOOTSTRAP_UNAME_S / _M / _R (as in the bootstrap), AH_DOCTOR_ROSETTA
 # (path of the file that means Rosetta is installed).
@@ -16,7 +16,7 @@ root=${AH_ENGINE_PLUGIN_ROOT:-}
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --quiet|--check) : ;;
-    --plugin-root) root=${2:-}; shift ;;
+    --plugin-root) root=${2:-}; [ "$#" -gt 1 ] && shift ;;
   esac
   shift
 done
@@ -384,16 +384,19 @@ else
   [ "$grc" -eq 0 ] || warnl "git is on PATH but does not run (exit $grc $(printf '%s' "$gv" | first_line)) - Fix: xcode-select --install (macOS) or reinstall git"
 fi
 command -v gh >/dev/null 2>&1 || infol "gh is not on PATH; only the optional PR/CI helpers need it"
+# Node is optional: the engine runs the hooks. A missing, broken or old Node is a warning; the failure is no working engine with no
+# usable Node behind it.
+node_ok=0
 if ! command -v node >/dev/null 2>&1; then
-  warnl "node is not on PATH; the Node fallback hooks cannot run (if the engine is down, guards fail closed) - Fix: install Node >= 22"
-  [ "$engine_usable" -eq 1 ] || bad "neither a working engine nor node is available; every guard fails closed - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v) or install Node"
+  warnl "node is not on PATH; Node is optional (the engine runs the hooks), only the few checks the engine still hands to Node are skipped - Fix: none needed; install Node >= 22 to run those checks"
 else
   nv=$(node --version 2>&1); nrc=$?
   nmajor=$(printf '%s' "$nv" | sed -n 's/^v\{0,1\}\([0-9][0-9]*\)\..*$/\1/p')
-  if [ "$nrc" -ne 0 ] || [ -z "$nmajor" ]; then bad "node does not run: exit $nrc $(printf '%s' "$nv" | first_line) - Fix: reinstall Node"
-  elif [ "$nmajor" -ge 22 ]; then ok "Node $nv (>= 22) — hooks can run"
-  else bad "Node $nv is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22."; fi
+  if [ "$nrc" -ne 0 ] || [ -z "$nmajor" ]; then warnl "node does not run: exit $nrc $(printf '%s' "$nv" | first_line); Node is optional, only the few checks the engine still hands to Node are skipped - Fix: reinstall Node or take it off PATH"
+  elif [ "$nmajor" -ge 22 ]; then node_ok=1; infol "Node $nv (>= 22) found; optional (the engine runs the hooks)"
+  else warnl "Node $nv is < 22; Node is optional, but the few checks the engine still hands to Node may silently no-op - Fix: install Node >= 22 or take it off PATH"; fi
 fi
+[ "$engine_usable" -eq 1 ] || [ "$node_ok" -eq 1 ] || bad "no working engine (and no usable Node fallback): the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v); Node is not needed"
 
 # ---- verdict -------------------------------------------------------------------------------------------------------------------
 echo

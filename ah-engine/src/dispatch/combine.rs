@@ -133,6 +133,8 @@ impl Ordered {
     /// Serialize the way `JSON.stringify` does (no spaces, keys in stored order).
     pub fn to_json(&self) -> String {
         match self {
+            // a number is a JavaScript double: `1.0` prints `1`, `1e21` prints `1e+21`
+            Ordered::Scalar(serde_json::Value::Number(n)) => crate::checks::jsport::num::to_js_string(n.as_f64().unwrap_or(f64::NAN)),
             Ordered::Scalar(v) => v.to_string(),
             Ordered::Str(s) => serde_json::Value::String(s.clone()).to_string(),
             Ordered::List(a) => format!("[{}]", a.iter().map(Ordered::to_json).collect::<Vec<_>>().join(",")),
@@ -175,6 +177,15 @@ pub fn parse_object(out: &str) -> Option<Ordered> {
 pub fn context_of(out: &str) -> Option<String> {
     let v = parse_object(out)?;
     v.get("hookSpecificOutput")?.get("additionalContext")?.as_str().map(str::to_string)
+}
+
+/// `out` with its `hookSpecificOutput.additionalContext` replaced by `ctx`, every other field and the key order untouched.
+pub fn with_context(out: &str, ctx: &str) -> Option<String> {
+    let Ordered::Obj(mut top) = parse_object(out)? else { return None };
+    let Some((_, Ordered::Obj(hso))) = top.iter_mut().find(|(k, _)| k == HSO_KEY) else { return None };
+    let (_, slot) = hso.iter_mut().find(|(k, v)| k == HSO_CTX && matches!(v, Ordered::Str(_)))?;
+    *slot = Ordered::Str(ctx.to_string());
+    Some(format!("{}\n", Ordered::Obj(top).to_json()))
 }
 
 /// The results delivered as one answer when [`combine`] found they cannot be expressed exactly (a conflict, or a join the

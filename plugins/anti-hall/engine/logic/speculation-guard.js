@@ -5,8 +5,7 @@
 // While the Jev master switch is on the reply is also asked about on the Jev lane (add-block trust: a confident "speculative" adds a
 // block; a hedge under a plan or expectation heading is asked once more with relax-block trust), every decision is written to the
 // guard's own jev-judge.ndjson, and the Stop after a block reports that block's outcome to the Jev decision log. Anything this
-// script cannot reproduce exactly defers BEFORE a side effect (guards.inferenceCheck on, which reads tool evidence; Jev on with a
-// payload that lacks the reply text; a relative transcript path). Keys and texts: response_guards.toml (speculation_guard.*).
+// script cannot reproduce exactly defers BEFORE a side effect (guards.inferenceCheck on, which reads tool evidence; a Jev text cut through a surrogate pair; a relative transcript path). Keys and texts: response_guards.toml (speculation_guard.*).
 'use strict';
 
 function sgT(key, flags, t) { return ah.re.test(ah.cfg(key), flags, t); }
@@ -16,6 +15,49 @@ function sgHasAck(t) {
   for (i = 0; i < ci.length; i++) if (ah.re.test(ci[i], 'i', t)) return true;
   for (i = 0; i < cs.length; i++) if (ah.re.test(cs[i], '', t)) return true;
   return false;
+}
+
+// Same-turn tool evidence as citation (dogfood 2026-10-09): a reply that names specifics (paths, versions, numbers, identifiers) found in
+// the output of tool calls made since the last human prompt cites that output, so its hedge is not an unevidenced guess.
+function sgTurnOutputs(lines) {
+  var human = false, outs = [], total = 0, cap = ah.cfgNum('speculation_guard.cite_output_max_chars');
+  for (var i = lines.length - 1; i >= 0 && total < cap; i--) {
+    var raw = lines[i];
+    if (raw.indexOf('"user"') < 0) continue;
+    var r = jx.parse(raw.trim());
+    if (r.unsure) return null;
+    if (r.invalid || !jx.isObj(r.v) || r.v.type !== 'user') continue;
+    var c = jx.isObj(r.v.message) ? r.v.message.content : undefined;
+    if (typeof c === 'string') { if (r.v.isMeta !== true && c.trim() !== '' && c.indexOf('<') !== 0) break; continue; }
+    if (!Array.isArray(c)) continue;
+    var sawResult = false;
+    for (var j = 0; j < c.length; j++) {
+      var b = c[j];
+      if (!jx.isObj(b)) continue;
+      if (b.type === 'tool_result') {
+        sawResult = true;
+        var t = typeof b.content === 'string' ? b.content : (Array.isArray(b.content) ? b.content.map(function (x) { return jx.isObj(x) && typeof x.text === 'string' ? x.text : ''; }).join(' ') : '');
+        total += t.length;
+        outs.push(t);
+      }
+    }
+    if (!sawResult && r.v.isMeta !== true && c.some(function (b) { return jx.isObj(b) && b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '' && b.text.indexOf('<') !== 0; })) break;
+  }
+  return outs.join('\n');
+}
+
+function sgCites(reply, lines) {
+  if (lines === null) return false;
+  var outs = sgTurnOutputs(lines);
+  if (outs === null || outs === '') return false;
+  var toks = ah.re.findAll(ah.cfg('speculation_guard.cite_token_re'), '', reply), seen = {}, hits = 0, min = ah.cfgNum('speculation_guard.cite_min_len');
+  for (var i = 0; i < toks.length && hits < ah.cfgNum('speculation_guard.cite_min_hits'); i++) {
+    var tk = reply.slice(toks[i][0], toks[i][1]);
+    if (tk.length < min || seen[tk] || !ah.re.test(ah.cfg('speculation_guard.cite_specific_re'), '', tk)) continue;
+    seen[tk] = true;
+    if (outs.indexOf(tk) >= 0) hits++;
+  }
+  return hits >= ah.cfgNum('speculation_guard.cite_min_hits');
 }
 
 // A "must be" / "should be" that states a duty, not a claim: the 40 units after it read as an obligation, or its line is a requirement.
@@ -162,9 +204,18 @@ function decide(p) {
   if (inferenceOn && !loopSafe && jevOn) return 'defer';
   var jevText = null;
   if (jevOn && !loopSafe && !skipped) {
-    if (payloadText === null) return 'defer';
-    jevText = jx.sliceUnits(payloadText, ah.cfgNum('speculation_guard.jev_state_chars'));
-    if (jevText.length < payloadText.length && jevText.length < ah.cfgNum('speculation_guard.jev_state_chars')) return 'defer'; // the cut splits a surrogate pair
+    // Jev reads the Stop payload's reply; without one, the transcript's last assistant text read WITHOUT the doubled nested message
+    // (a text Node falls back from to the legacy one when the deduplicated read finds none)
+    var jevFull = payloadText;
+    if (jevFull === null) {
+      if (tailLines === undefined) tailLines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
+      var dd = tailLines === null ? { text: null } : rp.lastAssistant(tailLines, undefined, true);
+      if (dd.unsure) return 'defer';
+      jevFull = dd.text ? dd.text : lastText;
+      if (jx.loneSurrogate(jevFull)) return 'defer';
+    }
+    jevText = jx.sliceUnits(jevFull, ah.cfgNum('speculation_guard.jev_state_chars'));
+    if (jevText.length < jevFull.length && jevText.length < ah.cfgNum('speculation_guard.jev_state_chars')) return 'defer'; // the cut splits a surrogate pair
   }
   var jevId = ah.cfg('speculation_guard.jev_id');
 
@@ -181,7 +232,12 @@ function decide(p) {
   if (skipped) return 'allow';
 
   var hit = sgHit(markerText);
-  var wouldBlock = hit !== null && !sgHasAck(lastText);
+  var cited = false;
+  if (hit !== null && !sgHasAck(lastText)) {
+    if (tailLines === undefined) tailLines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
+    cited = sgCites(lastText, tailLines);
+  }
+  var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
 
   // JEV: the speculation question (add-block). A confident "speculative" adds a block; any failure leaves the regex verdict.
   var entry = null, jevBlock = false, jevHash = '';
@@ -189,7 +245,7 @@ function decide(p) {
     entry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null, regexVerdict: wouldBlock };
   } else if (jevText !== null) {
     var d = sgAsk({
-      id: jevId, state: jevText, trust: 'add_block', baseline: false, compare: wouldBlock, sessionId: sessionRaw,
+      id: jevId, state: jevText, trust: 'add_block', baseline: false, compare: wouldBlock, sessionId: sessionRaw, turnRefFrom: payloadText === null ? transcript : undefined,
       question: { type: 'noul', instructions: ah.cfg('speculation_guard.jev_instructions'), criteria: [['true', ah.cfg('speculation_guard.jev_true')], ['false', ah.cfg('speculation_guard.jev_false')]] },
     }, p);
     if (d === null) d = { jev: null, outcome: false, reason: null };
@@ -210,7 +266,7 @@ function decide(p) {
 
   var marker = null, hitAt = 0;
   if (!jevBlock) {
-    if (hit !== null && !sgHasAck(lastText)) { marker = hit.text; hitAt = hit.at; }
+    if (hit !== null && !sgHasAck(lastText) && !cited) { marker = hit.text; hitAt = hit.at; }
     else {
       // no hedge, or an honest one: the causal-claim scan (off unless guards.inferenceCheck is on) reads tool evidence
       if (!loopSafe && inferenceOn) return 'defer';
@@ -225,7 +281,7 @@ function decide(p) {
     sgLog(home, JSON.stringify({ ts: new Date(ah.clock.now()).toISOString(), event: 'trigger', id: ah.cfg('speculation_guard.jev_framed_id'), outcome: 'seen' }) + '\n');
     if (jevText === null) return 'defer';
     var fd = sgAsk({
-      id: ah.cfg('speculation_guard.jev_framed_id'), state: jevText, trust: 'relax_block', baseline: true, sessionId: sessionRaw,
+      id: ah.cfg('speculation_guard.jev_framed_id'), state: jevText, trust: 'relax_block', baseline: true, sessionId: sessionRaw, turnRefFrom: payloadText === null ? transcript : undefined,
       question: { type: 'noul', instructions: ah.cfg('speculation_guard.framed_instructions'), criteria: [['true', ah.cfg('speculation_guard.framed_true')], ['false', ah.cfg('speculation_guard.framed_false')]] },
     }, p);
     if (fd !== null && fd.outcome === false) return finish('allow', 'allow');

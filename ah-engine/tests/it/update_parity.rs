@@ -92,6 +92,18 @@ struct Opt {
     bad_override: bool,
     /// No cache root at all.
     no_cache_root: bool,
+    /// A DevSwarm session (`DEVSWARM_REPO_ID` set): the DevSwarm-only stages are not gated off.
+    ds: bool,
+    /// Every one-time stage already stamped complete for the version the update lands on.
+    markers: bool,
+    /// `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`.
+    budget: Option<&'static str>,
+    /// Jev is on and a Jev key file exists: the one-time legacy key opt-in has work to do.
+    jev_key: bool,
+    /// The home's Codex hooks.json still registers a retired graphify script.
+    graphify: bool,
+    /// The engine runs with no usable Node: `node` on the PATH and `AH_ENGINE_NODE` are a shim that records the call and fails.
+    no_node: bool,
 }
 
 struct World {
@@ -159,6 +171,25 @@ fn world(o: &Opt) -> World {
             format!(r#"{{"version":2,"plugins":{{"anti-hall@anti-hall":[{{"scope":"user","installPath":"x","version":"{reg}"}}]}}}}"#),
         );
     }
+    if o.markers {
+        let v = if o.no_upstream_move { V1 } else { V2 };
+        let keys = defaults_keys();
+        let body: Vec<String> = keys.iter().map(|k| format!(r#""{k}":{{"completedVersion":"{v}"}}"#)).collect();
+        put(&home, ".anti-hall/update-sweep-state.json", format!("{{{}}}", body.join(",")));
+    }
+    if o.jev_key {
+        put(&home, ".anti-hall/settings.json", "{\n  \"jev\": {\n    \"enabled\": true\n  }\n}\n");
+        put(&home, ".config/vercel/ai-gateway-key", "k");
+    }
+    if o.graphify {
+        put(&home, ".codex/hooks.json", GRAPHIFY);
+    }
+    if o.no_node {
+        let log = root.join("node-calls.log");
+        let shim = format!("#!/bin/sh\necho \"node $*\" >> '{}'\nexit 127\n", log.display());
+        put(&root, "no-node/node", shim);
+        fs::set_permissions(root.join("no-node/node"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let claude = if o.claude_fails {
         "#!/bin/sh\necho 'boom: registry locked' >&2\nexit 3\n"
     } else if o.claude_confirms {
@@ -189,8 +220,29 @@ struct Out {
 fn envs(cmd: &mut Command, w: &World, o: &Opt) {
     let path = format!("{}:{}", w.bin.display(), std::env::var("PATH").unwrap());
     cmd.env_clear().env("PATH", path).env("HOME", &w.home).env("ANTIHALL_INGEST_DRY_RUN", "1").env("GIT_CONFIG_GLOBAL", "/dev/null");
+    // the Node script has no units heal: the comparison runs have the engine's stage off, `update_heals_the_units` has it on
+    cmd.env("ANTIHALL_UNITS_HEAL", "off");
     let ov = if o.bad_override { w.root.join("nope").to_string_lossy().into_owned() } else { w.mp.to_string_lossy().into_owned() };
     cmd.env("ANTIHALL_MARKETPLACE_DIR", ov);
+    if o.ds {
+        cmd.env("DEVSWARM_REPO_ID", "repo-parity").env("DEVSWARM_WORKSPACE_ID", "ws-parity");
+    }
+    if let Some(b) = o.budget {
+        cmd.env("ANTIHALL_UPDATE_POSTPULL_BUDGET_MS", b);
+    }
+}
+
+/// The update-sweep-state keys of the one-time stages, from the shipped stage table.
+fn defaults_keys() -> Vec<String> {
+    let text = fs::read_to_string(plugin().join("engine/defaults/update_post.toml")).unwrap();
+    let re = regex::Regex::new(r#"state = \[([^\]]*)\]"#).unwrap();
+    let mut keys: Vec<String> = re
+        .captures_iter(&text)
+        .flat_map(|c| c[1].split(',').map(|k| k.trim().trim_matches('"').to_string()).filter(|k| !k.is_empty()).collect::<Vec<_>>())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 fn finish(o: std::process::Output) -> Out {
@@ -212,8 +264,32 @@ fn run_engine(w: &World, o: &Opt, args: &[&str]) -> Out {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     cmd.arg("update").args(args).current_dir(&w.home);
     envs(&mut cmd, w, o);
+    if o.no_node {
+        let shim = w.root.join("no-node");
+        cmd.env("PATH", format!("{}:{}:{}", shim.display(), w.bin.display(), std::env::var("PATH").unwrap())).env("AH_ENGINE_NODE", shim.join("node"));
+    }
     finish(cmd.output().unwrap())
 }
+
+/// What the Node shim recorded (empty: nothing tried to run Node).
+fn node_calls(w: &World) -> String {
+    fs::read_to_string(w.root.join("node-calls.log")).unwrap_or_default()
+}
+
+const GRAPHIFY: &str = r#"{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "node /x/plugins/anti-hall/hooks/graphify-session.js"}]},
+      {"hooks": [{"type": "command", "command": "/other/tool.sh"}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "node C:\\x\\hooks\\graphify-guard.js"}]}
+    ],
+    "Stop": "not a list"
+  },
+  "other": 1.50
+}
+"#;
 
 fn norm(text: &str, w: &World) -> String {
     let canon = fs::canonicalize(&w.root).unwrap();
@@ -223,7 +299,8 @@ fn norm(text: &str, w: &World) -> String {
 fn clock(text: &str) -> String {
     let re = regex::Regex::new(r#"("completedTs"|"at"|"ts"|"startedAt"|"lastRun"|"time"):\s*\d{10,}"#).unwrap();
     let re2 = regex::Regex::new(r"\.corrupt-\d+|\.bak-[0-9TZ-]+").unwrap();
-    re2.replace_all(&re.replace_all(text, r#"$1:0"#), ".X").into_owned()
+    let re3 = regex::Regex::new(r#""ts":"[0-9T:.Z-]+"|"pid":\d+"#).unwrap();
+    re3.replace_all(&re2.replace_all(&re.replace_all(text, r#"$1:0"#), ".X"), "\"X\":0").into_owned()
 }
 
 fn tree(root: &Path) -> BTreeMap<String, String> {
@@ -316,6 +393,7 @@ fn assert_same_update(name: &str, node: &str, engine: &str) {
 fn parity(name: &str, o: &Opt, args: &[&str]) -> String {
     let (a, b) = (world(o), world(o));
     let (node, eng) = (run_node(&a, o, args), run_engine(&b, o, args));
+    assert_eq!(node_calls(&b), "", "{name}: the engine tried to run Node");
     assert_eq!(node.code, eng.code, "{name}: exit code\nnode out: {}\nengine out: {}\nengine err: {}", node.stdout, eng.stdout, eng.stderr);
     let (ns, es) = (norm(&node.stdout, &a), norm(&eng.stdout, &b));
     let moved = ns.lines().next().is_some_and(|l| l.contains("\"updated\":true") && l.contains("\"ingestHeal\""));
@@ -328,7 +406,7 @@ fn parity(name: &str, o: &Opt, args: &[&str]) -> String {
     let (ta, tb) = (tree(&a.home), tree(&b.home));
     let keys: Vec<&String> = ta.keys().chain(tb.keys()).collect();
     for k in keys {
-        if moved && k.contains("update-sweep-state") {
+        if moved && (k.contains("update-sweep-state") || k.contains("logs/devswarm.jsonl")) {
             continue; // the Node script's two passes stamp differently (see assert_same_update)
         }
         assert_eq!(ta.get(k).map(|v| norm(v, &a)), tb.get(k).map(|v| norm(v, &b)), "{name}: file {k} differs between the Node run and the engine run");
@@ -454,6 +532,49 @@ fn update_without_a_cache_root_mirrors_nothing() {
 #[test]
 fn post_pull_only_prints_just_the_status() {
     parity("post_pull_only", &Opt { no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn update_in_a_devswarm_session_with_every_one_time_stage_done() {
+    let out = parity("ds_done", &Opt { ds: true, markers: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("already completed for 0.1.0"), "{out}");
+}
+
+#[test]
+fn update_in_a_devswarm_session_with_nothing_stamped() {
+    parity("ds_fresh", &Opt { ds: true, no_upstream_move: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn update_that_moves_the_version_in_a_devswarm_session() {
+    parity("ds_moved", &Opt { ds: true, ..Opt::default() }, &[]);
+    parity("ds_moved_done", &Opt { ds: true, markers: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn post_pull_only_in_a_devswarm_session() {
+    parity("ds_post_pull_only", &Opt { ds: true, markers: true, no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn an_exhausted_post_pull_budget_defers_the_later_stages_whole() {
+    let o = Opt { ds: true, no_upstream_move: true, budget: Some("1"), ..Opt::default() };
+    let (a, b) = (world(&o), world(&o));
+    let (n, e) = (run_node(&a, &o, &[]), run_engine(&b, &o, &[]));
+    assert_eq!((n.code, e.code), (0, 0), "{}", e.stderr);
+    let first = |t: &str| -> serde_json::Map<String, serde_json::Value> { serde_json::from_str(t.lines().next().unwrap()).unwrap() };
+    let (ns, es) = (first(&norm(&n.stdout, &a)), first(&norm(&e.stdout, &b)));
+    assert_eq!(ns.keys().collect::<Vec<_>>(), es.keys().collect::<Vec<_>>(), "status key order");
+    let mut deferred = 0;
+    for (k, v) in &ns {
+        // the first stage may start in the same millisecond the deadline is set; every later budgeted stage is past it
+        if k == "reconcile" || v.get("deferred").is_none() {
+            continue;
+        }
+        deferred += 1;
+        assert_eq!(Some(v), es.get(k), "deferred stage {k}");
+    }
+    assert!(deferred >= 5, "the budget of 1ms defers the later stages: {ns:?}");
 }
 
 #[test]
@@ -595,33 +716,50 @@ fn fake_node(w: &World, line: &str) -> PathBuf {
 }
 
 #[test]
-fn a_disagreeing_node_check_is_logged_and_the_engine_result_stands() {
+fn update_never_asks_node_for_a_second_opinion() {
     let o = Opt::default();
     let w = world(&o);
-    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap(); // the event log is only written where the state dir exists
+    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap();
     let node = fake_node(&w, r#"{"installed":"9.9.9","latest":"9.9.9","updated":false,"cacheSynced":false,"action":"x"}"#);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.args(["update", "--check"]).current_dir(&w.home);
-    envs(&mut cmd, &w, &o);
-    let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
-    assert_eq!(out.code, 0);
-    assert!(out.stdout.contains("update available (0.1.0"), "the engine's own answer is printed: {}", out.stdout);
-    assert!(all_text(&w.home.join(".anti-hall")).contains("update_check_shadow_mismatch"), "the mismatch is logged");
+    for args in [&["--check"][..], &[][..]] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        cmd.arg("update").args(args).current_dir(&w.home);
+        envs(&mut cmd, &w, &o);
+        let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
+        assert_eq!(out.code, 0, "{}", out.stderr);
+    }
+    assert!(!all_text(&w.home.join(".anti-hall")).contains("shadow_mismatch"), "no Node shadow run, so nothing to disagree with");
+}
+
+// ---- no Node at all (v1.0 acceptance: `update` and `update --check` on a scratch home) ---------------------------------------
+
+#[test]
+fn no_node_check_matches_node() {
+    parity("nn_check_available", &Opt { no_node: true, ..Opt::default() }, &["--check"]);
+    parity("nn_check_current", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &["--check"]);
 }
 
 #[test]
-fn a_disagreeing_node_update_check_is_logged_before_the_update() {
-    let o = Opt::default();
-    let w = world(&o);
-    fs::create_dir_all(w.home.join(".anti-hall/ah-engine")).unwrap(); // the event log is only written where the state dir exists
-    let node = fake_node(&w, r#"{"installed":"9.9.9","latest":"9.9.9","updated":false,"cacheSynced":false,"action":"x"}"#);
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.arg("update").current_dir(&w.home);
-    envs(&mut cmd, &w, &o);
-    let out = finish(cmd.env("AH_ENGINE_NODE", &node).output().unwrap());
-    assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stdout.contains("\"updated\":true"));
-    assert!(all_text(&w.home.join(".anti-hall")).contains("update_shadow_mismatch"));
+fn no_node_update_that_moves_the_version_matches_node() {
+    parity("nn_update", &Opt { no_node: true, ..Opt::default() }, &[]);
+}
+
+#[test]
+fn no_node_update_when_current_matches_node() {
+    parity("nn_current", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    parity("nn_post_pull_only", &Opt { no_node: true, no_upstream_move: true, ..Opt::default() }, &["--post-pull-only"]);
+}
+
+#[test]
+fn legacy_jev_key_opt_in_matches_node() {
+    let out = parity("jev_key", &Opt { no_node: true, jev_key: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("legacy-key-opt-in fixed: ENABLED jev.allowLegacyKeyRead"), "{out}");
+}
+
+#[test]
+fn codex_graphify_cleanup_matches_node() {
+    let out = parity("graphify", &Opt { no_node: true, graphify: true, no_upstream_move: true, ..Opt::default() }, &[]);
+    assert!(out.contains("1 config(s) cleaned, 2 stale group(s) removed"), "{out}");
 }
 
 #[test]
@@ -640,21 +778,32 @@ fn a_matching_node_run_logs_nothing() {
 }
 
 #[test]
-fn a_disagreeing_node_installer_is_logged_and_the_files_are_still_written() {
-    let c = cx(&|home, _| fs::create_dir_all(home.join(".anti-hall/ah-engine")).unwrap());
-    let p = c.root.join("fake-node");
-    put(&c.root, "fake-node", "#!/bin/sh\necho 'anti-hall Codex install (project): would update'\necho '- hooks: nowhere unchanged'\n");
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    cmd.arg("install-codex")
-        .arg("--root")
-        .arg(plugin())
-        .current_dir(&c.cwd)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", &c.home)
-        .env("AH_ENGINE_NODE", &p);
-    assert_eq!(finish(cmd.output().unwrap()).code, 0);
-    assert!(c.cwd.join(".codex/hooks.json").exists());
-    assert!(all_text(&c.home.join(".anti-hall")).contains("install_codex_shadow_mismatch"));
+fn update_heals_the_units_by_default_obeys_the_switch_and_is_idempotent() {
+    let o = Opt { no_upstream_move: true, ..Opt::default() };
+    let w = world(&o);
+    let exe = w.home.join(".anti-hall/ah-engine/bin/ah-engine");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    let units = |w: &World| -> BTreeMap<String, String> {
+        tree(&w.home).into_iter().filter(|(k, _)| k.contains("LaunchAgents") || k.contains("systemd/user")).collect()
+    };
+    let run = |setting: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        cmd.arg("update").arg("--post-pull-only").current_dir(&w.home);
+        envs(&mut cmd, &w, &o);
+        cmd.env("ANTIHALL_UNITS_HEAL", setting);
+        finish(cmd.output().unwrap())
+    };
+    let off = run("off");
+    assert_eq!(off.code, 0, "{}", off.stderr);
+    assert!(units(&w).is_empty(), "the switch off still wrote units");
+    let on = run("on");
+    assert_eq!(on.code, 0, "{}", on.stderr);
+    let healed = units(&w);
+    assert!(!healed.is_empty(), "the post-pull stage wrote no unit: {}", on.stderr);
+    assert!(!on.stdout.contains("unitsHeal"), "the units heal is not one of the script's stages, the status keeps the script's keys");
+    let again = run("on");
+    assert_eq!(again.code, 0);
+    assert_eq!(units(&w), healed, "a second update changed the units");
 }

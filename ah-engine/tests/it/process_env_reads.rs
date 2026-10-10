@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
+    ("src/hcguard.rs", "the test-build guard: the scratch-stub roots and HOME of the process it guards (read only while the guard is active, a test build)"),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",
@@ -55,6 +56,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
     ),
     (
+        "src/script/golden.rs",
+        "the golden corpus replay, compiled into test builds only (`#[cfg(test)] mod golden`): `AH_REGEN_DEFERS`, the developer switch that rewrites a corpus's deferred cases from the script's own answers; no request is ever answered from it",
+    ),
+    (
         "src/script/host_proc.rs",
         "the process's own time-zone variable, compared with the request's so a process age is converted in local time only when both read the same zone (a mismatch is unsure and defers); no request is answered from it",
     ),
@@ -69,6 +74,18 @@ const ALLOW: &[(&str, &str)] = &[
     (
         "src/dswire/mod.rs",
         "`Wire::start`, the DevSwarm layer's own startup in the daemon: detection of the host DevSwarm and its home are properties of the engine process, not of any request",
+    ),
+    (
+        "src/wakew/mod.rs",
+        "`ah-engine devswarm wake-watch`, the idle-wake Monitor's own command-line process (run by `dswire/cli.rs`): the settings chain reads the Monitor's environment, as the Node watcher reads `process.env`; the daemon is not involved (D76)",
+    ),
+    (
+        "src/script/tests.rs",
+        "the scripted-check unit tests (`#[cfg(test)] mod tests` in script/mod.rs, a file of its own so the scan's `#[cfg(test)]` cut does not apply): the test process's wall-clock headroom `AH_TEST_TIME_SCALE`, which CI sets",
+    ),
+    (
+        "src/ghrt/ready.rs",
+        "`workspace_owns`, the GitHub poller (daemon background duty, no request): locates the DevSwarm app database from the engine process's own environment, like the DevSwarm layer's startup in `dswire/mod.rs`; `github_rt.ready_app_db` overrides it",
     ),
     (
         "src/dswire/cli.rs",

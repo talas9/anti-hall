@@ -6,9 +6,9 @@
 // dispatcher's run() and export object reach it through core.cliRun / core.dispatcherExports).
 
 const {
-  ALLOWED_URGENCY, CALLER_CWD, devswarmRoot, dispatcherExports, fs, hasFlag, identity,
-  identityContext, inst, livenessSelect, logVerbOutcome, one, path, planLib, readDescriptorFile,
-  readRetiredRedirect, repokey, store, withIdLock,
+  ALLOWED_URGENCY, archivedDir, CALLER_CWD, devswarmRoot, dispatcherExports, fs, hasFlag, identity,
+  identityContext, inst, isSafeId, livenessSelect, logVerbOutcome, one, path, planLib, readDescriptorFile,
+  readDescriptorPathState, readRetiredRedirect, repokey, store, withIdLock, workspacesDir,
 } = require('./core.js');
 const {
   canonicalMeshId, isRoutingLiveRowStrict, projectCwdFor, rawPathMeshId, registrySnapshot,
@@ -99,7 +99,81 @@ function meshCandidateRows(storeHandle, meshId) {
   return candidates;
 }
 
-function resolveMeshTarget(storeHandle, meshId, home) {
+
+// ---- ONE canonical workspace-reference resolver (id forms) -----------------
+// A workspace has TWO addressable forms: its meshId (`primary-<hash>`, derived
+// from the worktree path — what `spawn` returns and what the phantom registry row
+// is keyed by) and its app/builder id (uuid — what a descriptor/archived marker
+// is keyed by). Every verb that takes a workspace must accept both. Before this,
+// `archive` joined meshId->descriptor but `unarchive` (tombstoned registry row,
+// archived-only descriptor) and `send --to <uuid>` did not. These pure reads are
+// the shared join; resolveArchiveId, resolveSendTarget and the other id-taking
+// verbs all go through them. Read-only, fail-closed to null / [].
+function descriptorsDirs(home) { return [workspacesDir(home), archivedDir(home)]; }
+function descriptorMeshOf(wt) {
+  let canon = null;
+  try { canon = canonicalMeshId(wt); } catch (_) { canon = null; }
+  return canon || rawPathMeshId(wt);
+}
+function descriptorMeshId(home, id) {
+  if (!isSafeId(String(id))) return null;
+  for (const dir of descriptorsDirs(home)) {
+    const st = readDescriptorPathState(path.join(dir, String(id) + '.json'));
+    const wt = st && st.descriptor && st.descriptor.worktreePath;
+    if (wt) return descriptorMeshOf(wt);
+  }
+  return null;
+}
+// ids of live OR archived descriptors whose worktree derives to `meshId` (a
+// descriptor keyed BY the meshId itself is excluded: that is the label, not the id).
+function descriptorIdsForMesh(home, meshId, only) {
+  const out = [];
+  if (!meshId) return out;
+  const dirs = only === 'archived' ? [archivedDir(home)] : only === 'live' ? [workspacesDir(home)] : descriptorsDirs(home);
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { continue; }
+    for (const n of names) {
+      if (!n.endsWith('.json')) continue;
+      const id = n.slice(0, -5);
+      if (!isSafeId(id) || id === String(meshId) || out.includes(id)) continue;
+      const st = readDescriptorPathState(path.join(dir, n));
+      const wt = st && st.descriptor && st.descriptor.worktreePath;
+      if (wt && descriptorMeshOf(wt) === String(meshId)) out.push(id);
+    }
+  }
+  return out.sort();
+}
+// Why an address did not resolve to a registered row, in words the caller can act
+// on (archived / not yet registered). Never throws.
+function unregisteredHint(home, arg) {
+  try {
+    if (isSafeId(String(arg))) {
+      if (readDescriptorPathState(path.join(archivedDir(home), String(arg) + '.json')).exists) {
+        return ' — it is ARCHIVED (run `devswarm.js unarchive ' + arg + '` first)';
+      }
+      const mesh = descriptorMeshId(home, arg);
+      if (mesh) return ' — its descriptor exists (meshId ' + mesh + ') but it has no registry row in this project store; it has not registered/launched yet — retry once it has (`devswarm.js roster`)';
+      const ids = descriptorIdsForMesh(home, arg);
+      if (ids.length) return ' — that is the meshId of workspace ' + ids.join(', ') + ', which has no registry row in this project store (archived or not yet launched); see `devswarm.js roster` / `unarchive`';
+    }
+  } catch (_) { /* hint only */ }
+  return '';
+}
+
+// provenChildBuilder(home, env) -> (id) => boolean. True only on the DevSwarm app's own
+// record: the id is a builder whose type is not 'primary'. No app database (or an id it
+// does not know) proves nothing, so the row stays a candidate.
+function provenChildBuilder(home, env) {
+  let states = null;
+  try { states = require('../../companion/lib/devswarm-app-db.js').builderStates({ home, env }); } catch (_) { states = null; }
+  return (id) => {
+    const b = states && states.get(String(id));
+    return !!(b && b.builderType && b.builderType !== 'primary');
+  };
+}
+
+function resolveMeshTarget(storeHandle, meshId, home, opts) {
   if (!meshId) return null;
   // A single worktreePath can carry MORE THAN ONE registry row that ALL resolve to
   // the same meshId. Concretely observed: the `spawn` phantom (keyed BY the meshId,
@@ -132,7 +206,12 @@ function resolveMeshTarget(storeHandle, meshId, home) {
   // opts.isLive, so it keeps pickFreshestLive's own default (bare
   // isLiveSessionId) unchanged — this migration is scoped to send/fold routing
   // only, per the header comment above SYNTHETIC_SESSION_PREFIX.
-  const candidates = meshCandidateRows(storeHandle, meshId);
+  // opts.exclude(row): rows that must never receive this route. `--to-primary` excludes a
+  // proven CHILD builder registered against the Primary's path (the pre-fix submodule
+  // identity bug): its live session would win the freshest-live pick and the mail would
+  // land in a child instead of the Primary (SkyCrew report, 2026-10-09).
+  let candidates = meshCandidateRows(storeHandle, meshId);
+  if (opts && typeof opts.exclude === 'function') candidates = candidates.filter((r) => !opts.exclude(r));
   return livenessSelect.pickFreshestLive(candidates, {
     storeHandle, home,
     isLive: (row) => isRoutingLiveRowStrict(row, home),
@@ -333,6 +412,15 @@ function resolveSendTarget(storeHandle, arg, home, opts) {
   // resolved survivor is looked up directly against the registry (not by
   // recursing into resolveSendTarget), so this can never loop even on a
   // corrupt/cyclic redirect file.
+  // Canonical-resolver alias: `arg` is a descriptor id (e.g. the app uuid) whose worktree
+  // derives to a registered meshId row — route to that row, same as `--to <meshId>`.
+  if (arg && home) {
+    const aliasMesh = descriptorMeshId(home, arg);
+    if (aliasMesh && aliasMesh !== String(arg)) {
+      const viaAlias = resolveMeshTarget(storeHandle, aliasMesh, home);
+      if (viaAlias) return { target: viaAlias, ambiguous: false, candidates: null };
+    }
+  }
   if (arg) {
     const redirectedTo = readRetiredRedirect(home, arg);
     if (redirectedTo) {
@@ -702,7 +790,7 @@ function cmdSend(flags, ctx) {
       // (above) the Primary's row is now in THIS repoKey store, so this resolve
       // finds it.
       if (toPrimaryFlag) {
-        const target = resolveMeshTarget(s, primaryMeshId, home);
+        const target = resolveMeshTarget(s, primaryMeshId, home, { exclude: (r) => provenChildBuilder(home, ctx.env)(r.id) });
         if (!target) {
           return {
             ok: false, reason: 'primary-unregistered',
@@ -728,7 +816,7 @@ function cmdSend(flags, ctx) {
         if (!resolved.target) {
           return {
             ok: false, reason: 'unregistered-recipient',
-            error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace',
+            error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace' + unregisteredHint(home, toFlag),
           };
         }
         // The row's workspace_id is the target's REAL read partition — its
@@ -1016,7 +1104,7 @@ function sendQuietLine(result) {
 }
 
 module.exports = {
-  planRefFor, meshCandidateRows, resolveMeshTarget, resolveMeshPartitionIds, canonicalReceiptId,
+  planRefFor, meshCandidateRows, descriptorMeshId, descriptorIdsForMesh, unregisteredHint, resolveMeshTarget, resolveMeshPartitionIds, canonicalReceiptId,
   staleTwinSuccessor, resolveSendTarget, cmdRelay, cmdSendMulti, cmdSend, sendReceiptsDir,
   receiptDayKey, receiptFileName, writeSendReceipt, sendQuietLine,
 };

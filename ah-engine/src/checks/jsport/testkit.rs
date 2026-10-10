@@ -1,6 +1,5 @@
 //! Test support shared by the handover and Codex checks: a throw-away sandbox with its own home directory.
 use crate::reqenv::RequestEnv;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -39,10 +38,6 @@ impl Sandbox {
     pub(crate) fn age(&self, rel: &str, secs: u64) {
         let f = std::fs::OpenOptions::new().write(true).open(self.root.join(rel)).unwrap();
         f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
-    }
-
-    pub(crate) fn state(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.anti-hall/codex-availability.json")).unwrap()).unwrap()
     }
 }
 

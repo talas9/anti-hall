@@ -437,7 +437,7 @@ test('P1-7: a FUTURE heartbeat does NOT short-circuit computeLiveness to alive (
 });
 
 // ============================================================================
-// Item 2/3 (SkyCrew fix-wave): union-unread (NDJSON ∪ store-only mesh-direct)
+// Item 2/3 (DemoApp fix-wave): union-unread (NDJSON ∪ store-only mesh-direct)
 // drives `pending`, and a stale-but-nonzero backlog additionally flags
 // `notDraining` — a distinct, REPORT/ESCALATE-ONLY signal (never gates a kill;
 // see liveness.js header). A `send --to` direct is STORE-ONLY (see companion/

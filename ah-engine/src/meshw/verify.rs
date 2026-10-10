@@ -15,6 +15,14 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_tree_linked(src, dst, &mut std::collections::HashMap::new())
+}
+
+/// [`copy_tree`] that keeps hard links: a file with several names (a descriptor and its archived twin) is copied once and the
+/// other names are links to that copy, as in the original. `seen` carries the copies across trees, so two roots of one home
+/// that share a file keep sharing it (`unarchive` proves "the archived anchor" by inode).
+pub(crate) fn copy_tree_linked(src: &Path, dst: &Path, seen: &mut std::collections::HashMap<(u64, u64), PathBuf>) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     std::fs::create_dir_all(dst)?;
     // what the engine could not read, the witness cannot read either: an unreadable directory is copied as an empty one and
     // an unreadable file as an empty file, each with the permissions of the original
@@ -23,10 +31,21 @@ pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
             let (s, d) = (e.path(), dst.join(e.file_name()));
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                copy_tree(&s, &d)?;
-            } else if ft.is_file() && std::fs::copy(&s, &d).is_err() {
-                std::fs::write(&d, b"")?;
-                std::fs::set_permissions(&d, std::fs::metadata(&s)?.permissions())?;
+                copy_tree_linked(&s, &d, seen)?;
+            } else if ft.is_file() {
+                let key = std::fs::metadata(&s).ok().filter(|m| m.nlink() > 1).map(|m| (m.dev(), m.ino()));
+                if let Some(first) = key.and_then(|k| seen.get(&k))
+                    && std::fs::hard_link(first, &d).is_ok()
+                {
+                    continue;
+                }
+                if std::fs::copy(&s, &d).is_err() {
+                    std::fs::write(&d, b"")?;
+                    std::fs::set_permissions(&d, std::fs::metadata(&s)?.permissions())?;
+                }
+                if let Some(k) = key {
+                    seen.insert(k, d);
+                }
             }
         }
     }
@@ -130,6 +149,21 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
             }
         }
     }
+    if kind == Kind::Roster {
+        for f in defaults::list("mesh_write.verify_roster_copy_files") {
+            if root.join(f).is_file() {
+                std::fs::copy(root.join(f), sroot.join(f)).ok()?;
+            }
+        }
+        // what a roster reads under the home and the witness must see as the engine does (it only reads them)
+        for rel in defaults::list("mesh_write.verify_roster_home_links") {
+            let (src, dst) = (inv.home.join(rel), scratch.join(defaults::text("mesh_write.shadow_home")).join(rel));
+            if src.exists() {
+                std::fs::create_dir_all(dst.parent()?).ok()?;
+                std::os::unix::fs::symlink(&src, &dst).ok()?;
+            }
+        }
+    }
     if kind == Kind::ReadPrimary {
         // the `ackCommand` names the stable launcher under the home: the scratch home needs one, at the same relative place
         let rel = PathBuf::from(defaults::text("mesh_write.dir_anti_hall"))
@@ -159,6 +193,14 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
     if kind == Kind::ReadPrimary {
         snapshot_descriptor_files(&inv.home, &scratch.join(defaults::text("mesh_write.shadow_home")), &sroot)?;
     }
+    // the central log: the witness appends to a copy, and what it appended is compared with what the engine appended
+    for rel in defaults::list("devswarm_cli.log_witness_files") {
+        let (src, dst) = (inv.home.join(rel), scratch.join(defaults::text("mesh_write.shadow_home")).join(rel));
+        if src.is_file() {
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::fs::copy(&src, &dst).ok()?;
+        }
+    }
     // the sender-alias map the summary refresh attributes rows with
     let alias = defaults::text("mesh_write.alias_file");
     if root.join(alias).is_file() {
@@ -184,8 +226,8 @@ fn prepare_for(inv: &Inv, kind: Kind, with_store: bool) -> Option<PathBuf> {
             std::fs::copy(&src, &dst).ok()?;
         }
     }
-    if with_store {
-        let real = super::real_store(inv).ok()?;
+    // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
+    if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
         let key = real.parent()?.file_name()?.to_string_lossy().to_string();
         let dir = sroot.join(defaults::text("mesh_write.dir_store")).join(&key);
         std::fs::create_dir_all(&dir).ok()?;
@@ -331,6 +373,11 @@ pub fn row_text(db: &Path, hash: &str) -> Option<String> {
     .ok()
 }
 
+/// Whether a manifest path is a read receipt (named by a random id) rather than a file both sides write at one path.
+fn is_receipt(rel: &str) -> bool {
+    rel.split('/').any(|part| part == defaults::text("mesh_write.dir_read_receipts"))
+}
+
 /// What Node printed and wrote for a read-primary, as the engine's output is spelled: Node's receipt id replaced by the
 /// engine's, Node's scratch home by the real one. Returns the stdout and `(engine's relative path, Node's receipt)` pairs.
 fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, String)], stdout: &[u8]) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
@@ -338,7 +385,7 @@ fn read_primary_view(node_home: &Path, real_home: &Path, manifest: &[(String, St
     let (node_home_text, real_home_text) = (node_home.to_string_lossy().into_owned(), real_home.to_string_lossy().into_owned());
     let mut files = Vec::new();
     let mut out = String::from_utf8_lossy(stdout).replace(&node_home_text, &real_home_text);
-    for (rel, _) in manifest {
+    for (rel, _) in manifest.iter().filter(|(r, _)| is_receipt(r)) {
         let rel_path = Path::new(rel);
         let (Some(dir), Some(engine_rid)) = (rel_path.parent(), rel_path.file_stem().and_then(|x| x.to_str())) else { continue };
         let real_names: std::collections::HashSet<String> =
@@ -447,8 +494,11 @@ pub fn run_verifier(args: &[String]) -> i32 {
         .arg(now)
         .args(argv)
         .env(defaults::text("mesh_write.env_home"), &home)
+        // Node's central log goes to the scratch home whatever the caller's environment says
+        .env(defaults::text("devswarm_cli.env_log_dir"), crate::meshw::clog::witness_dir(&home))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
+    let log_before = crate::meshw::clog::size_of(&home);
     let out = bounded_output(&mut node);
     match out {
         Ok(o) if o.status.success() => {
@@ -477,7 +527,14 @@ pub fn run_verifier(args: &[String]) -> i32 {
             let mut detail = serde_json::Map::new();
             for (rel, file) in &manifest {
                 let want = read(&scratch.join(file));
-                let node_has = if kind == Kind::ReadPrimary {
+                if crate::meshw::clog::is_log_rel(rel) {
+                    // the central log: what Node appended, with the timestamp and the writer's pid blanked on both sides
+                    if !crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &want) {
+                        diff.push(rel.clone());
+                    }
+                    continue;
+                }
+                let node_has = if kind == Kind::ReadPrimary && is_receipt(rel) {
                     node_files.iter().find(|(r, _)| r == rel).map(|(_, b)| b.clone()).unwrap_or_default()
                 } else {
                     read(&home.join(rel))

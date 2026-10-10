@@ -193,7 +193,7 @@ test('git push: bare form + bounded filter allowed; env-assignment prefix stays 
   const repo = makeRepo();
   try {
     assert.strictEqual(blocked('git push origin main 2>&1 | tail -2', repo), false);
-    assert.ok(blocked('SKYCREW_TRIVIAL_PUSH=1 git push origin main 2>&1 | tail -2', repo));
+    assert.ok(blocked('DEMOAPP_TRIVIAL_PUSH=1 git push origin main 2>&1 | tail -2', repo));
     assert.ok(blocked('GIT_SSH_COMMAND="sh -c x" git push origin main', repo));
   } finally { fs.rmSync(repo, { recursive: true, force: true }); }
 });

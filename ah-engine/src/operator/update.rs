@@ -11,10 +11,8 @@
 //! fast-forward-only; nothing is deleted or overwritten; every failure is a status text and exit 0, except the two STOPs
 //! (exit 1).
 //!
-//! The post-pull stages that work on the DevSwarm stores and the settings migration are NOT ported here: they run by the
-//! plugin's own `update.js --post-pull-only` (the freshly pulled copy, as the Node script's re-exec does), and their status
-//! keys are merged into this command's status exactly as the Node re-exec merges them. When Node or that script is not
-//! there, those keys are simply absent.
+//! The post-pull stages (ingest-daemon heal, reconcile, folds, migrations, ...) are [`super::postpull`]'s: the engine answers the
+//! cases that need no work itself and runs the script's own stage function for the rest.
 use super::{out, t, warn};
 use crate::checks::guardkit::paths::{basename, is_absolute, join, resolve_abs};
 use crate::checks::guardkit::text::{js_number_of_str, js_trim, js_trim_end};
@@ -61,14 +59,14 @@ impl Rx {
 }
 
 /// Where everything lives.
-struct Paths {
+pub(super) struct Paths {
     marketplace: String,
     override_ignored: String,
     cache_root: String,
     installed_json: String,
     plugin_json: String,
     changelog: String,
-    plugin_src: String,
+    pub(super) plugin_src: String,
 }
 
 fn resolve_paths(env: &Env, home: &str) -> Paths {
@@ -197,6 +195,46 @@ fn resolve_installed(rx: &Rx, paths: &Paths) -> Option<String> {
     cache.or(json).or_else(|| version_from_marketplace(rx, &paths.plugin_json))
 }
 
+/// What the wake watcher needs of `update.js`: the versions it knows of (`versionFromInstalledJson`, `newestCacheVersion`,
+/// `versionFromMarketplace`) and where the cache lives. Pure reads; `None` when the patterns do not compile.
+pub(crate) struct KnownVersions {
+    /// The version the harness registry names.
+    pub registry: Option<String>,
+    /// The newest version cache directory.
+    pub cache: Option<String>,
+    /// The version in the marketplace clone's manifest.
+    pub marketplace: Option<String>,
+    /// The cache root (`<plugins>/cache/anti-hall/anti-hall`).
+    pub cache_root: String,
+}
+
+fn cached_rx() -> Option<&'static Rx> {
+    static RX: defaults::Cache<Option<Rx>> = defaults::Cache::new();
+    RX.get_or_init(|| Rx::new().ok()).as_ref()
+}
+
+/// The versions `checkStaleVersion` of the wake watcher compares (`update.js` `resolvePaths` and the three readers).
+pub(crate) fn known_versions(env: &Env, home: &str) -> Option<KnownVersions> {
+    let rx = cached_rx()?;
+    let paths = resolve_paths(env, home);
+    Some(KnownVersions {
+        registry: version_from_installed_json(rx, &paths.installed_json),
+        cache: newest_cache_version(rx, &paths.cache_root),
+        marketplace: version_from_marketplace(rx, &paths.plugin_json),
+        cache_root: paths.cache_root,
+    })
+}
+
+/// `isSemver(v)` of `update.js`.
+pub(crate) fn semver_ok(v: &str) -> bool {
+    cached_rx().is_some_and(|rx| is_semver(rx, v))
+}
+
+/// `compareVersions(a, b)` of `update.js`: -1, 0 or 1.
+pub(crate) fn compare_versions(a: &str, b: &str) -> i32 {
+    cached_rx().map_or(0, |rx| compare(rx, a, b))
+}
+
 /// The registry and the cache both read, and disagree.
 fn installed_version_lag(rx: &Rx, paths: &Paths) -> Option<(String, String)> {
     let cache = newest_cache_version(rx, &paths.cache_root)?;
@@ -280,7 +318,7 @@ pub(super) struct Ran {
     pub(super) status: Option<i32>,
     pub(super) stdout: String,
     /// `gitErr` of the failure: the first line of stderr, else of the error message.
-    reason: String,
+    pub(super) reason: String,
     spawn_not_found: bool,
 }
 
@@ -446,8 +484,8 @@ struct Core {
     action: String,
     changelog: String,
     stop: bool,
-    /// An early return (offline, dirty, pull failure): no stages run and nothing is merged.
-    early: bool,
+    /// The post-pull stages' answers, in the status order.
+    stages: Vec<(String, J)>,
 }
 
 fn early(installed: &Option<String>, action: String, stop: bool) -> Core {
@@ -460,11 +498,11 @@ fn early(installed: &Option<String>, action: String, stop: bool) -> Core {
         action,
         changelog: String::new(),
         stop,
-        early: true,
+        stages: Vec::new(),
     }
 }
 
-fn stage_quiet(env: &Env, home: &str) -> bool {
+pub(super) fn stage_quiet(env: &Env, home: &str) -> bool {
     let from_env = env.get(defaults::text("env.update_quiet")).and_then(|v| bool_token(js_trim(v)));
     if let Some(b) = from_env {
         return b;
@@ -477,7 +515,7 @@ fn stage_quiet(env: &Env, home: &str) -> bool {
     }
 }
 
-fn progress(line: &str) {
+pub(super) fn progress(line: &str) {
     use std::io::Write;
     if std::io::stderr().lock().write_all(line.as_bytes()).is_err() {
         // stderr is closed: progress is best-effort
@@ -501,6 +539,8 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     }
     let latest = version_from_marketplace(rx, &paths.plugin_json).or_else(|| installed.clone().filter(|v| is_semver(rx, v)));
     let (synced, _) = sync_cache(paths, latest.as_deref());
+    let stages = super::postpull::run(&super::postpull::Run { env, home, paths, latest: latest.as_deref(), synced, budget_ms: postpull_budget_ms(env) });
+    units_heal(env, home);
     if !semver_opt(rx, installed.as_deref()) {
         return Core {
             installed: None,
@@ -511,7 +551,7 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
             action: t("update_msg.unknown_installed").into(),
             changelog: String::new(),
             stop: false,
-            early: false,
+            stages,
         };
     }
     let inst = installed.clone().unwrap_or_default();
@@ -534,7 +574,26 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
         _ => String::new(),
     };
     let action = harness_action(Some(&harness), updated, latest.as_deref().unwrap_or(t("update.null_word")));
-    Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, early: false }
+    Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, stages }
+}
+
+/// The engine's own post-pull stage: heal the background-service units (write the engine unit, move the Node units whose duty
+/// the engine runs aside, never delete). It is not one of the script's stages, so it is not in the status object; its rows are
+/// in the units ledger and the engine log, and a failure never fails the update.
+fn units_heal(env: &Env, home: &str) {
+    if !crate::setup::units::heal_enabled() {
+        return;
+    }
+    let quiet = stage_quiet(env, home);
+    let name = t("units.stage_name");
+    if !quiet {
+        progress(&defaults::render("update_msg.stage_start", &[("name", &name)]));
+    }
+    let t0 = Instant::now();
+    drop(crate::setup::units::heal_changes(false)); // the ledger and the log have every action; the update goes on either way
+    if !quiet {
+        progress(&defaults::render("update_msg.stage_done", &[("name", &name), ("ms", &t0.elapsed().as_millis())]));
+    }
 }
 
 // ---- the Node stages --------------------------------------------------------------------------------------------------------
@@ -550,105 +609,14 @@ fn postpull_budget_ms(env: &Env) -> u64 {
     }
 }
 
-enum Stages {
-    /// The stage script is not there: nothing to merge, nothing to say.
-    Absent,
-    /// The parsed `status` object of the stage run.
-    Got(J),
-    /// The run failed or printed nothing usable; the text for the action.
-    Failed { unusable: bool, error: Option<String> },
-}
-
-fn node_stages(env: &Env, paths: &Paths) -> Stages {
-    let script = join(&paths.plugin_src, t("update.node_script_rel"));
-    if !Path::new(&script).is_file() {
-        return Stages::Absent;
+/// The status object: the engine's own keys, the stages' answers, then the registration and the action.
+fn assemble(core: &Core) -> J {
+    let mut all = status4(&core.installed, &core.latest, core.updated, core.synced);
+    all.extend(core.stages.iter().cloned());
+    if let Some(h) = &core.harness {
+        all.push(("harnessRegistered".into(), h.clone()));
     }
-    let node = env.get(defaults::text("env.node")).filter(|n| !n.is_empty()).unwrap_or_else(|| t("doctor.node_default"));
-    let timeout = Duration::from_millis(postpull_budget_ms(env) + defaults::num("update.harness_timeout_ms") + defaults::num("update.reexec_margin_ms"));
-    let envs = vec![
-        (defaults::text("env.update_reexec").to_string(), t("update.reexec_value").to_string()),
-        (defaults::text("env.update_marketplace_dir").to_string(), paths.marketplace.clone()),
-    ];
-    let cwd = std::env::current_dir().ok();
-    let args = vec![script, t("update.post_pull_flag").to_string()];
-    let r = run_child(node, &args, cwd.as_deref(), &envs, timeout);
-    if r.status != Some(0) || r.stdout.is_empty() {
-        return Stages::Failed { unusable: false, error: None };
-    }
-    let first = r.stdout.split('\n').find(|l| !l.is_empty()).unwrap_or(t("update.null_word"));
-    match json::parse(first, defaults::num("update.json_max_depth") as usize) {
-        Ok(p) => match p.get("status") {
-            Some(s @ J::Obj(_)) => Stages::Got(s.clone()),
-            _ => Stages::Failed { unusable: true, error: None },
-        },
-        Err(e) => Stages::Failed { unusable: false, error: Some(format!("{e:?}")) },
-    }
-}
-
-fn flag_true(h: Option<&J>, k: &str) -> bool {
-    h.and_then(|h| h.get(k)).is_some_and(|v| matches!(v, J::Bool(true)))
-}
-
-/// Merge the Node stage keys into the status the way the Node re-exec does.
-fn assemble(rx: &Rx, env: &Env, paths: &Paths, core: &Core) -> J {
-    let base = status4(&core.installed, &core.latest, core.updated, core.synced);
-    if core.early {
-        return with_action(base, core.action.clone());
-    }
-    let eligible = semver_opt(rx, core.latest.as_deref())
-        && semver_opt(rx, core.installed.as_deref())
-        && core.installed != core.latest
-        && env.get(defaults::text("env.update_reexec")) != Some(t("update.reexec_value"));
-    let mut action = core.action.clone();
-    let mut harness = core.harness.clone();
-    let mut stage_keys: Vec<(String, J)> = Vec::new();
-    match node_stages(env, paths) {
-        Stages::Absent => {}
-        Stages::Failed { unusable, error } => {
-            let (inst, lat) = (core.installed.clone().unwrap_or_default(), core.latest.clone().unwrap_or_default());
-            let note = if !eligible {
-                let reason = t(if unusable { "update_msg.reason_unusable" } else { "update_msg.reason_failed" });
-                defaults::render("update_msg.stages_unavailable", &[("reason", &reason)])
-            } else if let Some(e) = error {
-                defaults::render("update_msg.reexec_raised", &[("error", &e)])
-            } else if unusable {
-                defaults::render("update_msg.reexec_unusable", &[("latest", &lat), ("installed", &inst)])
-            } else {
-                defaults::render("update_msg.reexec_failed", &[("latest", &lat), ("installed", &inst)])
-            };
-            action.push_str(&note);
-        }
-        Stages::Got(child) => {
-            let kept = defaults::list("update.kept_local");
-            let J::Obj(entries) = &child else { return with_action(base, action) };
-            for (k, v) in entries {
-                if !kept.contains(&k.as_str()) && k != "harnessRegistered" {
-                    stage_keys.push((k.clone(), v.clone()));
-                }
-            }
-            if eligible {
-                let theirs = child.get("harnessRegistered");
-                // a registration that ran here stays on record, with its action, over the other run's "nothing to do"
-                if !(flag_true(core.harness.as_ref(), "attempted") && !flag_true(theirs, "attempted")) {
-                    if let Some(t) = theirs {
-                        harness = Some(t.clone());
-                    }
-                    if flag_true(theirs, "attempted")
-                        && let Some(J::Str(a)) = child.get("action")
-                    {
-                        action = a.clone();
-                    }
-                }
-            }
-        }
-    }
-    let mut all = base;
-    all.extend(stage_keys);
-    if let Some(h) = harness {
-        all.push(("harnessRegistered".into(), h));
-    }
-    with_action(all, action)
+    with_action(all, core.action.clone())
 }
 
 // ---- the human summary ------------------------------------------------------------------------------------------------------
@@ -770,38 +738,17 @@ fn go(p: &Parsed) -> Result<i32, String> {
     if !paths.override_ignored.is_empty() && !post_pull_only {
         out(&format!("{}\n", paths.override_ignored))?;
     }
-    let shadow_script = join(&paths.plugin_src, t("update.node_script_rel"));
-    let node_env = |a: &str| vec![a.to_string()];
     if is_check {
         let status = run_check(&rx, &paths);
-        let line = stringify(&status);
-        out(&format!("{line}\n{}\n", render_human(&rx, &status, "")))?;
-        // the Node check runs after the engine's, so the two fetches never race
-        if let Some(node) = super::shadow_line(&env, &shadow_script, &node_env(t("update.check_flag")), None).and_then(|o| o.lines().next().map(str::to_string))
-            && node != line
-        {
-            crate::discard::note("update_check_shadow_mismatch", &defaults::render("operator.shadow_check_log", &[("node", &node), ("engine", &line)]));
-        }
+        out(&format!("{}\n{}\n", stringify(&status), render_human(&rx, &status, "")))?;
         return Ok(0);
     }
     let core = run_core(&rx, &env, &home, &paths, post_pull_only);
-    let status = assemble(&rx, &env, &paths, &core);
+    let status = assemble(&core);
     if post_pull_only {
         out(&format!("{}\n", stringify(&obj(vec![("status", status)]))))?;
         return Ok(0);
     }
     out(&format!("{}\n{}\n", stringify(&status), render_human(&rx, &status, &core.changelog)))?;
-    // After the update, so the Node check's fetch cannot change what the pull reports. It must agree on the latest version.
-    if !post_pull_only
-        && !core.early
-        && let Some(n) = super::shadow_line(&env, &shadow_script, &node_env(t("update.check_flag")), None)
-            .and_then(|o| o.lines().next().and_then(|l| json::parse(l, defaults::num("update.json_max_depth") as usize).ok()))
-    {
-        let shown = |v: Option<&J>| v.map_or_else(|| t("update.null_word").to_string(), js_string);
-        let (nl, el) = (shown(n.get("latest")), shown(status.get("latest")));
-        if nl != el {
-            crate::discard::note("update_shadow_mismatch", &defaults::render("operator.shadow_update_log", &[("nl", &nl), ("el", &el)]));
-        }
-    }
     Ok(i32::from(core.stop))
 }

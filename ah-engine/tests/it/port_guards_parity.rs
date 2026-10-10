@@ -26,6 +26,9 @@ enum Expect {
     Same,
     /// The engine must defer to Node.
     Defer,
+    /// The engine answers silently (allow) and asks the refresh job for the work Node started detached: exactly one new file,
+    /// `.anti-hall/refresh/repair.json` (L06). Node is not run (it would start a detached repair process).
+    Request,
 }
 
 struct Case {
@@ -240,6 +243,21 @@ fn check_rows(hook: &str, check: &str, rows: Vec<Case>) -> (usize, usize) {
                     deferred += 1;
                 }
             }
+            Expect::Request => {
+                let mut want: BTreeMap<String, String> = BTreeMap::from_iter(setup_snapshot(&case.files, &rh, now));
+                let req = ".anti-hall/refresh/repair.json";
+                let wrote = eng_snap.get(req).cloned();
+                want.extend(wrote.clone().map(|w| (req.to_string(), w)));
+                if eng.0 != 0 || !eng.1.is_empty() || !eng.2.is_empty() {
+                    bad.push(format!("{}: expected a silent allow, got {}", case.name, show(&eng)));
+                } else if !wrote.is_some_and(|w| w.contains("\"requestedAt\"") && w.contains("\"version\"")) {
+                    bad.push(format!("{}: no repair request written: {eng_snap:?}", case.name));
+                } else if eng_snap != want {
+                    bad.push(format!("{}: only the request may change in the home, got {eng_snap:?}", case.name));
+                } else {
+                    deferred += 1;
+                }
+            }
             Expect::Same => {
                 if node != eng || node_snap != eng_snap {
                     let diff: Vec<String> = node_snap
@@ -443,6 +461,11 @@ fn spawn_payload(tool: &str, input: Value, transcript: Option<&str>) -> Value {
     p
 }
 
+/// The wall-clock headroom factor for a loaded runner: `AH_TEST_TIME_SCALE` (CI sets it), 1 when unset.
+fn time_scale() -> u64 {
+    std::env::var("AH_TEST_TIME_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1)
+}
+
 fn log_of(ages_ms: &[u64]) -> String {
     ages_ms.iter().map(|a| format!("{{NOW-{a}}}\n")).collect()
 }
@@ -628,7 +651,9 @@ fn swarm_cases() -> Vec<Case> {
         Case::json("twenty-five-recent-blocks", spawn_payload("Task", general(), Some("/t")), ex).file(log, &log_of(&recent(25))),
         Case::json("twenty-with-one-old-allows", spawn_payload("Agent", explore(), None), ex)
             .file(log, &log_of(&[70_000, 1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800])),
-        Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[59_000; 20])),
+        // just inside the 60 s window when the guard runs: Node runs first and the engine after it, so the margin must cover a
+        // Node start on a loaded runner (CI sets AH_TEST_TIME_SCALE; 2 s locally)
+        Case::json("near-window-edge-counts", spawn_payload("Agent", explore(), None), ex).file(log, &log_of(&[60_000 - 2_000 * time_scale(); 20])),
         Case::json("garbage-lines", spawn_payload("Agent", explore(), None), ex).file(log, "abc\n{NOW-1000}abc\n\n-5\n0\n+{NOW-500}\n 12 \n0x10\n1e3\n"),
         Case::json("crlf-log", spawn_payload("Agent", explore(), None), ex).file(log, "{NOW-1000}\r\n{NOW-900}\r\n"),
         Case::json("only-whitespace-log", spawn_payload("Agent", explore(), None), ex).file(log, "  \n\t\n"),
@@ -993,7 +1018,7 @@ fn prompt_submit() -> Value {
 
 fn repair_cases() -> Vec<Case> {
     let ex = Expect::Same;
-    let df = Expect::Defer;
+    let df = Expect::Request;
     let m = ".anti-hall/update-sweep-state.json";
     let done = markers(|_| Some("{V}".into()));
     let cool = ".anti-hall/repair-on-reload.last.json";
@@ -1085,8 +1110,8 @@ fn repair_cases() -> Vec<Case> {
         )
         .skip_node(),
         Case::json("judge-child-silent", prompt_submit(), ex).env("ANTIHALL_JUDGE_CHILD", "1"),
-        Case::new("empty-stdin-all-stamped-defers", "", df).file(m, &done),
-        Case::new("garbage-stdin-all-stamped-defers", "{nope", df).file(m, &done),
+        Case::new("empty-stdin-all-stamped-defers", "", Expect::Defer).file(m, &done),
+        Case::new("garbage-stdin-all-stamped-defers", "{nope", Expect::Defer).file(m, &done),
         Case::new("payload-null-all-stamped", "null", ex).file(m, &done),
         Case::json("payload-array-all-stamped", json!([1]), ex).file(m, &done),
     ];

@@ -69,7 +69,7 @@ function launcherPath(kind, home) {
 // launcher (via Function#toString, so it must stay self-contained). For exactly
 // the ported verbs (the ROUTES table below: `send`, `mesh read`, `mesh history`, `roster` (with or without `--ack`), `inbox ack-primary`,
 // `heartbeat`, `inbox tick`, `inbox read-primary`, `help` and any `-h`/`--help` request, `skip`, `archive-ignore`,
-// `archive-unignore`, `gate-intent`, `notice`, `plan`, `scope`, `gate`, `workspaces`, `logs`, `wake-directive`), when settings.json `mesh.engine_writes`
+// `archive-unignore`, `gate-intent`, `notice`, `plan`, `scope`, `gate`, `workspaces`, `logs`, `wake-directive`, `ready-check`, `app-state`, `app-sync`, `done`, `primary`, `relay`, `archive-request`, `nudge`, `supervision-report`, `sync-ui`, `retention`, `unarchive`, `archive`, `reap-orphans`, `merge`, `spawn`, `respawn`, `reconcile-registry`, `reap-stale`, `reconcile-active`, `auto-archive` and the other lifecycle verbs), when settings.json `mesh.engine_writes`
 // is "on" and the engine binary exists, it runs `ah-engine mesh <argv>` with a time
 // limit and returns {done: exitCode}; otherwise {input} (stdin already consumed
 // for --message-stdin, to be replayed) and the caller runs the Node script.
@@ -92,13 +92,18 @@ function meshRoute(argv, segments) {
       { words: ['help'] }, { words: [], anyOf: ['-h', '--h', '--help'] }, { words: ['skip'] }, { words: ['archive-ignore'] },
       { words: ['archive-unignore'] }, { words: ['gate-intent'] }, { words: ['notice'] }, { words: ['plan'] }, { words: ['scope'] },
       { words: ['gate'] }, { words: ['workspaces'] }, { words: ['logs'] }, { words: ['wake-directive'] },
+      { words: ['ready-check'] }, { words: ['app-state'] }, { words: ['app-sync'] }, { words: ['done'] }, { words: ['primary'] }, { words: ['relay'] }, { words: ['archive-request'] }, { words: ['nudge'] }, { words: ['supervision-report'] }, { words: ['sync-ui'] }, { words: ['retention'] }, { words: ['reap-orphans'] }, { words: ['correct'] }, { words: ['register'] }, { words: ['ensure'] }, { words: ['migrate-owner-keys'] }, { words: ['unarchive'] }, { words: ['archive'] }, { words: ['register-primary'] }, { words: ['diagnose'] }, { words: ['healthcheck'] }, { words: ['merge'], unbounded: true }, { words: ['spawn'] }, { words: ['respawn'] }, { words: ['reconcile-registry'] }, { words: ['reap-stale'] }, { words: ['reconcile-active'] }, { words: ['auto-archive'] },
     ];
-    var routed = ROUTES.some(function (r) {
-      return r.words.every(function (w, i) { return argv[i] === w; })
+    // `unbounded`: the verb acts outside anti-hall (merge runs hivecontrol's merge), so killing the engine at the time limit and
+    // running Node would do it twice; the engine is waited for, as Node's own merge is.
+    var hit = null;
+    ROUTES.forEach(function (r) {
+      if (hit) return;
+      if (r.words.every(function (w, i) { return argv[i] === w; })
         && (!r.flag || argv.some(function (a) { return a === r.flag || a.indexOf(r.flag + '=') === 0; }))
-        && (!r.anyOf || argv.some(function (a) { return r.anyOf.indexOf(a) >= 0; }));
+        && (!r.anyOf || argv.some(function (a) { return r.anyOf.indexOf(a) >= 0; }))) hit = r;
     });
-    if (!routed) return out;
+    if (!hit) return out;
     var fs = require('fs'), path = require('path'), os = require('os');
     var dir = path.join(os.homedir(), '.anti-hall');
     var m = null;
@@ -111,11 +116,20 @@ function meshRoute(argv, segments) {
     var piped = argv.indexOf('--message-stdin') >= 0;
     var input;
     if (piped) { try { input = fs.readFileSync(0); } catch (_) { input = Buffer.alloc(0); } out.input = input; }
-    var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), {
-      stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, timeout: ms, killSignal: 'SIGKILL',
-    });
+    // the engine creates this file at its commit point: a stop at the time limit after that must not be followed by Node
+    var mark = path.join(os.tmpdir(), 'ah-commit-' + process.pid + '-' + Date.now());
+    var spawnOpts = { stdio: [piped ? 'pipe' : 'inherit', 'inherit', 'inherit'], input: input, killSignal: 'SIGKILL',
+      env: Object.assign({}, process.env, { AH_ENGINE_COMMIT_MARK: mark }) };
+    if (!hit.unbounded) spawnOpts.timeout = ms;
+    var r = require('child_process').spawnSync(bin, ['mesh'].concat(argv), spawnOpts);
+    var acted = false;
+    try { acted = fs.existsSync(mark); fs.unlinkSync(mark); } catch (_) {}
     var why = r.error ? String(r.error.code || r.error.message) : r.signal ? 'signal ' + r.signal : r.status === 127 ? 'exit 127' : r.status === 75 ? 'exit 75' : '';
     if (!why) return { done: r.status === null ? 1 : r.status };
+    if (acted && r.status !== 75 && r.status !== 127) {
+      process.stderr.write('anti-hall: the engine was stopped after it had acted (' + why + '); not re-running ' + argv[0] + ' in Node\n');
+      return { done: 70 };
+    }
     try {
       fs.mkdirSync(path.join(dir, 'ah-engine'), { recursive: true });
       fs.appendFileSync(path.join(dir, 'ah-engine', 'mesh-route.log'),

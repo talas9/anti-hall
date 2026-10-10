@@ -12,6 +12,11 @@
 //! | `pluginVersions(root)` | the version of the plugin at `root` and the one the host registered: see [`plugin_versions`] |
 //! | `homeGuard()` | the home directory state files may live under: `{status: "ok" \| "guarded" \| "unknown", home}`: see [`home_guard`] |
 //! | `projectRoot(cwd)` | the project root of a working directory as the handover finder resolves it, or `null`: see [`project_root`] |
+//! | `repoRoot(cwd)` | the git work tree around an absolute directory (the directory itself when there is none), or `null`: see [`repo_root`] |
+//! | `dateParse(text)` | what V8's `Date.parse` makes of a text under the request's time zone: `{ms}`, `{nan}` or `{unsure}`: see [`date_parse`] |
+//! | `readEnd(path, bytes)` | the last `bytes` bytes of a file as text, no line handling: see [`read_end`] |
+//! | `isExecutable(path)` | a regular file this process may execute |
+//! | `uid()` | the process's user id (`process.getuid()`) |
 //! | `cores()` | the CPU count as Node's `os.availableParallelism()` reads it, or `null` when the engine cannot read it the same way |
 use super::host::with_settings;
 use crate::checks::agent_scan::{self, Opts};
@@ -119,6 +124,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
         "teammate": r.teammate,
         "lastSeenMs": r.last_seen_ms,
         "pendingMessage": r.pending_message,
+        "taskType": r.task_type,
         "spawnInput": r.spawn_input,
     })
 }
@@ -250,10 +256,51 @@ fn project_root(cwd: &str) -> rquickjs::Result<Option<String>> {
     Ok(crate::checks::taskkit::root::session_project_root(cwd, &home))
 }
 
+/// `repoRoot(cwd)`: the git work tree around an absolute directory, or `cwd` itself when there is none, when the directory does not exist,
+/// when it lies inside the git directory, or when the work tree found is the home directory; `null` for a relative `cwd` (Node would
+/// resolve it against its own directory) or a request with no home. Facts only: which file a check writes there is the script's.
+fn repo_root(cwd: &str) -> rquickjs::Result<Option<String>> {
+    let home = with_settings(|st| st.home.clone())?;
+    Ok(crate::checks::taskkit::root::repo_root(cwd, &home))
+}
+
+/// `dateParse(text)`: what V8's `Date.parse` makes of `text` under the request's time zone, as JSON: `{"ms": n}`, `{"nan": true}`, or
+/// `{"unsure": true}` for a string whose V8 reading the engine does not reproduce (or a zone-less one when the request's `TZ` is not
+/// the engine's own). Facts only: what a date means to a rule is the script's.
+fn date_parse(text: &str) -> rquickjs::Result<String> {
+    use crate::checks::jsport::date::{Parsed, ZoneGuard, parse};
+    let env = with_settings(|st| crate::reqenv::RequestEnv::from_pairs(st.env.clone()))?;
+    let _zone = ZoneGuard::new(&env);
+    Ok(match parse(text) {
+        Parsed::Ms(ms) => json!({"ms": ms}),
+        Parsed::Nan => json!({"nan": true}),
+        Parsed::Unknown => json!({"unsure": true}),
+    }
+    .to_string())
+}
+
+/// `readEnd(path, bytes)`: the last `bytes` bytes of a file (all of it when smaller; at most `script.tail_max_bytes`) as text, the bytes
+/// that are not UTF-8 replaced; no line handling at all. `null` when the file cannot be read.
+fn read_end(path: &str, bytes: f64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let cap = defaults::num("script.tail_max_bytes");
+    let want = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
+    let mut f = std::fs::File::open(path).ok()?;
+    let size = f.metadata().ok()?.len();
+    let len = size.min(want);
+    f.seek(SeekFrom::Start(size - len)).ok()?;
+    let mut buf = vec![0u8; len as usize];
+    f.read_exact(&mut buf).ok()?;
+    Some(crate::checks::guardkit::text::lossy_owned(buf))
+}
+
 /// Add the batch-6 functions to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
-    h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| transcript_tasks(&p, &v, w, wide))?)?;
-    h.set("agentScan", Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| agent_scan(&p, t, ignore.unwrap_or(false)))?)?;
+    h.set("transcriptTasks", Function::new(c.clone(), |p: String, v: String, w: f64, wide: f64| super::host::unless_cut(transcript_tasks(&p, &v, w, wide)))?)?;
+    h.set(
+        "agentScan",
+        Function::new(c.clone(), |p: String, t: f64, ignore: Option<bool>| super::host::unless_cut(agent_scan(&p, t, ignore.unwrap_or(false))))?,
+    )?;
     h.set(
         "jevRecordOutcome",
         Function::new(c.clone(), |id: String, hash: String, outcome: String, source: Option<String>, project: Option<String>| {
@@ -290,5 +337,13 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
     h.set("now", Function::new(c.clone(), super::host::now_ms)?)?;
     h.set("homeGuard", Function::new(c.clone(), home_guard)?)?;
     h.set("projectRoot", Function::new(c.clone(), |cwd: String| project_root(&cwd))?)?;
+    h.set("repoRoot", Function::new(c.clone(), |cwd: String| repo_root(&cwd))?)?;
+    h.set("dateParse", Function::new(c.clone(), |text: String| date_parse(&text))?)?;
+    h.set("readEnd", Function::new(c.clone(), |path: String, bytes: f64| read_end(&path, bytes))?)?;
+    h.set(
+        "isExecutable",
+        Function::new(c.clone(), |path: String| crate::checks::jsport::fsx::is_file(&path) && crate::checks::jsport::fsx::is_executable(&path))?,
+    )?;
+    h.set("uid", Function::new(c.clone(), || f64::from(crate::checks::jsport::home::uid()))?)?;
     Ok(())
 }

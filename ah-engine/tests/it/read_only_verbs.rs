@@ -26,6 +26,10 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
     let plug = plugin().display().to_string();
     let cfg = scratch.join("c.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let transcript = scratch.join("t.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    let findings = scratch.join("findings.json");
+    std::fs::write(&findings, "[]").unwrap();
     vec![
         ("status", s(&[])),
         ("status", s(&["--memory"])),
@@ -51,6 +55,15 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("devswarm", s(&["status"])),
         ("devswarm", s(&["line"])),
         ("gh", s(&["segment"])),
+        ("jev-report", s(&[])),
+        ("jev-report", s(&["--weekly", "--json"])),
+        ("codex-limit-status", s(&[])),
+        ("units", s(&["status"])),
+        ("units", s(&["status", "--json"])),
+        ("units", s(&["heal", "--dry-run"])),
+        ("coordinator-work-baseline", vec![transcript.display().to_string(), "--json".into()]),
+        ("dispatch-report", s(&["--json"])),
+        ("finding-dedup", vec!["--file".into(), findings.display().to_string()]),
     ]
 }
 

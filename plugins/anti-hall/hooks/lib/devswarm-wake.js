@@ -640,8 +640,11 @@ function wakeReassert(env, cli, isChild, watcher, explicitId) {
 function noWakePathLine(cov, env, cli, watcher, id) {
   try {
     if (!cov || cov.unknown || !cov.liveChildren || !isClaudeAgent(env)) return '';
-    const noWatcher = cov.watcherWanted !== false && !cov.watcherLive;
     const noCron = !!cov.cronLikelyMissing;
+    // The Monitor lapses at its harness cap by design (every ~30 min) and the cron tick is what re-arms it
+    // (devswarm.rearmOnTickOnly). While the cron is alive the lapse is already handled, so a missing watcher is
+    // only worth a nag when the cron is missing too (nothing would re-arm it).
+    const noWatcher = cov.watcherWanted !== false && !cov.watcherLive && noCron;
     if (!noWatcher && !noCron) return '';
     const mon = 'Monitor: node ' + watcher;
     const cron = 'CronList, then CronCreate "' + wakeCron(env) + '" running `node ' + cli + ' inbox tick ' + id + ' --quiet` if absent';
@@ -649,7 +652,6 @@ function noWakePathLine(cov, env, cli, watcher, id) {
       return 'NO MAILBOX WAKE PATH: you have live workspaces but no watcher and no recent mailbox tick. Do both now: (1) '
         + mon + ' (2) ' + cron + '.';
     }
-    if (noWatcher) return 'NO MAILBOX WATCHER: you have live workspaces but your wake watcher is not running. Arm it now: ' + mon + '.';
     return 'NO MAILBOX TICK: you have live workspaces but no recent mailbox tick (session crons do not survive a restart). ' + cron + '.';
   } catch (_) {
     return '';

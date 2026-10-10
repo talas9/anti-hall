@@ -177,10 +177,11 @@ max = 1000
 # ---- the cause matcher --------------------------------------------------------------------------------------
 
 [sibling_sweep.cause_cues]
-doc = "Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed."
+doc = "Regex sources, any of which states the cause of a bug in the assertive form (root-cause statements, 'caused by', 'the bug was', 'found the bug', a Cause label). 'Root cause' must be the subject ('the root cause [of X] was'), not a modifier ('root-cause messages were captured by running ...' describes a method, issue #55). Matched sentence by sentence after markdown emphasis, fenced code and quoted lines are removed."
 value = [
-  '\broot[- ]causes?\b[^.\n]{0,80}?\b(?:is|was|were|are|turned out|lies|lay|lives|came from)\b',
+  '\broot[- ]causes?(?:\s+(?:of|for|behind|in)\b[^.\n]{0,80}?)?\s*,?\s+(?:(?:here|then|now|clearly|actually|really|ultimately|finally|itself)\s+)?(?:is|was|were|are|turned out|lies|lay|lives|came from)\b',
   '\broot[- ]causes?\s*(?::|—|–|-\s)',
+  '\broot[- ]causes?\s+(?:is\s+|was\s+|now\s+)?(?:confirmed|found|identified|established|isolated|located|proven|proved|nailed\s+down|pinned\s+down|tracked\s+down)\b',
   '\b(?:found|identified|isolated|confirmed|proved|proven|traced|nailed|located|pinned down|tracked down|tracked)\s+(?:down\s+)?(?:the|its|a|an|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+)?(?:root[- ]cause|cause|culprit|bug)\b',
   '\b(?:the|its|this|that)\s+(?:actual\s+|real\s+|underlying\s+|exact\s+|true\s+|only\s+)?(?:cause|culprit|bug)\s+(?:is|was)\b',
   '\b(?:is|was|were|are|been|being)\s+caused\s+by\b',
@@ -196,6 +197,14 @@ value = '\b(?:probably|possibly|presumably|perhaps|maybe|apparently|supposedly|s
 [sibling_sweep.hedge_before_re]
 doc = "Regex source tested on the few characters just before the cue: a negation, condition, intent or modal there voids the cue ('to find the root cause', 'if it was caused by', 'may be caused by', 'not caused by')."
 value = '\b(?:if|unless|suppose|assuming|whether|may|might|could|would|should|can|cannot|not|never|no|to\s+(?:find|identify|determine|figure|locate|understand|discover|isolate|prove|confirm|get)|find(?:ing)?|identify(?:ing)?|determine|investigat\w+|looking\s+for|look\s+for|trying\s+to|try\s+to|need(?:s)?\s+to|want(?:s)?\s+to|let\s+me|let.s|help\s+me|going\s+to|will|until|until)\s+(?:\w+\s+){0,3}$|n.t\s+(?:\w+\s+){0,3}$'
+
+[sibling_sweep.operational_re]
+doc = "Regex source of environment and operational facts (a leftover git lock file, machine load, disk or network state, other agents' activity): a sentence that states one is no code-bug cause, so there are no sibling code sites to search for and the check stays quiet. A dependency lockfile or a test that times out under load is still a code cause."
+value = '\b(?:git\s+lock|index\.lock|(?:leftover|left-?over|orphaned?|hung)\s+(?:git\s+)?lock|lock\s?files?\s+(?:left|held|from)|machine\s+load|load\s+average|load\s*\(?[0-9]|disk\s+(?:was\s+)?(?:full|space)|(?:no|out\s+of)\s+(?:disk\s+)?space|network\s+(?:outage|was\s+down|is\s+down)|from\s+other\s+agents|other\s+(?:agents|sessions|processes)\b|zombie\s+process|stuck\s+process)'
+
+[sibling_sweep.attributed_re]
+doc = "Regex source of a cause that is quoted from someone else's report (an agent, worker, lane, reviewer or Codex says it, or 'according to', 'the report says'): it is the report's claim, not a finding the assistant states itself, so it is no cause statement here. First-person findings ('I found the root cause') never match."
+value = '\b(?:(?:sub)?agents?|workers?|lanes?|reviewers?|auditors?|critics?|codex|explorers?|builders?|the\s+report|reports?)(?:.s)?\s+(?:report(?:s|ed)?|says?|said|found|finds|claims?|claimed|states?|stated|notes?|noted|identified|diagnosed|blames?|blamed|attributes?|attributed|summary|result|finding)\b|\b(?:agent|lane|worker|subagent|codex|reviewer)\s+(?:report|summary|result|finding)s?\b|\baccording\s+to\b|\bper\s+the\s+(?:agent|report|lane|worker)\b'
 
 [sibling_sweep.meta_re]
 doc = "Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause."

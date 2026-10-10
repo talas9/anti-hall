@@ -1,0 +1,158 @@
+# Lane L12 (v1.0): the keys the main-thread half of edit-guard and the pending-marker half of orch-on-spawn read beyond small_guards.toml
+# (edit_guard.*), spawn_context.toml (orch_on_spawn.*, orch_state.*) and command.toml (command.eg_*, command.msg_edit_*), whose texts and
+# tables they share with the Bash edit parity of command-guard.
+
+[edit_guard.msg_what]
+doc = "Heading of the delegation block ({tool} is the tool name, {who} the next text)."
+value = "{tool} blocked: the {who} does not touch files directly."
+
+[edit_guard.msg_self_edit_what]
+doc = "Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name)."
+value = "{tool} of .anti-hall/edit-allow.json is blocked."
+
+[edit_guard.msg_self_edit_why]
+doc = "Why the repository's own edit allowlist is never edited by the main thread."
+value = "That file decides which files the main thread may edit directly, so the main thread never edits it."
+
+[edit_guard.msg_self_edit_instead]
+doc = "What to do instead ({sub} names the worker)."
+value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`."
+
+[edit_guard.msg_outside_what]
+doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
+value = "{tool} of a session-handover doc outside the project is blocked."
+
+[edit_guard.msg_outside_why]
+doc = "Why a handover document outside the project is blocked."
+value = "Handovers live inside the project, where handover-resume finds them; this path is outside it."
+
+[edit_guard.msg_outside_instead]
+doc = "What to do instead ({path} is the canonical handover path)."
+value = "write it yourself (the main thread may; no subagent, no override needed) at {path}."
+
+[edit_guard.msg_new_what]
+doc = "Heading of the block on a new handover document at the wrong place ({tool} is the tool name)."
+value = "{tool} of a new session-handover doc at this path is blocked."
+
+[edit_guard.msg_new_why]
+doc = "Why a new handover document is redirected."
+value = "New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (the `handover` skill computes <date>/<session-id>)."
+
+[edit_guard.msg_new_instead]
+doc = "What to do instead for a new handover document."
+value = "write it under .anti-hall/handovers/** and copy elsewhere afterwards if the project wants one."
+
+[edit_guard.msg_new_allowed]
+doc = "What stays allowed next to a redirected handover document."
+value = ".anti-hall/handovers/**."
+
+[edit_guard.msg_new_override]
+doc = "The override line of the handover redirect ({skip} is the skip command)."
+value = "{skip} (~/.anti-hall/skip.json, 15-min TTL), then retry"
+
+[edit_guard.msg_patch_what]
+doc = "Heading of the block on an apply_patch the parser rejects ({error} is the parser's message)."
+value = "this apply_patch could not be parsed ({error}), so its targets cannot be checked."
+
+[edit_guard.msg_patch_why]
+doc = "Why an unparseable patch is blocked on the main thread."
+value = "Edits in the main thread must be checked against the delegation rule."
+
+[edit_guard.msg_patch_instead]
+doc = "What to do instead for an unparseable patch ({sub} names the worker)."
+value = "send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the edit to {sub}."
+
+[edit_guard.handover_parts]
+doc = "The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory."
+value = { dir = [".anti-hall", "handovers"], file = "HANDOVER.md", placeholder = "<session-id>" }
+
+[edit_guard.session_id_unsafe]
+doc = "Characters of a session id replaced by an underscore in the handover path (a regular expression, JavaScript syntax)."
+value = "[^A-Za-z0-9._-]"
+
+[edit_guard.builder_id_env]
+doc = "The environment variable that holds a DevSwarm workspace's builder id."
+value = "DEVSWARM_BUILDER_ID"
+
+[edit_guard.builder_id_pattern]
+doc = "What a builder id may look like to be looked up as a descriptor file name (a regular expression, JavaScript syntax)."
+value = "^[A-Za-z0-9._-]+$"
+
+[edit_guard.descriptor_dir]
+doc = "Where anti-hall's DevSwarm workspace descriptors live under the home directory, as its parts."
+value = [".anti-hall", "devswarm", "workspaces"]
+
+[edit_guard.descriptor_ext]
+doc = "The extension of a workspace descriptor file."
+value = ".json"
+
+[edit_guard.repos_dir]
+doc = "DevSwarm's worktree root under the home directory, as its parts: a working directory below it belongs to a child workspace."
+value = [".devswarm", "repos"]
+
+[edit_guard.nudge_setting]
+doc = "Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)."
+value = { section = "devswarm", key = "inlineWorkNudge", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE", aliases = [], option = "devswarm_inline_work_nudge", default = true }
+
+[edit_guard.nudge_threshold_setting]
+doc = "Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)."
+value = { section = "devswarm", key = "inlineWorkNudgeThreshold", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE_THRESHOLD", aliases = [], option = "devswarm_inline_work_nudge_threshold", default = 5, min = 1 }
+
+[edit_guard.nudge_default_threshold]
+doc = "The threshold used when the setting holds nothing usable."
+value = 5
+
+[edit_guard.nudge_state_prefix]
+doc = "The state file name of the inline-work counter before the session id (under the state directory)."
+value = "inline-work-"
+
+[edit_guard.nudge_state_ext]
+doc = "The extension of the inline-work counter file."
+value = ".json"
+
+[edit_guard.nudge_sid_unsafe]
+doc = "Characters of the session id replaced by an underscore in the counter file name (a regular expression, JavaScript syntax)."
+value = "[^A-Za-z0-9_.-]"
+
+[edit_guard.nudge_sid_max]
+doc = "The longest session id kept in the counter file name."
+value = 128
+
+[edit_guard.nudge_prune_prefix]
+doc = "The writer prefix of the stale-file sweep of the counter files."
+value = "inline-work"
+
+# ---- orch-on-spawn, pending marker (hooks/orch-on-spawn.js, hooks/lib/orch-full-state.js) ----
+
+[orch_on_spawn.lease_ms]
+doc = "How long the first claim of an epoch is held before a second slot may be opened by a spawn that finds no delivered copy (2 minutes)."
+value = 120000
+unit = "ms"
+
+[orch_on_spawn.claim_suffix]
+doc = "The suffix of the first claim file name after the epoch id, before the extension."
+value = "claim"
+
+[orch_on_spawn.claim2_suffix]
+doc = "The suffix of the retry claim file name after the epoch id, before the extension."
+value = "claim2"
+
+[orch_on_spawn.claim_ext]
+doc = "The extension of a claim file."
+value = ".json"
+
+[orch_on_spawn.epoch_unsafe]
+doc = "Characters of an epoch id dropped from a claim file name (a regular expression, JavaScript syntax)."
+value = "[^A-Za-z0-9_-]"
+
+[orch_on_spawn.token_format]
+doc = "The token appended to the delivered text so the transcript scan can recognise this epoch's copy ({epoch} is the epoch id)."
+value = "[anti-hall orch-full:{epoch}]"
+
+[orch_on_spawn.codex_tool_suffix]
+doc = "A spawn tool name ending in this text is Codex's (a regular expression, JavaScript syntax)."
+value = "spawn_agent$"
+
+[orch_on_spawn.default_event]
+doc = "The event name echoed when the payload names none."
+value = "PreToolUse"

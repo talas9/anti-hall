@@ -166,16 +166,25 @@ fn no_node_path(root: &Path) -> String {
 }
 
 fn run_seed(script: &str, h: &Path, fx: &Fx, spec: &Value) {
-    let o = Command::new("node")
+    // the spec goes on stdin (`-`): as one argument a large spec exceeds Linux's 128 KiB cap on a single argument
+    let mut child = Command::new("node")
         .arg(support(script))
         .arg(h)
         .arg(&fx.repo_key)
-        .arg(spec.to_string())
+        .arg("-")
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", h)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    {
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(spec.to_string().as_bytes()).unwrap();
+    }
+    let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{script} failed: {}", String::from_utf8_lossy(&o.stderr));
 }
 
@@ -775,10 +784,11 @@ fn cases(fx: &Fx) -> Vec<Case> {
     };
     v.push(defer_store("flag-limit", rp("child-1", &["--limit", "1"]), vec!["\"count\":1"]));
     v.push(defer_store("flag-limit-fraction-floors-to-one", rp("child-1", &["--limit", "0.5"]), vec!["\"count\":1", "truncated"]));
-    v.push(defer_store("flag-since", rp("child-1", &["--since", "1"]), vec!["since"]));
-    v.push(defer_store("flag-tail", rp("child-1", &["--tail", "1"]), vec!["tail"]));
+    // `--since` / `--tail` are Node's refusal, which the engine answers and logs itself: tests/devswarm_l8d_parity.rs (this harness
+    // is built around the receipt a read files)
     v.push(defer_store("flag-ack-as-owner", rp("child-1", &["--ack-as-owner"]), vec!["\"count\":2"]));
-    v.push(defer_store("flag-ack-after-print", rp("child-1", &["--ack-after-print"]), vec!["autoAck"]));
+    // `--ack-after-print` alone is native (tests/devswarm_l8d_parity.rs); with the ownership override it is still Node's
+    v.push(defer_store("flag-ack-after-print-as-owner", rp("child-1", &["--ack-after-print", "--ack-as-owner"]), vec!["autoAck"]));
     v.push(defer_store("flag-legacy-ack-now", rp("child-1", &["--legacy-ack-now"]), vec!["\"acked\""]));
     v.push(defer_store("flag-unread", rp("child-1", &["--unread"]), vec!["\"count\":2"]));
     v.push(defer_store("flag-with-broadcasts", rp("child-1", &["--with-broadcasts"]), vec!["withBroadcastsIgnored"]));
@@ -801,7 +811,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
         vec!["child-1"],
     ));
     v.push(base(
-        "unclaimed-descriptor-session-is-promoted-by-node",
+        "unclaimed-descriptor-session-is-promoted",
         rp("child-1", &["--session", "real-session-1"]),
         ack(floors("child-1", 0, 0), {
             let wt = wt.clone();
@@ -809,7 +819,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
         }),
         nothing(),
         plain(),
-        false,
+        true,
         vec!["\"count\":2"],
     ));
     v.push(base(

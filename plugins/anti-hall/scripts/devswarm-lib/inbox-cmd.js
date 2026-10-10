@@ -368,15 +368,10 @@ function cmdInboxTick(id, flags, ctx) {
   let watcherArmed = false;
   try {
     if (isSafeId(id)) {
+      // The id's own lock, or (a Primary) the lock of another row on the SAME checkout: a Monitor armed under the
+      // DevSwarm app's own row id for the Primary's checkout is still the live watcher covering it.
       const wakeWatch = require('../../companion/lib/devswarm-wake-watch.js');
-      const lockPath = wakeWatch.lockPathFor(home, id);
-      const raw = fs.readFileSync(lockPath, 'utf8');
-      const lock = JSON.parse(raw);
-      const ts = lock && Number(lock.ts);
-      const fresh = Number.isFinite(ts) && (now - ts) <= wakeWatch.WATCH_LOCK_STALE_MS;
-      const pid = lock && Number.isInteger(lock.pid) ? lock.pid : null;
-      const alive = pid != null ? pidIsAlive(pid) : null;
-      watcherArmed = !!(fresh && alive !== false);
+      watcherArmed = isChildFlag ? wakeWatch.watcherLockLive(home, id, now, { pidIsAlive }) : wakeWatch.watcherLiveForWorkspace(home, id, now, { pidIsAlive });
     }
   } catch (_) { watcherArmed = false; }
 

@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! Parity of the store-free DevSwarm CLI verbs: `ah-engine mesh <argv>` (mesh.engine_writes = on) against the real
 //! `node scripts/devswarm.js <argv>` (lane l8: `help`, the unknown-command answer, `skip`, `archive-ignore`,
 //! `archive-unignore`, `gate-intent`, `notice --list`).
@@ -36,10 +45,23 @@ struct Case {
     writes: Vec<&'static str>,
     /// The working directory, relative to the test root (`cwd`: no checkout; `wt-child`: a linked worktree).
     cwd: &'static str,
+    /// Workspace ids given a descriptor before `setup`: an exact descriptor is the canonical id as given, so a verb that
+    /// resolves its target id (Node 35345b83 `resolveTargetId`) needs no project store for it.
+    registered: Vec<&'static str>,
 }
 
 fn case(name: &str, argv: &[&str], label: &'static str) -> Case {
-    Case { name: name.into(), argv: argv.iter().map(|s| (*s).into()).collect(), setup: nothing, env: vec![], native: true, label, writes: vec![], cwd: "cwd" }
+    Case {
+        name: name.into(),
+        argv: argv.iter().map(|s| (*s).into()).collect(),
+        setup: nothing,
+        env: vec![],
+        native: true,
+        label,
+        writes: vec![],
+        cwd: "cwd",
+        registered: vec![],
+    }
 }
 
 fn nothing(_: &Path) {}
@@ -294,6 +316,12 @@ fn steps_file(h: &Path) {
     put(h, "../cwd/steps.md", "Plan:\n1. first thing\n2. second thing\n3. third thing\n");
 }
 
+/// [`steps_file`] for a registered workspace (its id is then canonical as given, with no store to consult).
+fn steps_file_registered(h: &Path) {
+    descriptor(h);
+    steps_file(h);
+}
+
 fn huge_log(h: &Path) {
     let p = h.join(".anti-hall/logs/devswarm-supervision.ndjson");
     fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -338,7 +366,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     }
     v.push(case("read-primary-json-format-help", &["inbox", "read-primary", "x", "--format", "json", "--help"], "Help"));
     // `help` only counts as the first word: here it is `send`'s stray argument, and the send is Node's
-    v.push(Case { native: false, ..case("help-word-not-first", &["send", "help"], "Send") });
+    v.push(case("help-word-not-first", &["send", "help"], "Send")); // send answers its argument refusals natively since l8d
     for verb in verbs {
         v.push(case(&format!("help-{verb}"), &["help", verb], "Help"));
         v.push(case(&format!("help-{verb}-json"), &["help", verb, "--json"], "Help"));
@@ -399,11 +427,14 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     s("skip-target-is-a-directory", &["skip", "g"], skip_unwritable_target, false);
     s("skip-proto-key", &["skip", "__proto__"], nothing, false);
     // ---- archive-ignore / archive-unignore ----
+    // the id is resolved first (Node's `resolveTargetId`): a registered one is itself; one nothing names needs the project's
+    // store, and with no checkout (this cwd) Node opens a store under an empty key, which the engine leaves to Node
     let mut i = |n: &str, a: &[&str], label: &'static str, setup: fn(&Path), native: bool, writes: Vec<&'static str>| {
         let mut c = case(n, a, label);
         c.setup = setup;
         c.native = native;
         c.writes = writes;
+        c.registered = vec!["ws-1", "A_b-1.2"];
         v.push(c);
     };
     let mark = ".anti-hall/devswarm/archive-ignore/ws-1.json";
@@ -422,6 +453,8 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     i("unignore-a-directory", &["archive-unignore", "ws-1"], "ArchiveUnignore", mark_is_a_directory, true, vec![]);
     i("unignore-no-id", &["archive-unignore"], "ArchiveUnignore", nothing, true, vec![]);
     i("unignore-unsafe-id", &["archive-unignore", "x/y"], "ArchiveUnignore", nothing, true, vec![]);
+    i("ignore-unregistered-id-without-a-checkout", &["archive-ignore", "ws-9"], "ArchiveIgnore", nothing, false, vec![]);
+    i("unignore-unregistered-id-without-a-checkout", &["archive-unignore", "ws-9"], "ArchiveUnignore", nothing, false, vec![]);
     // ---- gate-intent ----
     let gate = ".anti-hall/devswarm/parent-gate/sess-1.json";
     let mut g = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool, writes: Vec<&'static str>| {
@@ -488,6 +521,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         c.setup = setup;
         c.env = env;
         c.native = native;
+        c.registered = vec!["ws-1"];
         v.push(c);
     };
     wd("wake-claude", &["wake-directive", "ws-1"], nothing, child("claude"), true);
@@ -518,6 +552,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     wd("wake-blank-source-branch-is-a-primary", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_SOURCE_BRANCH", "  ".into())], false);
     wd("wake-no-id", &["wake-directive"], nothing, child("claude"), true);
     wd("wake-unsafe-id", &["wake-directive", "a/b"], nothing, child("claude"), true);
+    wd("wake-unregistered-id-without-a-checkout", &["wake-directive", "ws-9"], nothing, child("claude"), false);
     // ---- logs ----
     let none = || -> Vec<(&'static str, String)> { vec![] };
     let mut lg = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool| {
@@ -589,7 +624,9 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     let none = || vec![];
     pl("plan-show-without-a-plan", &["plan", "show", "ws-1"], "Plan", descriptor, true, "cwd", none());
     pl("plan-show", &["plan", "show", "ws-1"], "Plan", plan_in_progress, true, "cwd", none());
-    pl("plan-show-by-id-only", &["plan", "show", "loose-id"], "Plan", plan_by_id, true, "cwd", none());
+    // an id with no descriptor is resolved through the project's store first (Node's `resolveTargetId`); with no checkout Node
+    // opens a store under an empty key, which the engine leaves to Node
+    pl("plan-show-by-id-only", &["plan", "show", "loose-id"], "Plan", plan_by_id, false, "cwd", none());
     pl("plan-show-bad-steps-shape", &["plan", "show", "ws-1"], "Plan", plan_with_bad_steps, false, "cwd", none());
     pl("plan-show-descriptor-with-a-number-for-a-path", &["plan", "show", "ws-1"], "Plan", descriptor_odd_worktree, false, "cwd", none());
     pl(
@@ -597,7 +634,8 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         &["plan", "show", "ws-9"],
         "Plan",
         nothing,
-        true,
+        // no project store yet: Node creates one while resolving the id (`resolveTargetId`), which the engine leaves to Node
+        false,
         "wt-child",
         vec![("DEVSWARM_BUILDER_ID", "ws-9".into())],
     );
@@ -606,13 +644,15 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     pl("plan-no-sub", &["plan"], "Plan", nothing, true, "cwd", none());
     pl("plan-bogus-sub", &["plan", "bogus", "ws-1"], "Plan", descriptor, true, "cwd", none());
     pl("plan-set-creates", &["plan", "set", "ws-1", "--steps", two], "Plan", descriptor, true, "cwd", none());
-    pl("plan-set-creates-without-a-descriptor", &["plan", "set", "ws-1", "--steps", two], "Plan", nothing, true, "cwd", none());
+    pl("plan-set-creates-without-a-descriptor", &["plan", "set", "ws-1", "--steps", two], "Plan", nothing, false, "cwd", none());
     pl(
         "plan-set-callers-own-checkout",
         &["plan", "set", "ws-9", "--steps", two],
         "Plan",
         nothing,
-        true,
+        // no project store yet: Node creates one while resolving the id (`resolveTargetId`), which the engine leaves to Node
+        // (2d76160c; the sibling `plan show` case says the same)
+        false,
         "wt-child",
         vec![("DEVSWARM_BUILDER_ID", "ws-9".into())],
     );
@@ -666,7 +706,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         none(),
     );
     pl("plan-set-over-a-plan-with-bad-steps", &["plan", "set", "ws-1", "--steps", two], "Plan", plan_with_bad_steps, false, "cwd", none());
-    pl("plan-set-by-id-plan-file", &["plan", "set", "loose-id", "--steps", "1. a\n2. b\n3. c"], "Plan", plan_by_id, true, "cwd", none());
+    pl("plan-set-by-id-plan-file", &["plan", "set", "loose-id", "--steps", "1. a\n2. b\n3. c"], "Plan", plan_by_id, false, "cwd", none());
     pl("plan-set-descriptor-with-a-number-for-a-path", &["plan", "set", "ws-1", "--steps", two], "Plan", descriptor_odd_worktree, false, "cwd", none());
     pl("plan-set-supervision-log-due-for-rotation", &["plan", "set", "ws-1", "--steps", two], "Plan", huge_log, false, "cwd", none());
     pl("plan-set-no-steps", &["plan", "set", "ws-1"], "Plan", descriptor, true, "cwd", none());
@@ -733,12 +773,20 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         "cwd",
         none(),
     );
-    pl("plan-set-steps-file", &["plan", "set", "ws-1", "--steps-file", "steps.md"], "Plan", steps_file, true, "cwd", none());
-    pl("plan-set-steps-wins-over-steps-file", &["plan", "set", "ws-1", "--steps", two, "--steps-file", "steps.md"], "Plan", steps_file, true, "cwd", none());
+    pl("plan-set-steps-file", &["plan", "set", "ws-1", "--steps-file", "steps.md"], "Plan", steps_file_registered, true, "cwd", none());
+    pl(
+        "plan-set-steps-wins-over-steps-file",
+        &["plan", "set", "ws-1", "--steps", two, "--steps-file", "steps.md"],
+        "Plan",
+        steps_file_registered,
+        true,
+        "cwd",
+        none(),
+    );
     pl("plan-set-missing-steps-file", &["plan", "set", "ws-1", "--steps-file", "nope.md"], "Plan", descriptor, false, "cwd", none());
     pl("scope-add", &["scope", "add", "ws-1", "--glob", "src/**", "--note", "the user asked for it"], "Scope", plan_in_progress, true, "cwd", none());
     pl("scope-add-creates-a-plan", &["scope", "add", "ws-1", "--glob", "src/**", "--note", "n"], "Scope", descriptor, true, "cwd", none());
-    pl("scope-add-without-descriptor-or-plan", &["scope", "add", "ws-1", "--glob", "a", "--note", "n"], "Scope", nothing, true, "cwd", none());
+    pl("scope-add-without-descriptor-or-plan", &["scope", "add", "ws-1", "--glob", "a", "--note", "n"], "Scope", nothing, false, "cwd", none());
     pl(
         "scope-add-same-glob-same-note-is-a-no-op",
         &["scope", "add", "ws-1", "--glob", "docs/**", "--note", "asked"],
@@ -879,6 +927,9 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
         for h in &homes {
             fs::create_dir_all(h.join(".anti-hall")).unwrap();
             fs::write(h.join(".anti-hall/settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"}}\n").unwrap();
+            for id in &c.registered {
+                put(h, &format!(".anti-hall/devswarm/workspaces/{id}.json"), &format!("{{\"id\":\"{id}\"}}"));
+            }
             (c.setup)(h);
         }
         // `{HOME}` in a value is each side's own home
@@ -897,13 +948,29 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
             let (es, ns) = (e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>"), n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>"));
             assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {:?}\n node:   {:?}", c.name, es, ns);
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
+            // a logged refusal (send's, since l8d) carries the run's own time and pid: those two fields are masked
+            let unstamp = |v: Option<&String>| {
+                v.map(|t| {
+                    let t = regex::Regex::new(r#""ts":"[^"]*""#).unwrap().replace_all(t, r##""ts":"#""##).into_owned();
+                    regex::Regex::new(r#""pid":\d+"#).unwrap().replace_all(&t, r##""pid":#"##).into_owned()
+                })
+            };
             for k in te.keys().chain(tn.keys()) {
-                assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
+                assert!(
+                    unstamp(te.get(k)) == unstamp(tn.get(k)),
+                    "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}",
+                    c.name,
+                    te.get(k),
+                    tn.get(k)
+                );
             }
             for w in &c.writes {
                 assert!(homes[1].join(w).is_file(), "{}: expected the verb to have written {w}", c.name);
             }
-            pending.push((c.name.clone(), homes[1].join("state")));
+            // send's native refusals (l8d) have no store-free witness; devswarm_l8d_parity::send_refusals_match_node covers them
+            if c.label != "Send" {
+                pending.push((c.name.clone(), homes[1].join("state")));
+            }
         } else {
             deferred += 1;
             assert_eq!(e.code, n.code, "{}: exit code of the fallback", c.name);

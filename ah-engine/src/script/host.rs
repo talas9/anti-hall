@@ -23,7 +23,7 @@
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
 //! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
-//! | `writeAtomic(rel, text)` | the SCOPED write (`rel` is relative to the home directory, under the state directory): see [`write_atomic`] |
+//! | `writeAtomic(rel, text, leaveTemp?)` | the SCOPED write (`rel` is relative to the home directory, under the state directory; `leaveTemp`: a failed rename keeps the temporary file, as the Node writers do): see [`write_atomic`] |
 //! | `appendFile(rel, text)` | the SCOPED append (same path rules as `writeAtomic`; one `O_APPEND` write): see [`append_file`] |
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
@@ -31,7 +31,7 @@
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
-//! | `lockAcquire(rel, group)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
@@ -96,8 +96,19 @@ pub(super) fn lift_deadline() {
         if let Some(d) = c.borrow().as_ref() {
             d.wall.store(0, std::sync::atomic::Ordering::Relaxed);
             d.cpu.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.req.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     });
+    crate::deadline::set_cut_armed(false);
+}
+
+/// `r`, or an exception when the request's client stopped waiting while it ran ([`crate::deadline::cut_due`]): a native scan cut
+/// short must not read as an answer, so the script call fails as a cut and its check defers to its Node hook.
+pub(super) fn unless_cut<T>(r: T) -> rquickjs::Result<T> {
+    if crate::deadline::cut_due() {
+        return Err(rquickjs::Error::new_from_js_message("scan", "cut", defaults::text("script.msg_scan_cut").to_string()));
+    }
+    Ok(r)
 }
 
 /// Run `f` with `st` as the request state the host functions read.
@@ -105,6 +116,8 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
     super::host_proc::reset_call();
+    super::host_mesh::reset_call();
+    super::host_spawn::reset_call();
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
@@ -124,6 +137,11 @@ pub(super) fn err(what: &'static str, msg: impl Into<String>) -> Error {
 
 fn entry(key: &str) -> rquickjs::Result<&'static defaults::Entry> {
     defaults::get(key).ok_or_else(|| err("cfg", defaults::render("script.msg_unknown_key", &[("key", &key)])))
+}
+
+/// Patterns this thread's regex cache holds (for the memory snapshot).
+pub(super) fn regex_cache_len() -> usize {
+    RES.with(|c| c.borrow().len())
 }
 
 /// Compile (cached) a pattern for `flags`.
@@ -186,8 +204,25 @@ fn refused(why: &str) -> Error {
 /// created as needed. The check and the write are separate steps, so a process that races a link into the tree between
 /// them is not excluded; the root is the owner's own state directory, so that is the owner racing themselves.
 pub fn write_atomic(home: &str, rel: &str, text: &str) -> rquickjs::Result<bool> {
-    let Some(cur) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
-    let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
+    write_atomic_with(home, rel, text, false)
+}
+
+/// [`write_atomic`] with the choice of what a failed rename leaves behind: `leave_temp` keeps the temporary file, as the Node
+/// writers do (a state writer whose parity suite compares the directory asks for it); otherwise it is removed.
+pub fn write_atomic_with(home: &str, rel: &str, text: &str, leave_temp: bool) -> rquickjs::Result<bool> {
+    let style = crate::atomic::Style {
+        skip_sync: defaults::num("script.write_sync") == 0,
+        leave_temp_on_rename_failure: leave_temp,
+        ..crate::atomic::Style::default()
+    };
+    let Some(cur) = scoped_target(home, rel, text.len(), false)? else {
+        // a directory where the file goes: the Node writers stage their temporary file and fail at the rename, which leaves it behind
+        let there = Path::new(home).join(rel);
+        if leave_temp && std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_dir()) {
+            crate::discard::harmless(crate::atomic::write_styled(&there, text, style)); // keep: the rename is expected to fail
+        }
+        return Ok(false);
+    };
     Ok(crate::atomic::write_styled(&cur, text, style).is_ok())
 }
 
@@ -216,6 +251,10 @@ pub enum Op {
     Remove,
     /// Rename the file to the path named by `text` (also under the write root).
     Rename,
+    /// Create the file with `text` only when it does not exist yet (`O_EXCL`): `true` for the one caller that created it.
+    Create,
+    /// Set the modification and access times of an existing regular file to now (`utimes`), leaving its content alone.
+    Touch,
 }
 
 /// The scoped file API under any absolute `root` (the home directory, or a project root the script names): `rel` must start with
@@ -232,6 +271,20 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
             Ok(std::fs::rename(from, to).is_ok())
         }
         Op::Mkdir => Ok(scoped_target(root, rel, 0, true)?.is_some()),
+        Op::Create => {
+            let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
+            use std::os::unix::fs::OpenOptionsExt;
+            let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) else { return Ok(false) };
+            // the file exists now: a failed write still leaves the claim standing, as the Node writer does
+            crate::discard::harmless(std::io::Write::write_all(&mut f, text.as_bytes()));
+            Ok(true)
+        }
+        Op::Touch => {
+            let Some(path) = scoped_existing(root, rel)? else { return Ok(false) };
+            let now = std::time::SystemTime::now();
+            let times = std::fs::FileTimes::new().set_accessed(now).set_modified(now);
+            Ok(std::fs::File::open(&path).and_then(|f| f.set_times(times)).is_ok())
+        }
         Op::WriteAfterReply => {
             let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
             let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
@@ -368,26 +421,25 @@ thread_local! {
 }
 
 /// `lockAcquire(rel, group, waitMs?)`: take the cross-process lock file `rel` (the scoped path rules of [`write_atomic`]) with the Node
-/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`). Returns a handle number,
-/// or `null` when the lock could not be taken (the script decides what that means; the swarm guard fails open). A lock still
-/// held when the script call ends is released by the host. At most `script.lock_max_held` locks are held at once.
+/// lock protocol of `companion/lib/lock.js`, timings from the defaults group `group` (`<group>.lock_*`), the wait replaced by `waitMs`
+/// when given (never past `script.lock_wait_max_ms`). Returns a handle number, or `null` when the lock could not be taken (the script
+/// decides what that means; the swarm guard fails open). A lock still held when the script call ends is released by the host. At most
+/// `script.lock_max_held` locks are held at once per call (a script that nests two takes them in one fixed order and releases the
+/// inner one first); the in-process serialization is taken by the first of them only.
 pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
     let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
         return Err(err("lockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
     };
-    // a script may shorten or lengthen the wait (a test home asks for its own)
     if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
-        params.wait_ms = w as u64;
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
     }
-    // nested locks (a window lock, then the metrics lock under it) are taken in the script's fixed order; how many a call may hold at
-    // once is `script.lock_max_held`
     let held_now = HELD.with(|h| h.borrow().len());
     if held_now as u64 >= defaults::num("script.lock_max_held") {
         return Ok(None);
     }
     let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(None) };
     let started = std::time::Instant::now();
-    let guard = if held_now == 0 { Some(IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner())) } else { None };
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
     let taken = crate::checks::guardkit::nodelock::acquire(&path.to_string_lossy(), params);
     credit_blocking(started);
     let Some(held) = taken else { return Ok(None) };
@@ -423,6 +475,22 @@ pub fn agents(path: &str) -> String {
         Ok(None) => "null".into(),
         Ok(Some(rows)) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
+            serde_json::json!({"rows": rows}).to_string()
+        }
+    }
+}
+
+/// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
+/// it (no widening to a longer window, and no refusal to count when the window shows none): `null` (unreadable),
+/// `{"unsure":true}`, else `{"rows":[...]}` as [`agents`].
+pub fn agents_window(path: &str) -> String {
+    use crate::checks::agent_scan;
+    let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
+    match agent_scan::scan_transcript(path, defaults::num("agent_scan.tail_bytes"), &opts) {
+        Err(_) => r#"{"unsure":true}"#.into(),
+        Ok(None) => "null".into(),
+        Ok(Some(scan)) => {
+            let rows: Vec<serde_json::Value> = scan.rows().iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
             serde_json::json!({"rows": rows}).to_string()
         }
     }
@@ -835,9 +903,9 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;
     h.set(
         "writeAtomic",
-        Function::new(c.clone(), |rel: String, text: String| -> rquickjs::Result<bool> {
+        Function::new(c.clone(), |rel: String, text: String, leave_temp: Option<bool>| -> rquickjs::Result<bool> {
             let home = with_settings(|st| st.home.clone())?;
-            write_atomic(&home, &rel, &text)
+            write_atomic_with(&home, &rel, &text, leave_temp.unwrap_or(false))
         })?,
     )?;
     h.set(
@@ -900,12 +968,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
+    h.set("agentsWindow", Function::new(c.clone(), |p: String| agents_window(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
     h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
-    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| tail_lines(&p, w, l))?)?;
+    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set(
         "pruneState",
@@ -967,8 +1036,11 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
     super::host_d::install(c, &h)?;
+    super::host_mesh::install(c, &h)?;
     super::host_proc::install(c, &h)?;
+    super::host_spawn::install(c, &h)?;
     super::host_ts::install(c, &h)?;
+    super::host_transcript::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
 }

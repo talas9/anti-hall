@@ -5,6 +5,7 @@
 // of the lower modules; this module never requires devswarm.js at load time (the
 // dispatcher's run() and export object reach it through core.cliRun / core.dispatcherExports).
 
+const branchSenderLib = require('../../companion/lib/devswarm-branch-sender.js');
 const {
   CALLER_CWD, CLI_PATH, descriptorRegisteredRepoKey, fs, hasFlag, identityContext, inboxCursor,
   one, path, primaryCursorPath, readDescriptorFile, readerCursors, readRetiredRedirect,
@@ -1772,6 +1773,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // both the `origHash`-stamped case and the legacy prefix-reconstruction
   // case) — additive only: never renumbers `seq`/rewrites `ts`, never mutates
   // the source row objects (a fresh shallow copy per message).
+  let legacyRegistry = null; // lazily read once, only when a legacy null-sender DONE row needs it
   messages = Array.isArray(messages) ? messages.map((m) => {
     const origHash = forwardedOrigHashOf(m);
     let out2 = origHash ? Object.assign({}, m, { forwarded: true, origHash }) : m;
@@ -1803,8 +1805,25 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // Normalized, additive row shape shared with `mesh read` broadcasts: every row
     // carries `from`, `text`, `kind` ('broadcast'|'direct') alongside the legacy
     // `sender`/`body` keys (kept for backward compatibility).
+    // LEGACY null-sender rows: native "DONE: <branch> ..." notices written before the ingest stamped a sender.
+    // Attribute them from the branch they name, at READ time only (nothing is rewritten; unknown/ambiguous
+    // stays null, so a consumer that tolerated `from: null` is unaffected).
+    let legacyFrom = null;
+    if (out2 && out2.sender == null && typeof out2.body === 'string') {
+      const br = branchSenderLib.branchOfDoneBody(out2.body);
+      if (br) {
+        if (legacyRegistry === null) {
+          legacyRegistry = [];
+          try {
+            const rs = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env, readOnly: true });
+            try { legacyRegistry = rs.listRegistry() || []; } finally { rs.close(); }
+          } catch (_) { legacyRegistry = []; }
+        }
+        legacyFrom = branchSenderLib.resolveBranchSender(legacyRegistry, br);
+      }
+    }
     out2 = Object.assign({}, out2, {
-      from: out2 && out2.sender != null ? out2.sender : null,
+      from: out2 && out2.sender != null ? out2.sender : legacyFrom,
       text: out2 && out2.body != null ? out2.body : '',
       kind: out2 && out2.mtype === 'broadcast' ? 'broadcast' : 'direct',
     });

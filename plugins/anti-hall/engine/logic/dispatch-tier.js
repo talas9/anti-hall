@@ -62,41 +62,6 @@ function dtTask(p, tool) {
   return base;
 }
 
-// `readState(home)`: the state object with `requested` and `sessions` objects in place; null for a state only the Node hook handles.
-function dtReadState(path) {
-  var s = {};
-  var f = jx.read(path);
-  if (f.big) return null;
-  if (f.text !== undefined) {
-    var r = jx.parse(f.text);
-    if (r.unsure) return null;
-    if (r.v !== undefined && r.v !== null && typeof r.v === 'object') {
-      if (Array.isArray(r.v)) return null;
-      s = r.v;
-    }
-  }
-  var keys = ['requested', 'sessions'];
-  for (var i = 0; i < keys.length; i++) {
-    var v = s[keys[i]];
-    if (Array.isArray(v)) return null;
-    if (!v || typeof v !== 'object') s[keys[i]] = {};
-  }
-  return s;
-}
-
-// `writeState(home, s)`: bounded, then replaced atomically. Best effort, as in Node.
-function dtWriteState(rel, s, now) {
-  var max = ah.cfgNum('dispatch_tier.max_sessions');
-  var sids = Object.keys(s.sessions);
-  if (sids.length > max) {
-    sids.sort(function (a, b) { return ((s.sessions[a] && s.sessions[a].t) || 0) - ((s.sessions[b] && s.sessions[b].t) || 0); });
-    sids.slice(0, sids.length - max).forEach(function (k) { delete s.sessions[k]; });
-  }
-  var ttl = ah.cfgNum('dispatch_tier.request_ttl_ms');
-  Object.keys(s.requested).forEach(function (k) { var v = s.requested[k]; if (!Number.isFinite(v) || now - v > ttl) delete s.requested[k]; });
-  ah.state.writeAtomic(rel, JSON.stringify(s)); // a lost write only means the tier question is asked again
-}
-
 function decide(p) {
   if (p === null || typeof p !== 'object') return 'allow';
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
@@ -120,7 +85,7 @@ function decide(p) {
   if (cached === null) return 'defer';
   if (cached) return 'allow';
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('dispatch_tier.state_file');
-  var st = dtReadState(guard.home + '/' + rel);
+  var st = tk.tierRead(guard.home + '/' + rel);
   if (st === null) return 'defer';
   var now = ah.clock.now();
   var at = st.requested[hash];
@@ -128,7 +93,7 @@ function decide(p) {
   // the session, as `String(payload.session_id)` when truthy
   var session = p.session_id ? String(p.session_id) : undefined;
   st.requested[hash] = now;
-  dtWriteState(rel, st, ah.clock.now());
+  tk.tierWrite(rel, st, ah.clock.now());
   var tiers = [['workspace', ah.cfg('dispatch_tier.tier_workspace')], ['workflow', ah.cfg('dispatch_tier.tier_workflow')], ['subagent', ah.cfg('dispatch_tier.tier_subagent')]];
   ah.jev.ask({
     id: jevId,

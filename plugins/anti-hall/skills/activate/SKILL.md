@@ -46,7 +46,7 @@ plugin. It is **never** auto-invoked — always user-triggered. Re-running is sa
 
    - **No existing statusLine:** delegate a subagent to run:
      ```
-     node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user
+     sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" install-statusline --user
      ```
      Report its stdout verbatim. Set `statusline_changed = true`.
 

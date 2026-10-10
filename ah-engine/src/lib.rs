@@ -1,5 +1,7 @@
 //! anti-hall engine: a tiny hook daemon + client. See README.md.
 #![deny(missing_docs)]
+#![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::redundant_explicit_links)]
+pub mod actlog;
 pub mod agents;
 pub mod atomic;
 pub mod backup;
@@ -29,6 +31,7 @@ pub mod gate;
 pub mod ghrt;
 pub mod gitcache;
 pub mod handovers;
+pub mod hcguard;
 pub mod health;
 pub mod hookcfg;
 pub mod hookio;
@@ -39,6 +42,7 @@ pub mod judge;
 pub mod limits;
 pub mod load;
 pub mod maintain;
+pub mod memdiag;
 pub mod memstat;
 pub mod mesh;
 pub mod meshw;
@@ -50,6 +54,7 @@ pub mod paths;
 pub mod proc;
 /// Process watch: orphan sweep, resource and disk warnings.
 pub mod procwatch;
+pub mod refresh;
 pub mod reqenv;
 pub mod roles;
 pub mod rules;
@@ -64,6 +69,7 @@ pub mod store;
 pub mod telemetry;
 pub mod tier;
 pub mod transcript;
+pub mod wakew;
 pub mod watch;
 
 /// Version this build reports and compares for handoff. The `version` env override (plugin

@@ -375,6 +375,117 @@ fn cmd_show(run: &mut Run, a: &Args) {
     out(&(lines.join("\n") + "\n"));
 }
 
+// ---- tunables: every key of the plugin's engine/defaults/*.toml ---------------------------------------------------------
+
+fn category_of(e: &defaults::Entry) -> &str {
+    e.file.strip_suffix(defaults::text("ops.tunable_file_suffix")).unwrap_or(e.file)
+}
+
+fn clip(t: &str, max: usize) -> String {
+    let one: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= max { one } else { one.chars().take(max).collect::<String>() + defaults::text("ops.tunable_ellipsis") }
+}
+
+/// A default's value as one table cell.
+fn tunable_value(v: &defaults::V, max: usize) -> String {
+    match v {
+        defaults::V::Int(n) => n.to_string(),
+        defaults::V::Bool(b) => b.to_string(),
+        defaults::V::Str(t) => clip(t, max),
+        defaults::V::List(l) => defaults::render("ops.tunable_list", &[("n", &l.len())]),
+        defaults::V::Table(t) => defaults::render("ops.tunable_table", &[("n", &t.len())]),
+    }
+}
+
+fn first_sentence(doc: &str, max: usize) -> String {
+    let one = clip(doc, usize::MAX);
+    let cut = one.find(defaults::text("ops.tunable_sentence_end")).map_or(one.len(), |i| i + 1);
+    clip(&one[..cut], max)
+}
+
+/// `settings tunables [<category|key prefix|key>] [--all] [--json]`: the settings the Node schema does not hold. Their single source
+/// is the plugin's `engine/defaults/*.toml` (category = the file); editing the file (or the env variable it names) changes them.
+fn cmd_tunables(run: &mut Run, a: &Args) {
+    let want = a.positional.first().map(String::as_str).filter(|w| !w.is_empty());
+    let all = defaults::all();
+    let hit = |e: &&&defaults::Entry| match want {
+        None => true,
+        Some(w) => category_of(e) == w || e.key == w || e.key.starts_with(&format!("{w}.")) || e.key.starts_with(w),
+    };
+    let picked: Vec<&defaults::Entry> = all.iter().filter(hit).copied().collect();
+    if let Some(w) = want
+        && picked.is_empty()
+    {
+        run.fail(defaults::render("ops.tunable_unknown", &[("name", &w)]));
+        return;
+    }
+    let (vmax, dmax) = (defaults::num("ops.tunable_value_max") as usize, defaults::num("ops.tunable_doc_max") as usize);
+    if a.json {
+        let rows: Vec<J> = picked
+            .iter()
+            .map(|e| {
+                let mut o = vec![
+                    ("key".to_string(), J::Str(e.key.to_string())),
+                    ("category".to_string(), J::Str(category_of(e).to_string())),
+                    ("default".to_string(), json::parse(&e.value.to_json().to_string(), defaults::num("ops.tunable_json_depth") as usize).unwrap_or(J::Null)),
+                    ("description".to_string(), J::Str(e.doc.to_string())),
+                ];
+                if let Some(v) = e.env {
+                    o.push(("env".to_string(), J::Str(v.to_string())));
+                }
+                if let Some(v) = e.min {
+                    o.push(("min".to_string(), J::Num(v as f64)));
+                }
+                if let Some(v) = e.max {
+                    o.push(("max".to_string(), J::Num(v as f64)));
+                }
+                if let Some(v) = e.unit {
+                    o.push(("unit".to_string(), J::Str(v.to_string())));
+                }
+                J::Obj(o)
+            })
+            .collect();
+        out(&(pretty(&J::Arr(rows)) + "\n"));
+        return;
+    }
+    let mut lines = vec![format!("{}{}", defaults::text("ops.heading_prefix"), defaults::text("ops.tunable_title")), String::new()];
+    lines.push(defaults::text("ops.tunable_intro").to_string());
+    lines.push(String::new());
+    if want.is_none() && !a.all {
+        let mut cats: BTreeMap<&str, usize> = BTreeMap::new();
+        for e in &picked {
+            *cats.entry(category_of(e)).or_default() += 1;
+        }
+        let rows: Vec<Vec<String>> = cats.iter().map(|(c, n)| vec![c.to_string(), n.to_string()]).collect();
+        lines.push(render_table(&rows, &defaults::list("ops.tunable_cat_headers")));
+        lines.push(String::new());
+        lines.push(defaults::render("ops.tunable_more", &[("total", &picked.len())]));
+    } else {
+        let rows: Vec<Vec<String>> = picked
+            .iter()
+            .map(|e| {
+                let range = match (e.min, e.max) {
+                    (Some(lo), Some(hi)) => format!("{lo}..{hi}"),
+                    (Some(lo), None) => format!("{lo}.."),
+                    (None, Some(hi)) => format!("..{hi}"),
+                    _ => String::new(),
+                };
+                let unit = e.unit.map_or(String::new(), |u| format!(" {u}"));
+                vec![
+                    e.key.to_string(),
+                    category_of(e).to_string(),
+                    tunable_value(&e.value, vmax) + &unit,
+                    e.env.unwrap_or("").to_string(),
+                    range,
+                    first_sentence(e.doc, dmax),
+                ]
+            })
+            .collect();
+        lines.push(render_table(&rows, &defaults::list("ops.tunable_headers")));
+    }
+    out(&(lines.join("\n") + "\n"));
+}
+
 // ---- get / set / reset ------------------------------------------------------------------------------------------------
 
 fn cmd_get(run: &mut Run, a: &Args) {
@@ -384,6 +495,13 @@ fn cmd_get(run: &mut Run, a: &Args) {
         return;
     };
     let Some(item) = find_item(&section, &key) else {
+        // not a Node-schema setting: a key of the plugin's engine defaults is read-only here (edit the file or set its env variable)
+        if let Some(n) = name
+            && defaults::has(n)
+        {
+            cmd_tunables(run, &Args { positional: vec![n.clone()], json: a.json, ..Args::default() });
+            return;
+        }
         run.fail(defaults::render("ops.settings_unknown_setting", &[("name", &name.map_or("undefined", String::as_str))]));
         return;
     };
@@ -416,11 +534,6 @@ fn cmd_get(run: &mut Run, a: &Args) {
 fn report_failure(run: &mut Run, a: &Args, outcome: Outcome) -> bool {
     match outcome {
         Outcome::Done => return false,
-        Outcome::LockBusy => {
-            err(&(defaults::text("ops.lock_busy").to_string() + "\n"));
-            run.code = super::defer_code();
-            return true;
-        }
         Outcome::Needs(warning) => {
             if a.json {
                 out(&(json::stringify(&J::Obj(vec![
@@ -513,11 +626,6 @@ fn cmd_judge(run: &mut Run, a: &Args) {
         let raw = if verb == "on" { defaults::text("ops.true_word") } else { defaults::text("ops.false_word") };
         match store::set_cli(&run.ctx, sem_entry, &sem.safety_note, raw, false) {
             Outcome::Done => {}
-            Outcome::LockBusy => {
-                err(&(defaults::text("ops.lock_busy").to_string() + "\n"));
-                run.code = super::defer_code();
-                return;
-            }
             Outcome::Needs(_) => {
                 run.fail(defaults::render("ops.settings_err", &[("error", &defaults::text("ops.undefined_word"))]));
                 return;
@@ -606,7 +714,9 @@ pub(crate) fn effective_bool(section: &str, key: &str) -> bool {
 
 /// `settings <verb> [args] [--json]`
 pub fn run(p: &Parsed) -> i32 {
-    let plan = super::shadow::begin(defaults::text("ops.verb_settings"), defaults::text("ops.script_settings"), &p.raw, None);
+    // `tunables` and a `get` of an engine key have no Node twin (settings.js knows only its own schema): nothing to compare
+    let engine_only = p.raw.first().map(String::as_str) == Some(defaults::text("ops.tunable_verb"));
+    let plan = if engine_only { None } else { super::shadow::begin(defaults::text("ops.verb_settings"), defaults::text("ops.script_settings"), &p.raw, None) };
     let code = run_inner(p);
     super::shadow::end(plan, code);
     code
@@ -619,6 +729,7 @@ fn run_inner(p: &Parsed) -> i32 {
     match verb {
         Some("show") => cmd_show(&mut run, &a),
         Some("get") => cmd_get(&mut run, &a),
+        Some(v) if v == defaults::text("ops.tunable_verb") => cmd_tunables(&mut run, &a),
         Some("set") => cmd_set(&mut run, &a),
         Some("reset") => cmd_reset(&mut run, &a),
         Some("judge") => cmd_judge(&mut run, &a),

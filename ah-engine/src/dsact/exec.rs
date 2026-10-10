@@ -4,6 +4,7 @@ use super::ledger::{Begin, KeyState, Ledger, Word};
 use super::live::LiveState;
 use super::runner::{RunResult, RunSpec, Runner, at_least, parse_version};
 use super::settings::ActSettings;
+use super::tele::{Attempt, gate_values};
 use crate::checks::git::util::Settings;
 use crate::checks::taskkit::time::iso;
 use crate::defaults;
@@ -28,6 +29,20 @@ impl Origin {
     }
 }
 
+/// What [`Act::archive_one`] did.
+pub(super) enum One {
+    /// The workspace was not eligible: nothing was attempted.
+    NotEligible,
+    /// Archived (the decision it ran on).
+    Done(Value),
+    /// It was eligible at the decision and no longer at the re-check: nothing ran.
+    Stale,
+    /// Another trigger holds the workspace: nothing ran.
+    Refused(String),
+    /// The call ran (or the ledger refused it) and did not archive.
+    Failed(Report),
+}
+
 /// What happened to one action.
 #[derive(Debug, Clone)]
 pub struct Report {
@@ -41,11 +56,15 @@ pub struct Report {
     pub word: Word,
     /// The detail.
     pub detail: Value,
+    /// The facts the decision was made from (the value of each condition), when the action came from a sweep.
+    pub inputs: Value,
+    /// How long the action took, milliseconds.
+    pub latency_ms: u64,
 }
 
 impl Report {
     fn new(kind: &str, id: &str, key: &str, word: Word, detail: Value) -> Report {
-        Report { kind: kind.into(), id: id.into(), key: key.into(), word, detail }
+        Report { kind: kind.into(), id: id.into(), key: key.into(), word, detail, inputs: Value::Null, latency_ms: 0 }
     }
 
     /// The report as a JSON object.
@@ -66,7 +85,8 @@ pub struct Act<'a> {
     pub live: &'a dyn LiveState,
     /// The runner.
     pub runner: &'a dyn Runner,
-    ledger: Ledger,
+    pub(super) ledger: Ledger,
+    pub(super) tele: super::tele::Tele,
     probe: RefCell<Option<(bool, Option<Vec<u64>>)>>,
 }
 
@@ -77,27 +97,36 @@ fn strings(v: &Value) -> Option<Vec<String>> {
 impl<'a> Act<'a> {
     /// A layer over `live` and `runner`.
     pub fn new(home: &Path, state_dir: &Path, env: RequestEnv, live: &'a dyn LiveState, runner: &'a dyn Runner) -> Act<'a> {
-        Act { home: home.into(), state_dir: state_dir.into(), env, live, runner, ledger: Ledger::open(state_dir), probe: RefCell::new(None) }
+        Act {
+            home: home.into(),
+            state_dir: state_dir.into(),
+            env,
+            live,
+            runner,
+            ledger: Ledger::open(state_dir),
+            tele: super::tele::Tele::new(state_dir),
+            probe: RefCell::new(None),
+        }
     }
 
-    fn settings(&self) -> ActSettings {
+    pub(super) fn settings(&self) -> ActSettings {
         ActSettings::read(&Settings::from_env(&self.env))
     }
 
-    fn home_str(&self) -> String {
+    pub(super) fn home_str(&self) -> String {
         self.home.to_string_lossy().into_owned()
     }
 
-    fn log(&self, rec: &Value) {
+    pub(super) fn log(&self, rec: &Value) {
         append_line(&self.state_dir.join(defaults::text("devswarm_act.log_file")), rec);
     }
 
-    fn payload(&self, kind: &str, facts: Value, request: Value, ledger_keys: Vec<String>, s: &ActSettings) -> Value {
+    pub(super) fn payload(&self, kind: &str, facts: Value, request: Value, ledger_keys: Vec<String>, s: &ActSettings) -> Value {
         json!({"kind": kind, "now": self.live.now_ms(), "settings": s.json(), "facts": facts, "request": request, "ledgerKeys": ledger_keys})
     }
 
     /// Keys of auto-archives already made at some HEAD of `id`, by the engine or by Node (its durable gate-(h) file).
-    fn archived_keys(&self, id: &str) -> Vec<String> {
+    pub(super) fn archived_keys(&self, id: &str) -> Vec<String> {
         let kind = defaults::text("devswarm_act.auto_archive_kind");
         let mut keys = self.ledger.acted_keys(&format!("{kind}:{id}:"));
         let file = self.home.join(defaults::text("devswarm_act.node_archived_state"));
@@ -115,6 +144,7 @@ impl<'a> Act<'a> {
 
     /// Whether `origin` may start `kind`: the automatic set is `devswarm_act.automatic_kinds`, the owner set `owner_kinds`, and the
     /// kinds the engine does not execute answer `deferred`.
+    #[allow(clippy::result_large_err)] // the refusal is the full report the caller returns as is
     pub fn permit(&self, origin: Origin, kind: &str) -> Result<(), Report> {
         if defaults::list("devswarm_act.deferred_kinds").contains(&kind) {
             return Err(Report::new(kind, "", "", Word::Deferred, json!({})));
@@ -143,7 +173,7 @@ impl<'a> Act<'a> {
     }
 
     /// Whether the DevSwarm CLI can run `verb`: present, and new enough where the verb has a minimum.
-    fn capability(&self, verb: &str) -> Result<(), String> {
+    pub(super) fn capability(&self, verb: &str) -> Result<(), String> {
         let (missing, ver) = self.version();
         if missing {
             return Err(defaults::text("devswarm_act.msg_inert").to_string());
@@ -185,7 +215,15 @@ impl<'a> Act<'a> {
     }
 
     /// Claim, run, check, record one action. `check` decides whether a successful process really did the job.
-    fn execute(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
+    pub(super) fn execute(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
+        let started = std::time::Instant::now();
+        let mut r = self.execute_inner(kind, id, d, timeout_ms, check);
+        r.latency_ms = started.elapsed().as_millis() as u64;
+        crate::telemetry::emit::act(&super::audit::act_rec(&r, r.latency_ms));
+        r
+    }
+
+    fn execute_inner(&self, kind: &str, id: &str, d: &Value, timeout_ms: u64, check: &dyn Fn(&RunResult) -> Result<(), String>) -> Report {
         // a merge's informational check is side-effecting, so it runs only once the key is claimed
         let pre = d.get("pre").and_then(strings).filter(|p| self.argv_ok(p).and_then(|_| self.capability(&p[1])).is_ok());
         let key = d.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -206,7 +244,11 @@ impl<'a> Act<'a> {
         }
         let now = self.live.now_ms();
         let attempt = match self.ledger.begin(&key, kind, id, now) {
-            Begin::Claimed(n) => n,
+            Begin::Claimed(n) => {
+                // the commit point: from here Node must never run the same action in this process
+                crate::meshw::mark_committed();
+                n
+            }
             Begin::Refused(st) => {
                 let w = if st == KeyState::Done {
                     Word::Skipped
@@ -255,13 +297,81 @@ impl<'a> Act<'a> {
     }
 
     /// One auto-archive candidate: decide from fresh facts.
-    fn auto_candidate(&self, id: &str, s: &ActSettings) -> Option<Value> {
+    pub(super) fn auto_candidate(&self, id: &str, s: &ActSettings) -> Option<Value> {
         let facts = self.live.facts(defaults::text("devswarm_act.auto_archive_kind"), id)?;
         let p = self.payload(defaults::text("devswarm_act.auto_archive_kind"), facts.clone(), json!({}), self.archived_keys(id), s);
         let mut d = decide(&self.home_str(), &p).ok()?;
         d["id"] = json!(id);
         d["facts"] = facts;
         Some(d)
+    }
+
+    /// One auto-archive of `id`, whatever started it (`trigger`: a sweep or a state-change event). Decides from fresh facts (or uses
+    /// `plan`, a decision the caller just made), takes the per-workspace in-flight lock, reads the facts AGAIN, acts only if the
+    /// workspace is still eligible, verifies in the app database, and records the attempt in the telemetry. A workspace that is
+    /// not eligible is not an attempt: nothing is recorded.
+    pub(super) fn archive_one(&self, id: &str, s: &ActSettings, trigger: &str, plan: Option<Value>) -> One {
+        let kind = defaults::text("devswarm_act.auto_archive_kind");
+        let (feature, outs) = (defaults::list("devswarm_act.feature_names")[0], defaults::list("devswarm_act.outcome_words"));
+        let Some(first) = plan.or_else(|| self.auto_candidate(id, s)).filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
+            return One::NotEligible;
+        };
+        let started = std::time::Instant::now();
+        let head = first["facts"]["head"].clone();
+        let key = first["key"].as_str().unwrap_or_default().to_string();
+        let record = |outcome: &str, reason: Option<&str>, gates: Value, via_execute: bool| {
+            self.tele.attempt(
+                &Attempt {
+                    feature,
+                    action: "archive",
+                    trigger,
+                    id,
+                    head: &head,
+                    gates,
+                    outcome,
+                    reason,
+                    latency_ms: started.elapsed().as_millis() as u64,
+                    key: &key,
+                    via_execute,
+                },
+                self.live.now_ms(),
+            );
+        };
+        let Some(_lock) = super::events::lock_id(id) else {
+            let why = defaults::render("devswarm_act.msg_inflight", &[("id", &id)]);
+            record(outs[1], Some(&why), gate_values(&json!([])), false);
+            return One::Refused(why);
+        };
+        // facts are read again immediately before the action (the plan may be seconds old)
+        let again = self.auto_candidate(id, s);
+        let Some(d) = again.as_ref().filter(|d| d.get("eligible").and_then(Value::as_bool) == Some(true)) else {
+            self.log(&json!({"ts": self.live.now_ms(), "kind": kind, "id": id, "outcome": Word::Stale.text()}));
+            record(
+                outs[1],
+                Some(defaults::text("devswarm_act.msg_stale")),
+                gate_values(&again.as_ref().map(|a| a["blockers"].clone()).unwrap_or(json!([]))),
+                false,
+            );
+            return One::Stale;
+        };
+        let live = self.live;
+        let ident = id.to_string();
+        let verify = move |_: &RunResult| match live.archived(&ident) {
+            Some(false) => Err(defaults::text("devswarm_act.msg_unverified").to_string()),
+            _ => Ok(()),
+        };
+        let r = self.execute(kind, id, d, defaults::num("devswarm_act.hc_timeout_ms"), &verify);
+        let head = d["facts"]["head"].clone();
+        self.node_records(&r, d, &head);
+        let err = r.detail.get("error").and_then(Value::as_str).map(str::to_string);
+        if r.word == Word::Done {
+            record(outs[0], None, gate_values(&json!([])), true);
+            One::Done(d.clone())
+        } else {
+            let outcome = if matches!(r.word, Word::Skipped | Word::Refused | Word::InDoubt | Word::Unavailable) { outs[1] } else { outs[2] };
+            record(outcome, err.as_deref().or(Some(r.word.text())), gate_values(&json!([])), true);
+            One::Failed(r)
+        }
     }
 
     /// Node's `autoArchiveSweep`, with the same summary: off does nothing; dry-run and an absent verb only plan; on archives at
@@ -285,22 +395,20 @@ impl<'a> Act<'a> {
             return sum;
         }
         for id in &would {
-            // facts are read again immediately before the action (the plan may be seconds old)
-            let again = self.auto_candidate(id, &s);
-            let Some(d) = again.filter(eligible) else {
-                self.log(&json!({"ts": self.live.now_ms(), "kind": defaults::text("devswarm_act.auto_archive_kind"), "id": id, "outcome": Word::Stale.text()}));
-                push(&mut sum, "failed", json!({"id": id, "reason": Word::Stale.text()}));
-                continue;
-            };
-            let kind = defaults::text("devswarm_act.auto_archive_kind");
-            let r = self.execute(kind, id, &d, defaults::num("devswarm_act.hc_timeout_ms"), &|_| Ok(()));
-            let head = d["facts"]["head"].clone();
-            self.node_records(&r, &d, &head);
-            if r.word == Word::Done {
-                push(&mut sum, "archived", json!(id));
-                push(&mut sum, "notices", json!({"id": id, "text": d["notice"]}));
-            } else {
-                push(&mut sum, "failed", json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()}));
+            let plan = cands.iter().find(|c| c["id"].as_str() == Some(id.as_str())).cloned();
+            match self.archive_one(id, &s, defaults::list("devswarm_act.trigger_words")[1], plan) {
+                One::NotEligible => push(&mut sum, "failed", json!({"id": id, "reason": Word::Stale.text()})),
+                One::Done(d) => {
+                    push(&mut sum, "archived", json!(id));
+                    push(&mut sum, "notices", json!({"id": id, "text": d["notice"]}));
+                }
+                One::Stale => push(&mut sum, "failed", json!({"id": id, "reason": Word::Stale.text()})),
+                One::Refused(why) => push(&mut sum, "failed", json!({"id": id, "reason": why, "outcome": Word::Refused.text()})),
+                One::Failed(r) => push(
+                    &mut sum,
+                    "failed",
+                    json!({"id": id, "reason": r.detail.get("error").cloned().unwrap_or(json!(r.word.text())), "outcome": r.word.text()}),
+                ),
             }
         }
         let owned: Vec<Value> = cands.iter().filter(|c| eligible(c) || c.get("soft").and_then(Value::as_bool) == Some(true)).map(|c| c["id"].clone()).collect();
@@ -309,7 +417,7 @@ impl<'a> Act<'a> {
     }
 
     /// Node's records of an auto-archive: the NDJSON line and the durable `auto-archived.json` entry gate (h) reads.
-    fn node_records(&self, r: &Report, d: &Value, head: &Value) {
+    pub(super) fn node_records(&self, r: &Report, d: &Value, head: &Value) {
         let now = self.live.now_ms();
         let f = &d["facts"];
         let rec = json!({"ts": iso(now), "at": now, "action": defaults::text("devswarm_act.auto_archive_kind"), "id": r.id, "doneHead": head, "branch": f["branch"], "label": f["label"], "argv": d["argv"], "ok": r.word == Word::Done, "error": r.detail.get("error").filter(|e| !e.is_null())});
@@ -343,16 +451,16 @@ impl<'a> Act<'a> {
         let s = self.settings();
         let kinds = defaults::list("devswarm_act.automatic_kinds");
         for id in self.live.stale() {
-            let decided = |this: &Self| -> Option<Value> {
+            let decided = |this: &Self| -> Option<(Value, Value)> {
                 let facts = this.live.facts(&format!("{}-or-{}", kinds[1], kinds[2]), &id)?;
-                let d = decide(&this.home_str(), &this.payload(&format!("{}-or-{}", kinds[1], kinds[2]), facts, json!({}), vec![], &s)).ok()?;
-                (d.get("eligible").and_then(Value::as_bool) == Some(true)).then_some(d)
+                let d = decide(&this.home_str(), &this.payload(&format!("{}-or-{}", kinds[1], kinds[2]), facts.clone(), json!({}), vec![], &s)).ok()?;
+                (d.get("eligible").and_then(Value::as_bool) == Some(true)).then_some((d, facts))
             };
             if decided(self).is_none() {
                 continue;
             }
             // right before acting: read and decide again
-            let Some(d) = decided(self) else {
+            let Some((d, facts)) = decided(self) else {
                 out.push(Report::new("", &id, "", Word::Stale, json!({})));
                 continue;
             };
@@ -360,11 +468,14 @@ impl<'a> Act<'a> {
             if !allow(&kind) {
                 continue;
             }
-            if let Err(r) = self.permit(Origin::Automatic, &kind) {
+            if let Err(mut r) = self.permit(Origin::Automatic, &kind) {
+                r.inputs = facts;
                 out.push(r);
                 continue;
             }
-            out.push(self.execute(&kind, &id, &d, defaults::num("devswarm_act.hc_timeout_ms"), &|_| Ok(())));
+            let mut r = self.execute(&kind, &id, &d, defaults::num("devswarm_act.hc_timeout_ms"), &|_| Ok(()));
+            r.inputs = facts;
+            out.push(r);
         }
         out
     }
@@ -524,7 +635,7 @@ fn join(v: &[u64]) -> String {
     v.iter().map(u64::to_string).collect::<Vec<_>>().join(".")
 }
 
-fn push(v: &mut Value, key: &str, item: Value) {
+pub(super) fn push(v: &mut Value, key: &str, item: Value) {
     if let Some(a) = v.get_mut(key).and_then(Value::as_array_mut) {
         a.push(item);
     }

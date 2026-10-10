@@ -28,6 +28,7 @@ pub mod inject;
 pub mod native;
 pub mod node;
 pub mod plan;
+pub mod spill;
 pub mod stoploop;
 pub mod table;
 
@@ -383,10 +384,43 @@ pub fn closed(event: &str, payload: Option<&Value>, why: &str) -> Outcome {
 /// cannot be read or spooled, a usage error, an unreadable `--fallback-map`, the event's budget spent): the event is handed
 /// to the wrapper's Node hooks with `dispatch.defer_exit`, logged with its reason. Never a block (a transient fault must not
 /// lock the user out) and never an allow (a skipped guard).
+///
+/// With `dispatch.defer_to_node` 0 there is no Node to hand the event to, and [`no_node_answer`] answers instead.
 pub fn defer(event: &str, why: &str) -> Outcome {
+    if let Some(o) = no_node_answer(event, None, "infra", why) {
+        return o;
+    }
     log_defer(event, why);
     let note = defaults::render("dispatch.msg_infra_defer", &[("event", &event), ("why", &why)]);
     Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{note}\n") }
+}
+
+/// The answer of a path that would hand the event to the wrapper's Node hooks (`path`: `budget`, `infra` or `panic`) when
+/// `dispatch.defer_to_node` is 0 and there is no Node: `None` while deferring is still the way. An event that cannot block skips
+/// its hooks (logged, counted, one stderr line); a guard event follows `dispatch.failure_mode` for the path: `closed` blocks
+/// ([`closed`], bounded on Stop), `open` lets the call through with a loud stderr line. Every answer is logged and counted
+/// in telemetry as the `dispatcher-<path>` hook.
+pub fn no_node_answer(event: &str, payload: Option<&Value>, path: &str, why: &str) -> Option<Outcome> {
+    if defaults::num("dispatch.defer_to_node") != 0 {
+        return None;
+    }
+    use crate::telemetry::event::Outcome as T;
+    let guard = guarded(event);
+    let closed_mode = guard && defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") != "open";
+    let (kind, outcome, msg) = if !guard {
+        ("dispatch_no_node_skipped", T::Skip, "dispatch.msg_no_node_skipped")
+    } else if closed_mode {
+        ("dispatch_no_node_closed", T::Block, "")
+    } else {
+        ("dispatch_no_node_open", T::Allow, "dispatch.msg_no_node_open")
+    };
+    crate::telemetry::emit::event(crate::telemetry::emit::no_node_path(path, event, outcome));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event(kind, event, &defaults::render("dispatch.msg_no_node_event", &[("path", &path), ("why", &why)]));
+    if closed_mode {
+        return Some(closed(event, payload, why));
+    }
+    Some(Outcome { out: String::new(), code: 0, err: format!("{}\n", defaults::render(msg, &[("event", &event), ("why", &why)])) })
 }
 
 /// Whether the wrapper's Node rerun (a deferral) can still finish inside the host's timeout for this event: what is left of
@@ -413,6 +447,9 @@ fn finish_then_defer(
 ) -> Outcome {
     if !started.iter().any(|(_, r)| r.started()) && !native_answered {
         node::finish(started.into_iter().map(|(_, r)| r).collect()); // only spawn failures: nothing to wait for
+        if let Some(o) = no_node_answer(event, payload, "budget", why) {
+            return o;
+        }
         if rerun_fits {
             return defer(event, why);
         }
@@ -497,6 +534,9 @@ fn unlisted(host: &str, event: &str) -> Option<Outcome> {
         table::Row::Entries(_) | table::Row::Missing if table::trigger_only(host, event) => Some(Outcome { out: String::new(), code: 0, err: String::new() }),
         _ => {
             let why = defaults::render("dispatch.msg_no_row", &[("host", &host), ("event", &event)]);
+            if let Some(o) = no_node_answer(event, None, "infra", &why) {
+                return Some(o);
+            }
             log_defer(event, &why);
             Some(Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{why}\n") })
         }
@@ -621,6 +661,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
         (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
     };
+    let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
+    let mut blocking: Vec<usize> = Vec::new();
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
@@ -666,7 +708,21 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 pre_err.push_str(&stderr);
                 pre_err.push('\n');
             }
+            // a check whose answer needs a model call of seconds (the daemon deferred it: its deadline cannot wait): this process runs it
+            // below, once the other hooks are running beside it; the Node hook only if it still defers
+            _ if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
             _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
+        }
+    }
+    if !blocking.is_empty() {
+        crate::judge::allow_blocking_calls(); // this is the one-shot dispatcher process, under the hook's own timeout, never the daemon
+        for i in blocking {
+            let e = &entries[i];
+            match parsed.as_ref().map(|p| native::run_entry(e, &meta, p)) {
+                Some(Answer::Decided(r, _)) if shadow[i] => shadow_results[i] = Some(r),
+                Some(Answer::Decided(r, _)) => results[i] = Some(r),
+                _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
+            }
         }
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
@@ -751,6 +807,15 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             if guard {
                 return combine::sequential(&results, &args.event);
             }
+            if defaults::num("dispatch.spill_over_cap") == 1
+                && let Some(s) = spill::apply(&args.event, &results, &o.out, cap)
+            {
+                o.out = s.out;
+                return o;
+            }
+            if defaults::num("dispatch.defer_to_node") == 0 {
+                return o; // no Node to run the hooks separately: the host spills the over-cap context itself
+            }
             let err = format!("{}{}", pre_err, defaults::render("dispatch.msg_defer_separately", &[("event", &args.event), ("len", &len), ("cap", &cap)]));
             Outcome { out: String::new(), code: defaults::num("dispatch.defer_exit") as i32, err: format!("{err}\n") }
         }
@@ -780,6 +845,7 @@ pub fn hook_main(args: &[String]) -> i32 {
     let guard = guarded(&event);
     let res = std::panic::catch_unwind(|| {
         sweep_stale_spool();
+        spill::sweep();
         let mut a = match parse_args(args) {
             Ok(a) => a,
             Err(e) if guard => {
@@ -863,6 +929,10 @@ fn on_panic(event: &str, guard: bool) -> Outcome {
     if !guard {
         return Outcome { out: String::new(), code: 0, err: String::new() };
     }
+    // with no Node to defer to the configured failure mode answers (every read guarded: the panic may have come from the defaults)
+    if let Ok(Some(o)) = std::panic::catch_unwind(|| no_node_answer(event, None, "panic", defaults::text("dispatch.msg_panic"))) {
+        return o;
+    }
     let read = std::panic::catch_unwind(|| (defaults::num("dispatch.defer_exit") as i32, defaults::text("dispatch.msg_panic").to_string()));
     let (code, why) = read.unwrap_or_else(|_| (crate::bootstrap::UNAVAILABLE_EXIT, String::new()));
     if !why.is_empty() {
@@ -882,6 +952,25 @@ mod tests {
         assert_eq!(o.code, defaults::num("dispatch.defer_exit") as i32, "a guard-event panic must defer, not block: {o:?}");
         assert_ne!(o.code, 2);
         assert_eq!(on_panic("Notification", false).code, 0, "a non-guard event stays the neutral no-op");
+    }
+
+    #[test]
+    fn without_node_the_paths_answer_by_their_failure_mode_and_with_node_they_defer() {
+        // nextest runs each test in its own process, so setting the variable here touches no other test
+        assert!(no_node_answer("PreToolUse", None, "infra", "x").is_none(), "Node exists: the caller defers");
+        // SAFETY: single-threaded test process (see paths.rs)
+        unsafe { std::env::set_var("AH_ENGINE_DEFER_TO_NODE", "0") };
+        let closed = no_node_answer("PreToolUse", None, "infra", "disk gone").expect("answered");
+        assert_eq!(closed.code, 2, "{closed:?}");
+        let open = no_node_answer("PreToolUse", None, "panic", "boom").expect("answered");
+        assert!(open.code == 0 && open.err.contains("UNGUARDED") && open.out.is_empty(), "{open:?}");
+        let skip = no_node_answer("SessionStart", None, "infra", "disk gone").expect("answered");
+        assert!(skip.code == 0 && skip.err.contains("skipped") && skip.out.is_empty(), "{skip:?}");
+        assert_eq!(on_panic("PreToolUse", true).code, 0, "a panic is open by default: it must not lock the user out");
+        let o = finish_then_defer("PreToolUse", None, Vec::new(), vec![None], &[false], false, true, "slow");
+        assert_eq!(o.code, 2, "a spent budget is closed by default: {o:?}");
+        // SAFETY: as above
+        unsafe { std::env::remove_var("AH_ENGINE_DEFER_TO_NODE") };
     }
 
     fn entry(id: &str, command: &str) -> table::Entry {

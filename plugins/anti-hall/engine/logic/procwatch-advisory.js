@@ -51,14 +51,25 @@ function pwMsg(kind, what, why, instead) {
 
 function pwProcLine(f) { return 'pid ' + f.pid + ' ' + String(f.cmd || '') + ' [' + String(f.class || '') + ']'; }
 
+// The directory a process runs in, appended when the report knows it (which project owns the process).
+function pwProcOwned(f) {
+  return pwProcLine(f) + (typeof f.cwd === 'string' && f.cwd !== '' ? text.render(ah.cfg('procwatch.msg_proc_cwd'), { cwd: f.cwd }) : '');
+}
+
 function pwOrphans(r, sid, nowS, st, parts) {
   var o = r.orphans || {}, count = typeof o.count === 'number' ? o.count : 0;
   var cooldown = ah.cfgNum('procwatch.orphan_cooldown_s');
-  if (count > 0 && pwFire(st, 'orphans:' + sid, nowS, cooldown)) {
-    var max = ah.cfgNum('procwatch.orphan_max_named'), listed = Array.isArray(o.listed) ? o.listed : [];
+  // a given process is reported once per session (acknowledged in the state file): a process of another project that this session
+  // cannot act on is not repeated every cooldown
+  var listed = (Array.isArray(o.listed) ? o.listed : []).filter(function (f) { return st.last['orphan-ack:' + sid + ':' + f.pid + ':' + f.cmd] === undefined; });
+  var unlisted = Math.max(0, count - (Array.isArray(o.listed) ? o.listed.length : 0));
+  if (listed.length > 0 && pwFire(st, 'orphans:' + sid, nowS, cooldown)) {
+    var max = ah.cfgNum('procwatch.orphan_max_named'), shown = listed.slice(0, max);
+    shown.forEach(function (f) { st.last['orphan-ack:' + sid + ':' + f.pid + ':' + f.cmd] = nowS; });
     var modes = r.modes && typeof r.modes === 'object' ? Object.keys(r.modes).map(function (k) { return k + '=' + r.modes[k]; }).join(', ') : '';
+    var n = listed.length + unlisted;
     parts.push(pwMsg('warn',
-      text.render(ah.cfg('procwatch.msg_orphans_what'), { n: count, list: listed.slice(0, max).map(pwProcLine).join('; '), more: pwMore(count, Math.min(max, listed.length)) }),
+      text.render(ah.cfg('procwatch.msg_orphans_what'), { n: n, list: shown.map(pwProcOwned).join('; '), more: pwMore(n, shown.length) }),
       text.render(ah.cfg('procwatch.msg_orphans_why'), { modes: modes }), ah.cfg('procwatch.msg_orphans_instead')));
   }
   var stopped = (Array.isArray(r.kills) ? r.kills : []).filter(function (e) { return e.outcome !== 'gone' && typeof e.ts_s === 'number' && e.ts_s + cooldown > nowS; });

@@ -135,7 +135,7 @@ test('on: help requests and the CLI verbs the engine answers (skip, archive-igno
   const { run } = setup({ mode: 'on', engine: 'exit 0' });
   for (const argv of [['help'], ['help', 'send', '--json'], ['-h'], ['--help'], ['--h'], ['inbox', 'x', '--help'], ['skip', 'edit-guard', '--ttl', '5'],
     ['archive-ignore', 'w1'], ['archive-unignore', 'w1'], ['gate-intent', '--reason', 'r'], ['notice', '--list'], ['plan', 'show', 'w1'],
-    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1']]) {
+    ['scope', 'add', 'w1', '--glob', 'a', '--note', 'n'], ['gate', 'w1', '--set', 'x'], ['workspaces', 'list'], ['logs', '--limit', '5'], ['wake-directive', 'w1'], ['ready-check', 'abc'], ['app-state', '--json'], ['app-sync', '--dry-run'], ['retention', 'status'], ['sync-ui', '--titles-json', 't.json'], ['supervision-report', '--days', '3'], ['nudge', 'w1'], ['archive-request', 'w1'], ['relay', '3', '--to', 'w1'], ['primary', 'status'], ['done', '--summary', 'x'], ['unarchive', 'w1'], ['migrate-owner-keys'], ['ensure', 'w1'], ['register', 'w1', '--worktree', '/x', '--session', 's'], ['correct', 'w1', '--dry-run'], ['reap-orphans'], ['archive', 'w1'], ['register-primary'], ['diagnose', '--json'], ['healthcheck'], ['merge', '--squash'], ['spawn', 'b1', '-p', 'x'], ['respawn', 'w1'], ['reconcile-registry'], ['reap-stale'], ['reconcile-active', '--active', 'a'], ['auto-archive']]) {
     const r = run(argv);
     assert.strictEqual(r.code, 0, argv.join(' '));
     assert.ok(r.trace.endsWith('engine mesh ' + argv.join(' ') + '\n'), argv.join(' ') + ' -> ' + r.trace);
@@ -184,6 +184,28 @@ test('on, engine hangs: killed at the time limit, then Node runs', () => {
   assert.strictEqual(r.code, 3);
   assert.match(r.trace, /node send/);
   assert.match(r.log, /ETIMEDOUT/);
+});
+
+test('on, merge: the engine is waited for past the time limit (a second merge in Node would act twice); every other verb is killed at it', () => {
+  const slow = setup({ mode: 'on', engine: 'sleep 2; exit 0', timeoutMs: 500 });
+  const m = slow.run(['merge', '--squash']);
+  assert.strictEqual(m.code, 0);
+  assert.doesNotMatch(m.trace, /^node /m);
+  assert.strictEqual(m.log, '');
+  const s = slow.run(['spawn', 'b1']);
+  assert.strictEqual(s.code, 3);
+  assert.match(s.log, /ETIMEDOUT/);
+});
+
+test('on, a write verb stopped at the time limit AFTER its commit point is never re-done in Node; before it, Node runs', () => {
+  const acted = setup({ mode: 'on', engine: 'echo wrote >> "$(dirname "$0")/effects"; : >> "$AH_ENGINE_COMMIT_MARK"; sleep 8', timeoutMs: 2500 });
+  const r = acted.run(['send', '--to', 'w', '--message', 'hi']);
+  assert.strictEqual(r.code, 70);
+  assert.doesNotMatch(r.trace, /^node /m);
+  const before = setup({ mode: 'on', engine: 'sleep 3', timeoutMs: 500 });
+  const b = before.run(['send', '--to', 'w', '--message', 'hi']);
+  assert.strictEqual(b.code, 3);
+  assert.match(b.trace, /node send/);
 });
 
 test('on, --message-stdin: the body reaches the engine and, on fallback, Node', () => {

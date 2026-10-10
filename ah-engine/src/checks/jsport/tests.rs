@@ -201,3 +201,78 @@ fn local_time_needs_proof_that_the_zone_is_the_requests() {
     }
     assert_eq!(date::local_ymd(1.0e12), None);
 }
+
+/// A DevSwarm child workspace gets its submodules as `git worktree add` worktrees of the MAIN checkout's submodule repo
+/// (`<main>/.git/modules/<name>`), whose `core.worktree` names the MAIN checkout's submodule dir. Node's identity resolver
+/// followed that and resolved a child's submodule cwd as the PRIMARY checkout (fixed in companion/lib/identity.js; Node test
+/// tests/scripts/devswarm-child-submodule-identity.test.js). Every engine port of that resolver must either answer the CHILD
+/// checkout or defer, never answer the Primary. Same layout as the Node test: real git, a scratch directory.
+#[test]
+fn a_child_submodule_worktree_never_resolves_as_the_primary_checkout() {
+    use std::path::Path;
+    use std::process::Command;
+    let git = |cwd: &Path, args: &[&str]| {
+        let o = Command::new("git")
+            .current_dir(cwd)
+            .args(["-c", "protocol.file.allow=always", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    let base = std::env::temp_dir().join(format!("ah-childsub-{}", std::process::id()));
+    crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a leftover from an aborted run; an absent dir is the goal state
+    std::fs::create_dir_all(&base).unwrap();
+    let tmp = std::fs::canonicalize(&base).unwrap();
+    let (lib, main) = (tmp.join("lib"), tmp.join("main"));
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(&main).unwrap();
+    for d in [&lib, &main] {
+        git(d, &["init", "-q"]);
+        std::fs::write(d.join("a"), "a").unwrap();
+        git(d, &["add", "a"]);
+        git(d, &["commit", "-qm", "i"]);
+    }
+    git(&main, &["submodule", "add", "-q", lib.to_str().unwrap(), "sky"]);
+    git(&main, &["commit", "-qm", "s"]);
+    let child = tmp.join("child");
+    git(&main, &["worktree", "add", "-q", child.to_str().unwrap(), "-b", "kid"]);
+    let child_sub = child.join("sky");
+    git(&main.join("sky"), &["worktree", "add", "-q", "-b", "kid-sky", child_sub.to_str().unwrap()]);
+    let s = |p: &Path| p.to_str().unwrap().to_string();
+    let (main_s, child_s, sub_s, main_sub_s) = (s(&main), s(&child), s(&child_sub), s(&main.join("sky")));
+    // the fixture is the DevSwarm layout: the child's submodule gitdir lives under the MAIN checkout's module repo
+    let dotgit = std::fs::read_to_string(child_sub.join(".git")).unwrap();
+    assert!(dotgit.contains(&format!("{main_s}/.git/modules/")), "{dotgit}");
+
+    // 1. checks::jsport::ident (ahHost.repoContext, the statusline / defect / allow / migrate callers)
+    let env = crate::reqenv::RequestEnv::from_pairs([("HOME", "/nonexistent-home")]);
+    let c = super::ident::resolve_context(&sub_s, true, &env);
+    assert_ne!(c.worktree_root.as_deref(), Some(main_s.as_str()), "jsport: child submodule cwd resolved as the Primary");
+    assert!(c.unsure || c.worktree_root.as_deref() == Some(child_s.as_str()), "jsport: {c:?}");
+    assert_eq!(c.toplevel.as_deref(), Some(sub_s.as_str()));
+    let k = super::ident::resolve_context(&child_s, true, &env);
+    assert_eq!((k.worktree_root.as_deref(), k.unsure), (Some(child_s.as_str()), false));
+    let p = super::ident::resolve_context(&main_sub_s, true, &env);
+    assert_eq!((p.worktree_root.as_deref(), p.unsure), (Some(main_s.as_str()), false), "the Primary's own submodule keys to the Primary");
+
+    // 2. meshw::ident (every mesh verb's caller identity)
+    use crate::meshw::ident as mi;
+    match mi::resolve_context(&sub_s, true) {
+        Ok(m) => assert_eq!(m.worktree_root.as_deref(), Some(child_s.as_str()), "meshw: {m:?}"),
+        Err(mi::Defer(code)) => assert!(!code.is_empty()),
+    }
+    assert_eq!(mi::resolve_context(&child_s, true).unwrap().worktree_root.as_deref(), Some(child_s.as_str()));
+    assert_eq!(mi::resolve_context(&main_sub_s, true).unwrap().worktree_root.as_deref(), Some(main_s.as_str()));
+
+    // 3. checks::taskkit::root (ahHost.projectRoot / repoRoot; script/host_d.rs delegates here)
+    use crate::checks::taskkit::root;
+    let home = "/nonexistent-home";
+    let spr = root::session_project_root(&sub_s, home);
+    assert!(spr.is_none() || spr.as_deref() == Some(child_s.as_str()), "taskkit sessionProjectRoot: {spr:?}");
+    assert_eq!(root::repo_root(&sub_s, home).as_deref(), Some(sub_s.as_str()), "repoRoot is the toplevel, as Node's");
+
+    crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent dir is the goal state
+}

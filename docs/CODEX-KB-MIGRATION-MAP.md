@@ -12,7 +12,6 @@
 | `docs/opus-4-8-swarm.md` | Claude/Opus multi-agent and managed-agent snapshot | **Covered by:** `docs/KB-codex-workflow-orchestration.md` plus model docs |
 | `docs/KB-omc.md` | oh-my-claudecode specific | **Create:** `docs/KB-omx.md` |
 | `docs/KB-fable-5.md`, `docs/opus-4-8-features.md` | Claude model-specific | **Create later if needed:** Codex model feature KB; current routing covered by `docs/KB-codex-vs-opus-coding.md` and official Codex model docs |
-| `docs/KB-flutter-claude-debug.md` | Claude + Flutter debug-loop specific | **Create later if feature is ported:** Codex Flutter/debug UI KB using Codex IDE/app/browser/computer-use sources |
 | `docs/TASK-WORK.md`, `docs/TASKLIST-GUARD.md` | Claude task tooling + anti-hall guard design | **Partially create later:** Codex task/progress discipline KB if Codex task hooks diverge materially; current Codex hooks/subagents covered in platform/workflow KBs |
 | `docs/CONTEXT-PRESERVATION-KB.md` | Agent-context discipline, broadly model-agnostic | **No clone needed:** cite from Codex workflow KB and update only for Codex-specific context surfaces |
 | `docs/KB-cmux.md` | Terminal workspace for multiple agent CLIs | **No clone needed:** already covers Claude, Codex, Gemini CLI |

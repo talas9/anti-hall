@@ -25,7 +25,7 @@ else.**
 
 ## Primary flow: "activate jev" / "enable jev" / "set up jev"
 
-1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" status` first.
+1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup status` first.
 2. **If a key is already present** (`key present: yes`, or the user says they
    already stored one through the plugin options): skip straight to step 5
    (enable) — don't ask for a key again.
@@ -60,7 +60,7 @@ else.**
    straight to `set-key`:
 
    ```
-   ! read -rs K && printf '%s' "$K" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" set-key --transport vercel && unset K
+   ! read -rs K && printf '%s' "$K" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport vercel && unset K
    ```
 
    (swap `--transport vercel` for `--transport typesafe` if that's what they
@@ -69,11 +69,11 @@ else.**
    reply**:
 
    ```
-   printf '%s' "<the key they pasted>" | node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" set-key --transport <vercel|typesafe>
+   printf '%s' "<the key they pasted>" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
    ```
 
    Confirm only with the script's own output — never with the key itself.
-5. Enable: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" enable [--transport vercel|typesafe]`
+5. Enable: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`
    (pass `--transport` again if the user picked typesafe, so it's recorded even on
    a repeat run).
 6. Test: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" test` — this makes
@@ -114,7 +114,7 @@ budget (a retry with under ~150 ms left is skipped; the primary is held back ~60
 After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
 again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
-- Set: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" enable --transport typesafe --fallback vercel`
+- Set: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
@@ -135,13 +135,13 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `jev-report.js` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-run.sh jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
 ## "disable jev"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" disable`. Mention the
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup disable`. Mention the
 per-session alternative: `ANTIHALL_JEV=0` force-disables for one session without
 touching `jev.json`.
 
@@ -196,7 +196,7 @@ it.
 This is the full tracking loop, end to end — run it whenever the user asks how
 Jev is doing:
 
-1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js"` (add `--window 24h|7d`
+1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report` (add `--window 24h|7d`
    to narrow the cost window; default shows both).
 2. For EACH integration row, read its **suggestion** column and explain what it
    means and what to do next:
@@ -254,7 +254,7 @@ Jev is doing:
 
 ### "label that decision right/wrong"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp` — see
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp` — see
 "jev report" below for the full mechanics. Mention that
 `~/.anti-hall/jev.json`'s `"audit": {"snippets": true}` must be turned on
 BEFORE the decision was made for `label <hash>` (no verdict) to show the actual
@@ -274,8 +274,8 @@ change with no evidence behind it yet.
 one combined table:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by project
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --by session
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by project
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by session
 ```
 
 `--project <name>` filters to one project BEFORE reporting (combine with
@@ -317,7 +317,7 @@ Use this when the user wants a bad/accidental run out of the numbers without
 editing the log file directly:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" \
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report \
   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
 ```
 
@@ -331,7 +331,7 @@ flags happened to be typed."
 
 ### Weekly scorecard (automatic + on-demand)
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" --weekly [--json]` — a
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --weekly [--json]` — a
 compact, ALWAYS-7-day summary: one line per integration with its current
 `[mode]`, KEEP/REVIEW/REMOVE suggestion, a short reason, and call count. Same
 thresholds as the full report, just condensed.
@@ -432,7 +432,7 @@ denominator; read it alongside the percentage, not the percentage alone.
 
 ## "jev report"
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" [--window 24h|7d]` — a
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report [--window 24h|7d]` — a
 read-only per-integration summary (call volume, agreement %, decisions changed,
 good-outcome rate, latency, estimated cost, real cost) with a KEEP/REVIEW/REMOVE
 suggestion per integration. Never mutates state.
@@ -441,10 +441,10 @@ Each changed decision's content hash `h` doubles as its stable id. Label one as
 a confirmed true/false positive:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" label <hash> tp|fp
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp
 ```
 
-This is the ONLY write path `jev-report.js` has — it appends to a separate,
+This is the ONLY write path `ah-run.sh jev-report` has — it appends to a separate,
 append-only `~/.anti-hall/logs/jev-labels.ndjson`, never touching
 `jev-assist.ndjson`. A human label always wins over an AUTO label for the same
 hash. AUTO labels are derived, at report time, from the SAME mechanical outcome
@@ -474,7 +474,7 @@ hash. `label <hash>` prints it if one exists. Deletion is manual-only, never
 automatic:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-report.js" prune-audit --days N
+sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report prune-audit --days N
 ```
 
 This is off by default precisely because it stores a piece of the actual
@@ -491,7 +491,7 @@ speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms ·
 
 ## Per-integration modes
 
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" mode <integration> on|shadow|off`
+`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup mode <integration> on|shadow|off`
 — `on` lets Jev actually influence that integration's outcome (bounded by its own
 trust rule), `shadow` consults and logs Jev but never changes the result (useful to
 gather `jev report` data before trusting it), `off` skips it entirely. `speculation`
@@ -501,7 +501,7 @@ other integration defaults to `shadow` until promoted.
 **v0.108.4:** each of the integrations below (13 then; `postHandoverGate` added in v0.109.0) is also its own row/setting in the
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
-(`node "${CLAUDE_PLUGIN_ROOT}/scripts/settings.js" show --section jevIntegrations`)
+(`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section jevIntegrations`)
 (it has no row in Claude Code's native `/config` panel, which carries only
 the headline switches). `jev-setup.js mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for

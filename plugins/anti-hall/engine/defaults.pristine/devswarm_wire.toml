@@ -171,12 +171,12 @@ max = 100000
 # ---- owner verbs and roles --------------------------------------------------------------------------------------------------
 
 [devswarm_wire.owner_verbs]
-doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor and ingest read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request. `create` and `merge` answer deferred (the Node verbs keep them, because the engine cannot reproduce their source-freshness and merge-gate checks yet)."
-value = ["status", "line", "advisory", "supervisor", "ingest", "archive", "plan-prune", "prune", "recover", "create", "merge"]
+doc = "The `ah-engine devswarm <verb>` verbs and what each does: status, line, advisory, supervisor, ingest and ledger (the action audit: per-feature counts, success rate, refusals by reason, mistake rate, in-doubt keys, witness agreement) read the state; archive, plan-prune, prune and recover (kill and resume one session; Node's recovery code does the kill after the engine's refusals) act at the owner's request; wake-watch runs the idle-wake Monitor until the session ends. `create` answers deferred (the Node verb keeps it, because the engine cannot reproduce its source-freshness check yet); `merge` is a devswarm.js verb (compat_verbs) and runs the hivecontrol merge itself."
+value = ["status", "line", "advisory", "supervisor", "ingest", "ledger", "archive", "plan-prune", "prune", "recover", "create", "merge", "wake-watch"]
 
 [devswarm_wire.compat_verbs]
 doc = "The `ah-engine devswarm <verb> <args>` verbs that take exactly the arguments of `node scripts/devswarm.js <verb>` and print its output (lane l8; ported in `src/meshw/simple.rs`). They run under the role matrix like the owner verbs, then through the same front as `ah-engine mesh <devswarm.js argv>`: `mesh.engine_writes` off sends them to Node, on makes the engine answer and Node the cases it defers (exit 75 only when Node cannot run either)."
-value = ["help", "skip", "archive-ignore", "archive-unignore", "gate-intent", "notice", "plan", "scope", "gate", "workspaces", "logs", "wake-directive"]
+value = ["help", "skip", "archive-ignore", "archive-unignore", "gate-intent", "notice", "plan", "scope", "gate", "workspaces", "logs", "wake-directive", "ready-check", "app-state", "app-sync", "done", "primary", "relay", "archive-request", "nudge", "supervision-report", "sync-ui", "retention", "unarchive", "migrate-owner-keys", "ensure", "register", "correct", "reap-orphans", "register-primary", "diagnose", "healthcheck", "merge", "spawn", "respawn", "reconcile-registry", "reap-stale", "reconcile-active", "auto-archive"]
 
 [devswarm_wire.command_word]
 doc = "The registered name of the command (`ah-engine devswarm ...`), used to find the verb's own arguments on the process command line."
@@ -188,7 +188,7 @@ value = ["main", "child", "subagent", "codex"]
 
 [devswarm_wire.role_matrix]
 doc = "Which roles may run each verb (the permission matrix). Reads are open to every role; the verbs that act (including skip, which switches a guard off, and the notice verb, whose --post is an act) are for the main session only."
-value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], ingest = ["main", "child", "subagent", "codex"], recover = ["main"], advisory = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], create = ["main"], merge = ["main"], help = ["main", "child", "subagent", "codex"], skip = ["main"], archive-ignore = ["main"], archive-unignore = ["main"], gate-intent = ["main"], notice = ["main"], plan = ["main", "child"], scope = ["main", "child"], gate = ["main", "child"], workspaces = ["main", "child", "subagent", "codex"], logs = ["main", "child", "subagent", "codex"], wake-directive = ["main", "child", "subagent", "codex"] }
+value = { status = ["main", "child", "subagent", "codex"], line = ["main", "child", "subagent", "codex"], supervisor = ["main", "child", "subagent", "codex"], ingest = ["main", "child", "subagent", "codex"], ledger = ["main", "child", "subagent", "codex"], recover = ["main"], advisory = ["main", "child", "subagent", "codex"], archive = ["main"], plan-prune = ["main"], prune = ["main"], create = ["main"], merge = ["main"], help = ["main", "child", "subagent", "codex"], skip = ["main"], archive-ignore = ["main"], archive-unignore = ["main"], gate-intent = ["main"], notice = ["main"], plan = ["main", "child"], scope = ["main", "child"], gate = ["main", "child"], workspaces = ["main", "child", "subagent", "codex"], logs = ["main", "child", "subagent", "codex"], wake-directive = ["main", "child", "subagent", "codex"], ready-check = ["main", "child", "subagent", "codex"], app-state = ["main", "child", "subagent", "codex"], app-sync = ["main"], done = ["main", "child"], primary = ["main"], relay = ["main", "child"], archive-request = ["main"], nudge = ["main"], supervision-report = ["main", "child", "subagent", "codex"], sync-ui = ["main"], retention = ["main"], unarchive = ["main"], migrate-owner-keys = ["main"], ensure = ["main", "child"], register = ["main", "child"], correct = ["main"], reap-orphans = ["main"], wake-watch = ["main", "child"], register-primary = ["main"], diagnose = ["main", "child", "subagent", "codex"], healthcheck = ["main", "child", "subagent", "codex"], spawn = ["main"], respawn = ["main"], reconcile-registry = ["main", "child", "subagent", "codex"], reap-stale = ["main"], reconcile-active = ["main"], auto-archive = ["main", "child", "subagent", "codex"] }
 
 [devswarm_wire.role_codex_env]
 doc = "Environment variables whose presence marks a Codex session (empty: no Codex marker is known)."
@@ -325,3 +325,7 @@ max = 64
 [devswarm_wire.check_script]
 doc = "The name of the plugin script (engine/logic/<name>.js) that decides the advisory."
 value = "devswarm-rt-advisory"
+
+[metric.dswire_stall_actions]
+doc = "Pokes and escalations of silent workspaces the engine ran or refused (feature 5), by kind (poke, escalate) and outcome (ok, failed, refused); the same actions, their inputs and the mistake signals found later are in the action log (`ah-engine telemetry actions stall`)."
+value = { kind = "counter", unit = "actions", labels = ["kind", "outcome"] }

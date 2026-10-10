@@ -1,6 +1,6 @@
 # Hook latency
 
-These are the Node hooks. The optional `ah-engine` answers most calls without a Node start-up; its pre-release replay figures are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and were measured on a different harness, so do not mix them with the tables here.
+These are the Node hooks. The core `ah-engine` answers most calls without a Node start-up; its pre-release replay figures are in [AH-ENGINE.md](AH-ENGINE.md#measured-results-pre-release) and were measured on a different harness, so do not mix them with the tables here.
 
 How long anti-hall's hooks take, measured with `scripts/hook-latency.js` (`node scripts/hook-latency.js [-n 20] [--json] [--only name,name] [--grouped]`). `--grouped` skips the per-hook passes and, for each event scenario, starts the whole matching hook set in parallel (as Claude Code does) and reports group wall and summed CPU. It starts every command registered in `plugins/anti-hall/hooks/hooks.json` the way Claude Code does (command string through a shell, `${CLAUDE_PLUGIN_ROOT}` expanded, node flags kept, JSON payload on stdin, `CLAUDE_CODE_ENTRYPOINT=cli`, `HOME` set to a temp dir, cwd a small git repo) and feeds it a realistic payload for each scenario.
 

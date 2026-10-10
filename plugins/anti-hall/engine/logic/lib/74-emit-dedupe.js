@@ -23,7 +23,7 @@ var dedupe = {
       if (now - seen > ah.cfgNum('emit_dedupe.key_ttl_ms')) delete state[k];
     });
     var ok = false;
-    try { ok = ah.state.writeAtomic(rel, JSON.stringify(state)); } catch (e) { return false; }
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(state), { leaveTemp: true }); } catch (e) { return false; }
     if (ok) gk.pruneStale(rel.slice(0, rel.lastIndexOf('/')), ah.cfg('emit_dedupe.file_prefix'));
     return ok;
   },
@@ -49,44 +49,30 @@ var dedupe = {
     }
     return false;
   },
-  // The UserPromptSubmit hook_additional_context attachments in the last `bytes` of the transcript: {atts, size}, or null when
-  // the tail cannot be used (missing, empty, or no timestamp anywhere in it). Memoized per call.
+  // The UserPromptSubmit hook_additional_context attachments in the last `bytes` of the transcript: {atts, size}, null when the tail cannot
+  // be used (missing, empty, or no timestamp anywhere in it), or {unsure: true} when an attachment's timestamp is in a form only V8 reads
+  // exactly (the decision then defers). Memoized per call.
   scanMemo: {},
   scanTail: function (tp, bytes) {
     var mk = tp + '\0' + bytes;
     if (Object.prototype.hasOwnProperty.call(dedupe.scanMemo, mk)) return dedupe.scanMemo[mk];
-    var size = ah.fs.size(tp), result = null;
-    if (size !== null) {
-      var tail = ah.fs.readTail(tp, bytes);
-      if (tail !== null) {
-        var atts = [], anyTs = false, att = ah.cfg('emit_dedupe.attachment_type'), ev = ah.cfg('emit_dedupe.hook_event');
-        tail.split('\n').forEach(function (line) {
-          if (!line) return;
-          if (!anyTs && line.indexOf('"timestamp"') !== -1) anyTs = true;
-          if (line.indexOf(att) === -1) return;
-          var e;
-          try { e = JSON.parse(line); } catch (x) { return; }
-          var a = e && e.type === 'attachment' ? e.attachment : null;
-          if (!a || a.type !== att || a.hookEvent !== ev) return;
-          var ts = Date.parse(e.timestamp);
-          if (!isFinite(ts)) return;
-          atts.push({ ts: ts, els: Array.isArray(a.content) ? a.content.map(function (x) { return String(x); }) : [String(a.content == null ? '' : a.content)] });
-        });
-        result = anyTs ? { atts: atts, size: size } : null;
-      }
-    }
+    // The host reads the window and returns the delivered attachments (a 4 MB window is far past the script's CPU limit line by line).
+    var raw = ahHost.transcriptDedupeTail(tp, bytes), result = raw === null || raw === undefined ? null : JSON.parse(raw);
     dedupe.scanMemo[mk] = result;
     return result;
   },
-  // true / false, or null (unknown): does some attachment in the tail (widened once to the wide window) satisfy `pred`?
+  // true / false, null (unknown), or 'unsure' (a timestamp only V8 reads exactly): does some attachment in the tail (widened once to the
+  // wide window) satisfy `pred`?
   findInTail: function (tp, pred) {
     if (!tp || typeof tp !== 'string') return null;
     var small = ah.cfgNum('emit_dedupe.tail_bytes'), t = dedupe.scanTail(tp, small);
     if (!t) return null;
+    if (t.unsure) return 'unsure';
     if (t.atts.some(pred)) return true;
     var any = t.atts.length > 0;
     if (t.size > small) {
       var w = dedupe.scanTail(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'));
+      if (w && w.unsure) return 'unsure';
       if (w) { if (w.atts.some(pred)) return true; any = any || w.atts.length > 0; }
     }
     return any ? false : null;
@@ -98,6 +84,15 @@ var dedupe = {
   // `shouldEmit({sessionId, key, content, transcriptPath, keepaliveTurns})`: false when the block is a repeat the model already
   // holds. Anything that cannot be persisted emits.
   shouldEmit: function (o) {
+    var r = dedupe.evaluate(o, true);
+    if (r === 'unsure') throw new Error('emit-dedupe: a transcript timestamp only JavaScript reads exactly');
+    return r;
+  },
+  // Whether the store can decide this block exactly (false: a transcript timestamp only V8 reads exactly, so the caller defers). Writes nothing.
+  canDecide: function (o) { return dedupe.evaluate(o, false) !== 'unsure'; },
+  // The decision of `shouldEmit` (true / false, or 'unsure'); with `commit` false nothing is written.
+  evaluate: function (o, commit) {
+    dedupe.scanMemo = {}; // the memo lives for one decision: the context outlives the request, and a transcript grows between requests
     if (dedupe.disabled()) return true;
     if (!o.sessionId || !o.key) return true;
     var now = ah.clock.now(), windowMs = dedupe.windowMs(), maxPending = ah.cfgNum('emit_dedupe.max_pending_ms'), tol = ah.cfgNum('emit_dedupe.ts_tolerance_ms');
@@ -113,6 +108,7 @@ var dedupe = {
     if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
       var consumed = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
+      if (consumed === 'unsure') return 'unsure';
       if (consumed === null) {
         if ((now - prev.lastEmittedAt) < windowMs) { emit = false; nextTurns = turns; }
         else if (keepalive > 0) {
@@ -122,17 +118,27 @@ var dedupe = {
       } else if (!consumed) {
         if ((now - prev.lastEmittedAt) < maxPending) { emit = false; nextTurns = turns; }
       } else if (keepalive > 0) {
-        var nt = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; }) === true;
-        var t = turns + (nt ? 1 : 0);
+        var nt = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
+        if (nt === 'unsure') return 'unsure';
+        var t = turns + (nt === true ? 1 : 0);
         if (t > keepalive) emit = true; else { emit = false; nextTurns = t; }
       }
     }
     var entry = emit
       ? Object.assign({ hash: hash, tp: tp, lastEmittedAt: now, lastSeenAt: now, turnsSinceEmit: 0 }, dedupe.exactId(content))
       : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k, lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns };
+    if (!commit) return emit;
     if (!dedupe.writeEntry(o.sessionId, key, entry, now)) return true;
     if (!emit) dedupe.bumpSuppressed(o.sessionId, now);
     return emit;
+  },
+  // `record(opts)`: record an emit the caller makes regardless, so that later lookalikes still pending are suppressed. A write that fails
+  // is lost silently, as in Node.
+  record: function (o) {
+    if (dedupe.disabled() || !o.sessionId || !o.key) return;
+    var now = ah.clock.now(), content = o.content == null ? '' : String(o.content);
+    var hash = ah.sha1(typeof o.normalize === 'function' ? String(o.normalize(content)) : content);
+    dedupe.writeEntry(o.sessionId, String(o.key), Object.assign({ hash: hash, tp: dedupe.tpId(o.transcriptPath), lastEmittedAt: now, lastSeenAt: now, turnsSinceEmit: 0 }, dedupe.exactId(content)), now);
   },
   bumpSuppressed: function (sessionId, now) {
     var state = dedupe.readState(dedupe.stateRel(sessionId)), sk = ah.cfg('emit_dedupe.stats_key'), prev = state[sk];

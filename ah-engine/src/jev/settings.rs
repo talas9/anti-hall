@@ -103,6 +103,11 @@ impl Env {
         self.0.get(name).map(String::as_str)
     }
 
+    /// The snapshot as a map (for the settings layer, which reads a map).
+    pub fn to_map(&self) -> HashMap<String, String> {
+        self.0.clone()
+    }
+
     /// A stable SHA-256 digest (lowercase hex) of the whole environment, used to tell two sessions' environments apart.
     /// A digest, not the text: the memo that holds it never contains a key value.
     pub fn digest(&self) -> String {
@@ -316,6 +321,10 @@ pub struct JevSettings {
     pub budget_watch: bool,
     /// `jev.budget.usdPerDay`: the daily spend that raises the warning, when set and positive.
     pub budget_usd_per_day: Option<f64>,
+    /// `jev.budget.usdPerWeek`: the weekly spend the report compares with, when set and positive.
+    pub budget_usd_per_week: Option<f64>,
+    /// `jev.budget.minCreditUsd`: the balance below which the report warns, when set and positive.
+    pub budget_min_credit_usd: Option<f64>,
     /// `jev.audit.snippets`: keep a redacted snippet of a decision that changed (or would change) the outcome.
     pub audit_snippets: bool,
     /// The `prices` table (`{model: {inPerMTok, outPerMTok}}`), if the owner set one.
@@ -384,6 +393,8 @@ impl JevSettings {
         };
         let budget_watch = file_value("budget.mode", Some("JEV_BUDGET_MODE")).as_ref().and_then(coerce_str).as_deref() == Some("watch");
         let budget_usd_per_day = file_value("budget.usdPerDay", Some("JEV_BUDGET_USD_PER_DAY")).as_ref().and_then(coerce_num).filter(|n| *n > 0.0);
+        let budget_usd_per_week = file_value("budget.usdPerWeek", Some("JEV_BUDGET_USD_PER_WEEK")).as_ref().and_then(coerce_num).filter(|n| *n > 0.0);
+        let budget_min_credit_usd = file_value("budget.minCreditUsd", Some("JEV_BUDGET_MIN_CREDIT_USD")).as_ref().and_then(coerce_num).filter(|n| *n > 0.0);
         let audit_snippets = sources
             .env
             .get(defaults::text("env.jev_audit_snippets"))
@@ -424,6 +435,8 @@ impl JevSettings {
             log_rotated_files,
             budget_watch,
             budget_usd_per_day,
+            budget_usd_per_week,
+            budget_min_credit_usd,
             audit_snippets,
             prices,
             price_in,

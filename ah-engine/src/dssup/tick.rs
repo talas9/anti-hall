@@ -134,9 +134,25 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
     if let Some(why) = not_due(ctx, d) {
         return (json!({"duty": name, "outcome": "skipped", "reason": why}), None);
     }
+    if name == "reconcile" && super::recon::sweep::engine_mode() && super::supervisor_enabled(ctx.st) {
+        let node_whole = || run_node_duty(name, d, ctx, runner);
+        return (super::recon::sweep::duty(ctx, runner, &super::recon::Hooks::none(), &node_whole), None);
+    }
     if runs_native(name, d) {
         if !super::supervisor_enabled(ctx.st) {
             return (json!({"duty": name, "outcome": "skipped", "reason": defaults::text("devswarm_sup.msg_disabled")}), None);
+        }
+        if name == "verdicts" {
+            return super::liveness::duty(ctx, runner);
+        }
+        if name == "deferred" {
+            return (super::deferred::duty(ctx, runner), None);
+        }
+        if name == "retention" {
+            return (super::retention::duty(ctx, runner), None);
+        }
+        if name == "app_sync" {
+            return (super::appsync::duty(ctx, runner), None);
         }
         let job = prepare_witness(name, ctx);
         let detail = match name {
@@ -146,16 +162,20 @@ pub fn run_duty_w(name: &str, ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<
         };
         return (json!({"duty": name, "outcome": "ran", "detail": detail}), job);
     }
+    (run_node_duty(name, d, ctx, runner), None)
+}
+
+/// A duty done by Node's own function in a bounded subprocess.
+fn run_node_duty(name: &str, d: &V, ctx: &Ctx, runner: &dyn Runner) -> Value {
     let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
     let timeout = d.get("timeout_ms").and_then(V::as_integer).unwrap_or(0).max(1) as u64;
     let r = node(runner, ctx, d.str_field("snippet"), &[owner], timeout);
-    let rec = if r.ok {
+    if r.ok {
         json!({"duty": name, "outcome": "ran", "detail": parse(&r.stdout)})
     } else {
         let why = r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { cut(&r.stderr) });
         json!({"duty": name, "outcome": "failed", "error": why, "status": r.status, "timedOut": r.timed_out})
-    };
-    (rec, None)
+    }
 }
 
 /// [`run_duty_w`] with the witness comparison finished at once (no lock to wait for).
@@ -216,9 +236,115 @@ pub fn run(ctx: &Ctx, owner: Owner, runner: &dyn Runner) -> Value {
     rec
 }
 
-/// After an engine escalation: the one-time notice to the parent (Primary), by Node's own function (store message with the
-/// hash `escalate:<id>:<staleSince>`, parked and retried by the liveness sweep when the Primary is not registered).
-pub fn notify_escalation(runner: &dyn Runner, home: &Path, root: &Path, st: &Settings, id: &str) -> RunResult {
-    let ctx = Ctx { home, root, st, now: now_ms(), engine_pokes: true };
-    node(runner, &ctx, defaults::text("devswarm_sup.notify_escalation"), &[id], defaults::num("devswarm_sup.notify_timeout_ms"))
+/// After an engine escalation: the one-time notice to the parent (Primary), native (`notifyParentEscalation`: a store message with
+/// the hash `escalate:<id>:<staleSince>`, parked and retried by the liveness sweep when the Primary is not registered). The
+/// result carries the delivery status as JSON on stdout; `ok` is false only when no notice could be built.
+pub fn notify_escalation(_runner: &dyn Runner, home: &Path, _root: &Path, st: &Settings, id: &str) -> RunResult {
+    let now = now_ms();
+    let t0 = std::time::Instant::now();
+    let desc = super::liveness::read_descriptors(home).into_iter().find(|d| d.id == id);
+    let wt = desc.as_ref().and_then(|d| d.raw.get(defaults::text("mesh_write.field_worktree_path"))).and_then(|v| match v {
+        crate::checks::guardkit::ojson::OVal::Str(s) => Some(s.clone()),
+        _ => None,
+    });
+    let since = super::verdict::path(home, id)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get(defaults::list("devswarm_sup.lv_keys")[2]).and_then(Value::as_f64));
+    let r = match wt {
+        None => Err(defaults::text("devswarm_sup.esc_why_no_descriptor").to_string()),
+        Some(wt) => super::verdict::notify_parent(home, &st.env, &wt, id, since, now),
+    };
+    let (outcome, reason) = match &r {
+        Ok(d) => (d.status.to_string(), String::new()),
+        Err(why) => (defaults::text("devswarm_sup.esc_skipped").to_string(), why.clone()),
+    };
+    record_action(
+        home,
+        &Action {
+            action: defaults::text("devswarm_sup.esc_action"),
+            target: id,
+            inputs: json!({"staleSince": since}),
+            outcome: &outcome,
+            reason: &reason,
+            latency_ms: t0.elapsed().as_millis() as u64,
+            now,
+        },
+    );
+    RunResult { ok: r.is_ok(), stdout: json!({"notified": r.is_ok(), "status": outcome, "why": reason}).to_string(), ..RunResult::default() }
+}
+
+// ---- action ledger and telemetry (every acting supervisor step is measured) ---------------------------------------------------
+
+/// One action the supervisor took (or declined), for the action ledger and telemetry.
+pub struct Action<'a> {
+    /// The action word (`devswarm_sup.esc_action`, ...).
+    pub action: &'a str,
+    /// What it acted on (a workspace id, a store hash).
+    pub target: &'a str,
+    /// The decision inputs.
+    pub inputs: Value,
+    /// The outcome word.
+    pub outcome: &'a str,
+    /// Why, when it did not act.
+    pub reason: &'a str,
+    /// Wall time.
+    pub latency_ms: u64,
+    /// The clock, epoch ms.
+    pub now: i64,
+}
+
+/// The id of an action: `<action>:<target>:<now>`.
+pub fn action_id(action: &str, target: &str, now: i64) -> String {
+    format!("{action}:{target}:{now}")
+}
+
+/// One telemetry `cmd` event. For the process's own home it goes the usual way (the daemon's recorder, else the inbox); for any
+/// other home (a scratch home) it goes to the inbox under that home, so a run on a scratch home never writes the real state.
+fn telemetry(home: &Path, command: &str, sub: &str, ok: bool, latency_ms: u64) {
+    let tok = |s: &str| crate::telemetry::event::Token::sanitize(s).as_str().to_string();
+    let ev = crate::telemetry::emit::command_run(&tok(command), &tok(sub), if ok { 0 } else { 1 }, latency_ms.saturating_mul(1000), u64::from(ok));
+    if crate::defaults::env_var("home").is_some_and(|h| Path::new(&h) == home) {
+        crate::telemetry::emit::event(ev);
+    } else {
+        let inbox = home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")).join(defaults::text("files.telemetry_inbox"));
+        crate::telemetry::emit::append_to(&inbox, &[ev]);
+    }
+}
+
+/// Record one action: a line of the action ledger (`devswarm_sup.action_log`) and a telemetry `cmd` event (h = the action, e =
+/// the outcome; an outcome outside `devswarm_sup.action_success` counts as an error). Returns the action id.
+pub fn record_action(home: &Path, a: &Action) -> String {
+    let id = action_id(a.action, a.target, a.now);
+    let ok = defaults::list("devswarm_sup.action_success").contains(&a.outcome);
+    crate::dsact::exec::append_line(
+        &home.join(defaults::text("devswarm_sup.action_log")),
+        &json!({"ts": a.now, "kind": defaults::text("devswarm_sup.action_kind"), "feature": defaults::text("devswarm_sup.action_feature"), "action": a.action,
+            "target": a.target, "inputs": a.inputs, "outcome": a.outcome, "reason": a.reason, "latency_ms": a.latency_ms, "action_id": id}),
+    );
+    telemetry(home, a.action, a.outcome, ok, a.latency_ms);
+    id
+}
+
+/// Record a mistake signal for an earlier action (`action_id`): a ledger line of kind `devswarm_sup.mistake_kind` and a telemetry
+/// `cmd` event (h = `devswarm_sup.mistake_command`, e = the action word).
+pub fn record_mistake(home: &Path, action: &str, action_id: &str, why: &str, now: i64) {
+    crate::dsact::exec::append_line(
+        &home.join(defaults::text("devswarm_sup.action_log")),
+        &json!({"ts": now, "kind": defaults::text("devswarm_sup.mistake_kind"), "feature": defaults::text("devswarm_sup.action_feature"), "action": action,
+            "action_id": action_id, "reason": why}),
+    );
+    telemetry(home, defaults::text("devswarm_sup.mistake_command"), action, true, 0);
+}
+
+/// The newest action line of the ledger for `target` with one of `actions`: `(action, action_id)`.
+pub fn last_action(home: &Path, actions: &[&str], target: &str) -> Option<(String, String)> {
+    let text = std::fs::read_to_string(home.join(defaults::text("devswarm_sup.action_log"))).ok()?;
+    text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find_map(|v| {
+        let action = v.get("action").and_then(Value::as_str)?;
+        let ok = v.get("kind").and_then(Value::as_str) == Some(defaults::text("devswarm_sup.action_kind"))
+            && actions.contains(&action)
+            && v.get("target").and_then(Value::as_str) == Some(target);
+        ok.then(|| (action.to_string(), v.get("action_id").and_then(Value::as_str).unwrap_or_default().to_string()))
+    })
 }

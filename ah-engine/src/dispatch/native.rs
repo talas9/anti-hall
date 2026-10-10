@@ -104,7 +104,23 @@ pub fn evaluate(meta: &Meta, p: &Value, observe: &dyn Fn(&Entry, &Answer, u64)) 
         .filter(|e| e.check.is_some() && meta.only.as_ref().is_none_or(|ids| ids.contains(&e.id)))
         .map(|e| {
             let started = std::time::Instant::now();
-            let a = run_entry(&e, meta, p);
+            crate::deadline::beat();
+            let check = e.check.as_deref().unwrap_or("");
+            // past the client's deadline nobody reads this reply's answer for the entry: it is not started, and its own Node hook
+            // answers it (the entries answered in time still count), so a slow machine costs single checks, never the event
+            let a = if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) {
+                crate::script::cut(check, &meta.event);
+                Answer::Defer
+            } else {
+                let mark = crate::deadline::staged_mark();
+                let a = run_entry(&e, meta, p);
+                if matches!(a, Answer::Defer) {
+                    // the Node hook decides this entry: what the check staged must not land for a decision nobody received
+                    crate::deadline::discard_staged_since(mark);
+                }
+                a
+            };
+            crate::deadline::beat();
             observe(&e, &a, started.elapsed().as_micros() as u64);
             (e.id, a)
         })
@@ -176,7 +192,8 @@ mod tests {
                 "api-guard",
                 "ship-it-guard",
                 "procwatch-advisory",
-                "engine-role-guard"
+                "engine-role-guard",
+                "broad-kill-guard"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
@@ -189,6 +206,21 @@ mod tests {
             }
             Answer::Defer => panic!("force push should be decided"),
         }
+    }
+
+    /// Load: past the client's deadline no entry is started, each defers to its own Node hook (a loaded machine costs single
+    /// entries, never the whole event's reply).
+    #[test]
+    fn past_the_clients_deadline_every_entry_defers_without_running() {
+        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main"}});
+        crate::deadline::begin(std::time::Instant::now());
+        crate::deadline::client_deadline(0);
+        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        crate::deadline::end();
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|(_, a)| matches!(a, Answer::Defer)), "{:?}", got.iter().map(|(id, _)| id).collect::<Vec<_>>());
+        let again = evaluate(&meta(), &p, &|_, _, _| {});
+        assert!(again.iter().any(|(id, a)| id == "git-guard" && matches!(a, Answer::Decided(r, _) if r.code == Some(2))), "in time it decides");
     }
 
     /// A payload each of the five stateless checks settles as "nothing to say".
@@ -235,15 +267,13 @@ mod tests {
         assert!(deferred.is_empty(), "these checks must answer natively, not defer: {deferred:?}");
     }
 
-    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74).
+    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74). A relative payload cwd
+    /// resolves against the Node hook's own working directory, which the daemon cannot know: git-guard defers.
     #[test]
     fn a_check_that_cannot_prove_silence_still_defers() {
-        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
-        // ship-it-guard with its opt-in gate on: Bash targets need the command-guard parser, so it defers.
-        let mut m = meta();
-        m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1")]);
-        let got = evaluate(&m, &p, &|_, _, _| {});
-        assert_eq!(got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1, Answer::Defer);
+        let p = json!({"session_id": "s", "cwd": "sub", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}});
+        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer);
     }
 
     /// Review P1: an incomplete request environment (dropped over the cap, absent, no HOME) must not be evaluated: with

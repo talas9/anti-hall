@@ -180,6 +180,67 @@ value = "anti-hall: the engine could not run the guards for {event} ({why}) {cap
 doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed but the consecutive-block count cannot be recorded, so the loop could not be bounded. Placeholders: {event}, {why}."
 value = "anti-hall: the engine could not run the guards for {event} ({why}) and cannot count its blocks, so the agent is let finish rather than risk a loop. Repair the install (`doctor --repair`)."
 
+[dispatch.spill_over_cap]
+doc = "1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in hook order, the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = the previous answer: hand the event to the wrapper's Node hooks (dispatch.defer_exit) while dispatch.defer_to_node is 1, else deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands."
+value = 1
+env = "AH_ENGINE_SPILL_OVER_CAP"
+min = 0
+max = 1
+
+[dispatch.spill_dir]
+doc = "The directory under the state dir that holds the over-cap context files (mode 0600, one per spilled event)."
+value = "context-spill"
+
+[dispatch.spill_file]
+doc = "File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}."
+value = "{event}-{ts}-{pid}.txt"
+
+[dispatch.spill_stale_s]
+doc = "Age at which a spilled context file is removed. A session reads its file soon after it starts, so a week is generous; the file only holds text the hooks print again at the next start."
+value = 604800
+unit = "s"
+min = 3600
+max = 31536000
+
+[dispatch.msg_spill_pointer]
+doc = "The last line of a spilled additionalContext: tells the model where the rest of the session context is. Placeholders: {path} (absolute file path), {hooks} (how many hooks' contexts are in the file), {chars} (their size)."
+value = "[anti-hall: the context of {hooks} more hook(s), {chars} characters, did not fit the {cap} characters a hook may inject inline. Read it with the Read tool: {path}]"
+
+[dispatch.msg_context_spilled]
+doc = "Event-log detail when an over-cap joined context was spilled to a file. Placeholders: {inline}, {file}, {hooks}, {path}."
+value = "joined context spilled: {inline} characters inline, {file} characters of {hooks} hook(s) in {path}"
+
+[dispatch.msg_spill_failed]
+doc = "Event-log detail when the spill file could not be written (the previous over-cap answer stands). Placeholder: {err}."
+value = "context spill file not written: {err}"
+
+[dispatch.msg_spill_sweep]
+doc = "Event-log detail after stale spill files were removed. Placeholder: {n}."
+value = "removed {n} stale context spill file(s)"
+
+[dispatch.defer_to_node]
+doc = "1 (until the Node cutover) = a path the engine cannot decide (infrastructure fault, spent event budget, panic) hands the event to the wrapper's Node hooks with dispatch.defer_exit. 0 = no Node exists: advisory events skip their hooks (logged, counted in telemetry as dispatcher-<path>, one stderr line) and guard events follow dispatch.failure_mode; an over-cap context is delivered for the host to spill when it cannot be spilled natively."
+value = 1
+env = "AH_ENGINE_DEFER_TO_NODE"
+min = 0
+max = 1
+
+[dispatch.failure_mode]
+doc = "With dispatch.defer_to_node 0, what a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, a hook the OS would not start, a lost table row, no engine answer and no fallback) and `panic` (the dispatcher hit an internal error). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool."
+value = { budget = "closed", infra = "closed", panic = "open" }
+
+[dispatch.msg_no_node_skipped]
+doc = "Printed on stderr (exit 0) when an event that cannot block is skipped because the engine cannot decide it and no Node hooks exist. Placeholders: {event}, {why}."
+value = "anti-hall: the {event} hooks were skipped ({why}); run `ah-engine doctor` if it keeps happening"
+
+[dispatch.msg_no_node_open]
+doc = "Printed on stderr (exit 0) when a guard event is let through because the engine cannot decide it and its failure mode is open. Placeholders: {event}, {why}."
+value = "anti-hall: the guards for {event} could not run ({why}); this call went through UNGUARDED. Run `ah-engine doctor`."
+
+[dispatch.msg_no_node_event]
+doc = "Event-log detail for a path that answered without Node. Placeholders: {path}, {why}."
+value = "{path}: {why}"
+
 [dispatch.defer_exit]
 doc = "Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent."
 value = 75
@@ -462,6 +523,7 @@ value = [
   { id = "stale-agent-stop-note", matcher = "TaskStop", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+  { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -552,6 +614,7 @@ value = [
   { id = "edit-guard", matcher = "apply_patch", command = "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/edit-guard.js\"", timeout = 10, check = "edit-guard" },
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
+  { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
 ]
 
 [dispatch.hooks_codex_Stop]

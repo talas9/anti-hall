@@ -57,9 +57,21 @@ function tgChildAttended(owner) {
   return tk.appDbPresent(ah.home()) ? null : false;
 }
 
+// A task whose owner names an agent this session has running (its id, its name or description) is attended: the agent is working
+// it. `rows` is the running-agent list of the transcript scan (null when unreadable: nothing is attended through it).
+function tgLiveAgentOwner(owner, rows) {
+  var o = (owner || '').trim().toLowerCase();
+  if (!o || rows === null || tgCoordinator(o)) return false;
+  var min = ah.cfgNum('task_guard.owner_match_min');
+  return rows.some(function (r) {
+    var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
+    return o === id || (d !== '' && o === d) || (o.length >= min && d.indexOf(o) >= 0);
+  });
+}
+
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the
 // owner is honestly blocked and left out, as is a task waiting on the owner and one owned by a live DevSwarm workspace. null defers.
-function tgUnblocked(open, tasks) {
+function tgUnblocked(open, tasks, rows) {
   var byId = {}, openIds = [];
   tasks.forEach(function (t) { byId[t.id] = t; if (ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0 && openIds.indexOf(t.id) < 0) openIds.push(t.id); });
   function valid(t) { return t.blockedBy.filter(function (id) { return id !== t.id && openIds.indexOf(id) >= 0; }); }
@@ -77,6 +89,7 @@ function tgUnblocked(open, tasks) {
   for (var i = 0; i < open.length; i++) {
     var t = open[i];
     if (tgOwnerBlocked(t) || valid(t).some(function (b) { return reach[b] === true; })) continue;
+    if (tgLiveAgentOwner(t.owner, rows)) continue;
     var attended = tgChildAttended(t.owner);
     if (attended === null) return null;
     if (!attended) out.push(t);
@@ -106,85 +119,12 @@ function tgAgentsRunning(home, now) {
   return false;
 }
 
-function tgLastActivity(r) {
-  var act = NaN, vs = [r.launchedAtMs, r.resumedAtMs === null || r.resumedAtMs === undefined ? NaN : r.resumedAtMs, r.lastSeenMs];
-  vs.forEach(function (v) { if (typeof v === 'number' && isFinite(v) && (isNaN(act) || v > act)) act = v; });
-  if (r.outputFile) {
-    if (r.outputFile.charAt(0) !== '/') return null;
-    var m = ah.fs.mtimeMs(r.outputFile);
-    if (m !== null && isFinite(m) && (isNaN(act) || m > act)) act = m;
-  }
-  return act;
-}
 
-function tgCap() {
-  var v = ah.settings.num('task_guard.max_parallel_setting');
-  if (isFinite(v) && v > 0) return Math.floor(v);
-  var c = ah.sys.cores();
-  if (c === null) return null;
-  if (c === 0) c = ah.cfgNum('task_guard.cap_fallback_cores');
-  return Math.max(ah.cfgNum('task_guard.cap_floor'), Math.min(ah.cfgNum('task_guard.cap_ceiling'), c - ah.cfgNum('task_guard.cap_reserve')));
-}
 
-// `evaluate`: the per-task cover from this session's running agents, the parallel cap and the proven count. null defers.
-function tgEvaluate(actionable, tasks, open, running, now) {
-  if (running === null) return { fire: false, proven: false, unknown: true, dispatch: [], cap: 0 };
-  var cap = tgCap();
-  if (cap === null) return null;
-  var known = {}, covered = {}, unmapped = 0, refsOf = [];
-  tasks.forEach(function (t) { known[t.id] = true; });
-  running.forEach(function (a) {
-    var refs = [], re = new RegExp(ah.cfg('task_guard.task_ref_re'), 'g'), m;
-    while ((m = re.exec(a.description)) !== null) { if (refs.indexOf(m[1]) < 0 && known[m[1]] === true) refs.push(m[1]); if (m[0].length === 0) re.lastIndex++; }
-    if (refs.length === 0) unmapped++;
-    refs.forEach(function (id) { covered[id] = true; });
-    refsOf.push(refs);
-  });
-  var inProgress = open.filter(function (t) { return tgRe('task_guard.in_progress_re', 'i').test(t.status || '') && covered[t.id] !== true; }).length;
-  var onPending = Math.max(0, unmapped - inProgress);
-  var dispatch = actionable.filter(function (t) { return covered[t.id] !== true; });
-  var fire = dispatch.length > 0 && dispatch.length > onPending && running.length < cap;
-  var maxAgeSetting = ah.settings.num('task_guard.agent_max_age_setting');
-  var maxAge = (isFinite(maxAgeSetting) && maxAgeSetting >= 0 ? maxAgeSetting : ah.cfgNum('task_guard.agent_max_age_default_min')) * ah.cfgNum('task_guard.ms_per_minute');
-  function earliest() {
-    if (dispatch.length === 0) return NaN;
-    var min = Infinity;
-    for (var i = 0; i < dispatch.length; i++) {
-      var s = dispatch[i].sinceMs;
-      if (s === 'unsure') return null;
-      if (typeof s !== 'number' || !isFinite(s)) return NaN;
-      min = Math.min(min, s);
-    }
-    return min;
-  }
-  var provenUnmapped = 0, uncounted = 0;
-  for (var i = 0; i < running.length; i++) {
-    if (refsOf[i].length !== 0) continue;
-    var r = running[i], act = tgLastActivity(r);
-    if (act === null) return null;
-    var stale = maxAge > 0 && isFinite(act) && now - act > maxAge;
-    var l = typeof r.launchedAtMs === 'number' && isFinite(r.launchedAtMs) ? r.launchedAtMs : -Infinity;
-    var rs = typeof r.resumedAtMs === 'number' && isFinite(r.resumedAtMs) ? r.resumedAtMs : -Infinity;
-    var started = Math.max(l, rs), before = false;
-    if (!stale && isFinite(started)) {
-      var e = earliest();
-      if (e === null) return null;
-      before = isFinite(e) && started < e;
-    }
-    if (stale || before) uncounted++; else provenUnmapped++;
-  }
-  var proven = dispatch.length > 0 && dispatch.length > provenUnmapped && (running.length - uncounted) < cap;
-  return { fire: fire, proven: proven, unknown: false, dispatch: dispatch, cap: cap };
-}
+// `evaluate`: the per-task cover from this session's running agents, the parallel cap and the proven count (lib/69-tasks.js). null defers.
+function tgEvaluate(actionable, tasks, open, running, now) { return tk.evaluate(actionable, tasks, open, running, now, true); }
+function tgLabel(t) { return tk.label(t); }
 
-function tgLabel(t) {
-  var src = t.content ? t.content : t.id;
-  var subj = tk.oneLine(src.replace(tgRe('task_guard.label_priority_prefix_re', 'i'), ''), ah.cfgNum('task_guard.label_max'));
-  if (subj === null) return null;
-  var quoted = JSON.stringify(subj ? subj : t.id);
-  if (!/^[0-9]+$/.test(t.id)) return quoted;
-  return subj && subj !== t.id ? '#' + t.id + ' ' + quoted : '#' + t.id;
-}
 
 function tgRenderList(ts) {
   var parts = [], max = Math.min(ts.length, ah.cfgNum('task_guard.list_max'));
@@ -417,13 +357,15 @@ function decide(p) {
   }
 
   var now = ah.clock.now();
+  var agMemo;
+  function tgAgents() { if (agMemo === undefined) agMemo = ah.transcript.agents(transcript); return agMemo; }
   var actionable = tgActionable(open, tasks);
   var haveAgents = tgAgentsRunning(home, now);
   if (haveAgents === null) return 'defer';
   var demand = { fire: false, proven: false, unknown: false, dispatch: [], cap: null };
   if (actionable.length > 0) {
     if (ah.settings.bool('task_guard.dispatch_demand_setting')) {
-      var ag = ah.transcript.agents(transcript);
+      var ag = tgAgents();
       if (ag !== null && ag.unsure) return 'defer';
       demand = tgEvaluate(actionable, tasks, open, ag === null ? null : ag.rows, now);
       if (demand === null) return 'defer';
@@ -433,7 +375,14 @@ function decide(p) {
     }
   }
   var idle = demand.fire;
-  var nudge = tgUnblocked(open, tasks);
+  // the running agents are read once, and only when a dispatch check or an owned open task needs them
+  var rows = null;
+  if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
+    var own = tgAgents();
+    if (own !== null && own.unsure) return 'defer';
+    rows = own === null ? null : own.rows;
+  }
+  var nudge = tgUnblocked(open, tasks, rows);
   if (nudge === null) return 'defer';
   if (!idle && nudge.length === 0) return tgQuiet(out, tasks, home, sessionId);
 

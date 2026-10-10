@@ -51,6 +51,19 @@ fn put(base: &Path, rel: &str, content: &str) {
     fs::write(p, content).unwrap();
 }
 
+thread_local! {
+    /// Extra variables for the next runs on this thread (a test sets them with `with_env`).
+    static EXTRA: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with extra environment variables on both doctors' runs.
+fn with_env<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    EXTRA.with(|e| *e.borrow_mut() = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+    let r = f();
+    EXTRA.with(|e| e.borrow_mut().clear());
+    r
+}
+
 fn env(cmd: &mut Command, fx: &Fx) {
     cmd.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -58,6 +71,11 @@ fn env(cmd: &mut Command, fx: &Fx) {
         .env("USERPROFILE", &fx.home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .current_dir(&fx.cwd);
+    EXTRA.with(|e| {
+        for (k, v) in e.borrow().iter() {
+            cmd.env(k, v);
+        }
+    });
 }
 
 fn run_node(fx: &Fx, args: &[&str]) -> (i32, String) {
@@ -234,4 +252,418 @@ fn flags_the_engine_doctor_does_not_handle_are_reported_not_ignored() {
     let fx = fixture(&|_, _| {});
     let (_, out) = run_rust(&fx, &["--check", "--prune-cache"]);
     assert!(out.contains("--prune-cache is not handled by the engine doctor yet"), "{out}");
+}
+
+// ---- the checks the engine doctor gained: statusline render, OMC, Codex, other plugins ---------------------------------------
+
+/// The finding lines (trimmed of their mark and indent) of a report that contain any of the needles, in order.
+fn pick(report: &str, needles: &[&str]) -> Vec<String> {
+    report.lines().filter(|l| l.starts_with("  ") && needles.iter().any(|n| l.contains(n))).map(|l| l.trim().to_string()).collect()
+}
+
+/// Run both doctors on identically seeded homes and return the (node, rust) finding lines holding any of the needles.
+fn both(seed: &dyn Fn(&Path, &Path), needles: &[&str]) -> (Vec<String>, Vec<String>) {
+    let (a, b) = (fixture(seed), fixture(seed));
+    let (_, node) = run_node(&a, &["--dry-run"]);
+    let (_, rust) = run_rust(&b, &["--dry-run"]);
+    (pick(&norm(&node, &a), needles), pick(&norm(&rust, &b), needles))
+}
+
+fn script(dir: &Path, name: &str, body: &str) -> String {
+    put(dir, name, body);
+    dir.join(name).to_string_lossy().into_owned()
+}
+
+#[test]
+fn the_statusline_render_check_reads_the_two_lines_the_same_way() {
+    let needles = ["statusline renders", "statusline rendered", "statusline.js", "statusline-rich.js", "dispatcher missing"];
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("statusline renders 2 lines")), "{r:?}");
+    assert!(r.iter().any(|l| l.contains("statusline-rich.js (line-1 renderer) present, syntax valid")), "{r:?}");
+    // the stand-in script path of the test override: one line, a failure, a hang, a missing script
+    let tmp = std::env::temp_dir().join(format!("ah-sl-standin-{}", std::process::id()));
+    let one = script(&tmp, "one.js", "process.stdin.resume();process.stdin.on('end',()=>console.log('only'));");
+    let fail = script(&tmp, "fail.js", "process.exit(3);");
+    let hang = script(&tmp, "hang.js", "setInterval(()=>{},1000);");
+    let two = script(&tmp, "two.js", "process.stdin.resume();process.stdin.on('end',()=>console.log('a\\nb'));");
+    let cases = [
+        ("one line", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", one.as_str())], "rendered only 1 line"),
+        ("failure", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", fail.as_str())], "produced no output (exit 3)"),
+        ("hang", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", hang.as_str()), ("ANTIHALL_DOCTOR_SL_TIMEOUT_MS", "400")], "timed out under load"),
+        ("two lines", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", two.as_str())], "statusline renders 2 lines"),
+        ("missing", vec![("ANTIHALL_DOCTOR_SL_SCRIPT", "/nonexistent/sl.js")], "dispatcher missing"),
+    ];
+    for (name, vars, want) in cases {
+        let (n, r) = with_env(&vars, || both(&|_, _| {}, &needles));
+        assert_eq!(n, r, "{name}");
+        assert!(r.iter().any(|l| l.contains(want)), "{name}: {r:?}");
+    }
+    fs::remove_dir_all(&tmp).ok();
+}
+
+fn omc_seed(home: &Path, cwd: &Path, state: Option<&str>) {
+    put(home, ".claude/settings.json", "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":true}}");
+    if let Some(s) = state {
+        put(cwd, ".omc/state/ralph-state.json", s);
+    }
+}
+
+#[test]
+fn omc_detection_matches_nodes_gates() {
+    let needles = ["OMC"];
+    let now = || format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("OMC (oh-my-claudecode) not detected")), "{r:?}");
+    let t = now();
+    let fresh = format!("{{\"active\":true,\"updated_at\":{t}}}");
+    let stale = "{\"active\":true,\"updated_at\":1000}".to_string();
+    let pinned = format!("{{\"active\":true,\"updated_at\":{t},\"session_id\":\"other\"}}");
+    let off = format!("{{\"active\":false,\"updated_at\":{t}}}");
+    for (name, state, want) in [
+        ("no state", None, "no active OMC autonomous loop"),
+        ("fresh loop", Some(fresh.as_str()), "autonomous loop is ACTIVE"),
+        ("stale loop", Some(stale.as_str()), "no active OMC autonomous loop"),
+        ("pinned elsewhere", Some(pinned.as_str()), "no active OMC autonomous loop"),
+        ("inactive", Some(off.as_str()), "no active OMC autonomous loop"),
+    ] {
+        let (n, r) = both(&|h, c| omc_seed(h, c, state), &needles);
+        assert_eq!(n, r, "{name}");
+        assert!(r.iter().any(|l| l.contains(want)), "{name}: {r:?}");
+    }
+    let (n, r) = with_env(&[("DISABLE_OMC", "1")], || both(&|h, c| omc_seed(h, c, Some(&fresh)), &needles));
+    assert_eq!(n, r, "kill switch");
+    assert!(r.iter().any(|l| l.contains("no active OMC autonomous loop")), "{r:?}");
+    // a project-level enablement and an ISO timestamp
+    let iso = "{\"active\":true,\"started_at\":\"2999-01-01T00:00:00.000Z\"}";
+    let (n, r) = both(
+        &|_, c| {
+            put(c, ".claude/settings.local.json", "{\"enabledPlugins\":{\"oh-my-claudecode@omc\":true}}");
+            put(c, ".omc/state/team-state.json", iso);
+        },
+        &needles,
+    );
+    assert_eq!(n, r, "project scope");
+}
+
+fn codex_hooks(wired: bool) -> String {
+    if !wired {
+        return "{\"hooks\":{\"Stop\":[]}}".to_string();
+    }
+    let thin = fs::read_to_string(plugin().join("codex/hooks/hooks.json")).unwrap();
+    thin.replace("${PLUGIN_ROOT}", plugin().to_string_lossy().as_ref())
+}
+
+#[test]
+fn codex_detection_matches_nodes_per_event_check() {
+    let needles = ["Codex / OMX", "Codex config.toml", "Codex hooks.json ("];
+    let (n, r) = both(&|_, _| {}, &needles);
+    assert_eq!(n, r);
+    assert!(r.iter().any(|l| l.contains("Codex / OMX not detected")), "{r:?}");
+    let on = "[features]\nhooks = true\n";
+    let off = "[features]\nother = 1\n";
+    let cases = [
+        ("project wired", Some(on), Some(true), None, None),
+        ("project unwired, global missing", Some(on), Some(false), Some(off), None),
+        ("project without hooks.json", Some(off), None, None, None),
+        ("both", Some(on), Some(true), Some(on), Some(true)),
+    ];
+    for (name, pc, pw, gc, gw) in cases {
+        let (n, r) = both(
+            &|h, c| {
+                if let Some(t) = pc {
+                    put(c, ".codex/config.toml", t);
+                    if let Some(w) = pw {
+                        put(c, ".codex/hooks.json", &codex_hooks(w));
+                    }
+                }
+                if let Some(t) = gc {
+                    put(h, ".codex/config.toml", t);
+                    if let Some(w) = gw {
+                        put(h, ".codex/hooks.json", &codex_hooks(w));
+                    }
+                }
+            },
+            &needles,
+        );
+        assert_eq!(n, r, "{name}");
+        assert!(!r.is_empty() && r.iter().all(|l| l.contains("Codex config.toml") || l.contains("Codex hooks.json")), "{name}: {r:?}");
+    }
+}
+
+#[test]
+fn the_foreign_plugin_scan_reports_the_same_conflicts() {
+    let seed = |home: &Path, _: &Path| {
+        let root = home.parent().unwrap();
+        let foo = root.join("plugins/foo");
+        let bar = root.join("plugins/bar");
+        put(
+            home,
+            ".claude/settings.json",
+            "{\"enabledPlugins\":{\"foo@m\":true,\"bar@m\":true,\"off@m\":false,\"anti-hall@anti-hall\":true,\"ghost@m\":true}}",
+        );
+        put(
+            home,
+            ".claude/plugins/installed_plugins.json",
+            &format!(
+                "{{\"plugins\":{{\"foo@m\":[{{\"installPath\":\"/old\"}},{{\"installPath\":{}}}],\"bar@m\":[{{\"installPath\":{}}}]}}}}",
+                serde_json::to_string(&foo.to_string_lossy()).unwrap(),
+                serde_json::to_string(&bar.to_string_lossy()).unwrap()
+            ),
+        );
+        put(
+            &foo,
+            "hooks/hooks.json",
+            "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"command\":\"node /u/secret/guard.js --x\"}]},{\"matcher\":\"Edit\",\"hooks\":[{\"command\":\"node e.js\"}]},{\"hooks\":[{\"command\":\"node g.cjs\"},{\"command\":\"node g.cjs\"}]}],\"Stop\":[{\"hooks\":[{\"command\":\"sh stop.sh\"}]}],\"SessionStart\":[{\"hooks\":[{\"command\":\"node s.mjs\"}]}],\"PostToolUse\":[{\"hooks\":[{\"command\":\"node p.js\"}]}]}}",
+        );
+        put(&foo, "skills/doctor/SKILL.md", "x");
+        put(&foo, "skills/unique/SKILL.md", "x");
+        put(&bar, "hooks/hooks.json", "{\"hooks\":{\"UserPromptSubmit\":[{\"hooks\":[{\"command\":\"node u.js\"}]}]}}");
+    };
+    let (a, b) = (fixture(&seed), fixture(&seed));
+    let (_, node) = run_node(&a, &["--dry-run"]);
+    let (_, rust) = run_rust(&b, &["--dry-run"]);
+    let (ns, rs) = (sections(&norm(&node, &a)), sections(&norm(&rust, &b)));
+    let title = "Foreign skill/hook conflict scan";
+    let (n, r) = (section(&ns, title).unwrap(), section(&rs, title).unwrap());
+    assert_eq!(n, r);
+    assert!(r.len() >= 5 && r.iter().any(|l| l.contains("skill-name collision") && l.contains("\"doctor\"")), "{r:?}");
+    assert!(r.iter().all(|l| !l.contains("secret")), "a command path never appears: {r:?}");
+    let (n, r) = both(&|_, _| {}, &["foreign hook/skill conflicts"]);
+    assert_eq!(n, r);
+}
+
+// ---- the explicit repair flags: ingest orphans, leaked test stores, resurrected rows ------------------------------------------------
+
+/// A PATH directory with stub `launchctl` and `systemctl`: the listing comes from `loaded.txt` in it, an unload removes the entry
+/// and is logged to `calls.log`. Nothing real is ever listed or unloaded.
+fn scheduler_stubs(dir: &Path, labels: &[&str]) {
+    let list_darwin: String = labels.iter().map(|l| format!("4242\t0\t{l}\n")).collect();
+    let list_linux: String = labels
+        .iter()
+        // the systemd unit of a launchd label `com.anti-hall.devswarm-ingest.<key>` is `anti-hall-devswarm-ingest-<key>`
+        // (install-devswarm-ingest.js `unitForWorktree` / `unitForProject`)
+        .map(|l| format!("{}.service loaded active running demo\n", l.replace("com.anti-hall.devswarm-ingest.", "anti-hall-devswarm-ingest-")))
+        .collect();
+    put(dir, "loaded.darwin", &list_darwin);
+    put(dir, "loaded.linux", &list_linux);
+    let body = |kind: &str| {
+        format!(
+            "#!/bin/sh\nD=\"$(dirname \"$0\")\"\ncase \"$1\" in\n  list|--user) if [ \"$2\" = stop ]; then echo \"$@\" >> \"$D/calls.log\"; n=\"${{3%.service}}\"; grep -v \"^$n\" \"$D/loaded.{kind}\" > \"$D/loaded.tmp\"; mv \"$D/loaded.tmp\" \"$D/loaded.{kind}\"; exit 0; fi; if [ \"$1\" = list ]; then printf 'PID\\tStatus\\tLabel\\n'; fi; cat \"$D/loaded.{kind}\";;\n  bootout) echo \"$@\" >> \"$D/calls.log\"; n=\"${{2##*/}}\"; grep -v \"$n\" \"$D/loaded.{kind}\" > \"$D/loaded.tmp\"; mv \"$D/loaded.tmp\" \"$D/loaded.{kind}\"; exit 0;;\nesac\n"
+        )
+    };
+    put(dir, "launchctl", &body("darwin"));
+    put(dir, "systemctl", &body("linux"));
+    for f in ["launchctl", "systemctl"] {
+        let p = dir.join(f);
+        let mut perm = fs::metadata(&p).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
+        fs::set_permissions(&p, perm).unwrap();
+    }
+}
+
+fn stub_path(dir: &Path) -> String {
+    format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default())
+}
+
+const ORPHAN_A: &str = "com.anti-hall.devswarm-ingest.demo-a1b2c3";
+const ORPHAN_LIVE: &str = "com.anti-hall.devswarm-ingest.demo-d4e5f6";
+const ORPHAN_PLIST: &str = "com.anti-hall.devswarm-ingest.demo-0a0b0c";
+
+fn seed_orphans(home: &Path, _cwd: &Path) {
+    // a fresh heartbeat proves ORPHAN_LIVE's daemon is running
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    put(home, ".anti-hall/devswarm/heartbeats/ingest-demo-d4e5f6.json", &format!("{{\"ts\":{now},\"pid\":1}}"));
+    // a unit file whose directory is gone: report-only
+    let plist = "<plist><dict><key>WorkingDirectory</key><string>/nonexistent/demo-wt</string><key>ProgramArguments</key><array><string>node</string><string>/nonexistent/ingest.js</string></array></dict></plist>";
+    put(home, &format!("Library/LaunchAgents/{ORPHAN_PLIST}.plist"), plist);
+    let svc = "[Service]\nWorkingDirectory=/nonexistent/demo-wt\nExecStart=\"node\" \"/nonexistent/ingest.js\"\n";
+    put(home, ".config/systemd/user/anti-hall-devswarm-ingest-demo-0a0b0c.service", svc);
+}
+
+#[test]
+fn the_orphan_report_and_its_dry_run_match_node_on_a_stubbed_scheduler() {
+    let stubs = std::env::temp_dir().join(format!("ah-sched-stubs-{}", std::process::id()));
+    scheduler_stubs(&stubs, &[ORPHAN_A, ORPHAN_LIVE, ORPHAN_PLIST, "com.anti-hall.devswarm-ingest.weird"]);
+    let path = stub_path(&stubs);
+    let (a, b) = (fixture(&seed_orphans), fixture(&seed_orphans));
+    let args = ["--dry-run", "--repair-ingest-orphans"];
+    let (nc, node, rc, rust) = with_env(&[("PATH", path.as_str())], || {
+        let (nc, node) = run_node(&a, &args);
+        let (rc, rust) = run_rust(&b, &args);
+        (nc, node, rc, rust)
+    });
+    assert_eq!(nc, rc, "exit\nnode: {node}\nrust: {rust}");
+    let (ns, rs) = (sections(&norm(&node, &a)), sections(&norm(&rust, &b)));
+    for title in
+        ["Orphaned launchd/systemd ingest registrations", "Repair ingest orphans (dry-run \u{2014} no changes written) [explicit --repair-ingest-orphans]"]
+    {
+        let (n, r) = (section(&ns, title), section(&rs, title));
+        assert!(n.is_some() && r.is_some(), "{title}\nnode: {node}\nrust: {rust}");
+        assert_eq!(n, r, "{title}");
+    }
+    let rows = section(&rs, "Repair ingest orphans (dry-run \u{2014} no changes written) [explicit --repair-ingest-orphans]").unwrap();
+    // the loaded label with nothing on disk and no live daemon is the only one eligible
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("demo-a1b2c3") || rows[0].contains("demo-a1b2c3"), "{rows:?}");
+    assert!(!stubs.join("calls.log").exists(), "a dry run unloads nothing");
+    fs::remove_dir_all(&stubs).ok();
+}
+
+#[test]
+fn applying_the_orphan_repair_unloads_once_and_a_second_run_finds_nothing() {
+    let stubs = std::env::temp_dir().join(format!("ah-sched-apply-{}", std::process::id()));
+    scheduler_stubs(&stubs, &[ORPHAN_A, ORPHAN_LIVE]);
+    let fx = fixture(&seed_orphans);
+    // TMPDIR names another directory, so the scratch home is not "under the temp directory" and the unload is not a no-op
+    let other = stubs.join("not-the-home");
+    fs::create_dir_all(&other).unwrap();
+    let path = stub_path(&stubs);
+    let vars = [("PATH", path.as_str()), ("TMPDIR", other.to_str().unwrap()), ("ANTIHALL_INGEST_DRY_RUN", "0")];
+    let (code, out) = with_env(&vars, || run_rust(&fx, &["--repair-ingest-orphans", "--apply"]));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("UNLOADED [repair-ingest-orphan-") && out.contains("demo-a1b2c3"), "{out}");
+    let calls = fs::read_to_string(stubs.join("calls.log")).unwrap_or_default();
+    assert_eq!(calls.lines().count(), 1, "one unload, of the eligible label only: {calls}");
+    assert!(calls.contains("demo-a1b2c3") && !calls.contains("demo-d4e5f6"), "{calls}");
+    let (_, again) = with_env(&vars, || run_rust(&fx, &["--repair-ingest-orphans", "--apply"]));
+    assert!(again.contains("none eligible") || again.contains("nothing to repair"), "{again}");
+    assert_eq!(fs::read_to_string(stubs.join("calls.log")).unwrap().lines().count(), 1, "the second run unloads nothing");
+    // the dry-run variable (a scratch home sets it) makes the apply a no-op, as in the Node installer
+    scheduler_stubs(&stubs, &[ORPHAN_A]);
+    fs::remove_file(stubs.join("calls.log")).ok();
+    let (_, guarded) = with_env(&[("PATH", path.as_str()), ("ANTIHALL_INGEST_DRY_RUN", "1")], || run_rust(&fx, &["--repair-ingest-orphans", "--apply"]));
+    assert!(guarded.contains("UNLOADED"), "{guarded}");
+    assert!(!stubs.join("calls.log").exists(), "nothing was run under the dry-run variable");
+    fs::remove_dir_all(&stubs).ok();
+}
+
+/// A SQLite store with the registry rows `rows` (worktree paths), at `<home>/.anti-hall/devswarm/store/<hash>/devswarm.db`.
+fn seed_store(home: &Path, hash: &str, rows: &[&str]) {
+    let dir = home.join(".anti-hall/devswarm/store").join(hash);
+    fs::create_dir_all(&dir).unwrap();
+    let c = rusqlite::Connection::open(dir.join("devswarm.db")).unwrap();
+    c.execute_batch(
+        "CREATE TABLE registry (id TEXT PRIMARY KEY, worktree_path TEXT, session_id TEXT, inbox_path TEXT, cursor_path TEXT, nudge_command TEXT, updated_at INTEGER, write_seq INTEGER);\
+         CREATE TABLE messages (id INTEGER PRIMARY KEY, workspace_id TEXT, ts INTEGER, body TEXT);\
+         CREATE TABLE cursors (workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER);",
+    )
+    .unwrap();
+    for (i, wt) in rows.iter().enumerate() {
+        c.execute("INSERT INTO registry (id, worktree_path) VALUES (?1, ?2)", rusqlite::params![format!("ws{i}"), wt]).unwrap();
+    }
+}
+
+fn seed_stores(home: &Path, cwd: &Path) {
+    seed_store(home, "ghost-a1b2c3", &["/tmp/ah-fixture-gone-wt"]);
+    seed_store(home, "two-d4e5f6", &["/tmp/ah-fixture-gone-1", "/tmp/ah-fixture-gone-2"]);
+    seed_store(home, "real-0a0b0c", &["/Users/someone/not-a-temp-dir-wt"]);
+    seed_store(home, "alive-1a2b3c", &[cwd.to_str().unwrap()]);
+    seed_store(home, "12345678", &["/private/var/folders/zz/ah-fixture-gone"]);
+}
+
+#[test]
+fn leaked_test_stores_are_found_and_planned_as_node_does() {
+    let (a, b) = (fixture(&seed_stores), fixture(&seed_stores));
+    let args = ["--dry-run", "--repair-test-stores"];
+    let (nc, node) = run_node(&a, &args);
+    let (rc, rust) = run_rust(&b, &args);
+    assert_eq!(nc, rc);
+    let (ns, rs) = (sections(&norm(&node, &a)), sections(&norm(&rust, &b)));
+    let detect = "leaked test-fixture stores";
+    let (n, r) = (section(&ns, detect), section(&rs, detect));
+    assert!(n.is_some() && r.is_some(), "node: {node}\nrust: {rust}");
+    assert_eq!(n, r);
+    assert!(r.unwrap()[0].contains("leaked test-fixture stores: 2"), "{r:?}");
+    // the plan names the same stores; Node's rows say "remove", the engine's "move aside" (it never deletes)
+    let title = "Repair test stores (dry-run \u{2014} no changes written) [explicit --repair-test-stores]";
+    let ids = |rows: &Vec<String>| -> Vec<String> { rows.iter().map(|l| l.split(']').next().unwrap_or("").to_string()).collect() };
+    assert_eq!(ids(section(&ns, title).unwrap()), ids(section(&rs, title).unwrap()));
+}
+
+#[test]
+fn applying_the_test_store_repair_moves_the_store_aside_and_never_deletes() {
+    let fx = fixture(&seed_stores);
+    let store = fx.home.join(".anti-hall/devswarm/store");
+    let (code, out) = run_rust(&fx, &["--repair-test-stores", "--apply"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("MOVED ASIDE [repair-test-store-ghost-a1b2c3]") && out.contains("MOVED ASIDE [repair-test-store-12345678]"), "{out}");
+    assert!(!store.join("ghost-a1b2c3").exists());
+    let aside = fx.home.join(".anti-hall/devswarm/stores-aside");
+    let kept: Vec<String> = fs::read_dir(&aside).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    assert!(kept.iter().any(|n| n.starts_with("ghost-a1b2c3-")) && fs::read_dir(aside.join(&kept[0])).unwrap().next().is_some(), "the data is kept: {kept:?}");
+    for survivor in ["two-d4e5f6", "real-0a0b0c", "alive-1a2b3c"] {
+        assert!(store.join(survivor).join("devswarm.db").exists(), "{survivor} is not a leak and stays");
+    }
+    let (_, again) = run_rust(&fx, &["--repair-test-stores", "--apply"]);
+    assert!(again.contains("no leaked test-fixture stores found"), "{again}");
+    // a journal-backend store is not inspected: said so, not silently skipped
+    let j = fx.home.join(".anti-hall/devswarm/store/jrnl-0f0f0f");
+    fs::create_dir_all(&j).unwrap();
+    fs::write(j.join("BACKEND"), "journal").unwrap();
+    let (jc, jout) = run_rust(&fx, &["--repair-test-stores"]);
+    assert_eq!(jc, 0, "{jout}");
+    assert!(jout.contains("DEFERRED [repair-test-stores] 1 store(s) use the journal backend"), "{jout}");
+}
+
+#[test]
+fn the_resurrected_rows_repair_matches_node_without_stores_and_defers_with_them() {
+    let (a, b) = (fixture(&|_, _| {}), fixture(&|_, _| {}));
+    let (nc, node) = run_node(&a, &["--repair-resurrected"]);
+    let (rc, rust) = run_rust(&b, &["--repair-resurrected"]);
+    assert_eq!(nc, rc);
+    let title = "Repair resurrected registry rows (dry-run \u{2014} no changes written) [explicit --repair-resurrected]";
+    assert_eq!(section(&sections(&node), title), section(&sections(&rust), title), "node: {node}\nrust: {rust}");
+    let with = fixture(&|h, _| seed_store(h, "ghost-a1b2c3", &["/tmp/ah-fixture-gone-wt"]));
+    let (code, out) = run_rust(&with, &["--repair-resurrected", "--apply"]);
+    assert_eq!(code, 0, "a deferral is not a failure: {out}");
+    assert!(out.contains("DEFERRED [repair-resurrected]") && with.home.join(".anti-hall/devswarm/store/ghost-a1b2c3/devswarm.db").exists(), "{out}");
+}
+
+// ---- the DevSwarm supervisor section -----------------------------------------------------------------------------------------------
+
+#[test]
+fn the_devswarm_section_is_silent_when_dormant_and_runs_the_four_hook_tests_when_it_is_not() {
+    // dormant: no descriptor, no DevSwarm environment, nothing installed: neither doctor prints the section
+    let (n, r) = both(&|_, _| {}, &["DevSwarm liveness"]);
+    assert!(n.is_empty() && r.is_empty(), "{n:?} {r:?}");
+    // a registered workspace makes it active; the hook tests and the measurement counters read the same in both
+    let needles = [
+        "writes a turn-authored heartbeat",
+        "forces a child to self-report",
+        "devswarm-parent-inbox self-test",
+        "surfaces a workspace unread backlog",
+        "blocks the Primary turn",
+        "supervisor companion",
+        "cron ticks that found mail",
+        "CHILD NOT DRAINING",
+        "wake-watch idle-skips",
+        "wake-watch limit-skips",
+        "mailbox-cron-missing",
+    ];
+    let seed = |home: &Path, _: &Path| {
+        put(home, ".anti-hall/devswarm/workspaces/x1.json", "{\"id\":\"x1\",\"worktreePath\":\"/nonexistent/wt\",\"sessionId\":\"s1\"}");
+        put(home, ".anti-hall/devswarm/cron-found-mail.jsonl", "{\"a\":1}\n\n{\"a\":2}\n");
+        put(home, ".anti-hall/devswarm/rearm-cues.jsonl", "{\"trigger\":\"idle-skip\"}\n{\"trigger\":\"limit-skip\"}\n{\"trigger\":\"idle-skip\"}\nnot json\n");
+        put(home, ".anti-hall/devswarm/cron-missing-warned.jsonl", "{}\n");
+    };
+    let (n, r) = both(&seed, &needles);
+    assert_eq!(n, r);
+    for want in [
+        "devswarm-child-turn writes",
+        "devswarm-child-gate forces",
+        "devswarm-parent-gate blocks",
+        "cron ticks that found mail while a watcher was armed: 2",
+        "wake-watch idle-skips: 2",
+        "wake-watch limit-skips: 1",
+        "mailbox-cron-missing warnings shown: 1",
+    ] {
+        assert!(r.iter().any(|l| l.contains(want)), "{want}: {r:?}");
+    }
+    // a Primary session (DevSwarm environment, no descriptors) is active too
+    let (n, r) = with_env(&[("DEVSWARM_REPO_ID", "repo-x")], || both(&|_, _| {}, &needles));
+    assert_eq!(n, r);
+    assert!(!r.is_empty());
 }

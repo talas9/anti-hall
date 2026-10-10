@@ -1,8 +1,8 @@
 'use strict';
-// Field defect (SkyCrew, 3rd occurrence): `spawn` returned submoduleFailures
-// `git worktree add -b <branch> <wt>/skyflutter <sha>` -> "already exists".
+// Field defect (DemoApp, 3rd occurrence): `spawn` returned submoduleFailures
+// `git worktree add -b <branch> <wt>/appflutter <sha>` -> "already exists".
 // Root cause (DevSwarm app source + log): the background `worktreeInclude` copy
-// (`skyflutter/.env`) mkdirs + fills <wt>/skyflutter before the submodule
+// (`appflutter/.env`) mkdirs + fills <wt>/appflutter before the submodule
 // `worktree add` runs, so git sees a NON-EMPTY path. These tests reproduce that
 // ordering with real git + real submodules and pin the loss-free repair.
 
@@ -36,7 +36,7 @@ function mkRepo(dir, file) {
   git(dir, ['commit', '-q', '-m', 'init']);
 }
 
-// Superproject with 2 submodules; skyflutter is configured like SkyCrew's
+// Superproject with 2 submodules; appflutter is configured like DemoApp's
 // (`branch = develop` in .gitmodules, a non-default tracking branch).
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-subrepair-'));
@@ -44,29 +44,29 @@ function fixture() {
   fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
   const parent = path.join(root, 'parent');
   mkRepo(parent, 'README');
-  for (const name of ['skyflutter', 'skydart']) {
+  for (const name of ['appflutter', 'appdart']) {
     const up = path.join(root, 'up-' + name);
     mkRepo(up, name + '.txt');
-    if (name === 'skyflutter') { git(up, ['checkout', '-q', '-b', 'develop']); }
-    git(parent, ['submodule', 'add', '-q'].concat(name === 'skyflutter' ? ['-b', 'develop'] : [], [up, name]));
+    if (name === 'appflutter') { git(up, ['checkout', '-q', '-b', 'develop']); }
+    git(parent, ['submodule', 'add', '-q'].concat(name === 'appflutter' ? ['-b', 'develop'] : [], [up, name]));
   }
   git(parent, ['commit', '-q', '-m', 'add submodules']);
-  const sha = git(parent, ['rev-parse', 'HEAD:skyflutter']);
+  const sha = git(parent, ['rev-parse', 'HEAD:appflutter']);
   return { root, home, parent, sha };
 }
 const rm = (f) => { try { fs.rmSync(f.root, { recursive: true, force: true }); } catch (_) {} };
 
 // Mimics DevSwarm `workspace create`: superproject worktree, background include
-// copy (skyflutter/.env), then `worktree add -b` per submodule. Returns the REAL
+// copy (appflutter/.env), then `worktree add -b` per submodule. Returns the REAL
 // stderr git/the app would have produced.
 function appCreate(f, wt, branch, { copyEnv = true } = {}) {
   git(f.parent, ['worktree', 'add', '-q', '-b', branch, wt]);
   if (copyEnv) {
-    fs.mkdirSync(path.join(wt, 'skyflutter'), { recursive: true });
-    fs.writeFileSync(path.join(wt, 'skyflutter', '.env'), 'SECRET=1\n');
+    fs.mkdirSync(path.join(wt, 'appflutter'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'appflutter', '.env'), 'SECRET=1\n');
   }
   let stderr = '';
-  for (const name of ['skyflutter', 'skydart']) {
+  for (const name of ['appflutter', 'appdart']) {
     const sub = path.join(f.parent, '.git', 'modules', name);
     const sha = git(f.parent, ['rev-parse', 'HEAD:' + name]);
     const cmd = ['worktree', 'add', '-b', branch, path.join(wt, name), sha];
@@ -81,9 +81,9 @@ test('REPRO: pre-copied .env makes the submodule path non-empty -> git says alre
   try {
     const wt = path.join(f.root, 'wt-a');
     const stderr = appCreate(f, wt, 'fix/a');
-    assert.match(stderr, /fatal: '.*wt-a\/skyflutter' already exists/);
-    assert.ok(fs.existsSync(path.join(wt, 'skydart', '.git')), 'sibling submodule worktree was created');
-    assert.ok(!fs.existsSync(path.join(wt, 'skyflutter', '.git')));
+    assert.match(stderr, /fatal: '.*wt-a\/appflutter' already exists/);
+    assert.ok(fs.existsSync(path.join(wt, 'appdart', '.git')), 'sibling submodule worktree was created');
+    assert.ok(!fs.existsSync(path.join(wt, 'appflutter', '.git')));
     const parsed = cli.parseSubmoduleWorktreeFailures({ raw: '', stderr }, f.parent);
     assert.strictEqual(parsed.length, 1);
   } finally { rm(f); }
@@ -99,7 +99,7 @@ test('repair: non-empty path -> moved aside, worktree added at the pinned sha, .
     assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
     assert.strictEqual(out.repaired.length, 1);
     assert.strictEqual(out.repaired[0].sha, f.sha);
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     assert.ok(fs.existsSync(path.join(p, '.git')));
     assert.strictEqual(fs.readFileSync(path.join(p, '.env'), 'utf8'), 'SECRET=1\n');
     assert.strictEqual(git(p, ['rev-parse', 'HEAD']), f.sha);
@@ -115,11 +115,11 @@ test('repair: empty placeholder dir -> rmdir only, worktree added', () => {
     const stderr = appCreate(f, wt, 'fix/c', { copyEnv: false }); // git fails nothing: placeholder is empty
     assert.strictEqual(stderr, '');
     // Re-run as the failing shape: empty dir present, worktree absent.
-    git(path.join(f.parent, '.git', 'modules', 'skyflutter'), ['worktree', 'remove', '--force', path.join(wt, 'skyflutter')]);
-    fs.mkdirSync(path.join(wt, 'skyflutter'));
-    const out = cli.repairSubmoduleWorktrees([{ path: path.join(wt, 'skyflutter'), error: 'already exists' }], 'git worktree add -b fix/c ' + path.join(wt, 'skyflutter') + ' ' + f.sha, 'fix/c', f.parent);
+    git(path.join(f.parent, '.git', 'modules', 'appflutter'), ['worktree', 'remove', '--force', path.join(wt, 'appflutter')]);
+    fs.mkdirSync(path.join(wt, 'appflutter'));
+    const out = cli.repairSubmoduleWorktrees([{ path: path.join(wt, 'appflutter'), error: 'already exists' }], 'git worktree add -b fix/c ' + path.join(wt, 'appflutter') + ' ' + f.sha, 'fix/c', f.parent);
     assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
-    assert.ok(fs.existsSync(path.join(wt, 'skyflutter', '.git')));
+    assert.ok(fs.existsSync(path.join(wt, 'appflutter', '.git')));
     assert.strictEqual(out.repaired[0].reusedBranch, true, 'branch created by the first add is reused (no -b)');
   } finally { rm(f); }
 });
@@ -129,13 +129,13 @@ test('repair: path missing + branch already exists (the reported post-failure st
   try {
     const wt = path.join(f.root, 'wt-d');
     const stderr = appCreate(f, wt, 'fix/d');
-    const sub = path.join(f.parent, '.git', 'modules', 'skyflutter');
+    const sub = path.join(f.parent, '.git', 'modules', 'appflutter');
     assert.strictEqual(git(sub, ['rev-parse', '--verify', 'refs/heads/fix/d']), f.sha, 'the FAILED -b add still created the branch (root-cause evidence)');
-    fs.rmSync(path.join(wt, 'skyflutter'), { recursive: true, force: true }); // test fixture cleanup only
+    fs.rmSync(path.join(wt, 'appflutter'), { recursive: true, force: true }); // test fixture cleanup only
     const out = cli.repairSubmoduleWorktrees(cli.parseSubmoduleWorktreeFailures({ raw: '', stderr }, f.parent), stderr, 'fix/d', f.parent);
     assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
     assert.strictEqual(out.repaired[0].reusedBranch, true);
-    assert.strictEqual(git(path.join(wt, 'skyflutter'), ['rev-parse', '--abbrev-ref', 'HEAD']), 'fix/d');
+    assert.strictEqual(git(path.join(wt, 'appflutter'), ['rev-parse', '--abbrev-ref', 'HEAD']), 'fix/d');
   } finally { rm(f); }
 });
 
@@ -144,9 +144,9 @@ test('repair: stale registration for the exact path (dir gone) is pruned and the
   try {
     const wt = path.join(f.root, 'wt-e');
     appCreate(f, wt, 'fix/e', { copyEnv: false });
-    const p = path.join(wt, 'skyflutter');
-    const sub = path.join(f.parent, '.git', 'modules', 'skyflutter');
-    assert.ok(git(sub, ['worktree', 'list', '--porcelain']).includes('wt-e/skyflutter'));
+    const p = path.join(wt, 'appflutter');
+    const sub = path.join(f.parent, '.git', 'modules', 'appflutter');
+    assert.ok(git(sub, ['worktree', 'list', '--porcelain']).includes('wt-e/appflutter'));
     fs.rmSync(p, { recursive: true, force: true }); // dir deleted, registration stale
     const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/e', f.parent);
     assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
@@ -159,13 +159,13 @@ test('repair: fails closed -- live checkout, non-submodule path, relative path a
   try {
     const wt = path.join(f.root, 'wt-f');
     appCreate(f, wt, 'fix/f', { copyEnv: false });
-    const live = path.join(wt, 'skydart');
+    const live = path.join(wt, 'appdart');
     fs.writeFileSync(path.join(live, 'keep.txt'), 'x');
     const input = [
       { path: live, error: 'already exists' },                       // live worktree: never touched
       { path: path.join(f.root, 'elsewhere', 'other'), error: 'already exists' }, // not a submodule path
-      { path: 'skyflutter', error: 'already exists' },               // relative
-      { path: path.join(wt, 'skyflutter'), error: 'some other fatal' },
+      { path: 'appflutter', error: 'already exists' },               // relative
+      { path: path.join(wt, 'appflutter'), error: 'some other fatal' },
     ];
     const out = cli.repairSubmoduleWorktrees(input, '', 'fix/f', f.parent);
     assert.strictEqual(out.repaired.length, 0);
@@ -179,10 +179,10 @@ test('repair: a failed add restores the moved-aside dir (no data loss)', () => {
   try {
     const wt = path.join(f.root, 'wt-g');
     appCreate(f, wt, 'fix/g');
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     // Branch checked out in ANOTHER live worktree -> repair must refuse and restore.
     const other = path.join(f.root, 'other-wt');
-    const sub = path.join(f.parent, '.git', 'modules', 'skyflutter');
+    const sub = path.join(f.parent, '.git', 'modules', 'appflutter');
     git(sub, ['worktree', 'add', '-q', other, 'fix/g']); // branch was created by the failed -b add
     const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/g', f.parent);
     assert.strictEqual(out.repaired.length, 0);
@@ -208,7 +208,7 @@ test('cmdSpawn end-to-end: repairs the reproduced failure, reports submoduleRepa
     assert.strictEqual(r.submoduleFailures, undefined, JSON.stringify(r.submoduleFailures));
     assert.strictEqual(r.submoduleRepaired.length, 1);
     assert.ok(r.submoduleHint.includes(f.sha) && /not the submodule's default branch/.test(r.submoduleHint), r.submoduleHint);
-    assert.ok(fs.existsSync(path.join(wt, 'skyflutter', '.git')));
+    assert.ok(fs.existsSync(path.join(wt, 'appflutter', '.git')));
   } finally { rm(f); }
 });
 
@@ -217,31 +217,31 @@ test('repair: include-copied file colliding with a TRACKED file is never overwri
   try {
     const wt = path.join(f.root, 'wt-h');
     git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/h', wt]);
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     fs.mkdirSync(p, { recursive: true });
-    fs.writeFileSync(path.join(p, 'skyflutter.txt'), 'COPIED-OVER'); // same path as a tracked file
+    fs.writeFileSync(path.join(p, 'appflutter.txt'), 'COPIED-OVER'); // same path as a tracked file
     fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n');
     const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/h', f.parent);
     assert.strictEqual(out.remaining.length, 0, JSON.stringify(out));
-    assert.strictEqual(fs.readFileSync(path.join(p, 'skyflutter.txt'), 'utf8'), 'skyflutter.txt', 'tracked content intact');
+    assert.strictEqual(fs.readFileSync(path.join(p, 'appflutter.txt'), 'utf8'), 'appflutter.txt', 'tracked content intact');
     assert.strictEqual(fs.readFileSync(path.join(p, '.env'), 'utf8'), 'SECRET=1\n');
     const c = out.repaired[0].conflicts;
     assert.strictEqual(c.length, 1);
-    assert.strictEqual(c[0].file, 'skyflutter.txt');
+    assert.strictEqual(c[0].file, 'appflutter.txt');
     assert.strictEqual(fs.readFileSync(c[0].kept, 'utf8'), 'COPIED-OVER', 'copy kept aside');
     assert.strictEqual(path.dirname(path.dirname(c[0].kept)), wt, 'aside lives in the workspace dir, not /tmp');
     assert.match(path.basename(path.dirname(c[0].kept)), /\.pre-wt-/);
   } finally { rm(f); }
 });
 
-// Commit a tracked `.env` inside the skyflutter submodule and bump the superproject pin.
+// Commit a tracked `.env` inside the appflutter submodule and bump the superproject pin.
 function trackEnv(f, content) {
-  const sub = path.join(f.parent, 'skyflutter');
+  const sub = path.join(f.parent, 'appflutter');
   fs.writeFileSync(path.join(sub, '.env'), content);
   git(sub, ['add', '.env']);
   git(sub, ['commit', '-q', '-m', 'track env']);
-  git(f.parent, ['add', 'skyflutter']);
-  git(f.parent, ['commit', '-q', '-m', 'bump skyflutter']);
+  git(f.parent, ['add', 'appflutter']);
+  git(f.parent, ['commit', '-q', '-m', 'bump appflutter']);
 }
 
 test('sha: a create-text where the sha is followed by a JSON-escaped newline + more text yields the bare 40-hex sha', () => {
@@ -249,7 +249,7 @@ test('sha: a create-text where the sha is followed by a JSON-escaped newline + m
   try {
     const wt = path.join(f.root, 'wt-s');
     git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/s', wt]);
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     fs.mkdirSync(p, { recursive: true });
     fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n');
     // The app reports the failed command inside a JSON string, so the separator is a literal backslash-n.
@@ -267,7 +267,7 @@ test('identical: aside copy byte-identical to the checked-out file is NOT a conf
     trackEnv(f, 'SECRET=1\n');
     const wt = path.join(f.root, 'wt-i');
     git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/i', wt]);
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     fs.mkdirSync(p, { recursive: true });
     fs.writeFileSync(path.join(p, '.env'), 'SECRET=1\n'); // same bytes as the tracked .env
     const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/i', f.parent);
@@ -288,7 +288,7 @@ test('differing: aside .env differs from the checked-out one -- both kept, repor
     trackEnv(f, 'TRACKED=1\n');
     const wt = path.join(f.root, 'wt-x');
     git(f.parent, ['worktree', 'add', '-q', '-b', 'fix/x', wt]);
-    const p = path.join(wt, 'skyflutter');
+    const p = path.join(wt, 'appflutter');
     fs.mkdirSync(p, { recursive: true });
     fs.writeFileSync(path.join(p, '.env'), 'SECRET=real\n');
     const out = cli.repairSubmoduleWorktrees([{ path: p, error: 'already exists' }], '', 'fix/x', f.parent);

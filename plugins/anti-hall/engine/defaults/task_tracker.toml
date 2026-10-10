@@ -8,7 +8,7 @@
 
 [task_tracker.summary]
 doc = "One-line description of the task-tracker check in the generated reference."
-value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the newRequest Jev label of each prompt and the previous turn's demand score; a session that could be a DevSwarm Primary, or has a task the per-turn DISPATCH NOW line would name or a dispatch-tier outcome still to record, defers to Node (port of task-tracker.js)."
+value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js)."
 
 [task_tracker.setting]
 doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
@@ -104,10 +104,6 @@ unit = "bytes"
 doc = "How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired."
 value = 300000
 unit = "ms"
-
-[task_tracker.json_max_depth]
-doc = "How deeply nested a state file may be before the engine hands the read to Node."
-value = 64
 
 [task_tracker.open_zero]
 doc = "The open-tasks line when no countable task is open; `{blocked}` is the blocked-tasks tail."
@@ -250,3 +246,170 @@ value = "a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, o
 [task_tracker.primary_key]
 doc = "The emit-dedupe key of the Primary block, rationed apart from the reminder."
 value = "task-tracker-primary"
+
+[task_tracker.peer_prompt_re]
+doc = "Regex source (case-insensitive) of a prompt that is another Claude session's message, not a person typing: the tracker stays silent for it (task-tracker.js, the cross-session test). Matched against the first peer_prompt_chars characters."
+value = '^\s*<cross-session-message\b|Another Claude session sent a message'
+
+[task_tracker.peer_prompt_chars]
+doc = "How many characters at the start of a prompt are tested against peer_prompt_re."
+value = 400
+unit = "chars"
+min = 40
+max = 5000
+
+# ---- the per-turn DISPATCH NOW line (hooks/lib/dispatch-demand.js demandLine) and the running-agent proof -----------------------------
+
+[task_tracker.demand_line]
+doc = "The per-turn demand line; `{running}` the running agents, `{cap}` the parallel cap, `{shown}` the labelled tasks, `{more}` the tail for tasks past the shown ones."
+value = "DISPATCH NOW in parallel \u2014 one background agent EACH, this turn ({running} running, cap {cap}): {shown}{more}. Pending, unblocked, unowned, and no in-flight agent names them. Hold one only if it truly needs the user (then mark it metadata.blockedOn:'owner'). If a running agent already covers a task, set the task's owner to it (TaskUpdate owner) and it counts as attended."
+
+[task_tracker.demand_more]
+doc = "The tail of the demand line when more tasks are dispatchable than are shown; `{n}` is how many more."
+value = ", +{n} more"
+
+[task_tracker.demand_show_max]
+doc = "How many dispatchable tasks the demand line names."
+value = 12
+min = 1
+
+[task_tracker.demand_joiner]
+doc = "What joins the labelled tasks of the demand line."
+value = ", "
+
+[task_tracker.annotation_joiner]
+doc = "What stands between a task label and its tier annotation."
+value = " "
+
+[task_tracker.footer_joiner]
+doc = "What stands between the demand line and the Jev footer."
+value = " "
+
+[task_tracker.freshness_joiner]
+doc = "What stands between the demand block and the open-tasks line."
+value = " "
+
+[task_tracker.unknown_head]
+doc = "The start of the note that the running-agent count is unknown."
+value = "Background-agent running-agent count unknown ("
+
+[task_tracker.unknown_saw]
+doc = "Part of that note when launches were seen; `{n}` how many, `{ids}` the first of them."
+value = "saw {n} launched, all finished: {ids}; "
+
+[task_tracker.unknown_none]
+doc = "Part of that note when no launch was seen."
+value = "none seen; "
+
+[task_tracker.unknown_older]
+doc = "Part of that note when launches older than the scanned window cannot be checked; `{mb}` the window in whole megabytes."
+value = "launches older than the last {mb}MB of transcript cannot be checked"
+
+[task_tracker.unknown_unreadable]
+doc = "Part of that note when the transcript could not be read."
+value = "transcript unreadable"
+
+[task_tracker.unknown_tail]
+doc = "The end of the note that the running-agent count is unknown."
+value = "): check before dispatching more. "
+
+[task_tracker.unknown_ids_max]
+doc = "How many seen launches the unknown-count note names."
+value = 3
+min = 1
+
+[task_tracker.unknown_ids_more]
+doc = "What follows the named launches when more were seen; `{n}` is how many more."
+value = " +{n} more"
+
+[task_tracker.unknown_ids_joiner]
+doc = "What joins the launch ids in the unknown-count note."
+value = ", "
+
+[task_tracker.bytes_per_mb]
+doc = "Bytes in one megabyte, for the window named in the unknown-count note."
+value = 1048576
+min = 1
+
+[task_tracker.metrics_shown]
+doc = "The counter of per-turn demand lines shown."
+value = "demandsShown"
+
+# ---- the dispatchTier annotation and outcome tracking (hooks/lib/dispatch-tier.js annotator, remember, trackOutcomes) --------------
+
+[task_tracker.tier_names]
+doc = "The tiers a cached Jev verdict may name, in the order of the question."
+value = ["workspace", "workflow", "subagent"]
+
+[task_tracker.tier_default]
+doc = "The tier a low-confidence or repo-overridden verdict is shown as (the cheapest)."
+value = "subagent"
+
+[task_tracker.tier_workspace]
+doc = "The tier a repository that forbids workspaces never gets recommended."
+value = "workspace"
+
+[task_tracker.tier_workflow]
+doc = "The tier of breadth-first work."
+value = "workflow"
+
+[task_tracker.tier_conf_floor]
+doc = "A workspace or workflow verdict below this confidence (a decimal, written as text) is shown as the default tier."
+value = "0.6"
+
+[task_tracker.tier_arrow]
+doc = "What starts a tier annotation."
+value = "\u2192 "
+
+[task_tracker.tier_conf]
+doc = "The confidence part of a tier annotation; `{conf}` is the confidence rounded to two decimals."
+value = " ({conf})"
+
+[task_tracker.tier_footer]
+doc = "The footer of a demand line that carried tier annotations."
+value = "Jev recommendation \u2014 final call is yours."
+
+[task_tracker.tier_text_joiner]
+doc = "What joins a task's subject and description in the text Jev classifies."
+value = "\n"
+
+[task_tracker.tier_done_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that counts as done for outcome tracking."
+value = '^(completed|done)$'
+
+[task_tracker.tier_spawn_agent_tools]
+doc = "The tool names whose description naming `#<id>` is an agent dispatch."
+value = ["Agent", "Task"]
+
+[task_tracker.tier_spawn_workflow_tool]
+doc = "The tool name whose input naming `#<id>` is a workflow dispatch."
+value = "Workflow"
+
+[task_tracker.tier_spawn_shell_tool]
+doc = "The tool name whose command naming `#<id>` is a workspace dispatch when it matches the spawn pattern."
+value = "Bash"
+
+[task_tracker.tier_spawn_shell_re]
+doc = "JavaScript regex source of a shell command that spawns a workspace."
+value = 'devswarm(\.js)?\s+spawn\b'
+
+[task_tracker.tier_use_marker]
+doc = "The text a transcript line must hold to be looked at as a tool call for outcome tracking."
+value = '"tool_use"'
+
+[task_tracker.tier_id_ok_re]
+doc = "JavaScript regex source of a task id the evidence search can use as a pattern; any other id is left to Node."
+value = '^[A-Za-z0-9_-]+$'
+
+[task_tracker.tier_id_after]
+doc = "JavaScript regex source that must not follow `#<id>` for the id to be named (so #1 does not match #12)."
+value = '(?!\d)'
+
+[task_tracker.tier_words]
+doc = "The words of the outcome records. dispatched: prefix of the dispatch outcome; followed, overridden: the recommendation against the dispatch; repo_override, low_conf: why a verdict was shown as the default tier; one_lane, escalated, fanned_out, no_fanout, not_applicable: the result of a dispatch; verdict: prefix of the verdict counters; the *_counter names count the results."
+value = { dispatched = "dispatched-", followed = "followed", overridden = "overridden", repo_override = "repo-override-subagent", low_conf = "low-confidence-subagent", one_lane = "one-lane", escalated = "escalated", fanned_out = "fanned-out", no_fanout = "no-fanout", not_applicable = "n/a", verdict = "verdict.", one_lane_counter = "subagentOneLane", escalated_counter = "subagentEscalated", fanned_out_counter = "workflowFannedOut", no_fanout_counter = "workflowNoFanout", metrics_key = "tier" }
+
+[task_tracker.tier_min_workflow_agents]
+doc = "Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out."
+value = 3
+min = 1

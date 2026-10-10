@@ -6,7 +6,7 @@
 
 ### Make Claude Code and Codex *verify before they claim* — with platform-native guardrails and workflow skills.
 
-[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827)
+[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15357/badge)](https://www.bestpractices.dev/projects/15357)
 
 </div>
 
@@ -20,7 +20,7 @@
 - Blocks risky git actions outright: force-pushes, and AI credit lines in commit messages and GitHub PR/issue/release text.
 - Keeps the main conversation responsive by pushing heavy commands and file edits to helper agents, and caps runaway agent spawning.
 - Adds skills you can call by name for debugging to a proven root cause, reviewing risky changes, and writing a session handover.
-- Works with Claude Code (plugin) and Codex (separate port). Hooks are Node; an optional small Rust engine (`ah-engine`) is downloaded once, checked against a pinned sha256, and answers most hook calls without starting Node (Node stays the fallback and the final word).
+- Works with Claude Code (plugin) and Codex (separate port). The core is a small Rust engine (`ah-engine`), downloaded once and checked against a pinned sha256; it answers hook calls without starting Node. The Node hooks are a temporary compatibility fallback during the migration and are removed in v1.0, when the engine is the only runtime.
 
 ## Install
 
@@ -86,8 +86,13 @@ Building, testing and releasing the plugin and the Rust engine: [Development gui
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Docs site](https://talas9.github.io/anti-hall/)
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
+
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
 
 ## License
 

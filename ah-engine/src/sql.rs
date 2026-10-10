@@ -308,6 +308,9 @@ pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipie
 pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE sender = ?1 ORDER BY id DESC LIMIT ?2";
 /// How many messages one workspace holds.
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
+/// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
+/// message with no sender counts.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s))";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -371,9 +374,9 @@ pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (worksp
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
-pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// `appendMessage` without a hash.
-pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// One registry row (the columns `upsertRegistry` writes), for the merge-preserving self-registration.
 pub const MESHW_REGISTRY_ROW: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command FROM registry WHERE id = ?;";
 /// The ids of the registry (`listRegistry`), for the partition door's "still registered here" recheck.
@@ -451,3 +454,87 @@ pub const MESHW_APP_LENGTH_CLOSE: &str = ")";
 pub const MESHW_APP_LIST_SEP: &str = ", ";
 /// Identifier quote of the select list.
 pub const MESHW_APP_QUOTE: &str = "\"";
+
+// ---- retention (src/dssup/retention): the statements of `companion/lib/devswarm-retention.js`, verbatim where Node's text is
+// one fixed statement ----
+
+/// The partitions that hold messages (`planStore`).
+pub const RT_PARTITIONS: &str = "SELECT DISTINCT workspace_id AS w FROM messages";
+/// The rows of one partition.
+pub const RT_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?1";
+/// A partition's rows in order, without the body (the body's length only).
+pub const RT_ROWS: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
+/// The same, with the body (the broadcast partition's run detection reads it).
+pub const RT_ROWS_BODY: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt, body FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
+/// One row's body.
+pub const RT_BODY: &str = "SELECT body FROM messages WHERE id = ?1";
+/// Every workspace's broadcast cursor.
+pub const RT_BC_ALL: &str = "SELECT value FROM broadcast_cursors";
+/// One workspace's broadcast cursor.
+pub const RT_BC_ONE: &str = "SELECT value FROM broadcast_cursors WHERE workspace_id = ?1";
+/// The registry rows (id and NDJSON inbox path).
+pub const RT_REGISTRY: &str = "SELECT id, inbox_path FROM registry ORDER BY id ASC";
+/// A partition's reader cursor rows.
+pub const RT_READER_ROWS: &str = "SELECT ns, reader, value, retired_line FROM reader_cursors WHERE partition = ?1";
+/// A partition's store-namespace reader rows (the in-transaction bound).
+pub const RT_READER_STORE: &str = "SELECT reader, value, retired_line FROM reader_cursors WHERE partition = ?1 AND ns = 'store'";
+/// Whether a legacy cursor row exists.
+pub const RT_CURSOR_ROW: &str = "SELECT 1 FROM cursors WHERE workspace_id = ?1";
+/// A legacy cursor row's value.
+pub const RT_CURSOR_VALUE: &str = "SELECT value FROM cursors WHERE workspace_id = ?1";
+/// A row's current state, read inside the tombstoning transaction.
+pub const RT_ROW_NOW: &str = "SELECT workspace_id, ts, hash, needs_reply, body IS NOT NULL FROM messages WHERE id = ?1";
+/// A row's position in its partition.
+pub const RT_POSITION: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?1 AND id <= ?2";
+/// The tombstone: the body goes, everything else stays.
+pub const RT_TOMBSTONE: &str = "UPDATE messages SET body = NULL WHERE id = ?1 AND body IS NOT NULL";
+/// The columns an archived row keeps (before the placeholders).
+pub const RT_FULL_OPEN: &str = "SELECT id, workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE body IS NOT NULL AND id IN (";
+/// The end of that statement.
+pub const RT_FULL_CLOSE: &str = ") ORDER BY id";
+/// Page and freelist counts.
+pub const RT_PAGE_COUNT: &str = "PRAGMA page_count";
+/// See above.
+pub const RT_FREELIST_COUNT: &str = "PRAGMA freelist_count";
+/// Reclaim the freed space.
+pub const RT_VACUUM: &str = "VACUUM";
+/// Fold the log back into the database file.
+pub const RT_CHECKPOINT: &str = "PRAGMA wal_checkpoint(TRUNCATE)";
+/// Start the tombstoning transaction.
+pub const RT_BEGIN: &str = "BEGIN IMMEDIATE";
+/// Commit it.
+pub const RT_COMMIT: &str = "COMMIT";
+/// Roll it back.
+pub const RT_ROLLBACK: &str = "ROLLBACK";
+/// A broadcast row's sequence number and heartbeat flag.
+pub const RT_ROW_BROADCAST: &str = "SELECT seq, is_heartbeat FROM messages WHERE id = ?1";
+/// The app's messages in a time window: the repository, the branch they went to and when (never the text).
+pub const AS_MESSAGES: &str = "SELECT repositoryId, toBranch, createdAt FROM workspace_messages WHERE createdAt >= ?1 AND createdAt < ?2";
+/// The timestamps of the app messages a store has ingested.
+pub const AS_NATIVE_TS: &str = "SELECT ts FROM messages WHERE hash LIKE ?1";
+/// The reconcile port: every registry row with the two columns the conditional operations compare.
+pub const RECON_REGISTRY_ALL: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry ORDER BY id ASC;";
+/// The reconcile port, orphan heal: the workspace ids a store holds messages for (`listWorkspaceIds`, first source).
+pub const RECON_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages;";
+/// The reconcile port, orphan heal: the ids of the registry rows (`listWorkspaceIds`, second source).
+pub const RECON_IDS_REGISTRY: &str = "SELECT id FROM registry;";
+/// The reconcile port, orphan heal: the ids that hold a cursor (`listWorkspaceIds`, third source).
+pub const RECON_IDS_CURSORS: &str = "SELECT DISTINCT workspace_id AS id FROM cursors;";
+/// The reconcile port, orphan heal: the ids that hold a gate (`listWorkspaceIds`, fourth source).
+pub const RECON_IDS_GATES: &str = "SELECT DISTINCT workspace_id AS id FROM gates;";
+/// The reconcile port's normaliser: the user tables of a store.
+pub const RECON_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+/// The reconcile port's normaliser: every row of a table in storage order (`{table}` is filled from `RECON_TABLES`).
+pub const RECON_DUMP: &str = "SELECT * FROM \"{table}\" ORDER BY rowid;";
+/// The reconcile port: the registry row of one id, every column.
+pub const RECON_REGISTRY_ONE: &str =
+    "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq FROM registry WHERE id = ?;";
+/// The reconcile port: a partition's message rows in storage order, with the columns the fold copies.
+pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce FROM messages WHERE workspace_id = ? ORDER BY id ASC;";
+/// The reconcile port: whether any partition of the store already holds a row with this hash.
+pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMIT 1;";
+/// The reconcile port: the number of message rows in a partition.
+pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
+/// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
+pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

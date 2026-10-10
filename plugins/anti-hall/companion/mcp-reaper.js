@@ -345,7 +345,7 @@ function descendantsOf(procs, rootPid) {
 // exists) the whole check is unresolvable and this returns true (fail-soft: never treat an
 // unresolvable broker as ownerless). A Claude session commonly runs at a workspace root
 // while the broker it owns runs `--cwd` inside a git submodule several levels under that
-// root (the real field case: broker `--cwd .../fix-roster-image-only-message/skyflutter`,
+// root (the real field case: broker `--cwd .../fix-roster-image-only-message/appflutter`,
 // owning session cwd `.../fix-roster-image-only-message`, an ANCESTOR, not the same dir or
 // a descendant — a descendant-only check would misread that live broker as abandoned).
 // Segment boundaries matter both directions: an owner at `/a/bc` never counts for a broker

@@ -1,4 +1,4 @@
-//! `ah-engine doctor` against every failure scenario of `~/.anti-hall/work/DOCTOR-SCENARIOS.md`, each simulated in a scratch HOME:
+//! `ah-engine doctor` against every documented failure scenario, each simulated in a scratch HOME:
 //! stub and fixture binaries (a wrong-OS or wrong-architecture header, a quarantined file), fake sockets and lock holders,
 //! read-only and unowned directories, a scratch copy of the plugin with its files broken, stub `node`/`git` programs on a
 //! restricted PATH. The shell doctor (`ah-hook.sh --doctor`) runs on the same fixtures and must say the same thing for every
@@ -65,7 +65,7 @@ impl Out {
 
     /// Assert no finding of any level contains `needle`.
     fn lacks(&self, needle: &str) {
-        assert!(!self.text.contains(needle), "unexpected {needle:?}\n{}", self.text);
+        assert!(!self.text.contains(needle), "unexpected {needle:?}\n{}\n--- stderr ---\n{}", self.text, self.err);
     }
 
     /// The lines of one section (heading line to the next blank line).
@@ -129,6 +129,11 @@ impl Sc {
         copy_dir(&real.join("engine"), &p.join("engine"));
         copy_dir(&real.join("hooks"), &p.join("hooks"));
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
+        copy_dir(&real.join("statusline"), &p.join("statusline"));
+        // the libraries the DevSwarm hook self-tests run through: read-only links to the real ones (a test that edits one copies it first)
+        for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+            symlink(real.join(dir), p.join(dir)).unwrap();
+        }
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());
@@ -1108,27 +1113,96 @@ fn nd_node_missing_old_broken_and_fine() {
     sc.own_plugin();
     sc.programs(&[], &["node"]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["node is not on PATH", "guards fail closed", "install Node >= 22"]);
-    d.has("bad", &["neither a working engine nor node is available"]);
+    d.has("warn", &["node is not on PATH", "Node is optional", "none needed"]);
+    d.has("bad", &["no working engine", "Node is not needed"]);
     assert_eq!(d.code, 1);
-    // the engine works: no node is only a warning
+    // the engine works: no node is only a warning, Node is not a requirement
     sc.stub_engine("0.1.0");
     let d = sc.doctor(&[]);
     d.has("warn", &["node is not on PATH"]);
-    d.lacks("neither a working engine nor node");
+    d.lacks("no working engine");
     assert_eq!(d.code, 0);
     let shell = sc.shell();
-    shell.has("warn", &["node is not on PATH"]);
-    // too old, broken, fine
+    shell.has("warn", &["node is not on PATH", "Node is optional"]);
+    shell.lacks("no working engine");
+    // too old, broken, fine: warnings and a note, never a failure while the engine works
+    // a stand-in node answers every start with its version, so the Node twins are off for these stages
+    twins_off(&sc);
     sc.programs(&[("node", "echo v18.19.0")], &[]);
     let d = sc.doctor(&[]);
-    d.has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22."]);
-    sc.shell().has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22"]);
+    d.has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
+    assert_eq!(d.code, 0, "{}", d.text);
+    sc.shell().has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
     sc.programs(&[("node", "echo oops >&2; exit 4")], &[]);
-    sc.doctor(&[]).has("bad", &["node does not run: exit 4 oops"]);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["node does not run: exit 4 oops"]);
+    assert_eq!(d.code, 0);
     sc.programs(&[("node", "echo v22.3.0")], &[]);
-    sc.doctor(&[]).has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
-    sc.shell().has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
+    sc.doctor(&[]).has("info", &["Node v22.3.0 (>= 22) found; optional"]);
+    sc.shell().has("info", &["Node v22.3.0 (>= 22) found; optional"]);
+}
+
+/// Turn `doctor.node_twins` off in the scenario's plugin copy (defaults and pristine twin).
+fn twins_off(sc: &Sc) {
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = sc.plugin.join(dir).join("doctor.toml");
+        let t = fs::read_to_string(&f).unwrap();
+        let at = t.find("[doctor.node_twins]").unwrap();
+        let v = at + t[at..].find("value = true").unwrap();
+        fs::write(&f, format!("{}value = false{}", &t[..v], &t[v + "value = true".len()..])).unwrap();
+    }
+}
+
+#[test]
+fn nd_with_node_twins_off_the_doctor_never_starts_node() {
+    // a node on PATH that records every start: with doctor.node_twins off, the engine doctor (live self-tests, statusline
+    // render, supervisor and renderer syntax checks) must not run it beyond the optional version probe, and every self-test the
+    // engine defers is a warning, never a pass
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.1.0");
+    twins_off(&sc);
+    let log = sc.root.join("node-starts.log");
+    sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
+    let d = sc.doctor(&[]);
+    let starts = fs::read_to_string(&log).unwrap_or_default();
+    let real: Vec<&str> = starts.lines().filter(|l| l.trim() != "--version").collect();
+    assert!(real.is_empty(), "the doctor started node: {real:?}\n{}", d.text);
+    d.has("warn", &["the engine defers this self-test to its Node hook, so it was not exercised here"]);
+}
+
+#[test]
+fn lg_logs_flag_lists_the_recent_warn_and_error_entries() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let logs = sc.root.join("central-logs");
+    fs::create_dir_all(&logs).unwrap();
+    let run = |sc: &Sc| {
+        let mut c = Command::new(BIN);
+        c.arg("doctor").arg("--check").arg("--logs").arg("--plugin-root").arg(&sc.plugin);
+        sc.env(&mut c);
+        c.env("ANTI_HALL_LOG_DIR", &logs);
+        sc.finish(c)
+    };
+    let d = run(&sc);
+    d.has("info", &["no warn/error entries in the central anti-hall log", &logs.display().to_string()]);
+    d.lacks("--logs is not handled");
+    let mut body = String::from("{\"ts\":\"t0\",\"level\":\"info\",\"component\":\"x\",\"op\":\"y\",\"msg\":\"quiet\"}\n{torn\n");
+    for i in 0..12 {
+        body.push_str(&format!("{{\"ts\":\"t{i}\",\"level\":\"warn\",\"component\":\"ingest\",\"op\":\"tick\",\"msg\":\"m{i}\\nsecond\"}}\n"));
+    }
+    body.push_str("{\"ts\":\"tz\",\"level\":\"error\",\"component\":\"cli\",\"op\":\"send\",\"repoKey\":\"r1\",\"err\":{\"message\":\"boom\"}}\n");
+    fs::write(logs.join("devswarm.jsonl"), body).unwrap();
+    let d = run(&sc);
+    d.has("warn", &["13 warn/error entries in the central anti-hall log across 2 component(s) — cli:1, ingest:12"]);
+    d.has("info", &["showing the most recent 10 of 13"]);
+    d.has("warn", &["[t11] warn ingest/tick: m11"]);
+    d.has("warn", &["[tz] error cli/send repoKey=r1: boom"]);
+    d.lacks("quiet");
+    d.lacks("[t2] warn");
+    d.lacks("second");
+    // report-only: the entries are warnings, not failures
+    assert_eq!(d.code, run(&sc).code);
 }
 
 #[test]
@@ -1355,9 +1429,9 @@ fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
     assert!(bad(&engine), "engine: {}", engine.text);
     assert_ne!(node.code, 0);
     assert_ne!(engine.code, 0);
-    // and both accept this Node
+    // and both see this Node (the engine doctor as an optional one)
     node.has("ok", &["Node v", "hooks can run"]);
-    engine.has("ok", &["Node v", "hooks can run"]);
+    engine.has("info", &["Node v", "found; optional"]);
 }
 
 // ---- the optional `claude doctor` sub-check ---------------------------------------------------------------------------------------
@@ -1428,4 +1502,79 @@ fn doctor_check_leaves_the_state_directory_alone() {
     // the repair, which does write, still may
     sc.doctor_raw(&["--repair"]);
     assert!(sc.state().exists());
+}
+
+#[test]
+fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.programs(&[], &[]);
+    // the hooks the self-tests run need the companion libraries and the scripts beside them
+    fs::remove_file(sc.plugin.join("companion")).unwrap();
+    copy_dir(&real_plugin().join("companion"), &sc.plugin.join("companion"));
+    // a supervisor script that does not parse is a failure, even with DevSwarm dormant
+    let live = sc.plugin.join("companion/lib/liveness.js");
+    let good = fs::read(&live).unwrap();
+    fs::write(&live, "function (((\n").unwrap();
+    let d = sc.doctor(&[]);
+    d.has("bad", &["supervisor lib SYNTAX ERROR: liveness.js"]);
+    assert_eq!(d.code, 1);
+    fs::write(&live, good).unwrap();
+    let d = sc.doctor(&[]);
+    d.lacks("DevSwarm liveness supervisor");
+    assert_eq!(d.code, 0);
+    // an installed supervisor (a launchd agent or a systemd timer file) makes the section appear
+    let unit = if host_os() == "macos" {
+        "Library/LaunchAgents/com.anti-hall.devswarm-supervisor.plist"
+    } else {
+        ".config/systemd/user/anti-hall-devswarm-supervisor.timer"
+    };
+    sc.put(unit, b"x");
+    let d = sc.doctor(&[]);
+    d.has("ok", &["supervisor companion INSTALLED (", "background sweep)"]);
+    assert_eq!(d.code, 0);
+}
+
+// ---- UN: the units heal inside the repair --------------------------------------------------------------------------------------
+
+/// The unit files the heal wrote under a scratch home (launchd plists or systemd user units).
+fn unit_files(home: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in ["Library/LaunchAgents", ".config/systemd/user"] {
+        if let Ok(rd) = fs::read_dir(home.join(dir)) {
+            found.extend(rd.flatten().map(|e| e.path()));
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn un_01_the_repair_heals_the_units_once_never_in_a_check_and_obeys_the_switch() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.0.0");
+    // a check and a dry run write nothing
+    assert!(!sc.doctor(&[]).text.contains("units-heal"));
+    let dry = sc.doctor_raw(&["--dry-run"]);
+    assert!(dry.text.contains("units-heal"), "{}", dry.text);
+    assert!(unit_files(&sc.home).is_empty(), "a dry run wrote units");
+    // the switch off: the repair leaves the units alone
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--plugin-root").arg(&sc.plugin).arg("--repair");
+    sc.env(&mut c);
+    c.env("ANTIHALL_UNITS_HEAL", "off");
+    let off = sc.finish(c);
+    assert!(!off.text.contains("units-heal") && unit_files(&sc.home).is_empty(), "{}", off.text);
+    // the repair writes the engine unit and says so
+    let first = sc.doctor_raw(&["--repair"]);
+    first.has("ok", &["units-heal"]);
+    let written = unit_files(&sc.home);
+    assert!(!written.is_empty(), "the repair wrote no unit: {}", first.text);
+    let bytes: Vec<Vec<u8>> = written.iter().map(|p| fs::read(p).unwrap()).collect();
+    // a second repair changes nothing and reports nothing
+    let again = sc.doctor_raw(&["--repair"]);
+    assert!(!again.text.contains("units-heal"), "not idempotent: {}", again.text);
+    assert_eq!(unit_files(&sc.home), written);
+    assert_eq!(written.iter().map(|p| fs::read(p).unwrap()).collect::<Vec<_>>(), bytes);
 }

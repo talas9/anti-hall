@@ -37,6 +37,7 @@ AskUserQuestion	10	node --no-concurrent-recompilation --no-concurrent-sparkplug 
 TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js"
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard"
+Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard"
 @SessionEnd	5
 *	5	node "${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js"
 @SessionStart	10

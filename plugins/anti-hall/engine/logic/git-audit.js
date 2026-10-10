@@ -71,16 +71,18 @@ function decide(p, opts, event) {
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
   TB = gitTables();
   if (!gitSettingOn('git.setting_git_guard') || ah.settings.skipped(ah.cfg('git.guard_name')) || ti.command === '') return 'allow';
-  // Node falls back to its own process directory without a cwd (or resolves a relative one against it)
-  if (typeof p.cwd !== 'string' || p.cwd.charAt(0) !== '/') return 'defer';
+  // Node falls back to its own process directory without a cwd (or resolves a relative one against it): lib/78-hook-proc.js
+  // a relative payload cwd resolves against the hook process's own directory, which the daemon cannot know: Node decides
+  if (typeof p.cwd === 'string' && p.cwd !== '' && p.cwd.charAt(0) !== '/') return 'defer';
+  const cwd = hookProc.cwd(p);
   let home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
-  S = gitFreshState(ti.command, p.cwd, null);
+  S = gitFreshState(ti.command, cwd, null);
   S.home = home || '';
-  S.abs = (q) => (q.charAt(0) === '/' ? q : posix.resolveIn(p.cwd, [q]));
+  S.abs = (q) => (q.charAt(0) === '/' ? q : posix.resolveIn(cwd, [q]));
   S.pluginRoot = '';
   shellScan.reset();
-  const hits = auditRecentCommits(ti.command, p.cwd);
+  const hits = auditRecentCommits(ti.command, cwd);
   if (!hits.length) return 'allow';
   const t = text.render(ah.cfg('git_audit.msg'), { window_min: Math.floor(ah.cfg('git_audit.window_s') / 60), hits: hits.join(', ') });
   return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: ah.cfg('git_audit.event'), additionalContext: t } }) };

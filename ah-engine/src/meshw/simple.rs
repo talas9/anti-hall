@@ -352,6 +352,12 @@ fn ignore(inv: &Inv, a: &Args, set: bool) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(defaults::text("devswarm_cli.msg_bad_id")));
     }
+    let action = defaults::text(if set { "devswarm_cli.action_archive_ignore" } else { "devswarm_cli.action_archive_unignore" });
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, action)? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let home = home_str(inv)?;
     let dir = devswarm_root(Path::new(&home)).join(defaults::text("devswarm_cli.ignore_dir"));
     let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
@@ -570,7 +576,7 @@ fn rollup_key(v: Option<&OVal>) -> R<String> {
     match v {
         None | Some(OVal::Null) => Ok(defaults::text("devswarm_cli.log_none_label").to_string()),
         Some(OVal::Str(t)) => Ok(t.clone()),
-        Some(OVal::Num(x)) => Ok(crate::checks::guardkit::ojson::js_number_text(*x)),
+        Some(OVal::Num(x)) => Ok(crate::checks::jsport::num::to_js_string(*x)),
         Some(OVal::Bool(b)) => Ok(b.to_string()),
         Some(_) => defer("log-rollup-shape"),
     }
@@ -694,6 +700,11 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(defaults::text("devswarm_cli.msg_bad_id")));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_wake_directive"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let child = inv.env.get(defaults::text("devswarm_role.branch_env")).is_some_and(|v| !js_trim(v).is_empty());
     if !child {
         return defer("primary-directive");
@@ -736,15 +747,12 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
 
 // ---- the Node witness ---------------------------------------------------------------------------------------------------
 
-/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
-fn gates_dump(db: &Path) -> Option<String> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
-    let mut st = c.prepare(crate::sql::MESHW_GATES_DUMP).ok()?;
+/// Every row of one query as text, oldest first (`None` when the store cannot be read).
+fn rows_dump(c: &rusqlite::Connection, query: &str, cols: usize, out: &mut String) -> Option<()> {
+    let mut st = c.prepare(query).ok()?;
     let mut rows = st.query([]).ok()?;
-    let mut out = String::new();
     while let Some(r) = rows.next().ok()? {
-        for i in 0..5 {
+        for i in 0..cols {
             out.push_str(&match r.get_ref(i).ok()? {
                 rusqlite::types::ValueRef::Null => "null".to_string(),
                 rusqlite::types::ValueRef::Integer(x) => x.to_string(),
@@ -756,6 +764,15 @@ fn gates_dump(db: &Path) -> Option<String> {
         }
         out.push('\n');
     }
+    Some(())
+}
+
+/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
+fn gates_dump(db: &Path) -> Option<String> {
+    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
+    let mut out = String::new();
+    rows_dump(&c, crate::sql::MESHW_GATES_DUMP, 5, &mut out)?;
     Some(out)
 }
 
@@ -773,14 +790,49 @@ pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
 fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> {
     let home = scratch.join(defaults::text("mesh_write.shadow_home"));
     std::fs::create_dir_all(&home).ok()?;
+    let mut linked = std::collections::HashMap::new();
     for rel in defaults::list("devswarm_cli.witness_copy_paths") {
         let src = inv.home.join(rel);
         let dst = home.join(rel);
         if src.is_dir() {
-            crate::meshw::verify::copy_tree(&src, &dst).ok()?;
+            crate::meshw::verify::copy_tree_linked(&src, &dst, &mut linked).ok()?;
         } else if src.is_file() {
             std::fs::create_dir_all(dst.parent()?).ok()?;
             std::fs::copy(&src, &dst).ok()?;
+        }
+    }
+    // read-only inputs that are too big to copy (session transcripts) are linked
+    for rel in defaults::list("devswarm_cli.witness_link_paths") {
+        let src = inv.home.join(rel);
+        // the store verbs copy their own project's store; the link is for the verbs that only read the stores
+        if src.exists() && !with_store {
+            let dst = home.join(rel);
+            std::fs::create_dir_all(dst.parent()?).ok()?;
+            std::os::unix::fs::symlink(&src, dst).ok()?;
+        }
+    }
+    // a caller whose ANTI_HALL_LOG_DIR moves the central log: Node's witness reads a copy of THAT log (its writes still go to the
+    // scratch home), and its printed paths are mapped back to the caller's directory
+    if let Some(d) = inv.env.get(defaults::text("devswarm_cli.env_log_dir")).filter(|d| !d.is_empty()) {
+        let wdir = crate::meshw::clog::witness_dir(&home);
+        std::fs::create_dir_all(&wdir).ok()?;
+        for f in [defaults::text("devswarm_cli.log_file"), defaults::text("devswarm_cli.log_rotated_file")] {
+            let (src, dst) = (Path::new(d).join(f), wdir.join(f));
+            crate::discard::harmless(std::fs::remove_file(&dst)); // keep: absent is the wanted state
+            if src.is_file() {
+                std::fs::copy(&src, &dst).ok()?;
+            }
+        }
+        std::fs::write(scratch.join("log-dir"), d).ok()?;
+    }
+    if with_store {
+        for rel in defaults::list("devswarm_cli.witness_link_paths_with_store") {
+            let src = inv.home.join(rel);
+            if src.exists() {
+                let dst = home.join(rel);
+                std::fs::create_dir_all(dst.parent()?).ok()?;
+                std::os::unix::fs::symlink(&src, dst).ok()?;
+            }
         }
     }
     // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
@@ -811,6 +863,11 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], ans: &Answer) {
         if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
             let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
             std::fs::write(scratch.join("expect-gates"), gates_dump(&db).unwrap_or_default())?;
+        }
+        if let (crate::meshw::send::Effect::Row(hash), Ok(key)) = (&ans.effect, std::fs::read_to_string(scratch.join("snap-key"))) {
+            let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
+            std::fs::write(scratch.join("expect-row-hash"), hash)?;
+            std::fs::write(scratch.join("expect-row"), super::row_by_hash(&db, hash).unwrap_or_default())?;
         }
         std::fs::write(scratch.join("expect-manifest"), serde_json::Value::Array(manifest).to_string())
     };
@@ -845,6 +902,9 @@ pub fn run_witness(args: &[String]) -> i32 {
         return 0;
     };
     let real_home = std::env::var_os(defaults::text("mesh_write.env_home")).map(PathBuf::from).unwrap_or_default();
+    // Node under the scratch home would look for the app database there: it is given the real one's path (it only reads it)
+    let env_now: crate::meshw::ident::Env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let real_app_db = crate::meshw::ident::app_db_path(&real_home, &env_now).unwrap_or_else(|| defaults::text("mesh_write.app_db_off").to_string());
     let mut node = Command::new(defaults::text("mesh_write.node_bin"));
     node.arg("-e")
         .arg(defaults::text("devswarm_cli.witness_node_snippet"))
@@ -852,19 +912,40 @@ pub fn run_witness(args: &[String]) -> i32 {
         .arg(now)
         .args(argv)
         .env(defaults::text("mesh_write.env_home"), &home)
+        .env(defaults::text("mesh_write.env_app_db"), real_app_db.as_str())
+        // Node's central log goes to the scratch home whatever the caller's environment says
+        .env(defaults::text("devswarm_cli.env_log_dir"), crate::meshw::clog::witness_dir(&home))
         .stdin(Stdio::null())
         .stderr(Stdio::null());
+    let log_before = crate::meshw::clog::size_of(&home);
     match crate::meshw::verify::bounded_output(&mut node) {
         Ok(o) => {
             let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-            let node_stdout = String::from_utf8_lossy(&o.stdout).replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy());
+            // a measured duration is never the same twice: blanked on both sides
+            let mask = |t: String| match regex::Regex::new(defaults::text("devswarm_cli.witness_mask")) {
+                Ok(re) => re.replace_all(&t, defaults::text("devswarm_cli.witness_mask_to")).into_owned(),
+                Err(_) => t,
+            };
+            let mut node_raw = String::from_utf8_lossy(&o.stdout).into_owned();
+            if let Ok(d) = std::fs::read_to_string(scratch.join("log-dir")) {
+                node_raw = node_raw.replace(&crate::meshw::clog::witness_dir(&home).to_string_lossy().into_owned(), &d);
+            }
+            let node_stdout = mask(node_raw.replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()));
             let node_code = o.status.code().unwrap_or(-1);
-            let want_stdout = String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned();
+            let want_stdout = mask(String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned());
             let want_code: i32 = String::from_utf8_lossy(&read(&scratch.join("expect-code"))).trim().parse().unwrap_or(-1);
             let manifest: Vec<(String, String)> = serde_json::from_slice(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
             let mut diff: Vec<String> = Vec::new();
             for (rel, file) in &manifest {
-                if read(&scratch.join(file)) != read(&home.join(rel)) {
+                // the central log: what Node appended, with the timestamp and the writer's pid blanked on both sides
+                let same = if crate::meshw::clog::is_log_rel(rel) {
+                    crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &read(&scratch.join(file)))
+                } else {
+                    // a path Node wrote into a descriptor names the scratch home: the engine's names the real one
+                    let theirs = String::from_utf8_lossy(&read(&home.join(rel))).replace(home.to_string_lossy().as_ref(), &real_home.to_string_lossy());
+                    read(&scratch.join(file)) == theirs.as_bytes()
+                };
+                if !same {
                     diff.push(rel.clone());
                 }
             }
@@ -872,6 +953,13 @@ pub fn run_witness(args: &[String]) -> i32 {
                 let db = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
                 if gates_dump(&db).unwrap_or_default().as_bytes() != read(&scratch.join("expect-gates")).as_slice() {
                     diff.push(defaults::text("devswarm_cli.gates_dump_table").to_string());
+                }
+                // the one message row the engine appended: Node's copy must hold the same row
+                if let Ok(hash) = std::fs::read_to_string(scratch.join("expect-row-hash")) {
+                    let theirs = super::row_by_hash(&db, &hash).unwrap_or_default();
+                    if theirs.as_bytes() != read(&scratch.join("expect-row")).as_slice() {
+                        diff.push(defaults::text("devswarm_cli.message_row_name").to_string());
+                    }
                 }
             }
             if node_stdout == want_stdout && node_code == want_code && diff.is_empty() {

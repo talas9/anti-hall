@@ -240,8 +240,8 @@ fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
 
 /// The supervision event of a plan write, recorded after it (best effort); a log due for rotation was deferred beforehand.
 fn record(inv: &Inv, typ: &str, fields: Vec<(String, OVal)>) {
-    if let Some(line) = plan::record(inv, typ, &fields, inv.now as f64) {
-        crate::meshw::note_written(&plan::log_rel(), line.as_bytes());
+    if plan::record(inv, typ, &fields, inv.now as f64).is_some() {
+        plan::note_log(inv);
     }
 }
 
@@ -255,6 +255,11 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(&[("action", action), ("error", s(defaults::text("devswarm_cli.msg_plan_bad_id")))]));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_plan"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     let now = inv.now as f64;
     let sub_word = || sub.map_or(OVal::Null, s);
     let wt = plan::plan_ref(inv, id)?;
@@ -360,6 +365,11 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
     if !is_safe_id(id) {
         return Ok(fail(&[("action", action), ("error", s(defaults::text("devswarm_cli.msg_scope_bad_id")))]));
     }
+    let id = match crate::meshw::actverbs::resolve_target_id(inv, id, defaults::text("devswarm_cli.action_scope"))? {
+        Ok(x) => x,
+        Err(refused) => return Ok(refused),
+    };
+    let id = id.as_str();
     if sub != Some(defaults::text("devswarm_cli.sub_add")) {
         return Ok(fail(&[("action", action), ("error", s(defaults::text("devswarm_cli.msg_scope_usage")))]));
     }

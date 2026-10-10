@@ -33,4 +33,18 @@ ah.sys.cores = function () { return ahNull(ahHost.cores()); };
 // home, so a hook reads and writes no state; unknown: no usable HOME).
 ah.homeGuard = function () { return JSON.parse(ahHost.homeGuard()); };
 // The project root of an absolute working directory as the handover finder resolves it, or null when the engine cannot tell.
-ah.project = { root: function (cwd) { return ahNull(ahHost.projectRoot(cwd)); } };
+ah.project = {
+  root: function (cwd) { return ahNull(ahHost.projectRoot(cwd)); },
+  // The git work tree around an absolute directory, or the directory itself when there is none (or the work tree is the home directory);
+  // null for a relative directory or a request with no home. The root the task and history ledgers are kept under.
+  repoRoot: function (cwd) { return ahNull(ahHost.repoRoot(cwd)); },
+};
+// What V8's Date.parse makes of a text under the request's time zone: {ms}, {nan: true} or {unsure: true} (a text whose reading the engine
+// does not reproduce: the script defers). Facts only; what a date means is the script's.
+ah.date = { parse: function (text) { return JSON.parse(ahHost.dateParse(text)); } };
+// The last `bytes` bytes of a file as text (the whole file when smaller), no line handling; null when unreadable.
+ah.fs.readEnd = function (p, bytes) { return ahNull(ahHost.readEnd(p, bytes || 0)); };
+// A regular file this process may execute.
+ah.fs.isExecutable = function (p) { return ahHost.isExecutable(p); };
+// The process's user id.
+ah.sys.uid = function () { return ahHost.uid(); };

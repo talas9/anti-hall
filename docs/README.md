@@ -4,6 +4,29 @@ The start page: every doc, grouped, one line each. New here? Read the
 [`GUIDE.md`](./GUIDE.md) sections you need; [`KB.md`](./KB.md) is the canonical,
 maintained knowledge base (ground truth, staleness ledger, topic map).
 
+## Docs site
+
+The pages of the published docs site, https://talas9.github.io/anti-hall/ (built with MkDocs from this folder; the settings
+reference and the changelog pages are generated at build time by `tools/site_gen.py`).
+
+| Page | What it covers |
+|---|---|
+| [`index.md`](./index.md) | Docs site home: what anti-hall is, install, what you'll notice in your first session. |
+| [`start/install.md`](./start/install.md) | Install for Claude Code and Codex, keep `.anti-hall/` out of git, check it works. |
+| [`start/update.md`](./start/update.md) | Update on Claude Code and Codex. |
+| [`start/uninstall.md`](./start/uninstall.md) | Remove the plugin, the statusline and the optional companions. |
+| [`features/guards.md`](./features/guards.md) | Each guard, its message, its setting, skipping one, and what guards do not do. |
+| [`features/tasks.md`](./features/tasks.md) | Task tracking: task-guard, tasklist-guard, the progress file and the fix ledger. |
+| [`features/handovers.md`](./features/handovers.md) | Automatic and manual handovers, resuming, keeping context small. |
+| [`features/skills.md`](./features/skills.md) | Every skill, when to use it, and the Codex skill names. |
+| [`features/statusline.md`](./features/statusline.md) | The optional two-line statusline: install, consolidate, remove. |
+| [`features/devswarm.md`](./features/devswarm.md) | The optional DevSwarm integration and its companions. |
+| [`how-it-works/index.md`](./how-it-works/index.md) | How it works: the Rust engine as the core component and the temporary Node fallback. |
+| [`settings/index.md`](./settings/index.md) | Changing settings: the skill, `/config`, the CLI, precedence, safety settings. |
+| [`troubleshooting.md`](./troubleshooting.md) | The doctor, common problems, what the messages mean, turning a check off. |
+| [`contributing.md`](./contributing.md) | Contributing links and how to build the docs site. |
+| [`background.md`](./background.md) | Introduces the research notes (KB-*) shown under Background on the site. |
+
 ## Getting started
 
 | Doc | What it covers |
@@ -27,7 +50,7 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | Doc | What it covers |
 |---|---|
 | [`KB-jev-classifier.md`](./KB-jev-classifier.md) | Jev (TypeSafe System One) opt-in classifier: [Enable Jev](./KB-jev-classifier.md#enable-jev) (full text and the measured result), every wired integration, metrics, cost and budget watch. |
-| [`AH-ENGINE.md`](./AH-ENGINE.md) | The optional ah-engine: a small Rust program that answers hook calls without starting Node per call. Install (pinned sha256), go-live and rollback, config failover and self-heal, telemetry, what still runs on Node, pre-release measurements. |
+| [`AH-ENGINE.md`](./AH-ENGINE.md) | The core ah-engine: a small Rust program that answers hook calls without starting Node per call. Install (pinned sha256), go-live and rollback, config failover and self-heal, telemetry, what still runs on Node, pre-release measurements. |
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Developer guide: prerequisites, building the plugin and the Rust engine, every test suite, local install, debugging, the porting workflow, branches and releases. Every command in it is run by `ah-engine/scripts/doc-check.sh`. |
 | [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event. |
 | [`KB-devswarm-hivecontrol.md`](./KB-devswarm-hivecontrol.md) | DevSwarm & the `hivecontrol` CLI — multi-workspace orchestration. |
@@ -43,7 +66,9 @@ maintained knowledge base (ground truth, staleness ledger, topic map).
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | Project layout, running the tests, adding a guard. |
 | [`../SECURITY.md`](../SECURITY.md) | Report a vulnerability privately, not in a public issue. |
 | [`../CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) | Expected behaviour and how to report a conduct problem. |
+| [`../SUPPORT.md`](../SUPPORT.md) | Where to ask a question, report a bug or get help. |
 | [`../RELEASING.md`](../RELEASING.md) | The release checklist and the `dev` → `main` branch flow. |
+| [`REPO-PIPELINES.md`](./REPO-PIPELINES.md) | Every GitHub workflow, its trigger and whether it gates, plus the repository's policy files and security settings. |
 | [`CONTRACT-1.0.md`](./CONTRACT-1.0.md) | What semver freezes at 1.0: settings keys, CLI verbs, hooks, state paths, Codex parity. |
 | [`../AGENTS.md`](../AGENTS.md) | The protocol for Codex and cross-tool agents. |
 | [`../plugins/anti-hall/README.md`](../plugins/anti-hall/README.md) | The plugin directory page (ships inside the plugin). |
@@ -77,7 +102,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `doctor` | "is anti-hall working?" | live self-tests on every guard; `--repair` for safe auto-fixes |
 | `system-briefing` | "brief me on anti-hall", "what does X mean" | operator guide (terms, rules, verbs, settings) + live inventory of every hook/skill shipped |
 | `update` | "update anti-hall" | pulls latest, shows changelog delta, prompts `/reload-plugins` (restart only if a hook or skill path still shows the old version) |
-| `flutter-debug` | debugging a running Flutter app | agent-driven hot-reload + visual-verification debug loop |
 | `activate` | first-time setup | one-shot idempotent install of statusline + model-routing state (statusline, model routing, sentinel) |
 | `simplify` | "simplify this" / "deslop" | behavior-preserving simplification with a measured `net: -N lines` score |
 | `debt` | tracking deliberate shortcuts | register + audit `// anti-hall: <ceiling>,<when>` debt markers for rot risk |
@@ -88,6 +112,7 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | `settings` | "anti-hall settings", "set auto-handover to 80%" | show or change any setting; one unified `~/.anti-hall/settings.json`, browsable via `show`/`get`/`set`/`reset` |
 | `engine-agents` | spawning, messaging or stopping agents, keeping the task list, or delegating work and a delegation, task or mo | Subagent, task-list, delegation and routing guards (generated from the engine registry) |
 | `engine-devswarm` | working in or with DevSwarm workspaces and a DevSwarm gate, role directive or wake guard applies | The DevSwarm role, gate and wake guards (generated from the engine registry) |
+| `engine-devswarm-supervisor` | tuning or checking the DevSwarm supervisor sweep (auto-archive, pokes, app sync, retention, reconcile, housekeeping) | The supervisor sweep switches (generated from the engine registry) |
 | `engine-doctor` | checking whether anti-hall works, repairing it, migrating its state, or scanning what it can do on this machin | Health check, repair, migrations and capability scans (generated from the engine registry) |
 | `engine-github` | committing, pushing, merging or releasing and a git or merge guard applies | Git, merge and release guards (generated from the engine registry) |
 | `engine-guards` | an anti-hall guard blocked, warned or injected something, or you need to know which guard covers a rule | What the automatic guards check and how to read a block (generated from the engine registry) |
@@ -123,7 +148,6 @@ Invoke any of these as `/anti-hall:<name>`. Full descriptions (arguments, env va
 | [`KB-overengineering.md`](./KB-overengineering.md) | Overengineering causes and measurement; anti-hall's scope-fidelity implications. |
 | [`KB-session-handover.md`](./KB-session-handover.md) | AI-agent session handover design; backs the `handover` skill. |
 | [`KB-handover-research.md`](./KB-handover-research.md) | 2026-09-24 sourced handover research: compaction loss, context rot, trigger points, Claude Code + Codex compaction/hook facts, receiver read-back; the gap review behind the 0.108 handover changes. |
-| [`KB-flutter-claude-debug.md`](./KB-flutter-claude-debug.md) | Research backing the `flutter-debug` skill. |
 | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | Slowing main-agent context growth — caching, sub-agent isolation, compaction, JIT retrieval. |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | Cross-reference between Claude-side and Codex-side KB docs. |
 
@@ -154,7 +178,6 @@ Historical working documents live in [`archive/`](./archive/README.md); they may
 | [`archive/ULTRAPLAN.md`](./archive/ULTRAPLAN.md) | Single consolidated reconciliation plan, `v0.3.0`-era. Superseded; executed. |
 | [`archive/2026-06-06-context-opt-test-design.md`](./archive/2026-06-06-context-opt-test-design.md) | Dated context-optimization test-harness design. |
 | [`archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md`](./archive/2026-06-10-v0.32.0-fable5-model-routing-plan.md) | Dated v0.32.0 design plan (Fable 5 support, model-routing guard). |
-| [`2026-06-10-v0.34.0-flutter-debug-plan.md`](./2026-06-10-v0.34.0-flutter-debug-plan.md) | Dated v0.34.0 design plan (flutter-debug agent + skill). Kept here: `tests/hooks/flutter-debug.test.js` reads it by path. |
 | [`archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md`](./archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md) | Approved design — DevSwarm-aware workspace-tier orchestration. |
 | [`archive/superpowers/plans/2026-07-06-devswarm-orchestration.md`](./archive/superpowers/plans/2026-07-06-devswarm-orchestration.md) | Implementation plan for the design above. |
 | [`archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md`](./archive/superpowers/specs/2026-07-08-devswarm-liveness-supervisor-design.md) | Design — DevSwarm liveness supervisor (wedged-session recovery). |

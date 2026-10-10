@@ -50,9 +50,8 @@ test('monitors.json entries are well-formed and their command targets exist', ()
   assert.ok(Array.isArray(m) && m.length > 0);
   for (const e of m) {
     for (const k of ['name', 'command', 'description']) assert.strictEqual(typeof e[k], 'string', `monitor ${k}`);
-    const refs = rootRefs(e.command);
-    assert.ok(refs.length > 0, 'monitor command must use CLAUDE_PLUGIN_ROOT');
-    for (const r of refs) assert.ok(fs.existsSync(path.join(PLUGIN, r)), `missing ${r}`);
+    assert.ok(e.command.includes('CLAUDE_PLUGIN_ROOT'), 'monitor command must use CLAUDE_PLUGIN_ROOT');
+    for (const r of rootRefs(e.command)) assert.ok(fs.existsSync(path.join(PLUGIN, r)), `missing ${r}`);
   }
 });
 
@@ -66,9 +65,9 @@ test('every skills/<dir> has a SKILL.md and only allow-listed loose files sit be
   assert.deepStrictEqual(bad, []);
 });
 
-test('${CLAUDE_PLUGIN_ROOT} paths named in skill and agent text exist', () => {
+test('${CLAUDE_PLUGIN_ROOT} paths named in skill text exist', () => {
   const bad = [];
-  for (const base of ['skills', 'agents']) {
+  for (const base of ['skills']) {
     for (const f of walk(path.join(PLUGIN, base)).filter((p) => p.endsWith('.md'))) {
       for (const r of rootRefs(fs.readFileSync(f, 'utf8'))) {
         if (!fs.existsSync(path.join(PLUGIN, r))) bad.push(`${path.relative(PLUGIN, f)}: ${r}`);

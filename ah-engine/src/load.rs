@@ -34,6 +34,11 @@ pub fn note_request(event: &str, session: Option<&str>) {
     REQUEST.with(|r| *r.borrow_mut() = (event.to_string(), session.map(str::to_string)));
 }
 
+/// The event noted on this thread for the request in progress (not reset).
+pub fn peek_event() -> String {
+    REQUEST.with(|r| r.borrow().0.clone())
+}
+
 /// The event and session noted on this thread, and reset.
 pub fn take_request() -> (String, Option<String>) {
     REQUEST.with(|r| std::mem::take(&mut *r.borrow_mut()))

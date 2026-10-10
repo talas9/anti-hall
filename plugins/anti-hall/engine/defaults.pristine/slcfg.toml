@@ -4,10 +4,6 @@
 # The message texts are the Node scripts' own, word for word: the parity tests compare the commands' output with the scripts'
 # byte for byte. A `{name}` in a text is filled in at run time.
 
-[slcfg.deferred]
-doc = "Said when the input needs the Node script to answer exactly (for example a settings file the engine cannot parse the way JavaScript does); nothing was written."
-value = "this input needs the Node script to answer exactly; nothing was written"
-
 [env.dispatcher_override]
 doc = "Test-only switch of the installer: names the dispatcher path to embed without checking that it exists (Node: ANTIHALL_DISPATCHER_OVERRIDE)."
 value = "ANTIHALL_DISPATCHER_OVERRIDE"
@@ -684,3 +680,137 @@ value = "h:"
 [ops.shadow_inst_cwd_tag]
 doc = "Prefix of a working-directory-relative file in the installer shadow's state digest."
 value = "c:"
+
+[env.statusline_node_only]
+doc = "When non-empty the installer writes the Node-only status line command (as the Node installer does) and the upgrade leaves an existing one alone. Used by the parity tests, which compare the two installers' output."
+value = "ANTIHALL_STATUSLINE_NODE_ONLY"
+
+[slcfg.launcher_rel]
+doc = "The launcher an earlier engine installer named in the statusLine command (it ran the engine first and the Node script when the engine was absent or deferred), relative to the directory of the status line dispatcher. Only used to recognise that form for the migration."
+value = "../scripts/ah-run.sh"
+
+[slcfg.command_launcher]
+doc = "The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Only used to recognise that form exactly for the migration."
+value = 'sh "{launcher}" --stdin statusline -- "{dispatcher}"'
+
+[slcfg.mig_fixed]
+doc = "Migration row: an existing status line command now runs the engine directly. {path} {command}."
+value = "statusLine in {path} now runs the engine directly: {command}"
+
+[slcfg.mig_dry_run]
+doc = "Migration row (dry run): what would change. {path} {command}."
+value = "would update the statusLine in {path} to run the engine directly: {command}"
+
+[slcfg.mig_ambiguous]
+doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
+
+[slcfg.mig_backup_failed]
+doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
+
+[slcfg.mig_write_failed]
+doc = "Migration row: the settings file could not be written. {path}."
+value = "could not write {path}; the statusLine there is unchanged"
+
+# ---- v1.0: the engine's own status line command, and no deferral (L04) ---------------------------------------------------
+
+[slcfg.command_engine]
+doc = "The statusLine command the installer writes: the engine's own status line, no launcher and no Node script. {engine}."
+value = '"{engine}" statusline'
+
+[slcfg.engine_command_re]
+doc = "Recognises a statusLine command in the engine's own form (installer, uninstaller)."
+value = '^"[^"]+/ah-engine" statusline$'
+
+[slcfg.launcher_form_re]
+doc = "Recognises the launcher form an earlier engine installer wrote; named groups launcher and dispatcher (checked again against slcfg.command_launcher)."
+value = '^sh "(?<launcher>[^"]+)" --stdin statusline -- "(?<dispatcher>[^"]+)"$'
+
+[slcfg.engine_bin_rel]
+doc = "The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the hook wrappers look for it first."
+value = "bin/ah-engine"
+
+[slcfg.engine_line]
+doc = "The first line of the installer (engine form). Placeholders: path."
+value = "Engine:     {path}"
+
+[slcfg.engine_not_found]
+doc = "stderr: no engine to point the status line at. Placeholders: path."
+value = "❌ anti-hall · install-statusline: the anti-hall engine is not installed at {path}. Run /anti-hall:doctor, then install the status line again."
+
+[slcfg.already_engine]
+doc = "The effective statusLine already is anti-hall's."
+value = "Already installed — the effective statusLine already runs the anti-hall status line."
+
+[slcfg.engine_unsafe_1]
+doc = "stderr: the engine path has shell metacharacters."
+value = "⛔ anti-hall · install-statusline: engine path contains shell metacharacters — refusing to embed in statusLine.command."
+
+[slcfg.engine_unsafe_4]
+doc = "stderr: the manual entry (engine form)."
+value = '    "statusLine": { "type": "command", "command": "\"/path/to/ah-engine\" statusline" }'
+
+[slcfg.engine_uninstall_hint]
+doc = "The uninstall command (engine form); also the restore hint after a failed write. Placeholders: engine."
+value = '  "{engine}" uninstall-statusline'
+
+[slcfg.err_read]
+doc = "Node's wording of a failed read of an opened file (a directory). Placeholders: err."
+value = "{err}, read"
+
+[slcfg.err_cwd]
+doc = "Node's wording of a working directory that no longer exists. Placeholders: err."
+value = "{err}, process.cwd"
+
+[slcfg.no_plugin_root]
+doc = "Why the installer cannot start: no plugin directory with the engine's defaults was found."
+value = "the anti-hall plugin directory was not found"
+
+[slcfg.start_failed]
+doc = "stderr: the installer or uninstaller could not start; nothing was written. Placeholders: msg."
+value = "❌ anti-hall · statusline: {msg}; nothing was written"
+
+[slcfg.parse_invalid]
+doc = "Why a settings, base or backup file could not be used: it is not valid JSON."
+value = "not valid JSON"
+
+[slcfg.parse_unsupported]
+doc = "Why a settings, base or backup file is not rewritten: JSON the engine cannot write back unchanged. Placeholders: depth."
+value = "JSON that cannot be rewritten without changing it (a lone surrogate escape, or nesting deeper than {depth} levels)"
+
+[slcfg.parse_not_object]
+doc = "Why a settings file is not merged into: its top level is not a JSON object."
+value = "not a JSON object"
+
+[slcfg.inst_parse_failed]
+doc = "stderr: the settings file could not be read or parsed (exit 1, nothing written). Placeholders: path msg."
+value = "❌ anti-hall · install-statusline: Could not parse {path}: {msg}"
+
+[slcfg.uninst_parse_failed]
+doc = "stderr: a settings or base file could not be read or parsed. Placeholders: path msg."
+value = "❌ anti-hall · uninstall-statusline: Could not parse {path}: {msg}"
+
+[slcfg.uninst_parse_backup_failed]
+doc = "stderr: the backup could not be read or parsed. Placeholders: path msg."
+value = "❌ anti-hall · uninstall-statusline: Could not parse backup {path}: {msg}"
+
+[slcfg.u_fall_through_a]
+doc = "stderr: after an unparsable base file the uninstaller tries the backup, then removes the key."
+value = "Falling through to backup / key-removal strategy."
+
+[slcfg.u_fall_through_b]
+doc = "stderr: after an unparsable backup the uninstaller removes the key."
+value = "Falling through to key-removal strategy."
+
+[slcfg.gitignore_unreadable]
+doc = "stderr: the project's .gitignore could not be read (exit 1). Placeholders: msg."
+value = "❌ anti-hall · install-statusline: Could not read .gitignore: {msg}"
+
+[statusline.lone_surrogate_text]
+doc = "What an ESC followed by an astral character becomes in a label: JavaScript's ESC-and-any-character pattern removes only the high surrogate, and Node writes the lone low surrogate left behind as the replacement character."
+value = "\uFFFD"
+
+[statusline.date_max_ms]
+doc = "The largest distance from the epoch a JavaScript date can hold (TimeClip); a session start number beyond it is not a date."
+value = "8.64e15"

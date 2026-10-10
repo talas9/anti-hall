@@ -345,6 +345,13 @@ fn spec(
     }
 }
 
+/// As [`spec`], with the reply only in the transcript (a real entry: the text sits under `message.content`, which the legacy read
+/// collects twice) and a timestamp the decision row points at.
+fn spec_transcript(name: &'static str, reply: &str, noul: f64, requests: usize, rows: usize) -> Scenario {
+    let entry = json!({"type":"assistant","timestamp":"2026-10-10T08:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":reply}]}});
+    Scenario { transcript: vec![user("go"), entry.to_string()], payload: stop("sp"), ..spec(name, reply, noul, "", requests, rows, &[]) }
+}
+
 const GIT_ON: &str = r#"{"jevIntegrations":{"gitGuardSelfCredit":"on"}}"#;
 
 fn git(name: &'static str, command: &str, noul: f64, modes: &'static str, requests: usize, rows: usize) -> Scenario {
@@ -552,6 +559,10 @@ fn scenarios() -> Vec<Scenario> {
             2,
             &[(".anti-hall/speculation-guard-state-sp.json", r#"{"hash":"old","blocks":1,"pending":{"h":"abc123","source":"jev"}}"#)],
         ),
+        // no reply in the payload: Jev reads the transcript's last assistant text without its doubled nested message, and the row
+        // points at the transcript turn (both must match Node's `extractLastAssistantTextDedup` and `turnRefFromTranscript`)
+        spec_transcript("speculation: reply only in the transcript, Jev confidently adds a block", "All done, it works.", 0.97, 1, 1),
+        spec_transcript("speculation: reply only in the transcript, a hedge Jev finds grounded", "It is probably the cache.", 0.03, 1, 1),
         spec("speculation: integration off logs the off row", "It is probably the cache.", 0.97, r#"{"jevIntegrations":{"speculation":"off"}}"#, 0, 1, &[]),
         spec(
             "speculation: loop-safe asks nothing",

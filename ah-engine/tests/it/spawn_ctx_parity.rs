@@ -7,6 +7,7 @@
 //! must also have left the state exactly as it was seeded, so Node then sees what it would have seen alone.
 //! Timestamps within a minute of the run are normalized, since the two runs are not simultaneous.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+use crate::common::TempDir;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -108,11 +109,8 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
 }
 
-fn temp_home(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-spawnctx-{tag}-{}-{}", std::process::id(), HOME_ID.fetch_add(1, Ordering::Relaxed)));
-    ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
-    std::fs::create_dir_all(&d).unwrap();
-    d.canonicalize().unwrap()
+fn temp_home(tag: &str) -> TempDir {
+    TempDir::at(std::env::temp_dir().join(format!("ah-spawnctx-{tag}-{}-{}", std::process::id(), HOME_ID.fetch_add(1, Ordering::Relaxed))))
 }
 
 /// `$HOME` and `{NOW-n}` / `{NOW+n}` in a seed or payload.
@@ -179,12 +177,27 @@ fn snapshot(home: &Path, now: u128) -> BTreeMap<String, String> {
                 walk(&p, root, out, now);
             } else {
                 let body = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).to_string();
-                out.insert(rel, norm(&body.replace(&root.to_string_lossy().to_string(), "$HOME"), now));
+                out.insert(rel, mask_pid(&norm(&body.replace(&root.to_string_lossy().to_string(), "$HOME"), now)));
             }
         }
     }
     let mut out = BTreeMap::new();
     walk(home, home, &mut out, now);
+    out
+}
+
+/// The process id a claim file records (`"pid":123`) is the hook process's own: Node's and the engine's differ by nature.
+fn mask_pid(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("\"pid\":") {
+        let (head, tail) = rest.split_at(i + 6);
+        out.push_str(head);
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        out.push_str(if digits > 0 { "<PID>" } else { "" });
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -410,14 +423,14 @@ fn inbox_cases() -> Vec<Case> {
         ("store-legacy-db", format!("{R}/store/12345678/devswarm.db")),
         ("store-legacy-ndjson", format!("{R}/store/ABCDEF12/journal/x.ndjson")),
     ] {
-        v.push(ds(case(name, read(json!(p)))).defer());
+        v.push(ds(case(name, read(json!(p)))));
     }
     // relative paths and the working directory
     v.push(ds(case("rel-inbox-cwd-root", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":R}))));
     v.push(ds(case("rel-from-home-no-cwd", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"}}))));
     v.push(ds(case("rel-dotdot-from-store", json!({"tool_name":"Read","tool_input":{"file_path":"../inbox/x"},"cwd":format!("{R}/store")}))));
     v.push(ds(case("rel-elsewhere", json!({"tool_name":"Read","tool_input":{"file_path":"x/y"},"cwd":"$HOME/proj"}))));
-    v.push(ds(case("rel-relative-cwd-defers", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":"rel/dir"}))).defer());
+    v.push(ds(case("rel-relative-cwd", json!({"tool_name":"Read","tool_input":{"file_path":"inbox/x"},"cwd":"rel/dir"}))));
     v.push(ds(case("rel-numeric-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":7}))));
     v.push(ds(case("rel-array-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":["a"]}))));
     v.push(ds(case("rel-empty-cwd-uses-home", json!({"tool_name":"Read","tool_input":{"file_path":".anti-hall/devswarm/inbox/x"},"cwd":""}))));
@@ -509,7 +522,7 @@ fn inbox_read_guard_matches_node() {
     assert!(cases.len() >= 60, "the corpus must stay broad");
     let t = drive("inbox", INBOX, cases);
     assert!(t.blocks >= 15, "the corpus must exercise the block: {}", t.blocks);
-    assert!(t.same >= 60 && t.deferred >= 10, "answered {} deferred {}", t.same, t.deferred);
+    assert!(t.same >= 70 && t.deferred >= 2, "answered {} deferred {}", t.same, t.deferred);
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -569,13 +582,16 @@ fn phase_cases() -> Vec<Case> {
         v.push(case(name, spawn_payload("Agent", extra)));
     }
     for (name, extra) in [
-        ("cwd-number-defers", json!({"cwd":5})),
-        ("cwd-true-defers", json!({"cwd":true})),
-        ("cwd-object-defers", json!({"cwd":{"a":1}})),
-        ("cwd-empty-array-defers", json!({"cwd":[]})),
-        ("workspace-dir-number-defers", json!({"workspace":{"current_dir":9}})),
+        ("cwd-number-hashed", json!({"cwd":5})),
+        ("cwd-true-hashed", json!({"cwd":true})),
+        ("cwd-object-hashed", json!({"cwd":{"a":1}})),
+        ("cwd-array-hashed", json!({"cwd":["a","b"]})),
+        ("cwd-nested-array-hashed", json!({"cwd":[[1,2],[3]]})),
+        ("cwd-float-hashed", json!({"cwd":1.5e21})),
+        ("cwd-empty-array-hashed", json!({"cwd":[]})),
+        ("workspace-dir-number-hashed", json!({"workspace":{"current_dir":9}})),
     ] {
-        v.push(case(name, spawn_payload("Agent", extra)).defer());
+        v.push(case(name, spawn_payload("Agent", extra)));
     }
     // payload shapes
     v.push(case("task-tool", spawn_payload("Task", json!({"session_id":"t1"}))));
@@ -629,7 +645,7 @@ fn phase_tracker_matches_node() {
     assert!(t.state_changed >= 40, "the corpus must exercise the writes: {}", t.state_changed);
     assert_eq!(t.blocks, 0);
     assert_eq!(t.stdout_nonempty, 0, "the tracker never prints");
-    assert!(t.deferred >= 7);
+    assert!(t.deferred >= 2, "deferred {}", t.deferred);
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -661,23 +677,23 @@ fn spawn_cases() -> Vec<Case> {
     };
     // tools
     for tool in ["Agent", "Task", "Workflow", "spawn_agent", "collaborationspawn_agent"] {
-        v.push(named(case("x", spawn_call(tool, json!("s1"))).file(&marker_file("s1"), PENDING), &format!("pending-{tool}")).defer());
+        v.push(named(case("x", spawn_call(tool, json!("s1"))).file(&marker_file("s1"), PENDING), &format!("pending-{tool}")));
         v.push(named(case("x", spawn_call(tool, json!("s1"))).file(&marker_file("s1"), SETTLED), &format!("settled-{tool}")));
     }
     for tool in ["Bash", "Read", "agent", "Agent ", "collaborationwait_agent", "Spawn_Agent", ""] {
         v.push(named(case("x", spawn_call(tool, json!("s1"))).file(&marker_file("s1"), PENDING), &format!("not-a-spawn-{tool}")));
     }
-    v.push(case("tool-missing-pending-defers", json!({"session_id":"s1"})).file(&marker_file("s1"), PENDING).defer());
-    v.push(case("tool-number-pending-defers", json!({"tool_name":5,"session_id":"s1"})).file(&marker_file("s1"), PENDING).defer());
-    v.push(case("tool-null-pending-defers", json!({"tool_name":null,"session_id":"s1"})).file(&marker_file("s1"), PENDING).defer());
+    v.push(case("tool-missing-pending", json!({"session_id":"s1"})).file(&marker_file("s1"), PENDING));
+    v.push(case("tool-number-pending", json!({"tool_name":5,"session_id":"s1"})).file(&marker_file("s1"), PENDING));
+    v.push(case("tool-null-pending", json!({"tool_name":null,"session_id":"s1"})).file(&marker_file("s1"), PENDING));
     // sessions
     v.push(case("sid-missing", json!({"tool_name":"Agent"})).file(&marker_file("s1"), PENDING));
     v.push(case("sid-empty", json!({"tool_name":"Agent","session_id":""})).file(&marker_file(""), PENDING));
     v.push(case("sid-number", json!({"tool_name":"Agent","session_id":5})));
     v.push(case("sid-null", json!({"tool_name":"Agent","session_id":null})));
-    v.push(named(with("a/b c", PENDING), "sid-sanitized-pending").defer());
-    v.push(named(with("ünï", PENDING), "sid-unicode-sanitizes-to-unknown-pending").defer());
-    v.push(named(with("!!!", PENDING), "sid-all-symbols-unknown-session").defer());
+    v.push(named(with("a/b c", PENDING), "sid-sanitized-pending"));
+    v.push(named(with("ünï", PENDING), "sid-unicode-sanitizes-to-unknown-pending"));
+    v.push(named(with("!!!", PENDING), "sid-all-symbols-unknown-session"));
     v.push(named(with("a.b", SETTLED), "sid-dot-settled"));
     v.push(case("sid-only-in-other-marker", spawn_call("Agent", json!("s2"))).file(&marker_file("s1"), PENDING));
     // marker states
@@ -701,14 +717,11 @@ fn spawn_cases() -> Vec<Case> {
         ("marker-bom", "\u{feff}{\"epochId\":\"1\",\"decision\":\"pending\",\"sentAt\":1}"),
     ] {
         let c = case(name, spawn_call("Agent", json!("s1"))).file(&marker_file("s1"), body);
-        v.push(if name == "marker-extra-keys-pending-ok" { c.defer() } else { c });
+        v.push(c);
     }
     v.push(case("marker-is-directory", spawn_call("Agent", json!("s1"))).seed(Seed::Dir(marker_file("s1"))));
     v.push(
-        case("marker-is-symlink-pending", spawn_call("Agent", json!("s1")))
-            .file("m.json", PENDING)
-            .seed(Seed::Link(marker_file("s1"), "$HOME/m.json".into()))
-            .defer(),
+        case("marker-is-symlink-pending", spawn_call("Agent", json!("s1"))).file("m.json", PENDING).seed(Seed::Link(marker_file("s1"), "$HOME/m.json".into())),
     );
     v.push(case("marker-invalid-utf8", spawn_call("Agent", json!("s1"))).seed(Seed::File(marker_file("s1"), b"\xff\xfe".to_vec(), 0)));
     // subagent calls
@@ -731,17 +744,17 @@ fn spawn_cases() -> Vec<Case> {
         for (k, val) in extra.as_object().unwrap() {
             p[k] = val.clone();
         }
-        v.push(case(name, p).file(&marker_file("s1"), PENDING).defer());
+        v.push(case(name, p).file(&marker_file("s1"), PENDING));
     }
     // switches
     let pend = |c: Case| c.file(&marker_file("s1"), PENDING);
     let call = || spawn_call("Agent", json!("s1"));
     v.push(pend(case("switch-off-file", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":false}}))));
     v.push(pend(case("switch-off-string", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":"no"}}))));
-    v.push(pend(case("switch-on-file", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":true}}))).defer());
-    v.push(pend(case("switch-garbage-ignored", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":"maybe"}}))).defer());
+    v.push(pend(case("switch-on-file", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":true}}))));
+    v.push(pend(case("switch-garbage-ignored", call())).seed(Seed::Settings(json!({"context":{"verifyFirstOrchestration":"maybe"}}))));
     v.push(pend(case("switch-option-false", call())).env("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_ORCHESTRATION", "false"));
-    v.push(pend(case("switch-option-default-masked", call())).env("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_ORCHESTRATION", "true").defer());
+    v.push(pend(case("switch-option-default-masked", call())).env("CLAUDE_PLUGIN_OPTION_CONTEXT_VERIFY_FIRST_ORCHESTRATION", "true"));
     v.push(
         pend(case("switch-stored-false", call()))
             .seed(Seed::Claude(json!({"pluginConfigs":{"anti-hall":{"options":{"context_verify_first_orchestration":false}}}}))),
@@ -750,25 +763,61 @@ fn spawn_cases() -> Vec<Case> {
     let far = 4_102_444_800_000u64;
     v.push(pend(case("skip-named", call())).seed(Seed::Skip(json!({"orch-on-spawn": far}))));
     v.push(pend(case("skip-all", call())).seed(Seed::Skip(json!({"all": far}))));
-    v.push(pend(case("skip-expired", call())).seed(Seed::Skip(json!({"orch-on-spawn": 5}))).defer());
-    v.push(pend(case("skip-other", call())).seed(Seed::Skip(json!({"git-guard": far}))).defer());
+    v.push(pend(case("skip-expired", call())).seed(Seed::Skip(json!({"orch-on-spawn": 5}))));
+    v.push(pend(case("skip-other", call())).seed(Seed::Skip(json!({"git-guard": far}))));
     // the protocol level
     v.push(pend(case("level-full-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "full"));
     v.push(pend(case("level-full-env-padded", call())).env("ANTIHALL_PROTOCOL_LEVEL", " FULL "));
-    v.push(pend(case("level-compact-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "compact").defer());
-    v.push(pend(case("level-junk-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "huge").defer());
+    v.push(pend(case("level-compact-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "compact"));
+    v.push(pend(case("level-junk-env", call())).env("ANTIHALL_PROTOCOL_LEVEL", "huge"));
     v.push(pend(case("level-full-file", call())).seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}}))));
     v.push(
-        pend(case("level-env-beats-file", call()))
-            .env("ANTIHALL_PROTOCOL_LEVEL", "compact")
-            .seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}})))
-            .defer(),
+        pend(case("level-env-beats-file", call())).env("ANTIHALL_PROTOCOL_LEVEL", "compact").seed(Seed::Settings(json!({"context":{"protocolLevel":"full"}}))),
     );
     // codex
     let mut cx = spawn_call("spawn_agent", json!("s1"));
     cx["turn_id"] = json!("t1");
     cx["model"] = json!("m");
-    v.push(pend(case("codex-main-pending", cx.clone())).defer());
+    v.push(pend(case("codex-main-pending", cx.clone())));
+    // the claim: the first spawn wins, a held claim keeps the others silent, the retry slot needs the transcript scan
+    let claim = |n: u8| format!(".anti-hall/orch-full/orch-full-s1-1700000000000-claim{}.json", if n == 2 { "2" } else { "" });
+    v.push(pend(case("claim-recent-silent", call())).file(&claim(1), "{\"at\":{NOW-1000},\"pid\":1}"));
+    v.push(pend(case("claim-expired-defers", call())).file(&claim(1), "{\"at\":{NOW-300000},\"pid\":1}").defer());
+    v.push(
+        pend(case("claim-retry-slot-present-silent", call()))
+            .file(&claim(1), "{\"at\":{NOW-300000},\"pid\":1}")
+            .file(&claim(2), "{\"at\":{NOW-1000},\"pid\":1}"),
+    );
+    v.push(pend(case("claim-unreadable-recent-silent", call())).file(&claim(1), "zzz"));
+    v.push(pend(case("claim-unreadable-old-defers", call())).aged(&claim(1), "zzz", 300_000).defer());
+    v.push(pend(case("claim-at-string-recent-silent", call())).file(&claim(1), "{\"at\":\"x\"}"));
+    v.push(pend(case("claim-is-directory-silent", call())).seed(Seed::Dir(claim(1))));
+    v.push(pend(case("claim-future-silent", call())).file(&claim(1), "{\"at\":{NOW+1000000},\"pid\":1}"));
+    v.push(pend(case("hook-event-echoed", {
+        let mut p = call();
+        p["hook_event_name"] = json!("PostToolUse");
+        p
+    })));
+    v.push(pend(case("hook-event-number-not-echoed", {
+        let mut p = call();
+        p["hook_event_name"] = json!(5);
+        p
+    })));
+    v.push(pend(case("hook-event-empty-not-echoed", {
+        let mut p = call();
+        p["hook_event_name"] = json!("");
+        p
+    })));
+    v.push(case("epoch-with-odd-characters", call()).file(&marker_file("s1"), r#"{"epochId":"12/3 4-x_y","decision":"pending","sentAt":5}"#));
+    v.push(case("epoch-all-symbols", call()).file(&marker_file("s1"), r#"{"epochId":"@@@","decision":"pending","sentAt":5}"#));
+    v.push(
+        case("codex-payload-by-rollout-path", {
+            let mut p = call();
+            p["transcript_path"] = json!("$HOME/.codex/sessions/rollout-1.jsonl");
+            p
+        })
+        .file(&marker_file("s1"), PENDING),
+    );
     let mut cs = cx.clone();
     cs["agent_id"] = json!("child");
     v.push(pend(case("codex-subagent", cs)));
@@ -782,7 +831,7 @@ fn orch_on_spawn_matches_node() {
     assert!(cases.len() >= 60, "the corpus must stay broad");
     let t = drive("spawn", SPAWN, cases);
     assert_eq!(t.blocks, 0);
-    assert!(t.same >= 40 && t.deferred >= 15, "answered {} deferred {}", t.same, t.deferred);
+    assert!(t.same >= 60, "answered {} deferred {}", t.same, t.deferred);
 }
 
 // ------------------------------------------------------------------------------------------------------------------

@@ -414,7 +414,6 @@ pub(crate) fn opts() -> Opts {
     o.node_cli = true;
     o.events = vec!["PostToolUseFailure"];
     o.mode = Mode::Daemon;
-    o.dual = true;
     o.state_files = Some(gate);
     o.conc = 6;
     o

@@ -13,16 +13,18 @@
 //!
 //! Where JavaScript could decide differently from this port, the store answers [`Defer`] and the calling check defers the
 //! whole hook to Node before anything is written: a state file serde rejects (JavaScript may accept it), a transcript line
-//! that holds a delivered-block marker but that neither parser accepts, a timestamp that is not the strict ISO form, a
+//! that holds a delivered-block marker and that serde rejects for a reason JavaScript might not share (a number past the
+//! double range, deep nesting; any other unreadable line is skipped as `JSON.parse` in a try/catch skips it), a timestamp that is not the strict ISO form, a
 //! relative transcript path, no home directory.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, number_to_string, parse_line};
+use crate::checks::guardkit::jsval::{DateParse, Js, date_parse, js_to_string, parse_line};
 use crate::checks::guardkit::settings::{get_bool, get_number};
 use crate::checks::guardkit::tail::read_tail;
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use serde_json::Value;
 
@@ -179,19 +181,23 @@ fn prune_stale(dir: &std::path::Path, keep: &std::path::Path) {
 }
 
 /// One `hook_additional_context` UserPromptSubmit attachment of the transcript tail.
-struct Att {
-    ts: f64,
-    els: Vec<String>,
+pub struct Att {
+    /// The attachment's timestamp in milliseconds.
+    pub ts: f64,
+    /// The attachment's content elements, as strings.
+    pub els: Vec<String>,
 }
 
 /// The tail scan result: the attachments and the file size.
-struct Tail {
-    atts: Vec<Att>,
-    size: u64,
+pub struct Tail {
+    /// The attachments of the window, in order.
+    pub atts: Vec<Att>,
+    /// The file size in bytes.
+    pub size: u64,
 }
 
 /// `scanTail`: `Ok(None)` is "unusable" (missing, unreadable, empty, or no timestamp anywhere in the window).
-fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
+pub fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
     let Some((lines, size)) = read_tail(path, bytes) else { return Ok(None) };
     let marker = defaults::text("emit_dedupe.attachment_type");
     let mut atts = Vec::new();
@@ -206,8 +212,15 @@ fn scan_tail(path: &str, bytes: u64) -> Result<Option<Tail>, Defer> {
         if !line.contains(marker) {
             continue;
         }
-        // A line that holds the marker and that neither parser reads may still be valid JavaScript: defer.
-        let Some(e) = parse_line(line) else { return Err(Defer) };
+        // `JSON.parse` in a try/catch: a line that is not JSON is skipped, and only a line serde rejects for a reason JavaScript
+        // might not (replykit.unsure_parse_errors: a lone surrogate, a number past the double range, deep nesting) defers.
+        let e = match parse_line(line) {
+            Some(e) => e,
+            None => match crate::checks::replykit::transcript::parse_text(line) {
+                Ok(_) => continue,
+                Err(_) => return Err(Defer),
+            },
+        };
         let Some(a) = (e.get("type").and_then(Value::as_str) == Some("attachment")).then(|| e.get("attachment")).flatten() else { continue };
         if a.get("type").and_then(Value::as_str) != Some(marker) || a.get("hookEvent").and_then(Value::as_str) != Some(defaults::text("emit_dedupe.hook_event"))
         {
@@ -510,7 +523,7 @@ pub fn session_of(p: &Value) -> Result<Option<String>, Defer> {
     match p.get("session_id") {
         None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
         Some(Value::String(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-        Some(Value::Number(n)) => Ok(n.as_f64().filter(|x| *x != 0.0 && !x.is_nan()).map(number_to_string)),
+        Some(Value::Number(n)) => Ok(n.as_f64().filter(|x| *x != 0.0 && !x.is_nan()).map(to_js_string)),
         Some(Value::Bool(true)) => Ok(Some("true".into())),
         Some(_) => Err(Defer),
     }

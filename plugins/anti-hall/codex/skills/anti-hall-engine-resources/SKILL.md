@@ -12,7 +12,9 @@ Daemon status, metrics, backups, schedules and limits.
 | Verb | What it does | Roles |
 |---|---|---|
 | `ah-engine backup` | `[--to <dir>]` Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given... | main, codex |
+| `ah-engine coordinator-work-baseline` | `<transcript.jsonl> [--from-line <n>] [--cwd <dir>] [--json]` Replay a session transcript's main-thread Bash calls through the coordinator-work classifier and window (L03, the port of... | main, codex, workspace, subagent |
 | `ah-engine ctl` | `<ping\|reload\|stop\|status>` Send a control verb to the daemon: ping, reload, stop or status | main, codex |
+| `ah-engine dispatch-report` | `[--json]` Read-only effectiveness metrics (L03, the port of scripts/dispatch-report.js): the parallel-dispatch demand shown, followed and ignored... | main, codex, workspace, subagent |
 | `ah-engine impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including... | main, codex, workspace, subagent |
 | `ah-engine maintain` | `` Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived... | main, codex |
 | `ah-engine metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one... | main, codex, workspace, subagent |
@@ -22,8 +24,12 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine serve` | `` Run the resident daemon in the foreground (the client starts it detached when needed) | main, codex, workspace, subagent |
 | `ah-engine status` | `[--memory]` Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did | main, codex, workspace, subagent |
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
-| `ah-engine telemetry` | `[summary\|events\|rollup] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
+| `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
+| `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job... | main, codex |
+| `ah-engine units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their... | main, codex, workspace, subagent (owner args: install, heal, uninstall) |
+| `ah-engine codex-activate` | `` Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the... | main, codex |
+| `ah-engine codex-limit-status` | `` Print whether limit conservation is active, as JSON (active, reason, weekly, fiveHour, sonnetWeekly, source, stale, resetsAt): the Codex... | main, codex, workspace, subagent |
 
 ## Guards
 
@@ -51,6 +57,7 @@ Daemon status, metrics, backups, schedules and limits.
 - `context.injectGateSwarm` = true: Cut 4 (context.injectGateSwarm, default on): swarm-guard's shared-tree advisory is passed on when new or changed, and again only after N...
 - `context.injectGateTask` = true: Cut 2 (context.injectGateTask, default on): task-tracker's short reminder is passed on only every N turns (its long form always passes),...
 - `guards.reaperExclude` = "": Where the user's exclusion pattern is read from (guards.reaperExclude, a JavaScript regular expression, empty = none): a process it...
+- `maintenance.mcpReaperJob` = "auto": The switch of the reaper job, maintenance.mcpReaperJob: off never runs it; on always runs it; auto (the default) runs it once the Node...
 - `guards.reaperMatch` = "": Where the user's extra MCP process pattern is read from (guards.reaperMatch, a JavaScript regular expression, empty = none)
 - `maintenance.sessionEndReaper` = true: Where the reaper's on/off switch is read from (maintenance.sessionEndReaper, default on; the deprecated environment alias is read too)
 

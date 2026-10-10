@@ -225,11 +225,31 @@ var fs = (function () {
     if (l.kind === 'error') throw cmdErr('EIO', 'lstat ' + p + ' ' + l.code);
     return stat(l);
   }
-  // JavaScript's realpathSync resolves `..` lexically first; the native one is libc realpath.
+  // JavaScript's realpathSync resolves `..` lexically first and then walks the path one component at a time (lstat, and readlink for
+  // a link): it keeps each component as it was spelled, where the native one is libc realpath, which on a case-insensitive volume
+  // (macOS) also returns the spelling the directory holds (`.Anti-Hall` for `.anti-hall`).
+  function jsRealpath(p0) {
+    var segs = path.resolve(p0).split('/').filter(Boolean), current = '', i = 0, hops = 0;
+    while (i < segs.length) {
+      var base = current + '/' + segs[i], l = ah.fs.lstat(base);
+      if (l === null) throw cmdErr('ENOENT', 'realpath ' + p0);
+      if (l.kind === 'error') throw cmdErr('EIO', 'realpath ' + p0);
+      if (l.kind !== 'link') { current = base; i++; continue; }
+      var target = ah.fs.readlink(base), alive = ah.fs.realpathEx(base);
+      if (target === null) throw cmdErr('EIO', 'realpath ' + p0);
+      if (alive.error) throw cmdErr(alive.error === 'NotFound' ? 'ENOENT' : 'EIO', 'realpath ' + p0);
+      if (++hops > ah.cfgNum('command.realpath_max_links')) throw cmdErr('EIO', 'realpath ' + p0);
+      segs = path.resolve(path.resolve(current === '' ? '/' : current, target), segs.slice(i + 1).join('/')).split('/').filter(Boolean);
+      current = '';
+      i = 0;
+    }
+    return current === '' ? '/' : current;
+  }
   function real(p, native) {
     p = String(p);
     if (!path.isAbsolute(p)) unsure();
-    var r = ah.fs.realpathEx(native ? p : path.resolve(p));
+    if (!native) return jsRealpath(p);
+    var r = ah.fs.realpathEx(p);
     if (r.error) throw cmdErr(r.error === 'NotFound' ? 'ENOENT' : 'EIO', 'realpath ' + p);
     return r.path;
   }
@@ -362,6 +382,11 @@ function cmdBuildTables() {
   t.wholeCliStart = new RegExp('^(?:' + t.wholeClis.map(cmdEsc).join('|') + ')\\s', 'i');
   t.ghMutating = {};
   Object.keys(ah.cfg('command.gh_mutating_subcommands')).forEach(function (g) { t.ghMutating[g] = new Set(ah.cfg('command.gh_mutating_subcommands')[g]); });
+  t.ghOneliner = {};
+  Object.keys(ah.cfg('command.gh_oneliner_subcommands')).forEach(function (g) { t.ghOneliner[g] = new Set(ah.cfg('command.gh_oneliner_subcommands')[g]); });
+  t.ghOnelinerApi = cmdSet('command.gh_oneliner_api_methods'); t.ghOnelinerMax = ah.cfgNum('command.gh_oneliner_max_chars');
+  t.ghOnelinerRe = new RegExp(ah.cfg('command.gh_oneliner_deny_re'));
+  t.scratchSyncSubs = cmdSet('command.scratch_clone_sync_subs');
   t.ghApiMethods = cmdSet('command.gh_api_mutating_methods'); t.ghGqlValue = cmdSet('command.gh_gql_value_flags'); t.ghGqlBool = cmdSet('command.gh_gql_bool_flags');
   t.ghField = cmdSet('command.gh_api_field_flags');
   t.timeoutPrefix = cmdRe(ah.cfg('command.timeout_prefix')); t.controlPrefix = cmdRe(ah.cfg('command.control_keyword_prefix'));
@@ -372,6 +397,8 @@ function cmdBuildTables() {
   t.gcloudReadVerbs = cmdSet('command.gcloud_read_verbs'); t.jqSafe = cmdSet('command.jq_safe_flags'); t.curlBare = cmdSet('command.curl_bare_flags');
   t.jqRefusedWords = ah.cfg('command.jq_refused_words'); t.gcloudTokenVars = ah.cfg('command.gcloud_token_vars');
   t.bgInterpreters = cmdSet('command.background_script_interpreters'); t.bgDelims = cmdSet('command.background_chain_delims');
+  t.plainReadGitKinds = cmdSet('command.plain_read_git_kinds');
+  t.bgSafeFlags = {}; Object.keys(ah.cfg('command.background_script_safe_flags')).forEach(function (k) { t.bgSafeFlags[k] = new Set(ah.cfg('command.background_script_safe_flags')[k]); });
   t.cdDelims = ah.cfg('command.cd_delims'); t.pipelineEnds = ah.cfg('command.pipeline_ends'); t.cdContextsMax = ah.cfg('command.cd_contexts_max');
   t.inlineVerbs = cmdSet('command.inline_verbs'); t.inlinePythonFlags = ah.cfg('command.inline_python_flags'); t.inlineOtherFlags = ah.cfg('command.inline_other_flags');
   t.inlineWriteMarkers = ah.cfg('command.inline_write_markers');
@@ -975,6 +1002,8 @@ LIB['./edit-guard.js'] = (function () {
       try { alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath))); } catch (e) { if (e.unsure) throw e; alreadyExists = true; }
       return alreadyExists ? 'allow' : 'block-handover';
     }
+    // a handover-shaped .md that resolves outside the project gets its own redirect (hooks/edit-guard.js, owner-reported 2026-10-08)
+    if (isHandoverDoc(filePath) && cwd && !isWithinCwd(filePath, cwd) && !isPlanMode(payload)) return 'block-handover-outside';
     if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) return 'allow';
     return 'block';
   }
@@ -2186,6 +2215,42 @@ function isWholeCommandReadOnlyForm(command) {
   return true;
 }
 
+// readOnlyFormUnits(split) -> Set of segment indexes that belong to a chain UNIT which is, on its
+// own, exactly one isWholeCommandReadOnlyForm. A chain is cut into units at `;` / `&&` only (a unit is
+// its pipe-joined segments). The exemption applies ONLY when EVERY unit of the chain is read-only on
+// its face: a whole read-only form, or one plain read-only git segment (a safe `git fetch`, or
+// `git rev-parse|status|log|show` in the plain-chain shapes). Any other unit leaves the set empty, so the
+// line is judged segment by segment exactly as before. (command-guard.js readOnlyFormUnits)
+function readOnlyFormUnits(split) {
+  const none = new Set();
+  const out = new Set();
+  const { segments, delims } = split;
+  if (segments.length < 2 || !delims.some((x) => x === '&&' || x === ';')) return none;
+  let start = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const last = i === segments.length - 1;
+    const cut = last || delims[i] === '&&' || delims[i] === ';';
+    if (!cut) { if (delims[i] !== '|') return none; continue; }
+    let text = '';
+    for (let j = start; j <= i; j++) text += (j > start ? ' | ' : '') + segments[j].trim();
+    if (isWholeCommandReadOnlyForm(text)) {
+      for (let j = start; j <= i; j++) out.add(j);
+    } else if (!(start === i && isPlainReadGitSegment(segments[i].trim()))) {
+      return none;
+    }
+    start = i + 1;
+  }
+  return out;
+}
+
+// One plain read-only git segment: a fetch that isSafeGitFetch accepts, or a log/status/show/rev-parse in
+// the exact shapes classifyPlainGitChainSegment recognises (no redirect, no expansion, no extra flags).
+function isPlainReadGitSegment(segment) {
+  if (isSafeGitFetch(segment)) return !hasUnquotedRedirectChar(segment) && !hasShellExpansionAnywhere(segment);
+  const cls = classifyPlainGitChainSegment(segment);
+  return !!cls && T.plainReadGitKinds.has(cls.kind);
+}
+
 // isClosedSinkStage(segment) -> true iff the stage is EXACTLY one of the closed
 // stdin-only sink shapes (no file operand, no unknown flag; only used by
 // isWholeCommandReadOnlyForm AND isBoundedSinkSegment, so every sink that
@@ -2267,7 +2332,7 @@ function isReadOnlyGhGraphql(tokens, ghIdx) {
 // method). Gated on effectiveVerb(segment) === 'gh' first, same discipline
 // as isHeavyGitSegment, so `gh` appearing only as quoted DATA is never
 // misread as a real invocation.
-function isHeavyGhSegment(segment, command) {
+function isHeavyGhSegment(segment, command, strict) {
   if (effectiveVerb(segment) !== 'gh') return false;
   const tokens = tokenizeQuoted(segment);
   const ghIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'gh');
@@ -2275,6 +2340,8 @@ function isHeavyGhSegment(segment, command) {
   const group = (tokens[ghIdx + 1] || '').toLowerCase();
   const sub = (tokens[ghIdx + 2] || '').toLowerCase();
   if (group === 'workflow' && sub === 'run') return true;
+  const oneLine = !strict && typeof command === 'string' && command.length <= T.ghOnelinerMax && !T.ghOnelinerRe.test(command);
+  if (oneLine && T.ghOneliner[group] && T.ghOneliner[group].has(sub)) return false;
   if (T.ghMutating[group] && T.ghMutating[group].has(sub)) return true;
   if (group === 'api') {
     // The splitter cuts a segment AT a backtick, so a trailing `query=`\`cmd\``
@@ -2282,6 +2349,17 @@ function isHeavyGhSegment(segment, command) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => RX44.test(t))) return true;
+    if (oneLine) {
+      // an explicit POST/PATCH/PUT (or the implicit POST of a field flag) on one short line is light; DELETE and a body file are not
+      let method = '', body = false;
+      for (let i = ghIdx + 2; i < tokens.length; i++) {
+        const t = tokens[i];
+        if ((t === '-X' || t === '--method') && tokens[i + 1] !== undefined) method = tokens[i + 1].toUpperCase();
+        else if (/^--method=/.test(t)) method = t.slice(9).toUpperCase();
+        if (t === '--input' || /^--input=/.test(t)) body = true;
+      }
+      if (!body && (method === '' || T.ghOnelinerApi.has(method))) return false;
+    }
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
       if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
@@ -2464,7 +2542,11 @@ function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
   const d = typeof depth === 'number' ? depth : 0;
   if (d === 0 && isWholeCommandReadOnlyForm(command)) return false;
-  for (const seg of splitSegments(command)) {
+  const split = splitSegmentsDetailed(command);
+  const exempt = d === 0 ? readOnlyFormUnits(split) : null;
+  for (let si = 0; si < split.segments.length; si++) {
+    if (exempt && exempt.has(si)) continue;
+    const seg = split.segments[si];
     if (isHeavySegment(seg, command)) return true;
     if (d < T.maxDepth) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
@@ -3462,6 +3544,86 @@ function sinkPathHasSymlink(target, payload) {
   } catch (_) { return true; }
 }
 
+// isAllowedScratchCloneSync(command, payload) -> bool (issue #55). `git pull` / `git fetch` (T.scratchSyncSubs) run in a git
+// checkout OUTSIDE the session's own tree, named by `git -C <abs|~ dir>` or by one leading `cd <abs|~ dir>`, chained with && or ;
+// only to light segments (a `sed -n` range, a `gh … list`), with at most one final `| tail/head -N`: such a sync prints a few lines,
+// and the "raw output floods" rationale is for unbounded runners and builds. One plain line only (no newline, substitution or
+// heredoc), no global git option but -C, no shell expansion. Fails closed. git-guard's push/force checks are separate and untouched.
+function scratchSyncHome() { try { return io.homeOf(guardEnv) || ''; } catch (e) { if (cmdFatal(e)) throw e; return ''; } }
+function scratchSyncDir(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let p = raw;
+  if (p === '~' || p.startsWith('~/')) { const h = scratchSyncHome(); if (!h) return null; p = h + p.slice(1); }
+  return path.isAbsolute(p) ? path.resolve(p) : null;
+}
+// The git checkout `dir` belongs to, when it is a checkout outside the session's tree (cwd and its toplevel, real paths); else null.
+function scratchSyncOtherClone(dir, cwd) {
+  let real;
+  try { real = fs.realpathSync(dir); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  const id = require('../companion/lib/identity.js');
+  let top = null;
+  try { top = id.resolveContext(real, { missingPath: 'ancestor' }).toplevel || null; } catch (e) { if (cmdFatal(e)) throw e; top = null; }
+  if (!top) return null;
+  const inside = (a, d) => { const rel = path.relative(d, a); return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)); };
+  const session = [];
+  try { session.push(fs.realpathSync(cwd)); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  try { const t = id.resolveContext(cwd, { missingPath: 'ancestor' }).toplevel; if (t) session.push(fs.realpathSync(t)); } catch (e) { if (cmdFatal(e)) throw e; return null; }
+  if (session.some((s) => inside(real, s) || inside(s, real))) return null;
+  return top;
+}
+function scratchSyncGit(seg) {
+  if (effectiveVerb(seg) !== 'git') return null;
+  if (hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg.replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return null;
+  const tokens = tokenizeQuoted(seg);
+  if (!tokens.length || tokens[0] !== 'git') return null;
+  let i = 1, cdir = null;
+  while (i < tokens.length && tokens[i].startsWith('-')) {
+    if (tokens[i] !== '-C' || tokens[i + 1] === undefined) return null; // only -C: no -c/--git-dir/--work-tree
+    cdir = tokens[i + 1];
+    i += 2;
+  }
+  const sub = (tokens[i] || '').toLowerCase();
+  return T.scratchSyncSubs.has(sub) ? { sub, cdir } : null;
+}
+function isAllowedScratchCloneSync(command, payload) {
+  if (typeof command !== 'string' || !command.trim() || !T.scratchSyncSubs.size || command.length > T.ghOnelinerMax || T.ghOnelinerRe.test(command)) return false;
+  const split = splitSegmentsDetailed(command);
+  const segments = split.segments.slice();
+  const delims = split.delims.slice();
+  if (!segments.length) return false;
+  if (segments.length >= 2 && delims[delims.length - 1] === 'end' && delims[delims.length - 2] === '|' &&
+      PLAIN_OUTPUT_FILTER_RE.test(segments[segments.length - 1].trim())) {
+    segments.pop();
+    delims.pop();
+    delims[delims.length - 1] = 'end';
+  }
+  for (let i = 0; i < delims.length; i++) {
+    if (i === delims.length - 1 ? delims[i] !== 'end' : (delims[i] !== '&&' && delims[i] !== ';')) return false;
+  }
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) || process.cwd();
+  let dir = null, saw = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (!seg) return false;
+    const t = tokenizeQuoted(seg);
+    if (i === 0 && t[0] === 'cd') {
+      if (t.length !== 2 || hasShellExpansionAnywhere(seg) || hasUnquotedRedirectChar(seg)) return false;
+      dir = scratchSyncDir(t[1]);
+      if (!dir) return false;
+      continue;
+    }
+    const g = scratchSyncGit(seg);
+    if (g) {
+      const target = g.cdir !== null ? scratchSyncDir(g.cdir) : dir;
+      if (!target || !scratchSyncOtherClone(target, cwd)) return false;
+      saw = true;
+      continue;
+    }
+    if (isHeavySegment(seg, command)) return false;
+  }
+  return saw;
+}
+
 // isAllowedPlainPushChain(command, cwd) -> bool. See the header block above.
 function isAllowedPlainPushChain(command, cwd, payload) {
   if (typeof command !== 'string' || !command.trim()) return false;
@@ -3729,7 +3891,12 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
   // `VAR=…` token is not a path, so env-prefix assignments stay refused.
   const direct = tokens.length >= 1 && tokens[0].includes('/') && !T.bgInterpreters.has(tokens[0]);
   if (!direct && (tokens.length < 2 || !T.bgInterpreters.has(tokens[0]))) return false;
-  const script = direct ? tokens[0] : tokens[1];
+  let scriptIdx = direct ? 0 : 1;
+  if (!direct) {
+    const safe = Object.prototype.hasOwnProperty.call(T.bgSafeFlags, tokens[0]) ? T.bgSafeFlags[tokens[0]] : undefined;
+    while (safe && scriptIdx < tokens.length && safe.has(tokens[scriptIdx])) scriptIdx++;
+  }
+  const script = tokens[scriptIdx];
   if (!script || script.startsWith('-')) return false;
   if (!isScratchpadOrTmpPath(script, direct ? Object.assign({ ownOnly: true }, ctx) : ctx)) return false;
   const payload = ctx.payload;
@@ -3759,8 +3926,19 @@ function isBackgroundScratchScriptSegment(segment, ctx) {
 // scratch-script segment or a bounded read sink (tail/head/wc/grep -c|-m N) —
 // the exact remedy shape the block text suggests (`script > out; wc -l out`).
 // At least one scratch-script segment is required; anything else refuses.
+// `sed -n 'N,Mp' <scratch file>`: a bounded line range of a scratch/tmp file, read only (no -i, no w/e command).
+function isScratchSedRangeSegment(segment, ctx) {
+  if (effectiveVerb(segment) !== 'sed') return false;
+  if (hasUnquotedRedirectChar(segment) || hasShellExpansionAnywhere(segment)) return false;
+  const t = tokenizeQuoted(segment.trim());
+  if (t.length !== 4 || t[0] !== 'sed' || t[1] !== '-n') return false;
+  return /^(?:\d+)(?:,\d+)?p$/.test(t[2]) && !t[3].startsWith('-') && isScratchpadOrTmpPath(t[3], ctx);
+}
+
 function isBackgroundScratchScript(command, payload) {
-  if (!payload || !payload.tool_input || payload.tool_input.run_in_background !== true) return false;
+  if (!payload || !payload.tool_input) return false;
+  // Foreground too (dogfood 2026-10-09): a foreground chain must redirect each script's stdout to a file; a background one keeps the looser rule.
+  const background = payload.tool_input.run_in_background === true;
   if (typeof command !== 'string' || !command.trim()) return false;
   if (RX82.test(neutralizeQuotedContents(command))) return false;
   if (hasShellExpansionAnywhere(command)) return false;
@@ -3775,8 +3953,10 @@ function isBackgroundScratchScript(command, payload) {
     if (!T.bgDelims.has(delims[i])) return false;
     const seg = segments[i].trim();
     if (!seg) return false;
-    if (isBackgroundScratchScriptSegment(seg, ctx)) sawScript = true;
-    else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx)) return false;
+    if (isBackgroundScratchScriptSegment(seg, ctx)) {
+      if (!background && !/(^|[^0-9&<>])>>?\s*\S/.test(neutralizeQuotedContents(seg).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false; // foreground: stdout must go to a file
+      sawScript = true;
+    } else if (!isBoundedSinkSegment(seg) && !isScratchFileSinkSegment(seg, ctx) && !isScratchSedRangeSegment(seg, ctx)) return false;
   }
   return sawScript;
 }
@@ -4345,7 +4525,7 @@ function inlineCodeWork(segment, ctx, payload, rootOf) {
     for (const m of body.matchAll(INLINE_GIT_GH_ARRAY_RE)) {
       cmds.push([m[2]].concat([...m[3].matchAll(/(['"])([^'"]*)\1/g)].map((x) => x[2])).join(' '));
     }
-    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c))) return { precise: true };
+    if (cmds.some((c) => isStateChangingGitSegment(c) || isHeavyGhSegment(c, c, true))) return { precise: true };
   }
   const sp = require('./lib/scratchpad.js');
   // 'tmp' (tmp/scratch), 'notes' (a coordinator-writable repo file), 'repo' (non-notes repo file) or 'outside'.
@@ -4690,6 +4870,8 @@ function mainFlow(payload) {
       && !matchedProjectCommandAllowPattern(command, (payload && payload.cwd) || '')) {
       if (command.length > T.maxLen) unsure(); // a very large command is judged in parts, which the engine does not reproduce
       if (classifyBashWork(command, payload, { editOnly: true }).editBlocks.length) {
+        // a DevSwarm child workspace is a worker (hooks/lib/devswarm-role.js isChildWorker, which reads the disk): Node decides
+        if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
         return blockExact(LIB['./edit-guard.js'].delegationReason('Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write)', payload.cwd, payload));
       }
     }
@@ -4718,9 +4900,12 @@ function mainFlow(payload) {
     }
     return false;
   })) return 'allow';
+  if (guarded(() => isAllowedScratchCloneSync(command, payload))) return 'allow'; // issue #55: a pull/fetch in a clone outside the session's tree
   if (guarded(() => settingsGet('guards', 'allowBackgroundScratchScripts') !== false && isBackgroundScratchScript(command, payload))) return 'allow';
   if (guarded(() => settingsGet('guards', 'allowGcloudReads') !== false && isAllowedGcloudReadCommand(command))) return 'allow';
 
+  // a DevSwarm child workspace commits and pushes its own branch inline (hooks/command-guard.js isChildGitSyncChain): Node decides
+  if (LIB['./lib/devswarm-role.js'].isChildWorkspace()) unsure();
   const cls = classifyHeavy(command);
   const remote = !!cls && cls.kind === 'remote';
   const detail = remote ? '' : cls

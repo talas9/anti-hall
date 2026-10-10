@@ -217,12 +217,15 @@ both!(a_ten_thousand_write_storm_produces_a_bounded_output, |b| {
     let w = Watcher::start(bk(b, 10));
     w.add(&t.0, Filter::All);
     let files: Vec<PathBuf> = (0..3).map(|i| t.0.join(format!("f{i}.log"))).collect();
+    // The files stay open: an open and a close per write would triple the kernel's event count and overflow its queue on a slow
+    // machine, which is reported (correctly) as a rescan and is not what this test measures.
+    let mut handles: Vec<fs::File> = files.iter().map(|p| fs::OpenOptions::new().create(true).append(true).open(p).unwrap()).collect();
     let started = Instant::now();
     for i in 0..10_000 {
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&files[i % 3]).unwrap();
-        f.write_all(b"line\n").unwrap();
+        handles[i % 3].write_all(b"line\n").unwrap();
     }
     let writing = started.elapsed();
+    drop(handles);
     let batches = drain(&w, ms(400));
     let total: usize = batches.iter().map(|b| b.paths.len()).sum();
     assert!(batches.iter().all(|b| !b.rescan), "3 files never overflow a cap of 64");

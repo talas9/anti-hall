@@ -198,7 +198,12 @@ function main() {
   // The generic nudge lists only tasks NOT honestly marked blocked (an open
   // blockedBy task, or an owner/external blockedOn marker). All blocked -> no
   // nudge: the session is genuinely waiting, not neglecting work.
-  const nudgeTasks = unblockedOpen(openTasks, taskMap);
+  // A task owned by an agent this session has RUNNING (owner = its id or name/description) is attended, like a live DevSwarm child.
+  let ownerRows = null;
+  if (openTasks.some((t) => normOwner(t.owner) && !/^(main|orchestrator|coordinator)$/i.test(normOwner(t.owner)))) {
+    try { ownerRows = require('./lib/agent-scan.js').runningAgentsOrNull(transcriptPath); } catch (_) { ownerRows = null; }
+  }
+  const nudgeTasks = unblockedOpen(openTasks, taskMap, ownerRows);
   if (!idleNeglect && nudgeTasks.length === 0) {
     quietExit();
   }
@@ -683,7 +688,17 @@ function classifyOpen(openTasks, taskMap) {
 // a Primary's delegation to a child over the mesh has no local heartbeat, so
 // without this an attended in_progress task false-blocked as if neglected; an
 // archived/unknown/unreadable-registry owner still counts as unattended.
-function unblockedOpen(openTasks, taskMap) {
+// liveAgentOwner(owner, rows) -- true when `owner` is the id, the description, or (4+ chars) part of the description of a running agent.
+function liveAgentOwner(owner, rows) {
+  const o = normOwner(owner).toLowerCase();
+  if (!o || !Array.isArray(rows) || /^(main|orchestrator|coordinator)$/.test(o)) return false;
+  return rows.some((r) => {
+    const id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
+    return o === id || (d !== '' && o === d) || (o.length >= 4 && d.includes(o));
+  });
+}
+
+function unblockedOpen(openTasks, taskMap, runningRows) {
   const openIds = new Set();
   for (const t of taskMap.values()) {
     const s = (t.status || '').toLowerCase();
@@ -731,7 +746,7 @@ function unblockedOpen(openTasks, taskMap) {
     return validBlockers(t).some(id => reachOrTerminal.has(id));
   }
 
-  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t) && !devswarmChildAttended(t.owner));
+  return openTasks.filter(t => !isOwnerBlocked(t) && !honestlyBlocked(t) && !liveAgentOwner(t.owner, runningRows) && !devswarmChildAttended(t.owner));
 }
 
 function parseTasksFromFile(filePath) {

@@ -6,7 +6,7 @@
 //!
 //! # Backends
 //!
-//! * **events** ([`notify`]): OS file events (FSEvents on macOS, inotify on Linux), non-recursive per directory, filtered by
+//! * **events** ([`notify`]): OS file events (kqueue on macOS, inotify on Linux), non-recursive per directory, filtered by
 //!   file name. Used by default: it measured 0.009 permille idle CPU and a 15 ms p95 detection latency on a realistic watch
 //!   set, where polling that set costs 15 permille at 250 ms (4.5 at 800 ms, 746 ms p95) (numbers in DECISIONS.md).
 //! * **poll** ([`poll`]): list or stat the watched names every `realtime.poll_ms` and compare (modification time, size,
@@ -27,6 +27,8 @@
 //! All numbers, names and lists are plugin settings (`engine/defaults/realtime.toml`).
 
 pub mod fstype;
+#[cfg(target_os = "macos")]
+pub mod kq;
 pub mod notify;
 pub mod poll;
 

@@ -11,6 +11,8 @@
 //! answered that step).
 
 use super::support::*;
+pub use crate::common::goldens::Tool;
+use crate::common::goldens::{self, Answer, Golden, NodeMode, Norm};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -129,6 +131,8 @@ pub struct Opts {
     pub events: Vec<&'static str>,
     pub tools: Vec<&'static str>,
     pub node_argv: Option<fn(&Step) -> Vec<String>>,
+    /// Node and the engine each get a home of their own (the default). With one shared home the engine would read what Node
+    /// wrote, which a replayed Node golden never writes.
     pub dual: bool,
     pub state_files: Option<fn(&Value) -> Regex>,
     pub state_norm: Option<fn(&str, &str) -> String>,
@@ -140,6 +144,12 @@ pub struct Opts {
     pub strict_defer_prefix: Option<&'static str>,
     /// Self-test of the harness: Node's answers are altered before they are compared, so every compared step must mismatch.
     pub mutate: bool,
+    /// The tools the hook shells out to: their versions are part of its Node golden's fingerprint.
+    pub node_tools: Vec<Tool>,
+    /// Text a replayed Node answer cannot reproduce (it names something the run created from the real clock, such as a commit
+    /// id), masked in both answers when Node's answer came from its golden. A live run (record, `AH_LIVE_NODE=1`) compares it
+    /// exactly.
+    pub replay_mask: Option<fn(&str) -> String>,
 }
 
 impl Opts {
@@ -155,7 +165,7 @@ impl Opts {
             events: vec!["PreToolUse", "PostToolUse"],
             tools: vec!["Bash"],
             node_argv: None,
-            dual: false,
+            dual: true,
             state_files: None,
             state_norm: None,
             shared_files: None,
@@ -163,6 +173,8 @@ impl Opts {
             fallback_argv: Vec::new(),
             strict_defer_prefix: None,
             mutate: false,
+            node_tools: vec![Tool::Node, Tool::Git],
+            replay_mask: None,
         }
     }
 }
@@ -234,35 +246,115 @@ fn homed(e: &Env, home: &str) -> Env {
     e.iter().map(|(k, v)| (k.clone(), v.as_ref().map(|s| s.replace("__HOME__", home)))).collect()
 }
 
-fn state_diff(home_n: &Path, home_e: &Path, re: &Regex, norm: Option<fn(&str, &str) -> String>) -> Option<(String, String, String)> {
-    let list = |h: &Path| -> Vec<String> {
-        let mut v = Vec::new();
-        for sub in ["", "turn-gate"] {
-            if let Ok(rd) = std::fs::read_dir(h.join(".anti-hall").join(sub)) {
-                for e in rd.flatten() {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    v.push(if sub.is_empty() { n } else { format!("{sub}/{n}") });
-                }
+/// The state files of a home that `re` selects, by name (`None`: listed but unreadable, such as a sub-directory).
+fn state_map(h: &Path, re: &Regex) -> BTreeMap<String, Option<String>> {
+    let mut v = Vec::new();
+    for sub in ["", "turn-gate"] {
+        if let Ok(rd) = std::fs::read_dir(h.join(".anti-hall").join(sub)) {
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                v.push(if sub.is_empty() { n } else { format!("{sub}/{n}") });
             }
         }
-        // `readdir` of a directory lists its sub-directories too; JavaScript's listing did the same and read them as absent
-        v.retain(|f| re.is_match(f));
-        v.sort();
-        v
-    };
-    let read = |h: &Path, f: &str| -> Option<String> { std::fs::read(h.join(".anti-hall").join(f)).ok().map(|b| String::from_utf8_lossy(&b).to_string()) };
+    }
+    // `readdir` of a directory lists its sub-directories too; JavaScript's listing did the same and read them as absent
+    v.retain(|f| re.is_match(f));
+    v.into_iter()
+        .map(|f| {
+            let t = std::fs::read(h.join(".anti-hall").join(&f)).ok().map(|b| String::from_utf8_lossy(&b).to_string());
+            (f, t)
+        })
+        .collect()
+}
+
+/// Node's state as the comparison sees it (the lane's `state_norm`, which is idempotent): what a golden stores, so clock values
+/// the comparison masks do not make a case volatile.
+fn state_norm(o: &Opts, m: BTreeMap<String, Option<String>>) -> BTreeMap<String, Option<String>> {
+    m.into_iter()
+        .map(|(f, t)| {
+            let t = t.map(|t| o.state_norm.map_or(t.clone(), |n| n(&f, &t)));
+            (f, t)
+        })
+        .collect()
+}
+
+/// The first state file that differs between Node's state (as Node left it, live or from its golden) and the engine's home.
+fn state_diff(node: &BTreeMap<String, Option<String>>, home_e: &Path, re: &Regex, norm: Option<fn(&str, &str) -> String>) -> Option<(String, String, String)> {
     let nrm = |f: &str, t: Option<String>| -> Option<String> { t.map(|t| norm.map(|n| n(f, &t)).unwrap_or(t)) };
-    let a = list(home_n);
-    let b = list(home_e);
-    let names: BTreeSet<String> = a.into_iter().chain(b).collect();
+    let eng = state_map(home_e, re);
+    let names: BTreeSet<&String> = node.keys().chain(eng.keys()).collect();
     for f in names {
-        let x = nrm(&f, read(home_n, &f));
-        let y = nrm(&f, read(home_e, &f));
+        let x = nrm(f, node.get(f).cloned().flatten());
+        let y = nrm(f, eng.get(f).cloned().flatten());
         if x != y {
-            return Some((f, x.unwrap_or("null".into()), y.unwrap_or("null".into())));
+            return Some((f.clone(), x.unwrap_or("null".into()), y.unwrap_or("null".into())));
         }
     }
     None
+}
+
+/// A golden key without clock readings: corpora and contexts are built from the real clock (a skip entry `now + 1 h`, a
+/// session's `firstTs`), so the readings move between recording and replay while the case stays the same. Only the key is
+/// masked; a Node answer that depends on the reading is caught as volatile when recording.
+fn unclocked(s: &str) -> String {
+    static CLOCK: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\d{4}-\d\d-\d\d|\b1\d{9}(?:\d{3})?(?:\.\d+)?\b").unwrap()
+    });
+    static PID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(&format!(r"\b{}\b", std::process::id())).unwrap());
+    // the test process's own pid (a lock a scenario writes as held by a live process) differs per run as well
+    PID.replace_all(&CLOCK.replace_all(s, "<CLOCK>"), "<PID>").to_string()
+}
+
+/// The initial home of a group as text (paths relative, contents and link targets normalized): part of every golden input, so
+/// a changed context re-keys its cases.
+fn home_key(home: &Path, norm: &Norm) -> String {
+    fn walk(d: &Path, rel: &str, norm: &Norm, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        let mut names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        names.sort();
+        for n in names {
+            let p = d.join(&n);
+            let r = format!("{rel}/{n}");
+            let Ok(md) = std::fs::symlink_metadata(&p) else { continue };
+            if md.file_type().is_symlink() {
+                out.push(format!("{r} -> {}", std::fs::read_link(&p).map(|x| x.to_string_lossy().to_string()).unwrap_or_default()));
+            } else if md.is_dir() {
+                use std::os::unix::fs::PermissionsExt;
+                out.push(format!("{r}/ {:o}", md.permissions().mode() & 0o7777));
+                // a repository's objects carry commit times: the setup that made it is in the corpus, its bytes are not stable
+                if n != ".git" {
+                    walk(&p, &r, norm, out);
+                }
+            } else {
+                use std::os::unix::fs::PermissionsExt;
+                out.push(format!(
+                    "{r} {:o} {}",
+                    md.permissions().mode() & 0o7777,
+                    goldens::sha256_hex(unclocked(&norm.apply(&String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()))).as_bytes())
+                ));
+            }
+        }
+    }
+    let mut v = Vec::new();
+    walk(home, "", norm, &mut v);
+    norm.apply(&v.join("\n"))
+}
+
+/// Stop a group's daemon and wait for its process to exit (the pid its singleton lock file names; `common::reap` looks for an
+/// `ah-engine serve` command line, which a daemon the client spawned does not show, and then waited 2 s per group for nothing).
+/// SIGKILL after the ceiling, so a daemon never outlives its group.
+fn stop_daemon(dir: &Path, stop: impl Fn()) {
+    let pid = crate::common::lock_pid(dir).or_else(|| crate::common::marker_pid(dir));
+    stop();
+    let Some(pid) = pid else { return };
+    let t = std::time::Instant::now();
+    while crate::common::alive(pid) && t.elapsed() < crate::common::READY_CEILING {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if crate::common::alive(pid) {
+        // SAFETY: `kill` takes plain integers and has no memory-safety preconditions; a dead pid just fails with ESRCH.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
 }
 
 enum R {
@@ -304,9 +396,33 @@ exit 0
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Run a guard corpus with Node from its golden (see `crate::common::goldens`): replayed by default, recorded with
+/// `AH_RECORD_NODE=1` (two passes, under scratch roots of different path lengths, to find volatile cases), live with
+/// `AH_LIVE_NODE=1`. A harness self-test (`mutate`) never records: in a recording run it runs Node live.
 pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
+    let entry = hooks.join(o.hook_file);
+    let root = repo_root().canonicalize().unwrap_or_else(|_| repo_root());
+    let entry = entry.strip_prefix(&root).unwrap_or(&entry).to_string_lossy().to_string();
+    let fp = goldens::fingerprint(&[&entry], &o.node_tools);
+    let mode = goldens::mode();
+    if mode == NodeMode::Record && !o.mutate {
+        let a = Golden::open_in(o.name, fp.clone(), NodeMode::Record);
+        let ra = run_guard_with(o, hooks, scenarios, &a, "");
+        let b = Golden::open_in(o.name, fp, NodeMode::Record);
+        let rb = run_guard_with(o, hooks, scenarios, &b, "-recording-pass-two");
+        let (n, v) = Golden::write_pair(a, b);
+        println!("goldens: recorded {}: {n} cases, {v} volatile (always live)", o.name);
+        return if ra.stats.mismatch > 0 { ra } else { rb };
+    }
+    let g = Golden::open_in(o.name, fp, if mode == NodeMode::Record { NodeMode::Live } else { mode });
+    let r = run_guard_with(o, hooks, scenarios, &g, "");
+    g.finish();
+    r
+}
+
+fn run_guard_with(o: &Opts, hooks: &Path, scenarios: &[Scenario], golden: &Golden, pad: &str) -> Report {
     let plugin_root = hooks.parent().unwrap().to_path_buf();
-    let scratch = Scratch::new(o.name);
+    let scratch = Scratch::new(&format!("{}{pad}", o.name));
     let tmp = scratch.path().to_path_buf();
     let base_path = std::env::var("PATH").unwrap_or_default();
     let hook_path = hooks.join(o.hook_file);
@@ -318,6 +434,17 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
     let mism: Mutex<Vec<Mismatch>> = Mutex::new(Vec::new());
     let norm_default = Ctx::default();
 
+    // A scenario's golden key: its id, plus `~<k>` for the k-th repeat of an id (ids are not unique). A subset taken in corpus
+    // order (the harness self-tests) numbers its repeats the same way.
+    let mut seen_ids: BTreeMap<&str, usize> = BTreeMap::new();
+    let keys: Vec<String> = scenarios
+        .iter()
+        .map(|sc| {
+            let k = seen_ids.entry(sc.id.as_str()).or_insert(0);
+            *k += 1;
+            if *k == 1 { sc.id.clone() } else { format!("{}~{}", sc.id, *k - 1) }
+        })
+        .collect();
     // group scenarios by ctx identity
     let mut groups: Vec<(Option<*const Ctx>, Vec<usize>)> = Vec::new();
     for (i, sc) in scenarios.iter().enumerate() {
@@ -332,24 +459,51 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
         let base = env_of(&[("PATH", &base_path), ("HOME", home), ("USERPROFILE", home), ("ANTIHALL_TEST_ISOLATION", "1")]);
         homed(&env_merge(&base, &ctx.env), home)
     };
-    let node_step = |payload: &Value, step: &Step, home: &str, ctx: &Ctx| -> Out {
+    // Node's answer to one step: from the golden (replay) or a live run (record, live, or a volatile case). `chain` keys the
+    // case: the group's initial home plus every input of the scenario so far, so an earlier step's change re-keys later ones.
+    let node_step = |id: &str,
+                     chain: &mut String,
+                     payload: &Value,
+                     step: &Step,
+                     home: &Path,
+                     ctx: &Ctx,
+                     (norm, norm_e): (&Norm, &Norm),
+                     state_re: Option<&Regex>|
+     -> (Out, Answer) {
+        let home_s = home.to_string_lossy().to_string();
         let mut args = o.node_flags.clone();
         args.push(hook_path.to_string_lossy().to_string());
         args.extend(step.argv.clone().unwrap_or_else(|| o.node_argv.map(|f| f(step)).unwrap_or_default()));
         let input = step.raw.clone().unwrap_or_else(|| serde_json::to_string(payload).unwrap());
-        let r = node(&args, input.as_bytes(), &node_env(home, ctx), "/tmp");
-        let mut out = if o.node_cli { r.trimmed() } else { Out { code: if r.code_is(2) { "2".into() } else { "0".into() }, out: r.out, err: r.err }.trimmed() };
+        let env = node_env(&home_s, ctx);
+        // PATH is the runner's own (it differs between shells and CI); the tools it finds are in the fingerprint
+        let keyed_env: Vec<&(String, Option<String>)> = env.iter().filter(|(k, _)| k != "PATH").collect();
+        let this = unclocked(&norm.apply(&format!("args={args:?}\nenv={keyed_env:?}\nstdin={input}")));
+        *chain = goldens::sha256_hex(format!("{chain}\n{this}").as_bytes());
+        let a = golden.node(id, chain.as_bytes(), norm, || {
+            let r = node(&args, input.as_bytes(), &env, "/tmp");
+            let out = if o.node_cli { r.trimmed() } else { Out { code: if r.code_is(2) { "2".into() } else { "0".into() }, out: r.out, err: r.err }.trimmed() };
+            Answer { code: out.code, out: out.out, err: out.err, state: state_re.map(|re| state_norm(o, state_map(home, re))).unwrap_or_default() }
+        });
+        let a = a.map(|s| norm_e.undo(&norm.apply(s)));
+        let mut out = Out { code: a.code.clone(), out: a.out.clone(), err: a.err.clone() };
         if o.mutate {
             out.out.push_str("~mutant");
         }
-        out
+        (out, a)
     };
 
-    for (gi, (_, idxs)) in groups.iter().enumerate() {
+    // One group: its homes, rules file and daemon, its scenarios on `inner` workers. Groups are independent of each other.
+    let run_group = |idxs: &Vec<usize>, gi: usize, inner: usize| {
         let gi = gi + 1;
         let ctx: &Ctx = scenarios[idxs[0]].ctx.as_deref().unwrap_or(&norm_default);
         let home = mk_home(&tmp, &gi.to_string(), ctx);
         let home_e = if o.dual { mk_home(&tmp, &format!("e{gi}"), ctx) } else { home.clone() };
+        let norm = Norm::new().path(&tmp, "SCRATCH").path(&home, "HOME").path(&plugin_root, "PLUGIN");
+        // With two homes, Node's answer names Node's home where the engine's names its own: compare them with Node's home read as
+        // the engine's (what the one shared home compared implicitly).
+        let norm_e = Norm::new().path(&tmp, "SCRATCH").path(&home_e, "HOME").path(&plugin_root, "PLUGIN");
+        let group_key = goldens::sha256_hex(home_key(&home, &norm).as_bytes());
         let (home_s, home_e_s) = (home.to_string_lossy().to_string(), home_e.to_string_lossy().to_string());
         let dir = tmp.join(format!("e{gi}"));
         let rf = tmp.join(format!("rules{gi}.json"));
@@ -395,9 +549,12 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
             }
         }
         let list: Vec<&Scenario> = idxs.iter().map(|&i| &scenarios[i]).collect();
-        pool(&list, o.conc, |sc, _| {
+        let list_keys: Vec<&String> = idxs.iter().map(|&i| &keys[i]).collect();
+        let chains: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        pool(&list, inner, |sc, li| {
             stats.lock().unwrap().scenarios += 1;
             let mut stopped = false;
+            let mut chain = group_key.clone();
             for (si, step) in sc.steps.iter().enumerate() {
                 {
                     let mut st = stats.lock().unwrap();
@@ -408,7 +565,8 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                 }
                 let payload = subst_home(&step.payload, &home_s);
                 let payload_e = if o.dual { subst_home(&step.payload, &home_e_s) } else { payload.clone() };
-                let n = node_step(&payload, step, &home_s, ctx);
+                let state_re = if o.dual { o.state_files.map(|f| f(&step.payload)) } else { None };
+                let (n, n_answer) = node_step(&format!("{}#{si}", list_keys[li]), &mut chain, &payload, step, &home, ctx, (&norm, &norm_e), state_re.as_ref());
                 {
                     let mut st = stats.lock().unwrap();
                     if n.code_is(2) {
@@ -422,6 +580,11 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                     continue;
                 }
                 let input = step.raw.clone().unwrap_or_else(|| serde_json::to_string(&payload_e).unwrap());
+                let replayed = golden.mode() == NodeMode::Replay && !golden.is_volatile(&format!("{}#{si}", list_keys[li]));
+                let same = |e: &Out, n: &Out| match o.replay_mask.filter(|_| replayed) {
+                    Some(m) => e.code == n.code && m(&e.out) == m(&n.out) && m(&e.err) == m(&n.err),
+                    None => e == n,
+                };
                 let mut results: Vec<(&str, R)> = Vec::new();
                 if matches!(o.mode, Mode::Oneshot | Mode::Both) && si == 0 {
                     let e = run(ENGINE, &strs(&["check", o.check]), input.as_bytes(), &oenv, "/tmp").trimmed();
@@ -429,7 +592,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                         "oneshot",
                         if e.out == "AHFALLBACK" {
                             R::Deferred
-                        } else if e == n {
+                        } else if same(&e, &n) {
                             R::Same
                         } else {
                             R::Other(e)
@@ -442,7 +605,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                         "daemon",
                         if e.out == "AHDEFERRED" {
                             R::Deferred
-                        } else if e == n {
+                        } else if same(&e, &n) {
                             R::Same
                         } else {
                             R::Other(e)
@@ -462,10 +625,9 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                 if o.dual
                     && !stopped
                     && !results.is_empty()
-                    && let Some(state_files) = o.state_files
+                    && let Some(re) = &state_re
                 {
-                    let re = state_files(&step.payload);
-                    let d = state_diff(&home, &home_e, &re, o.state_norm);
+                    let d = state_diff(&n_answer.state, &home_e, re, o.state_norm);
                     let any_deferred = results.iter().any(|(_, r)| matches!(r, R::Deferred));
                     let mut st = stats.lock().unwrap();
                     match d {
@@ -539,6 +701,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                     }
                 }
             }
+            chains.lock().unwrap().push(chain);
         });
         if o.fallback_real {
             let mut st = stats.lock().unwrap();
@@ -549,10 +712,23 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
                 }
             }
         }
+        // The shared files at the end of the group are a golden case of their own, keyed by every scenario of the group. A volatile
+        // one cannot be replayed (Node did not run the group), so it is compared only when Node really ran; a harness self-test
+        // (a subset, with Node's stdout altered) leaves it out.
+        let gid = format!("~group-end-{gi}#0");
         if o.dual
+            && !o.mutate
             && let Some(re) = &o.shared_files
+            && !(golden.mode() == NodeMode::Replay && golden.is_volatile(&gid))
         {
-            let d = state_diff(&home, &home_e, re, o.state_norm);
+            let mut all = chains.into_inner().unwrap();
+            all.sort();
+            all.insert(0, group_key.clone());
+            let node_state = golden
+                .node(&gid, all.join("\n").as_bytes(), &norm, || Answer { state: state_norm(o, state_map(&home, re)), ..Answer::default() })
+                .map(|s| norm_e.undo(&norm.apply(s)))
+                .state;
+            let d = state_diff(&node_state, &home_e, re, o.state_norm);
             let mut st = stats.lock().unwrap();
             st.compared += 1;
             if let Some((name, nn, ee)) = d {
@@ -570,15 +746,24 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
             }
         }
         if o.mode != Mode::Oneshot {
-            run(ENGINE, &strs(&["ctl", "stop"]), b"", &denv, "/tmp");
-            for _ in 0..200 {
-                if !run(ENGINE, &strs(&["ctl", "ping"]), b"", &denv, "/tmp").code_is(0) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(30));
+            // wait for the daemon PROCESS to end, not just its socket: an exiting daemon still writes its log and last-known-good
+            // defaults, which re-created the group's dir after it was removed (a leaked scratch dir per run)
+            stop_daemon(&dir, || {
+                run(ENGINE, &strs(&["ctl", "stop"]), b"", &denv, "/tmp");
+            });
+        }
+        // a lane of a thousand groups held ~1 GB of engine state until its end: each group's dirs go when the group is done
+        if std::env::var_os("AH_PARITY_KEEP").is_none() {
+            for d in [&dir, &home, &home_e] {
+                wipe(d);
             }
         }
-    }
+    };
+    // The groups run side by side (api_guard has about one per scenario, which ran as a serial chain of daemon start-ups), and
+    // each gets workers in proportion to its share of the scenarios, so one big group is not left to a single worker.
+    let total = scenarios.len().max(1);
+    let all: Vec<(usize, &Vec<usize>)> = groups.iter().map(|(_, v)| v).enumerate().collect();
+    pool(&all, o.conc, |(gi, idxs), _| run_group(idxs, *gi, (idxs.len() * o.conc).div_ceil(total).clamp(1, o.conc)));
     let stats = stats.into_inner().unwrap();
     let mismatches = mism.into_inner().unwrap();
     let pc = |x: usize| if stats.compared > 0 { format!("{:.2}%", 100.0 * x as f64 / stats.compared as f64) } else { "-".into() };
@@ -620,6 +805,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
     ));
     if !stats.deferred_ids.is_empty() {
         let mut by: BTreeMap<String, usize> = BTreeMap::new();
+        s.push_str(&format!("  LOCAL deferred ids: {:?}\n", stats.deferred_ids));
         for id in &stats.deferred_ids {
             *by.entry(id.split('-').next().unwrap_or("").to_string()).or_insert(0) += 1;
         }
@@ -636,6 +822,7 @@ pub fn run_guard(o: &Opts, hooks: &Path, scenarios: &[Scenario]) -> Report {
             (&m.engine.code, clip(&m.engine.out, 160), clip(&m.engine.err, 160))
         ));
     }
+    s.push_str(&timing::line(o.name));
     drop(scratch);
     Report { stats, summary: s }
 }

@@ -1,0 +1,24 @@
+#!/bin/sh
+# (settings may instead come from a stub.conf next to this script, which is sourced)
+# Recording hivecontrol stub for the reconcile-port tests: replays recorded output, never touches DevSwarm.
+#   HC_STUB_DIR     fixtures: "<args joined by _>.out" (stdout) and optional ".rc" (exit code)
+#   HC_STUB_LOG     every invocation is appended here (one line of args)
+#   HC_STUB_FORBID  space-separated first arguments that must never be called (logged as VIOLATION, exit 99)
+#   HC_STUB_DIE_MID first argument whose reply is cut in half and the stub then SIGKILLs itself
+[ -f "$(dirname "$0")/stub.conf" ] && . "$(dirname "$0")/stub.conf"
+key=$(printf '%s' "$*" | tr ' /' '__')
+[ -n "$HC_STUB_LOG" ] && printf '%s\n' "$*" >> "$HC_STUB_LOG"
+for f in $HC_STUB_FORBID; do
+  if [ "$1" = "$f" ]; then
+    [ -n "$HC_STUB_LOG" ] && printf 'VIOLATION %s\n' "$*" >> "$HC_STUB_LOG"
+    exit 99
+  fi
+done
+out="$HC_STUB_DIR/$key.out"
+if [ -n "$HC_STUB_DIE_MID" ] && [ "$1" = "$HC_STUB_DIE_MID" ] && [ -f "$out" ]; then
+  n=$(wc -c < "$out"); head -c $((n / 2)) "$out"
+  kill -9 $$
+fi
+[ -f "$out" ] && cat "$out"
+rc=0; [ -f "$HC_STUB_DIR/$key.rc" ] && rc=$(cat "$HC_STUB_DIR/$key.rc")
+exit "$rc"

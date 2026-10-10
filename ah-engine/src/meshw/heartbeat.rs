@@ -40,7 +40,7 @@ struct Pending {
 }
 
 /// `/^primary-[0-9a-f]{8}$/`: a Primary label id, which Node's `childLabelRefusal` examines.
-fn is_primary_label(id: &str) -> bool {
+pub(crate) fn is_primary_label(id: &str) -> bool {
     let hex = defaults::num("mesh_write.mesh_id_hex") as usize;
     id.strip_prefix(defaults::text("mesh_write.primary_prefix"))
         .is_some_and(|rest| rest.len() == hex && rest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
@@ -85,7 +85,7 @@ pub(crate) fn running_version() -> OVal {
 
 /// Open the partition's store the way `openStoreForUnread` does (read only): `Ok(None)` is Node's null handle (no store
 /// yet); anything the engine cannot read exactly like Node defers.
-fn open_reader(inv: &Inv, desc: &OVal) -> R<Option<MeshReader>> {
+pub(crate) fn open_reader(inv: &Inv, desc: &OVal) -> R<Option<MeshReader>> {
     let Some(wt) = union::path_field(desc, defaults::text("mesh_write.field_worktree_path"))? else { return Ok(None) };
     let Some(repo_key) = ident::repo_key_for_worktree(&wt)? else { return Ok(None) };
     let dir = union::store_dir(&inv.home, &repo_key);
@@ -139,7 +139,7 @@ fn pending_for(inv: &Inv, id: &str, desc: &OVal) -> R<Pending> {
 
 /// The lines `unreadBacklog(inboxPath, cursorPath)` reports: the inbox's lines past the cursor FILE's position, 0 when the
 /// backlog is not known.
-fn known_backlog(inbox: Option<&str>, cursor_file: Option<&str>) -> R<usize> {
+pub(crate) fn known_backlog(inbox: Option<&str>, cursor_file: Option<&str>) -> R<usize> {
     let (Some(i), Some(c)) = (inbox, cursor_file) else { return Ok(0) };
     let Some(all) = union::non_empty_lines(i) else { return Ok(0) };
     let Some(pos) = union::cursor_position(c)? else { return Ok(0) };

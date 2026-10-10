@@ -273,6 +273,17 @@ pub fn script_failure(check: &str, event: &str) -> Event {
     base(Kind::Check, check, event, Outcome::Error, 0, 0, Extras::None)
 }
 
+/// The event for a hook output too large to inject inline, written to a file instead: `bytes` is the size of the file.
+pub fn spill(h: &str, event: &str, bytes: u64) -> Event {
+    base(Kind::Spill, h, event, Outcome::Advise, 0, bytes, Extras::Spill(bytes))
+}
+
+/// The event for a dispatcher path that would have handed the event to the Node hooks and answered without them
+/// (`path` is `budget`, `infra` or `panic`; `outcome` is Skip for an advisory event, Block or Allow for a guard event).
+pub fn no_node_path(path: &str, event: &str, outcome: Outcome) -> Event {
+    base(Kind::Hook, &format!("dispatcher-{path}"), event, outcome, 0, 0, Extras::None)
+}
+
 /// The event for a daemon health snapshot: `readings` are the numbers the `daemon` schema lists.
 pub fn daemon_snapshot(degraded: bool, readings: &[(&str, u64)]) -> Event {
     let mut f = Fields::new().num("degraded", u64::from(degraded));
@@ -334,6 +345,57 @@ pub struct AgentRec<'a> {
 /// The event for one agent-tracker record.
 pub fn agent_call(r: AgentRec<'_>) -> Event {
     base(Kind::Agent, r.class, r.name, r.outcome, 0, 0, Extras::Fields(r.fields))
+}
+
+/// One acting-feature action (the shared `act` schema: see `telemetry.fields`). Identifiers and numbers only.
+pub struct ActRec<'a> {
+    /// The feature (`h`), for example `auto-archive`.
+    pub feature: &'a str,
+    /// The action (`e`), for example `archive`.
+    pub action: &'a str,
+    /// How it ended: Allow = done, Block = refused or stale, Skip = not applicable, Error, Timeout.
+    pub outcome: Outcome,
+    /// Latency in milliseconds.
+    pub latency_ms: u64,
+    /// What it acted on (a workspace id, a PR number, ...).
+    pub target: &'a str,
+    /// A short digest of the inputs (never text).
+    pub inputs: &'a str,
+    /// Why it was refused or failed; empty when it ran.
+    pub reason: &'a str,
+    /// The id a mistake signal refers back to (normally the idempotency key).
+    pub action_id: &'a str,
+}
+
+fn act_fields(r: &ActRec<'_>) -> Fields {
+    let mut f = Fields::new().tok("target", r.target).tok("action_id", r.action_id);
+    if !r.inputs.is_empty() {
+        f = f.tok("inputs", r.inputs);
+    }
+    if !r.reason.is_empty() {
+        f = f.tok("reason", r.reason);
+    }
+    f
+}
+
+/// The event for one action.
+pub fn act_call(r: &ActRec<'_>) -> Event {
+    base(Kind::Act, r.feature, r.action, r.outcome, r.latency_ms.saturating_mul(1000), 0, Extras::Fields(act_fields(r)))
+}
+
+/// The event for a mistake signal about an earlier action (`r.action_id`); the outcome is always Advise.
+pub fn mistake_call(r: &ActRec<'_>) -> Event {
+    base(Kind::Mistake, r.feature, r.action, Outcome::Advise, 0, 0, Extras::Fields(act_fields(r)))
+}
+
+/// Record one action now (any process).
+pub fn act(r: &ActRec<'_>) {
+    event(act_call(r));
+}
+
+/// Record a mistake signal now (any process).
+pub fn mistake(r: &ActRec<'_>) {
+    event(mistake_call(r));
 }
 
 #[cfg(test)]

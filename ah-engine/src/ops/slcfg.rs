@@ -6,16 +6,17 @@
 //! (installer) or left alone (uninstaller), a re-run changes nothing, and the dispatcher path is refused when it holds shell
 //! metacharacters. The write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
 //!
-//! Where the Node script would print a JavaScript parser or file-system message the port cannot reproduce (a settings file
-//! that is not valid JSON), it writes nothing, says so and exits with the deferral code; the Node script can be run instead.
+//! A file it cannot read or parse is reported the way the scripts report it (the same lines and exit codes; Node's words for an
+//! operating-system error, the engine's own for a parse error) and nothing is written. The installer writes the engine's own
+//! status line command (`"<engine>" statusline`, no launcher and no Node script); `slcfg.node_only_env` gives the Node
+//! installer's command instead (the parity tests set it).
 use super::jsio::{self, join};
-use super::{defer_code, env_snapshot, home, plugin_root};
+use super::{env_snapshot, home, plugin_root};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::{self, J};
 use crate::cli::Parsed;
 use crate::defaults;
 use crate::migrate::{j_string, j_truthy};
-use crate::ops::js::Defer;
 use crate::setup::jsfmt::pretty;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -57,6 +58,32 @@ fn parse(text: &str) -> Result<J, json::Fail> {
 /// The text of a file, or `None` when it cannot be read (a directory, no permission).
 fn read_text(path: &str) -> Option<String> {
     crate::checks::jsport::fsx::read_utf8(path)
+}
+
+/// `fs.readFileSync(path, 'utf8')`, or Node's message for the failure.
+fn read_text_or_message(path: &str) -> Result<String, String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| jsio::node_message(&e, t("slcfg.err_open"), &[("path", &path)]))?;
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes).map_err(|e| jsio::node_message(&e, t("slcfg.err_read"), &[]))?;
+    Ok(crate::checks::guardkit::text::lossy_owned(bytes))
+}
+
+/// `JSON.parse(fs.readFileSync(path, 'utf8'))`: the value, or the message the scripts print after "Could not parse <path>: ".
+fn read_json(path: &str) -> Result<J, String> {
+    match parse(&read_text_or_message(path)?) {
+        Ok(v) => Ok(v),
+        Err(json::Fail::Invalid) => Err(t("slcfg.parse_invalid").to_string()),
+        Err(json::Fail::Unsupported) => Err(fill("slcfg.parse_unsupported", &[("depth", &defaults::num("setup.json_max_depth"))])),
+    }
+}
+
+/// [`read_json`] for a file whose top level must be an object the tool merges into.
+fn read_object(path: &str) -> Result<J, String> {
+    match read_json(path)? {
+        J::Obj(o) => Ok(J::Obj(o)),
+        _ => Err(t("slcfg.parse_not_object").to_string()),
+    }
 }
 
 /// `isShellSafe(p)`.
@@ -108,11 +135,11 @@ struct Paths {
     script_dir: String,
 }
 
-fn paths(env: &BTreeMap<String, String>) -> Result<Paths, Defer> {
+fn paths(env: &BTreeMap<String, String>) -> Result<Paths, String> {
     let home = home(env);
-    let cwd = std::env::current_dir().map_err(|_| Defer)?.to_string_lossy().into_owned();
+    let cwd = std::env::current_dir().map_err(|e| jsio::node_message(&e, t("slcfg.err_cwd"), &[]))?.to_string_lossy().into_owned();
     let base_dir = join(&home, t("paths.base_dir"));
-    let root = plugin_root(env).ok_or(Defer)?;
+    let root = plugin_root(env).ok_or_else(|| t("slcfg.no_plugin_root").to_string())?;
     let sdir = Path::new(&root).join(t("statusline.dir"));
     // the script's own directory, with links resolved as Node resolves the main module
     let script_dir = std::fs::canonicalize(&sdir).unwrap_or(sdir).to_string_lossy().into_owned();
@@ -133,15 +160,15 @@ fn exists(p: &str) -> bool {
 // ---- install ----------------------------------------------------------------------------------------------------------
 
 /// `readStatusLineFrom(file)`: the file's `statusLine` member, `None` for absent, unreadable or not JSON.
-fn status_line_from(path: &str) -> Result<Option<J>, Defer> {
+/// JSON the parser cannot represent exactly counts as unreadable here: it only feeds the notes and the "already installed"
+/// test, and the file that is written is read again (and refused) below.
+fn status_line_from(path: &str) -> Option<J> {
     if !exists(path) {
-        return Ok(None);
+        return None;
     }
-    let Some(text) = read_text(path) else { return Ok(None) };
-    match parse(&text) {
-        Ok(J::Obj(o)) => Ok(o.into_iter().find(|(k, _)| k == "statusLine").map(|(_, v)| v)),
-        Ok(_) | Err(json::Fail::Invalid) => Ok(None),
-        Err(json::Fail::Unsupported) => Err(Defer),
+    match parse(&read_text(path)?) {
+        Ok(J::Obj(o)) => o.into_iter().find(|(k, _)| k == "statusLine").map(|(_, v)| v),
+        _ => None,
     }
 }
 
@@ -157,22 +184,34 @@ fn shown_command(sl: &J) -> String {
     js_text(sl)
 }
 
-fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, Defer> {
+fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, String> {
     let pa = paths(env)?;
-    let stable = join(&pa.home, &format!("{}/{}", t("slcfg.stable_dir"), t("slcfg.dispatcher_file")));
-    let override_var = env.get(defaults::env_name("dispatcher_override"));
-    let dispatcher = match override_var {
-        Some(o) => o.clone(),
-        None if exists(&stable) => stable.clone(),
-        None => join(&pa.script_dir, t("slcfg.dispatcher_file")),
+    let node_only = node_only(env);
+    // what the command will run: the engine itself, or (Node-only form) the dispatcher script
+    let target = if node_only {
+        let stable = join(&pa.home, &format!("{}/{}", t("slcfg.stable_dir"), t("slcfg.dispatcher_file")));
+        let override_var = env.get(defaults::env_name("dispatcher_override"));
+        let dispatcher = match override_var {
+            Some(o) => o.clone(),
+            None if exists(&stable) => stable.clone(),
+            None => join(&pa.script_dir, t("slcfg.dispatcher_file")),
+        };
+        if override_var.is_none_or(String::is_empty) && !exists(&dispatcher) {
+            log.err(fill("slcfg.inst_not_found_1", &[("path", &dispatcher)]));
+            log.err(t("slcfg.inst_not_found_2"));
+            return Ok(1);
+        }
+        let note = if dispatcher == stable { t("slcfg.dispatcher_stable") } else { t("slcfg.dispatcher_dev") };
+        log.out(fill("slcfg.dispatcher_line", &[("path", &dispatcher), ("note", &note)]));
+        dispatcher
+    } else {
+        let Some(engine) = engine_path(&pa.home) else {
+            log.err(fill("slcfg.engine_not_found", &[("path", &engine_home_path(&pa.home))]));
+            return Ok(1);
+        };
+        log.out(fill("slcfg.engine_line", &[("path", &engine)]));
+        engine
     };
-    if override_var.is_none_or(String::is_empty) && !exists(&dispatcher) {
-        log.err(fill("slcfg.inst_not_found_1", &[("path", &dispatcher)]));
-        log.err(t("slcfg.inst_not_found_2"));
-        return Ok(1);
-    }
-    let note = if dispatcher == stable { t("slcfg.dispatcher_stable") } else { t("slcfg.dispatcher_dev") };
-    log.out(fill("slcfg.dispatcher_line", &[("path", &dispatcher), ("note", &note)]));
 
     let project = args.iter().any(|a| a == t("slcfg.flag_project"));
     let consolidate = args.iter().any(|a| a == t("slcfg.flag_consolidate"));
@@ -193,9 +232,9 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     log.out(fill("slcfg.settings_line", &[("path", &settings_path)]));
     log.out("");
 
-    let sl_user = status_line_from(&user_settings)?;
-    let sl_project = status_line_from(&project_settings)?;
-    let sl_local = status_line_from(&local_settings)?;
+    let sl_user = status_line_from(&user_settings);
+    let sl_project = status_line_from(&project_settings);
+    let sl_local = status_line_from(&local_settings);
     let effective = sl_local.as_ref().or(sl_project.as_ref()).or(sl_user.as_ref());
     let effective_cmd = command_of(effective).filter(|c| !c.is_empty());
 
@@ -214,10 +253,12 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
         }
     }
 
-    let ours = effective_cmd
-        .filter(|cmd| cmd.contains(t("slcfg.installed_marker")) && (cmd.contains(t("slcfg.installed_dir_install")) || cmd.contains(&pa.script_dir)));
+    let ours = effective_cmd.filter(|cmd| {
+        is_engine_command(cmd)
+            || (cmd.contains(t("slcfg.installed_marker")) && (cmd.contains(t("slcfg.installed_dir_install")) || cmd.contains(&pa.script_dir)))
+    });
     if let Some(cmd) = ours {
-        log.out(t("slcfg.already_1"));
+        log.out(t(if node_only { "slcfg.already_1" } else { "slcfg.already_engine" }));
         log.out(fill("slcfg.indent_line", &[("text", &cmd)]));
         let same = |sl: &Option<J>| command_of(sl.as_ref()).is_some_and(|c| !c.is_empty() && c == cmd);
         log.out(if same(&sl_local) {
@@ -233,7 +274,15 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
                 log.out(t(k));
             }
         }
-        log.out(t("slcfg.no_changes"));
+        // an older anti-hall form (Node-only or launcher) is moved to the engine's command, in place, by the same migration
+        // `update` runs
+        let upgraded = if node_only || is_engine_command(cmd) { Vec::new() } else { upgrade_commands(&pa.home, &pa.cwd, env, false) };
+        if upgraded.is_empty() {
+            log.out(t("slcfg.no_changes"));
+        }
+        for u in upgraded {
+            log.out(u.msg);
+        }
         return Ok(0);
     }
 
@@ -255,11 +304,12 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
         }
     }
 
-    // a file the script cannot read or parse is reported with the JavaScript parser's own message: left to Node
-    let text = read_text(&settings_path).ok_or(Defer)?;
-    let mut settings = match parse(&text) {
-        Ok(J::Obj(o)) => J::Obj(o),
-        _ => return Err(Defer),
+    let mut settings = match read_object(&settings_path) {
+        Ok(v) => v,
+        Err(msg) => {
+            log.err(fill("slcfg.inst_parse_failed", &[("path", &settings_path), ("msg", &msg)]));
+            return Ok(1);
+        }
     };
 
     let existing = settings.get("statusLine").cloned();
@@ -320,7 +370,17 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     if project {
         let gi = join(&pa.cwd, t("slcfg.gitignore_file"));
         let entry = t("slcfg.local_entry");
-        let content = if exists(&gi) { read_text(&gi).ok_or(Defer)? } else { String::new() };
+        let content = if exists(&gi) {
+            match read_text_or_message(&gi) {
+                Ok(c) => c,
+                Err(msg) => {
+                    log.err(fill("slcfg.gitignore_unreadable", &[("msg", &msg)]));
+                    return Ok(1);
+                }
+            }
+        } else {
+            String::new()
+        };
         if content.split('\n').any(|l| js_trim(l) == entry) {
             log.out(fill("slcfg.gitignore_has", &[("entry", &entry)]));
         } else {
@@ -357,25 +417,29 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     }
     log.out("");
 
-    if !shell_safe(&dispatcher) {
-        log.err(t("slcfg.unsafe_1"));
-        log.err(fill("slcfg.unsafe_2", &[("path", &dispatcher)]));
+    if !shell_safe(&target) {
+        log.err(t(if node_only { "slcfg.unsafe_1" } else { "slcfg.engine_unsafe_1" }));
+        log.err(fill("slcfg.unsafe_2", &[("path", &target)]));
         log.err(fill("slcfg.unsafe_3", &[("path", &settings_path)]));
-        log.err(t("slcfg.unsafe_4"));
+        log.err(t(if node_only { "slcfg.unsafe_4" } else { "slcfg.engine_unsafe_4" }));
         return Ok(1);
     }
+    let command = if node_only { node_command(&target) } else { engine_command(&target) };
     let new_line = J::Obj(vec![
         ("type".into(), J::Str(t("slcfg.type_command").into())),
-        ("command".into(), J::Str(format!("{}{dispatcher}{}", t("slcfg.command_prefix"), t("slcfg.command_suffix")))),
+        ("command".into(), J::Str(command)),
         ("padding".into(), J::Num(0.0)),
         ("refreshInterval".into(), J::Num(defaults::num("slcfg.refresh_interval") as f64)),
     ]);
     settings.set("statusLine", new_line.clone());
-    let uninstall = join(&pa.script_dir, t("slcfg.uninstall_file"));
+    let uninstall_js = join(&pa.script_dir, t("slcfg.uninstall_file"));
+    let hint = |node_key: &str| {
+        if node_only { fill(node_key, &[("path", &uninstall_js)]) } else { fill("slcfg.engine_uninstall_hint", &[("engine", &target)]) }
+    };
     if let Err(msg) = jsio::write_file(&settings_path, (pretty(&settings) + "\n").as_bytes()) {
         log.err(fill("slcfg.write_failed_1", &[("path", &settings_path), ("msg", &msg)]));
         log.err(t("slcfg.write_failed_2"));
-        log.err(fill("slcfg.write_failed_3", &[("path", &uninstall)]));
+        log.err(hint("slcfg.write_failed_3"));
         return Ok(1);
     }
     log.out(t("slcfg.new_statusline"));
@@ -393,7 +457,7 @@ fn install(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Re
     log.out(t("slcfg.scope_phase_2"));
     log.out("");
     log.out(t("slcfg.to_uninstall"));
-    log.out(fill("slcfg.uninstall_hint", &[("path", &uninstall)]));
+    log.out(hint("slcfg.uninstall_hint"));
     Ok(0)
 }
 
@@ -424,11 +488,139 @@ fn backup_once(settings: &str, backup: &str, log: &mut Log, report_existing: boo
     }
 }
 
+// ---- the command the host runs ----------------------------------------------------------------------------------------
+
+/// The launcher next to a dispatcher (`<dispatcher dir>/<slcfg.launcher_rel>`): only to recognise the launcher form an
+/// earlier engine installed.
+fn launcher_for(dispatcher: &str) -> String {
+    let dir = Path::new(dispatcher).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    crate::meshw::ident::resolve_abs(&Path::new(&dir).join(t("slcfg.launcher_rel")).to_string_lossy())
+}
+
+/// The Node-only form: `node "<dispatcher>"`.
+fn node_command(dispatcher: &str) -> String {
+    format!("{}{dispatcher}{}", t("slcfg.command_prefix"), t("slcfg.command_suffix"))
+}
+
+/// The engine's own form: `"<engine>" statusline`.
+fn engine_command(engine: &str) -> String {
+    fill("slcfg.command_engine", &[("engine", &engine)])
+}
+
+/// A statusLine command in the engine's own form.
+fn is_engine_command(cmd: &str) -> bool {
+    crate::checks::guardkit::jsre::compile(t("slcfg.engine_command_re"), false).is_match(cmd)
+}
+
+/// The Node installer's command is wanted (`slcfg.node_only_env`; the parity tests set it).
+fn node_only(env: &BTreeMap<String, String>) -> bool {
+    env.get(defaults::env_name("statusline_node_only")).is_some_and(|v| !v.is_empty())
+}
+
+/// Where the hook wrappers look for the engine first: `<home>/<paths.base_dir>/<paths.state_dir>/<slcfg.engine_bin_rel>`.
+fn engine_home_path(home: &str) -> String {
+    join(home, &format!("{}/{}/{}", t("paths.base_dir"), t("paths.state_dir"), t("slcfg.engine_bin_rel")))
+}
+
+/// The engine the status line command runs: the installed one under the home directory, else this very binary (a
+/// development build).
+fn engine_path(home: &str) -> Option<String> {
+    let is_executable = |p: &str| crate::checks::jsport::fsx::is_file(p) && crate::checks::jsport::fsx::is_executable(p);
+    let installed = engine_home_path(home);
+    if is_executable(&installed) {
+        return Some(installed);
+    }
+    let me = std::fs::canonicalize(std::env::current_exe().ok()?).ok()?.to_string_lossy().into_owned();
+    is_executable(&me).then_some(me)
+}
+
+/// What one settings file's upgrade did.
+pub(crate) struct Upgrade {
+    /// `fixed`, `skipped` or `failed` (a migration report's words).
+    pub status: &'static str,
+    /// The report text.
+    pub msg: String,
+}
+
+/// A statusLine command an earlier anti-hall installer wrote: the Node-only form (`node "<…/anti-hall/…/statusline.js>"`) or
+/// the launcher form (`sh "<…/scripts/ah-run.sh>" --stdin statusline -- "<dispatcher>"`), each matched exactly.
+fn legacy_form(cmd: &str) -> bool {
+    let ours = |d: &str| {
+        let norm = d.replace('\\', "/");
+        norm.contains(t("slcfg.installed_marker")) && norm.contains(t("slcfg.installed_dir_install"))
+    };
+    if let Some(inner) = cmd.strip_prefix(t("slcfg.command_prefix")).and_then(|r| r.strip_suffix(t("slcfg.command_suffix"))) {
+        return ours(inner);
+    }
+    let re = crate::checks::guardkit::jsre::compile(t("slcfg.launcher_form_re"), false);
+    re.captures(cmd).is_some_and(|c| {
+        let (Some(l), Some(d)) = (c.name("launcher"), c.name("dispatcher")) else { return false };
+        let (l, d) = (l.as_str(), d.as_str());
+        ours(d) && l == launcher_for(d) && fill("slcfg.command_launcher", &[("launcher", &l), ("dispatcher", &d)]) == cmd
+    })
+}
+
+/// The persisted-shape migration of an existing install: a statusLine an earlier anti-hall installer wrote (Node-only or
+/// launcher form) becomes the engine's own command. Idempotent (the new form is not an old one), fail-open (anything unclear
+/// is left exactly as it is), and it only ever changes that one string, in place in the file's own text, after the one-time
+/// backup the installer keeps. `None`: nothing to do.
+fn upgrade_file(path: &str, home: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
+    if node_only(env) || jsio::config_write_refused(path, env, cwd) {
+        return None;
+    }
+    let text = read_text(path)?;
+    let settings = parse(&text).ok()?;
+    let old = command_of(settings.get("statusLine"))?.to_string();
+    if !legacy_form(&old) {
+        return None;
+    }
+    let engine = engine_path(home).filter(|e| shell_safe(e))?;
+    let new = engine_command(&engine);
+    if new == old {
+        return None;
+    }
+    let (old_lit, new_lit) = (json::quote(&old), json::quote(&new));
+    let report = |status: &'static str, key: &str| Some(Upgrade { status, msg: fill(key, &[("path", &path), ("command", &new)]) });
+    if text.matches(&old_lit).count() != 1 {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    let next = text.replacen(&old_lit, &new_lit, 1);
+    if parse(&next).ok().is_none_or(|n| command_of(n.get("statusLine")) != Some(new.as_str())) {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    if dry_run {
+        return report("skipped", "slcfg.mig_dry_run");
+    }
+    let backup = path.to_string() + t("slcfg.backup_suffix");
+    if !exists(&backup) && std::fs::copy(path, &backup).is_err() {
+        return report("failed", "slcfg.mig_backup_failed");
+    }
+    match jsio::write_file(path, next.as_bytes()) {
+        Ok(()) => report("fixed", "slcfg.mig_fixed"),
+        Err(_) => report("failed", "slcfg.mig_write_failed"),
+    }
+}
+
+/// The settings files an install may have written: the user's, and the project's own two.
+pub(crate) fn upgrade_commands(home: &str, cwd: &str, env: &BTreeMap<String, String>, dry_run: bool) -> Vec<Upgrade> {
+    let claude = t("slcfg.claude_dir");
+    let mut files = vec![join(home, &format!("{claude}/{}", t("slcfg.settings_file")))];
+    if !cwd.is_empty() {
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.local_file"))));
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.settings_file"))));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    files.into_iter().filter(|f| seen.insert(f.clone())).filter_map(|f| upgrade_file(&f, home, env, cwd, dry_run)).collect()
+}
+
 // ---- uninstall --------------------------------------------------------------------------------------------------------
 
-/// `looksLikeAntiHallStatusLine(cmd)`.
+/// `looksLikeAntiHallStatusLine(cmd)`, which also knows the engine's own command.
 fn looks_like_ours(cmd: Option<&str>) -> bool {
     cmd.is_some_and(|c| {
+        if is_engine_command(c) {
+            return true;
+        }
         let norm = c.replace('\\', "/");
         norm.contains(t("slcfg.installed_marker")) && norm.contains(t("slcfg.installed_dir_uninstall"))
     })
@@ -442,7 +634,7 @@ fn purge_if_requested(pa: &Paths, purge: bool, log: &mut Log) {
     }
 }
 
-fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, Defer> {
+fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> Result<i32, String> {
     let pa = paths(env)?;
     let project = args.iter().any(|a| a == t("slcfg.flag_project"));
     let purge = args.iter().any(|a| a == t("slcfg.flag_purge"));
@@ -479,15 +671,22 @@ fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> 
     };
     // Strategy A: the saved base command is the original statusLine
     if exists(&pa.base_cfg) {
-        let base = match parse(&read_text(&pa.base_cfg).ok_or(Defer)?) {
+        let base = match read_json(&pa.base_cfg) {
             Ok(v) => v,
-            Err(_) => return Err(Defer),
+            Err(msg) => {
+                log.err(fill("slcfg.uninst_parse_failed", &[("path", &pa.base_cfg), ("msg", &msg)]));
+                log.err(t("slcfg.u_fall_through_a"));
+                J::Null
+            }
         };
         let restored = command_of(Some(&base)).map(|c| js_trim(c).to_string()).filter(|c| !c.is_empty());
         if let Some(restored) = restored {
-            let mut settings = match parse(&read_text(&settings_path).ok_or(Defer)?) {
-                Ok(J::Obj(o)) => J::Obj(o),
-                _ => return Err(Defer),
+            let mut settings = match read_object(&settings_path) {
+                Ok(v) => v,
+                Err(msg) => {
+                    log.err(fill("slcfg.uninst_parse_failed", &[("path", &settings_path), ("msg", &msg)]));
+                    return Ok(1);
+                }
             };
             let current = command_of(settings.get("statusLine")).filter(|c| !c.is_empty()).map(str::to_string);
             if !looks_like_ours(current.as_deref()) {
@@ -523,9 +722,13 @@ fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> 
     }
     // Strategy B: restore the whole file from the backup
     if exists(&backup_path) {
-        let backup = match parse(&read_text(&backup_path).ok_or(Defer)?) {
+        let backup = match read_json(&backup_path) {
             Ok(v) => v,
-            Err(_) => return Err(Defer),
+            Err(msg) => {
+                log.err(fill("slcfg.uninst_parse_backup_failed", &[("path", &backup_path), ("msg", &msg)]));
+                log.err(t("slcfg.u_fall_through_b"));
+                J::Null
+            }
         };
         if !matches!(backup, J::Null) {
             if let Err(msg) = jsio::write_file(&settings_path, (pretty(&backup) + "\n").as_bytes()) {
@@ -545,9 +748,12 @@ fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> 
         }
     }
     // Strategy C: no backup and no base: remove the key
-    let mut settings = match parse(&read_text(&settings_path).ok_or(Defer)?) {
-        Ok(J::Obj(o)) => J::Obj(o),
-        _ => return Err(Defer),
+    let mut settings = match read_object(&settings_path) {
+        Ok(v) => v,
+        Err(msg) => {
+            log.err(fill("slcfg.uninst_parse_failed", &[("path", &settings_path), ("msg", &msg)]));
+            return Ok(1);
+        }
     };
     let Some(removed) = settings.get("statusLine").cloned() else {
         log.out(fill("slcfg.u_nothing", &[("path", &settings_path)]));
@@ -573,15 +779,14 @@ fn uninstall(env: &BTreeMap<String, String>, args: &[String], log: &mut Log) -> 
 
 // ---- the commands -----------------------------------------------------------------------------------------------------
 
-fn finish(plan: Option<super::shadow::Plan>, result: Result<i32, Defer>, log: Log) -> i32 {
+/// `Err` is a start-up failure (no working directory, no plugin root): said on stderr, exit 1, nothing written.
+fn finish(plan: Option<super::shadow::Plan>, result: Result<i32, String>, log: Log) -> i32 {
+    log.flush();
     let code = match result {
-        Ok(c) => {
-            log.flush();
-            c
-        }
-        Err(Defer) => {
-            super::err(&(t("slcfg.deferred").to_string() + "\n"));
-            defer_code()
+        Ok(c) => c,
+        Err(msg) => {
+            super::err(&(fill("slcfg.start_failed", &[("msg", &msg)]) + "\n"));
+            1
         }
     };
     super::shadow::end(plan, code);

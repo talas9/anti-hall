@@ -2,7 +2,8 @@
 //!
 //! # Layers
 //!
-//! Every shipped setting (`defaults/*.toml`, compiled in by `build.rs`) is resolved from these sources, highest first.
+//! Every shipped setting (the plugin's `engine/defaults/*.toml`, read AT RUN TIME through `defaults.rs`: at start-up, on plugin update
+//! and on file change; nothing is compiled in, `build.rs` only collects the key names as a schema) is resolved from these sources, highest first.
 //! The order mirrors `get()` in `plugins/anti-hall/hooks/lib/settings.js` (env, then `settings.json`, then the tiers
 //! below the file, then the default), with the engine's own TOML in the slot Node gives to its "below the file" tiers:
 //!
@@ -935,10 +936,16 @@ mod tests {
             "tier.",
             "dispatch.in_process",
             "dispatch.max_timeout_s",
+            "dispatch.defer_to_node", // the Node-cutover switch of the dispatcher: one value for the whole daemon, read per path the engine cannot decide
+            "dispatch.spill_over_cap", // the over-cap SessionStart spill switch: one value for the whole daemon
             "session.gitignore_probe_ms",
-            "realtime.",        // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
-            "script.",          // the interpreter switch and deadline are process-wide, not per request
-            "ops.shadow_rate_", // the shadow sampling rates of the operator command-line tools: each run is its own process
+            "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
+            "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
+            "script.",                      // the interpreter switch and deadline are process-wide, not per request
+            "ops.shadow_rate_",             // the shadow sampling rates of the operator command-line tools: each run is its own process
+            "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
+            "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
+            "refresh.every_ms",             // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request
         ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
         assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");

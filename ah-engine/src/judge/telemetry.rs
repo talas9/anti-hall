@@ -1,8 +1,9 @@
 //! One row per model call the engine makes, in `<home>/.anti-hall/` + `judge.telemetry_log`: when, which integration, which
 //! backend and model, how long, how confident, what was decided and what went wrong. Never the prompt, the reply or a
 //! key. Best effort: a failed write never changes a decision.
+use crate::checks::jsport::num::to_js_string;
 use crate::checks::replykit::io::now_ms;
-use crate::checks::replykit::json::{js_number, quote};
+use crate::checks::replykit::json::quote;
 use crate::defaults;
 use std::io::Write;
 use std::path::Path;
@@ -38,7 +39,7 @@ pub fn line(r: &Row<'_>) -> String {
         quote(r.integration),
         quote(r.backend),
         opt(r.model),
-        js_number(r.ms as f64),
+        to_js_string(r.ms as f64),
         r.confidence.clone().unwrap_or_else(|| "null".to_string()),
         opt(r.decision),
         opt(r.error),
@@ -98,23 +99,23 @@ pub struct Escalation<'a> {
 
 /// The escalation as one JSON line (the shared fields first, then the cascade's own).
 pub fn escalation_line(e: &Escalation<'_>) -> String {
-    let num = |n: Option<f64>| n.map_or_else(|| "null".to_string(), js_number);
+    let num = |n: Option<f64>| n.map_or_else(|| "null".to_string(), to_js_string);
     format!(
         "{{\"ts\":{},\"integration\":{},\"backend\":{},\"model\":{},\"ms\":{},\"confidence\":{},\"decision\":{},\"error\":{},\"jevAnswer\":{},\"jevConfidence\":{},\"haikuAnswer\":{},\"haikuConfidence\":{},\"agree\":{},\"addedMs\":{},\"showJevAnswer\":{}}}\n",
         quote(&crate::jev::assist::iso_ms(now_ms() as u64)),
         quote(e.integration),
         quote(defaults::text("cascade.backend")),
         quote(e.model),
-        js_number(e.added_ms as f64),
+        to_js_string(e.added_ms as f64),
         num(e.haiku_confidence),
         opt(e.haiku_answer.as_deref()),
         opt(e.error),
         quote(&e.jev_answer),
-        js_number(e.jev_confidence),
+        to_js_string(e.jev_confidence),
         opt(e.haiku_answer.as_deref()),
         num(e.haiku_confidence),
         e.agree.map_or_else(|| "null".to_string(), |b| b.to_string()),
-        js_number(e.added_ms as f64),
+        to_js_string(e.added_ms as f64),
         e.show_jev_answer,
     )
 }

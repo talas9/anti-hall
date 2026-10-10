@@ -117,23 +117,23 @@ pub fn environment_section(doc: &mut Doc, ctx: &Ctx, engine_usable: bool, uid: u
     if which("gh", path).is_none() {
         doc.infol(defaults::text("doctor_msg.gh_missing").to_string());
     }
+    // Node is optional: the engine runs the hooks. A missing, broken or old Node is a warning (only the checks the engine still
+    // hands to their Node twin lose it); the failure is a missing working engine with no usable Node behind it.
     let min = defaults::num("doctor.node_min_major");
     let mut node_ok = false;
-    match which("node", path) {
-        None => {
-            doc.warnl(defaults::render("doctor_msg.node_missing", &[("min", &min)]));
-            if !engine_usable {
-                doc.bad(defaults::text("doctor_msg.no_engine_no_node").to_string());
-            }
-        }
-        Some(n) => match probe(&n, &["--version"]) {
-            Err(why) => doc.bad(defaults::render("doctor_msg.node_broken", &[("why", &why)])),
+    match which(defaults::text("doctor.node_default"), path) {
+        None => doc.warnl(defaults::render("doctor_msg.node_missing", &[("min", &min)])),
+        Some(n) => match probe(&n, &[defaults::text("doctor.node_version_flag")]) {
+            Err(why) => doc.warnl(defaults::render("doctor_msg.node_broken", &[("why", &why)])),
             Ok(v) if node_major(&v).is_some_and(|m| m >= min) => {
                 node_ok = true;
-                doc.ok(defaults::render("doctor_msg.node_ok", &[("v", &v), ("min", &min)]));
+                doc.infol(defaults::render("doctor_msg.node_ok", &[("v", &v), ("min", &min)]));
             }
-            Ok(v) => doc.bad(defaults::render("doctor_msg.node_old", &[("v", &v), ("min", &min)])),
+            Ok(v) => doc.warnl(defaults::render("doctor_msg.node_old", &[("v", &v), ("min", &min)])),
         },
+    }
+    if !engine_usable && !node_ok {
+        doc.bad(defaults::text("doctor_msg.no_engine_no_node").to_string());
     }
     node_ok
 }

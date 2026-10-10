@@ -924,3 +924,39 @@ test('LAM tool_use shape: clean transcript, hedged payload -> block', () => {
     h.cleanup();
   }
 });
+
+// Dogfood 2026-10-09: same-turn tool output is a citation for a reply that names specifics found in it.
+function userPrompt(text) { return { type: 'user', message: { role: 'user', content: text } }; }
+function toolTurn(id, command, output) {
+  return [
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: output }] } },
+  ];
+}
+const CITING = 'The migration should be applied: 0042_add_index.sql ran and schema_version is now 42.';
+test('ALLOW: hedge whose specifics appear in tool output of the same turn', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      userPrompt('apply the migration'),
+      ...toolTurn('t1', 'run-migrate', 'applied 0042_add_index.sql\nschema_version=42\n'),
+      assistantMessage(CITING),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `same-turn tool output cites the specifics; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+test('BLOCK still: the same reply when the tool output is from an EARLIER turn, or does not contain the specifics', () => {
+  for (const entries of [
+    [userPrompt('first'), ...toolTurn('t1', 'run-migrate', 'applied 0042_add_index.sql\nschema_version=42\n'), userPrompt('and now?'), assistantMessage(CITING)],
+    [userPrompt('apply'), ...toolTurn('t1', 'ls', 'README.md\npackage.json\n'), assistantMessage(CITING)],
+    [userPrompt('apply'), ...toolTurn('t1', 'run-migrate', 'applied 0042_add_index.sql\n'), assistantMessage('This should be fine now, 0042_add_index.sql was touched.')],
+  ]) {
+    const h = makeHome();
+    try {
+      const tp = h.writeTranscript(entries);
+      const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+      assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    } finally { h.cleanup(); }
+  }
+});
