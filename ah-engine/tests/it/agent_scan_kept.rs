@@ -2,7 +2,7 @@
 //! scans read only the appended bytes. Every scan below is compared with a fresh scan of the same file (`scan_transcript_uncached`),
 //! step by step as the file grows (including a last line that is still unfinished), so any difference in the answer is a failure.
 //! `AH_SCAN_CORPUS=<dir of .jsonl>` adds real transcripts, cut at many points, to the same comparison (skipped when unset).
-use ah_engine::checks::agent_scan::{Opts, Scan, scan_transcript, scan_transcript_uncached};
+use ah_engine::checks::agent_scan::{Opts, Scan, kept_usage, scan_transcript, scan_transcript_uncached};
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -167,6 +167,24 @@ fn a_transcript_longer_than_the_window_is_scanned_afresh_each_time() {
         let kept = scan_transcript(path.to_str().unwrap(), small, &opts(ignore));
         assert_eq!(snap(&fresh.ok().flatten()), snap(&kept.ok().flatten()));
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn kept_walk_cache_stays_under_the_configured_byte_cap() {
+    let dir = scratch("cap");
+    let big = "x".repeat(5 * 1024 * 1024);
+    for n in 0..4 {
+        let path = dir.join(format!("t{n}.jsonl"));
+        let lines = [
+            assistant_use(&format!("toolu_big_{n}"), "Bash", json!({"command": "echo"}), "2026-10-06T12:00:00.000Z"),
+            result(&format!("toolu_big_{n}"), &big, "2026-10-06T12:00:01.000Z"),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let _ = scan_transcript(path.to_str().unwrap(), WINDOW, &opts(false)).unwrap();
+    }
+    let (_, bytes, _) = kept_usage();
+    assert!(bytes <= ah_engine::defaults::num("agent_scan.cache_max_bytes"), "kept-walk cache held {bytes} bytes, over configured cap");
     std::fs::remove_dir_all(&dir).ok();
 }
 

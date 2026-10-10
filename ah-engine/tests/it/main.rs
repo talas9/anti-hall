@@ -95,6 +95,7 @@ mod task_tracker_parity;
 mod telemetry;
 mod temp_leaks;
 mod template_drift;
+mod transcript_cache;
 mod transcript_index;
 mod transcript_parity;
 mod update_parity;

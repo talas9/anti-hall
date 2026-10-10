@@ -632,8 +632,8 @@ value = 900000
 unit = "ms"
 
 [agent_scan.cache_max_bytes]
-doc = "Largest estimated size of one kept walk; a walk that grows past it is not kept (the next scan reads the file afresh, as it did before the cache)."
-value = 16777216
+doc = "Total byte cap for kept transcript walks; a single walk that grows past it is not kept (the next scan reads the file afresh, as it did before the cache)."
+value = 8388608
 unit = "bytes"
 
 [agent_scan.cache_entry_bytes]

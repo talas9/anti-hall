@@ -11,25 +11,42 @@
 //! | `jevCachePeek(hash)` | the answer and confidence of the Jev cache entry under `hash`: see [`cache_peek`] |
 
 use crate::checks::emit_dedupe::scan_tail;
+use quick_cache::{Weighter, sync::Cache};
 use rquickjs::{Ctx, Function, Object};
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 type Key = (String, u64);
 type Stamp = (u64, std::time::SystemTime);
 
-/// Last answer per (path, window): valid while the file keeps its size and modification time.
-static CACHE: OnceLock<Mutex<HashMap<Key, (Stamp, String)>>> = OnceLock::new();
+#[derive(Clone)]
+struct Entry {
+    stamp: Stamp,
+    answer: String,
+}
 
-fn cache() -> std::sync::MutexGuard<'static, HashMap<Key, (Stamp, String)>> {
-    CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+#[derive(Clone)]
+struct EntryWeighter;
+
+impl Weighter<Key, Entry> for EntryWeighter {
+    fn weight(&self, key: &Key, val: &Entry) -> u64 {
+        (key.0.len() + std::mem::size_of::<u64>() + val.answer.len()) as u64
+    }
+}
+
+/// Last answer per (path, window): valid while the file keeps its size and modification time.
+static CACHE: OnceLock<Cache<Key, Entry, EntryWeighter>> = OnceLock::new();
+
+fn cache() -> &'static Cache<Key, Entry, EntryWeighter> {
+    let c = CACHE.get_or_init(|| Cache::with_weighter(1, crate::defaults::num("script.transcript_cache_max_bytes"), EntryWeighter));
+    c.set_capacity(crate::defaults::num("script.transcript_cache_max_bytes"));
+    c
 }
 
 /// (entries, bytes of cached answers) of the transcript-tail cache, for the memory snapshot.
 pub fn cache_usage() -> (usize, usize) {
     let c = cache();
-    (c.len(), c.iter().map(|((p, _), (_, r))| p.len() + r.len()).sum())
+    (c.len(), c.weight() as usize)
 }
 
 fn stamp_of(path: &str) -> Option<Stamp> {
@@ -48,8 +65,9 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
     let cap = crate::defaults::num("script.tail_max_bytes");
     let n = if bytes.is_finite() && bytes > 0.0 { (bytes as u64).min(cap) } else { cap };
     let stamp = stamp_of(path);
+    let key = (path.to_string(), n);
     if let Some(st) = stamp
-        && let Some(hit) = cache().get(&(path.to_string(), n)).filter(|(s, _)| *s == st).map(|(_, r)| r.clone())
+        && let Some(hit) = cache().get(&key).filter(|e| e.stamp == st).map(|e| e.answer)
     {
         return hit;
     }
@@ -59,11 +77,7 @@ pub fn dedupe_tail(path: &str, bytes: f64) -> String {
         Ok(Some(t)) => json!({"size": t.size, "atts": t.atts.iter().map(|a| json!({"ts": a.ts, "els": a.els})).collect::<Vec<_>>()}).to_string(),
     };
     if let (Some(st), false) = (stamp, out.contains("unsure")) {
-        let mut c = cache();
-        if c.len() >= crate::defaults::num("script.transcript_cache_entries") as usize {
-            c.clear();
-        }
-        c.insert((path.to_string(), n), (st, out.clone()));
+        cache().insert(key, Entry { stamp: st, answer: out.clone() });
     }
     out
 }
@@ -192,5 +206,17 @@ mod tests {
         std::fs::write(&p, [att("2026-01-01T00:00:00.000Z", "one"), att("2026-01-01T00:00:02.000Z", "three")].join("\n") + "\n").unwrap();
         let b: serde_json::Value = serde_json::from_str(&dedupe_tail(&p, 1048576.0)).unwrap();
         assert_eq!(b["atts"].as_array().unwrap().len(), 2, "a grown file is rescanned");
+    }
+
+    #[test]
+    fn ht_04_cache_stays_under_the_byte_cap() {
+        for i in 0..40 {
+            let p = scratch(&format!("cap-{i}"));
+            let body = "x".repeat(300_000);
+            std::fs::write(&p, att("2026-01-01T00:00:00.000Z", &body) + "\n").unwrap();
+            let _ = dedupe_tail(&p, 1048576.0);
+        }
+        let (_, bytes) = cache_usage();
+        assert!(bytes as u64 <= crate::defaults::num("script.transcript_cache_max_bytes"), "cache held {bytes} bytes, over configured cap");
     }
 }

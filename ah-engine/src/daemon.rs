@@ -306,6 +306,9 @@ impl Shared {
     /// since the previous report.
     pub fn memory(&self) -> serde_json::Value {
         let heap = crate::memstat::heap();
+        let alloc = crate::memdiag::allocator();
+        let (tc_entries, tc_bytes) = crate::script::host_transcript::cache_usage();
+        let (walks, walk_est, walk_read) = crate::checks::agent_scan::kept_usage();
         crate::memstat::reset_peak();
         serde_json::json!({
             "rss_kb": limits::rss_kb(),
@@ -315,6 +318,11 @@ impl Shared {
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
+            "jemalloc": alloc.map(|a| serde_json::json!({"allocated": a.allocated, "resident": a.resident})),
+            "caches": {
+                "transcript_tail": {"entries": tc_entries, "bytes": tc_bytes},
+                "agent_scan_walks": {"transcripts": walks, "estimated_bytes": walk_est, "transcript_bytes_read": walk_read},
+            },
             "components": {
                 "guard_state_entries": crate::checks::guardkit::state::entries(),
                 "hookcfg_session_counters": crate::hookcfg::session::global().len(),

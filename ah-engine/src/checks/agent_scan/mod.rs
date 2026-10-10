@@ -12,12 +12,13 @@
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::{js_trim, js_trim_start as trim_start};
 use crate::defaults;
+use quick_cache::{Weighter, sync::Cache};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 #[cfg(test)]
 mod tests;
@@ -1088,6 +1089,7 @@ fn feed(w: &mut Walk, seq: &mut u64, raw: &[u8]) -> Res<()> {
 
 /// What the scan of one transcript keeps between calls: the walk over every complete line up to `off`, while the whole file is
 /// inside the scan window (so the window is the file, however much it grows, and appended lines only extend it).
+#[derive(Clone)]
 struct Kept {
     gen_: u64,
     dev: u64,
@@ -1100,15 +1102,37 @@ struct Kept {
     walk: Walk,
 }
 
-static KEPT: Mutex<Option<HashMap<String, Kept>>> = Mutex::new(None);
+#[derive(Clone)]
+struct KeptEntry {
+    kept: std::sync::Arc<Kept>,
+    bytes: u64,
+}
 
-fn kept_lock() -> std::sync::MutexGuard<'static, Option<HashMap<String, Kept>>> {
-    KEPT.lock().unwrap_or_else(|e| e.into_inner())
+#[derive(Clone)]
+struct KeptWeighter;
+
+impl Weighter<String, KeptEntry> for KeptWeighter {
+    fn weight(&self, key: &String, val: &KeptEntry) -> u64 {
+        key.len() as u64 + val.bytes
+    }
+}
+
+static KEPT: OnceLock<Cache<String, KeptEntry, KeptWeighter>> = OnceLock::new();
+
+fn kept_cache() -> &'static Cache<String, KeptEntry, KeptWeighter> {
+    let c = KEPT.get_or_init(|| {
+        let cap = defaults::num("agent_scan.cache_max_bytes");
+        Cache::with_weighter(defaults::num("agent_scan.cache_max_paths").max(1) as usize, cap, KeptWeighter)
+    });
+    c.set_capacity(defaults::num("agent_scan.cache_max_bytes"));
+    c
 }
 
 /// (transcripts kept, their estimated bytes by the cache's own estimate, transcript bytes they have read) for the memory snapshot.
 pub fn kept_usage() -> (usize, u64, u64) {
-    kept_lock().as_ref().map_or((0, 0, 0), |m| m.values().fold((m.len(), 0, 0), |(n, b, o), k| (n, b + walk_bytes(&k.walk), o + k.off)))
+    let c = kept_cache();
+    let read = c.iter().map(|(_, e)| e.kept.off).sum();
+    (c.len(), c.weight(), read)
 }
 
 /// A cheap digest of `len` bytes of the file at `at` (None when they cannot be read).
@@ -1191,7 +1215,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
-    let taken = kept_lock().as_mut().and_then(|map| map.remove(path));
+    let taken = kept_cache().remove(path).map(|(_, e)| e.kept);
     let mut k = match taken {
         Some(k)
             if k.gen_ == gen_
@@ -1201,7 +1225,7 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
                 && digest_at(&f, 0, fp.min(k.off)) == Some(k.head)
                 && digest_at(&f, k.off - fp.min(k.off), fp.min(k.off)) == Some(k.back) =>
         {
-            k
+            std::sync::Arc::try_unwrap(k).unwrap_or_else(|k| (*k).clone())
         }
         _ => Kept { gen_, dev: m.dev(), ino: m.ino(), off: 0, seq: 0, head: 0, back: 0, used_ms: 0, walk: Walk::new() },
     };
@@ -1234,35 +1258,58 @@ fn scan_kept(path: &str, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -
             break;
         }
     }
-    let mut w = k.walk.clone();
-    if let Some(p) = partial {
+    let scan = if let Some(p) = partial {
+        let mut w = k.walk.clone();
         let mut seq = k.seq;
         feed(&mut w, &mut seq, &p)?;
-    }
-    let scan = finish(w, path, opts).map(Some);
+        finish_ref(&w, path, opts).map(Some)
+    } else {
+        finish_ref(&k.walk, path, opts).map(Some)
+    };
     // keep the walk for the next call, unless it grew past the cap
-    if scan.is_ok() && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
+    let bytes = walk_bytes(&k.walk);
+    if scan.is_ok() && bytes <= defaults::num("agent_scan.cache_max_bytes") {
         let now = now_ms() as u64;
         if let (Some(head), Some(back)) = (digest_at(&f, 0, fp.min(k.off)), digest_at(&f, k.off - fp.min(k.off), fp.min(k.off))) {
             k.head = head;
             k.back = back;
             k.used_ms = now;
-            let mut g = kept_lock();
-            let map = g.get_or_insert_with(HashMap::new);
             let ttl = defaults::num("agent_scan.cache_idle_ms");
-            map.retain(|_, e| now.saturating_sub(e.used_ms) <= ttl);
-            let cap = defaults::num("agent_scan.cache_max_paths") as usize;
-            while map.len() >= cap.max(1) {
-                let Some(oldest) = map.iter().min_by_key(|(_, e)| e.used_ms).map(|(p, _)| p.clone()) else { break };
-                map.remove(&oldest);
-            }
-            map.insert(path.to_string(), k);
+            let cache = kept_cache();
+            cache.retain(|_, e| now.saturating_sub(e.kept.used_ms) <= ttl);
+            cache.insert(path.to_string(), KeptEntry { kept: std::sync::Arc::new(k), bytes });
         }
     }
     scan
 }
 
 fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_mut(&mut w, path, opts)
+}
+
+fn finish_ref(w: &Walk, path: &str, opts: &Opts) -> Res<Scan> {
+    let mut w = Walk {
+        launched: w.launched.clone(),
+        terminal: w.terminal.clone(),
+        desc_by_tool_use: w.desc_by_tool_use.clone(),
+        others: w.others.clone(),
+        other_bytes: w.other_bytes,
+        dropped_ids: HashSet::new(),
+        tool_uses: w.tool_uses.clone(),
+        stops: w.stops.clone(),
+        errored: w.errored.clone(),
+        answered: w.answered.clone(),
+        team_events: w.team_events.clone(),
+        team_info: w.team_info.clone(),
+        terminal_ev: w.terminal_ev.clone(),
+        resume_seq: w.resume_seq.clone(),
+        resume_full: w.resume_full.clone(),
+        resume_ts: w.resume_ts.clone(),
+    };
+    finish_mut(&mut w, path, opts)
+}
+
+fn finish_mut(w: &mut Walk, path: &str, opts: &Opts) -> Res<Scan> {
     // Attach descriptions where the Agent tool_use was in the window.
     let ids: Vec<String> = w.launched.keys().cloned().collect();
     for id in &ids {
@@ -1281,7 +1328,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
     let mut background: HashSet<String> = w.launched.keys().cloned().collect();
     background.extend(w.terminal.iter().cloned());
 
-    let stops = std::mem::take(&mut w.stops);
+    let stops = w.stops.clone();
     for s in &stops {
         if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t)) {
             continue;
@@ -1472,7 +1519,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
         );
         w.terminal.remove(&name);
     }
-    Ok(Scan { launched: w.launched, terminal: w.terminal, pending })
+    Ok(Scan { launched: std::mem::take(&mut w.launched), terminal: std::mem::take(&mut w.terminal), pending })
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

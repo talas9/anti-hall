@@ -13,6 +13,7 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "perf
 unicode-normalization = "0.1.25"
 # SIMD substring search for the transcript scans (already in the tree through regex: no new crate in the dependency budget).
 memchr = "2.8.3"
+quick_cache = { version = "0.7.0", default-features = false }
 libc = "0.2.190"
 # Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
 # online backup API used by `ah-engine backup` (D27).
