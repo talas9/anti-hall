@@ -25,3 +25,7 @@ Object.assign(ah.jev, {
   // spec: {id, question:{type,instructions,criteria:[[k,t]...]}, state, trust, baseline, ...}; detached unless spec.sync.
   ask: function (spec) { var r = ahHost.jevAskSpec(JSON.stringify(spec)); return r === undefined || r === null ? null : JSON.parse(r); },
 });
+// The speculation judge's model call (raw primitive; the decision and the state live in the check script). spec: {transcript, message}.
+// Returns {decision} (the model's parsed answer, or null when the call produced none), or null when the call is left to the Node hook:
+// this process may not wait for a model (the daemon), or a transcript line cannot be read exactly as Node reads it.
+ah.judge = { cli: function (spec) { var r = ahHost.judgeCliCall(JSON.stringify(spec)); return r === undefined || r === null ? null : JSON.parse(r); } };

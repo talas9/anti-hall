@@ -5,8 +5,7 @@
 // While the Jev master switch is on the reply is also asked about on the Jev lane (add-block trust: a confident "speculative" adds a
 // block; a hedge under a plan or expectation heading is asked once more with relax-block trust), every decision is written to the
 // guard's own jev-judge.ndjson, and the Stop after a block reports that block's outcome to the Jev decision log. Anything this
-// script cannot reproduce exactly defers BEFORE a side effect (guards.inferenceCheck on, which reads tool evidence; Jev on with a
-// payload that lacks the reply text; a relative transcript path). Keys and texts: response_guards.toml (speculation_guard.*).
+// script cannot reproduce exactly defers BEFORE a side effect (guards.inferenceCheck on, which reads tool evidence; a Jev text cut through a surrogate pair; a relative transcript path). Keys and texts: response_guards.toml (speculation_guard.*).
 'use strict';
 
 function sgT(key, flags, t) { return ah.re.test(ah.cfg(key), flags, t); }
@@ -205,9 +204,18 @@ function decide(p) {
   if (inferenceOn && !loopSafe && jevOn) return 'defer';
   var jevText = null;
   if (jevOn && !loopSafe && !skipped) {
-    if (payloadText === null) return 'defer';
-    jevText = jx.sliceUnits(payloadText, ah.cfgNum('speculation_guard.jev_state_chars'));
-    if (jevText.length < payloadText.length && jevText.length < ah.cfgNum('speculation_guard.jev_state_chars')) return 'defer'; // the cut splits a surrogate pair
+    // Jev reads the Stop payload's reply; without one, the transcript's last assistant text read WITHOUT the doubled nested message
+    // (a text Node falls back from to the legacy one when the deduplicated read finds none)
+    var jevFull = payloadText;
+    if (jevFull === null) {
+      if (tailLines === undefined) tailLines = rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'));
+      var dd = tailLines === null ? { text: null } : rp.lastAssistant(tailLines, undefined, true);
+      if (dd.unsure) return 'defer';
+      jevFull = dd.text ? dd.text : lastText;
+      if (jx.loneSurrogate(jevFull)) return 'defer';
+    }
+    jevText = jx.sliceUnits(jevFull, ah.cfgNum('speculation_guard.jev_state_chars'));
+    if (jevText.length < jevFull.length && jevText.length < ah.cfgNum('speculation_guard.jev_state_chars')) return 'defer'; // the cut splits a surrogate pair
   }
   var jevId = ah.cfg('speculation_guard.jev_id');
 
@@ -237,7 +245,7 @@ function decide(p) {
     entry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null, regexVerdict: wouldBlock };
   } else if (jevText !== null) {
     var d = sgAsk({
-      id: jevId, state: jevText, trust: 'add_block', baseline: false, compare: wouldBlock, sessionId: sessionRaw,
+      id: jevId, state: jevText, trust: 'add_block', baseline: false, compare: wouldBlock, sessionId: sessionRaw, turnRefFrom: payloadText === null ? transcript : undefined,
       question: { type: 'noul', instructions: ah.cfg('speculation_guard.jev_instructions'), criteria: [['true', ah.cfg('speculation_guard.jev_true')], ['false', ah.cfg('speculation_guard.jev_false')]] },
     }, p);
     if (d === null) d = { jev: null, outcome: false, reason: null };
@@ -273,7 +281,7 @@ function decide(p) {
     sgLog(home, JSON.stringify({ ts: new Date(ah.clock.now()).toISOString(), event: 'trigger', id: ah.cfg('speculation_guard.jev_framed_id'), outcome: 'seen' }) + '\n');
     if (jevText === null) return 'defer';
     var fd = sgAsk({
-      id: ah.cfg('speculation_guard.jev_framed_id'), state: jevText, trust: 'relax_block', baseline: true, sessionId: sessionRaw,
+      id: ah.cfg('speculation_guard.jev_framed_id'), state: jevText, trust: 'relax_block', baseline: true, sessionId: sessionRaw, turnRefFrom: payloadText === null ? transcript : undefined,
       question: { type: 'noul', instructions: ah.cfg('speculation_guard.framed_instructions'), criteria: [['true', ah.cfg('speculation_guard.framed_true')], ['false', ah.cfg('speculation_guard.framed_false')]] },
     }, p);
     if (fd !== null && fd.outcome === false) return finish('allow', 'allow');

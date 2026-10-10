@@ -661,6 +661,8 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
         (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
     };
+    let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
+    let mut blocking: Vec<usize> = Vec::new();
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.check.is_some()) {
@@ -706,7 +708,21 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 pre_err.push_str(&stderr);
                 pre_err.push('\n');
             }
+            // a check whose answer needs a model call of seconds (the daemon deferred it: its deadline cannot wait): this process runs it
+            // below, once the other hooks are running beside it; the Node hook only if it still defers
+            _ if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
             _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
+        }
+    }
+    if !blocking.is_empty() {
+        crate::judge::allow_blocking_calls(); // this is the one-shot dispatcher process, under the hook's own timeout, never the daemon
+        for i in blocking {
+            let e = &entries[i];
+            match parsed.as_ref().map(|p| native::run_entry(e, &meta, p)) {
+                Some(Answer::Decided(r, _)) if shadow[i] => shadow_results[i] = Some(r),
+                Some(Answer::Decided(r, _)) => results[i] = Some(r),
+                _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
+            }
         }
     }
     let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();

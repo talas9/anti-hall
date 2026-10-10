@@ -1596,3 +1596,58 @@ fn a_reminder_the_gate_cuts_is_no_output_not_an_empty_context() {
     assert!(context_of(&first.1).contains(short_reminder()), "{first:?}");
     assert_eq!(second, (0, String::new(), String::new()), "a suppressed reminder prints nothing, not an empty additionalContext");
 }
+
+/// L11 (#69): the speculation judge's model call. The daemon cannot wait seconds for a model, so it defers the check; the
+/// dispatcher process, which can, runs it itself before any Node hook, in process and through the daemon alike. The Node hook
+/// mapped here must never run, the fake `claude` must be called once, and the block is the check's own.
+#[test]
+fn the_dispatcher_makes_the_speculation_judge_call_itself_after_the_daemon_deferred_it() {
+    let e = Env::new("judgecall");
+    let home = e.dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::write(home.join(".anti-hall/settings.json"), r#"{"jev":{"semanticJudge":true,"judgeBackend":"cli"}}"#).unwrap();
+    let bin = e.dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(&claude, "#!/bin/sh\nd=\"$FAKE_CLAUDE_LOG/call-$$\"\nmkdir -p \"$d\"\ncat > \"$d/stdin\"\ncat \"$FAKE_CLAUDE_REPLY\"\n").unwrap();
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let reply = e.dir.join("reply.txt");
+    let answer = serde_json::json!({"is_error": false, "result": r#"{"decision":"block","claim":"the cache is stale"}"#}).to_string();
+    std::fs::write(&reply, answer).unwrap();
+    let transcript = e.dir.join("t.jsonl");
+    std::fs::write(&transcript, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "why is it slow?"}}))).unwrap();
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> =
+        ids.iter().map(|id| (id.clone(), if id == "speculation-judge" { "printf NODE-RAN >&2; exit 0" } else { "true" }.into())).collect();
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let path = format!("{}:{}", bin.display(), path_without_codex());
+    let log = e.dir.join("calls");
+    let calls = || std::fs::read_dir(&log).map(|d| d.count()).unwrap_or(0);
+    let env = [("PATH", path.as_str()), ("FAKE_CLAUDE_LOG", log.to_str().unwrap()), ("FAKE_CLAUDE_REPLY", reply.to_str().unwrap())];
+    let payload = |session: &str| {
+        serde_json::json!({"session_id": session, "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": transcript, "last_assistant_message": "The cause is the stale cache."})
+            .to_string()
+    };
+    // in process
+    let (code, out, err) = e.run_with(&args, true, &payload("jc-1"), true, &env);
+    assert_eq!(code, 0, "{out:?} {err:?}");
+    assert!(out.contains("\"decision\":\"block\"") && out.contains("the cache is stale"), "{out:?} {err:?}");
+    assert!(!err.contains("NODE-RAN"), "the Node hook must not run: {err:?}");
+    assert_eq!(calls(), 1);
+    // through the daemon: its first call is answered through Node (D5), the later ones by the daemon, which defers this check
+    let mut last = (0, String::new(), String::new());
+    for i in 0..50 {
+        last = e.run_with(&args, false, &payload(&format!("jc-d{i}")), true, &env);
+        if !last.2.contains("NODE-RAN") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    e.stop();
+    assert!(last.1.contains("\"decision\":\"block\"") && last.1.contains("the cache is stale") && !last.2.contains("NODE-RAN"), "{last:?}");
+    assert!(calls() >= 2, "the dispatcher made the call for the daemon-deferred check: {}", calls());
+    let tel = std::fs::read_to_string(home.join(".anti-hall/logs/judge-calls.ndjson")).unwrap();
+    assert!(tel.lines().all(|l| l.contains("\"integration\":\"speculation\"") && l.contains("\"decision\":\"block\"")) && tel.lines().count() >= 2, "{tel}");
+}

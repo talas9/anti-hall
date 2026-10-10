@@ -315,7 +315,7 @@ value = "jev"
 
 [speculation_judge.summary]
 doc = "One-line description of the speculation-judge check in the generated reference."
-value = "Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js)."
+value = "Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process; an Anthropic API call, and the call inside the daemon (which defers it to the dispatcher), stay with Node (port of speculation-judge.js)."
 
 [speculation_judge.guard_name]
 doc = "The guard id this check answers to in skip.json."

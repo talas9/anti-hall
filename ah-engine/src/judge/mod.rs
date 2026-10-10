@@ -5,6 +5,7 @@
 //! |---|---|---|
 //! | `cli` | `judge-core.js` `cliArgs`, `runCliJudge`, `parseDecision` | runs `claude -p` isolated, under one timeout, and parses its answer |
 //! | `evidence` | `inference-check.js` `collectEvidence`, `lastUserPrompt` | the tool evidence and the user request a reply is judged against |
+//! | `host` | `hooks/speculation-judge.js` main | the one host function the speculation judge's plugin script calls: evidence, input, the CLI call, a telemetry row |
 //! | `input` | `judge-core.js` `buildJudgeInput` | the speculation judge's user-turn text |
 //! | `settings` | `settings.js` reads of `jev.judgeModel`, `jev.judgeBackend`, `credentials.js` `resolveKey('anthropic')` | model alias, backend, key presence |
 //! | `telemetry` | (new) | one row per model call: integration, backend, model, latency, confidence, error |
@@ -15,10 +16,13 @@
 //!
 //! A CLI judge call takes seconds (5 to 25 s for the speculation judge). The resident daemon must answer a hook within the
 //! client's exchange deadline and trips its watchdog on a worker busy longer than `daemon.stuck_ms`, so a check never makes
-//! the call there: it decides everything it can without the model and defers the rest. A one-shot process (`ah-engine
-//! check`, `ah-engine jev triage`) has no such deadline and calls [`allow_blocking_calls`] first.
+//! the call there: its script defers, and the dispatcher process (a one-shot process under the hook's own timeout, which
+//! calls [`allow_blocking_calls`] before it runs a check listed in `judge.dispatch_blocking_checks`) runs the check again and
+//! makes the call itself, so the Node hook runs only if the check still defers. A one-shot command (`ah-engine check`, `ah-engine
+//! jev triage`) calls [`allow_blocking_calls`] first too.
 pub mod cli;
 pub mod evidence;
+pub mod host;
 pub mod input;
 pub mod settings;
 pub mod telemetry;
