@@ -13,6 +13,7 @@
 // reported; the caller then aborts the respawn.
 
 const fs = require('fs');
+const { readOnlyGitEnv } = require('../../hooks/lib/git-env.js');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
@@ -24,7 +25,7 @@ function git(cwd, args, opts) {
   const o = opts || {};
   const r = spawnSync('git', ['-C', cwd].concat(args), {
     encoding: 'utf8', timeout: o.timeout || GIT_TIMEOUT_MS,
-    env: o.env ? Object.assign({}, process.env, o.env) : process.env,
+    env: readOnlyGitEnv(o.env ? Object.assign({}, process.env, o.env) : process.env),
   });
   return {
     ok: !r.error && !r.signal && r.status === 0,

@@ -1,8 +1,8 @@
 'use strict';
-// devswarm-parent-inbox.js — inbox grace window (SkyCrew report fix, then
+// devswarm-parent-inbox.js — inbox grace window (DemoApp report fix, then
 // peer-bug fix 2026-09-26).
 //
-// FIELD REPORT (SkyCrew): a direct send to a LIVE child lane was flagged
+// FIELD REPORT (DemoApp): a direct send to a LIVE child lane was flagged
 // "need attention" in the Primary's own per-turn additionalContext as little
 // as 4s after sending — before the child's own Stop-hook loop could
 // realistically have cycled once, let alone drained the message. Root cause:

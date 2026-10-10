@@ -1,0 +1,20 @@
+# gitleaks config for privacy-scan.yml, loaded from the PR base commit (a PR cannot weaken it).
+# Default rule set plus repo-specific allowlists for test fixtures with fake credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic credentials in test fixtures"
+paths = [
+  '''^tests/fixtures/''',
+  '''^evals/anti-hall/cases/''',
+  '''(^|/)package-lock\.json$''',
+  # Rust engine golden payloads: sha256 file manifests and routing spawn ids, no credentials.
+  '''^ah-engine/tests/goldens?/''',
+]
+# Exact fake tokens that exercise the secret scrubbers (scrub tests, parity inputs); matched against
+# the secret value, so a real key of the same shape is still reported.
+regexes = [
+  '''^AKIAABCDEFGHIJKLMNOP$''',
+  '''^sk_live_abcdefghij12$''',
+]

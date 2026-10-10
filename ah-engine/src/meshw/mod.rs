@@ -31,10 +31,13 @@
 pub mod actverbs;
 pub mod appdb;
 pub mod appverbs;
+pub mod archiveverb;
 pub mod args;
 pub mod clog;
 pub mod common;
 pub mod cursors;
+pub mod diagverbs;
+pub mod dsbverbs;
 pub mod extverbs;
 pub mod gitverbs;
 pub mod heartbeat;
@@ -43,9 +46,10 @@ pub mod ident;
 pub mod idlock;
 pub mod inbox;
 pub mod lifeverbs;
+pub mod mboxtool;
 pub mod plan;
-pub mod pull;
 pub mod planverbs;
+pub mod pull;
 pub mod read;
 pub mod readprimary;
 pub mod reportverbs;
@@ -78,6 +82,10 @@ pub static COMMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// Mark the commit point (see [`COMMITTED`]).
 pub fn mark_committed() {
     COMMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // the launcher that may stop this process at its time limit learns from this file that the verb already acted
+    if let Some(mark) = std::env::var_os(defaults::text("mesh_write.env_commit_mark")).filter(|m| !m.is_empty()) {
+        crate::discard::harmless(std::fs::OpenOptions::new().create(true).append(true).open(mark)); // keep: the mark is advisory; a failed create only leaves today's behaviour
+    }
 }
 
 fn committed() -> bool {

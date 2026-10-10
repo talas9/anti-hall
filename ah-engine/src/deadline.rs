@@ -11,6 +11,8 @@
 //! ([`commit_staged`]): a client that fell back to Node must not find a stamp for a decision it never received (review P1-2).
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// A staged state write: the written temporary file, its target, and how to rename it.
@@ -21,6 +23,63 @@ thread_local! {
     static REQ: Cell<Option<(Instant, Option<Instant>)>> = const { Cell::new(None) };
     /// The state writes the current request staged, in order.
     static STAGED: RefCell<Vec<Staged>> = const { RefCell::new(Vec::new()) };
+    /// Whether the script call in progress on this thread may be cut at the request's deadline (armed, not lifted by `commit()`).
+    static CUT_ARMED: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) };
+    /// The daemon worker's progress beat (its watchdog slot and the daemon's start), set once per worker thread.
+    static BEAT: RefCell<Option<(Arc<AtomicU64>, Instant)>> = const { RefCell::new(None) };
+}
+
+/// Make `slot` (milliseconds since `base`, plus 1; 0 = idle) this thread's progress beat: the daemon watchdog reads it.
+pub fn set_beat(slot: Arc<AtomicU64>, base: Instant) {
+    BEAT.with(|b| *b.borrow_mut() = Some((slot, base)));
+}
+
+/// Forward progress on the request this thread serves (a check started or finished, the interpreter ran): the watchdog's
+/// stuck rule (`daemon.stuck_ms`) measures the time since the last beat, so a worker a loaded machine merely slows down is
+/// never taken for a hung one. Nothing outside a daemon request (an idle slot stays 0).
+pub fn beat() {
+    BEAT.with(|b| {
+        if let Some((slot, base)) = b.borrow().as_ref()
+            && slot.load(Ordering::Relaxed) != 0
+        {
+            slot.store(base.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Arm (or disarm) the cut of the script call in progress at the request's client deadline.
+pub fn set_cut_armed(on: bool) {
+    CUT_ARMED.with(|c| c.store(on, Ordering::Relaxed));
+}
+
+/// True when the script call in progress may be cut and its request's client has stopped waiting: a native scan the call is
+/// running (a transcript window of many megabytes, which the interpreter cannot interrupt) stops early, and the call fails as
+/// a cut (its check defers to its Node hook).
+pub fn cut_due() -> bool {
+    CUT_ARMED.with(|c| c.load(Ordering::Relaxed)) && !in_time()
+}
+
+/// When the client of the request this thread serves stops waiting (after the reply slack); `None` outside a request.
+pub fn at() -> Option<Instant> {
+    REQ.with(|r| r.get()).and_then(|(_, at)| at)
+}
+
+/// How many writes the current request has staged so far: [`discard_staged_since`] drops the ones staged after this mark.
+pub fn staged_mark() -> usize {
+    STAGED.with(|s| s.borrow().len())
+}
+
+/// Drop the writes staged after `mark` (a check that deferred to its Node hook must not leave a stamp for a decision it never
+/// made: the Node hook that answers instead would find it).
+pub fn discard_staged_since(mark: usize) {
+    let tail: Vec<Staged> = STAGED.with(|s| {
+        let mut s = s.borrow_mut();
+        let at = mark.min(s.len());
+        s.split_off(at)
+    });
+    for (tmp, _, _) in tail {
+        crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
+    }
 }
 
 /// A request that arrived at `arrived` starts on this thread; its deadline is the defaults' client deadline until the
@@ -108,6 +167,51 @@ mod tests {
         assert_eq!(clamp(long), Duration::ZERO, "a client that no longer waits leaves no budget");
         end();
         assert_eq!(clamp(long), long);
+    }
+
+    #[test]
+    fn the_progress_beat_moves_a_busy_slot_and_leaves_an_idle_one_alone() {
+        let slot = Arc::new(AtomicU64::new(0));
+        let base = Instant::now() - Duration::from_secs(5);
+        set_beat(slot.clone(), base);
+        beat();
+        assert_eq!(slot.load(Ordering::Relaxed), 0, "an idle worker stays idle");
+        slot.store(1, Ordering::Relaxed); // picked a request up at the daemon's start
+        beat();
+        assert!(slot.load(Ordering::Relaxed) > 5000, "the beat records the progress time: {}", slot.load(Ordering::Relaxed));
+        BEAT.with(|b| *b.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_native_scan_is_cut_only_inside_an_armed_call_past_its_deadline() {
+        assert!(!cut_due(), "no request");
+        begin(Instant::now());
+        set_cut_armed(true);
+        assert!(!cut_due(), "the client still waits");
+        client_deadline(0);
+        assert!(cut_due(), "armed and past the deadline");
+        set_cut_armed(false); // commit() or the end of the call
+        assert!(!cut_due(), "a lifted call is never cut");
+        end();
+    }
+
+    #[test]
+    fn a_deferred_checks_staged_writes_are_dropped_and_the_others_kept() {
+        let dir = std::env::temp_dir().join(format!("ah-stage-since-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.json"), dir.join("b.json"));
+        let style = crate::atomic::Style::default();
+        begin(Instant::now());
+        crate::atomic::write_after_reply(&a, "a", style).unwrap();
+        let mark = staged_mark();
+        crate::atomic::write_after_reply(&b, "b", style).unwrap();
+        discard_staged_since(mark); // the second check deferred to its Node hook
+        settle_staged(true);
+        end();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a", "the answered check's state lands");
+        assert!(!b.exists(), "the deferred check left no stamp");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file is left behind");
+        crate::discard::harmless(std::fs::remove_dir_all(&dir));
     }
 
     #[test]

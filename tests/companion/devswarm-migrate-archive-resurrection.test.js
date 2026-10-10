@@ -2,7 +2,7 @@
 // devswarm-migrate / scripts/devswarm.js healOrphanPartitions — ARCHIVE
 // RESURRECTION GATE (defect df54edf54804).
 //
-// Field report: SkyCrew archived 4 workspaces via `devswarm.js archive <id>`
+// Field report: DemoApp archived 4 workspaces via `devswarm.js archive <id>`
 // on 0.97.1. The 0.99.0 update's store migration ("N workspaces migrated")
 // blindly upserted the registry row for every id it found an active
 // workspaces/<id>.json descriptor for, without consulting archived/<id>.json

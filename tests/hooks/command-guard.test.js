@@ -162,28 +162,24 @@ const BLOCK = [
   'node -e "process.binding(\'fs\').writeFile(\'x\')"',
   'node -e "require(\'fs\').cpSync(\'a\',\'b\')"',
   // (4) P2: gh mutating subcommands were never classified heavy at all.
-  'gh pr merge 123',
-  'gh pr merge 12',
-  'gh pr close 123',
-  'gh pr edit 123 --title x',
   'gh pr create --title x --body y',
-  'gh pr review 123 --approve',
+  // multi-line / substituted gh commands are not one-liners
+  'gh pr merge 12 $(cat ids)',
+  'gh api repos/o/r/pulls/3 -X PATCH --input body.json',
+  'gh api repos/o/r/git/refs/heads/x -X DELETE',
   'gh issue create --title x',
-  'gh issue close 5',
   'gh issue delete 5',
-  'gh issue edit 5 --title x',
   'gh release create v1.0.0',
   'gh release delete v1.0.0',
   'gh release edit v1.0.0 --title x',
   'gh release upload v1.0.0 f.tar.gz',
   'gh repo delete owner/repo',
   'gh repo edit owner/repo --description x',
-  'gh secret set FOO --body bar',
+  // a one-line `gh secret set` is light (issue #55); with a substitution it is no plain one-liner
+  'gh secret set FOO --body "$(cat token.txt)"',
   'gh secret delete FOO',
   'gh workflow run build.yml',
-  'gh api repos/o/r/issues -X POST -f title=x',
   'gh api repos/o/r/issues --method DELETE',
-  'gh api repos/o/r/issues -f title=x',
   'gh api graphql -F query=x',
   // defect.js: only report/list/show/recurring/similar are exempt (append-only
   // or read). `backfill` writes history records and stays gated. `rule`
@@ -250,14 +246,14 @@ const BLOCK = [
   // A write redirect outside the scratchpad/tmp on the SINK segment itself
   // disqualifies the whole line even though the primary segment and the
   // pipe shape both otherwise qualify.
-  'git clone --depth 1 https://example.com/repo.git /tmp/x | tail > /Users/talas9/Projects/anti-hall/out.log',
+  'git clone --depth 1 https://example.com/repo.git /tmp/x | tail > /Users/dev/Projects/anti-hall/out.log',
   // `tee` is not one of the allowed bounded sinks (tail/head/grep -c/grep -m
   // N/wc only) — piping an otherwise-qualifying git clone into `tee` (even
   // to a tmp destination) does not satisfy the "bounded output" condition.
   'git clone --depth 1 https://example.com/repo.git /tmp/x | tee /tmp/out.log',
   // git clone --depth 1 to a destination OUTSIDE the scratchpad/tmp must
   // stay blocked (git clone is HEAVY_PATTERNS-matched).
-  'git clone --depth 1 https://example.com/repo.git /Users/talas9/Projects/anti-hall/x | tail -1',
+  'git clone --depth 1 https://example.com/repo.git /Users/dev/Projects/anti-hall/x | tail -1',
   // Only `git clone --depth 1 https://… <tmp dest>` qualifies — a clone
   // without --depth 1 (or from a local path) never does.
   'git clone https://example.com/repo.git /tmp/x | tail -1',
@@ -299,7 +295,7 @@ const ALLOW = [
   // coordinator context (its internal spawn is the non-destructive count-gate +
   // one bounded read-messages, never a blocking monitor).
   'node scripts/devswarm.js inbox pull x',
-  // 0.114.1 hotfix (peer report, SkyCrew Primary): the version-independent
+  // 0.114.1 hotfix (peer report, DemoApp Primary): the version-independent
   // stable-launcher form under ~/.anti-hall/bin/ (hooks/lib/stable-launcher.js)
   // that every hook-emitted directive now names when devswarm.stableLauncher
   // is on (default) — `~`, `$HOME`, and `"${HOME}"` home-anchor forms. The
@@ -343,7 +339,7 @@ const ALLOW = [
   // command (verb: pytest) even though a real shell never expands a
   // backtick/$() inside a `<<'EOF'` body. Root cause: extractSubstitutions
   // had no heredoc awareness at all, unlike splitSegments/isHeavySegment.
-  "cd /Users/talas9/Projects/skycrew && S=/private/tmp/claude-501/-Users-talas9-Projects-skycrew/901870ae-e9d0-42cd-b328-fad620732d19/scratchpad\ncat > $S/m_alert23.txt <<'EOF'\nCORRECTIONS to your filed item (i), measured by the test-isolation lane — please update FOLLOWUPS-2026-09-23.md:\n1. The failing import is python/skyinformApi/_esim_admin_router.py:79 (NOT esimOps). There are TWO _esim_admin_router.py files; skyinformApi's is the one that dies. Traceback: tests/test_esim_intent_get_mirror_projection.py:27 -> skyinformApi/_esim_admin_router.py:79.\n2. The wrapper's \"codebase-scoped\" test step (bin/deploy-skyfb.sh:452-467) is a `pytest tests -k <codebase>` NAME FILTER over the root tests/ directory, not a directory scope — which is why a skyinformApi file fails the \"esimOps\" step.\n3. The test-isolation branch does NOT fix it (identical EXIT=2 on its head and main).\nThe error I relayed to that lane said esimOps; that was my relay error.\nEOF\nnode ~/.claude/plugins/cache/anti-hall/anti-hall/0.103.0/scripts/devswarm.js send --to a7aa9263-6a85-4582-a7ff-9aed4ad18e55 --message-file $S/m_alert23.txt | head -c 20",
+  "cd /Users/dev/Projects/demoapp && S=/private/tmp/claude-501/-Users-dev-Projects-demoapp/901870ae-e9d0-42cd-b328-fad620732d19/scratchpad\ncat > $S/m_alert23.txt <<'EOF'\nCORRECTIONS to your filed item (i), measured by the test-isolation lane — please update FOLLOWUPS-2026-09-23.md:\n1. The failing import is python/mailerApi/_esim_admin_router.py:79 (NOT esimOps). There are TWO _esim_admin_router.py files; mailerApi's is the one that dies. Traceback: tests/test_esim_intent_get_mirror_projection.py:27 -> mailerApi/_esim_admin_router.py:79.\n2. The wrapper's \"codebase-scoped\" test step (bin/deploy-appfb.sh:452-467) is a `pytest tests -k <codebase>` NAME FILTER over the root tests/ directory, not a directory scope — which is why a mailerApi file fails the \"esimOps\" step.\n3. The test-isolation branch does NOT fix it (identical EXIT=2 on its head and main).\nThe error I relayed to that lane said esimOps; that was my relay error.\nEOF\nnode ~/.claude/plugins/cache/anti-hall/anti-hall/0.103.0/scripts/devswarm.js send --to a7aa9263-6a85-4582-a7ff-9aed4ad18e55 --message-file $S/m_alert23.txt | head -c 20",
   // Minimal isolate of the same root cause: a backtick command substitution
   // inside a QUOTED heredoc delimiter's body is inert DATA (no expansion in
   // a real shell) and must not be extracted/recursed.
@@ -1534,3 +1530,12 @@ test('`;`-joined leading cd: block reason hints `cd <dir> &&`; the && form is al
     } finally { h.cleanup(); }
   } finally { require('node:fs').rmSync(dir, { recursive: true, force: true }); }
 });
+
+// One-line remote state changes are light (dogfood 2026-10-09): no subagent for `gh pr merge 12`.
+for (const c of ['gh pr merge 123 --squash', 'gh pr close 123', 'gh pr edit 123 --title x', 'gh pr review 123 --approve', 'gh issue close 5',
+  'gh issue edit 5 --title x', 'gh api repos/o/r/pulls/3 -X PATCH -f state=closed', 'gh api repos/o/r/issues -X POST -f title=x', 'gh api repos/o/r/issues -f title=x']) {
+  test('ALLOW one-line gh state change in the main thread: ' + c, () => {
+    const r = runCoord(c);
+    assert.strictEqual(r.status, 0, c + ' -> ' + r.stdout);
+  });
+}

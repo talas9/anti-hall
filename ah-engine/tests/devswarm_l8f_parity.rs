@@ -43,7 +43,18 @@ struct Lc {
 }
 
 fn lc(name: &str, argv: &[&str], cwd: &'static str, native: bool, label: &'static str) -> Lc {
-    Lc { children: "echo '[]'".into(), all: "echo '[]'".into(), expect: vec![], name: name.into(), argv: argv.iter().map(|s| (*s).into()).collect(), cwd, setup: Box::new(|_| {}), env: vec![], native, label }
+    Lc {
+        children: "echo '[]'".into(),
+        all: "echo '[]'".into(),
+        expect: vec![],
+        name: name.into(),
+        argv: argv.iter().map(|s| (*s).into()).collect(),
+        cwd,
+        setup: Box::new(|_| {}),
+        env: vec![],
+        native,
+        label,
+    }
 }
 
 impl Lc {
@@ -294,7 +305,6 @@ fn check_from(
 
 // ---- done ----------------------------------------------------------------------------------------------------------------
 
-
 // ---- fixtures of the cases ----------------------------------------------------------------------------------------------
 
 const MIN: i64 = 60_000;
@@ -394,7 +404,8 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
         r("idle-days-from-the-verdict", &["roster", "--json"], true)
             .setup(move |h| ds(h, "liveness/child-1.json", &format!("{{\"lastOutboundTs\":{}}}", NOW - 3 * DAY - 5000)))
             .expect(&["idle 3d"]),
-        r("idle-days-in-the-text", &["roster"], true).setup(move |h| ds(h, "liveness/child-1.json", &format!("{{\"lastOutboundTs\":{}}}", NOW - 3 * DAY - 5000))),
+        r("idle-days-in-the-text", &["roster"], true)
+            .setup(move |h| ds(h, "liveness/child-1.json", &format!("{{\"lastOutboundTs\":{}}}", NOW - 3 * DAY - 5000))),
         r("a-silent-session-is-dormant", &["roster", "--json"], true).setup(move |h| heartbeat(h, "child-1", NOW - 10 * HOUR, None)).expect(&["dormant"]),
         r("an-empty-transcript-uses-the-tight-window", &["roster", "--json"], true)
             .setup(move |h| {
@@ -424,8 +435,7 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
             })
             .expect(&["idle (alive)"]),
         // a transcript with content is read natively (is the child waiting on a human?): see roster_transcript_tail_matches_node
-        r("a-transcript-without-times-says-nothing", &["roster", "--json"], true)
-            .setup(move |h| transcript(h, &c4, "child-1", "{\"type\":\"user\"}\n")),
+        r("a-transcript-without-times-says-nothing", &["roster", "--json"], true).setup(move |h| transcript(h, &c4, "child-1", "{\"type\":\"user\"}\n")),
         r("a-heartbeat-of-another-session-settles-the-wait", &["roster", "--json"], true).setup(move |h| {
             heartbeat(h, "child-1", NOW - 1000, Some("someone-else"));
             transcript(h, &c5, "child-1", "{\"type\":\"user\"}\n");
@@ -461,15 +471,19 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
                 app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 0, 1, "standard", 0), ("child-1", "First", c6.to_str().unwrap(), 2, 0, 1, "standard", 1)])
             })
             .expect(&["\"app\":{\"rank\":1", "\"wsName\":\"First\""]),
-        r("the-app-orders-and-titles-the-rows-in-the-text", &["roster"], true)
-            .env(app.0, app.1)
-            .setup(move |h| app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 0, 1, "standard", 0), ("child-1", "First", c7.to_str().unwrap(), 2, 0, 1, "standard", 1)])),
+        r("the-app-orders-and-titles-the-rows-in-the-text", &["roster"], true).env(app.0, app.1).setup(move |h| {
+            app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 0, 1, "standard", 0), ("child-1", "First", c7.to_str().unwrap(), 2, 0, 1, "standard", 1)])
+        }),
         r("the-app-archived-a-row", &["roster", "--json"], true)
             .env(app.0, app.1)
             .setup(|h| app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 1, 0, "standard", 0)]))
             .expect(&["\"appArchived\":true"]),
-        r("the-app-archived-a-row-in-the-text", &["roster"], true).env(app.0, app.1).setup(|h| app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 1, 0, "standard", 0)])),
-        r("the-app-knows-nobody-here", &["roster", "--json"], true).env(app.0, app.1).setup(|h| app_db(h, &[("someone", "Else", "/nowhere/e", 1, 0, 1, "standard", 0)])),
+        r("the-app-archived-a-row-in-the-text", &["roster"], true)
+            .env(app.0, app.1)
+            .setup(|h| app_db(h, &[("child-2", "Second", "/nowhere/s", 1, 1, 0, "standard", 0)])),
+        r("the-app-knows-nobody-here", &["roster", "--json"], true)
+            .env(app.0, app.1)
+            .setup(|h| app_db(h, &[("someone", "Else", "/nowhere/e", 1, 0, 1, "standard", 0)])),
         r("the-app-database-is-missing", &["roster", "--json"], true).env(app.0, "{HOME}/no-such.db"),
         r("a-ghost-label-folds-by-alias", &["roster", "--json"], true)
             .setup(move |h| {
@@ -493,7 +507,11 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
             .setup({
                 let k = key.clone();
                 move |h| {
-                    ds(h, "archived/child-9.json", &format!("{{\"id\":\"child-9\",\"worktreePath\":\"{nonexistent}\",\"ownerKey\":\"{k}\",\"branch\":\"feat-9\"}}"));
+                    ds(
+                        h,
+                        "archived/child-9.json",
+                        &format!("{{\"id\":\"child-9\",\"worktreePath\":\"{nonexistent}\",\"ownerKey\":\"{k}\",\"branch\":\"feat-9\"}}"),
+                    );
                     app_db(h, &[("child-9", "Nine", "/nowhere/n", 3, 0, 1, "standard", 0)]);
                 }
             })
@@ -501,7 +519,11 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
         r("an-app-sourced-marker-is-not-still-live", &["roster", "--json"], true).env(app.0, app.1).setup({
             let k = key.clone();
             move |h| {
-                ds(h, "archived/child-9.json", &format!("{{\"id\":\"child-9\",\"worktreePath\":\"/nowhere/wt9\",\"ownerKey\":\"{k}\",\"archivedBy\":\"devswarm-app\"}}"));
+                ds(
+                    h,
+                    "archived/child-9.json",
+                    &format!("{{\"id\":\"child-9\",\"worktreePath\":\"/nowhere/wt9\",\"ownerKey\":\"{k}\",\"archivedBy\":\"devswarm-app\"}}"),
+                );
                 app_db(h, &[("child-9", "Nine", "/nowhere/n", 3, 0, 1, "standard", 0)]);
             }
         }),
@@ -525,8 +547,10 @@ fn roster_cases(fx: &Fx) -> Vec<Lc> {
         r("a-name-with-a-pipe-and-unread-broadcasts", &["roster"], true).setup(move |h| ds(h, "names/child-1.json", "{\"name\":\"fix|the parser\"}")),
         r("a-step-plan-is-nodes", &["roster", "--json"], false)
             .setup(move |h| ds(h, &format!("plans/{cmesh}.json"), "{\"steps\":[{\"n\":1,\"text\":\"first\",\"status\":\"pending\"}]}")),
-        r("a-plan-of-nobody-here", &["roster", "--json"], true).setup(|h| ds(h, "plans/unrelated.json", "{\"steps\":[{\"n\":1,\"text\":\"first\",\"status\":\"pending\"}]}")),
-        r("the-active-list-cache-nobody-needs", &["roster", "--json"], true).setup(|h| ds(h, "hivecontrol-active.json", &format!("{{\"fetchedAt\":{NOW},\"byRepoKey\":{{}}}}"))),
+        r("a-plan-of-nobody-here", &["roster", "--json"], true)
+            .setup(|h| ds(h, "plans/unrelated.json", "{\"steps\":[{\"n\":1,\"text\":\"first\",\"status\":\"pending\"}]}")),
+        r("the-active-list-cache-nobody-needs", &["roster", "--json"], true)
+            .setup(|h| ds(h, "hivecontrol-active.json", &format!("{{\"fetchedAt\":{NOW},\"byRepoKey\":{{}}}}"))),
         r("a-fallback-summary-of-a-known-primary", &["roster", "--json"], true).setup(move |h| {
             let hash = p4.strip_prefix("primary-").unwrap_or(&p4).to_string();
             ds(h, &format!("summaries/{hash}.json"), "{\"workspaces\":{}}");
@@ -616,17 +640,66 @@ fn tail_cases(fx: &Fx) -> Vec<Lc> {
     let cases = vec![
         tcase("tail-active-tool-is-running", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({"command":"ls"}))]), 10_000, true, &[], w),
         tcase("tail-resolved-call-is-quiet", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]) + &t_result("a".into()), 10_000, true, &[], w),
-        tcase("tail-open-question-waits", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("Which   branch\nshould I use?"))]), 10_000, true, &["waiting-on-human: Which branch should I use?"], w),
+        tcase(
+            "tail-open-question-waits",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("Which   branch\nshould I use?"))]),
+            10_000,
+            true,
+            &["waiting-on-human: Which branch should I use?"],
+            w,
+        ),
         tcase("tail-open-question-in-text-table", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("Pick one"))]), 10_000, true, &[], w),
-        tcase("tail-plan-approval-long-plan-is-cut", t_user("go") + &t_call(&[("p", "ExitPlanMode", serde_json::json!({"plan": long}))]), 10_000, true, &["waiting-on-human: "], w),
-        tcase("tail-question-as-lone-string", t_user("go") + &t_call(&[("q", "AskUserQuestion", serde_json::json!({"question":"Plain?"}))]), 10_000, true, &["waiting-on-human: Plain?"], w),
-        tcase("tail-question-without-text", t_user("go") + &t_call(&[("q", "AskUserQuestion", serde_json::json!({"questions":[]}))]), 10_000, true, &["\"waiting-on-human\""], w),
+        tcase(
+            "tail-plan-approval-long-plan-is-cut",
+            t_user("go") + &t_call(&[("p", "ExitPlanMode", serde_json::json!({"plan": long}))]),
+            10_000,
+            true,
+            &["waiting-on-human: "],
+            w,
+        ),
+        tcase(
+            "tail-question-as-lone-string",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", serde_json::json!({"question":"Plain?"}))]),
+            10_000,
+            true,
+            &["waiting-on-human: Plain?"],
+            w,
+        ),
+        tcase(
+            "tail-question-without-text",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", serde_json::json!({"questions":[]}))]),
+            10_000,
+            true,
+            &["\"waiting-on-human\""],
+            w,
+        ),
         tcase("tail-idle-turn-is-closed", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("x"))]) + &t_sys("turn_duration"), 10_000, true, &[], w),
-        tcase("tail-closed-then-reopened-by-a-result", t_user("go") + &t_call(&[("q", "Bash", serde_json::json!({}))]) + &t_sys("stop_hook_summary") + &t_result("zz".into()), 10_000, true, &[], w),
-        tcase("tail-dormant-quiet-transcript-with-open-tool", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]), 30 * 3_600_000, true, &["waiting-on-human", "dormant"], w),
+        tcase(
+            "tail-closed-then-reopened-by-a-result",
+            t_user("go") + &t_call(&[("q", "Bash", serde_json::json!({}))]) + &t_sys("stop_hook_summary") + &t_result("zz".into()),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-dormant-quiet-transcript-with-open-tool",
+            t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]),
+            30 * 3_600_000,
+            true,
+            &["waiting-on-human", "dormant"],
+            w,
+        ),
         tcase("tail-skewed-future-mtime-is-fresh", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]), -30_000, true, &[], w),
         tcase("tail-far-future-mtime-is-not-fresh", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]), -120_000, true, &["waiting-on-human"], w),
-        tcase("tail-stale-by-one-minute-over-the-window", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]), 6 * 60_000, true, &["waiting-on-human"], w),
+        tcase(
+            "tail-stale-by-one-minute-over-the-window",
+            t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({}))]),
+            6 * 60_000,
+            true,
+            &["waiting-on-human"],
+            w,
+        ),
         tcase(
             "tail-compacted-transcript",
             ln(serde_json::json!({"type":"summary","summary":"earlier work","leafUuid":"u"}))
@@ -640,32 +713,148 @@ fn tail_cases(fx: &Fx) -> Vec<Lc> {
         ),
         tcase(
             "tail-sidechain-entries-are-ignored",
-            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("main"))]) + &ln(serde_json::json!({"type":"user","isSidechain":true,"timestamp":TS,"message":{"content":"agent prompt"}})),
+            t_user("go")
+                + &t_call(&[("q", "AskUserQuestion", ask("main"))])
+                + &ln(serde_json::json!({"type":"user","isSidechain":true,"timestamp":TS,"message":{"content":"agent prompt"}})),
             10_000,
             true,
             &["waiting-on-human: main"],
             w,
         ),
-        tcase("tail-huge-transcript-open-question-at-the-end", huge.clone() + &t_user("now") + &t_call(&[("q", "AskUserQuestion", ask("at the end of a huge file"))]), 10_000, true, &["waiting-on-human: at the end of a huge file"], w),
+        tcase(
+            "tail-huge-transcript-open-question-at-the-end",
+            huge.clone() + &t_user("now") + &t_call(&[("q", "AskUserQuestion", ask("at the end of a huge file"))]),
+            10_000,
+            true,
+            &["waiting-on-human: at the end of a huge file"],
+            w,
+        ),
         tcase("tail-huge-transcript-question-before-the-window", head_open + &huge, 10_000, true, &[], w),
-        tcase("tail-malformed-last-line", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("before the torn line"))]) + "{\"type\":\"assist", 10_000, true, &["waiting-on-human: before the torn line"], w),
-        tcase("tail-blank-and-garbage-lines", t_user("go") + "\n   \nnot json\n[1,2]\n\"s\"\nnull\n" + &t_call(&[("q", "AskUserQuestion", ask("between garbage"))]), 10_000, true, &["waiting-on-human: between garbage"], w),
-        tcase("tail-human-prompt-opens-a-new-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_user("never mind"), 10_000, true, &[], w),
-        tcase("tail-meta-prompt-stays-in-the-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("still open"))]) + &t_meta("a skill body"), 10_000, true, &["waiting-on-human: still open"], w),
-        tcase("tail-stop-hook-feedback-opens-a-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_meta("Stop hook feedback: do it"), 10_000, true, &[], w),
-        tcase("tail-cron-fire-then-meta-prompt-opens-a-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_sys("scheduled_task_fire") + &t_meta("wake up"), 10_000, true, &[], w),
-        tcase("tail-notification-wake-opens-a-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_meta("  <task-notification>Mailbox WAKE</task-notification>"), 10_000, true, &[], w),
-        tcase("tail-other-notification-stays-in-the-turn", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("kept"))]) + &t_meta("<task-notification>done</task-notification>"), 10_000, true, &["waiting-on-human: kept"], w),
-        tcase("tail-last-of-several-open-calls-wins", t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({})), ("q", "AskUserQuestion", ask("last open"))]) + &t_result("q".into()), 10_000, true, &[], w),
-        tcase("tail-numeric-ids-match-by-text", t_user("go") + &t_call(&[("5", "AskUserQuestion", ask("n"))]) + &t_result(serde_json::json!(5)), 10_000, true, &[], w),
-        tcase("tail-array-tool-use-id-is-nodes", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("n"))]) + &t_result(serde_json::json!(["q"])), 10_000, false, &[], w),
-        tcase("tail-odd-timestamp-alone-is-nodes", ln(serde_json::json!({"type":"assistant","timestamp":1700000000000i64,"message":{"content":[]}})), 10_000, false, &[], w),
-        tcase("tail-no-timestamps-says-nothing", ln(serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"q","name":"AskUserQuestion","input":{}}]}})), 10_000, true, &[], w),
+        tcase(
+            "tail-malformed-last-line",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("before the torn line"))]) + "{\"type\":\"assist",
+            10_000,
+            true,
+            &["waiting-on-human: before the torn line"],
+            w,
+        ),
+        tcase(
+            "tail-blank-and-garbage-lines",
+            t_user("go") + "\n   \nnot json\n[1,2]\n\"s\"\nnull\n" + &t_call(&[("q", "AskUserQuestion", ask("between garbage"))]),
+            10_000,
+            true,
+            &["waiting-on-human: between garbage"],
+            w,
+        ),
+        tcase(
+            "tail-human-prompt-opens-a-new-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_user("never mind"),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-meta-prompt-stays-in-the-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("still open"))]) + &t_meta("a skill body"),
+            10_000,
+            true,
+            &["waiting-on-human: still open"],
+            w,
+        ),
+        tcase(
+            "tail-stop-hook-feedback-opens-a-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_meta("Stop hook feedback: do it"),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-cron-fire-then-meta-prompt-opens-a-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_sys("scheduled_task_fire") + &t_meta("wake up"),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-notification-wake-opens-a-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &t_meta("  <task-notification>Mailbox WAKE</task-notification>"),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-other-notification-stays-in-the-turn",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("kept"))]) + &t_meta("<task-notification>done</task-notification>"),
+            10_000,
+            true,
+            &["waiting-on-human: kept"],
+            w,
+        ),
+        tcase(
+            "tail-last-of-several-open-calls-wins",
+            t_user("go") + &t_call(&[("a", "Bash", serde_json::json!({})), ("q", "AskUserQuestion", ask("last open"))]) + &t_result("q".into()),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-numeric-ids-match-by-text",
+            t_user("go") + &t_call(&[("5", "AskUserQuestion", ask("n"))]) + &t_result(serde_json::json!(5)),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-array-tool-use-id-is-nodes",
+            t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("n"))]) + &t_result(serde_json::json!(["q"])),
+            10_000,
+            false,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-odd-timestamp-alone-is-nodes",
+            ln(serde_json::json!({"type":"assistant","timestamp":1700000000000i64,"message":{"content":[]}})),
+            10_000,
+            false,
+            &[],
+            w,
+        ),
+        tcase(
+            "tail-no-timestamps-says-nothing",
+            ln(serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"q","name":"AskUserQuestion","input":{}}]}})),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
         tcase("tail-lone-surrogate-in-a-skipped-field", t_user("go") + "{\"type\":\"user\",\"x\":\"\\ud800\"}\n", 10_000, true, &[], w),
-        tcase("tail-lone-surrogate-in-a-read-field-is-nodes", t_user("go") + "{\"type\":\"user\",\"message\":{\"content\":\"a\\ud800\"}}\n", 10_000, false, &[], w),
+        tcase(
+            "tail-lone-surrogate-in-a-read-field-is-nodes",
+            t_user("go") + "{\"type\":\"user\",\"message\":{\"content\":\"a\\ud800\"}}\n",
+            10_000,
+            false,
+            &[],
+            w,
+        ),
         tcase("tail-out-of-range-number-in-a-skipped-field", t_user("go") + "{\"type\":\"user\",\"x\":1e999}\n", 10_000, true, &[], w),
         tcase("tail-out-of-range-number-in-a-read-field-is-nodes", t_user("go") + "{\"type\":\"user\",\"timestamp\":1e999}\n", 10_000, false, &[], w),
-        tcase("tail-deeply-nested-line", t_user("go") + &t_call(&[("q", "AskUserQuestion", ask("old"))]) + &format!("{{\"type\":\"user\",\"message\":{{\"content\":\"deep\"}},\"x\":{}1{}}}\n", "[".repeat(300), "]".repeat(300)), 10_000, true, &[], w),
+        tcase(
+            "tail-deeply-nested-line",
+            t_user("go")
+                + &t_call(&[("q", "AskUserQuestion", ask("old"))])
+                + &format!("{{\"type\":\"user\",\"message\":{{\"content\":\"deep\"}},\"x\":{}1{}}}\n", "[".repeat(300), "]".repeat(300)),
+            10_000,
+            true,
+            &[],
+            w,
+        ),
         tcase("tail-empty-file-says-nothing", String::new(), 10_000, true, &[], w),
     ];
     let mut cases = cases;

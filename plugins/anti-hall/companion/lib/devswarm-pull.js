@@ -59,6 +59,7 @@ const {
   normalizeMonitorPayload, messageHash, ingestPayload,
 } = require('../devswarm-ingest.js');
 const store = require('./devswarm-store.js');
+const { resolveBranchSender } = require('./devswarm-branch-sender.js');
 // v0.57 mesh (PLAN-v0.57-mesh.md D1/D8): the parity feed's STORE target re-keys
 // to the SAME shared per-project store the ingest daemon drains into — this
 // child never touches child-side liveness surfaces (descriptor id / heartbeat /
@@ -370,6 +371,20 @@ function pullOnce(opts) {
     const ingestRaw = (raw) => {
       const messages = normalizeMonitorPayload(raw);
       const seen = collectExistingHashes(F, inboxPath);
+      // SENDER per row. A CHILD's queue is the Primary's outbound (senderId, above). The Primary's OWN queue
+      // (its checkout's builder row) carries the children's notices instead (the "DONE: <branch> ..." lines):
+      // when the row names a branch whose workspace is registered, that child is the sender.
+      let registryRows = null;
+      const registryOnce = () => {
+        if (registryRows) return registryRows;
+        registryRows = [];
+        try {
+          const rs = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env, readOnly: true });
+          try { registryRows = (typeof rs.listRegistry === 'function' ? rs.listRegistry() : []) || []; } finally { rs.close(); }
+        } catch (_) { registryRows = []; }
+        return registryRows;
+      };
+
       let imported = 0;
       let duplicate = 0;
       const batch = [];
@@ -390,7 +405,7 @@ function pullOnce(opts) {
           // lack this key; every reader already treats `sender == null` as
           // "no resolvable sender, count as real" (fail-open), so this is
           // silently backward-compatible with every row written before it.
-          sender: senderId,
+          sender: resolveBranchSender(registryOnce(), m && m.fromBranch) || senderId,
         }) + '\n');
         imported++;
       }

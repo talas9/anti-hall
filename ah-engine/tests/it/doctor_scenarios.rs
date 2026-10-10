@@ -1,4 +1,4 @@
-//! `ah-engine doctor` against every failure scenario of `~/.anti-hall/work/DOCTOR-SCENARIOS.md`, each simulated in a scratch HOME:
+//! `ah-engine doctor` against every documented failure scenario, each simulated in a scratch HOME:
 //! stub and fixture binaries (a wrong-OS or wrong-architecture header, a quarantined file), fake sockets and lock holders,
 //! read-only and unowned directories, a scratch copy of the plugin with its files broken, stub `node`/`git` programs on a
 //! restricted PATH. The shell doctor (`ah-hook.sh --doctor`) runs on the same fixtures and must say the same thing for every

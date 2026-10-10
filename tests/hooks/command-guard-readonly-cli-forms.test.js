@@ -62,8 +62,8 @@ const ALLOW = [
   'git push origin main 2>&1 | tail -3; git rev-parse HEAD; git ls-remote origin refs/heads/main',
   'git push -q origin main && git ls-remote --heads origin main',
   'git push origin main | tail -2 && git status',
-  // (d) a gcloud read INSIDE a chain keeps its space-separated read flags (field: friendship verify, 2026-10-07)
-  "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe friendship --project sky-crew-uc --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
+  // (d) a gcloud read INSIDE a chain keeps its space-separated read flags (field verify, 2026-10-07)
+  "git fetch -q origin main && git rev-parse origin/main && gcloud run services describe my-service --project my-project --region us-central1 --format='value(status.latestReadyRevisionName,status.traffic)' 2>&1 | head -2",
   'git rev-parse HEAD && gcloud functions describe fn --project foo --region us-central1',
   'gcloud functions list --project foo | head -3; git rev-parse HEAD',
 ];

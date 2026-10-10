@@ -40,9 +40,9 @@ function mkFixture() {
   const origin = mk(path.join(root, 'origin'));
   const ws = mk(path.join(root, 'ws'));
   const other = mk(path.join(root, 'other'));
-  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', 'file://' + origin, 'skyfb'], ws);
+  git(['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', 'file://' + origin, 'appfb'], ws);
   git(['commit', '-q', '-m', 'sub'], ws);
-  return { root, home, ws, sub: path.join(ws, 'skyfb'), other };
+  return { root, home, ws, sub: path.join(ws, 'appfb'), other };
 }
 
 const backends = ['journal'];

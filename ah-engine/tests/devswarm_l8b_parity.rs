@@ -1,3 +1,12 @@
+#![allow(
+    dead_code,
+    clippy::type_complexity,
+    clippy::collapsible_if,
+    clippy::needless_range_loop,
+    clippy::useless_vec,
+    clippy::regex_creation_in_loops,
+    clippy::let_underscore_must_use
+)]
 //! Parity of the DevSwarm CLI verbs of lane l8b (`ready-check`, ...): `ah-engine mesh <argv>` (mesh.engine_writes = on) against the
 //! real `node scripts/devswarm.js <argv>`.
 //!

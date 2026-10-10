@@ -53,7 +53,7 @@ test('archived-stranded classifier == healOrphanPartitions archived-no-family', 
     s.appendMessage({ workspaceId: 'archived-with-family', body: 'x', hash: 'b1' });
 
     // 3. not archived at all -> adoptable, NOT stranded
-    const wtLive = path.join(home, 'wt-live');
+    const wtLive = path.join(home, 'wt-active');
     fs.mkdirSync(wtLive, { recursive: true });
     writeDescriptor(home, 'workspaces', 'plain-orphan', { worktreePath: wtLive, sessionId: 'sess-2' });
     s.appendMessage({ workspaceId: 'plain-orphan', body: 'x', hash: 'c1' });

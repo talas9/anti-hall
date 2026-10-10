@@ -95,11 +95,35 @@ fn read_stdin() -> Option<Vec<u8>> {
     rx.recv_timeout(defaults::millis("statusline.stdin_watchdog_ms")).ok().map(|(b, _)| b)
 }
 
-/// `statusline` (the host pipes its session JSON on stdin)
+/// The first line, once it is known: what a run that is cut at its overall deadline still prints.
+static PARTIAL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// `statusline` (the host pipes its session JSON on stdin). The whole run, input wait included, is bounded by
+/// `statusline.total_deadline_ms`: past it the line already rendered is printed and the process ends (a host that stopped waiting
+/// has already dropped the output), and every step's own limit is cut to what is left.
 pub fn run(p: &Parsed) -> i32 {
+    let started = std::time::Instant::now();
+    let total = defaults::millis("statusline.total_deadline_ms");
+    util::set_end(Some(started + total));
     let Some(stdin) = read_stdin() else { return 0 };
     let plan = super::shadow::begin(defaults::text("ops.verb_statusline"), defaults::text("ops.script_statusline"), &p.raw, Some(&stdin));
-    render_all(&stdin);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let input = stdin.clone();
+    std::thread::spawn(move || {
+        crate::discard::harmless(tx.send(render_all(&input))); // keep: the main thread gave up at the deadline
+    });
+    let wait = (started + total).saturating_duration_since(std::time::Instant::now()) + defaults::millis("statusline.cut_grace_ms");
+    match rx.recv_timeout(wait) {
+        Ok(()) => {}
+        Err(_) => {
+            // cut: the part already rendered is the answer; the Node witness is not compared (it ran to completion)
+            if let Some(line) = PARTIAL.lock().ok().and_then(|g| g.clone()) {
+                out(&line);
+            }
+            crate::discard::note("statusline_cut", &format!("{} ms", started.elapsed().as_millis()));
+            return 0;
+        }
+    }
     super::shadow::end(plan, 0);
     0
 }
@@ -159,6 +183,9 @@ fn render(stdin: &[u8], env: &std::collections::BTreeMap<String, String>, home: 
     } else {
         own_line1(&cx, &env, &root, &cwd, &input)
     };
+    if let Ok(mut g) = PARTIAL.lock() {
+        *g = Some(line1.clone());
+    }
     let line2 = phasebar::run(&cx, &input).map(|l| trim_nl(&l)).filter(|l| !l.is_empty());
     let mut text = line1.clone();
     if let Some(l2) = line2 {

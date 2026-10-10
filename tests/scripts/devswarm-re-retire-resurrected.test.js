@@ -1,5 +1,5 @@
 'use strict';
-// Item 6, defect df54edf54804 field aftermath — SkyCrew's `roster --json` on
+// Item 6, defect df54edf54804 field aftermath — DemoApp's `roster --json` on
 // 0.99.0 showed ~43 legacy-slug registry rows (the resurrected worktree-group
 // family) still sitting in the store after the migration gate (companion/lib/
 // devswarm-archive-gate.js) shipped: the gate stops the migration doing this
@@ -77,7 +77,7 @@ function upsertResurrectedRow(home, repo, id, wt, sessionId) {
   try { s.upsertRegistry({ id, worktreePath: wt, sessionId }); } finally { s.close(); }
 }
 
-test('re-retire: SkyCrew shape — archived A + resurrected legacy-slug twin T (stale, no marker): T retired, unread forwarded to A, A stays archived', () => {
+test('re-retire: DemoApp shape — archived A + resurrected legacy-slug twin T (stale, no marker): T retired, unread forwarded to A, A stays archived', () => {
   const home = tmpHome();
   const repo = makeGitRepo('main');
   try {
@@ -90,7 +90,7 @@ test('re-retire: SkyCrew shape — archived A + resurrected legacy-slug twin T (
     // T: legacy-slug twin — descriptor present (stale mtime, no heartbeat),
     // NO archived/T.json marker of its own, but a registry row a prior
     // (pre-fix) migration run resurrected — exactly the shape traced from
-    // SkyCrew's field data.
+    // DemoApp's field data.
     writeStaleDescriptor(home, 'T', repo, 'sess-T-dead');
     upsertResurrectedRow(home, repo, 'T', repo, 'sess-T-dead');
     seedUnread(home, repo, 'T', 2);

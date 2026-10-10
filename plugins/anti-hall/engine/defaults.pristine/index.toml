@@ -64,6 +64,7 @@ files = [
     "agent_tracker.toml",
     "devswarm_act.toml",
     "devswarm_wire.toml",
+    "actions.toml",
     "devswarm_sup.toml",
     "devswarm_cli.toml",
     "devswarm_ingest.toml",

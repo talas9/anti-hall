@@ -134,6 +134,7 @@ fn split_env<'a>(items: impl Iterator<Item = &'a [u8]>) -> Vec<(String, String)>
 
 /// The `KERN_PROCARGS2` buffer: `argc` (native i32), the executable path, NUL padding, `argc` argument strings, then the
 /// environment strings. Returns (arguments, environment strings); `None` for a buffer too short to hold the count.
+#[allow(clippy::type_complexity)]
 pub fn parse_procargs2(buf: &[u8]) -> Option<(Vec<Vec<u8>>, Vec<Vec<u8>>)> {
     let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?).max(0) as usize;
     let mut rest = &buf[4..];

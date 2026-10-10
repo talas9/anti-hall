@@ -385,10 +385,21 @@ fn the_auto_archive_record_is_seeded_from_the_log() {
         // an earlier record for w1 at head abc exists: it is not added twice
         put(home, ".anti-hall/devswarm/auto-archived.json", r#"{"w1":[{"doneHead":"abc","at":1}]}"#);
     };
-    // a record with no `doneHead` (written before 0.108.3) never matches the entry the migration appends for it (`null` is not
-    // `undefined`), so Node reports it pending forever; the engine reports exactly the same
+    // a record with no `doneHead` (written before 0.108.3) is the canonical `null` on both sides (`normHead`, Node 92bc4530), so
+    // it is seeded once and the migration completes; before that fix `null` never matched `undefined` and it stayed pending
     let r = parity("auto-archived", &seed, &dry_then_real());
-    assert_eq!(status(&r[1], "migrate-auto-archived-state").as_deref(), Some("failed"));
+    did(&r, 1, &["migrate-auto-archived-state"]);
+    // the repair pass: entries already written with an absent or empty `doneHead` are rewritten to `null`, deleting nothing
+    let unnormalized = |home: &Path, _: &Path| {
+        put(home, ".anti-hall/logs/devswarm-auto-archive.ndjson", "{\"action\":\"auto-archive\",\"ok\":true,\"id\":\"w1\",\"at\":3}\n");
+        put(
+            home,
+            ".anti-hall/devswarm/auto-archived.json",
+            r#"{"w1":[{"at":1},{"doneHead":"","at":2},{"doneHead":"abc","at":4}],"w2":[{"doneHead":null,"at":5}]}"#,
+        );
+    };
+    let r = parity("auto-archived-unnormalized", &unnormalized, &dry_then_real());
+    did(&r, 1, &["migrate-auto-archived-state"]);
     let clean = |home: &Path, cwd: &Path| {
         seed(home, cwd);
         put(

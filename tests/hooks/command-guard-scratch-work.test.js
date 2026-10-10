@@ -271,7 +271,7 @@ test('git spawn counts (execFileSync stub)', (t) => {
 // counts waiting for a busy machine's scheduler (163-221 ms at load 12-23
 // for a ~55 ms classify), so it flaked under load. The git status child's own
 // CPU is not in cpuUsage, so the spawn count is asserted separately (<= 1).
-test('latency: classifyBashWork CPU p95 < 150 ms on a 5,000-char command', (t) => {
+test('latency: classifyBashWork CPU p95 < 150 ms on a 5,000-char command', { skip: process.env.ANTIHALL_BENCH !== '1' && 'timing test: set ANTIHALL_BENCH=1 (nightly bench job)' }, (t) => {
   const tail = 'sed -i s/a/b/ src/a.js && bash .claude/tracked.sh';
   const chunk = 'git status && echo x >> /tmp/l.log && sed -n 1p a.txt && ';
   let command = '';

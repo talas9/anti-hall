@@ -64,6 +64,19 @@ pub fn trim(s: &str) -> &str {
     js_trim(s)
 }
 
+/// When the whole run must be over (set once by `statusline::run`): every child's own limit is cut to what is left of it.
+static END: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Arm (`Some`) or lift (`None`) the overall deadline of this run.
+pub fn set_end(at: Option<Instant>) {
+    *END.lock().unwrap_or_else(|e| e.into_inner()) = at;
+}
+
+/// Time left before the overall deadline; `None` when none is armed.
+pub fn left() -> Option<Duration> {
+    END.lock().unwrap_or_else(|e| e.into_inner()).map(|e| e.saturating_duration_since(Instant::now()))
+}
+
 /// What a bounded child came to.
 pub struct Ran {
     /// The exit code was 0.
@@ -102,6 +115,12 @@ pub fn run_with_input_detail(mut cmd: Command, input: &[u8], timeout: Duration, 
 }
 
 fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Option<Finished> {
+    // past the overall deadline nothing new starts; before it a child never outlives it
+    let timeout = match left() {
+        Some(l) if l.is_zero() => return None,
+        Some(l) => timeout.min(l),
+        None => timeout,
+    };
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = cmd.spawn().ok()?;
     let mut stdin = child.stdin.take()?;
@@ -163,3 +182,6 @@ fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usiz
     }
     Some(Finished::Done { code: status.code(), stdout })
 }
+
+#[cfg(all(test, unix))]
+mod tests;

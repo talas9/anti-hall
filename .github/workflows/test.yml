@@ -5,8 +5,11 @@ name: tests
 on:
   push:
     branches: [main]
-    tags: ['rc-v*']
+    tags: ['rc-v*', 'v*']
   pull_request:
+  # Weekly full matrix (node 22 + 3 ubuntu shards); the nightly gated suites live in nightly.yml.
+  schedule:
+    - cron: '17 4 * * 1'
 
 permissions:
   contents: read
@@ -18,9 +21,9 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # rc-v* tags: full matrix (ubuntu + macos x node 22/24). main and PRs: ubuntu x
-  # node 22/24 plus macos x node 24 only. macOS is capped at 5 concurrent jobs
-  # per account, so macOS runs 2 shards per node version (4 jobs on rc).
+  # PRs: node 24 only - 2 ubuntu shards + 2 macOS shards. Full matrix (ubuntu +
+  # macos x node 22/24, 3 ubuntu shards) on rc-v*/v* tags, pushes to main and the
+  # weekly schedule. macOS is capped at 5 concurrent jobs per account.
   plan:
     name: plan matrix
     runs-on: ubuntu-latest
@@ -30,7 +33,7 @@ jobs:
     steps:
       - id: m
         env:
-          FULL: ${{ startsWith(github.ref, 'refs/tags/rc-v') }}
+          FULL: ${{ github.event_name != 'pull_request' }}
         run: |
           node -e '
             const full = process.env.FULL === "true";
@@ -40,9 +43,13 @@ jobs:
                 include.push({ os, node, shard, total, timeout });
               }
             };
-            add("ubuntu-latest", "22.x", 3, 15);
-            add("ubuntu-latest", "24.x", 3, 15);
-            if (full) add("macos-latest", "22.x", 2, 25);
+            if (full) {
+              add("ubuntu-latest", "22.x", 3, 15);
+              add("ubuntu-latest", "24.x", 3, 15);
+              add("macos-latest", "22.x", 2, 25);
+            } else {
+              add("ubuntu-latest", "24.x", 2, 20);
+            }
             add("macos-latest", "24.x", 2, 25);
             console.log("matrix=" + JSON.stringify({ include }));
           ' >> "$GITHUB_OUTPUT"
@@ -56,8 +63,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
       # tests/hooks/api-guard.test.js exercises the opt-in third-party API check,

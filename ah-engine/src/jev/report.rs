@@ -241,8 +241,10 @@ fn write_cache(path: &Path, text: &str) {
     if let Some(dir) = path.parent() {
         crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the cache is best effort, as Node's
     }
-    if std::fs::write(&tmp, text).is_ok() {
-        crate::discard::harmless(std::fs::rename(&tmp, path)); // keep: as above
+    // Node's temporary name (`<file>.tmp.<pid>`) through crate::atomic, left in place when the rename fails as Node leaves it
+    let style = crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() };
+    if crate::atomic::stage(&tmp, text, style).is_ok() {
+        crate::discard::harmless(crate::atomic::replace(&tmp, path, style)); // keep: as above
     }
 }
 
@@ -355,7 +357,7 @@ fn finish(input: &Value, label_path: Option<PathBuf>, audit_path: Option<PathBuf
         if let Some(dir) = sp.parent() {
             crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the latch is best effort, as Node's
         }
-        crate::discard::harmless(std::fs::write(&sp, state)); // keep: as above
+        crate::discard::harmless(crate::atomic::write(&sp, state)); // keep: as above
     }
     if let Some((home, entry)) = cache {
         write_cache(&base_of(&home).join(defaults::text("jevrep.credits_cache_file")), &entry);

@@ -4,7 +4,7 @@
 use super::facts::{self, Desc, Git};
 use crate::defaults;
 use crate::devswarm_rt::reconcile::Rt;
-use crate::devswarm_rt::sources::{self, AppBuilder, AppRead, FsProbe};
+use crate::devswarm_rt::sources::{self, AppBuilder, AppRead, FsProbe, Probe};
 use crate::devswarm_rt::state::{Activity, Lifecycle};
 use crate::dsact::live::LiveState;
 use crate::dsact::runner::Runner;
@@ -162,11 +162,32 @@ impl RtLive<'_> {
         if st.at.is_some_and(|at| self.now - at < cooldown) {
             return None;
         }
-        let snap = self.rt.current();
-        let stale = snap.workspaces.get(id).is_some_and(|w| w.activity.value == Activity::Stuck && w.lifecycle.value == Lifecycle::Active);
+        // Every condition is read again NOW from its source, never taken from the snapshot: the workspace is still active (not
+        // archived, hidden or closed), not paused, not waiting on CI, and silent on enough sources. The snapshot is consulted only for
+        // the CI wait, whose source (the GitHub realtime state) the engine cannot re-read here.
+        let app = self.app()?;
+        let b = app.builders.iter().find(|b| b.id == id)?;
+        let cfg = self.rt.cfg();
+        let lifecycle = crate::devswarm_rt::state::lifecycle_of(b);
+        let paused = crate::devswarm_rt::state::paused_of(cfg, b, &app, lifecycle);
+        let probe = FsProbe::new(&self.home, self.now);
+        let hb = probe.heartbeat_ms(id);
+        let others = probe.other_activity_ms(id, b.worktree.as_deref());
+        let silence = crate::devswarm_rt::state::silence(cfg, hb, &others, self.now);
+        let snap_act = self.rt.current().workspaces.get(id).map(|w| w.activity.value);
+        let waiting = matches!(snap_act, Some(Activity::WaitingCi | Activity::Done));
+        let active = lifecycle == Lifecycle::Active;
+        let not_paused = matches!(paused, crate::devswarm_rt::state::Paused::No | crate::devswarm_rt::state::Paused::Unknown);
+        let stale = active && not_paused && !waiting && silence.is_some_and(|(s, _)| s);
         Some(json!({
             "id": id, "status": if st.escalated { "escalated" } else if stale { "stale" } else { "alive" },
             "nudgeAttempts": st.attempts, "nudgedAt": st.at, "nudgeArgv": nudge, "escalateArgv": escalate,
+            "inputs": {
+                "lifecycle_active": active, "paused": !not_paused, "waiting_ci_or_done": waiting,
+                "heartbeat_ms": hb, "other_activity_ms": others, "last_activity_ms": silence.map(|(_, t)| t),
+                "silent": silence.map(|(s, _)| s), "stall_ms": cfg.stall_ms, "require_quiet_sources": cfg.require_quiet,
+                "attempts": st.attempts, "last_nudge_ms": st.at, "now_ms": self.now,
+            },
         }))
     }
 
@@ -265,6 +286,18 @@ impl LiveState for RtLive<'_> {
             let b = app.builders.iter().find(|b| b.id == id)?;
             return Some(self.auto_archive_facts(&app, b));
         }
+        if kind == defaults::text("devswarm_act.nag_kind") {
+            let app = app?;
+            let b = app.builders.iter().find(|b| b.id == id)?;
+            let mut f = self.auto_archive_facts(&app, b);
+            let open = b.active == Some(true) && b.hidden == Some(false);
+            f["lifecycle"] = json!(if open { "active" } else { "inactive" });
+            if defaults::list("devswarm_act.nag_done_requires").contains(&"pushed") {
+                let wt = f["worktreePath"].as_str().unwrap_or_default().to_string();
+                f["pushed"] = json!(f["head"].as_str().and_then(|h| self.git().pushed(&wt, h)) == Some(true));
+            }
+            return Some(f);
+        }
         if kind == format!("{}-or-{}", kinds[1], kinds[2]) {
             return self.nudge_facts(id);
         }
@@ -279,6 +312,16 @@ impl LiveState for RtLive<'_> {
 
     fn archived(&self, id: &str) -> Option<bool> {
         self.app()?.builders.iter().find(|b| b.id == id).map(archived_flags)
+    }
+
+    fn post_archive(&self, id: &str) -> Option<Value> {
+        let app = self.app()?;
+        let b = app.builders.iter().find(|b| b.id == id)?;
+        let wt = b.worktree.clone()?;
+        let descs = facts::descriptors(&self.home);
+        let mine = facts::descs_of(&descs, b);
+        let probe = FsProbe::new(&self.home, self.now);
+        Some(json!({"head": self.git().head(&wt), "activityMs": facts::activity_ms(&self.home, &probe, b, &mine)}))
     }
 
     fn prune_rows(&self, days: u64) -> Vec<Value> {

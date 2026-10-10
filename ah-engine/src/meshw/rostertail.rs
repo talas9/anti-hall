@@ -14,8 +14,8 @@
 //! to Node.
 //!
 //! Every limit, marker and text is a plugin setting (`devswarm_cli.rr_tr_*`).
-use crate::checks::jsport::num::to_js_string;
 use crate::checks::guardkit::text::{collapse_ws, js_trim, js_trim_start, lossy_owned, slice_utf16};
+use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::extverbs::tpl;
 use crate::meshw::ident::{R, defer};
@@ -135,11 +135,13 @@ struct Blk {
     name: Option<Sc>,
     /// The truncated question of an unresolved human-wait tool call (`Err`: the cut falls inside a surrogate pair).
     question: Result<Option<String>, ()>,
+    /// `isMailboxTool(block)` of a tool call (`Err`: its name is an array, whose text JavaScript builds from its elements).
+    mailbox: Result<bool, ()>,
 }
 
 impl Default for Blk {
     fn default() -> Blk {
-        Blk { ty: None, tool_use_id: None, text: None, id: None, name: None, question: Ok(None) }
+        Blk { ty: None, tool_use_id: None, text: None, id: None, name: None, question: Ok(None), mailbox: Ok(false) }
     }
 }
 
@@ -195,6 +197,13 @@ impl<'de> Visitor<'de> for BlkVisitor {
             && defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&name)
         {
             b.question = extract_question(name, input.as_ref());
+        }
+        if is_ty(&b.ty, key("devswarm_cli.rr_tr_block_tool_use")) {
+            b.mailbox = match &b.name {
+                None => Ok(super::mboxtool::is_mailbox_tool("", input.as_ref())),
+                Some(n) if !n.truthy() => Ok(super::mboxtool::is_mailbox_tool("", input.as_ref())),
+                Some(n) => n.js_string().map(|s| super::mboxtool::is_mailbox_tool(&s, input.as_ref())),
+            };
         }
         Ok(b)
     }
@@ -421,12 +430,17 @@ struct Tool {
     id: Option<Sc>,
     name: Option<Sc>,
     question: Result<Option<String>, ()>,
+    mailbox: Result<bool, ()>,
 }
 
 #[derive(Default)]
 struct Turn {
     tools: Vec<Tool>,
     closed: bool,
+    /// A prompt opened the turn (an orphan turn, whose prompt fell before the window, has none).
+    prompted: bool,
+    /// The opening prompt was the child's own wake (a cron fire, a mailbox-wake notification, a stop-hook feedback).
+    wake: bool,
 }
 
 /// The settings the per-entry walk compares with, read once per call.
@@ -484,8 +498,8 @@ fn wakes(text: &str) -> bool {
 }
 
 impl Walk {
-    fn open(&mut self) {
-        self.cur = Some(Turn::default());
+    fn open(&mut self, wake: bool) {
+        self.cur = Some(Turn { prompted: true, wake, ..Turn::default() });
     }
 
     fn apply(&mut self, e: Entry) -> R<()> {
@@ -531,13 +545,15 @@ impl Walk {
             };
             let meta = e.meta.as_ref().is_some_and(Sc::truthy);
             match p {
-                Some(_) if !meta => {
+                Some(t) if !meta => {
                     self.cron = false;
-                    self.open();
+                    // a human prompt is real work; only a notification that is the mailbox wake is a wake
+                    let wake = js_trim_start(&t).starts_with(key("devswarm_cli.rr_tr_notification_tag")) && wakes(&t);
+                    self.open(wake);
                 }
                 Some(t) if self.cron || wakes(&t) => {
                     self.cron = false;
-                    self.open();
+                    self.open(true);
                 }
                 _ => {
                     let t = self.cur.get_or_insert_with(Turn::default);
@@ -549,7 +565,7 @@ impl Walk {
             if let Some(Content::Arr(bs)) = content {
                 for b in bs {
                     if is_ty(&b.ty, self.k.tool_use) {
-                        t.tools.push(Tool { id: clone_sc(&b.id), name: clone_sc(&b.name), question: b.question.clone() });
+                        t.tools.push(Tool { id: clone_sc(&b.id), name: clone_sc(&b.name), question: b.question.clone(), mailbox: b.mailbox });
                     }
                 }
             }
@@ -611,8 +627,52 @@ fn read_window(file: &Path, tail: u64) -> Option<(String, f64)> {
     Some((lossy_owned(buf), mtime))
 }
 
-/// The roster hint of a child whose transcript is `file`, at `now` (ms): `Some` text when it waits on a human.
-pub fn waiting_hint(file: &Path, now: f64) -> R<Option<String>> {
+/// `realActivity`'s way to the transcript of a child (id, worktree and session all set): `None` when the heartbeat of the child
+/// names another session (Node then knows nothing of this one); otherwise the session's transcript file under the project
+/// directory of the worktree. Anything JavaScript would read differently defers.
+pub fn transcript_file(home: &Path, id: &str, wt: &str, session: &str) -> R<Option<std::path::PathBuf>> {
+    let beat = if crate::meshw::idlock::is_safe_id(id) {
+        let p = crate::meshw::idlock::devswarm_root(home).join(key("mesh_write.dir_heartbeats")).join(format!("{id}{}", key("mesh_write.json_suffix")));
+        std::fs::read(p).ok().and_then(|b| crate::checks::guardkit::ojson::OVal::parse(&String::from_utf8_lossy(&b)))
+    } else {
+        None
+    };
+    if let Some(theirs) = beat.as_ref().and_then(|b| b.get(key("mesh_write.field_session_id")))
+        && theirs.truthy()
+    {
+        use crate::checks::guardkit::ojson::OVal;
+        let theirs = match theirs {
+            OVal::Str(t) => t.clone(),
+            OVal::Num(x) => to_js_string(*x),
+            OVal::Bool(b) => b.to_string(),
+            _ => return defer("heartbeat-session-type"),
+        };
+        if theirs != session {
+            return Ok(None);
+        }
+    }
+    if session.contains('/') || session.contains('\\') || session.contains("..") {
+        return defer("session-path");
+    }
+    let from = key("devswarm_sup.lv_encode_chars");
+    let encoded: String = wt.chars().map(|c| if from.contains(c) { key("devswarm_sup.lv_encode_to").to_string() } else { c.to_string() }).collect();
+    Ok(Some(
+        home.join(key("mesh_write.claude_dir"))
+            .join(key("devswarm_sup.lv_projects_dir"))
+            .join(encoded)
+            .join(format!("{session}{}", key("devswarm_sup.lv_transcript_ext"))),
+    ))
+}
+
+/// What one pass over the window found: the walk, and the transcript's modification time (ms).
+struct Scan {
+    w: Walk,
+    mtime: f64,
+}
+
+/// The bounded pass over the transcript `file`: `None` when Node reports nothing (a missing, unreadable or empty file; no entry
+/// with a time).
+fn scan(file: &Path) -> R<Option<Scan>> {
     let Some((text, mtime)) = read_window(file, defaults::num("devswarm_cli.rr_tr_tail_bytes")) else { return Ok(None) };
     let Ok(iso) = regex::Regex::new(key("devswarm_cli.rr_tr_iso_pattern")) else { return defer("iso-pattern") };
     let k = Keys {
@@ -643,6 +703,11 @@ pub fn waiting_hint(file: &Path, now: f64) -> R<Option<String>> {
         // no entry has a time: Node cannot tell and reports nothing; an unrecognised form of time it might have read
         return if w.odd_ts { defer("transcript-timestamp") } else { Ok(None) };
     }
+    Ok(Some(Scan { w, mtime }))
+}
+
+/// The unresolved tool call of the last turn, when that turn is still open.
+fn open_tool(w: &Walk) -> R<Option<Open>> {
     let open = match &w.cur {
         Some(t) if !t.closed => {
             let mut found = None;
@@ -664,9 +729,19 @@ pub fn waiting_hint(file: &Path, now: f64) -> R<Option<String>> {
         }
         _ => None,
     };
-    let Some(open) = open.filter(|o| !o.tool.is_empty()) else { return Ok(None) };
+    Ok(open.filter(|o| !o.tool.is_empty()))
+}
+
+fn is_fresh(now: f64, mtime: f64, fresh_ms: f64) -> bool {
     let age = now - mtime;
-    let fresh = age <= defaults::num("devswarm_cli.rr_tr_fresh_ms") as f64 && age >= -(defaults::num("devswarm_cli.rr_tr_future_skew_ms") as f64);
+    age <= fresh_ms && age >= -(defaults::num("devswarm_cli.rr_tr_future_skew_ms") as f64)
+}
+
+/// The roster hint of a child whose transcript is `file`, at `now` (ms): `Some` text when it waits on a human.
+pub fn waiting_hint(file: &Path, now: f64) -> R<Option<String>> {
+    let Some(sc) = scan(file)? else { return Ok(None) };
+    let Some(open) = open_tool(&sc.w)? else { return Ok(None) };
+    let fresh = is_fresh(now, sc.mtime, defaults::num("devswarm_cli.rr_tr_fresh_ms") as f64);
     let human = defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&open.tool.as_str());
     if !(human || !fresh) {
         return Ok(None);
@@ -675,4 +750,47 @@ pub fn waiting_hint(file: &Path, now: f64) -> R<Option<String>> {
         Some(q) => tpl("devswarm_cli.rr_hint_waiting_q", &[("question", &q)]),
         None => key("devswarm_cli.rr_hint_waiting").to_string(),
     }))
+}
+
+/// `childBusyState` for a transcript that exists: busy (a fresh transcript whose last turn is real work), waiting on a human
+/// (with the question preview). Not busy and not waiting for everything Node cannot tell (the unknown cases).
+pub struct Busy {
+    /// The transcript is fresh and its last turn is real work.
+    pub busy: bool,
+    /// The last turn is open on a human-wait tool, or on any unresolved tool call in a transcript gone quiet.
+    pub waiting: bool,
+    /// The preview of the unresolved question (only meaningful with `waiting`).
+    pub question: Option<String>,
+}
+
+/// `childBusyState(desc, home, { now, freshMs })` from `realActivity` on: the transcript `file` at `now`, fresh within `fresh_ms`.
+pub fn busy_state(file: &Path, now: f64, fresh_ms: f64) -> R<Busy> {
+    let none = Busy { busy: false, waiting: false, question: None };
+    let Some(sc) = scan(file)? else { return Ok(none) };
+    let open = open_tool(&sc.w)?;
+    let fresh = is_fresh(now, sc.mtime, fresh_ms);
+    if let Some(o) = &open
+        && (defaults::list("devswarm_cli.rr_tr_wait_tools").contains(&o.tool.as_str()) || !fresh)
+    {
+        return Ok(Busy { busy: false, waiting: true, question: o.question.clone() });
+    }
+    if !fresh {
+        return Ok(none);
+    }
+    // the last turn is real work unless it is a ping: a wake (or, with its prompt before the window, any turn) whose every call
+    // is mailbox-class
+    let Some(t) = &sc.w.cur else { return Ok(none) };
+    let ping = if t.prompted { t.wake && all_mailbox(t)? } else { !t.tools.is_empty() && all_mailbox(t)? };
+    Ok(Busy { busy: !ping, waiting: false, question: None })
+}
+
+fn all_mailbox(t: &Turn) -> R<bool> {
+    for tool in &t.tools {
+        match tool.mailbox {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(()) => return defer("tool-name-array"),
+        }
+    }
+    Ok(true)
 }

@@ -75,6 +75,22 @@ function ghRules(a) {
 }
 
 // What a repo looks like now, derived from its summaries; edges are the differences between two of these.
+// Merge readiness: every condition and its value. Advisory data (the notice) and the decision inputs of the optional auto-merge.
+// ready needs: an open, non-draft pull request; CI green on its head with every required check present; no changes requested, and
+// an approval when requireApproval; no conflict; GitHub's own mergeable_state in okStates (plus the behind states when
+// requireUpToDate is off); GitHub not saying mergeable=false.
+function ghReady(r) {
+  var c = {
+    open: r.prState === 'open', not_draft: r.draft !== true, ci_green: r.checks === 'green', required_present: r.missing.length === 0,
+    no_changes_requested: r.review !== 'changes_requested', approved: !r.requireApproval || r.review === 'approved', no_conflict: r.conflict !== true,
+    mergeable: r.mergeable !== false, up_to_date: !r.requireUpToDate || r.behindStates.indexOf(r.mergeableState) === -1,
+    mergeable_state_ok: r.okStates.indexOf(r.mergeableState) !== -1 || (!r.requireUpToDate && r.behindStates.indexOf(r.mergeableState) !== -1),
+  };
+  c.mergeable_state = r.mergeableState;
+  var ok = Object.keys(c).every(function (k) { return typeof c[k] !== 'boolean' || c[k]; });
+  return { ready: ok, conditions: c };
+}
+
 function ghStatus(a) {
   var repo = a.repo, now = a.now, sha = ghStr(repo, 'sha');
   var own = function (k) { var c = repo[k]; return c !== null && typeof c === 'object' && ghStr(c, 'sha') === sha && sha !== '' ? c : null; };
@@ -89,9 +105,13 @@ function ghStatus(a) {
   var required = ghNames(repo, 'required'), present = ghNames(checks, 'names');
   var missing = required.filter(function (r) { return present.indexOf(r) === -1; });
   var conflict = prState === 'open' && a.conflictStates.indexOf(ghStr(repo.detail, 'mergeable_state')) !== -1;
+  var ready = ghReady({ prState: prState, draft: pr !== null && pr.draft === true, checks: state, review: prState === 'open' ? ghStr(repo, 'review') : 'none', conflict: conflict,
+    missing: missing, mergeableState: ghStr(repo.detail, 'mergeable_state'), mergeable: repo.detail !== null && typeof repo.detail === 'object' && repo.detail.mergeable !== undefined ? repo.detail.mergeable : null,
+    requireApproval: a.ready && a.ready.requireApproval === true, requireUpToDate: a.ready && a.ready.requireUpToDate === true, okStates: a.ready ? ghNames(a.ready, 'okStates') : [], behindStates: a.ready ? ghNames(a.ready, 'behindStates') : [] });
   return {
     checks: state, pr: prState, number: pr !== null && pr.number !== undefined ? pr.number : null, review: prState === 'open' ? ghStr(repo, 'review') : 'none',
     conflict: conflict, sha: sha, jobs: failing, required: required, required_missing: missing, total: total, running: running,
+    base: pr !== null ? ghStr(pr, 'base') : '', title: pr !== null ? ghStr(pr, 'title') : '', ready: a.ready && a.ready.enabled === true && ready.ready, ready_conditions: ready.conditions,
   };
 }
 
@@ -107,6 +127,7 @@ function ghEdges(a) {
     if (ghStr(nw, 'pr') === 'merged') out.push({ kind: 'pr_merged', subject: subject });
     if (ghStr(nw, 'pr') === 'closed') out.push({ kind: 'pr_closed', subject: subject });
   }
+  if (nw.ready === true && (prev.ready !== true || !samePr || shaChanged)) out.push({ kind: 'ready', subject: subject + '@' + sha });
   if (ghStr(nw, 'pr') === 'open') {
     if (ghStr(nw, 'review') === 'changes_requested' && (ghStr(prev, 'review') !== 'changes_requested' || !samePr)) out.push({ kind: 'changes_requested', subject: subject });
     if (ghStr(nw, 'review') === 'approved' && (ghStr(prev, 'review') !== 'approved' || !samePr)) out.push({ kind: 'approved', subject: subject });
@@ -160,4 +181,23 @@ function ghCadence(a) {
   if (pr === 'open') return 'poll_idle_ms';
   if (pr === 'none') return 'poll_nopr_ms';
   return 'poll_done_ms';
+}
+
+// The merge commit of a pull request (and whether it is merged), from the pull request itself.
+function ghMergeInfo(a) {
+  var b = a.body;
+  return { merged: b !== null && typeof b === 'object' && b.merged === true, merge_commit_sha: ghStr(b, 'merge_commit_sha'), base: b !== null && typeof b === 'object' ? ghStr(b.base, 'ref') : '' };
+}
+
+// Whether a commit on the base branch reverts the merged pull request: a message saying "This reverts commit <sha>" for its merge
+// commit, or one that starts with `Revert "<title>"`. a.body is the commit list.
+function ghRevertCheck(a) {
+  var list = Array.isArray(a.body) ? a.body : [], sha = a.mergeSha || '', title = a.title || '', hit = null;
+  list.forEach(function (c) {
+    var m = c !== null && typeof c === 'object' && c.commit !== null && typeof c.commit === 'object' ? ghStr(c.commit, 'message') : '';
+    var byHash = sha !== '' && m.indexOf('This reverts commit ' + sha) !== -1;
+    var byTitle = title !== '' && m.indexOf('Revert "' + title + '"') === 0;
+    if (hit === null && (byHash || byTitle)) hit = ghStr(c, 'sha');
+  });
+  return { reverted: hit !== null, by: hit === null ? '' : hit };
 }

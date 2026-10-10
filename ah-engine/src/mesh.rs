@@ -275,6 +275,20 @@ impl MeshReader {
         Ok(self.conn.prepare_cached(sql::MESH_MESSAGE_COUNT)?.query_row(params![id], |r| r.get::<_, i64>(0))? as u64)
     }
 
+    /// How many messages of workspace `id` were not sent by one of `senders` (its own identity family); a message with no sender
+    /// counts, and with no senders this is [`message_count`](Self::message_count).
+    pub fn message_count_from_others(&self, id: &str, senders: &std::collections::HashSet<String>) -> Res<u64> {
+        if senders.is_empty() {
+            return self.message_count(id);
+        }
+        let marks = vec!["?"; senders.len()].join(",");
+        let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS.replace("%s", &marks);
+        let mut st = self.conn.prepare(&q)?;
+        let mut args: Vec<&str> = vec![id];
+        args.extend(senders.iter().map(String::as_str));
+        Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+    }
+
     fn message(r: &Row<'_>, index: u64) -> Res<Value> {
         let mut m = Map::new();
         let seq = js_number_or_null(r.get_ref(12)?)?;
@@ -710,6 +724,19 @@ mod tests {
         assert_eq!(last, vec![5, 6, 7]);
         assert_eq!(r.message_count("w").unwrap(), 7);
         assert_eq!(r.message_count("nobody").unwrap(), 0);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    #[test]
+    fn the_count_from_others_skips_rows_the_own_family_sent() {
+        let (dir, r) = store(4, 1);
+        let c = Connection::open(dir.join("devswarm.db")).unwrap();
+        c.execute("UPDATE messages SET sender = 'me' WHERE hash = 'h1'", []).unwrap();
+        c.execute("UPDATE messages SET sender = 'peer' WHERE hash = 'h2'", []).unwrap();
+        drop(c);
+        let me: std::collections::HashSet<String> = ["me".to_string()].into();
+        assert_eq!(r.message_count_from_others("w", &me).unwrap(), 3, "the own send is not inbound; a row with no sender counts");
+        assert_eq!(r.message_count_from_others("w", &std::collections::HashSet::new()).unwrap(), 4, "no family: the plain count");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 

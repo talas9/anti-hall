@@ -9,9 +9,15 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request supersedes the older check.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dev-only:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require the dev branch of this repository as the source
         env:

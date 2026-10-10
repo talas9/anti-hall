@@ -1407,3 +1407,23 @@ fn a_deferred_installer_run_leaves_no_shadow_behind() -> R {
 fn zz_report_the_case_count() {
     eprintln!("operator parity cases run in this process: {}", CASES.load(Ordering::SeqCst));
 }
+
+/// Dogfood 2026-10-09: the status line has an overall deadline. A base command that would run for seconds is cut at the deadline
+/// (the engine prints what it has and exits 0), where before only each step had its own limit.
+#[test]
+fn statusline_with_a_cut_base_command_still_exits_clean_under_a_short_deadline() -> R {
+    let seed = Scratch::new("slcut-seed")?;
+    write(seed.path(), ".claude.json", "{}")?;
+    write(seed.path(), ".anti-hall/base-statusline.json", r#"{"command":"sleep 20; echo late"}"#)?;
+    let home = Scratch::new("slcut-home")?;
+    fs::create_dir_all(home.path().join("tmp"))?;
+    copy_dir(seed.path(), home.path())?;
+    let cwd = Scratch::new("slcut-cwd")?;
+    let mut e = Command::new(BIN);
+    e.arg("statusline");
+    let o = run(e, home.path(), cwd.path(), &[("AH_ENGINE_STATUSLINE_DEADLINE_MS", "700")], "{}")?;
+    // the timing proof is the unit test in ops/statusline/util.rs (a wall-clock bound here would flake under load)
+    assert_eq!(o.code, 0, "{o:?}");
+    assert!(!o.stdout.contains("late"), "the cut base command printed: {o:?}");
+    Ok(())
+}

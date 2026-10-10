@@ -1,5 +1,5 @@
 'use strict';
-// DUAL-PARTITION ACK (0.106.0 field report, SkyCrew Primary).
+// DUAL-PARTITION ACK (0.106.0 field report, DemoApp Primary).
 //
 // One DevSwarm-launched Primary is ONE process with TWO names: its cwd-derived
 // `primary-<hash>` row (register-primary) and the hivecontrol workspace UUID in

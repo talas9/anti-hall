@@ -18,6 +18,9 @@ pub struct Cfg {
     pub stale_ms: i64,
     /// An active workspace silent for longer than this is stuck.
     pub stall_ms: i64,
+    /// How many of the silence sources (the heartbeat and the other sources the probe knows) must all be older than `stall_ms`
+    /// before the workspace is stuck; never more than the sources that exist for it.
+    pub require_quiet: usize,
     /// Start-up changes are not notified before this long after start.
     pub restart_grace_ms: i64,
     /// Most change records kept.
@@ -52,6 +55,7 @@ impl Cfg {
         Cfg {
             stale_ms: defaults::num("devswarm_rt.stale_ms") as i64,
             stall_ms: defaults::num("devswarm_rt.stall_ms") as i64,
+            require_quiet: defaults::num("devswarm_rt.stall_require_quiet_sources") as usize,
             restart_grace_ms: defaults::num("devswarm_rt.restart_grace_ms") as i64,
             edge_cap: defaults::num("devswarm_rt.edge_cap") as usize,
             reconcile_ms: defaults::num("devswarm_rt.reconcile_ms") as i64,
@@ -322,7 +326,7 @@ fn render<T: Serialize>(v: &T) -> String {
     }
 }
 
-fn lifecycle_of(b: &AppBuilder) -> Lifecycle {
+pub(crate) fn lifecycle_of(b: &AppBuilder) -> Lifecycle {
     match (b.active, b.hidden) {
         (Some(true), Some(false)) => Lifecycle::Active,
         (Some(true), Some(true)) => Lifecycle::Hidden,
@@ -364,7 +368,7 @@ fn ci_of(cfg: &Cfg, s: Option<&str>) -> Ci {
     }
 }
 
-fn paused_of(cfg: &Cfg, b: &AppBuilder, app: &AppRead, lifecycle: Lifecycle) -> Paused {
+pub(crate) fn paused_of(cfg: &Cfg, b: &AppBuilder, app: &AppRead, lifecycle: Lifecycle) -> Paused {
     if !matches!(lifecycle, Lifecycle::Active | Lifecycle::Hidden) {
         return Paused::No;
     }
@@ -398,6 +402,18 @@ fn pr_field(cfg: &Cfg, b: &AppBuilder, app: &AppRead, gh: Option<&dyn GithubStat
     }
 }
 
+/// The silence verdict from the heartbeat and the other activity times of a workspace: `None` when the heartbeat is unknown (the
+/// workspace is `unknown`, as before); otherwise whether it is stuck and the time of its newest activity. Stuck needs at least
+/// `require_quiet` sources (never more than exist) older than `stall_ms`, so a child that is writing its transcript or committing
+/// is not stuck because its heartbeat file is old. Pure; the same function decides at the live re-check right before a poke.
+pub fn silence(cfg: &Cfg, hb: Option<i64>, others: &[i64], now: i64) -> Option<(bool, i64)> {
+    let hb = hb?;
+    let known: Vec<i64> = std::iter::once(hb).chain(others.iter().copied().filter(|t| *t > 0)).collect();
+    let quiet = known.iter().filter(|t| now - **t > cfg.stall_ms).count();
+    let need = cfg.require_quiet.clamp(1, known.len());
+    Some((quiet >= need, known.iter().copied().max().unwrap_or(hb)))
+}
+
 /// Derive a snapshot from the sources. Pure apart from the reads the inputs perform. `prev` supplies the records kept when
 /// the app database is unreadable. The generation is carried over; the reconciler raises it when edges are emitted.
 pub fn derive(cfg: &Cfg, inp: &Inputs<'_>, prev: &Snapshot) -> Snapshot {
@@ -425,6 +441,7 @@ pub fn derive(cfg: &Cfg, inp: &Inputs<'_>, prev: &Snapshot) -> Snapshot {
         let plan = if finished(lifecycle) { None } else { b.worktree.as_deref().and_then(|w| inp.probe.plan_step(w)) };
         let unread = if finished(lifecycle) { None } else { inp.probe.unread(&b.id) };
         let pr = pr_field(cfg, b, app, inp.gh, now);
+        let paused = paused_of(cfg, b, app, lifecycle);
         let activity = if finished(lifecycle) || lifecycle == Lifecycle::Unknown {
             Field::new(Activity::Unknown, Src::Derived, now, String::new())
         } else if pr.value.as_ref().is_some_and(|p| p.state == PrState::Merged) {
@@ -432,10 +449,12 @@ pub fn derive(cfg: &Cfg, inp: &Inputs<'_>, prev: &Snapshot) -> Snapshot {
         } else if pr.value.as_ref().is_some_and(|p| p.state == PrState::Open && p.checks == Ci::Running) {
             Field::new(Activity::WaitingCi, Src::Derived, pr.observed_ms, pr.sig.clone())
         } else {
-            match hb {
+            let others = inp.probe.other_activity_ms(&b.id, b.worktree.as_deref());
+            match silence(cfg, hb, &others, now) {
                 None => Field::new(Activity::Unknown, Src::None, now, String::new()),
-                Some(t) if now - t > cfg.stall_ms => Field::new(Activity::Stuck, Src::Heartbeat, t, t.to_string()),
-                Some(t) => Field::new(Activity::Working, Src::Heartbeat, t, t.to_string()),
+                // a paused workspace is not stuck: it is waiting for its owner (`paused?` included: the evidence is not proof, so nothing is poked)
+                Some((true, t)) if matches!(paused, Paused::No | Paused::Unknown) => Field::new(Activity::Stuck, Src::Heartbeat, t, t.to_string()),
+                Some((_, t)) => Field::new(Activity::Working, Src::Heartbeat, t, t.to_string()),
             }
         };
         let w = Workspace {
@@ -445,7 +464,7 @@ pub fn derive(cfg: &Cfg, inp: &Inputs<'_>, prev: &Snapshot) -> Snapshot {
             branch: b.branch.clone(),
             repo: b.repo.clone(),
             lifecycle: Field::new(lifecycle, lc_src, now, app.sig.clone()),
-            paused: Field::new(paused_of(cfg, b, app, lifecycle), Src::AppDb, now, app.sig.clone()),
+            paused: Field::new(paused, Src::AppDb, now, app.sig.clone()),
             activity,
             unread: Field::new(unread, if unread.is_some() { Src::Mesh } else { Src::None }, now, String::new()),
             plan_step: Field::new(plan.clone(), if plan.is_some() { Src::Plan } else { Src::None }, now, String::new()),

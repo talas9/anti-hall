@@ -1,0 +1,62 @@
+title: "[Q] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask for help here. Mark the reply that solves it as the answer.
+        Please check the [guide](https://github.com/talas9/anti-hall/blob/main/docs/GUIDE.md) first, and run `/anti-hall:doctor` in Claude Code to see whether anti-hall is working.
+        Remove secrets, tokens and personal paths from anything you paste.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands, settings or steps you already tried, and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: hook-message
+    attributes:
+      label: Hook message text
+      description: If an anti-hall message is involved, paste its exact text (a block reason, a warning or a statusline line).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: anti-hall version
+      description: Shown by `/anti-hall:doctor` or `/anti-hall:update`.
+      placeholder: e.g. 0.203.1
+    validations:
+      required: true
+  - type: dropdown
+    id: port
+    attributes:
+      label: Platform
+      options:
+        - Claude Code plugin
+        - Codex port
+        - Both
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`.
+      placeholder: e.g. v24.1.0

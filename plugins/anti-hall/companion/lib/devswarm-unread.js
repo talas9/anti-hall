@@ -296,6 +296,25 @@ function unionUnread(opts) {
       const unreadUncovered = storeUnreadRows.filter((r) => !r.hash || !unreadNdjsonHashes.has(r.hash));
       const unreadBodyCovered = bodyCoveredRows(unreadUncovered, u.lines, storeHashes, id, unreadStartIndex);
       storeOnlyUnreadRows = unreadUncovered.filter((_r, i) => !unreadBodyCovered.has(i));
+      // LEADING TWIN-READ RUN (phantom-unread fix). A native-drained line lands on BOTH channels under
+      // the SAME `_h`; the store side is the one `ack` advances, so a line whose store twin is already
+      // at or behind the store read position has been READ. The NDJSON cursor is only moved by an ack
+      // of THIS partition's own reader, so a partition nobody reads (the app's primary-builder row
+      // under the Primary's own checkout) kept that line "unread" forever and the roster/advisory
+      // nagged on mail `read-primary` could never show. Skip the leading run of such lines (keeps the
+      // tail contiguous: every ack target is `cursor + lines.length`). Loss-free: a skipped line is
+      // one whose content was already delivered through its store twin.
+      const unreadStoreHashes = new Set(storeUnreadRows.map((r) => r && r.hash).filter((h) => h != null));
+      const readStoreHashes = new Set();
+      for (const r of storeAllRows) { if (r && r.hash != null && !unreadStoreHashes.has(r.hash)) readStoreHashes.add(r.hash); }
+      let twinRun = 0;
+      while (twinRun < u.lines.length
+        && hashesForLine(id, unreadStartIndex + twinRun, u.lines[twinRun]).some((h) => readStoreHashes.has(h))) twinRun += 1;
+      if (twinRun > 0) {
+        u.lines = u.lines.slice(twinRun);
+        u.count = u.lines.length;
+        u.cursor = (Number.isFinite(u.cursor) ? u.cursor : 0) + twinRun;
+      }
     }
   } catch (e) {
     // A store READ error is NOT "the store side holds 0 unread" (Codex, Phase 3):

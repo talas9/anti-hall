@@ -108,7 +108,7 @@ test('app-db source: the app database decides when it has a record', { skip: sql
   const home = mkHome();
   try {
     const wtA = path.join(home, 'wt-arch'); fs.mkdirSync(wtA);
-    const wtL = path.join(home, 'wt-live'); fs.mkdirSync(wtL);
+    const wtL = path.join(home, 'wt-active'); fs.mkdirSync(wtL);
     const dbFile = path.join(home, 'app', 'devswarm.db');
     fs.mkdirSync(path.dirname(dbFile));
     const db = new sqlite.DatabaseSync(dbFile);

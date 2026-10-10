@@ -624,3 +624,21 @@ test('selfHeal: stale + job DISABLED in launchd -> NO installer spawn, daemonDis
     assert.strictEqual(spawned, 1);
   } finally { rm(home); rm(repo); }
 });
+
+test('staleBannerOnce: a seconds-old heartbeat with a LIVE lock holder (daemon hand-over) is quiet; a DEAD holder still warns', () => {
+  const home = tmpHome();
+  try {
+    const t0 = Date.now();
+    const lockDir = path.join(home, '.anti-hall', 'devswarm', 'locks');
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'ingest-project-proj-h.lock'), JSON.stringify({ pid: process.pid }));
+    const base = { home, sessionId: 'sess-hand', repoKey: 'proj-h', platform: 'linux', stale: true, beatTs: t0 - 3000, now: t0 };
+    assert.strictEqual(health.staleBannerOnce(base), null, 'live holder + 3s-old heartbeat: not stale');
+    fs.writeFileSync(path.join(lockDir, 'ingest-project-proj-h.lock'), JSON.stringify({ pid: 2147483646 }));
+    const dead = health.staleBannerOnce(Object.assign({}, base, { sessionId: 'sess-dead' }));
+    assert.ok(dead && /devswarm-stale-data/.test(dead), 'dead holder + fresh heartbeat (D25) still warns: ' + dead);
+    fs.writeFileSync(path.join(lockDir, 'ingest-project-proj-h.lock'), JSON.stringify({ pid: process.pid }));
+    const old = health.staleBannerOnce(Object.assign({}, base, { sessionId: 'sess-old', beatTs: t0 - 6 * 60000 }));
+    assert.ok(old, 'a heartbeat past the grace warns even with a live holder');
+  } finally { rm(home); }
+});

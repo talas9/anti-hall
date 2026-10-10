@@ -1372,3 +1372,63 @@ test('HARNESS PLAN FILE: symlink out of ~/.claude/plans/ to a source file is STI
     p.cleanup();
   }
 });
+
+// HANDOVER OUTSIDE THE PROJECT: specific redirect naming the exact project path;
+// the correct project path is allowed (cwd = root and cwd = a subdirectory).
+function runWith(project, cwdRel, absFile, sid) {
+  const h = makeHome();
+  try {
+    const payload = editPayload('Write', { filePath: absFile, cwd: path.join(project.dir, cwdRel) });
+    payload.session_id = sid;
+    return testHook(HOOK, payload, { home: h.home, env: COORD });
+  } finally {
+    h.cleanup();
+  }
+}
+function today() {
+  const d = new Date(); const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+test('HANDOVER OUTSIDE PROJECT: blocked with a redirect naming the exact project path', () => {
+  const proj = makeProject();
+  const outside = makeProject();
+  try {
+    const bad = path.join(outside.dir, '.anti-hall', 'handovers', today(), 'sess-9', 'HANDOVER.md');
+    const r = runWith(proj, '.', bad, 'sess-9');
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    const tail = path.join('.anti-hall', 'handovers', today(), 'sess-9', 'HANDOVER.md');
+    assert.ok(r.json.reason.includes(path.join(proj.dir, tail)) || r.json.reason.includes(path.join(fs.realpathSync(proj.dir), tail)), r.json.reason);
+    assert.match(r.json.reason, /main thread may/);
+    assert.doesNotMatch(r.json.reason, /does not touch files directly/);
+  } finally {
+    proj.cleanup(); outside.cleanup();
+  }
+});
+
+for (const sub of ['.', 'src/deep']) {
+  test(`HANDOVER AT PROJECT PATH: allowed with cwd = ${sub}`, () => {
+    const proj = makeProject();
+    try {
+      fs.mkdirSync(path.join(proj.dir, 'src', 'deep'), { recursive: true });
+      require('node:child_process').execFileSync('git', ['init', '-q'], { cwd: proj.dir });
+      const good = path.join(proj.dir, '.anti-hall', 'handovers', today(), 'sess-9', 'HANDOVER.md');
+      const r = runWith(proj, sub, good, 'sess-9');
+      assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+    } finally {
+      proj.cleanup();
+    }
+  });
+}
+
+test('NON-HANDOVER .md outside the project: unchanged generic coordinator block', () => {
+  const proj = makeProject();
+  const outside = makeProject();
+  try {
+    const r = runWith(proj, '.', path.join(outside.dir, 'notes.md'), 'sess-9');
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /does not touch files directly/);
+  } finally {
+    proj.cleanup(); outside.cleanup();
+  }
+});

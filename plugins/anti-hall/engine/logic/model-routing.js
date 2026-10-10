@@ -69,6 +69,37 @@ function mrRunsUpdate(corpus) {
     (mrT('model_routing.update_node_re', corpus) && corpus.toLowerCase().indexOf(ah.cfg('model_routing.update_qualifier')) >= 0);
 }
 
+// The tier an omitted model inherits: the payload's parent model, else the newest assistant entry of the transcript tail whose
+// model names a known family (session_model_families, first match). null when unknown.
+function mrFamily(id) {
+  var m = String(id || '').toLowerCase(), fams = ah.cfg('model_routing.session_model_families');
+  for (var i = 0; i < fams.length; i++) if (m.indexOf(fams[i]) >= 0) return fams[i];
+  return null;
+}
+
+function mrInheritedTier(p) {
+  var direct = mrFirstStr(p, ['parent_model', 'model']);
+  if (direct !== null) return mrFamily(direct);
+  return mrTranscriptFamily(p);
+}
+
+// The family of the newest assistant entry of the transcript tail (the session's own model), null when unknown or unreadable.
+function mrTranscriptFamily(p) {
+  var tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
+  if (!tp || !ah.path.isAbsolute(tp)) return null;
+  var r = ah.transcript.tailEntries(tp, ah.cfgNum('model_routing.session_model_window_bytes'), ah.cfgNum('model_routing.session_model_line_max_bytes'),
+    [['type'], ['message', 'model']], ah.cfgNum('model_routing.session_model_max_lines'));
+  if (r === null || !r.lines) return null;
+  for (var i = r.lines.length - 1; i >= 0; i--) {
+    var e = r.lines[i][1];
+    if (typeof e === 'string') { try { e = JSON.parse(e); } catch (x) { continue; } }
+    if (!jx.isObj(e) || e.type !== 'assistant' || !jx.isObj(e.message) || typeof e.message.model !== 'string') continue;
+    var f = mrFamily(e.message.model);
+    if (f !== null) return f;
+  }
+  return null;
+}
+
 function mrBlock(t) { return { exact: { code: 2, out: text.blockJson(t), err: '' } }; }
 function mrAdvise(t) { return { exact: { code: 0, out: text.advisoryJson('PreToolUse', t) + '\n', err: '' } }; }
 
@@ -114,7 +145,10 @@ function mrFirstStr(p, keys) {
 
 function mrParentModel(p) {
   var m = mrFirstStr(p, ['parent_model', 'model']);
-  return m === null ? ah.cfg('telemetry.inherit_prefix') + 'unknown' : jx.asciiLower(m.trim());
+  if (m !== null) return jx.asciiLower(m.trim());
+  // the payload names no model: the session model the transcript records (newest assistant entry), else unknown
+  var fam = mrTranscriptFamily(p);
+  return fam !== null ? fam : ah.cfg('telemetry.inherit_prefix') + 'unknown';
 }
 
 function mrSelected(requested, parent, recommended, outcome) {
@@ -221,7 +255,10 @@ function decide(p) {
   var floorName = ah.settings.enum('model_routing.deploy_floor_setting');
   if (floorName !== ah.cfg('model_routing.deploy_floor_off') && mrDeployShaped(corpus)) {
     var floor = mrRank(floorName) !== null ? floorName : ah.cfg('model_routing.deploy_floor_default');
-    if (omitted) {
+    // an omitted model inherits the session's: at or above the floor it is no cheap model (only an unknown or lower tier is advised)
+    var inherited = omitted ? mrInheritedTier(p) : null;
+    var inheritOk = inherited !== null && mrRank(inherited) !== null && mrRank(floor) !== null && mrRank(inherited) >= mrRank(floor);
+    if (omitted && !inheritOk) {
       return mrRouted(mrTip(ah.cfg('model_routing.msg_deploy_omitted_what'), mrPass('model_routing.msg_deploy_omitted_instead', { floor: floor }), ah.cfg('model_routing.msg_deploy_why')),
         p, input, 'deploy', floor, 'up');
     }
@@ -251,7 +288,7 @@ function decide(p) {
   }
 
   // Row 2: mechanical-only, model omitted, generic agent.
-  if (mechanicalOnly && omitted && generic) {
+  if (!suppressHaiku && mechanicalOnly && omitted && generic) { // a deploy-shaped spawn inheriting a model at or above the floor is never pushed to haiku
     if (strict) {
       if (mrJevRelaxes(corpus, p)) {
         return mrRouted(mrTip(ah.cfg('model_routing.msg_row2_jev_what'), ah.cfg('model_routing.msg_row2_jev_instead'), ''), p, input, 'mechanical', tierHaiku, 'exempt');
@@ -273,7 +310,8 @@ function decide(p) {
   }
 
   // Row 6: a research-shaped generic spawn that writes nothing is nudged toward Explore, which cannot recurse.
-  var writeShaped = mrT('model_routing.write_phrase_re', corpus) ||
+  var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
+    mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
   if (generic && mrT('model_routing.research_re', corpus) && !writeShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');

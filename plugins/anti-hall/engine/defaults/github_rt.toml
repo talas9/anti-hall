@@ -172,8 +172,8 @@ value = 200
 min = 5
 
 [github_rt.files]
-doc = "Where GitHub realtime keeps its files, relative to the engine state directory: the recent directories, the state, the edge log."
-value = { dir = "ghrt", cwds = "cwds.json", state = "state.json", edges = "edges.json", cursor_dir = "cursor" }
+doc = "Where GitHub realtime keeps its files, relative to the engine state directory: the recent directories, the state, the edge log, the ledger of ready notices and merges (one line per idempotency key)."
+value = { dir = "ghrt", cwds = "cwds.json", state = "state.json", edges = "edges.json", cursor_dir = "cursor", ledger = "ledger.ndjson" }
 
 [github_rt.git]
 doc = "The read-only git commands used ({root} is the directory; {gitdir} is added where named). toplevel: the repo root of a directory; branch: the current branch (the word HEAD when detached); sha: the head commit; remote: the origin URL; dirs: the git dir and the common git dir, one per line. timeout_ms bounds each."
@@ -194,8 +194,8 @@ doc = "The GitHub CLI call: argv is the command and its fixed arguments (the end
 value = { argv = ["gh", "api", "-i", "-H", "X-GitHub-Api-Version: 2022-11-28"], etag_header = "If-None-Match: {etag}", accept = "Accept: application/vnd.github+json" }
 
 [github_rt.endpoints]
-doc = "The API paths, per call ({owner} {repo} {branch} {sha} {number} {base}). pulls: the pull requests whose head is the branch; pull: one pull request (mergeability); reviews: its reviews; checks: the check runs of the head commit; runs: the workflow runs of the head commit; rules: the branch rules of the base branch (the required checks)."
-value = { pulls = "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=5&head={owner}:{branch}", pull = "repos/{owner}/{repo}/pulls/{number}", reviews = "repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", checks = "repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100", runs = "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=30", rules = "repos/{owner}/{repo}/rules/branches/{base}" }
+doc = "The API paths, per call ({owner} {repo} {branch} {sha} {number} {base}). pulls: the pull requests whose head is the branch; pull: one pull request (mergeability); reviews: its reviews; checks: the check runs of the head commit; runs: the workflow runs of the head commit; rules: the branch rules of the base branch (the required checks); merge_info: the pull request again, read after a merge for its merge commit; commits: the newest commits of the base branch ({base}), read to see whether a merge was reverted."
+value = { merge_info = "repos/{owner}/{repo}/pulls/{number}?info=merge", commits = "repos/{owner}/{repo}/commits?sha={base}&per_page=30", pulls = "repos/{owner}/{repo}/pulls?state=all&sort=updated&direction=desc&per_page=5&head={owner}:{branch}", pull = "repos/{owner}/{repo}/pulls/{number}", reviews = "repos/{owner}/{repo}/pulls/{number}/reviews?per_page=100", checks = "repos/{owner}/{repo}/commits/{sha}/check-runs?per_page=100", runs = "repos/{owner}/{repo}/actions/runs?head_sha={sha}&per_page=30", rules = "repos/{owner}/{repo}/rules/branches/{base}" }
 
 [github_rt.headers]
 doc = "The response headers read (lower case): the rate limit (limit, remaining, used, reset in epoch seconds), retry_after (seconds), poll_interval (seconds, a floor on the cadence), etag."
@@ -232,7 +232,7 @@ min = 5
 
 [github_rt.advisory_kinds]
 doc = "The edges a session is told about (once per session each): ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. Empty turns the advisory off."
-value = ["ci_red", "ci_green", "pr_merged", "changes_requested", "conflict"]
+value = ["ci_red", "ci_green", "pr_merged", "changes_requested", "conflict", "ready"]
 
 [github_rt.advisory_summary]
 doc = "One-line description of the gh-rt-advisory check in the generated reference."
@@ -288,5 +288,65 @@ min = 1000
 unit = "ms"
 
 [github_rt.words]
-doc = "The words GitHub realtime writes. Placeholders: {slug} {branch} {number} {sha} {jobs} {n} {title}. Edge lines: ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict. advisory_head is the first line of an advisory. segment_*: the statusline pieces; gh states: ok, missing, logged_out, offline, backoff, budget, disabled."
-value = { ci_red = "CI failed on {slug}@{branch} ({sha}): {jobs}", ci_green = "CI passed on {slug}@{branch} ({sha})", pr_merged = "PR #{number} of {slug} was merged", pr_closed = "PR #{number} of {slug} was closed without a merge", changes_requested = "Changes were requested on PR #{number} of {slug}", approved = "PR #{number} of {slug} was approved", conflict = "PR #{number} of {slug} has merge conflicts", no_jobs = "a check", advisory_head = "GitHub:", title = "anti-hall", segment_checks_running = "CI running", segment_checks_red = "CI red", segment_checks_green = "CI green", segment_pr = "PR #{number}", segment_merged = "PR #{number} merged", segment_closed = "PR #{number} closed", segment_changes = "changes requested", segment_approved = "approved", segment_conflict = "conflict", segment_sep = " ", state_ok = "ok", state_missing = "gh not installed", state_logged_out = "gh not logged in", state_offline = "offline", state_backoff = "backing off", state_budget = "over budget", state_disabled = "off", no_repos = "no repos followed yet", no_pr = "no PR", head_status = "{slug}@{branch}", detached = "detached HEAD", not_github = "not a GitHub remote", job_sep = ", " }
+doc = "The words GitHub realtime writes. Placeholders: {slug} {branch} {number} {sha} {jobs} {n} {title}. Edge lines: ci_red, ci_green, pr_merged, pr_closed, changes_requested, approved, conflict, ready. advisory_head is the first line of an advisory. segment_*: the statusline pieces; gh states: ok, missing, logged_out, offline, backoff, budget, disabled."
+value = { ci_red = "CI failed on {slug}@{branch} ({sha}): {jobs}", ci_green = "CI passed on {slug}@{branch} ({sha})", pr_merged = "PR #{number} of {slug} was merged", pr_closed = "PR #{number} of {slug} was closed without a merge", changes_requested = "Changes were requested on PR #{number} of {slug}", approved = "PR #{number} of {slug} was approved", conflict = "PR #{number} of {slug} has merge conflicts", ready = "PR #{number} of {slug} is ready to merge ({sha}): CI green, approved, mergeable, up to date with its base", no_jobs = "a check", advisory_head = "GitHub:", title = "anti-hall", segment_checks_running = "CI running", segment_checks_red = "CI red", segment_checks_green = "CI green", segment_pr = "PR #{number}", segment_merged = "PR #{number} merged", segment_closed = "PR #{number} closed", segment_changes = "changes requested", segment_approved = "approved", segment_conflict = "conflict", segment_sep = " ", state_ok = "ok", state_missing = "gh not installed", state_logged_out = "gh not logged in", state_offline = "offline", state_backoff = "backing off", state_budget = "over budget", state_disabled = "off", no_repos = "no repos followed yet", no_pr = "no PR", head_status = "{slug}@{branch}", detached = "detached HEAD", not_github = "not a GitHub remote", job_sep = ", " }
+
+# ---- merge readiness (feature 4) -------------------------------------------------------------------------
+
+[github_rt.ready_enabled]
+doc = "Detect when the pull request of a followed branch becomes ready to merge (CI green on its head commit with every required check present, no changes requested, approved when ready_require_approval, no conflict, GitHub's mergeable state clean) and record a `ready` edge, once per head commit. Off: no ready edge, no auto-merge."
+value = true
+
+[github_rt.ready_require_approval]
+doc = "A pull request is ready only with an approving review (and no pending request for changes). Off: a pull request without review rules is ready as soon as CI is green and it is mergeable."
+value = true
+
+[github_rt.ready_require_up_to_date]
+doc = "A pull request that is behind its base branch (mergeable_state in ready_behind_states) is not ready. Off: being behind does not stop it."
+value = true
+
+[github_rt.ready_notify]
+doc = "Tell the sessions of the repo about a ready pull request (the `ready` edge reaches the gh-rt-advisory check, once per session). Off: the edge is still recorded and logged, but no session is told."
+value = true
+
+[github_rt.ready_auto_merge]
+doc = "ACT: when every ready condition holds for the current head commit, re-checked live right before, merge the pull request with `gh pr merge --merge` (ready_merge_argv; never --admin, so GitHub's branch protection and required reviews still decide and may refuse). Once per head commit (key merge:<repo>#<number>:<sha>), recorded in the ledger and the action log, with follow-up checks for a revert or a red base branch. Default ON by owner decision; turn it off with github_rt.ready_auto_merge = false in settings.json (section github_rt) or the engine config file."
+value = true
+
+[github_rt.ready_auto_merge_scope]
+doc = "Which pull requests the auto-merge may merge: `workspaces` (default) only those whose head branch is the branch of a live, non-primary DevSwarm workspace (matched against the app database's builders and their worktrees), never a release pull request (dev into main), a dependency bot's or a person's; `all` any pull request of a followed branch that is ready. Drafts are never ready, whatever the scope."
+value = "workspaces"
+
+[github_rt.ready_app_db]
+doc = "The DevSwarm app database the scope check reads; empty (default) uses the detected one. For installs in a non-standard place."
+value = ""
+
+[github_rt.ready_ok_states]
+doc = "The mergeable_state values GitHub reports that count as mergeable and clean."
+value = ["clean", "has_hooks"]
+
+[github_rt.ready_behind_states]
+doc = "The mergeable_state values that mean the branch is behind its base."
+value = ["behind"]
+
+[github_rt.ready_merge_argv]
+doc = "The merge command ({number} {slug} {sha} are filled in). --match-head-commit makes GitHub refuse the merge if the head moved after the live re-check. Do not add --admin: that would bypass branch protection."
+value = ["gh", "pr", "merge", "{number}", "--repo", "{slug}", "--merge", "--match-head-commit", "{sha}"]
+
+[github_rt.ready_merge_timeout_ms]
+doc = "The longest the merge command may run."
+value = 60000
+min = 1000
+unit = "ms"
+
+[github_rt.ready_refusal_patterns]
+doc = "Case-insensitive substrings of the merge command's output that mean GitHub (or gh) refused the merge by rule, not that something broke: branch protection or review requirements, a head that moved, a pull request that is not mergeable. Those are logged as `refused`, other failures as `failed`."
+value = ["policy prohibits", "not mergeable", "protected branch", "required status", "required review", "review is required", "head branch was modified", "is not mergeable", "merge conflict", "pull request is in clean status", "base branch"]
+
+[github_rt.ready_followup]
+doc = "How the merge is checked afterwards for mistakes: wait_ms after the merge the checks of the merge commit on the base branch and the base's recent commits are read (CI red, or a revert of this pull request, is a mistake signal); retry_ms between reads while the checks are still running; give_up_ms after which an unfinished check is recorded as unknown; revert_window_ms the total time a revert is looked for."
+value = { wait_ms = 900000, retry_ms = 300000, give_up_ms = 3600000, revert_window_ms = 86400000 }
+
+[github_rt.ready_actions]
+doc = "How merge readiness names itself in the action log: the feature, its two actions and its two mistake signals (with the text logged for each)."
+value = { feature = "merge_ready", notify = "notify", merge = "merge", mistake_reverted = "merged_then_reverted", detail_reverted = "a commit on the base branch reverts the merged pull request", mistake_ci = "base_ci_red_after_merge", detail_ci = "checks of the merge commit failed on the base branch", out_of_scope = "not a DevSwarm workspace pull request (github_rt.ready_auto_merge_scope = workspaces)", live_recheck_failed = "a ready condition no longer held at the live re-check", head_moved = "the head commit changed since the ready edge" }

@@ -60,8 +60,8 @@ fn git_head(runner: &dyn Runner, dir: &str) -> Option<String> {
             defaults::text("devswarm_cli.done_head").to_string(),
         ],
         cwd: None,
-        timeout_ms: defaults::num("devswarm_cli.done_git_timeout_ms") as u64,
-        cap_bytes: defaults::num("devswarm_cli.ready_git_max_bytes") as u64,
+        timeout_ms: defaults::num("devswarm_cli.done_git_timeout_ms"),
+        cap_bytes: defaults::num("devswarm_cli.ready_git_max_bytes"),
         scrub_env: vec![],
     });
     if r.missing || r.timed_out || r.truncated || r.error.is_some() || r.status != Some(0) {
@@ -302,7 +302,7 @@ fn tokens_total(inv: &Inv, key: &str) -> OVal {
 
 /// Whether the caller is outside the project's Primary checkout (`seatVerdict(...).state === 'n/a'`): no worktree, or a child.
 /// Any other state needs the handover scan, the session transcripts or the seat holder's liveness: Node's.
-fn seat_not_applicable(inv: &Inv) -> R<bool> {
+pub(crate) fn seat_not_applicable(inv: &Inv) -> R<bool> {
     let c = ident::resolve_context(&inv.cwd, true)?;
     let Some(wt) = c.worktree_root.clone() else { return Ok(true) };
     Ok(!ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &inv.home, &inv.env)?)
@@ -453,7 +453,7 @@ fn lstat_exists(p: &std::path::Path) -> bool {
 
 /// `hasFreshHeartbeat(id, home, { now })`: the heartbeat record's `ts` (else the file's mtime) is positive, not in the future,
 /// and at most the freshness window old.
-fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
+pub(crate) fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
     let p = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let ts = match std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
         Some(v) if matches!(v.get("ts"), Some(OVal::Num(x)) if x.is_finite()) => match v.get("ts") {
@@ -488,9 +488,60 @@ impl Resolved {
     }
 }
 
-/// `resolveArchiveId(raw, ctx)` for a safe id: an exact descriptor (active or archived) wins; else a unique prefix of the
-/// project's workspaces; else a unique registry row of that mesh label; else the id as given.
-pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
+/// `descriptorIdsForMesh(home, meshId, only)` (Node `send.js`): the ids of the descriptors in `dirs` whose worktree derives to
+/// `mesh` (`canonicalMeshId`, else `rawPathMeshId`), sorted; a descriptor keyed by the mesh id itself is the label, not an id.
+/// A descriptor whose `worktreePath` is truthy but not a string is Node's throw: deferred.
+fn descriptor_ids_for_mesh(home: &std::path::Path, mesh: &str, dirs: &[&str]) -> R<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let suffix = defaults::text("mesh_write.json_suffix");
+    for dir in dirs {
+        let dir = devswarm_root(home).join(defaults::text(dir));
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(suffix) else { continue };
+            if !is_safe_id(id) || id == mesh || out.iter().any(|x| x == id) {
+                continue;
+            }
+            // readDescriptorPathState: a regular file (lstat) holding a JSON object
+            let p = dir.join(&name);
+            if !std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
+                continue;
+            }
+            let Some(d @ OVal::Obj(_)) = std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else { continue };
+            let wt = match d.get("worktreePath") {
+                Some(OVal::Str(w)) if !w.is_empty() => w.clone(),
+                None | Some(OVal::Null | OVal::Str(_) | OVal::Bool(false)) => continue,
+                Some(OVal::Num(x)) if *x == 0.0 || x.is_nan() => continue,
+                Some(_) => return defer("descriptor-worktree-shape"),
+            };
+            let derived = match ident::canonical_mesh_id(&wt)? {
+                Some(c) if !c.is_empty() => Some(c),
+                _ => ident::raw_path_mesh_id(&wt)?,
+            };
+            if derived.as_deref() == Some(mesh) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// `resolveTargetId(raw, ctx, action)` (Node 35345b83): the one canonical id of the workspace a verb targets (nudge, gate,
+/// plan, scope, wake-directive, correct, archive-ignore/unignore), through [`resolve_archive_id`]. An id nothing resolves stays
+/// as given; an ambiguous one is refused with the candidates (`Object.assign({ action, id }, resolved)`, exit 2).
+pub(crate) fn resolve_target_id(inv: &Inv, raw: &str, action: &str) -> R<Result<String, Answer>> {
+    Ok(match resolve_archive_id(inv, raw, false)? {
+        Resolved::Id(x) => Ok(x),
+        Resolved::Ambiguous(tpl, ids) => Err(Resolved::refusal(action, true, raw, tpl, &ids)),
+    })
+}
+
+/// `resolveArchiveId(raw, ctx, { unarchive })` for a safe id: an exact descriptor (active or archived) wins; else a unique
+/// prefix of the project's workspaces; else, when `unarchiving` and no workspace matched, a unique archived descriptor by
+/// prefix or mesh label; else a unique registry row (or live descriptor) of that mesh label; else the id as given.
+pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<Resolved> {
     let root = devswarm_root(&inv.home);
     let file = format!("{raw}{}", defaults::text("mesh_write.json_suffix"));
     if lstat_exists(&root.join(defaults::text("mesh_write.dir_workspaces")).join(&file)) {
@@ -510,6 +561,29 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
         return defer("integer-keys");
     }
     let cands: Vec<&String> = all.iter().map(|(k, _)| k).filter(|k| is_safe_id(k) && k.starts_with(raw)).collect();
+    if unarchiving && cands.is_empty() {
+        // unarchive targets archived descriptors, which the active pool and the (tombstoned) registry rows cannot name:
+        // prefix and mesh label are resolved against the archived-descriptor directory instead
+        let mut hits: Vec<String> = match std::fs::read_dir(&adir) {
+            Ok(entries) => entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(defaults::text("mesh_write.json_suffix")).map(str::to_string))
+                .filter(|n| is_safe_id(n) && n.starts_with(raw))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        for id in descriptor_ids_for_mesh(&inv.home, raw, &["mesh_write.dir_archived"])? {
+            if !hits.contains(&id) {
+                hits.push(id);
+            }
+        }
+        hits.sort();
+        match hits.len() {
+            0 => {}
+            1 => return Ok(Resolved::Id(hits.remove(0))),
+            _ => return Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_archived"), hits)),
+        }
+    }
     match cands.len() {
         1 => return Ok(Resolved::Id(cands[0].clone())),
         0 => {}
@@ -519,13 +593,17 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str) -> R<Resolved> {
     }
     let rows = rows_of(&st)?;
     let mut mesh: Vec<String> = mesh_rows(&rows, raw)?.into_iter().filter(|r| r.id != raw && is_safe_id(&r.id)).map(|r| r.id).collect();
+    // a live descriptor whose worktree derives to this mesh label (no registry row yet, or any more) is the same workspace
+    for id in descriptor_ids_for_mesh(&inv.home, raw, &["mesh_write.dir_workspaces"])? {
+        if !mesh.contains(&id) {
+            mesh.push(id);
+        }
+    }
     mesh.sort();
     match mesh.len() {
         0 => Ok(Resolved::Id(raw.to_string())),
         1 => Ok(Resolved::Id(mesh.remove(0))),
-        _ => {
-            Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh))
-        }
+        _ => Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh)),
     }
 }
 
@@ -560,7 +638,7 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
         return Ok(refusal(&[("error", s(defaults::text("devswarm_cli.msg_bad_id")))]));
     }
     let raw_id = id;
-    let id = match resolve_archive_id(inv, id)? {
+    let id = match resolve_archive_id(inv, id, false)? {
         Resolved::Id(x) => x,
         Resolved::Ambiguous(tpl, ids) => return Ok(Resolved::refusal(defaults::text("devswarm_cli.action_archive_request"), false, raw_id, tpl, &ids)),
     };
@@ -638,6 +716,13 @@ pub fn nudge(inv: &Inv, a: &Args) -> R<Answer> {
     let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
     if !is_safe_id(id) {
         return Ok(refusal(&[("error", s(defaults::text("devswarm_cli.msg_bad_id")))]));
+    }
+    // the canonical id first (Node echoes the id as given and adds `resolvedId`): a different one names a workspace the
+    // engine does not nudge
+    match resolve_target_id(inv, id, defaults::text("devswarm_cli.action_nudge"))? {
+        Ok(x) if x == id => {}
+        Ok(_) => return defer("resolved-target"),
+        Err(refused) => return Ok(refused),
     }
     if ident::read_descriptor(&inv.home, id).is_some() {
         return defer("descriptor");

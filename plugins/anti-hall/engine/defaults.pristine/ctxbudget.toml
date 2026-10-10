@@ -175,8 +175,12 @@ doc = "The start of the Do instead line of the directive (the reset clause and t
 value = "route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff)."
 
 [ctxbudget.lc_resets_at]
-doc = "The reset clause when a tripped bucket states its reset time ({at}, as the cache wrote it)."
+doc = "The reset clause when a tripped bucket states its reset time ({at}, rounded per ctxbudget.lc_reset_round)."
 value = " Defer non-urgent heavy work until reset at {at}."
+
+[ctxbudget.lc_reset_round]
+doc = "The reset time in the reset clause is rounded to the nearest `ms` (a minute) and printed as an ISO time with a whole-minute `cut` replaced by `to`: the usage API reports the reset with millisecond jitter, which would change the directive every turn and defeat emit-dedupe. A reset time that is not a date is printed as written."
+value = { ms = 60000, cut = ":00.000Z", to = "Z" }
 
 [ctxbudget.lc_resets_next]
 doc = "The reset clause when no tripped bucket states a reset time."

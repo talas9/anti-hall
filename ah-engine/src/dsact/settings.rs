@@ -27,6 +27,16 @@ pub struct ActSettings {
     pub create_timeout_ms: i64,
     /// The viewed grace ms.
     pub viewed_grace_ms: i64,
+    /// A state change archives the finished workspace right away (feature 3).
+    pub event_trigger: bool,
+    /// Quiet time after the last edge before the event path looks at a workspace.
+    pub event_debounce_ms: i64,
+    /// The done-but-open nag is on (feature 2).
+    pub nag: bool,
+    /// Gap between two digests about one workspace.
+    pub nag_every_ms: i64,
+    /// Most nag messages in a rolling hour.
+    pub nag_hourly_cap: i64,
 }
 
 fn lookup(o: &serde_json::Map<String, Value>, section: &str, key: &str) -> Option<Value> {
@@ -60,6 +70,9 @@ fn coerce(entry: &V, raw: &str) -> Option<Value> {
         let w = t.to_lowercase();
         let known = entry.get("values").map(V::strings).unwrap_or_default().contains(&w.as_str());
         return known.then_some(Value::String(w));
+    }
+    if ty == defaults::text("devswarm_act.type_string") {
+        return Some(Value::String(t.to_string()));
     }
     if ty == defaults::text("devswarm_act.type_bool") {
         return crate::checks::guardkit::settings::token(t).map(Value::Bool);
@@ -118,6 +131,11 @@ impl ActSettings {
             nudge_cooldown_sec: int(resolve(st, defaults::raw("devswarm_act.set_nudge_cooldown_sec"))),
             create_timeout_ms: int(resolve(st, defaults::raw("devswarm_act.set_create_timeout_ms"))),
             viewed_grace_ms: defaults::num("devswarm_act.viewed_grace_ms") as i64,
+            event_trigger: resolve(st, defaults::raw("devswarm_act.set_event_trigger")).as_bool().unwrap_or(true),
+            event_debounce_ms: int(resolve(st, defaults::raw("devswarm_act.set_event_debounce_ms"))),
+            nag: resolve(st, defaults::raw("devswarm_act.set_nag")).as_bool().unwrap_or(true),
+            nag_every_ms: int(resolve(st, defaults::raw("devswarm_act.set_nag_every_ms"))),
+            nag_hourly_cap: int(resolve(st, defaults::raw("devswarm_act.set_nag_hourly_cap"))),
         }
     }
 
@@ -126,6 +144,7 @@ impl ActSettings {
         serde_json::json!({
             "mode": self.mode, "idleMin": self.idle_min, "maxPerSweep": self.max_per_sweep, "ignorePings": self.ignore_pings,
             "nudgeMaxAttempts": self.nudge_max_attempts, "nudgeCooldownSec": self.nudge_cooldown_sec, "viewedGraceMs": self.viewed_grace_ms,
+            "nagEveryMs": self.nag_every_ms, "nagHourlyCap": self.nag_hourly_cap, "doneRequires": defaults::list("devswarm_act.nag_done_requires"),
         })
     }
 }

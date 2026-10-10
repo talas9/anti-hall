@@ -1,5 +1,5 @@
 'use strict';
-// GHOST ALIAS ROW (0.108.4). Field: the SkyCrew roster showed a live
+// GHOST ALIAS ROW (0.108.4). Field: the DemoApp roster showed a live
 // `primary-<childhash>` row for a worktree the app gives to a real child
 // builder. The label had been folded + tombstoned; then `update` (run inside
 // the Primary's session) ran `reconcile`, whose per-row `inbox pull` subprocess

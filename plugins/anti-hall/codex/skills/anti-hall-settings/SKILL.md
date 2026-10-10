@@ -160,6 +160,8 @@ have no switch on purpose, and why.
    sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings show        # or: show --section <key> [--all]
    ```
    Present the output as-is. Advanced/tuning knobs are hidden unless `--all`.
+   The engine's own keys (cadences, limits, deadlines, widgets) are in the plugin's `engine/defaults/*.toml`: list them with
+   `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings tunables [<category|key prefix>] [--all]` (read-only; edit the file to change one).
 
 2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
    tool, so use **numbered lists** in prose:
