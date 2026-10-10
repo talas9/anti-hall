@@ -209,8 +209,8 @@ value = 1048576
 min = 4096
 
 [taskstate.backfill_exact_bytes]
-doc = "How far back the backfill scans before the engine hands the call to Node. Node stops after 150 ms of wall clock (64 MiB at most); the engine scans a fixed number of bytes instead so its answer never depends on machine speed, and past this bound it defers rather than guess where Node would have stopped."
-value = 8388608
+doc = "How far back the backfill scans before the engine hands the call to Node: Node's own byte cap (64 MiB). Node also stops after 150 ms of wall clock; the engine scans a fixed number of bytes instead so its answer never depends on machine speed. Where Node's clock would have stopped it short on a slow machine, the engine finds the subjects Node missed (a fuller note, never a missing one); past this bound it defers rather than guess where Node would have stopped."
+value = 67108864
 min = 4096
 
 [taskstate.backfill_prefix_scan_bytes]
