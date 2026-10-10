@@ -125,7 +125,7 @@ fn write_intent(home: &Path, child: &str, it: &OVal) {
     if let Some(d) = p.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: Node's write is best effort too
     }
-    crate::discard::harmless(std::fs::write(&p, it.stringify())); // keep: same (Node: `try { writeFileSync } catch (_) {}`)
+    crate::discard::harmless(crate::atomic::write(&p, it.stringify())); // keep: same (Node: `try { writeFileSync } catch (_) {}`); the engine writes it whole or not at all
 }
 
 /// `readEscalationIntent(home, child)`: the parked, undelivered notice of `child`.

@@ -347,8 +347,11 @@ fn a_stale_workspace_is_poked_then_escalated_and_a_foreign_executor_leaves_it() 
     wire.act_sweeps(true);
     assert_eq!(stub.calls.lock().unwrap().len(), n, "escalated is terminal");
     assert!(ah_engine::dswire::nudges::get(&w.state, "ws-1").escalated);
-    let notices = stub.calls.lock().unwrap().iter().filter(|c| c.first().map(String::as_str) == Some("node")).count();
-    assert_eq!(notices, 1, "the parent notice of the escalation was asked for once");
+    // the parent notice of the escalation is the engine's own now (v1.0 lane L08a): Node is not asked, the action ledger has it once
+    let node_asked = stub.calls.lock().unwrap().iter().filter(|c| c.first().map(String::as_str) == Some("node")).count();
+    assert_eq!(node_asked, 0, "Node is not asked for the notice: {:?}", stub.calls.lock().unwrap());
+    let ledger = std::fs::read_to_string(w.home.join(".anti-hall/logs/devswarm-sup-actions.ndjson")).unwrap_or_default();
+    assert_eq!(ledger.matches("\"dssup-escalation-notice\"").count(), 1, "the notice is in the action ledger once: {ledger}");
     let verdict: Value = serde_json::from_str(&std::fs::read_to_string(root.join("liveness/ws-1.json")).unwrap()).unwrap();
     assert_eq!(verdict["status"], "escalated", "Node's verdict file says so too");
     assert_eq!(verdict["nudgeAttempts"], 2);

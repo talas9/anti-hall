@@ -796,10 +796,6 @@ value = "{k} ({len} chars -> cap {cap}{marked})"
 doc = "Added when a truncation marker was written into the value."
 value = ", marker written"
 
-[defect.deferred]
-doc = "Said when the input needs the Node tool to answer exactly; nothing was written."
-value = "this input needs the Node defect tool to answer exactly; nothing was written"
-
 [defect.true_word]
 doc = "How a bare flag reads as text."
 value = "true"

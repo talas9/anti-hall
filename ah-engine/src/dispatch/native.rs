@@ -266,15 +266,13 @@ mod tests {
         assert!(deferred.is_empty(), "these checks must answer natively, not defer: {deferred:?}");
     }
 
-    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74).
+    /// The other side of the fix: where a check cannot prove Node is silent it still defers (D74). A relative payload cwd
+    /// resolves against the Node hook's own working directory, which the daemon cannot know: git-guard defers.
     #[test]
     fn a_check_that_cannot_prove_silence_still_defers() {
-        let p = json!({"session_id": "s", "cwd": "/", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}});
-        // ship-it-guard with its opt-in gate on: Bash targets need the command-guard parser, so it defers.
-        let mut m = meta();
-        m.env = crate::reqenv::RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1")]);
-        let got = evaluate(&m, &p, &|_, _, _| {});
-        assert_eq!(got.iter().find(|(id, _)| id == "ship-it-guard").unwrap().1, Answer::Defer);
+        let p = json!({"session_id": "s", "cwd": "sub", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "git status"}});
+        let got = evaluate(&meta(), &p, &|_, _, _| {});
+        assert_eq!(got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer);
     }
 
     /// Review P1: an incomplete request environment (dropped over the cap, absent, no HOME) must not be evaluated: with

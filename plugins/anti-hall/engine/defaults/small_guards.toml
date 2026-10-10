@@ -189,10 +189,6 @@ value = "ship-it-guard"
 doc = "Where the opt-in switch is read from (guards.shipitGate, default off)."
 value = { section = "guards", key = "shipitGate", env = "ANTIHALL_SHIPIT_GATE", aliases = [], option = "guards_shipit_gate", default = false }
 
-[ship_it.deferred_tools]
-doc = "Tool names whose targets the engine cannot derive exactly (shell writes need the command-guard parser, apply_patch needs the Codex patch parser): with the gate on they defer to the Node guard."
-value = ["Bash", "apply_patch"]
-
 [ship_it.plan_file]
 doc = "Name of the plan file looked for in the working directory."
 value = "PLAN.md"
@@ -1532,10 +1528,6 @@ value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
 doc = "Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it."
 value = '[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\b|createWriteStream|File(?:Sync)?\s*\(|\.write\('
 
-[api_guard.noise_pattern]
-doc = "Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains."
-value = '[^A-Za-z0-9_.]'
-
 [api_guard.python_stdlib]
 doc = "Python standard-library modules whose attributes the Node guard verifies by default."
 value = ["os", "sys", "math", "cmath", "random", "json", "re", "collections", "itertools", "functools", "pathlib", "asyncio", "datetime", "time", "statistics", "heapq", "bisect", "string", "textwrap", "shutil", "glob", "csv", "sqlite3", "decimal", "fractions", "secrets", "uuid", "contextlib", "operator", "inspect", "abc", "numbers", "array", "enum", "dataclasses", "typing", "io", "struct", "hashlib", "base64", "binascii", "copy", "pprint", "queue", "threading", "socket"]
@@ -1547,14 +1539,6 @@ value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "ur
 [api_guard.js_globals]
 doc = "JavaScript global builtins whose members the Node guard verifies by default."
 value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
-
-[api_guard.python_import_word]
-doc = "The word a Python module reference needs before the guard can resolve an attribute against it."
-value = "import"
-
-[api_guard.js_require_word]
-doc = "The text a JavaScript module reference needs before the guard can resolve an attribute against it."
-value = "require"
 
 # ---- edit-guard (hooks/edit-guard.js) ---------------------------------------------------------------------
 
@@ -1667,11 +1651,3 @@ value = 32
 unit = "bytes"
 min = 0
 max = 65536
-
-[scan_throttle.pattern_literal_chars]
-doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
-value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-[scan_throttle.pattern_escapes]
-doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
-value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"

@@ -106,10 +106,10 @@ fn output_verify_cases() -> Vec<Case> {
         format!(r#"{{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"s1","tool_input":{{"command":"npm test"}},"tool_response":{resp}}}"#)
     };
     v.push(c("ov-raw-unsorted-unambiguous").raw(&raw_resp(r#"{"stdout":"8 passed","stderr":"2 failed","interrupted":false}"#), Expect::Same));
-    v.push(c("ov-raw-unsorted-ambiguous-defers").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"5 failed"}"#), Expect::Defer));
-    v.push(c("ov-raw-unsorted-ambiguous-pass-defers").raw(&raw_resp(r#"{"stdout":"9 passed","stderr":"4 passed 1 failed"}"#), Expect::Defer));
+    v.push(c("ov-raw-unsorted-ambiguous-matches").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"5 failed"}"#), Expect::Same));
+    v.push(c("ov-raw-unsorted-ambiguous-pass-matches").raw(&raw_resp(r#"{"stdout":"9 passed","stderr":"4 passed 1 failed"}"#), Expect::Same));
     v.push(c("ov-raw-unsorted-same-text-in-both").raw(&raw_resp(r#"{"stdout":"2 failed 8 passed","stderr":"2 failed"}"#), Expect::Same));
-    v.push(c("ov-raw-unsorted-exit-codes-defer").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5"}"#), Expect::Defer));
+    v.push(c("ov-raw-unsorted-exit-codes-matches").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5"}"#), Expect::Same));
     v.push(
         c("ov-raw-unsorted-structured-exit-wins").raw(&raw_resp(r#"{"stdout":"8 passed exit code: 2","stderr":"exit code: 5","exit_code":1}"#), Expect::Same),
     );
@@ -127,9 +127,9 @@ fn output_verify_cases() -> Vec<Case> {
     // size
     v.push(c("ov-huge-string-head-tail").same(post("npm test", json!(format!("{}8 passed\n{}2 failed", big(150_000, "a"), big(150_000, "b"))))));
     v.push(c("ov-huge-string-astral").same(post("npm test", json!(format!("{}8 passed 2 failed{}", big(100_001, "😀"), big(5, "z"))))));
-    v.push(c("ov-huge-string-astral-split-defers").defer(post("npm test", json!(format!("a{}8 passed 2 failed", big(100_000, "😀"))))));
+    v.push(c("ov-huge-string-astral-split-matches").same(post("npm test", json!(format!("a{}8 passed 2 failed", big(100_000, "😀"))))));
     v.push(c("ov-node-dash-test-is-not-a-runner").same(post("node --test", json!(mixed))));
-    v.push(c("ov-huge-object-defers").defer(post("npm test", json!({"stdout":big(250_000, "a"),"stderr":"2 failed"}))));
+    v.push(c("ov-huge-object-matches").same(post("npm test", json!({"stdout":big(250_000, "a"),"stderr":"2 failed"}))));
     // switches
     v.push(c("ov-env-off").env("ANTIHALL_OUTPUT_VERIFY_GUARD", "0").same(post("npm test", json!(mixed))));
     v.push(c("ov-env-off-word").env("ANTIHALL_OUTPUT_VERIFY_GUARD", "off").same(post("npm test", json!(mixed))));

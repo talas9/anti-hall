@@ -311,7 +311,7 @@ impl Run<'_> {
             let stamp = crate::checks::jsport::date::to_iso(crate::checks::jsport::date::now_ms()).unwrap_or_default().replace([':', '.'], "-");
             let mut backup = target.as_os_str().to_os_string();
             backup.push(defaults::fill(text("update_post.graphify_backup_suffix"), &[("stamp", &stamp)]));
-            let wrote = std::fs::copy(target, &backup).and_then(|_| std::fs::write(target, migrate::settings::pretty(&next) + "\n"));
+            let wrote = std::fs::copy(target, &backup).and_then(|_| crate::atomic::write(target, migrate::settings::pretty(&next) + "\n"));
             match wrote {
                 Ok(()) => {
                     changed += 1;

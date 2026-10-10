@@ -1307,6 +1307,8 @@ fn engine_shadowed(home: &Path, cwd: &Path, node: Option<&Path>, extra: &[(&str,
         .env("AH_ENGINE_SHADOW_RATE_PHASE", "1000")
         .env("AH_ENGINE_SHADOW_RATE_INSTALL", "1000")
         .env("AH_ENGINE_SHADOW_RATE_UNINSTALL", "1000")
+        // the Node installer writes the Node-only command; the engine's installer writes its own command unless told otherwise
+        .env("ANTIHALL_STATUSLINE_NODE_ONLY", "1")
         .env("AH_ENGINE_DIR", home.join("state"))
         .current_dir(cwd);
     if let Some(n) = node {
@@ -1393,13 +1395,14 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
 }
 
 #[test]
-fn a_deferred_installer_run_leaves_no_shadow_behind() -> R {
+fn an_installer_run_on_unreadable_settings_fails_like_node_and_leaves_no_shadow_behind() -> R {
     let home = home_with(Some("{bad"), &[])?;
     let state = home.path().join("state");
+    // the installer never defers (v1.0 lane L04): it reports the unreadable settings as the Node script does
     let o = engine_shadowed(home.path(), home.path(), None, &[], &["install-statusline"])?;
-    assert_eq!(o.code, 75);
+    assert_eq!(o.code, 1, "{} {}", o.stdout, o.stderr);
     assert!(wait_shadow_done(&state));
-    assert!(shadow_dirs(&state).is_empty(), "nothing to compare after a deferral");
+    assert!(shadow_dirs(&state).is_empty(), "Node failed the same way, so nothing is kept");
     Ok(())
 }
 

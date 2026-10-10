@@ -3,8 +3,8 @@
 // since, one line says so: the agent may be working, and a report the coordinator read earlier describes the state before the
 // message. It says nothing when the state is unknown. The scan is ah.transcript.agentScan (the pending messages, the launched
 // agents and the terminal ids; a TaskStop with no result yet is not counted). A relative transcript path is read from the hook
-// process's directory (lib/78-hook-proc.js); a transcript the host cannot read exactly as JavaScript would says nothing (the
-// state is unknown; logged). Mirrors hooks/stale-agent-stop-note.js.
+// process's directory (lib/78-hook-proc.js); a transcript the host cannot read exactly as JavaScript would defers to Node.
+// Mirrors hooks/stale-agent-stop-note.js.
 // Keys and texts: agent_controls.toml (stale_note.*).
 'use strict';
 
@@ -50,7 +50,7 @@ function decide(p) {
   if (typeof taskId !== 'string' || !taskId || !tp) return 'allow';
   var scan = ah.transcript.agentScan(hookProc.open(p, tp), ah.cfgNum('stale_note.scan_bytes'), true);
   if (scan === null) return 'allow';
-  if (scan.unsure) { ah.log('stale_note_scan_unsure', tp); return 'allow'; }
+  if (scan.unsure) return 'defer'; // the transcript cannot be read exactly as JavaScript would: Node decides
   var t = sanNote(scan, taskId, ah.clock.now());
   return t === null ? 'allow' : { advisory: text.advisoryJson('PreToolUse', t) };
 }

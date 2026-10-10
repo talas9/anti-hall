@@ -197,15 +197,20 @@ fn bash(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "e2e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
 }
 
-/// A Bash payload on which the built-in `merge-gate` and `api-guard` checks both defer to their Node hooks, which these
-/// tests replace with shell stand-ins: an auto-merge command that names a code file and also writes one with a verifiable
-/// reference (api-guard answers a Bash command natively unless its text could carry one), with the gate switched on in the
-/// test home and a RELATIVE transcript path (Node resolves it against its own working directory, so the engine's merge-gate
-/// always leaves it to the Node hook; the gate's other deferrals went native with the Jev port).
+/// A Bash payload on which the `merge-gate` and `api-guard` entries run their Node hooks, which these tests replace with shell
+/// stand-ins. The scripted checks answer almost every payload now (v1.0 lane L07), so the entries are switched to Node the way
+/// an operator reverts one check: `mode = "off"` in the state directory's config.toml turns off only the engine's check of a
+/// guard entry and leaves the Node hook as its decider.
 fn node_only_bash(e: &Env) -> String {
     let home = e.dir.join("home");
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
     std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"mergeGate":true}}"#).unwrap();
+    std::fs::create_dir_all(e.state()).unwrap();
+    std::fs::write(
+        e.state().join("config.toml"),
+        "[entries.\"PreToolUse/merge-gate\"]\nmode = \"off\"\n[entries.\"PreToolUse/api-guard\"]\nmode = \"off\"\n",
+    )
+    .unwrap();
     let tp = "hedged.jsonl";
     serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "gh pr merge 1 # a.py; echo 'import os' > a.py # \u{e9} $(true)"}, "transcript_path": tp})
         .to_string()

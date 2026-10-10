@@ -264,6 +264,16 @@ labelled with how it was measured in the README of `ah-engine/`.
 | Porting the other guards | planned (D57) | D57 |
 | Prebuilt binaries for every Unix target, release automation (prepare, publish, sha256 and attestation), the plugin-side bootstrap with a pinned lock | implemented (see Install, go-live and rollback) | D56, D64, D67, D68 |
 
+### Session-cache refresh (v1.0 lane L06)
+
+`ah-engine refresh [--force] [--home <dir>]` handles the refresh requests the SessionStart checks write (the remote-latest release tag for `version-alert`, the Claude Code and DevSwarm CLI versions for the drift probes, and the reload repair for `repair-on-reload`), each as a bounded subprocess. Where the Node hooks started a detached refresh, the engine's checks write a request file, answer at once and let this job do the work; the scheduler runs it every `refresh.every_ms` (`refresh.toml`).
+
+### Background units, the MCP reaper and the wake-watch monitor (v1.0 lane L08b)
+
+- `ah-engine units <status|install|heal|uninstall> [--dry-run] [--bin <path>] [--json]` writes and loads the one engine unit (a launchd agent on macOS, a systemd user timer on Linux) and, on `heal`, moves aside (never deletes) the Node units whose duty the engine now runs. Every action is a ledger line, an engine log line and a telemetry item. `update` runs the heal as a post-pull stage and `doctor --repair` as a repair row (`units-heal`), idempotent and silent when nothing changed; the setting `maintenance.unitsHeal` (default on) switches both off.
+- `ah-engine mcp-reaper run [--dry-run]` is the port of the standalone MCP orphan reaper (`companion/mcp-reaper.js`), run by the scheduled job `mcp_reaper` (`mcp_reaper.job_every_ms`). The setting `maintenance.mcpReaperJob` is `auto` by default: it runs once the Node reaper's opt-in was carried over by `units heal`, and never while a Node reaper unit is still installed, so the reaper never runs twice.
+- `monitors/monitors.json` starts `ah-engine devswarm wake-watch --auto` directly. Until the runtime cutover (lane L17) the command falls back to the launcher `scripts/ah-run.sh`, which runs the Node watcher, when the engine answers 70, 75, 126 or 127 (it cannot load its defaults, defers, is not executable or is missing); any other engine exit is the watcher's own and is kept.
+
 ## Install, go-live and rollback
 
 **Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset). On every
@@ -1186,6 +1196,9 @@ Files:
 | `small_guards.toml` | patterns, switches, limits and messages of the small Bash guard ports and their shared helpers |
 | `verify_first.toml` | the verify-first protocol texts (copied byte for byte from `hooks/verify-first-core.js`), the switches and message of the verify-first and fable-availability checks |
 | `mcp_reaper.toml` | the session-end MCP sweep: its patterns, init names, age floor, cap, grace period, commands and audit log texts |
+| `guards_v1.toml` | the v1.0 guard defers answered in plugin JavaScript (lane L07): the bounded host-spawn limits and interpreter probes of `api-guard`, the hook process stand-ins (`hook_proc.*`), the host key order of the output-verify scan, the Codex `apply_patch` parser and the guards' texts |
+| `hardening.toml` | the hardening bar's own limits and wording (`tests/hardening_bar.rs`): what the engine must survive and the budgets it is held to |
+| `units.toml` | the background-service units (`ah-engine units`, lane L08b): the unit names, launchd and systemd file shapes, the service-manager command lines, the ledger and lock files, the report words and the switch `maintenance.unitsHeal` |
 | `agent_tracker.toml` | the agent tracker: every threshold, window, weight, route, cooldown, pattern, word, path and text, the Claude Code CLI source and the `agent-reminders` check |
 | `host_proc.toml` | the generic process primitives (`ah.proc.*`, `ah.sleep`): the listing, age and service-manager commands and their bounds, the start-time forms, the signal and sleep caps |
 | `task_tracker.toml` | the task-tracker directive and reminder texts, window and growth thresholds, the open-tasks line, the Jev label question and the demand-metrics file |

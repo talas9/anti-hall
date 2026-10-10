@@ -56,6 +56,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
     ),
     (
+        "src/script/golden.rs",
+        "the golden corpus replay, compiled into test builds only (`#[cfg(test)] mod golden`): `AH_REGEN_DEFERS`, the developer switch that rewrites a corpus's deferred cases from the script's own answers; no request is ever answered from it",
+    ),
+    (
         "src/script/host_proc.rs",
         "the process's own time-zone variable, compared with the request's so a process age is converted in local time only when both read the same zone (a mismatch is unsure and defers); no request is answered from it",
     ),

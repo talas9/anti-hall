@@ -988,11 +988,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `api_guard.guard_name` | `api-guard` |  |  | The guard id this check answers to in skip.json. |
 | `api_guard.js_extensions` | `js, mjs, cjs, ts, tsx, jsx` |  |  | File extensions (lower-case) the guard checks as JavaScript or TypeScript. |
 | `api_guard.js_globals` | `17 items` |  |  | JavaScript global builtins whose members the Node guard verifies by default. |
-| `api_guard.js_require_word` | `require` |  |  | The text a JavaScript module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.node_builtins` | `23 items` |  |  | Node built-in modules whose attributes the Node guard verifies by default. |
-| `api_guard.noise_pattern` | `[^A-Za-z0-9_.]` |  |  | Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains. |
 | `api_guard.python_extensions` | `py, pyi` |  |  | File extensions (lower-case) the guard checks as Python. |
-| `api_guard.python_import_word` | `import` |  |  | The word a Python module reference needs before the guard can resolve an attribute against it. |
 | `api_guard.python_stdlib` | `46 items` |  |  | Python standard-library modules whose attributes the Node guard verifies by default. |
 | `api_guard.setting` | `6 entries` |  |  | Where the guard's own on/off switch is read from (guards.apiGuard, default on). |
 | `api_guard.shell_setting` | `6 entries` |  |  | Where the switch for checking the code a shell write puts in a file is read from (guards.shellWriteChecks, default on). |
@@ -1382,8 +1379,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `scan_throttle.msg_group_what` | `a repo-wide scan command was detected in a compound or grouped command (not t...` |  |  | Advisory headline when the scan is not the first simple command. |
 | `scan_throttle.path_separator` | `:` |  |  | Separator of the entries of the PATH variable. |
 | `scan_throttle.path_var` | `PATH` |  |  | Name of the variable that holds the executable search path. |
-| `scan_throttle.pattern_escapes` | `.-/\()[]*+?\|^$sSdDwWbBnt{}` |  |  | Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab). |
-| `scan_throttle.pattern_literal_chars` | ` !#%&',-/:;<=>@_"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345...` |  |  | ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority. |
 | `scan_throttle.patterns_env` | `ANTI_HALL_THROTTLE_PATTERNS` |  |  | Environment variable holding the comma-separated regex sources of the scan commands to advise on; with none set the check matches nothing. |
 | `scan_throttle.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.scanThrottle, default on; the old ANTI_HALL_SCAN_THROTTLE name is an alias). |
 | `scan_throttle.summary` | `Advisory: recommends the background-throttled form of a user-configured heavy...` |  |  | One-line description of the scan-throttle check in the generated reference. |
@@ -1394,7 +1389,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `ship_it.deferred_tools` | `Bash, apply_patch` |  |  | Tool names whose targets the engine cannot derive exactly (shell writes need the command-guard parser, apply_patch needs the Codex patch parser): with the gate on they defer to the Node guard. |
 | `ship_it.files_end` | `\n-[ \t]*[\w][\w ]*:\|\n###[ \t]` |  |  | Regex source (case-insensitive) that finds where a files value ends: the next field bullet or phase heading. |
 | `ship_it.files_head` | `\n-[ \t]*files:[ \t]*` |  |  | Regex source (case-insensitive) of the files field a phase declares, up to where its value starts. |
 | `ship_it.guard_name` | `ship-it-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
@@ -5603,7 +5597,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.control_re` | `[\x00-\x1f\x7f]` |  |  | A control character. |
 | `defect.dash` | `-` |  |  | Shown for a missing value in the text reports. |
 | `defect.default_top` | `10` |  |  | How many rows the text reports show unless --top says otherwise. |
-| `defect.deferred` | `this input needs the Node defect tool to answer exactly; nothing was written` |  |  | Said when the input needs the Node tool to answer exactly; nothing was written. |
 | `defect.dir` | `defects` |  |  | The defect store directory, under the base directory of the home. |
 | `defect.err_line` | `❌ anti-hall · defect: {e}` |  |  | An error line of `defect`. Placeholder: e. |
 | `defect.explicit_word` | ` (explicit)` |  |  | Marks an explicit regression. |

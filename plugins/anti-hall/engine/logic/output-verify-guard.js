@@ -151,7 +151,7 @@ function ovDecide(p, pend) {
   var blob = build(false), cap = ah.cfgNum('output_verify.scan_cap'), multi = vals.filter(ovHasOrdered);
   if (multi.length && (blob.length > cap || multi.some(function (x) { return ovOrderMatters(x, structured !== null, fail, pass); }))) {
     blob = build(true);
-    if (multi.some(function (x) { return ovHasUnlisted(x, order); })) ah.log('output_verify_unlisted_keys', '');
+    if (multi.some(function (x) { return ovHasUnlisted(x, order); })) return 'defer'; // the host's order of these keys is not known here: Node decides
   }
   if (blob.length > cap) {
     var half = Math.floor(cap / 2);

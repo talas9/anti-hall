@@ -837,7 +837,8 @@ fn retention_matches_node() {
             assert!(pre == rt_dump(&homes[2]), "{}: a deferral wrote", k.name);
         }
     }
-    // an acting run with no Node to agree with the plan writes nothing and exits 75
+    // no Node on the machine at all (v1.0 lane L08a): the witness is decommissioned, not failing, so the engine acts on its own two
+    // identical plans, the in-transaction re-checks and the archive written first (a Node that FAILS still blocks the write)
     let h = fx.root.join("ret-nowitness");
     assert!(Command::new("cp").arg("-Rp").arg(&seed).arg(&h).status().unwrap().success());
     fs::create_dir_all(h.join(".anti-hall")).unwrap();
@@ -847,11 +848,12 @@ fn retention_matches_node() {
     e.push(("PATH".into(), nonode.clone()));
     let argv: Vec<String> = vec!["retention".into(), "run".into()];
     let d = engine_cli(&h, &nongit, &argv, NOW, &to_ref(&e));
-    assert_eq!(d.code, 75, "no witness, no write: {} / {}", d.code, d.stdout);
-    assert!(pre == rt_dump(&h), "an acting run without a witness wrote");
-    let (deferred, total) = (deferred + 1, cases.len() + 1);
+    assert_eq!(d.code, 0, "no Node on the machine: the engine acts on its own plans: {} / {}", d.code, d.stdout);
+    assert!(d.stdout.contains("retention-run"), "the run reports itself: {}", d.stdout);
+    assert!(pre != rt_dump(&h), "the acting run without a (removed) witness made its prunes");
+    let (deferred, total) = (deferred, cases.len() + 1);
     eprintln!("l8c retention parity: {total} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written");
     if std::env::var("AH_L8C_FILTER").is_err() {
-        assert!(native >= 13 && deferred >= 4, "{native} native, {deferred} deferred");
+        assert!(native >= 13 && deferred >= 3, "{native} native, {deferred} deferred");
     }
 }

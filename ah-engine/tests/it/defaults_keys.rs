@@ -124,6 +124,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         ("codex-quota-detect.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("codex-nudge.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("command.js", r"\bcm(?:C|Set|ReAny)\('([a-z][a-z0-9_]*)'", "command"),
+        ("api-guard.js", r"\bagCfg\('([a-z][a-z0-9_]*)'\)", "api_guard_v1"),
     ] {
         let re = regex::Regex::new(helper).unwrap();
         for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == script)) {
