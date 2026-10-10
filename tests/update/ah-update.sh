@@ -77,6 +77,9 @@ check "no sha and no --yes: exit 3, nothing changed" sh -c 'HOME='"$home"' AH_WR
 rm -f "$home/.anti-hall/fake-calls"
 check "good --sha256 installs" sh -c 'HOME='"$home"' AH_WRAPPER_TEST=1 sh '"$upd"' --from '"$tmp"'/v2/ah-engine --sha256 '"$good"' >/dev/null && [ "$('"$bin"' version)" = 2.0.0 ]'
 check ".prev holds the previous binary" sh -c '[ "$('"$bin"'.prev version)" = 1.0.0 ]'
+# `serve` is launched in the background and the fake `status` answers at once, so ah-update can return before the fake serve has
+# appended its line. Wait (bounded) for that line instead of racing it; otherwise a late write also lands after the rm below.
+i=0; while ! grep -q serve "$home/.anti-hall/fake-calls" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 check "daemon restarted via stop then serve" sh -c '[ "$(cat '"$home"'/.anti-hall/fake-calls | tr "\n" " ")" = "stop serve " ]'
 rm -f "$home/.anti-hall/fake-calls"
 check "idempotent re-run: already current, no restart, .prev untouched" sh -c 'HOME='"$home"' AH_WRAPPER_TEST=1 sh '"$upd"' --from '"$tmp"'/v2/ah-engine --sha256 '"$good"' | grep -q "already current" && [ ! -f '"$home"'/.anti-hall/fake-calls ] && [ "$('"$bin"'.prev version)" = 1.0.0 ]'
