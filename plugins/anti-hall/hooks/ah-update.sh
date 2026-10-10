@@ -12,7 +12,8 @@
 #                                                   files when the live kit is installed)
 #   ah-update.sh --rollback                         restore the previous binary (bin/ah-engine.prev); run twice to toggle
 #   ah-update.sh --auto                             honour the engine.autoUpdate setting (off|stable|dev) and the daily limit
-# options: --dry-run (verify + smoke test, install nothing)  --no-restart  --no-plugin  --live-select LIST  -v  --config FILE
+# options: --dry-run (verify + smoke test, install nothing)  --extract-to PATH (verify + smoke test, write the binary to PATH and the
+#          recorded commit, if any, to PATH.commit, install nothing: used by the live-kit installer)  --no-restart  --no-plugin  --live-select LIST  -v  --config FILE
 #          --json (accepted, ignored)
 # Online sources are verified against the release's SHA256SUMS and, when `gh` is installed and logged in, the GitHub build
 # attestation (`gh attestation verify`); without gh that step is skipped with a note.
@@ -25,7 +26,7 @@
 # Exit: 0 done / already current / nothing to do, 1 failed (old binary kept), 2 usage, 3 --yes needed.
 
 from_file=; sha_arg=; channel=; do_rollback=0; auto=0; yes=0; dry=0; no_restart=0; no_plugin=0; verbose=0
-cfg_file=; live_select=all-agreeing
+cfg_file=; live_select=all-agreeing; extract_to=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --from) from_file=${2:-}; shift ;;
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --auto) auto=1 ;;
     --yes|-y) yes=1 ;;
     --dry-run) dry=1 ;;
+    --extract-to) extract_to=${2:-}; shift ;;
     --no-restart) no_restart=1 ;;
     --no-plugin) no_plugin=1 ;;
     --live-select) live_select=${2:-all-agreeing}; shift ;;
@@ -368,6 +370,14 @@ smoke "$tmp/new" "$want_version" || die "the new binary failed its smoke test; $
 say "smoke test: ok (engine $smoke_version)"
 newsha=$(sha256_of "$tmp/new")
 cursha=; [ -f "$bin" ] && cursha=$(sha256_of "$bin")
+
+if [ -n "$extract_to" ]; then
+  cp "$tmp/new" "$extract_to" || die "cannot write $extract_to"
+  chmod 755 "$extract_to"
+  [ -z "$commit" ] || printf '%s\n' "$commit" >"$extract_to.commit"
+  say "extracted: verified engine $smoke_version from $src_label (sha256 $newsha) written to $extract_to${commit:+; commit $commit}; nothing installed"
+  exit 0
+fi
 
 # dev channel on a live kit: the matching plugin files (the commit recorded in the pre-release)
 newplug=

@@ -139,6 +139,8 @@ cp "$tmp/sums.good" "$tmp/www/dl/ah-engine-v5.0.0/SHA256SUMS"
 check "--channel dev (no live kit) installs the latest dev pre-release and says the plugin is not synced" sh -c 'HOME='"$home"' AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE='"$triple"' AH_UPDATE_NO_ATTEST=1 AH_UPDATE_API_BASE=http://127.0.0.1:'"$port"' AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:'"$port"'/dl sh '"$upd"' --channel dev --no-restart | grep -q "plugin: not synced" && [ "$('"$bin"' version)" = 6.0.0-dev ]'
 check "an unknown channel is a usage error" sh -c 'HOME='"$home"' AH_WRAPPER_TEST=1 sh '"$upd"' --channel nightly >/dev/null 2>&1; [ $? -eq 2 ]'
 
+check "--extract-to writes the verified binary and the commit, installs nothing" sh -c 'cp '"$tmp"'/v1/ah-engine '"$bin"'; HOME='"$home"' AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE='"$triple"' AH_UPDATE_NO_ATTEST=1 AH_UPDATE_API_BASE=http://127.0.0.1:'"$port"' AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:'"$port"'/dl sh '"$upd"' --channel stable --extract-to '"$tmp"'/out-bin >/dev/null && [ "$('"$tmp"'/out-bin version)" = 5.0.0 ] && [ "$('"$bin"' version)" = 1.0.0 ]'
+
 # ---- auto mode -------------------------------------------------------------------------------------------------------------------
 cp "$tmp/v1/ah-engine" "$bin"
 check "--auto with the setting off does nothing" sh -c 'HOME='"$home"' AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE='"$triple"' AH_UPDATE_NO_ATTEST=1 AH_UPDATE_API_BASE=http://127.0.0.1:'"$port"' AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:'"$port"'/dl sh '"$upd"' --auto >/dev/null && [ "$('"$bin"' version)" = 1.0.0 ]'
@@ -181,6 +183,8 @@ touch "$kit/fail"
 lrun --channel dev --no-restart >"$tmp/live3.out" 2>&1; rc=$?
 check "live: a failing go-live puts the previous bundle back and exits 1" sh -c '[ '"$rc"' -eq 1 ] && [ "$(cat '"$kit"'/bundle/plugin/marker.txt)" = old ] && ls -d '"$kit"'/bundle.failed-* >/dev/null 2>&1'
 rm -f "$kit/fail"
+lrun --channel dev --extract-to "$tmp/out-dev" >/dev/null 2>&1
+check "--extract-to on the dev channel records the pre-release commit" sh -c '[ "$('"$tmp"'/out-dev version)" = 6.0.0-dev ] && [ "$(cat '"$tmp"'/out-dev.commit)" = '"$commit"' ]'
 
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
