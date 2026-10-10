@@ -56,8 +56,10 @@ fn trim_nl(s: &str) -> String {
     s.trim_end_matches(['\r', '\n']).to_string()
 }
 
-/// `ownLine1(input)`
-fn own_line1(cx: &Ctx, env: &std::collections::BTreeMap<String, String>, root: &str, cwd: &str, input: &str) -> Result<String, Defer> {
+/// `ownLine1(input)`. A relative directory from the payload is resolved against the process working directory, as
+/// `path.resolve` does; where the context resolver is unsure of a layout its answer is used as it stands (it only picks the
+/// fallback renderer when the rich one prints nothing).
+fn own_line1(cx: &Ctx, env: &std::collections::BTreeMap<String, String>, root: &str, cwd: &str, input: &str) -> String {
     let mut dir = cwd.to_string();
     if let Some(d) = parse(input) {
         let ws = d.get("workspace").and_then(|w| w.get("current_dir")).filter(|v| util::truthy(Some(v)));
@@ -65,21 +67,21 @@ fn own_line1(cx: &Ctx, env: &std::collections::BTreeMap<String, String>, root: &
             dir = crate::migrate::j_string(v);
         }
     }
-    let ctx = ident::resolve_context(&dir, true, &RequestEnv::from_pairs(env.clone()));
-    if ctx.unsure {
-        return Err(Defer);
+    if !dir.starts_with('/') {
+        dir = Path::new(cwd).join(&dir).to_string_lossy().into_owned();
     }
+    let ctx = ident::resolve_context(&dir, true, &RequestEnv::from_pairs(env.clone()));
     let top = ctx.toplevel.unwrap_or_else(|| dir.clone());
     let mono_file = defaults::text("statusline.gitmodules");
     let monorepo = Path::new(&top).join(mono_file).exists() || Path::new(&dir).join(mono_file).exists();
-    if let rich::Rich::Line(l) = rich::render(cx, env, root, cwd, input)? {
+    if let rich::Rich::Line(l) = rich::render(cx, env, root, cwd, input) {
         let l = trim_nl(&l);
         if !l.is_empty() {
-            return Ok(l);
+            return l;
         }
     }
     let fallback = if monorepo { simple::monorepo(input, cwd, cx, env) } else { simple::simple(input, cwd, env) };
-    Ok(fallback.map(|s| trim_nl(&s)).unwrap_or_default())
+    fallback.map(|s| trim_nl(&s)).unwrap_or_default()
 }
 
 /// Read all of stdin, giving up (silently) after `statusline.stdin_watchdog_ms`.
@@ -97,48 +99,46 @@ fn read_stdin() -> Option<Vec<u8>> {
 pub fn run(p: &Parsed) -> i32 {
     let Some(stdin) = read_stdin() else { return 0 };
     let plan = super::shadow::begin(defaults::text("ops.verb_statusline"), defaults::text("ops.script_statusline"), &p.raw, Some(&stdin));
-    let code = match render_all(&stdin) {
-        Ok(()) => 0,
-        Err(Defer) => {
-            super::err(&(defaults::text("defect.deferred").to_string() + "\n"));
-            super::defer_code()
-        }
-    };
-    super::shadow::end(plan, code);
-    code
+    render_all(&stdin);
+    super::shadow::end(plan, 0);
+    0
 }
 
-fn render_all(stdin: &[u8]) -> Result<(), Defer> {
+fn render_all(stdin: &[u8]) {
     let env = env_snapshot();
     let home = home(&env);
-    let Some(root) = plugin_root(&env) else { return Ok(()) };
+    let Some(root) = plugin_root(&env) else { return };
     let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-    let text = render_text(stdin, &env, &home, &root, &cwd)?;
+    let text = render(stdin, &env, &home, &root, &cwd);
     if !text.is_empty() {
         out(&text);
     }
-    Ok(())
 }
 
-/// The statusline text for a session payload (what [`run`] prints), rendered in this process; `Err` when the engine leaves it to
-/// the Node dispatcher. The doctor's render check calls this with its own home, so it spawns nothing and writes nothing.
+/// The statusline text for a session payload (what [`run`] prints), rendered in this process. Always `Ok` since the renderer
+/// answers every input itself; the `Result` stays for the doctor's render check, which calls this with its own home, so it
+/// spawns nothing and writes nothing.
 pub(crate) fn render_text(stdin: &[u8], env: &std::collections::BTreeMap<String, String>, home: &str, root: &str, cwd: &str) -> Result<String, Defer> {
+    Ok(render(stdin, env, home, root, cwd))
+}
+
+fn render(stdin: &[u8], env: &std::collections::BTreeMap<String, String>, home: &str, root: &str, cwd: &str) -> String {
     let (home, root, cwd, env) = (home.to_string(), root.to_string(), cwd.to_string(), env.clone());
     let cx = Ctx { home: home.clone(), tmpdir: phasebar::tmpdir(&env), now: crate::checks::jsport::date::now_ms() };
     let input = String::from_utf8_lossy(stdin).into_owned();
-    let run_own = |kind: &str| -> Result<Option<String>, Defer> {
-        Ok(if kind == "rich" {
-            match rich::render(&cx, &env, &root, &cwd, &input)? {
+    let run_own = |kind: &str| -> Option<String> {
+        if kind == "rich" {
+            match rich::render(&cx, &env, &root, &cwd, &input) {
                 rich::Rich::Line(l) => Some(trim_nl(&l)),
                 rich::Rich::Threw => None,
             }
         } else {
-            phasebar::run(&cx, &input)?.map(|l| trim_nl(&l))
-        })
+            phasebar::run(&cx, &input).map(|l| trim_nl(&l))
+        }
     };
     let line1 = if let Some(base) = read_base_command(&home) {
         let out = match own_renderer(&base, &root) {
-            Some(kind) => run_own(kind)?,
+            Some(kind) => run_own(kind),
             None => {
                 let mut c = Command::new(defaults::text("statusline.shell"));
                 c.arg(defaults::text("statusline.shell_flag")).arg(&base);
@@ -154,12 +154,12 @@ pub(crate) fn render_text(stdin: &[u8], env: &std::collections::BTreeMap<String,
         };
         match out {
             Some(o) if !o.is_empty() => o,
-            _ => own_line1(&cx, &env, &root, &cwd, &input)?,
+            _ => own_line1(&cx, &env, &root, &cwd, &input),
         }
     } else {
-        own_line1(&cx, &env, &root, &cwd, &input)?
+        own_line1(&cx, &env, &root, &cwd, &input)
     };
-    let line2 = phasebar::run(&cx, &input)?.map(|l| trim_nl(&l)).filter(|l| !l.is_empty());
+    let line2 = phasebar::run(&cx, &input).map(|l| trim_nl(&l)).filter(|l| !l.is_empty());
     let mut text = line1.clone();
     if let Some(l2) = line2 {
         if !line1.is_empty() {
@@ -167,5 +167,5 @@ pub(crate) fn render_text(stdin: &[u8], env: &std::collections::BTreeMap<String,
         }
         text.push_str(&l2);
     }
-    Ok(text)
+    text
 }

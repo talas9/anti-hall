@@ -8,7 +8,6 @@ use crate::checks::jsport::fsx;
 use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::migrate::{j_number, str_number};
-use crate::ops::js::Defer;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -305,7 +304,7 @@ fn run_base(cmd: &str, input: &str) -> Option<String> {
 }
 
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
-pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, input_raw: &str) -> Result<Rich, Defer> {
+pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, input_raw: &str) -> Rich {
     let c = Colors { on: env.get(defaults::text("statusline.no_color_env")).is_none_or(|v| v.is_empty()) };
     let raw = trim(input_raw).to_string();
     let data: Option<J> = if raw.starts_with('{') { parse(&raw) } else { None };
@@ -326,7 +325,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     if let Some(base) = consolidated
         && let Some(out) = run_base(&base, &raw)
     {
-        return Ok(Rich::Line(out + &ah_chip(cx, root, &c)));
+        return Rich::Line(out + &ah_chip(cx, root, &c));
     }
     let g = git_info(cwd, env);
     let settings = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.settings_file")))
@@ -340,7 +339,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         Some(v) => text_of(v),
         None => match model_name(cwd, cx, &settings) {
             Ok(m) => m,
-            Err(()) => return Ok(Rich::Threw),
+            Err(()) => return Rich::Threw,
         },
     };
     let cw = data.as_ref().and_then(|d| d.get("context_window")).filter(|v| truthy(Some(v)));
@@ -355,10 +354,10 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         let usd = cost.get("total_cost_usd").filter(|v| truthy(Some(v)));
         match usd {
             Some(J::Num(x)) => cost_usd = *x,
-            Some(other) if j_number(other) > 0.0 => return Ok(Rich::Threw), // `.toFixed` is not a function on a string
+            Some(other) if j_number(other) > 0.0 => return Rich::Threw, // `.toFixed` is not a function on a string
             _ => {}
         }
-    } else if let Some(d) = session_duration(cwd, cx)? {
+    } else if let Some(d) = session_duration(cwd, cx) {
         duration = d;
     }
     let project_root = g.toplevel.clone();
@@ -372,24 +371,24 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         (Some(parts[0].to_string()).filter(|s| !s.is_empty()), parts[1..].join("/"))
     };
     let project_name = {
-        let s = safe_label(&basename(&project_root))?;
+        let s = safe_label(&basename(&project_root));
         if s.is_empty() { defaults::text("statusline.default_project").to_string() } else { s }
     };
     let sep = format!("  {}{}{}  ", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"));
     let mut h = format!("{}{}{}{project_name}{}", c.c("bold"), c.c("brightPurple"), defaults::text("statusline.header_mark"), c.c("reset"));
     if let Some(sm) = &submodule {
-        h.push_str(&format!("{}/{}{}{}{}{}", c.c("dim"), c.c("reset"), c.c("bold"), c.c("brightPurple"), safe_label(sm)?, c.c("reset")));
+        h.push_str(&format!("{}/{}{}{}{}{}", c.c("dim"), c.c("reset"), c.c("bold"), c.c("brightPurple"), safe_label(sm), c.c("reset")));
     }
     h.push_str(&format!(" {}{}{}{}{}", c.c("dim"), defaults::text("statusline.user_mark"), c.c("brightCyan"), g.name, c.c("reset")));
     if !sub_path.is_empty() {
-        h.push_str(&format!("{sep}{}{}{}{}", c.c("dim"), defaults::text("statusline.dir_icon"), safe_label(&sub_path)?, c.c("reset")));
+        h.push_str(&format!("{sep}{}{}{}{}", c.c("dim"), defaults::text("statusline.dir_icon"), safe_label(&sub_path), c.c("reset")));
     }
     if !g.branch.is_empty() {
         let icon = if g.is_worktree { defaults::text("statusline.tree_icon") } else { defaults::text("statusline.branch_icon") };
         let label = if g.is_worktree && !g.worktree_name.is_empty() {
-            format!("{}@{}", safe_label(&g.worktree_name)?, safe_label(&g.branch)?)
+            format!("{}@{}", safe_label(&g.worktree_name), safe_label(&g.branch))
         } else {
-            safe_label(&g.branch)?
+            safe_label(&g.branch)
         };
         h.push_str(&format!("{sep}{}{icon} {label}{}", c.c("brightBlue"), c.c("reset")));
         if g.modified + g.staged + g.untracked > 0 {
@@ -437,10 +436,13 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         h.push_str(&format!("{sep}{col}{}{}% ctx{}", defaults::text("statusline.ctx_mark"), n(p), c.c("reset")));
     }
     if cost_usd > 0.0 {
-        if cost_usd >= defaults::text("statusline.tofixed_limit").parse::<f64>().unwrap_or(f64::MAX) {
-            return Err(Defer);
-        }
-        h.push_str(&format!("{sep}{}${}{}", c.c("brightWhite"), crate::setup::jsfmt::to_fixed2(cost_usd), c.c("reset")));
+        // from the limit on, `toFixed` returns `String(x)` (exponent form)
+        let shown = if cost_usd >= defaults::text("statusline.tofixed_limit").parse::<f64>().unwrap_or(f64::MAX) {
+            n(cost_usd)
+        } else {
+            crate::setup::jsfmt::to_fixed2(cost_usd)
+        };
+        h.push_str(&format!("{sep}{}${shown}{}", c.c("brightWhite"), c.c("reset")));
     }
     h.push_str(&ah_chip(cx, root, &c));
     let no_email = crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.no_email_key"));
@@ -454,20 +456,33 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     {
         h.push_str(&format!("{sep}{}{}{email}{}", c.c("dim"), defaults::text("statusline.email_icon"), c.c("reset")));
     }
-    Ok(Rich::Line(h))
+    Rich::Line(h)
 }
 
-/// `getSessionStats()`: the duration from a local `session.json`.
-fn session_duration(cwd: &str, cx: &Ctx) -> Result<Option<String>, Defer> {
+/// `getSessionStats()`: the duration from a local `session.json`. `startTime` is converted as `new Date(v)` converts it; a date
+/// string whose V8 reading the port does not reproduce leaves the duration out.
+fn session_duration(cwd: &str, cx: &Ctx) -> Option<String> {
+    use crate::checks::jsport::date::{Parsed, parse};
     let Some(data) = read_json(&Path::new(cwd).join(defaults::text("statusline.claude_dir")).join(defaults::text("statusline.session_file"))) else {
-        return Ok(None);
+        return None;
     };
-    let Some(start) = data.get("startTime").filter(|v| truthy(Some(v))) else { return Ok(None) };
-    let J::Str(s) = start else { return Err(Defer) };
-    let mins = match crate::checks::jsport::date::parse(s) {
-        crate::checks::jsport::date::Parsed::Ms(ms) => ((cx.now - ms) / 60000.0).floor(),
-        crate::checks::jsport::date::Parsed::Nan => f64::NAN,
-        crate::checks::jsport::date::Parsed::Unknown => return Err(Defer),
+    let start = data.get("startTime").filter(|v| truthy(Some(v)))?;
+    let parsed = match start {
+        J::Str(s) => parse(s),
+        J::Num(x) => Parsed::Ms(time_clip(*x)),
+        J::Bool(b) => Parsed::Ms(f64::from(u8::from(*b))),
+        other => parse(&text_of(other)), // an array or object becomes its string form first
     };
-    Ok(Some(if mins < 60.0 { format!("{}m", n(mins)) } else { format!("{}h{}m", n((mins / 60.0).floor()), n(mins % 60.0)) }))
+    let mins = match parsed {
+        Parsed::Ms(ms) => ((cx.now - ms) / 60000.0).floor(),
+        Parsed::Nan => f64::NAN,
+        Parsed::Unknown => return None,
+    };
+    Some(if mins < 60.0 { format!("{}m", n(mins)) } else { format!("{}h{}m", n((mins / 60.0).floor()), n(mins % 60.0)) })
+}
+
+/// `TimeClip(x)`: NaN outside the representable date range, else the integer part.
+fn time_clip(x: f64) -> f64 {
+    let max = defaults::text("statusline.date_max_ms").parse::<f64>().unwrap_or(f64::NAN);
+    if !x.is_finite() || x.abs() > max { f64::NAN } else { x.trunc() + 0.0 }
 }
