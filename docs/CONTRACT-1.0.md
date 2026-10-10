@@ -10,11 +10,11 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 329 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| Settings keys | 330 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (83 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
-| Codex hook scripts | 44 (59 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
+| Hook scripts | 62 (84 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
+| Codex hook scripts | 44 (60 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
 | Skills | 29 Claude, 32 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
@@ -27,7 +27,7 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | Section | Label | Keys | Headline keys (keep a native `/config` row) |
 |---|---|---|---|
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
-| `guards` | Guards | 74 | `modelRouting` |
+| `guards` | Guards | 75 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
 | `context` | Context Injections | 22 | |
 | `maintenance` | Maintenance | 5 | |
@@ -47,8 +47,8 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `engine` | Engine | 1 | |
 | `defects` | Defects | 1 | |
 
-Of the 329 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 250
-have an env override, 13 are `locked` (safety keys), 3 are `homeOnly`. The full list with
+Of the 330 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 251
+have an env override, 14 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
 

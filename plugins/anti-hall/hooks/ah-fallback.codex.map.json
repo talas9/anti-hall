@@ -11,6 +11,7 @@
   },
   "PreToolUse": {
     "api-guard": "node \"${PLUGIN_ROOT}/hooks/api-guard.js\"",
+    "broad-kill-guard": "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"",
     "command-guard": "node \"${PLUGIN_ROOT}/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"",
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/hooks/edit-guard.js\"",

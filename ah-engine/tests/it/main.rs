@@ -5,6 +5,7 @@
 //! their process); see docs/DEVELOPMENT.md.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
+mod broad_kill;
 #[path = "../common/mod.rs"]
 mod common;
 mod replies;

@@ -22,6 +22,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"failureNudgeFilter\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_FAILURE_NUDGE_FILTER\"}",
   "{\"section\":\"guards\",\"key\":\"repoSelfDrift\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_REPO_SELF_DRIFT\",\"pluginOption\":\"guards_repo_self_drift\"}",
   "{\"section\":\"guards\",\"key\":\"stashGuard\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_STASH_GUARD\",\"pluginOption\":\"guards_stash_guard\",\"locked\":true,\"safetyDirection\":\"off\"}",
+  "{\"section\":\"guards\",\"key\":\"broadKill\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_BROAD_KILL\",\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"guards\",\"key\":\"handoverCommitGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_HANDOVER_COMMIT_GUARD\",\"pluginOption\":\"guards_handover_commit_guard\"}",
   "{\"section\":\"guards\",\"key\":\"gitAliasResolve\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_ALIAS_RESOLVE\",\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"guards\",\"key\":\"gitReusedMessageCheck\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_GIT_REUSED_MESSAGE_CHECK\",\"locked\":true,\"safetyDirection\":\"off\"}",

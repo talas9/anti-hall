@@ -38,6 +38,7 @@ files = [
     "task_guards.toml",
     "devswarm_role.toml",
     "roles.toml",
+    "broad_kill.toml",
     "devswarm_gates.toml",
     "migrate.toml",
     "migrate_settings.toml",

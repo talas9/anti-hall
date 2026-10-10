@@ -483,6 +483,13 @@ fn ask_guard_script_matches_the_compiled_port() {
     golden_report("ask-guard", 12);
 }
 
+/// broad-kill-guard is engine-only (issue #38): its corpus is hand-judged, every case's verdict was checked against the decision
+/// table in tests/it/broad_kill.rs, then recorded here with the exact block text for both hosts and every caller.
+#[test]
+fn broad_kill_guard_script_matches_its_golden_corpus() {
+    golden_report("broad-kill-guard", 12);
+}
+
 #[test]
 fn failure_nudge_script_matches_the_compiled_port() {
     golden_report("failure-root-cause-nudge", 12);

@@ -251,6 +251,9 @@ pub static AGENT_REMINDERS: Scripted = Scripted::new("agent-reminders", "agent_t
 /// `engine-role-guard` (PreToolUse on Bash; engine-only).
 pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "roles.summary_guard");
 
+/// `broad-kill-guard` (PreToolUse on Bash, every agent; engine-only): blocks pkill, killall, `kill -9 -1` and the pattern kills.
+pub static BROAD_KILL_GUARD: Scripted = Scripted::new("broad-kill-guard", "broad_kill.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 
