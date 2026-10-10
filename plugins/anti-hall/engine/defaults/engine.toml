@@ -72,6 +72,10 @@ value = ".anti-hall"
 doc = "Engine state directory name inside base_dir (D53)."
 value = "ah-engine"
 
+[paths.live_state_dir]
+doc = "Live-kit state directory name inside base_dir; excluded from scratch-daemon parent/socket orphan handling."
+value = "ah-engine-live"
+
 [paths.socket_file]
 doc = "Socket file name inside the state directory."
 value = "e.sock"
@@ -345,7 +349,7 @@ env = "AH_ENGINE_IDLE_EXIT_S"
 unit = "s"
 
 [daemon.orphan_check_ms]
-doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
+doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; non-live daemons also check that their parent process and socket file still exist. Once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
 value = 2000
 min = 100
 unit = "ms"

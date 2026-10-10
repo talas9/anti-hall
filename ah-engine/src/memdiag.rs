@@ -50,17 +50,23 @@ mod je {
     }
 
     pub fn alloc() -> Option<super::Alloc> {
+        if crate::memstat::active_allocator() == crate::memstat::Allocator::System {
+            return None;
+        }
         advance();
         Some(super::Alloc { allocated: read("stats.allocated")?, resident: read("stats.resident")? })
     }
 
     pub fn detail() -> serde_json::Value {
+        if crate::memstat::active_allocator() == crate::memstat::Allocator::System {
+            return serde_json::json!({"active": "system", "jemalloc": "n/a"});
+        }
         advance();
         let mut m = serde_json::Map::new();
         for k in ["allocated", "active", "metadata", "resident", "mapped", "retained"] {
             m.insert(k.into(), read(&format!("stats.{k}")).map_or(serde_json::Value::Null, Into::into));
         }
-        serde_json::Value::Object(m)
+        serde_json::json!({"active": crate::memstat::active_allocator().as_str(), "jemalloc": serde_json::Value::Object(m)})
     }
 }
 
@@ -171,6 +177,11 @@ fn sqlite_status(op: i32) -> i64 {
     if rc == 0 { cur } else { -1 }
 }
 
+/// The active allocator and jemalloc statistics, or `jemalloc: "n/a"` when the system allocator is active.
+pub fn allocator_stats() -> Value {
+    je::detail()
+}
+
 // ---- per-request log -----------------------------------------------------------------------------------------------
 
 /// What was measured when a request started.
@@ -274,6 +285,7 @@ pub fn finish(before: Before, d: &Done) {
     let sy = |x: &Option<Sys>, f: fn(&Sys) -> u64| x.as_ref().map_or(Value::Null, |a| json!(f(a)));
     let line = json!({
         "ts": crate::health::now_ms(), "kind": d.kind, "event": d.event, "checks": checks,
+        "allocator": crate::memstat::active_allocator().as_str(),
         "rss_kb_before": b.rss_kb, "rss_kb_after": a.rss_kb,
         "footprint_kb_before": b.footprint_kb, "footprint_kb_after": a.footprint_kb,
         "alloc_before": al(&b.alloc, |x| x.allocated), "alloc_after": al(&a.alloc, |x| x.allocated),
@@ -341,7 +353,7 @@ pub fn worker_tick(idx: usize) {
 fn ledger(snap: &Value) -> Value {
     let mb = |v: &Value| v.as_f64().map_or(0.0, |b| (b / 1048.576).round() / 1000.0);
     let footprint = snap["footprint_kb"].as_f64().unwrap_or(0.0) * 1024.0;
-    let jemalloc = snap["allocator"]["resident"].as_f64().unwrap_or(0.0);
+    let jemalloc = snap["allocator"]["jemalloc"]["resident"].as_f64().or_else(|| snap["allocator"]["resident"].as_f64()).unwrap_or(0.0);
     let quickjs: f64 = snap["pools"].as_array().into_iter().flatten().filter_map(|p| p["quickjs_bytes"].as_f64()).sum();
     let sqlite = snap["sqlite"]["memory_used"].as_f64().unwrap_or(0.0);
     let zones = snap["system_malloc"]["zones"].as_array();
@@ -515,6 +527,7 @@ fn summary_of(text: &str) -> Value {
     let n = defaults::num("diagnostics.summary_top") as usize;
     json!({
         "requests": lines.len(), "first_ts": lines[0]["ts"], "last_ts": lines[lines.len() - 1]["ts"],
+        "allocator": crate::memstat::active_allocator().as_str(),
         "rss_kb_first": lines[0]["rss_kb_before"], "rss_kb_last": lines[lines.len() - 1]["rss_kb_after"],
         "rss_delta_kb_total": all.rss, "alloc_delta_bytes_total": all.alloc,
         "top_events": top(events, n), "top_checks": top(checks, n),
