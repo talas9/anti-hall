@@ -176,8 +176,12 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
     out
 }
 
-/// The supervisor files that do not parse (`node --check`): `(file name, first line of the error)`.
+/// The supervisor files that do not parse (`node --check`): `(file name, first line of the error)`. Empty when the doctor may not
+/// start Node (`doctor.node_twins` off) or there is none.
 fn syntax_errors(ctx: &Ctx, root: &Path) -> Vec<(String, String)> {
+    if !super::node_twins() {
+        return Vec::new();
+    }
     let Some(node) = super::system::which(text("doctor.node_default"), ctx.env.get("PATH").map(String::as_str).unwrap_or("")) else { return Vec::new() };
     let mut bad = Vec::new();
     for rel in defaults::list("doctor.ds_supervisor_files") {

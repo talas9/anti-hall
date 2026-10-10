@@ -1,6 +1,7 @@
 //! The statusline render check: does the statusline actually produce its two lines? The engine renders the statusline for a
-//! sample session payload in this process (writing nothing; the Node dispatcher renders it when the engine leaves it to Node, and
-//! a stand-in script under Node when the test override names one) and the lines are counted, as the Node doctor does.
+//! sample session payload in this process (writing nothing) and the lines are counted, as the Node doctor does. When the engine
+//! leaves the render to the Node dispatcher, the doctor reports a deferral unless `doctor.node_twins` lets it start Node; the
+//! test override's stand-in script always runs under Node.
 use super::Doc;
 use crate::defaults;
 use crate::migrate::Ctx;
@@ -13,8 +14,12 @@ fn on_path(ctx: &Ctx, name: &str) -> Option<PathBuf> {
     super::system::which(name, ctx.env.get("PATH").map(String::as_str).unwrap_or(""))
 }
 
-/// `node --check <file>`: whether Node accepts the file's syntax. `None` when there is no Node to ask.
+/// `node --check <file>`: whether Node accepts the file's syntax. `None` when there is no Node to ask or the doctor may not start
+/// Node (`doctor.node_twins` off).
 fn node_accepts(ctx: &Ctx, file: &Path) -> Option<bool> {
+    if !super::node_twins() {
+        return None;
+    }
     let node = on_path(ctx, defaults::text("doctor.node_default"))?;
     let mut cmd = Command::new(node);
     cmd.arg(defaults::text("doctor.node_check_flag")).arg(file).env_clear().envs(&ctx.env);
@@ -59,7 +64,12 @@ pub fn statusline_render(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
         Some(s) => node_render(ctx, root, s, sample.as_bytes(), timeout),
         None => match crate::ops::statusline::render_text(sample.as_bytes(), &ctx.env, &ctx.home, &root.to_string_lossy(), &ctx.cwd) {
             Ok(text) => Finished::Done { code: Some(0), stdout: text.into_bytes() },
-            Err(_) => node_render(ctx, root, &dispatcher.to_string_lossy(), sample.as_bytes(), timeout),
+            Err(_) if super::node_twins() => node_render(ctx, root, &dispatcher.to_string_lossy(), sample.as_bytes(), timeout),
+            Err(_) => {
+                // the engine leaves this render to the Node dispatcher and the doctor does not start Node: not exercised
+                doc.warnl(defaults::render("doctor_msg.deferred", &[("check", &defaults::text("doctor.statusline_check"))]));
+                return rich_check(doc, ctx, root);
+            }
         },
     };
     match finished {
@@ -81,6 +91,11 @@ pub fn statusline_render(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
         Finished::TimedOut => doc.warnl(defaults::text("doctor_msg.statusline_timeout").to_string()),
         Finished::Failed => doc.bad(defaults::render("doctor_msg.statusline_no_output", &[("code", &defaults::text("doctor.no_exit_code"))])),
     }
+    rich_check(doc, ctx, root);
+}
+
+/// The rich renderer is on disk (and, when the doctor may start Node, parses).
+fn rich_check(doc: &mut Doc, ctx: &Ctx, root: &Path) {
     let rich = root.join(defaults::text("doctor.statusline_rich"));
     if rich.exists() && node_accepts(ctx, &rich).unwrap_or(true) {
         doc.ok(defaults::text("doctor_msg.statusline_rich_ok").to_string());

@@ -1113,27 +1113,96 @@ fn nd_node_missing_old_broken_and_fine() {
     sc.own_plugin();
     sc.programs(&[], &["node"]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["node is not on PATH", "guards fail closed", "install Node >= 22"]);
-    d.has("bad", &["neither a working engine nor node is available"]);
+    d.has("warn", &["node is not on PATH", "Node is optional", "none needed"]);
+    d.has("bad", &["no working engine", "Node is not needed"]);
     assert_eq!(d.code, 1);
-    // the engine works: no node is only a warning
+    // the engine works: no node is only a warning, Node is not a requirement
     sc.stub_engine("0.1.0");
     let d = sc.doctor(&[]);
     d.has("warn", &["node is not on PATH"]);
-    d.lacks("neither a working engine nor node");
+    d.lacks("no working engine");
     assert_eq!(d.code, 0);
     let shell = sc.shell();
-    shell.has("warn", &["node is not on PATH"]);
-    // too old, broken, fine
+    shell.has("warn", &["node is not on PATH", "Node is optional"]);
+    shell.lacks("no working engine");
+    // too old, broken, fine: warnings and a note, never a failure while the engine works
+    // a stand-in node answers every start with its version, so the Node twins are off for these stages
+    twins_off(&sc);
     sc.programs(&[("node", "echo v18.19.0")], &[]);
     let d = sc.doctor(&[]);
-    d.has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22."]);
-    sc.shell().has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22"]);
+    d.has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
+    assert_eq!(d.code, 0, "{}", d.text);
+    sc.shell().has("warn", &["Node v18.19.0 is < 22; Node is optional"]);
     sc.programs(&[("node", "echo oops >&2; exit 4")], &[]);
-    sc.doctor(&[]).has("bad", &["node does not run: exit 4 oops"]);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["node does not run: exit 4 oops"]);
+    assert_eq!(d.code, 0);
     sc.programs(&[("node", "echo v22.3.0")], &[]);
-    sc.doctor(&[]).has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
-    sc.shell().has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
+    sc.doctor(&[]).has("info", &["Node v22.3.0 (>= 22) found; optional"]);
+    sc.shell().has("info", &["Node v22.3.0 (>= 22) found; optional"]);
+}
+
+/// Turn `doctor.node_twins` off in the scenario's plugin copy (defaults and pristine twin).
+fn twins_off(sc: &Sc) {
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = sc.plugin.join(dir).join("doctor.toml");
+        let t = fs::read_to_string(&f).unwrap();
+        let at = t.find("[doctor.node_twins]").unwrap();
+        let v = at + t[at..].find("value = true").unwrap();
+        fs::write(&f, format!("{}value = false{}", &t[..v], &t[v + "value = true".len()..])).unwrap();
+    }
+}
+
+#[test]
+fn nd_with_node_twins_off_the_doctor_never_starts_node() {
+    // a node on PATH that records every start: with doctor.node_twins off, the engine doctor (live self-tests, statusline
+    // render, supervisor and renderer syntax checks) must not run it beyond the optional version probe, and every self-test the
+    // engine defers is a warning, never a pass
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.1.0");
+    twins_off(&sc);
+    let log = sc.root.join("node-starts.log");
+    sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
+    let d = sc.doctor(&[]);
+    let starts = fs::read_to_string(&log).unwrap_or_default();
+    let real: Vec<&str> = starts.lines().filter(|l| l.trim() != "--version").collect();
+    assert!(real.is_empty(), "the doctor started node: {real:?}\n{}", d.text);
+    d.has("warn", &["the engine defers this self-test to its Node hook, so it was not exercised here"]);
+}
+
+#[test]
+fn lg_logs_flag_lists_the_recent_warn_and_error_entries() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let logs = sc.root.join("central-logs");
+    fs::create_dir_all(&logs).unwrap();
+    let run = |sc: &Sc| {
+        let mut c = Command::new(BIN);
+        c.arg("doctor").arg("--check").arg("--logs").arg("--plugin-root").arg(&sc.plugin);
+        sc.env(&mut c);
+        c.env("ANTI_HALL_LOG_DIR", &logs);
+        sc.finish(c)
+    };
+    let d = run(&sc);
+    d.has("info", &["no warn/error entries in the central anti-hall log", &logs.display().to_string()]);
+    d.lacks("--logs is not handled");
+    let mut body = String::from("{\"ts\":\"t0\",\"level\":\"info\",\"component\":\"x\",\"op\":\"y\",\"msg\":\"quiet\"}\n{torn\n");
+    for i in 0..12 {
+        body.push_str(&format!("{{\"ts\":\"t{i}\",\"level\":\"warn\",\"component\":\"ingest\",\"op\":\"tick\",\"msg\":\"m{i}\\nsecond\"}}\n"));
+    }
+    body.push_str("{\"ts\":\"tz\",\"level\":\"error\",\"component\":\"cli\",\"op\":\"send\",\"repoKey\":\"r1\",\"err\":{\"message\":\"boom\"}}\n");
+    fs::write(logs.join("devswarm.jsonl"), body).unwrap();
+    let d = run(&sc);
+    d.has("warn", &["13 warn/error entries in the central anti-hall log across 2 component(s) — cli:1, ingest:12"]);
+    d.has("info", &["showing the most recent 10 of 13"]);
+    d.has("warn", &["[t11] warn ingest/tick: m11"]);
+    d.has("warn", &["[tz] error cli/send repoKey=r1: boom"]);
+    d.lacks("quiet");
+    d.lacks("[t2] warn");
+    d.lacks("second");
+    // report-only: the entries are warnings, not failures
+    assert_eq!(d.code, run(&sc).code);
 }
 
 #[test]
@@ -1360,9 +1429,9 @@ fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
     assert!(bad(&engine), "engine: {}", engine.text);
     assert_ne!(node.code, 0);
     assert_ne!(engine.code, 0);
-    // and both accept this Node
+    // and both see this Node (the engine doctor as an optional one)
     node.has("ok", &["Node v", "hooks can run"]);
-    engine.has("ok", &["Node v", "hooks can run"]);
+    engine.has("info", &["Node v", "found; optional"]);
 }
 
 // ---- the optional `claude doctor` sub-check ---------------------------------------------------------------------------------------

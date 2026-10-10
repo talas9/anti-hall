@@ -48,7 +48,71 @@ value = 48
 
 [doctor.unhandled_flags]
 doc = "Flags of the Node doctor that the engine doctor does not handle yet; each is reported and the run continues."
-value = ["--prune-cache", "--reclaim-ingest-lock", "--logs"]
+value = ["--prune-cache", "--reclaim-ingest-lock"]
+
+[doctor.node_twins]
+doc = "Whether the doctor may start Node: to run a check's Node twin where the engine defers (live self-tests, the statusline render) and to syntax-check the Node supervisor and statusline files. Node is not a doctor requirement either way: with this off, or with no Node on PATH, a deferral is reported as a warning, never a pass. On while the engine still defers some self-tests to their Node twins (git, command and edit guards, DevSwarm hooks), so the report stays as complete as the live hook path; the runtime cutover turns it off. The test-only statusline stand-in always runs under Node."
+value = true
+
+[doctor.node_version_flag]
+doc = "The flag that makes Node print its version."
+value = "--version"
+
+[doctor.version_alert_check]
+doc = "The built-in check the version-alert self-test runs."
+value = "version-alert"
+
+[doctor.statusline_check]
+doc = "The name the statusline render check is reported under when the engine defers the render to Node."
+value = "statusline"
+
+[doctor.logs_flag]
+doc = "The flag that adds the central-log section (the Node doctor's --logs)."
+value = "--logs"
+
+[doctor.logs_dir_env]
+doc = "The environment variable that overrides the central log directory (the logger's own override, companion/lib/anti-hall-log.js)."
+value = "ANTI_HALL_LOG_DIR"
+
+[doctor.logs_dir]
+doc = "The central log directory under the home directory, as path parts."
+value = [".anti-hall", "logs"]
+
+[doctor.logs_file]
+doc = "The central log file in the log directory (JSON lines)."
+value = "devswarm.jsonl"
+
+[doctor.logs_rotated_suffix]
+doc = "The suffix of the one rotated predecessor of the central log, read too when the current file holds fewer entries than the limit."
+value = ".1"
+
+[doctor.logs_levels]
+doc = "The central log's level names, lowest first; an entry whose level is not one of them is dropped."
+value = ["debug", "info", "warn", "error"]
+
+[doctor.logs_min_level]
+doc = "The lowest level --logs reports."
+value = "warn"
+
+[doctor.logs_limit]
+doc = "How many of the most recent entries at or above the minimum level --logs reads."
+value = 200
+
+[doctor.logs_shown]
+doc = "How many of those entries --logs prints one by one (the most recent)."
+value = 10
+
+[doctor.logs_unknown_component]
+doc = "The component name counted for an entry that has none."
+value = "(unknown)"
+
+[doctor.logs_missing_mark]
+doc = "What an entry line shows for a missing timestamp, level, component or operation."
+value = "?"
+
+[doctor.logs_no_message]
+doc = "What an entry line shows when the entry has neither a message nor an error message."
+value = "(no message)"
 
 [doctor.selftest_home_prefix]
 doc = "The name prefix of the throwaway home the live self-tests run against."
@@ -667,6 +731,34 @@ value = "Toolchain and environment"
 doc = "Section heading."
 value = "Logs and telemetry"
 
+[doctor_msg.head_central_logs]
+doc = "Section heading of --logs (the Node doctor's)."
+value = "Logs (--logs: recent anti-hall-log entries)"
+
+[doctor_msg.logs_dir_suffix]
+doc = "The log directory appended to the --logs summary lines. Placeholder: {dir}."
+value = " ({dir})"
+
+[doctor_msg.logs_none]
+doc = "--logs found no warn/error entry. Placeholder: {at} (doctor_msg.logs_dir_suffix)."
+value = "no warn/error entries in the central anti-hall log{at}"
+
+[doctor_msg.logs_summary]
+doc = "--logs found entries. Placeholders: {n}, {components}, {summary} (component:count, sorted), {at}."
+value = "{n} warn/error entries in the central anti-hall log across {components} component(s) — {summary}{at}"
+
+[doctor_msg.logs_showing]
+doc = "--logs prints only the most recent entries. Placeholders: {shown}, {n}."
+value = "showing the most recent {shown} of {n} — re-run with a narrower window if you built one, or read the file directly for the rest"
+
+[doctor_msg.logs_repo_tag]
+doc = "The repository tag of an entry line. Placeholder: {repo}."
+value = " repoKey={repo}"
+
+[doctor_msg.logs_entry]
+doc = "One central-log entry. Placeholders: {ts}, {level}, {component}, {op}, {repo} (doctor_msg.logs_repo_tag or empty), {msg} (its first line)."
+value = "[{ts}] {level} {component}/{op}{repo}: {msg}"
+
 [doctor_msg.head_witness]
 doc = "Section heading."
 value = "Node witness"
@@ -1033,24 +1125,24 @@ doc = "EV-07."
 value = "gh is not on PATH; only the optional PR/CI helpers need it"
 
 [doctor_msg.node_missing]
-doc = "ND-01. Placeholder: {min}."
-value = "node is not on PATH; the Node fallback hooks cannot run (if the engine is down, guards fail closed) - Fix: install Node >= {min}"
+doc = "ND-01: Node is optional. Placeholder: {min}."
+value = "node is not on PATH; Node is optional (the engine runs the hooks), only the few checks the engine still hands to Node are skipped - Fix: none needed; install Node >= {min} to run those checks"
 
 [doctor_msg.no_engine_no_node]
-doc = "ND-04."
-value = "neither a working engine nor node is available; every guard fails closed - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v) or install Node"
+doc = "ND-04: no working engine and no usable Node behind it."
+value = "no working engine (and no usable Node fallback): the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v); Node is not needed"
 
 [doctor_msg.node_broken]
-doc = "ND-03. Placeholder: {why}."
-value = "node does not run: {why} - Fix: reinstall Node"
+doc = "ND-03: Node is optional. Placeholder: {why}."
+value = "node does not run: {why}; Node is optional, only the few checks the engine still hands to Node are skipped - Fix: reinstall Node or take it off PATH"
 
 [doctor_msg.node_ok]
-doc = "ND-05. Placeholders: {v}, {min}. The Node doctor's text."
-value = "Node {v} (>= {min}) — hooks can run"
+doc = "ND-05: a note, Node is optional. Placeholders: {v}, {min}."
+value = "Node {v} (>= {min}) found; optional (the engine runs the hooks)"
 
 [doctor_msg.node_old]
-doc = "ND-02. Placeholders: {v}, {min}. The Node doctor's text."
-value = "Node {v} is < {min} — plugin.json requires Node.js >= {min} on PATH; hooks may silently no-op. Install Node >= {min}."
+doc = "ND-02: Node is optional. Placeholders: {v}, {min}."
+value = "Node {v} is < {min}; Node is optional, but the few checks the engine still hands to Node may silently no-op - Fix: install Node >= {min} or take it off PATH"
 
 [doctor_msg.log_huge]
 doc = "LG-01. Placeholders: {file}, {mb}, {cap_mb}."
