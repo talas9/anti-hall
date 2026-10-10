@@ -144,6 +144,17 @@ pub fn spawn_daemon() -> Option<std::process::Child> {
         }
     };
     let mut cmd = Command::new(exe);
+    // The allocator is chosen before the daemon's first allocation, so the configured one travels in its environment.
+    let alloc_env = defaults::text("diagnostics.allocator_env");
+    if std::env::var_os(alloc_env).is_none() {
+        let want = defaults::text("diagnostics.allocator");
+        if defaults::list("diagnostics.allocator_choices").contains(&want) {
+            cmd.env(alloc_env, want);
+        } else {
+            log_fallback("alloc_invalid", "config", &defaults::render("msg.log_allocator_invalid", &[("value", &want)]));
+            cmd.env(alloc_env, "jemalloc");
+        }
+    }
     // The allocator's purge tuning is read by jemalloc at its first allocation, so it has to be in the environment the daemon starts with.
     let conf = defaults::text("daemon.malloc_conf");
     if !conf.is_empty() {

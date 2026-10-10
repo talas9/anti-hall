@@ -200,7 +200,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.accept_error_backoff_ms` | `50` |  | ms | Sleep after an accept that failed for a reason other than nothing pending (a full descriptor table, EMFILE): the pending connection would make poll fire again at once, so without it the accept loop spins at full CPU. Kept well under daemon.stall_ms. |
 | `daemon.accept_poll_ms` | `200` |  | ms | Accept-loop poll interval while serving. |
 | `daemon.bucket_cap` | `4096` |  |  | Most distinct keys one token-bucket map tracks; idle full buckets are dropped first and unknown keys are refused under a key flood. |
-| `daemon.busy_write_ms` | `100` |  | ms | Write timeout for the BUSY reply sent from the accept loop. |
 | `daemon.close_max_ms` | `30000` |  | ms | Longest a drain's exit timer waits for the database close (the commit of everything queued) once it has started, so a timer that fires during the close cannot lose queued commits. A close wedged longer than this is cut off. |
 | `daemon.drain_grace_ms` | `1000` |  | ms | After a drain starts, a worker or loop that has not finished in this long is cut off. |
 | `daemon.drain_max_ms` | `10000` |  | ms | Longest a clean drain (handoff, stop, idle exit, SIGTERM) may take before the daemon exits anyway, so a worker stuck while draining can never keep the process (and the singleton lock) alive with its socket already gone. Above daemon.stuck_ms, so the stuck-worker check normally ends such a drain first. |
@@ -214,16 +213,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `daemon.malloc_conf` | `narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0` |  |  | Allocator purge tuning handed to the daemon at start (jemalloc `malloc_conf` syntax): one arena for the four worker threads (less fragmentation) and decay 0 (freed pages go back to the OS at once; the system allocators keep them, which left RSS at 2.5x the live heap). Measured on 1000 mixed calls, this Mac: system allocator 45-48 MB RSS, jemalloc with only decay 0 37 MB, with narenas:1 as well 32 MB (live heap 16 MB), adding tcache:false 27 MB but p50 call latency 10 ms against 6.5-7 ms, so tcache stays on. empty = the allocator's own defaults. A variable the caller already set is not overridden. |
 | `daemon.malloc_conf_vars` | `_RJEM_MALLOC_CONF, MALLOC_CONF` |  |  | Environment variables the allocator reads its tuning from (the crate's prefixed name and the plain one). |
 | `daemon.max_request` | `1048576` | `AH_ENGINE_MAX_REQUEST` | bytes | Largest request the daemon reads; the client sends nothing larger (it falls back instead). |
-| `daemon.mem_mb` | `512` | `AH_ENGINE_MEM_MB` | MB | Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS accepts the call but does not enforce it. |
+| `daemon.mem_mb` | `512` | `AH_ENGINE_MEM_MB` | MB | Data-segment limit applied with setrlimit; 0 = none. It is a ceiling against runaway allocation, not a budget (the RSS cap is the budget), and Linux enforces it on thread stacks, so it must exceed daemon.workers times git.stack_mb plus headroom or a check thread cannot start. macOS does not support RLIMIT_DATA here, so the daemon reports unsupported and relies on the RSS/footprint cap. |
 | `daemon.mem_metric` | `footprint` |  |  | Which figure `daemon.rss_cap_kb` is compared with: `footprint` (the process's own memory: macOS physical footprint, Linux RssAnon + RssShmem; shared and reclaimable file pages are not counted) or `rss` (the kernel's resident set, which also counts shared code pages touched over time and made the daemon restart without a real leak). Falls back to the resident set where the platform has no footprint. |
 | `daemon.mem_metric_rss` | `rss` |  |  | The word that selects the resident set for `daemon.mem_metric`. |
 | `daemon.nice` | `5` | `AH_ENGINE_NICE` |  | `nice` increment applied to the daemon process. |
-| `daemon.orphan_check_ms` | `2000` |  | ms | How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable. |
+| `daemon.orphan_check_ms` | `2000` |  | ms | How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; non-live daemons also check that their parent process and socket file still exist. Once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable. |
 | `daemon.project_burst` | `400` | `AH_ENGINE_PROJECT_BURST` |  | Token-bucket burst per project. |
 | `daemon.project_rps` | `100` | `AH_ENGINE_PROJECT_RPS` |  | Sustained requests per second allowed per project; 0 = unlimited. |
 | `daemon.queue` | `16` | `AH_ENGINE_QUEUE` |  | Connections that may wait for a worker; beyond this the daemon answers BUSY and the client falls back. |
 | `daemon.read_ms` | `1000` | `AH_ENGINE_READ_MS` | ms | Total time a client has to deliver its request. |
-| `daemon.read_poll_ms` | `100` |  | ms | Socket read timeout slice while collecting a request (the total is read_ms). |
 | `daemon.reply_slack_ms` | `150` |  | ms | Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer. |
 | `daemon.rss_cap_kb` | `131072` | `AH_ENGINE_RSS_CAP_KB` | KB | Memory cap, compared with the figure `daemon.mem_metric` selects (default: the footprint, not the resident set); above it the daemon drains and exits cleanly and the next call starts a fresh one; 0 = none. The measurement below is of the resident set. Set from measurement, not guessed (DECISIONS.md 1.111, 2026-10-09): on the real-payload replay (2,113 recorded hook calls, unpaced, isolated home) the engine with 16 scripted checks sits at 69 MB after one pass and 78 MB after three (jemalloc, aarch64-apple-darwin), and at 102 MB after one pass with the system allocator (the x86_64-apple-darwin and musl builds, measured as a system-allocator build on this Mac); the live heap is 45-52 MB. The engine before the scripted checks (live4) measured 62 and 68 MB on the same replay, so the previous 64 MB cap (set from a synthetic soak with a 16-18 MB live heap) sat inside the steady state of both: the daemon restarted 4 times in 600 s and the crash-loop breaker sent every hook to Node. The cap sits above the larger figure with room for the slow growth both builds show on repeated passes (about 1.5 MB per 1,000 calls), so only real growth trips it. |
 | `daemon.rss_check_ms` | `10000` | `AH_ENGINE_RSS_CHECK_MS` | ms | How often the watchdog samples resident memory. |
@@ -344,6 +342,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `paths.base_dir` | `.anti-hall` |  |  | Directory under the home directory that holds all anti-hall state. |
 | `paths.fallback_tmp` | `/tmp` |  |  | Last-resort base for the short-path socket when TMPDIR is unset or too long. |
+| `paths.live_state_dir` | `ah-engine-live` |  |  | Live-kit state directory name inside base_dir; excluded from scratch-daemon parent/socket orphan handling. |
 | `paths.lock_suffix` | `.lock` |  |  | Suffix appended to the socket path for the singleton lock file. |
 | `paths.plugin_rules_file` | `engine/rules.json` |  |  | The shipped rules file, relative to the plugin root (the engine reads it from the plugin, never from its own install). |
 | `paths.private_dir_prefix` | `anti-hall-` |  |  | Prefix of the private per-user directory that holds a short-path socket (the uid is appended). |
@@ -4136,6 +4135,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.crashloop` | `daemon crash-looping: restarts halted for {secs}s more ({reason}) - Fix: read...` |  |  | DMN-08. Placeholders: {secs}, {reason}. |
 | `doctor_msg.daemon_down` | `the engine daemon is not running (it starts on the first hook call)` |  |  | The engine daemon is not running, which is normal until the first hook call. |
 | `doctor_msg.daemon_hung` | `a daemon holds {lock} (pid {pid}) but does not answer on {sock}; it is hung -...` |  |  | DMN-03. Placeholders: {lock}, {pid}, {sock}. |
+| `doctor_msg.daemon_non_live_serve` | `non-live ah-engine serve process pid {pid} is using socket {sock}; it should ...` |  |  | DMN-13. Placeholders: {pid}, {sock}. |
 | `doctor_msg.daemon_other_version` | `the daemon runs engine {daemon}, this binary is {engine}; the daemon hands ov...` |  |  | DMN-01b. Placeholders: {daemon}, {engine}. |
 | `doctor_msg.daemon_up` | `the engine daemon is running ({reply})` |  |  | The engine daemon is running. Placeholder: {reply}. |
 | `doctor_msg.daemons_many` | `{n} engine daemons are running; the extra ones (pids {pids}) do not serve {so...` |  |  | DMN-10. Placeholders: {n}, {pids}, {sock}. |
@@ -9289,6 +9289,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `diagnostics.allocator` | `jemalloc` |  |  | Allocator for the daemon the client spawns: jemalloc (default) or system. The client passes it on as AH_ENGINE_ALLOCATOR unless that is already set. Changing it requires a daemon restart. |
+| `diagnostics.allocator_choices` | `jemalloc, system` |  |  | Allocator names the client accepts from diagnostics.allocator; any other value is logged and the daemon starts with jemalloc. |
+| `diagnostics.allocator_env` | `AH_ENGINE_ALLOCATOR` |  |  | Environment variable the client sets on the daemon it spawns to select the allocator (the daemon reads it before its first allocation). An existing value in the client's own environment wins. |
+| `diagnostics.malloc_stack_logging` | `` |  |  | Diagnostic label for an operator-run macOS `MallocStackLogging` repro (`lite` or empty). The engine only accepts and reports it; the OS facility must be enabled in the process environment before start. |
 | `diagnostics.mem_log` | `true` |  |  | Append one NDJSON line per served request to the memory log: time, request kind, event, the checks that ran, resident set and allocator figures before and after, and the size of the transcript file. Costs a few microseconds and one small append per request; turn it off once the memory question is closed. |
 | `diagnostics.mem_log_max_bytes` | `4194304` |  | bytes | Size at which the memory log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so the log never holds more than twice this. |
 | `diagnostics.mem_snapshot` | `true` |  |  | When the resident-set cap trips, write one snapshot before the daemon exits: allocator figures, thread count, the interpreters and caches of every worker, and the platform's own memory map of the process. |
@@ -9380,6 +9384,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.impact_no_routing` | Status shown in place of a model-routing saving figure while no routing events are recorded. |
 | `msg.log_accept_error` | Event-log detail (rate-limited) when the daemon's accept failed for a reason other than nothing pending. Placeholders: {code} (os<n>), {err}. |
 | `msg.log_accept_recovered` | Event-log detail when the daemon accepts a connection again after accept failures (logged then, because a full descriptor table can keep the failure's own log line from being written). Placeholders: {n}, {code} (os<n> of the last failure). |
+| `msg.log_allocator_invalid` | Event-log detail (kind alloc_invalid) when diagnostics.allocator holds a value that is not an accepted allocator; the daemon starts with jemalloc. Placeholder: {value}. |
 | `msg.log_bind_fail` | Start-failure detail when binding the socket fails. Placeholders: {path}, {err}. |
 | `msg.log_budget` | Log detail when a rule evaluation exceeded its CPU budget. |
 | `msg.log_crash` | Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}. |
@@ -9418,6 +9423,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.reply_test_panic` | Panic text of the test-only `panic` verb. |
 | `msg.reply_too_large` | ERR body for an oversize request. |
 | `msg.reply_unknown_request` | ERR body for a request the daemon does not understand. |
+| `msg.reply_write_deadline` | Log reason when the client did not read the reply in time. |
 | `msg.restore_daemon_busy` | A restore could not stop the daemon or take its lock in time. |
 | `msg.restore_damaged` | A snapshot database failed its integrity check. Placeholders: {path}, {check}. |
 | `msg.restore_no_hot` | A snapshot directory has no hot.db. Placeholder: {path}. |

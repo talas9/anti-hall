@@ -268,6 +268,10 @@ value = "stat"
 doc = "Printed on stderr (exit dispatch.defer_exit) when the legacy `hook` command gets a guard event, the engine cannot answer and no Node fallback was given: the caller must run the Node hook, never take silence as an allow."
 value = "anti-hall: the engine could not answer this guard event and no Node fallback was given; run the Node hook"
 
+[msg.log_allocator_invalid]
+doc = "Event-log detail (kind alloc_invalid) when diagnostics.allocator holds a value that is not an accepted allocator; the daemon starts with jemalloc. Placeholder: {value}."
+value = "diagnostics.allocator={value} is not an accepted allocator; using jemalloc"
+
 [msg.log_daemon_spawn_failed]
 doc = "Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}."
 value = "could not start the daemon: {err}"
