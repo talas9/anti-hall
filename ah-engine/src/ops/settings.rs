@@ -412,7 +412,7 @@ fn cmd_tunables(run: &mut Run, a: &Args) {
         None => true,
         Some(w) => category_of(e) == w || e.key == w || e.key.starts_with(&format!("{w}.")) || e.key.starts_with(w),
     };
-    let picked: Vec<&defaults::Entry> = all.iter().filter(hit).map(|e| *e).collect();
+    let picked: Vec<&defaults::Entry> = all.iter().filter(hit).copied().collect();
     if let Some(w) = want
         && picked.is_empty()
     {
