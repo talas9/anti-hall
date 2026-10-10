@@ -31,6 +31,8 @@ fn now() -> i64 {
 struct Stub {
     calls: Mutex<Vec<Vec<String>>>,
     git_fail: Mutex<Vec<String>>,
+    /// The app database the stand-in hivecontrol writes an archive into (the engine checks the database shows the archive).
+    db: Mutex<Option<PathBuf>>,
 }
 
 impl Runner for Stub {
@@ -55,6 +57,9 @@ impl Runner for Stub {
         }
         let mut call = spec.bin.clone().into_iter().collect::<Vec<_>>();
         call.extend(spec.args.iter().cloned());
+        if let (Some(db), Some(id)) = (self.db.lock().unwrap().as_ref(), (call.get(1).map(String::as_str) == Some("archive")).then(|| call.get(2)).flatten()) {
+            Connection::open(db).unwrap().execute("UPDATE builders SET isActive = 0, isHidden = 1 WHERE id = ?1", params![id]).unwrap();
+        }
         self.calls.lock().unwrap().push(call);
         ok("{\"archived\":true}")
     }
@@ -116,7 +121,29 @@ fn world(tag: &str) -> World {
     );
     let w = World { _t: t, dir, home, state, db, wt };
     app_db(&w, "open");
+    age_git(&w, 7_200_000); // a fresh repo's HEAD is new; this child last committed two hours ago
     w
+}
+
+/// Set the modification time of `path` to `age_ms` ago.
+fn age(path: &Path, age_ms: u64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::SystemTime::now() - Duration::from_millis(age_ms)).unwrap();
+}
+
+/// The git activity of the worktree (HEAD and its log) happened `age_ms` ago.
+fn age_git(w: &World, age_ms: u64) {
+    for n in ["HEAD", "logs/HEAD"] {
+        age(&w.wt.join(".git").join(n), age_ms);
+    }
+}
+
+/// The transcript of ws-1's session, last written `age_ms` ago.
+fn transcript(w: &World, age_ms: u64) {
+    let p = facts::transcript_path(&w.home, w.wt.to_str().unwrap(), "s1");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "{}\n").unwrap();
+    age(&p, age_ms);
 }
 
 /// (Re)write the app database: ws-1 active with a PR in `pr_state`, and a primary.
@@ -140,8 +167,16 @@ fn rt(w: &World) -> Rt {
 }
 
 fn wire(w: &World, stub: &Arc<Stub>, exec: Executor) -> Wire {
+    wire_with(w, stub, exec, &[("ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_DEBOUNCE_MS", "0")])
+}
+
+/// `wire` with extra settings in the wire's environment (the event path of an edge archives once its debounce has passed).
+fn wire_with(w: &World, stub: &Arc<Stub>, exec: Executor, extra: &[(&str, &str)]) -> Wire {
+    *stub.db.lock().unwrap() = Some(w.db.clone());
     let sink: ah_engine::dswire::Sink = Arc::new(|_f| {});
-    let env = RequestEnv::from_pairs([("HOME", w.home.to_string_lossy().into_owned())]);
+    let mut pairs = vec![("HOME".to_string(), w.home.to_string_lossy().into_owned())];
+    pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let env = RequestEnv::from_pairs(pairs);
     Wire::new(rt(w), &w.home, &w.state, None, sink, Box::new(Shared(stub.clone()))).with_executor(move |_| exec).with_env(env).with_act_gap(0)
 }
 
@@ -181,6 +216,7 @@ fn a_state_edge_leads_to_exactly_one_archive() {
     app_db(&w, "merged");
     let r = wire.reconcile(Cause::Event);
     assert!(!r.edges.is_empty(), "the merged PR is an edge");
+    wire.events_if_due(); // an edge archives through the event path, once its debounce has passed
     assert_eq!(archives(&stub), vec![vec!["workspace".to_string(), "archive".into(), "ws-1".into()]], "exactly one archive, with an explicit id");
     wire.reconcile(Cause::Periodic);
     wire.reconcile(Cause::Overflow);
@@ -257,7 +293,8 @@ fn a_real_file_event_drives_the_archive() {
 fn an_edge_inside_the_sweep_gap_is_not_lost() {
     let w = world("gap");
     let stub = Arc::new(Stub::default());
-    let wire = wire(&w, &stub, Executor::Engine).with_act_gap(400);
+    // the event path owns a plain edge's archive; with it off the edge's sweep is the one the gap holds back
+    let wire = wire_with(&w, &stub, Executor::Engine, &[("ANTIHALL_DEVSWARM_AUTO_ARCHIVE_EVENT_TRIGGER", "false")]).with_act_gap(400);
     stub.git_fail.lock().unwrap().push("status".into());
     wire.reconcile(Cause::Startup);
     stub.git_fail.lock().unwrap().clear();
@@ -502,7 +539,7 @@ fn a_subagent_calling_an_owner_action_is_refused_before_anything_is_read() {
     assert_eq!(cli::run_with(&p(&["bogus"]), &sub), 64);
     let main = env_of(&[]);
     assert_eq!(cli::run_with(&p(&["create", "--branch", "x"]), &main), 75, "create is left to Node: nothing done");
-    assert_eq!(cli::run_with(&p(&["merge"]), &main), 75);
+    // `merge` is a devswarm.js verb the engine now runs itself (covered by tests/devswarm_dsB_parity.rs against a recording hivecontrol stub); it is not called here, where the real hivecontrol would be
 }
 
 // ---- facts -----------------------------------------------------------------------------------------------------------------
@@ -559,4 +596,190 @@ fn an_archive_of_a_primary_or_unknown_builder_is_refused() {
         assert_eq!(r.word, ah_engine::dsact::ledger::Word::Refused, "{id}: {}", r.json());
     }
     assert!(archives(&stub).is_empty());
+}
+
+// ---- feature 5: stuck / silent-child detection on events -------------------------------------------------------------------
+
+fn pokable(w: &World) {
+    write(
+        &w.home.join(".anti-hall/devswarm/workspaces/ws-1.json"),
+        &json!({"id": "ws-1", "worktreePath": w.wt, "sessionId": "s1", "nudgeCommand": ["poker", "--wake", "ws-1"], "escalateCommand": ["escalator", "ws-1"]}),
+    );
+}
+
+fn pokes(stub: &Stub) -> usize {
+    stub.calls.lock().unwrap().iter().filter(|c| c.first().map(String::as_str) == Some("poker")).count()
+}
+
+fn stall_report(w: &World) -> Value {
+    ah_engine::actlog::report(&w.state, Some("stall"), now() as u64, 0)["features"]["stall"].clone()
+}
+
+#[test]
+fn silence_needs_enough_quiet_sources_and_never_more_than_exist() {
+    use ah_engine::devswarm_rt::state::silence;
+    let cfg = |n| Cfg { stall_ms: 1000, require_quiet: n, ..Cfg::from_defaults() };
+    assert_eq!(Cfg::from_defaults().require_quiet, 3, "by default every source must be silent");
+    let t = 100_000;
+    assert_eq!(silence(&cfg(2), None, &[1], t), None, "no heartbeat: unknown, as before");
+    assert_eq!(silence(&cfg(2), Some(t - 5000), &[], t), Some((true, t - 5000)), "only the heartbeat exists: it alone decides");
+    assert_eq!(silence(&cfg(2), Some(t - 5000), &[t - 100], t), Some((false, t - 100)), "a fresh transcript resets the clock");
+    assert_eq!(silence(&cfg(1), Some(t - 5000), &[t - 100], t), Some((true, t - 100)), "the heartbeat alone decides when one source is enough");
+    assert_eq!(silence(&cfg(2), Some(t - 100), &[t - 5000], t), Some((false, t - 100)));
+    assert_eq!(silence(&cfg(2), Some(t - 5000), &[t - 6000, t - 100], t), Some((true, t - 100)), "two of three silent when two are needed");
+    assert_eq!(silence(&cfg(3), Some(t - 5000), &[t - 6000, t - 100], t).map(|s| s.0), Some(false), "all three must be silent when three are needed");
+    assert_eq!(silence(&cfg(3), Some(t - 5000), &[t - 6000, t - 7000], t).map(|s| s.0), Some(true));
+}
+
+#[test]
+fn a_child_writing_its_transcript_or_committing_is_not_poked_and_a_silent_one_is() {
+    let w = world("stall-sources");
+    pokable(&w);
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    let wire = wire(&w, &stub, Executor::Engine);
+    transcript(&w, 1_000); // heartbeat two hours old, but the transcript was written a second ago
+    wire.reconcile(Cause::Startup);
+    assert_eq!(pokes(&stub), 0, "the transcript is fresh: not stuck, not poked");
+    transcript(&w, 7_200_000);
+    age_git(&w, 500); // and now a commit a moment ago instead
+    wire.reconcile(Cause::Periodic);
+    assert_eq!(pokes(&stub), 0, "a fresh commit also resets the silence clock");
+    age_git(&w, 7_200_000);
+    wire.reconcile(Cause::Periodic);
+    assert_eq!(pokes(&stub), 1, "all sources silent: poked, through the descriptor's own command");
+    let s = stall_report(&w);
+    assert_eq!((s["ok"].clone(), s["by_action"]["poke"]["ok"].clone()), (json!(1), json!(1)));
+    let log = std::fs::read_to_string(w.state.join("actions.ndjson")).unwrap();
+    let rec: Value = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|r| r["t"] == "action").unwrap();
+    assert_eq!(
+        (rec["feature"].clone(), rec["action"].clone(), rec["target"].clone(), rec["outcome"].clone()),
+        (json!("stall"), json!("poke"), json!("ws-1"), json!("ok"))
+    );
+    assert_eq!(rec["inputs"]["silent"], json!(true));
+    assert_eq!(rec["inputs"]["lifecycle_active"], json!(true));
+    assert_eq!(rec["inputs"]["paused"], json!(false));
+    assert!(rec["latency_ms"].is_u64());
+}
+
+#[test]
+fn a_paused_archived_or_ci_waiting_child_is_never_poked() {
+    // waiting on CI: the PR's checks are running
+    let w = world("stall-ci");
+    pokable(&w);
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    Connection::open(&w.db).unwrap().execute("UPDATE pull_requests SET checkStatus = 'Running'", []).unwrap();
+    wire(&w, &stub, Executor::Engine).reconcile(Cause::Startup);
+    assert_eq!(pokes(&stub), 0, "waiting on CI");
+    // paused: every open terminal of the child is resumable
+    let w = world("stall-paused");
+    pokable(&w);
+    Connection::open(&w.db).unwrap().execute("INSERT INTO builder_terminals VALUES (1, 'ws-1', 'resumable', 1)", []).unwrap();
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    wire(&w, &stub, Executor::Engine).reconcile(Cause::Startup);
+    assert_eq!(pokes(&stub), 0, "paused (or maybe paused): the owner has to resume it");
+    // archived or closed
+    let w = world("stall-archived");
+    pokable(&w);
+    Connection::open(&w.db).unwrap().execute("UPDATE builders SET isActive = 0, isHidden = 1 WHERE id = 'ws-1'", []).unwrap();
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    wire(&w, &stub, Executor::Engine).reconcile(Cause::Startup);
+    assert_eq!(pokes(&stub), 0, "archived");
+}
+
+#[test]
+fn the_live_recheck_refuses_a_poke_when_the_child_woke_up_after_the_decision() {
+    let w = world("stall-recheck");
+    pokable(&w);
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    let engine_on = Arc::new(AtomicBool::new(false));
+    let flag = engine_on.clone();
+    let sink: ah_engine::dswire::Sink = Arc::new(|_f| {});
+    let env = RequestEnv::from_pairs([("HOME", w.home.to_string_lossy().into_owned())]);
+    let wire = Wire::new(rt(&w), &w.home, &w.state, None, sink, Box::new(Shared(stub.clone())))
+        .with_executor(move |_| if flag.load(Ordering::SeqCst) { Executor::Engine } else { Executor::Node })
+        .with_env(env)
+        .with_act_gap(0);
+    wire.reconcile(Cause::Startup); // the snapshot says stuck; the executor is not the engine yet, so nothing is poked
+    assert!(wire.stuck_among(&["ws-1".to_string()]));
+    transcript(&w, 100); // it wakes up between the snapshot and the sweep
+    engine_on.store(true, Ordering::SeqCst);
+    wire.act_sweeps(true);
+    assert_eq!(pokes(&stub), 0, "the sources are read again right before acting, not taken from the snapshot");
+}
+
+#[test]
+fn the_silence_clock_reaching_stall_ms_re_reads_the_state_without_an_event() {
+    let w = world("stall-deadline");
+    pokable(&w);
+    write(&w.home.join(".anti-hall/devswarm/heartbeats/ws-1.json"), &json!({"ts": now() - 200}));
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    let sink: ah_engine::dswire::Sink = Arc::new(|_f| {});
+    let rt = Rt::new(
+        Cfg { stall_ms: 600, ..Cfg::from_defaults() },
+        Detection { app_db: Some(w.db.clone()), descriptors: true, mode: Mode::On, home: w.home.clone() },
+    );
+    let env = RequestEnv::from_pairs([("HOME", w.home.to_string_lossy().into_owned())]);
+    let wire = Wire::new(rt, &w.home, &w.state, None, sink, Box::new(Shared(stub.clone()))).with_executor(|_| Executor::Engine).with_env(env).with_act_gap(0);
+    wire.reconcile(Cause::Startup);
+    assert_eq!(wire.rt.current().workspaces["ws-1"].activity.value, ah_engine::devswarm_rt::state::Activity::Working);
+    wire.stall_tick();
+    assert_eq!(pokes(&stub), 0, "the clock has not reached stall_ms yet");
+    std::thread::sleep(Duration::from_millis(700));
+    wire.stall_tick(); // no file event, no periodic tick: the deadline itself triggers the read
+    assert_eq!(wire.rt.current().workspaces["ws-1"].activity.value, ah_engine::devswarm_rt::state::Activity::Stuck);
+    assert_eq!(pokes(&stub), 1, "and the poke follows");
+}
+
+#[test]
+fn a_transcript_event_on_a_stuck_child_clears_the_stuck_state_at_once() {
+    let w = world("stall-event");
+    let stub = Arc::new(Stub::default());
+    let wire = wire(&w, &stub, Executor::Node);
+    wire.reconcile(Cause::Startup);
+    assert!(wire.stuck_among(&["ws-1".to_string()]));
+    transcript(&w, 50);
+    wire.reconcile(Cause::Event); // what the watcher loop does for a transcript event on a stuck child
+    assert!(!wire.stuck_among(&["ws-1".to_string()]));
+    // and the watcher classifies a transcript path of a watched child as a dirty id, not a reconcile
+    let mut have = HashMap::new();
+    let dir = facts::transcript_path(&w.home, w.wt.to_str().unwrap(), "s1").parent().unwrap().to_path_buf();
+    have.insert(dir.clone(), watching::Role::Transcript("ws-1".into()));
+    let p = watching::plan(&have, false, &[dir.join("s1.jsonl")]);
+    assert_eq!((p.reconcile, p.dirty), (None, vec!["ws-1".to_string()]));
+}
+
+#[test]
+fn a_nudge_that_changed_nothing_and_an_escalation_followed_by_activity_are_logged_as_mistakes() {
+    let w = world("stall-followup");
+    pokable(&w);
+    let stub = Arc::new(Stub::default());
+    stub.git_fail.lock().unwrap().push("status".into());
+    let wire = wire(&w, &stub, Executor::Engine);
+    wire.reconcile(Cause::Startup);
+    assert_eq!(pokes(&stub), 1);
+    let wait = ah_engine::defaults::num("devswarm_rt.stall_followup_wait_ms") as i64;
+    wire.stall_followups(now() + 1000);
+    assert_eq!(stall_report(&w)["followups_pending"], json!(1), "not due yet");
+    wire.stall_followups(now() + wait + 1000); // nothing happened in the workspace since the poke
+    let s = stall_report(&w);
+    assert_eq!((s["mistakes"].clone(), s["mistakes_by_kind"]["nudge_no_change"].clone(), s["followups_pending"].clone()), (json!(1), json!(1), json!(0)));
+    assert_eq!(s["mistake_rate"], json!(1.0));
+    // a poke followed by activity is clean
+    ah_engine::actlog::followup_add(&w.state, "stall", "poke", "ws-1", 0, json!({"last_activity_ms": 0}), 0);
+    transcript(&w, 10);
+    wire.reconcile(Cause::Event);
+    wire.stall_followups(now());
+    let s = stall_report(&w);
+    assert_eq!(s["mistakes"], json!(1), "activity after the poke is not a mistake");
+    assert_eq!(s["followups_verified"], json!(2));
+    // an escalation after which the child shows activity again was needless
+    ah_engine::actlog::followup_add(&w.state, "stall", "escalate", "ws-1", 0, json!({"last_activity_ms": 0}), 0);
+    wire.stall_followups(now());
+    assert_eq!(stall_report(&w)["mistakes_by_kind"]["escalation_then_active"], json!(1));
 }

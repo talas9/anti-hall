@@ -88,7 +88,9 @@ pub fn resume_rel() -> String {
 pub fn read_resume(home: &Path, repo_key: &str) -> Vec<String> {
     let Some(v) = file_json(home, &resume_rel()) else { return Vec::new() };
     match (v.get("repoKey"), v.get("ids")) {
-        (Some(OVal::Str(k)), Some(OVal::Arr(ids))) if k == repo_key => ids.iter().filter_map(|x| if let OVal::Str(t) = x { Some(t.clone()) } else { None }).collect(),
+        (Some(OVal::Str(k)), Some(OVal::Arr(ids))) if k == repo_key => {
+            ids.iter().filter_map(|x| if let OVal::Str(t) = x { Some(t.clone()) } else { None }).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -100,12 +102,8 @@ pub fn plan_resume(home: &Path, repo_key: &str, ids: &[String], now: i64) -> Pla
     let op = if ids.is_empty() {
         Op::Unlink { rel: rel.clone(), pre: super::Pre::Any }
     } else {
-        let body = OVal::Obj(vec![
-            ("repoKey".into(), s(repo_key)),
-            ("ids".into(), OVal::Arr(ids.iter().map(|i| s(i)).collect())),
-            ("ts".into(), n(now)),
-        ])
-        .stringify();
+        let body =
+            OVal::Obj(vec![("repoKey".into(), s(repo_key)), ("ids".into(), OVal::Arr(ids.iter().map(|i| s(i)).collect())), ("ts".into(), n(now))]).stringify();
         write_op(home, &rel, body, false)
     };
     Planned {
@@ -170,7 +168,8 @@ pub fn repo_unknown_suppressed(home: &Path, repo_key: &str, scope: &str, now: i6
 fn clean_reason(reason: &str) -> R<String> {
     let re = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
     let stripped = re.replace_all(reason, "");
-    slice_utf16(js_trim(&stripped), defaults::num("devswarm_recon.reason_max") as usize).ok_or_else(|| Defer(defaults::text("devswarm_recon.why_surrogate").to_string()))
+    slice_utf16(js_trim(&stripped), defaults::num("devswarm_recon.reason_max") as usize)
+        .ok_or_else(|| Defer(defaults::text("devswarm_recon.why_surrogate").to_string()))
 }
 
 /// `record(home, repoKey, scope, reason, now)`: note one more sweep that met hivecontrol's "repository not found". The result is
@@ -525,7 +524,15 @@ pub fn touched(u: &Unit) -> Vec<String> {
                 out.push(rel.clone());
                 out.push(other.clone());
             }
-            Op::Upsert { .. } | Op::Derive { .. } | Op::Log { .. } | Op::Remove { .. } | Op::Forward { .. } | Op::RaiseCursors { .. } | Op::RemoveRegistryIf { .. } | Op::Guard { .. } | Op::Pull { .. } => {}
+            Op::Upsert { .. }
+            | Op::Derive { .. }
+            | Op::Log { .. }
+            | Op::Remove { .. }
+            | Op::Forward { .. }
+            | Op::RaiseCursors { .. }
+            | Op::RemoveRegistryIf { .. }
+            | Op::Guard { .. }
+            | Op::Pull { .. } => {}
         }
     }
     out.sort();

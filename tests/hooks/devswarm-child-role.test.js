@@ -552,7 +552,7 @@ test('SWITCH devswarm.childRole=false: no SessionStart override injection', () =
   } finally { h.cleanup(); }
 });
 
-// STABLE LAUNCHER (peer report, SkyCrew Primary, 2026-09-26): the CLI/WATCHER
+// STABLE LAUNCHER (peer report, DemoApp Primary, 2026-09-26): the CLI/WATCHER
 // paths embedded in the OVERRIDE_CORE directive and wakeDirective's CronCreate
 // prompt must be the version-independent launcher under ~/.anti-hall/bin/, not
 // this hook's own version-pinned __dirname path — so the text stays runnable

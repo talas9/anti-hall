@@ -486,10 +486,10 @@ fn send_refusals_match_node() {
         sd("send-to-primary-from-the-primary", &["send", "--to-primary", "--message", "hi"], "main", true),
         sd("send-refused-in-a-log-dir-of-its-own", &["send", "--message", "hi"], "child", true).env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
         sd("send-refused-under-a-test-context-is-node", &["send", "--message", "hi"], "child", false).env("NODE_TEST_CONTEXT", "child-v8"),
-        sd("send-unreadable-message-file-is-node", &["send", "--to", "child-2", "--message-file", "/no/such/file"], "child", false),
+        sd("send-unreadable-message-file", &["send", "--to", "child-2", "--message-file", "/no/such/file"], "child", true),
         sd("send-a-good-message-still-sends", &["send", "--to", "child-2", "--message", "hello"], "child", true),
     ];
-    check(&fx, &cases, &[], 17, 2);
+    check(&fx, &cases, &[], 20, 1);
 }
 
 // ---- done refusals --------------------------------------------------------------------------------------------------------

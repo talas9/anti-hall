@@ -34,6 +34,12 @@ pub enum Fail {
 pub trait Runner {
     /// GET `path` (relative to the API root) with `If-None-Match: etag` when one is given.
     fn call(&self, path: &str, etag: Option<&str>) -> Result<Resp, Fail>;
+
+    /// Run the configured merge command (`github_rt.ready_merge_argv`, already filled in): whether it succeeded and what it
+    /// printed (stdout and stderr). The default is "gh is missing"; only the real runner and a test stub merge.
+    fn merge(&self, _argv: &[String], _timeout_ms: u64) -> Result<(bool, String), Fail> {
+        Err(Fail::Missing)
+    }
 }
 
 /// Parse the stdout of `gh api -i`: status line, headers, a blank line, the body.
@@ -89,6 +95,20 @@ impl GhRunner {
 }
 
 impl Runner for GhRunner {
+    fn merge(&self, argv: &[String], timeout_ms: u64) -> Result<(bool, String), Fail> {
+        let Some((prog, rest)) = argv.split_first() else { return Err(Fail::Missing) };
+        let mut cmd = Command::new(prog);
+        cmd.args(rest);
+        let poll = crate::defaults::millis("client.fallback_poll_ms");
+        match crate::proc::run(cmd, "gh-merge", Duration::from_millis(timeout_ms), poll) {
+            Ok(o) => Ok((o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))),
+            Err(crate::proc::Error::Spawn(e)) if e.kind() == std::io::ErrorKind::NotFound => Err(Fail::Missing),
+            Err(crate::proc::Error::Spawn(e)) => Err(Fail::NoResponse(e.to_string())),
+            Err(crate::proc::Error::Timeout) => Err(Fail::Timeout),
+            Err(e) => Err(Fail::NoResponse(format!("{e:?}"))),
+        }
+    }
+
     fn call(&self, path: &str, etag: Option<&str>) -> Result<Resp, Fail> {
         let Some((prog, rest)) = self.argv.split_first() else { return Err(Fail::Missing) };
         let mut cmd = Command::new(prog);

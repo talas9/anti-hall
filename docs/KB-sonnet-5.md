@@ -4,7 +4,7 @@
 > unparseable at time of writing) and are tagged with sources; treat exact figures as directional
 > until checked against the official model card. Model IDs and pricing are from Anthropic docs.
 > Dual-platform note: anti-hall routes both Claude and Codex — the Codex-model table is in
-> [§7](#7-codex-model-parallel-gpt-5x); orchestration parity is OMC ↔ OMX (see `KB-omc.md` /
+> [§8](#8-codex-model-parallel-gpt-5x--for-the-codex-port); orchestration parity is OMC ↔ OMX (see `KB-omc.md` /
 > `KB-omx.md`).
 >
 > **[CORRECTION 2026-08-22 — title/lineup one full generation stale; every "Opus 4.8" reference

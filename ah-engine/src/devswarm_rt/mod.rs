@@ -9,8 +9,10 @@
 //!   trait, plus the [`sources::GithubState`] trait through which the GitHub realtime feature (A) supplies PR and CI facts.
 //! * [`state`]: the per-workspace record, the pure derivation from sources, the invariants I1 to I5 and the change diff.
 //! * [`reconcile`]: the live store, start-up diff (`while_down`), periodic repair counting and persistence.
+//! * [`linefile`]: the compact snapshot copy the statusline segment reads (feature 1; never the database at render time).
 //! * [`shadow`]: the comparison against the Node witness (a non-acting Node run in a scratch HOME), appended to a log.
 pub mod detect;
+pub mod linefile;
 pub mod reconcile;
 pub mod shadow;
 pub mod sources;

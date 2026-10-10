@@ -14,7 +14,11 @@ const T0: u64 = 1_000_000_000_000;
 const ACME: &str = "https://github.com/acme/widgets.git";
 
 fn kind_of(path: &str) -> &'static str {
-    if path.contains("/pulls?") {
+    if path.contains("info=merge") {
+        "merge_info"
+    } else if path.contains("/commits?sha=") {
+        "commits"
+    } else if path.contains("/pulls?") {
         "pulls"
     } else if path.contains("/reviews") {
         "reviews"
@@ -40,6 +44,8 @@ struct Stub {
     used: Cell<u64>,
     headers: Cell<bool>,
     remaining: Cell<Option<u64>>,
+    merges: RefCell<Vec<Vec<String>>>,
+    merge_reply: RefCell<Option<Result<(bool, String), Fail>>>,
 }
 
 impl Stub {
@@ -51,6 +57,8 @@ impl Stub {
             used: Cell::new(0),
             headers: Cell::new(true),
             remaining: Cell::new(None),
+            merges: RefCell::default(),
+            merge_reply: RefCell::default(),
         }
     }
 
@@ -81,6 +89,11 @@ impl Stub {
 }
 
 impl Runner for Stub {
+    fn merge(&self, argv: &[String], _timeout_ms: u64) -> Result<(bool, String), Fail> {
+        self.merges.borrow_mut().push(argv.to_vec());
+        self.merge_reply.borrow().clone().unwrap_or(Ok((true, String::from("merged"))))
+    }
+
     fn call(&self, path: &str, etag: Option<&str>) -> Result<Resp, Fail> {
         self.log.borrow_mut().push((path.to_string(), etag.map(String::from)));
         let kind = kind_of(path);
@@ -761,4 +774,289 @@ fn a_missing_corrupt_or_unwritable_state_says_nothing() {
     write_edges(&fx.dir, &[edge(1, "ci_red", "/r", true, 9_999_999_999_999, "x")]);
     std::fs::write(d.join("cursor"), "a file where the cursor directory should be").unwrap();
     assert_eq!(advise(&fx.dir, "s1", "/r"), Allow, "a cursor that cannot be written means no advisory, never a repeat at every prompt");
+}
+
+// ---- merge readiness (feature 4) -----------------------------------------------------------------------------------------
+
+fn head_of(fx: &Fx, name: &str) -> String {
+    fx.repo_state(name).sha
+}
+
+fn approved(s: &Stub, etag: &str) {
+    s.set("reviews", 200, etag, json!([{"user": {"login": "x"}, "state": "APPROVED"}]));
+}
+
+fn green(s: &Stub, etag: &str) {
+    s.set("checks", 200, etag, json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "success"}]}));
+}
+
+/// A DevSwarm app database with a primary and, when `workspace` is given, a child workspace on `branch` in `worktree`.
+fn app_db(fx: &Fx, workspace: Option<(&str, &Path)>) -> PathBuf {
+    let db = fx.dir.join("devswarm.db");
+    crate::discard::harmless(std::fs::remove_file(&db)); // keep: a leftover of an earlier call in the same test
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, worktreePath TEXT, label TEXT, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isActive INTEGER, lastSelectedAt TEXT);
+         CREATE TABLE builder_terminals (id INTEGER PRIMARY KEY, builderId TEXT, panelStatus TEXT, isActive INTEGER);
+         CREATE TABLE pull_requests (id TEXT PRIMARY KEY, number INTEGER, state TEXT, checkStatus TEXT, lastSyncedAt TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO builders VALUES ('prim','r1','main','/nowhere','Primary',0,NULL,'primary',1,NULL)", []).unwrap();
+    if let Some((branch, wt)) = workspace {
+        c.execute("INSERT INTO builders VALUES ('ws1','r1',?1,?2,'Child',0,NULL,'standard',1,NULL)", rusqlite::params![branch, wt.to_str().unwrap()]).unwrap();
+    }
+    db
+}
+
+/// A followed repo whose PR #7 (head branch `branch`) is open, unreviewed, with CI running (the baseline), then approved with CI
+/// green. `workspace`: the branch belongs to a DevSwarm workspace in the repo's directory.
+fn becomes_ready_on(name: &str, branch: &str, workspace: bool) -> (Fx, Stub) {
+    let mut fx = Fx::new(name);
+    let r = fx.repo("r1", Some(ACME));
+    if branch != "main" {
+        git(&r, &["checkout", "-q", "-b", branch]);
+    }
+    let db = app_db(&fx, workspace.then_some((branch, r.as_path())));
+    fx.cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
+    let s = Stub::new();
+    open_pr(&s);
+    fx.tick(&s, T0 + 1000);
+    approved(&s, "\"v2\"");
+    green(&s, "\"c2\"");
+    (fx, s)
+}
+
+fn becomes_ready(name: &str) -> (Fx, Stub) {
+    becomes_ready_on(name, "main", true)
+}
+
+fn merge_report(fx: &Fx) -> Value {
+    crate::actlog::report(&fx.cfg.state_dir(), Some("merge_ready"), T0 * 2, 0)["features"]["merge_ready"].clone()
+}
+
+#[test]
+fn a_ready_pull_request_is_announced_once_per_head_and_merged_once_with_everything_logged() {
+    let (fx, s) = becomes_ready("ready-merge");
+    let sha = head_of(&fx, "r1");
+    fx.tick(&s, T0 + 100_000);
+    assert!(edge_kinds(&fx).contains(&"ready".to_string()), "{:?}", edge_kinds(&fx));
+    let e = poll::edges(&fx.cfg).into_iter().find(|e| e["kind"] == "ready").unwrap();
+    assert_eq!(e["advisory"], json!(true), "sessions are told");
+    assert!(e["text"].as_str().unwrap().contains("ready to merge"));
+    let m = s.merges.borrow().clone();
+    assert_eq!(m.len(), 1, "merged once");
+    assert_eq!(m[0], ["gh", "pr", "merge", "7", "--repo", "acme/widgets", "--merge", "--match-head-commit", sha.as_str()]);
+    assert!(!m[0].iter().any(|a| a == "--admin"), "never bypasses branch protection");
+    // the same head again, later: neither announced nor merged a second time
+    fx.tick(&s, T0 + 5_000_000);
+    fx.tick(&s, T0 + 9_000_000);
+    assert_eq!(s.merges.borrow().len(), 1);
+    assert_eq!(edge_kinds(&fx).iter().filter(|k| *k == "ready").count(), 1);
+    let r = merge_report(&fx);
+    // the merge commit could not be read (the stub has no answer): after give_up_ms the follow-up ends as unknown, not as clean
+    assert_eq!(
+        (r["by_action"]["merge"]["ok"].clone(), r["by_action"]["notify"]["ok"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()),
+        (json!(1), json!(1), json!(0), json!(0))
+    );
+    let log = std::fs::read_to_string(fx.cfg.state_dir().join("actions.ndjson")).unwrap();
+    let merge: Value = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|r| r["action"] == "merge").unwrap();
+    assert_eq!(merge["target"], json!(format!("acme/widgets#7@{sha}")));
+    assert_eq!(merge["inputs"]["ci_green"], json!(true));
+    assert_eq!(merge["inputs"]["approved"], json!(true));
+    assert_eq!(merge["inputs"]["mergeable_state"], json!("clean"));
+    assert!(merge["latency_ms"].is_u64());
+    // the ledger holds both keys
+    let ledger = std::fs::read_to_string(repos::file(&fx.cfg, "ledger")).unwrap();
+    assert!(ledger.contains(&format!("ready:acme/widgets#7:{sha}")) && ledger.contains(&format!("merge:acme/widgets#7:{sha}")));
+}
+
+#[test]
+fn auto_merge_off_still_announces_and_notify_off_records_without_telling_sessions() {
+    let (fx0, s) = becomes_ready("ready-off-a");
+    let cfg = Cfg::shipped().in_dir(&fx0.cfg.state_dir()).with("github_rt.ready_auto_merge", json!(false));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert_eq!(s.merges.borrow().len(), 0, "auto_merge off: nothing is merged");
+    assert!(poll::edges(&cfg).iter().any(|e| e["kind"] == "ready"), "but the notice is still recorded");
+    let (fx1, s1) = becomes_ready("ready-off-b");
+    let cfg = Cfg::shipped().in_dir(&fx1.cfg.state_dir()).with("github_rt.ready_notify", json!(false)).with("github_rt.ready_auto_merge", json!(false));
+    poll::tick(&cfg, &s1, T0 + 100_000, false);
+    let e = poll::edges(&cfg).into_iter().find(|e| e["kind"] == "ready").unwrap();
+    assert_eq!(e["advisory"], json!(false));
+    let (fx2, s2) = becomes_ready("ready-off-c");
+    let cfg = Cfg::shipped().in_dir(&fx2.cfg.state_dir()).with("github_rt.ready_enabled", json!(false));
+    poll::tick(&cfg, &s2, T0 + 100_000, false);
+    assert!(!poll::edges(&cfg).iter().any(|e| e["kind"] == "ready") && s2.merges.borrow().is_empty(), "ready_enabled off: no notice, no merge");
+}
+
+#[test]
+#[allow(clippy::type_complexity)]
+fn every_ready_condition_is_required() {
+    // (name, what to change after the baseline, the condition that must read false)
+    let cases: [(&str, &dyn Fn(&Stub), &str); 5] = [
+        (
+            "draft",
+            &|s: &Stub| s.set("pulls", 200, "\"pd\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}])),
+            "not_draft",
+        ),
+        ("behind", &|s: &Stub| s.set("pull", 200, "\"db\"", json!({"mergeable_state": "behind", "mergeable": true})), "up_to_date"),
+        ("blocked", &|s: &Stub| s.set("pull", 200, "\"dk\"", json!({"mergeable_state": "blocked", "mergeable": true})), "mergeable_state_ok"),
+        ("changes", &|s: &Stub| s.set("reviews", 200, "\"vc\"", json!([{"user": {"login": "x"}, "state": "CHANGES_REQUESTED"}])), "no_changes_requested"),
+        (
+            "ci",
+            &|s: &Stub| s.set("checks", 200, "\"cf\"", json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "failure"}]})),
+            "ci_green",
+        ),
+    ];
+    for (name, change, cond) in cases {
+        let (fx, s) = becomes_ready(&format!("cond-{name}"));
+        change(&s);
+        fx.tick(&s, T0 + 100_000);
+        let st = fx.repo_state("r1").status;
+        assert_eq!(st["ready"], json!(false), "{name}");
+        assert_eq!(st["ready_conditions"][cond], json!(false), "{name}: {}", st["ready_conditions"]);
+        assert!(s.merges.borrow().is_empty() && !edge_kinds(&fx).contains(&"ready".to_string()), "{name}");
+    }
+    // no approval needed when the setting says so; a missing required check is never ready
+    let (fx, s) = becomes_ready("cond-noreview");
+    s.set("reviews", 200, "\"v0\"", json!([]));
+    let cfg =
+        Cfg::shipped().in_dir(&fx.cfg.state_dir()).with("github_rt.ready_require_approval", json!(false)).with("github_rt.ready_auto_merge", json!(false));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert_eq!(fx.repo_state("r1").status["ready"], json!(true));
+    let (fx, s) = becomes_ready("cond-required");
+    s.set(
+        "rules",
+        200,
+        "\"rq\"",
+        json!([{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "e2e"}]}}]),
+    );
+    s.set("pull", 200, "\"dr\"", json!({"mergeable_state": "clean", "mergeable": true}));
+    fx.cfg.int("github_rt.rules_ms");
+    fx.tick(&s, T0 + 100_000);
+    // the rules are re-read only after rules_ms, so move far enough ahead
+    fx.tick(&s, T0 + 100_000 + fx.cfg.int("github_rt.rules_ms") + 100_000);
+    let st = fx.repo_state("r1").status;
+    assert_eq!(st["ready_conditions"]["required_present"], json!(false), "{}", st["ready_conditions"]);
+}
+
+#[test]
+fn github_refusing_the_merge_is_logged_as_refused_and_never_retried_for_that_head() {
+    let (fx, s) = becomes_ready("ready-refused");
+    *s.merge_reply.borrow_mut() =
+        Some(Ok((false, String::from("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge. (mergePullRequest)"))));
+    fx.tick(&s, T0 + 100_000);
+    fx.tick(&s, T0 + 5_000_000);
+    assert_eq!(s.merges.borrow().len(), 1, "one attempt per head, whatever the answer");
+    let r = merge_report(&fx);
+    assert_eq!(
+        (r["refused"].clone(), r["ok"].clone(), r["failed"].clone()),
+        (json!(1), json!(1), json!(0)),
+        "the notice is ok; the merge was refused by GitHub's rule"
+    );
+    assert_eq!(r["by_action"]["merge"]["refused"], json!(1));
+    assert_eq!(r["followups_pending"], json!(0), "nothing was merged, nothing to check afterwards");
+    // another failure kind counts as failed
+    let (fx, s) = becomes_ready("ready-failed");
+    *s.merge_reply.borrow_mut() = Some(Err(Fail::Timeout));
+    fx.tick(&s, T0 + 100_000);
+    assert_eq!(merge_report(&fx)["by_action"]["merge"]["failed"], json!(1));
+}
+
+#[test]
+fn the_live_recheck_stops_a_merge_when_the_pull_request_changed_after_the_edge() {
+    let (fx, s) = becomes_ready("ready-recheck");
+    // the poll sees an approval; the re-check right before merging sees a request for changes
+    s.queue("reviews", reply(200, &[("etag", "\"v3\"")], &json!([{"user": {"login": "x"}, "state": "APPROVED"}]).to_string()));
+    s.queue("reviews", reply(200, &[("etag", "\"v4\"")], &json!([{"user": {"login": "x"}, "state": "CHANGES_REQUESTED"}]).to_string()));
+    fx.tick(&s, T0 + 100_000);
+    assert!(s.merges.borrow().is_empty(), "no merge");
+    let r = merge_report(&fx);
+    assert_eq!(r["by_action"]["merge"]["refused"], json!(1));
+    let log = std::fs::read_to_string(fx.cfg.state_dir().join("actions.ndjson")).unwrap();
+    assert!(log.contains("no_changes_requested") || log.contains("approved"), "the refusal names the failed conditions: {log}");
+    assert!(!std::fs::read_to_string(repos::file(&fx.cfg, "ledger")).unwrap_or_default().contains("merge:"), "a refused re-check claims nothing");
+}
+
+fn merged_world(name: &str) -> (Fx, Stub, u64) {
+    let (fx, s) = becomes_ready(name);
+    fx.tick(&s, T0 + 100_000);
+    assert_eq!(s.merges.borrow().len(), 1);
+    s.set("merge_info", 200, "\"mi\"", json!({"merged": true, "merge_commit_sha": "m1m1m1m", "base": {"ref": "main"}}));
+    (fx, s, T0 + 100_000)
+}
+
+#[test]
+fn a_merge_whose_base_branch_goes_red_or_is_reverted_is_a_mistake_and_a_clean_one_is_verified_after_the_window() {
+    let wait = 900_000;
+    // red CI on the merge commit
+    let (fx, s, t) = merged_world("follow-red");
+    s.set("checks", 200, "\"cr\"", json!({"check_runs": [{"name": "build", "status": "completed", "conclusion": "failure"}]}));
+    s.set("commits", 200, "\"k0\"", json!([]));
+    fx.tick(&s, t + wait + 60_000);
+    let r = merge_report(&fx);
+    assert_eq!(r["mistakes_by_kind"]["base_ci_red_after_merge"], json!(1), "{r}");
+    assert_eq!(r["followups_pending"], json!(0));
+    // a revert commit
+    let (fx, s, t) = merged_world("follow-revert");
+    s.set("commits", 200, "\"k1\"", json!([{"sha": "r1", "commit": {"message": "Revert \"t\"\n\nThis reverts commit m1m1m1m."}}]));
+    fx.tick(&s, t + wait + 60_000);
+    assert_eq!(merge_report(&fx)["mistakes_by_kind"]["merged_then_reverted"], json!(1));
+    // CI still running: looked at again later, nothing is decided yet
+    let (fx, s, t) = merged_world("follow-running");
+    s.set("checks", 200, "\"cw\"", json!({"check_runs": [{"name": "build", "status": "in_progress", "conclusion": null}]}));
+    s.set("commits", 200, "\"k2\"", json!([]));
+    fx.tick(&s, t + wait + 60_000);
+    let r = merge_report(&fx);
+    assert_eq!((r["mistakes"].clone(), r["followups_pending"].clone()), (json!(0), json!(1)));
+    // clean: green CI and no revert, then the revert window passes
+    let (fx, s, t) = merged_world("follow-clean");
+    s.set("commits", 200, "\"k3\"", json!([{"sha": "z", "commit": {"message": "unrelated"}}]));
+    fx.tick(&s, t + wait + 60_000);
+    let r = merge_report(&fx);
+    assert_eq!(
+        (r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone()),
+        (json!(0), json!(1), json!(0)),
+        "still watching for a revert"
+    );
+    fx.tick(&s, t + 90_000_000);
+    let r = merge_report(&fx);
+    assert_eq!(
+        (r["mistakes"].clone(), r["followups_pending"].clone(), r["followups_verified"].clone(), r["mistake_rate"].clone()),
+        (json!(0), json!(0), json!(1), json!(0.0))
+    );
+}
+
+#[test]
+fn only_a_workspace_pull_request_is_auto_merged() {
+    // a dependency bot's pull request, a release pull request (dev into main) and a person's: ready, announced, never merged
+    for branch in ["dependabot/npm_and_yarn/lodash-4.17.21", "dev", "alice/fix-typo"] {
+        let (fx, s) = becomes_ready_on(&format!("scope-{}", branch.len()), branch, false);
+        fx.tick(&s, T0 + 100_000);
+        fx.tick(&s, T0 + 5_000_000);
+        assert!(edge_kinds(&fx).contains(&"ready".to_string()), "{branch}: still announced");
+        assert!(s.merges.borrow().is_empty(), "{branch}: not a workspace branch, never merged");
+        let r = merge_report(&fx);
+        assert_eq!(r["by_action"]["merge"]["refused"], json!(1), "{branch}: refused once, not once per tick: {r}");
+    }
+    // the branch of a live workspace in this directory: merged once
+    let (fx, s) = becomes_ready_on("scope-ws", "feat/child-work", true);
+    fx.tick(&s, T0 + 100_000);
+    fx.tick(&s, T0 + 5_000_000);
+    assert_eq!(s.merges.borrow().len(), 1);
+    // the same branch name on a workspace that lives in another directory is not this pull request's workspace
+    let (fx, s) = becomes_ready_on("scope-elsewhere", "feat/child-work", false);
+    let db = app_db(&fx, Some(("feat/child-work", Path::new("/somewhere/else"))));
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_app_db", json!(db.to_str().unwrap()));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert!(s.merges.borrow().is_empty());
+    // scope all: any ready pull request
+    let (fx, s) = becomes_ready_on("scope-all", "dev", false);
+    let cfg = Cfg::shipped().in_dir(&fx.dir.join("state")).with("github_rt.ready_auto_merge_scope", json!("all"));
+    poll::tick(&cfg, &s, T0 + 100_000, false);
+    assert_eq!(s.merges.borrow().len(), 1);
+    // a draft is never ready, in any scope
+    let (fx, s) = becomes_ready_on("scope-draft", "feat/d", true);
+    s.set("pulls", 200, "\"pdr\"", json!([{"number": 7, "state": "open", "draft": true, "base": {"ref": "main"}, "title": "t"}]));
+    fx.tick(&s, T0 + 100_000);
+    assert!(s.merges.borrow().is_empty());
 }

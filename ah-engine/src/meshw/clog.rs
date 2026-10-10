@@ -89,6 +89,7 @@ pub(crate) fn write_line(dir: &std::path::Path, line: &str) {
 
 /// `buildEntry` + `writeEntry`. `repo_key` is the explicit `ctx.repoKey` (`Some(None)` = explicit null); `None` = not given,
 /// so the environment's `DEVSWARM_REPO_KEY` or null.
+#[allow(clippy::too_many_arguments)]
 fn write_entry(inv: &Inv, op: &str, level: &str, repo_key: Option<Option<&str>>, mesh_id: Option<&str>, msg: &str, err: Option<&str>, ctx: Vec<(&str, OVal)>) {
     let Some(dir) = dir_of(inv) else { return };
     let f = defaults::list("devswarm_cli.log_entry_fields");

@@ -1,0 +1,31 @@
+title: "[Show] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show how you use anti-hall: a setup, a workflow, a skill or settings combination, a screenshot of the statusline, or a story of a guard that saved you.
+        Remove secrets, tokens and personal paths before posting.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you made or how you use it
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How it works
+      description: Settings, commands or steps others need to try it.
+  - type: dropdown
+    id: port
+    attributes:
+      label: Platform
+      options:
+        - Claude Code plugin
+        - Codex port
+        - Both
+  - type: input
+    id: link
+    attributes:
+      label: Link
+      description: Optional link to a repo, post or recording.

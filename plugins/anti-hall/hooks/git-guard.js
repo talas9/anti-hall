@@ -44,6 +44,7 @@
 'use strict';
 
 const fs = require('fs');
+const { readOnlyGitEnv } = require('./lib/git-env.js');
 const path = require('path');
 const io = require('./lib/guard-io.js');
 const { HEREDOC_RE, basename, parseHeredocAt, SHELL_VERBS } = require('./lib/shell-scan.js');
@@ -2992,7 +2993,7 @@ function committedHandovers(ev, lastCdDir) {
     if (handoverQueryCache.has(key)) return handoverQueryCache.get(key);
     if (handoverQueryBudget <= 0) return undefined;
     handoverQueryBudget--;
-    const r = spawnSync('git', ['-C', dir, '-c', 'diff.relative=false', ...args], { encoding: 'utf8', timeout: 3000, env: guardEnv });
+    const r = spawnSync('git', ['-C', dir, '-c', 'diff.relative=false', ...args], { encoding: 'utf8', timeout: 3000, env: readOnlyGitEnv(guardEnv) });
     const out = r.status === 0 && typeof r.stdout === 'string' ? parse(r.stdout) : null;
     handoverQueryCache.set(key, out);
     return out;

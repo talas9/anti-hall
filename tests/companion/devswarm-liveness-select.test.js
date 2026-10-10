@@ -283,7 +283,7 @@ test('cursorEvidence: a throwing storeHandle degrades to neutral sentinels, neve
 
 // ============================================================================
 // FIELD SCENARIO (spec item 6 E2E, unit-level reproduction): the exact
-// SkyCrew ground-truth shape — dead slug row FRESHER updatedAt, sessionId set
+// DemoApp ground-truth shape — dead slug row FRESHER updatedAt, sessionId set
 // to the sibling row's registry id (stale cross-reference), NO cursor row,
 // unread backlog; live UUID row OLDER updatedAt, self-consistent sessionId,
 // cursor present (draining). Assert the ranking picks the UUID row despite

@@ -23,7 +23,7 @@ const {
   retireIdentityFamilyDescriptors,
 } = require('./fold.js');
 const {
-  meshCandidateRows,
+  descriptorIdsForMesh, meshCandidateRows,
 } = require('./send.js');
 const {
   APP_SOURCED_MARKERS, readJsonDescriptors,
@@ -793,7 +793,8 @@ function cmdArchive(id, ctx, opts) {
 //   5. Two or more -> ARCHIVE NOTHING; return an error listing every
 //      candidate's full id so the caller can pick the exact one.
 // Never throws; every path returns { ok, id? , error?, candidates? }.
-function resolveArchiveId(raw, ctx) {
+function resolveArchiveId(raw, ctx, opts) {
+  const unarchiving = !!(opts && opts.unarchive);
   if (!isSafeId(raw)) return { ok: false, error: 'invalid or missing workspace id' };
   const home = ctx.home;
   // Step 1: exact id short-circuit (active OR archived-only descriptor) — no
@@ -819,6 +820,26 @@ function resolveArchiveId(raw, ctx) {
     candidates = Object.keys(sum.workspaces || {}).filter((wid) => isSafeId(wid) && wid.startsWith(raw));
   } catch (_) {
     candidates = []; // fail-closed: an unresolvable project context yields no candidates, not a crash
+  }
+  if (unarchiving && candidates.length === 0) {
+    // unarchive targets ARCHIVED descriptors: the active-workspace pool above is the wrong
+    // universe (an archived workspace is excluded from it by construction, and its registry
+    // row is tombstoned, so the registry mesh join finds nothing either). Resolve prefix and
+    // meshId against the archived-descriptor dir — the same join, other source.
+    let archivedIds = [];
+    try { archivedIds = fs.readdirSync(archivedDir(home)).filter((n) => n.endsWith('.json')).map((n) => n.slice(0, -5)).filter((n) => isSafeId(n)); } catch (_) { archivedIds = []; }
+    const byPrefix = archivedIds.filter((n) => n.startsWith(raw));
+    const byMesh = descriptorIdsForMesh(home, raw, 'archived');
+    const hits = Array.from(new Set(byPrefix.concat(byMesh))).sort();
+    if (hits.length === 1) return { ok: true, id: hits[0] };
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        error: 'ambiguous archived id ' + JSON.stringify(raw) + ' matches ' + hits.length
+          + ' archived workspaces — unarchived nothing; use one full id: ' + hits.join(', '),
+        candidates: hits,
+      };
+    }
   }
   if (candidates.length === 1) return { ok: true, id: candidates[0] };
   if (candidates.length === 0) {
@@ -861,7 +882,11 @@ function resolveMeshIdToWorkspaceIds(meshId, ctx) {
     const s = store.openStore({ home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
     try {
       const rows = meshCandidateRows(s, meshId).filter((d) => d && d.id != null && String(d.id) !== String(meshId) && isSafeId(String(d.id)));
-      return rows.map((d) => String(d.id)).sort(); // several rows: never guess which to archive
+      const ids = rows.map((d) => String(d.id));
+      // A live descriptor whose worktree derives to this meshId (no registry row yet / any
+      // more) is the same workspace — the registry-only join missed it.
+      for (const id of descriptorIdsForMesh(home, meshId, 'live')) if (!ids.includes(id)) ids.push(id);
+      return ids.sort(); // several rows: never guess which to archive
     } finally { s.close(); }
   } catch (_) { return []; }
 }

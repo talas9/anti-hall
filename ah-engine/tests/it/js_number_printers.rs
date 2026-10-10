@@ -100,4 +100,3 @@ fn no_ad_hoc_float_formatter_outside_the_one_printer() {
     }
     assert!(hits.is_empty(), "ad-hoc number formatter(s) outside jsport/num.rs (use num::to_js_string):\n{}", hits.join("\n"));
 }
-

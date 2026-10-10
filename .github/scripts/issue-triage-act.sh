@@ -27,7 +27,7 @@ case "$cmd" in
     once comment
     body=$(head -c 4000)
     [ -n "$body" ] || { echo "empty comment" >&2; exit 1; }
-    printf '%s' "$body" | gh issue comment "$ISSUE" --body-file -
+    printf '%s' "$body" | "$(dirname "$0")/bot-comment.sh" "$ISSUE" triage-brief
     ;;
   *) echo "usage: label <name>... | comment (body on stdin)" >&2; exit 1 ;;
 esac

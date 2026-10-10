@@ -842,7 +842,7 @@ function buildReport(rows, opts = {}) {
     if (!row.id) continue;
     if (!byId.has(row.id)) {
       byId.set(row.id, {
-        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0,
+        id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, derivedCalls: 0,
         excludedNoCompare: 0,
         // changedHashByFresh: hash -> direction, populated ONLY from
         // non-cached rows. A decision (content hash) is counted ONCE
@@ -886,6 +886,10 @@ function buildReport(rows, opts = {}) {
       });
     }
     const bucket = byId.get(row.id);
+    // A row tagged derivedFrom (e.g. 'triage': supervisorBlockerLabel / parentGateQuestion
+    // re-read the triage cache label) is NOT an independent Jev decision -- keep it out of
+    // calls / jev% / cache totals and report it separately as derivedCalls.
+    if (typeof row.derivedFrom === 'string' && row.derivedFrom) { bucket.derivedCalls++; continue; }
     bucket.calls++;
     if (row.backend === 'jev' || row.backend === 'cache') bucket.jevAnswered++;
     if (row.backend === 'cache') bucket.cacheHits++;
@@ -1145,6 +1149,7 @@ function buildReport(rows, opts = {}) {
       cachedCalls: bucket.cacheHits,
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
+      derivedCalls: bucket.derivedCalls,
       agreementPct,
       // agreeTotal: the denominator behind agreementPct above -- DISTINCT
       // fresh decisions with a compare signal, never a raw row count. Always

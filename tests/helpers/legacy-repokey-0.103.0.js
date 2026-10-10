@@ -71,7 +71,7 @@ const MAX_NAME_LEN = 40;
 
 // GIT_SPAWN_TIMEOUT_MS — Wave D9: bounds defaultRun's git spawn so a `git`
 // stuck on a stale/unmounted worktree (or a fixture dir a test suite pollutes
-// the real registry with — the exact SkyCrew defect f3c1bc827d89 root cause)
+// the real registry with — the exact DemoApp defect f3c1bc827d89 root cause)
 // can never hang this call forever. `ANTIHALL_REPOKEY_GIT_TIMEOUT_MS` is a
 // TEST-ONLY override (never documented/relied on in production) so a test can
 // prove the kill-on-timeout behavior against a deliberately-hanging fake `git`
@@ -109,7 +109,7 @@ function defaultRun(spec) {
   try {
     // Wave D9: a `git` subprocess stuck on a stale/unmounted worktree (or a
     // fixture dir a test suite pollutes the real registry with — the exact
-    // SkyCrew defect f3c1bc827d89 root cause) must never hang this call
+    // DemoApp defect f3c1bc827d89 root cause) must never hang this call
     // forever. `timeout` makes spawnSync kill it and set `r.error`/a null
     // `r.status`, which the existing failure check below already treats
     // identically to any other non-zero-exit git failure — no separate
@@ -266,7 +266,7 @@ function repoKeyForWorktree(worktree, opts) {
 //     IS the common dir (matches git's own `--git-common-dir` output for a
 //     submodule with no further linked worktrees of its own).
 // Verified live against real repos/worktrees/submodules on this machine
-// (2026-09-18, ToolFox3 linked worktrees + skycrew submodules) to produce
+// (2026-09-18, DevBoard3 linked worktrees + demoapp submodules) to produce
 // BYTE-IDENTICAL output to `git rev-parse --git-common-dir` for every shape
 // above.
 // Returns null (fail-open) for: a nonexistent worktree path (no spawn at

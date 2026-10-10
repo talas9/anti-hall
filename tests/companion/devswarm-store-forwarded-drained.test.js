@@ -182,7 +182,7 @@ for (const B of backends) {
     const home = tmpHome();
     try {
       const s = open(home);
-      const wt = path.join(home, 'wt-live');
+      const wt = path.join(home, 'wt-active');
       fs.mkdirSync(wt, { recursive: true });
       // A live family survivor exists AND every unread row will be given a
       // matching hash in it — i.e. EVERY OTHER condition forwardedDrained

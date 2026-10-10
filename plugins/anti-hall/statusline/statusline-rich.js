@@ -6,6 +6,10 @@
 'use strict';
 
 const fs = require('fs');
+// GIT_OPTIONAL_LOCKS=0 for the read-only status call (see hooks/lib/git-env.js); inline fallback if the plugin tree is absent.
+let readOnlyGitEnv;
+try { readOnlyGitEnv = require('../hooks/lib/git-env.js').readOnlyGitEnv; }
+catch { readOnlyGitEnv = (b) => Object.assign({}, b || process.env, { GIT_OPTIONAL_LOCKS: '0' }); }
 const path = require('path');
 const { execSync, execFileSync, spawnSync } = require('child_process');
 const os = require('os');
@@ -307,6 +311,7 @@ function getGitInfo() {
         stdio: ['pipe', 'pipe', 'pipe'],
         maxBuffer: 4 * 1024 * 1024,
         cwd: CWD,
+        env: readOnlyGitEnv(),
       }).trim();
     } catch {
       return '';

@@ -647,3 +647,19 @@ test('build-cases: suite loader and the B1 extended prompt filter', () => {
   assert.ok(!B.NO_MENTION.test('Rename the helper.'));
   assert.ok(B.loadFamilies().length > 0);
 });
+
+test('trace: one message.id split across 3 assistant events counts its usage once (last usage wins)', () => {
+  const ev = (id, content, usage) => ({ type: 'assistant', message: { id, content, usage } });
+  const u = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 };
+  const m = T.extractRunMetrics([
+    ev('msg_1', [{ type: 'text', text: 'a' }], { ...u, output_tokens: 1 }),
+    ev('msg_1', [{ type: 'tool_use', id: 'x1', name: 'Bash', input: {} }], u),
+    ev('msg_1', [{ type: 'tool_use', id: 'x2', name: 'Bash', input: {} }], u),
+    ev('msg_2', [{ type: 'text', text: 'b' }], u),
+    // a sidechain event must stay out of main totals
+    { type: 'assistant', parent_tool_use_id: 'sp', message: { id: 'msg_3', content: [], usage: u } },
+  ]);
+  assert.deepStrictEqual(m.mainTokens, { input: 20, output: 10, cacheRead: 200, cacheWrite: 14 });
+  assert.strictEqual(m.firstCacheRead, 100);
+  assert.strictEqual(m.mainToolCalls, 2);
+});

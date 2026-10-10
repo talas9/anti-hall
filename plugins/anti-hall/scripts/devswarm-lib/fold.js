@@ -16,7 +16,7 @@ const {
 } = require('./core.js');
 const {
   canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, isLiveSessionId,
-  liveSessionElsewhere, pickSurvivor, rawPathMeshId,
+  isPrimaryCheckout, liveSessionElsewhere, pickSurvivor, rawPathMeshId,
 } = require('./identity.js');
 const {
   floorCursor, logCursorWrite, readSiblingSeenCursor, siblingBaseCursor,
@@ -681,6 +681,89 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
   }
 }
 
+// repairRootMappedChildRows(home, repoKey, ctx) — forward-migration step of the
+// heal-registry-rows sweep (SkyCrew child report, 2026-10-09). Before the
+// identity fix (companion/lib/identity.js: a linked worktree of a SUBMODULE under
+// a child worktree climbed to the MAIN checkout), a child that ran a verb from
+// inside its submodule registered its id against the PRIMARY checkout's path, and
+// every later register/pull then hit upsertRegistry's different-path guard.
+// A row is repaired only on positive proof from the DevSwarm app's own record:
+// the id is a NON-primary builder whose worktree exists, is a different path
+// than the row's, belongs to the SAME project, and the row's current path IS the
+// Primary checkout. Rewrites the registry row (and the descriptor when it still
+// carries the same wrong path) to the app's path; the inbox/cursor/nudge paths
+// that start with the old path move with it. Idempotent (a repaired row no longer
+// matches), fail-open per row, no delete. ctx.dryRun counts only.
+function repairRootMappedChildRows(home, repoKey, ctx) {
+  const out = { repaired: 0, pending: 0, rows: [] };
+  try {
+    const env = (ctx && ctx.env) || process.env;
+    const dryRun = !!(ctx && ctx.dryRun) || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+    let states = null;
+    try { states = require('../../companion/lib/devswarm-app-db.js').builderStates({ home, env }); } catch (_) { states = null; }
+    if (!states || !repoKey) return out;
+    let rows = [];
+    const s0 = store.openStore({ home, hash: repoKey, backend: ctx && ctx.backend, env, readOnly: true });
+    try { rows = s0.listRegistry() || []; } finally { try { s0.close(); } catch (_) {} }
+    const prefixSwap = (v, from, to) => (typeof v === 'string' && (v === from || v.startsWith(from + path.sep)) ? to + v.slice(from.length) : v);
+    // proof(row) -> { app, oldPath, newPath } | null (same classification outside and inside the id lock)
+    const proof = (row) => {
+      if (!row || row.id == null || !row.worktreePath || !isSafeId(String(row.id)) || /^primary-/.test(String(row.id))) return null;
+      const app = states.get(String(row.id));
+      if (!app || app.builderType === 'primary' || !app.worktreePath) return null;
+      const oldIc = identityContext(String(row.worktreePath));
+      if (!oldIc.worktreeRoot || !isPrimaryCheckout(oldIc.worktreeRoot, oldIc.mainWorktree, home, env)) return null;
+      let newPath;
+      try { newPath = fs.realpathSync(String(app.worktreePath)); } catch (_) { return null; } // gone worktree: no proof
+      const newIc = identityContext(newPath);
+      if (newIc.worktreeRoot !== newPath || newIc.repoKey !== oldIc.repoKey || newPath === oldIc.worktreeRoot) return null;
+      return { app, oldPath: String(row.worktreePath), newPath };
+    };
+    for (const row of rows) {
+      let p = null;
+      try { p = proof(row); } catch (_) { p = null; }
+      if (!p) continue;
+      out.pending++;
+      if (dryRun) { out.rows.push({ id: row.id, action: 'would-repair', to: p.newPath }); continue; }
+      const r = withIdLock(String(row.id), home, () => {
+        const s = store.openStore({ home, hash: repoKey, backend: ctx && ctx.backend, env });
+        try {
+          const cur = (s.listRegistry() || []).find((x) => x && String(x.id) === String(row.id));
+          const pr = cur ? proof(cur) : null;
+          if (!pr) return { repaired: false };
+          let nudge = cur.nudgeCommand;
+          if (Array.isArray(nudge)) {
+            const moved = nudge.map((a) => prefixSwap(a, pr.oldPath, pr.newPath));
+            // the poke script's last argument is the branch it pokes: the child's, not the Primary's
+            if (moved.some((a, i) => a !== nudge[i]) && pr.app.branchName && moved.length > 1) moved[moved.length - 1] = String(pr.app.branchName);
+            nudge = moved;
+          }
+          const written = s.upsertRegistry(Object.assign({}, cur, {
+            worktreePath: pr.newPath,
+            inboxPath: prefixSwap(cur.inboxPath, pr.oldPath, pr.newPath),
+            cursorPath: prefixSwap(cur.cursorPath, pr.oldPath, pr.newPath),
+            nudgeCommand: nudge,
+          }), { allowPathChange: true });
+          if (!written) return { repaired: false };
+          const desc = readDescriptorFile(home, cur.id);
+          if (desc && String(desc.id) === String(cur.id) && String(desc.worktreePath) === pr.oldPath) {
+            writeDescriptorAtomic(home, cur.id, Object.assign({}, desc, {
+              worktreePath: pr.newPath,
+              inboxPath: prefixSwap(desc.inboxPath, pr.oldPath, pr.newPath),
+              cursorPath: prefixSwap(desc.cursorPath, pr.oldPath, pr.newPath),
+              nudgeCommand: Array.isArray(desc.nudgeCommand) ? desc.nudgeCommand.map((a) => prefixSwap(a, pr.oldPath, pr.newPath)) : desc.nudgeCommand,
+            }));
+          }
+          return { repaired: true, to: pr.newPath };
+        } finally { try { s.close(); } catch (_) {} }
+      });
+      if (r && r.repaired) { out.repaired++; out.rows.push({ id: row.id, action: 'repaired', to: r.to }); }
+    }
+  } catch (_) { /* fail-open: the heal sweep continues */ }
+  return out;
+}
+
+
 // healRegistry(home, repoKey, ctx) — Claim 3 (d): the ONE exported sweep
 // `doctor`, `update.js`'s repair pass, and `cmdReconcile`'s own self-heal
 // pre-pass all share: runs rehomeMiskeyedRow over EVERY row currently in
@@ -691,6 +774,10 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
 function healRegistry(home, repoKey, ctx) {
   const out = { repoKey, checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] };
   if (!repoKey) return out;
+  // Root-mapped child rows first (proof from the app's own builder record), so the descriptor-led heal below sees the right path.
+  const rootFix = repairRootMappedChildRows(home, repoKey, ctx);
+  if (rootFix.repaired) out.healed += rootFix.repaired;
+  out.rootMapped = rootFix.repaired;
   let rows = [];
   try {
     const s = store.openStore({ home, hash: repoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
@@ -2481,7 +2568,7 @@ module.exports = {
   MESH_ROW_COPY_FIELDS, meshRowCopy, ARCHIVE_FORWARD_MAX_AGE_DAYS_DEFAULT, archiveForwardMaxAgeMs,
   archivedForwardProvenancePrefix, ARCHIVED_FORWARD_PREFIX_RE, stripArchivedForwardPrefix,
   forwardedOrigHashOf, logicalDeliveryKey, CONSUMED_HASH_SEED_CAP, consumedDedupSeed,
-  forwardArchivedOrphanUnread, rehomeAcrossStores, rehomeCore, rehomeMiskeyedRow, healRegistry,
+  forwardArchivedOrphanUnread, rehomeAcrossStores, rehomeCore, rehomeMiskeyedRow, healRegistry, repairRootMappedChildRows,
   maybeRehomeToCwdProject, isForwardable, foldSiblingGapRows, retireWorktreeDuplicates,
   foldGroupIntoSurvivor, pickArchiveForwardSurvivor, archiveLeftReason,
   retireArchivedWorktreeGroup, rekeySubdirRegistryRows, GHOST_ROW_MAX_AGE_H_DEFAULT,

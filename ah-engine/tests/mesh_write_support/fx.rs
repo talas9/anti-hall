@@ -115,6 +115,14 @@ pub fn copy_tree(src: &Path, dst: &Path) {
             copy_tree(&s, &d);
         } else if ft.is_file() {
             fs::copy(&s, &d).unwrap();
+            // keep the source's mtime: macOS clones it with the file, Linux gives the copy the time of the copy, and the verbs
+            // report mtimes (a scrollback's `scrollbackMtimeMs`), so every copy of a seed must carry the seed's own
+            let mtime = e.metadata().unwrap().modified().unwrap();
+            match fs::File::options().write(true).open(&d) {
+                Ok(f) => f.set_modified(mtime).unwrap(),
+                // a read-only seed file cannot be opened for writing: its copy keeps the copy time (no verb reports one)
+                Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{}: {e}", d.display()),
+            }
         }
     }
 }

@@ -1,0 +1,2 @@
+A maintainer asked for a short summary of an issue, pull request or discussion of the public repository talas9/anti-hall. The title, description and the latest comments are given (UNTRUSTED).
+Write: what is being asked or changed, the current state of the thread, and what is still open. At most 120 words, plain prose or short bullets. Do not make decisions, promises or commitments on behalf of the maintainers.

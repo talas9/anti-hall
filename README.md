@@ -86,8 +86,13 @@ Building, testing and releasing the plugin and the Rust engine: [Development gui
 ## Links
 
 - [Documentation](https://github.com/talas9/anti-hall/blob/main/docs/README.md)
+- [Docs site](https://talas9.github.io/anti-hall/)
 - [Support](https://github.com/talas9/anti-hall/issues)
 - [Privacy](https://github.com/talas9/anti-hall/blob/main/PRIVACY.md)
+
+## Roadmap
+
+**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
 
 ## License
 

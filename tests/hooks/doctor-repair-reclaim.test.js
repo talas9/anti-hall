@@ -575,9 +575,8 @@ function runDoctor({ cwd, env, args }) {
       HOME: fallbackHome, USERPROFILE: fallbackHome, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
       // Ambient-env leak fix: inheriting process.env wholesale means a real
-      // ANTIHALL_DOCTOR_CONTEXT set in the invoking shell (e.g. 'flutter-debug')
-      // changes doctor's own behavior (see doctor.js's flutter-debug context
-      // check) and makes this suite's pass/fail depend on the ambient
+      // ANTIHALL_DOCTOR_CONTEXT set in the invoking shell (e.g. a stale value)
+      // could change doctor's behavior and make this suite's pass/fail depend on the ambient
       // environment it happens to run under — the exact "shipped RED because
       // of ambient state" failure class this project has been burned by
       // before. Always clear it explicitly, same as the other behavior-

@@ -164,6 +164,25 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch) {
             }
         }
     }
+    // a session with ONE user request: a write under a path that request names is the requested output (dogfood 2026-10-09)
+    let req = |id: &str, prompts: &[&str], blocks: Vec<String>| {
+        let mut lines: Vec<String> = prompts.iter().map(|p| tl.prompt(p)).collect();
+        lines.extend(blocks);
+        work_lines(lines, format!("work-req-{id}"));
+    };
+    req("file", &["Save the result to /out/dir/report.md when done."], vec![write_l("/out/dir/report.md")]);
+    req("folder", &["Put the files into /out/dir/ (create it)"], vec![write_l("/out/dir/a.md"), write_l("/out/dir/sub/b.md")]);
+    req("elsewhere", &["Save the result to /out/dir/report.md"], vec![write_l("/out/other/a.md")]);
+    req("sibling-prefix", &["Save the result to /out/dir"], vec![write_l("/out/dirty/a.md")]);
+    req("two-prompts", &["Save to /out/dir/report.md", "and more"], vec![write_l("/out/dir/report.md")]);
+    req("no-path", &["Please write it"], vec![write_l("/out/dir/report.md")]);
+    req("relative", &["Write the notes to notes/out.md"], vec![write_l("notes/out.md")]);
+    req("home", &["Write it to ~/Documents/out.md"], vec![write_l("~/Documents/out.md")]);
+    req("bash-redirect", &["Save the listing to /out/dir/list.txt"], tl.bash("ls /x > /out/dir/list.txt"));
+    req("bash-other", &["Save the listing to /out/dir/list.txt"], tl.bash("ls /x > /out/dir/list.txt; cp /x /y/z"));
+    req("bash-git", &["Save the listing to /out/dir/list.txt"], tl.bash("git commit -am x"));
+    req("trailing-dot", &["Save the result to /out/dir/report.md."], vec![write_l("/out/dir/report.md")]);
+    req("notification-first", &["<task-notification>done</task-notification>", "Save to /out/dir/r.md"], vec![write_l("/out/dir/r.md")]);
     let shape_blocks: Vec<(&str, Vec<J>)> = vec![
         ("agent", vec![tl.use_("Agent", jo! {"prompt": "x", "description": "d"})]),
         ("task", vec![tl.use_("Task", jo! {})]),

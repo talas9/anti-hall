@@ -107,6 +107,10 @@ fn drain(mut r: impl Read + Send + 'static, cap: usize) -> Drained {
 impl Runner for System {
     fn run(&self, spec: &RunSpec) -> RunResult {
         let bin = spec.bin.clone().unwrap_or_else(|| self.hc.clone());
+        // a test build never reaches the real DevSwarm CLI (src/hcguard.rs): a refused call reads as a missing binary
+        if let Err(why) = crate::hcguard::permit(&bin, None) {
+            return RunResult { missing: true, error: Some(why), ..RunResult::default() };
+        }
         let mut cmd = Command::new(&bin);
         cmd.args(&spec.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         if !spec.scrub_env.is_empty() {
@@ -119,6 +123,7 @@ impl Runner for System {
         if let Some(c) = &spec.cwd {
             cmd.current_dir(c);
         }
+        crate::proc::apply_git_env(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {

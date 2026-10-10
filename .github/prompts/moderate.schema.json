@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["verdict","reason"],"properties":{"verdict":{"type":"string","enum":["spam","abusive","off-topic","low-quality","duplicate-suspect","ok"]},"reason":{"type":"string","maxLength":200}}}

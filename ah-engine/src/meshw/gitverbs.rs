@@ -86,8 +86,8 @@ fn git(runner: &dyn Runner, cwd: &str, args: &[&str]) -> Option<Probe> {
         bin: Some(defaults::text("devswarm_cli.ready_git").to_string()),
         args: a,
         cwd: None,
-        timeout_ms: defaults::num("devswarm_cli.ready_git_timeout_ms") as u64,
-        cap_bytes: defaults::num("devswarm_cli.ready_git_max_bytes") as u64,
+        timeout_ms: defaults::num("devswarm_cli.ready_git_timeout_ms"),
+        cap_bytes: defaults::num("devswarm_cli.ready_git_max_bytes"),
         scrub_env: vec![],
     });
     if r.missing || r.timed_out || r.truncated || r.error.is_some() {

@@ -412,6 +412,23 @@ test('INJECTOR emit-dedupe: identical directive repeated immediately -> suppress
   } finally { h.cleanup(); }
 });
 
+test('INJECTOR emit-dedupe: reset time differing only in milliseconds does not defeat the dedupe', () => {
+  const h = makeHome();
+  try {
+    const base = Date.now() + 7 * 24 * 3600000;
+    const a = new Date(Math.ceil(base / 60000) * 60000 - 43).toISOString(); // ...:59.957Z
+    const b = new Date(Math.ceil(base / 60000) * 60000 + 295).toISOString(); // ...:00.295Z
+    writeCacheFile(h.home, makeCache({ weekly: 90, weeklyResetsAt: a }));
+    const r1 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    const ctx1 = additionalContext(r1);
+    assert.ok(ctx1.includes('limit conservation is active'), 'first call must emit');
+    assert.ok(!/\d{2}:\d{2}:\d{2}\.\d{3}Z/.test(ctx1), `reset time must not carry seconds/ms; got: ${ctx1}`);
+    writeCacheFile(h.home, makeCache({ weekly: 90, weeklyResetsAt: b }));
+    const r2 = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(additionalContext(r2), '', 'ms-only reset jitter must be suppressed by the dedupe');
+  } finally { h.cleanup(); }
+});
+
 test('INJECTOR emit-dedupe: different session_id is not suppressed by another session\'s emit', () => {
   const h = makeHome();
   try {
@@ -446,6 +463,19 @@ test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and the workhorse
     const ctx = additionalContext(r);
     assert.ok(ctx.includes('Sonnet'), `Sonnet missing from downshift directive; got: ${ctx}`);
     assert.ok(ctx.includes('workhorse'), `workhorse category missing from downshift directive; got: ${ctx}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR: advisory never calls a Claude model a separate weekly bucket', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    const ctx = additionalContext(r);
+    assert.ok(ctx.length > 0, 'advisory should be emitted');
+    assert.ok(!/(sonnet|opus|haiku)[^.;]{0,40}(separate|own|different)[^.;]{0,20}(weekly )?(bucket|pool|limit)/i.test(ctx),
+      `advisory must not call a Claude model a separate bucket; got: ${ctx}`);
+    assert.ok(!/separate weekly bucket|flagship weekly bucket/i.test(ctx), `stale bucket claim; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 

@@ -107,7 +107,6 @@ test('scan self-check: the doctor.js spawner discovery is not vacuous', () => {
     'tests/hooks/doctor-repair.test.js',
     'tests/hooks/doctor-repair-reclaim.test.js',
     'tests/hooks/doctor-logs.test.js',
-    'tests/hooks/flutter-debug.test.js',
   ]) {
     assert.ok(rel.includes(known), 'scan must discover known doctor.js spawner ' + known + '; found: ' + rel.join(', '));
   }
