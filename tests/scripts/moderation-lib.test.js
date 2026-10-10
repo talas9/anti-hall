@@ -79,11 +79,14 @@ test('buildPrompt fences untrusted text and strips forged markers', () => {
   assert.ok(!p.includes('END-UNTRUSTED-0000'));
 });
 
-test('chain: default, explicit order, none', () => {
-  assert.deepStrictEqual(L.chain('', cfg), ['claude', 'copilot']);
-  assert.deepStrictEqual(L.chain('copilot,claude', cfg), ['copilot', 'claude']);
+test('chain: default, explicit order, none; copilot only when copilot_fallback is true', () => {
+  assert.deepStrictEqual(L.chain('', cfg), ['claude']);
+  assert.deepStrictEqual(L.chain('copilot,claude', cfg), ['claude'], 'copilot_fallback=false drops copilot even when AI_PROVIDER names it');
   assert.deepStrictEqual(L.chain('none', cfg), []);
   assert.deepStrictEqual(L.chain('claude,gpt', cfg), ['claude']);
+  const on = { model: { ...cfg.model, copilot_fallback: true } };
+  assert.deepStrictEqual(L.chain('claude,copilot', on), ['claude', 'copilot']);
+  assert.deepStrictEqual(L.chain('copilot,claude', on), ['copilot', 'claude']);
 });
 
 test('privacyScan: rules hit without returning values; deny-list optional', () => {
