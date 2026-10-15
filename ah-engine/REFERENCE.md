@@ -4004,6 +4004,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.plist_ext` | `.plist` |  |  | The extension of a launchd property list. |
 | `doctor.plist_string_re` | `<string>([\s\S]*?)</string>` |  |  | One string of a property list array. |
 | `doctor.plist_wd_re` | `<key>WorkingDirectory</key>\s*<string>([\s\S]*?)</string>` |  |  | The working directory of a launchd property list. |
+| `doctor.plugin_manifest_file` | `.claude-plugin/plugin.json` |  |  | A plugin's manifest, relative to its install path. |
+| `doctor.plugin_name` | `anti-hall` |  |  | The plugin name anti-hall declares in its manifest; another enabled plugin with this name makes Claude Code (2.1.296+) skip hooks. |
 | `doctor.plugin_prefix` | `anti-hall@` |  |  | The registry key prefix of anti-hall plugin installs. |
 | `doctor.plugin_root_envs` | `CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT` |  |  | Environment variables that name the plugin root, first set one wins, after the engine's own and the --plugin-root flag. |
 | `doctor.poll_ms` | `20` |  | ms | How often a live self-test checks whether its Node hook has finished. |
@@ -4278,6 +4280,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.plugin_double` | `{n} anti-hall plugins are enabled ({keys}); every hook runs twice - Fix: disa...` |  |  | PL-04. Placeholders: {n}, {keys}. |
 | `doctor_msg.plugin_json_bad` | `{file} is not valid JSON ({err}); plugin enablement could not be checked - Fi...` |  |  | PL-09. Placeholders: {file}, {err}. |
 | `doctor_msg.plugin_moved` | `{key} is registered at {path}, which does not exist (moved or pruned) - Fix: ...` |  |  | PL-07. Placeholders: {key}, {path}. |
+| `doctor_msg.plugin_name_clash` | `enabled plugin {key} ({path}) shares the plugin name '{name}'; Claude Code 2....` |  |  | PL-10. Placeholders: {key}, {name}, {path}. |
 | `doctor_msg.plugin_no_registry` | `no plugin registry at {file} (a manual or Codex install); plugin enablement w...` |  |  | No registry file. Placeholder: {file}. |
 | `doctor_msg.plugin_not_registered` | `no anti-hall plugin is registered in {file}; the hooks do not run - Fix: /plu...` |  |  | PL-02. Placeholder: {file}. |
 | `doctor_msg.plugin_ok` | `plugin {key} v{version} is registered and enabled` |  |  | PL-08. Placeholders: {key}, {version}. |
