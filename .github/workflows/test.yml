@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  # PRs: node 24 only - 2 ubuntu shards + 2 macOS shards. Full matrix (ubuntu +
+  # PRs: node 24 on ubuntu only - 2 shards (macOS is capped at 5 concurrent jobs and runs in the full matrix). Full matrix (ubuntu +
   # macos x node 22/24, 3 ubuntu shards) on rc-v*/v* tags, pushes to main and the
   # weekly schedule. macOS is capped at 5 concurrent jobs per account.
   plan:
@@ -47,10 +47,10 @@ jobs:
               add("ubuntu-latest", "22.x", 3, 15);
               add("ubuntu-latest", "24.x", 3, 15);
               add("macos-latest", "22.x", 2, 25);
+              add("macos-latest", "24.x", 2, 25);
             } else {
               add("ubuntu-latest", "24.x", 2, 20);
             }
-            add("macos-latest", "24.x", 2, 25);
             console.log("matrix=" + JSON.stringify({ include }));
           ' >> "$GITHUB_OUTPUT"
 
@@ -67,11 +67,18 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
       # tests/hooks/api-guard.test.js exercises the opt-in third-party API check,
       # which needs networkx importable by `python3`. A venv works on both runners
       # (ubuntu 24.04 and Homebrew python are PEP 668 "externally managed", so a
       # bare `pip install` fails there); its bin dir goes on PATH for later steps.
       # ANTIHALL_REQUIRE_NX makes the test file fail, not skip, if this breaks.
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/Library/Caches/pip
+          key: pip-networkx-${{ runner.os }}-3.4.2
       - name: install networkx for api-guard tests
         run: |
           python3 -m venv "$RUNNER_TEMP/nx-venv"
