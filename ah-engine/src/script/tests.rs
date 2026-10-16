@@ -437,6 +437,13 @@ pub(super) fn golden_report(check: &str, limit: usize) {
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
         let l = golden::lay(c);
+        if check == "task-tracker" {
+            // The corpus was recorded on a 16-core machine, where the dispatch cap (cores - 2) is 14; the script reads the real core
+            // count, so a smaller runner wrote "cap 3". Pinning the setting to the recorded value makes the answer machine-independent.
+            let dir = format!("{}/.anti-hall", l.home);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/settings.json"), r#"{"guards":{"maxParallelDispatch":14}}"#).unwrap();
+        }
         let got = golden::run_case(check, &l, golden::repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
