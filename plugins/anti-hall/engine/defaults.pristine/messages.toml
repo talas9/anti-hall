@@ -46,6 +46,19 @@ value = "--- anti-hall ah-engine diagnostics ---\nversion: {version}\nos: {os} {
 doc = "Recorded reason when the daemon keeps dying. Placeholders: {n}, {secs}."
 value = "daemon died {n} times in {secs} s"
 
+[msg.log_rollback_request]
+doc = "Log detail when the crash-loop rule asks for a roll-back. Placeholder: {sha}."
+value = "binary {sha} never ran healthy; asked the integrity script to restore the known-good binary"
+
+[msg.log_crashloop_rollback]
+doc = "Log detail added when a crash-loop trip also requested a roll-back."
+value = "roll-back to the known-good binary requested"
+
+[msg.log_crashloop_new_binary]
+doc = "Log detail when a crash-loop cooldown ends because the binary was replaced. Placeholder: {sha}."
+value = "binary replaced ({sha}); respawning allowed again"
+
+
 [msg.reason_breaker]
 doc = "Recorded reason when the client breaker opens. Placeholders: {n}, {secs}, {why}."
 value = "{n} engine failures in {secs} s (last: {why})"
@@ -63,6 +76,10 @@ value = "stopped ({secs} s left)"
 [msg.log_daemon_killed]
 doc = "Log detail when the daemon was killed by a signal while starting."
 value = "daemon killed while starting"
+
+[msg.log_client_panic]
+doc = "Log detail when the hook client hit an internal error (a panic) and failed open."
+value = "hook client internal error; failing open"
 
 [msg.log_fallback_timeout]
 doc = "Log detail when the Node fallback did not finish in time."
@@ -96,9 +113,25 @@ value = "anti-hall: the Node hook was killed by signal {signal}; no decision was
 doc = "Log detail for `reset`."
 value = "operator reset"
 
-[msg.log_crash]
-doc = "Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}."
-value = "daemon pid {pid} died without a clean exit"
+[msg.log_crash_context]
+doc = "Log detail when a daemon is found dead without a clean exit, with the last breadcrumb. Placeholders: {pid}, {context}."
+value = "daemon pid {pid} died without a clean exit; last context {context}"
+
+[msg.panic_payload_unknown]
+doc = "Panic payload text when Rust did not carry a string."
+value = "non-string panic payload"
+
+[msg.thread_unknown]
+doc = "Thread name used in panic reports for unnamed threads."
+value = "unnamed"
+
+[msg.thread_panic]
+doc = "Log detail when a daemon service thread panics. Placeholders: {thread}, {n}, {max}."
+value = "daemon service thread {thread} panicked ({n}/{max})"
+
+[msg.thread_panic_restart]
+doc = "Clean restart reason when a daemon service thread exceeds its panic restart cap. Placeholder: {thread}."
+value = "daemon service thread {thread} exceeded panic restart cap"
 
 [msg.log_budget]
 doc = "Log detail when a rule evaluation exceeded its CPU budget."
@@ -165,8 +198,16 @@ doc = "Event-log detail (rate-limited, code proc_unread) when a helper exited bu
 value = "{what} exited but its output was not complete; its process group was killed"
 
 [msg.log_lock_no_daemon]
-doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
-value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
+doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty), {live_engine}."
+value = "lock {path} held (pid {pid}, live_engine={live_engine}) but no daemon answers; this start gives up and the call falls back to Node"
+
+[msg.daemon_already_running]
+doc = "Printed on stderr when a second daemon start finds an existing daemon/lock holder for the socket. Placeholders: {path}, {pid}, {live_engine}, {answers}."
+value = "ah-engine daemon already running for socket {path}; exiting (holder pid {pid}, live_engine={live_engine}, answers={answers})"
+
+[msg.log_cpu_sustained]
+doc = "Event-log detail when the daemon CPU self-check observes sustained CPU and backs off scheduled jobs. Placeholders: {pct}, {ms}, {backoff_ms}."
+value = "daemon CPU {pct}% over {ms} ms; backing off scheduled jobs for {backoff_ms} ms"
 
 [msg.exit_reason_handoff]
 doc = "Drain reason for a handoff to a newer build or a stop request."
@@ -243,6 +284,30 @@ value = "test panic"
 [msg.client_bad_socket]
 doc = "Exchange failure when the socket path is not a socket owned by this user."
 value = "socket is not a socket owned by this user"
+
+[msg.cold_guard_notice]
+doc = "Printed once per session on stderr when a guard event gave up waiting for a cold-starting daemon and was let through unchecked; {event} is the event name."
+value = "anti-hall: the engine was still starting, so this {event} was not checked; the guards apply again once it is up"
+
+[msg.client_skip]
+doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
+value = "skipped"
+
+[msg.client_hung]
+doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat is stale, seen for the first time (a suspicion, nothing is signalled). {pid} = the daemon, {age} = the heartbeat's age in ms."
+value = "daemon {pid} heartbeat stale ({age} ms): suspected stopped or wedged"
+
+[msg.client_hung_confirmed]
+doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat stayed stale and unchanged past client.heartbeat_confirm_ms (a confirmed hang). {pid} = the daemon, {age} = the heartbeat's age in ms, {held} = how long the same heartbeat was seen unchanged in ms."
+value = "daemon {pid} heartbeat stale ({age} ms) and unchanged for {held} ms: stopped or wedged"
+
+[msg.log_hung_spared]
+doc = "Log detail when a client declines to end a daemon it found hung, because the heartbeat moved, or the process generation (pid, start time, executable, state dir) could not be confirmed. {pid} = the pid the heartbeat names, {why} = the stale-heartbeat detail."
+value = "did not end daemon {pid}: its heartbeat moved or its process generation could not be confirmed ({why})"
+
+[msg.log_hung_kill]
+doc = "Log detail when a client ends a hung daemon (verified pid) so a new one can start. {pid} = the ended daemon, {why} = the stale-heartbeat detail."
+value = "ended hung daemon {pid} with SIGKILL: {why}"
 
 [msg.client_timeout]
 doc = "Exchange failure when the hard deadline passed."
@@ -434,9 +499,21 @@ value = "delivery to a session's mailbox is planned (D45); the run is recorded, 
 doc = "Detail of a run that passed its timeout."
 value = "the run passed its timeout and was stopped"
 
+[msg.schedule_panic]
+doc = "Detail of a scheduled run panic caught at the job boundary."
+value = "the run panicked and was stopped"
+
 [msg.schedule_failed]
 doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."
 value = "job {job} failed: {detail}"
+
+[msg.schedule_skipped]
+doc = "Event-log detail when a scheduled job skipped itself because there was no work. Placeholders: {job}, {detail}."
+value = "job {job} skipped: {detail}"
+
+[msg.schedule_no_work]
+doc = "Reason text when a scheduled job has no recent sessions or pending requests to handle."
+value = "no recent sessions or pending work"
 
 [msg.schedule_daemon_gone]
 doc = "An in-process job found the daemon gone (it was exiting)."

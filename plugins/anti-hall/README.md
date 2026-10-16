@@ -13,7 +13,7 @@ It fights four failure modes common to coding assistants:
 What it ships: always-on Node hooks (mechanical guards such as `git-guard`, `api-guard`,
 `command-guard`, `edit-guard`, `swarm-guard`, `task-guard`), a rotating verify-first nudge,
 skills you call as `/anti-hall:<name>` (`root-cause`, `deadly-loop`, `ship-it`, `doctor`,
-`handover`, `settings`, and more), an optional two-line statusline, and optional DevSwarm and
+`handover`, `settings`, and more), legacy statusline cleanup, and optional DevSwarm and
 Jev integrations.
 
 ## Quickstart
@@ -24,7 +24,7 @@ Jev integrations.
 ```
 
 The hooks apply globally once enabled. To try it without installing:
-`claude --plugin-dir /path/to/anti-hall`. For the statusline, ask Claude "install the statusline".
+`claude --plugin-dir /path/to/anti-hall`. The old anti-hall statusline installer is retired; use uninstall-statusline only to clean up older installs.
 
 **Requirement: Node.js >= 22 on `PATH`** (verify with `node --version`). Every hook is pure
 Node.js (built-ins only). If `node` is unreachable by the hook shell, Claude Code silently
@@ -46,7 +46,7 @@ skips every anti-hall hook, and nothing is surfaced.
 (downloaded once from the GitHub Release and installed only if its sha256 equals the one pinned in `ah-engine.lock`; skip it with
 the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`), the engine answers what it can prove identical to the Node hook and, during the migration, hands the rest to the temporary Node compatibility hooks (removed in v1.0, when the engine is the only runtime); with no binary those Node hooks run. Its rules, settings and texts are plain files in `engine/`, hot-reloaded
 with fallbacks (edited, last-known-good, pristine). Still on the temporary Node hooks: DevSwarm mesh writes and daemons, every call that consults Jev,
-the semantic judge and the statusline. macOS and Linux; Windows is not supported yet. Details:
+the semantic judge. macOS and Linux; Windows is not supported yet. Details:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md).
 
 ## Binary download and verification
@@ -69,7 +69,7 @@ Everything else (logs, handovers, defect reports) stays in `~/.anti-hall/` and `
 
 ## Documentation
 
-Everything else (every guard and setting, all skills, the statusline, troubleshooting, the
+Everything else (every guard and setting, all skills, legacy statusline cleanup, troubleshooting, the
 Codex port, contributing) starts at the
 [documentation start page](https://github.com/talas9/anti-hall/blob/main/docs/README.md).
 This README uses absolute GitHub URLs because it ships inside the plugin cache, where

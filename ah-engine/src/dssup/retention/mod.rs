@@ -315,12 +315,14 @@ pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Setti
 
 /// `recordStore(st, hash, r, now)`.
 pub(super) fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
-    let prev_total = match obj_mut(obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")), hash).get(defaults::text("devswarm_sup.rt_state_tombstoned")) {
+    let Some(e) = obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")).and_then(|stores| obj_mut(stores, hash)) else {
+        return;
+    };
+    let prev_total = match e.get(defaults::text("devswarm_sup.rt_state_tombstoned")) {
         Some(OVal::Num(n)) if n.is_finite() => *n,
         Some(OVal::Str(t)) => crate::checks::guardkit::text::js_number_of_str(t),
         _ => 0.0,
     };
-    let e = obj_mut(obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")), hash);
     let n = |x: f64| OVal::Num(x);
     for (k, v) in [
         ("lastRunAt", n(now as f64)),

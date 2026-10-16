@@ -576,7 +576,7 @@ function versionAlertTest() {
 }
 versionAlertTest() ? ok('version-alert nudges on a stale cached version and stays silent when current') : bad('version-alert did NOT behave correctly for stale-vs-current cache');
 
-// --- 4. Statusline install status -------------------------------------------
+// --- 4. Legacy statusline cleanup status ------------------------------------
 head('Statusline');
 function readJSON(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
 const cwd = process.cwd();
@@ -591,12 +591,12 @@ for (const [label, p] of scopes) {
   const cmd = s && s.statusLine && s.statusLine.command;
   if (cmd) {
     slFound = true;
-    if (cmd.includes('statusline.js')) ok(`statusline installed (${label}) -> anti-hall dispatcher`);
-    else ok(`statusline set (${label}) -> ${cmd.slice(0, 48)}…${cmd.length > 48 ? '' : ''}`);
+    if (cmd.includes('statusline.js')) warnl(`legacy anti-hall statusLine still configured (${label}) -> uninstall-statusline can clean it up`);
+    else ok(`custom statusline set (${label}) -> ${cmd.slice(0, 48)}…${cmd.length > 48 ? '' : ''}`);
     break;
   }
 }
-if (!slFound) warnl('no statusLine configured — run the install-statusline skill (then restart)');
+if (!slFound) ok('no anti-hall statusLine configured (installer retired)');
 
 // Behavioral: does the statusline actually RENDER? Spawn the dispatcher with a
 // sample session payload and assert it produces output (line 1 = rich, line 2 =

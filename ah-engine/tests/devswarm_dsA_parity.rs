@@ -8,6 +8,7 @@
 //! also checked by the background Node witness where it runs. `hivecontrol` is a recording stub on the PATH (the same script for
 //! both sides; the calls it saw are a file of the home, so the comparison covers them).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

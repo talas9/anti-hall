@@ -36,7 +36,6 @@ const ALLOWLIST = {
   // B1: resolvers are identity shims; the one left is the injected-io (fake git) test seam.
   'companion/lib/devswarm-repokey.js': { 'git-common-dir': 1 },
   'companion/lib/devswarm-store.js': { 'primaryWorkspaceId-call': 1 },
-  'companion/lib/devswarm-wake-watch.js': { 'primaryWorkspaceId-call': 3 },
   'companion/lib/liveness.js': { 'primaryWorkspaceId-call': 1 },
   'companion/lib/recovery.js': { 'primaryWorkspaceId-call': 1 },
   'hooks/devswarm-parent-gate.js': { 'primaryWorkspaceId-call': 1 },

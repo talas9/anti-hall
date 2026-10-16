@@ -104,14 +104,24 @@ fn reader<R: Read + Send + 'static>(r: Option<R>) -> Option<Capture> {
     let mut r = r?;
     let cap = Capture { buf: Arc::new(Mutex::new(Vec::new())), done: Arc::new(AtomicBool::new(false)), failed: Arc::new(AtomicBool::new(false)) };
     let (buf, done, failed) = (cap.buf.clone(), cap.done.clone(), cap.failed.clone());
+    let max = defaults::num("mem.proc_output_max_bytes") as usize;
     std::thread::spawn(move || {
         let mut chunk = vec![0u8; defaults::num("io.small_chunk_bytes") as usize];
+        let mut cut = false;
         loop {
             match r.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // keep at most `mem.proc_output_max_bytes`; the rest is read and dropped so the child never blocks on a full pipe
                     if let Ok(mut b) = buf.lock() {
-                        b.extend_from_slice(&chunk[..n]);
+                        let room = max.saturating_sub(b.len());
+                        if n > room && !cut {
+                            cut = true;
+                            b.extend_from_slice(&chunk[..room]);
+                            b.extend_from_slice(defaults::text("mem.proc_output_marker").as_bytes());
+                        } else if !cut {
+                            b.extend_from_slice(&chunk[..n]);
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}

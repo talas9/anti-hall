@@ -12,6 +12,7 @@
 //! cases pre-run Node, poison the cache so the answer proves whether it was used, and age or invalidate it.
 //! Native cases are also checked by the background Node shadow (`mesh-verify.jsonl`).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -8,6 +8,15 @@ fn committed_reference_matches_the_generated_one() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("REFERENCE.md");
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
     let generated = ah_engine::docs::markdown();
+    if committed != generated
+        && let Some(dir) = std::env::var_os("RUNNER_TEMP").or_else(|| std::env::var_os("TMPDIR")).or_else(|| std::env::var_os("TEMP"))
+    {
+        let out = std::path::PathBuf::from(dir).join("ah-engine-generated-reference.md");
+        match std::fs::write(&out, &generated) {
+            Ok(()) => {}
+            Err(err) => panic!("failed to write {}: {err}", out.display()),
+        }
+    }
     assert!(
         committed == generated,
         "REFERENCE.md is out of date: run `cargo run -q -- docs --format md > REFERENCE.md` and commit it ({} bytes committed, {} generated)",

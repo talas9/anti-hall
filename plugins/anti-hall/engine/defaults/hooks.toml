@@ -90,13 +90,6 @@ value = 3600
 min = 1
 max = 604800
 unit = "s"
-
-[hooks.session_max_keys]
-doc = "The most session-condition counters kept at once; past it the oldest are dropped (a dropped counter starts again, which only makes its condition fire sooner)."
-value = 4096
-min = 16
-max = 1000000
-
 [hooks.transcript_facts]
 doc = "The transcript-index facts a `transcript` condition may read, with their types (int, bool or str). Only facts the index already computes: records, compact_boundaries, sidechain_rows, meta_rows (counts), has_last_prompt and has_last_assistant (whether the index holds them), last_tool (the newest tool use's name), terminal_agents (background agents with a terminal notification) and unresolved_agents (agents a compaction re-injected as live that no terminal notification closed)."
 value = { records = "int", compact_boundaries = "int", sidechain_rows = "int", meta_rows = "int", has_last_prompt = "bool", has_last_assistant = "bool", last_tool = "str", terminal_agents = "int", unresolved_agents = "int" }

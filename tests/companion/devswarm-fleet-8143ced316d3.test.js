@@ -285,6 +285,9 @@ test('F: a watcher whose lock is stolen mid-loop prints LOCK LOST to stderr, exi
     // still wrote its own stale state on a lock-lost exit, this seeded value
     // would be clobbered back down to the exiting watcher's lower baseline.
     fs.mkdirSync(require('node:path').dirname(seenPath), { recursive: true });
+    const inboxPath = require('../../plugins/anti-hall/companion/lib/devswarm-pull.js').inboxDefaultPath(home, id);
+    fs.mkdirSync(require('node:path').dirname(inboxPath), { recursive: true });
+    fs.writeFileSync(inboxPath, Array.from({ length: 42 }, (_, i) => JSON.stringify({ seq: i + 1 })).join('\n') + '\n');
     fs.writeFileSync(seenPath, JSON.stringify({ lastTotal: 42, lastTotal2: 7 }));
     const env = {
       PATH: process.env.PATH,

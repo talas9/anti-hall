@@ -228,6 +228,9 @@ impl World {
             .env("TMPDIR", std::env::temp_dir())
             .env("CLAUDE_PLUGIN_ROOT", &self.plugin)
             .env("AH_NO_NODE_CASE", tag)
+            // The no-node harness is a serial healthy-daemon contract test. Keep one worker so the readiness probe warms
+            // the same interpreter that later evaluates guard cases; multi-worker cold-start behaviour is covered elsewhere.
+            .env("AH_ENGINE_WORKERS", "1")
             .current_dir(&self.project);
         if let Some(env) = self.cfg.get("env").and_then(|v| v.as_table()) {
             for (k, v) in env {
@@ -251,9 +254,14 @@ impl World {
         let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
         let sock = ah_engine::paths::socket_in(&self.state);
         let t = Instant::now();
+        let mut saw_socket = false;
+        let mut last_probe = Outcome { code: None, stdout: String::new(), stderr: String::new(), timed_out: false, elapsed_ms: 0 };
         while t.elapsed() < ready {
             if sock.exists() && common::marker_pid(&self.state).is_some() {
-                return;
+                saw_socket = true;
+                if self.daemon_dispatch_ready("claude", &mut last_probe) && self.daemon_dispatch_ready("codex", &mut last_probe) {
+                    return;
+                }
             }
             if let Some(st) = self.daemon.as_mut().unwrap().try_wait().unwrap() {
                 panic!(
@@ -261,16 +269,41 @@ impl World {
                     fs::read_to_string(self.dir.join("out").join("daemon.err")).unwrap_or_default()
                 );
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(100));
         }
         panic!(
-            "the harness daemon did not come up within {ready:?}; stderr: {}",
+            "the harness daemon did not answer dispatch within {ready:?} (socket_seen={saw_socket}, last_probe={last_probe:?}); stderr: {}",
             fs::read_to_string(self.dir.join("out").join("daemon.err")).unwrap_or_default()
         );
     }
 
     fn out_file(&self, name: &str) -> fs::File {
         fs::File::create(self.dir.join("out").join(name)).unwrap()
+    }
+
+    /// The socket and pid marker only prove the daemon process exists. The no-node hook tests require a healthy daemon
+    /// that can answer guard dispatches inside the client deadline; otherwise the client correctly treats it as unavailable
+    /// and the wrapper fails open before exercising the healthy-daemon contract.
+    fn daemon_dispatch_ready(&self, host: &str, last_probe: &mut Outcome) -> bool {
+        let payload = serde_json::json!({
+            "session_id": format!("no-node-ready-{host}"),
+            "transcript_path": self.transcript.to_string_lossy(),
+            "cwd": self.project.to_string_lossy(),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git push --force origin main"},
+        });
+        let payload = self.subst(&payload.to_string());
+        let mut cmd = self.command(&self.engine, &format!("daemon-ready-{host}"));
+        cmd.arg("hook").args(["--event", "PreToolUse", "--tool", "Bash", "--host", host, "--fallback-map"]).arg(match host {
+            "codex" => self.plugin.join("hooks").join("ah-fallback.codex.map.json"),
+            _ => self.plugin.join("hooks").join("ah-fallback.map.json"),
+        });
+        if host == "codex" {
+            cmd.env("PLUGIN_ROOT", &self.plugin);
+        }
+        *last_probe = self.run(cmd, Some(&payload), Duration::from_secs(5));
+        last_probe.code == Some(2)
     }
 
     /// Run `c` (built by `command`) with `stdin`, bounded by `timeout`; the process group is killed on a timeout.
@@ -352,6 +385,14 @@ impl World {
         let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("no_node");
         fs::create_dir_all(&d).unwrap();
         d.join(format!("{name}.json"))
+    }
+
+    /// The daemon event log, newest lines last. Used by failed no-node reports to explain scripted deferrals without
+    /// rerunning locally.
+    pub fn event_log_tail(&self) -> Vec<String> {
+        let p = self.state.join(ah_engine::health::log_name());
+        let text = fs::read_to_string(p).unwrap_or_default();
+        text.lines().rev().take(80).map(str::to_string).collect::<Vec<_>>().into_iter().rev().collect()
     }
 
     /// Stop the daemon (and any a client started anyway) before the world is removed.

@@ -14,6 +14,7 @@
 //! The other tests: concurrent writers (engine and Node on one plan and one store, loss-free), the plan lock (held by a live
 //! process, left by a dead one) and injected faults (an unwritable plan directory, a store another process holds).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};

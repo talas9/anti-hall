@@ -1,14 +1,17 @@
 //! The client's Node fallback: its stdout and stderr are read to EOF, bounded only by the overall fallback deadline, and a
 //! deadline hit with output still unread is an explicit error, never an empty stdout that reads as an allow.
 //!
-//! The Node hook is simulated with `/bin/sh <script>` via AH_ENGINE_NODE, and no daemon ever runs (AH_ENGINE_NOSPAWN), so
-//! every call goes to the fallback. A script that "writes late" hands its stdout to a background process that lives on
+//! The Node hook is simulated with `/bin/sh <script>` via AH_ENGINE_NODE. Tests that cover daemon-unavailable behavior
+//! use AH_ENGINE_NOSPAWN; tests that cover fallback execution run behind a healthy non-OK daemon reply. A script that
+//! "writes late" hands its stdout to a background process that lives on
 //! after the script itself exits, the way a Node hook that spawns a helper does.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 struct Env {
     dir: PathBuf,
@@ -63,6 +66,35 @@ impl Env {
     }
 }
 
+fn fake_non_ok_daemon(e: &Env) {
+    std::fs::create_dir_all(e.dir.join("eng")).unwrap();
+    let l = UnixListener::bind(e.dir.join("eng").join("e.sock")).unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut s = s;
+            let mut b = Vec::new();
+            ah_engine::discard::harmless(s.read_to_end(&mut b));
+            ah_engine::discard::harmless(s.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Err, "fixture fallback")));
+        }
+    });
+}
+
+fn wait_for_socket(e: &Env) {
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_secs(1) {
+        if e.dir.join("eng").join("e.sock").exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("fake daemon socket was not created");
+}
+
+fn with_healthy_non_ok(e: &Env) {
+    fake_non_ok_daemon(e);
+    wait_for_socket(e);
+}
+
 impl Drop for Env {
     fn drop(&mut self) {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
@@ -74,6 +106,7 @@ fn a_slow_writer_that_outlives_its_script_is_read_to_the_end_and_stderr_is_passe
     // The script exits at once; a background shell keeps stdout open and writes the real answer a moment later (longer
     // than the old fixed 500 ms drain allowed). The deadline is generous, so a read that waits for EOF always gets it.
     let e = Env::new("slow", "cat >/dev/null\n(sleep 1; printf 'LATE-ANSWER\\n') &\necho EARLY\necho why >&2\nexit 2\n");
+    with_healthy_non_ok(&e);
     let (out, err, code) = e.call(30_000);
     assert_eq!((out.as_str(), err.as_str(), code), ("EARLY\nLATE-ANSWER\n", "why\n", 2));
 }
@@ -82,6 +115,7 @@ fn a_slow_writer_that_outlives_its_script_is_read_to_the_end_and_stderr_is_passe
 fn a_hook_whose_output_is_still_open_at_the_deadline_is_an_error_not_an_empty_allow() {
     // The script exits at once but a background process holds stdout for far longer than the deadline.
     let e = Env::new("expire", "cat >/dev/null\n(exec sleep 5) &\necho EARLY\nexit 0\n");
+    with_healthy_non_ok(&e);
     let (out, err, code) = e.call(1_000);
     assert_eq!(out, "", "no partial stdout is passed on as the answer");
     assert_eq!(code, 1);
@@ -92,6 +126,7 @@ fn a_hook_whose_output_is_still_open_at_the_deadline_is_an_error_not_an_empty_al
 #[test]
 fn a_hook_still_running_at_the_deadline_is_killed_and_unavailable() {
     let e = Env::new("hang", "cat >/dev/null\nexec sleep 30\n");
+    with_healthy_non_ok(&e);
     assert_eq!(e.call(500), (String::new(), String::new(), 0), "unavailable, like a host timeout: the call is not blocked");
     assert!(e.log().contains("fallback_fail"), "logged: {:?}", e.log());
 }
@@ -99,6 +134,7 @@ fn a_hook_still_running_at_the_deadline_is_killed_and_unavailable() {
 #[test]
 fn a_hook_killed_by_a_signal_is_an_error_not_an_exit_0() {
     let e = Env::new("sig", "cat >/dev/null\nkill -9 $$\n");
+    with_healthy_non_ok(&e);
     let (out, err, code) = e.call(30_000);
     assert_eq!((out.as_str(), code), ("", 1));
     assert!(err.contains("killed by signal 9"), "{err:?}");
@@ -133,6 +169,7 @@ fn non_utf8_stdin_runs_the_fallback_with_the_original_bytes() {
 #[test]
 fn non_empty_whitespace_stdin_is_not_a_noop_when_a_fallback_exists() {
     let e = Env::new("space", "cat > \"$(dirname \"$0\")/seen\"\necho BLOCKED >&2\nexit 2\n");
+    with_healthy_non_ok(&e);
     let input = b" \n\t";
     let (out, err, code) = e.call_bytes(input, 30_000);
     assert_eq!((out.as_str(), code), ("", 2));

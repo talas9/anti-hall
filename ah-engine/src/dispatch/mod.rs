@@ -33,6 +33,7 @@ pub mod stoploop;
 pub mod table;
 
 use crate::client::Outcome;
+use crate::discard::Logged;
 use crate::error::DispatchError;
 use crate::{defaults, health};
 use native::{Answer, Meta};
@@ -74,15 +75,28 @@ pub fn parse_args(args: &[String]) -> Result<Args, DispatchError> {
     Ok(Args { host, event: flag(args, "--event").unwrap_or_default(), tool: flag(args, "--tool"), map: flag(args, "--fallback-map").map(PathBuf::from) })
 }
 
-/// Ask the daemon for the built-in checks; `None` when it cannot answer (the checks then run as Node hooks).
-fn ask_daemon(meta: &Meta, raw: &str) -> Option<Vec<(String, Answer)>> {
+/// Ends the wrapper-visible wait (the client's wait marker) when the call's final result is ready, on every return path: an OK
+/// reply whose answers defer to Node leaves the marker in place while those hooks run, so a Node deny that lands after the fail-fast
+/// budget is still waited for.
+struct WaitRelease;
+
+impl Drop for WaitRelease {
+    fn drop(&mut self) {
+        crate::client::release_wait_marker();
+    }
+}
+
+/// Ask the daemon for the built-in checks; `None` when it cannot answer (the checks then run as Node hooks). `hold_wait` leaves the
+/// client's wait marker in place after an OK reply (the caller releases it, see [`WaitRelease`]).
+fn ask_daemon(meta: &Meta, raw: &str, hold_wait: bool) -> Option<Vec<(String, Answer)>> {
     let cfg = crate::config::ClientConfig::from_env();
     let meta = serde_json::to_string(meta).ok()?;
     let req = format!("D {}\n{meta}\n{raw}", crate::version());
     if req.len() as u64 > defaults::num("daemon.max_request") {
         return None; // the daemon would refuse it; Node answers instead
     }
-    native::decode(&crate::client::attempt(req.as_bytes(), &cfg, true)?)
+    let reply = if hold_wait { crate::client::attempt_holding_wait(req.as_bytes(), &cfg, true) } else { crate::client::attempt(req.as_bytes(), &cfg, true) };
+    native::decode(&reply?)
 }
 
 /// True for an event whose hooks can block: a deferral there fails closed.
@@ -142,8 +156,8 @@ impl PayloadInput {
     fn structural_tool_name(&self) -> Option<String> {
         match &self.file {
             Some(file) => {
-                let mut f = file.try_clone().ok()?;
-                f.seek(SeekFrom::Start(0)).ok()?;
+                let mut f = file.try_clone().ok_logged("dispatch_spill_clone")?;
+                f.seek(SeekFrom::Start(0)).ok_logged("dispatch_spill_seek")?;
                 scan_tool_name(&mut f).ok().flatten()
             }
             None => scan_tool_name(&mut self.raw.as_slice()).ok().flatten(),
@@ -543,7 +557,33 @@ fn unlisted(host: &str, event: &str) -> Option<Outcome> {
     }
 }
 
+/// The wrapper's cold-start kick (`client.cold_guard_kick_event`): an empty request that names no hook. Its only job is to make the
+/// client find the daemon absent and start it (single-flight, breaker and crash-loop rules as for any call), so a guard event can
+/// wait for a socket. It asks for no check (`only` is empty), decides nothing and prints nothing; the daemon answers it with no work.
+fn cold_start_kick(args: &Args) -> Option<Outcome> {
+    if args.event != defaults::text("client.cold_guard_kick_event") {
+        return None;
+    }
+    let meta = Meta {
+        host: args.host.clone(),
+        event: args.event.clone(),
+        tool: None,
+        root: table::plugin_root(&args.host),
+        env: crate::reqenv::RequestEnv::capture(),
+        only: Some(Vec::new()),
+        plan: Vec::new(),
+        cfg: String::new(),
+        payload_sha1: None,
+        deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+    };
+    ask_daemon(&meta, "{}", false); // keep: the answer is empty by construction; the call is for the daemon start
+    Some(Outcome { out: String::new(), code: 0, err: String::new() })
+}
+
 fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele: &mut plan::Tele) -> Outcome {
+    if let Some(o) = cold_start_kick(args) {
+        return o;
+    }
     if let Some(o) = unlisted(&args.host, &args.event) {
         return o;
     }
@@ -653,13 +693,21 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
     };
+    let _wait = WaitRelease;
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the
         // engine must not be a worse guard than Node (D74). Only a guard entry with no runnable Node command blocks.
         (_, false) | (None, _) => Vec::new(),
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
-        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_, _, _| {}),
-        (Some(_), _) => ask_daemon(&meta, raw).unwrap_or_default(),
+        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|| false, &|_, _, _| {}),
+        (Some(_), _) => match ask_daemon(&meta, raw, true) {
+            Some(a) => a,
+            None if crate::client::take_non_ok_reply() => Vec::new(),
+            None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
+                return Outcome { out: String::new(), code: 0, err: String::new() };
+            }
+            None => Vec::new(),
+        },
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
     let mut blocking: Vec<usize> = Vec::new();
@@ -708,9 +756,10 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 pre_err.push_str(&stderr);
                 pre_err.push('\n');
             }
-            // a check whose answer needs a model call of seconds (the daemon deferred it: its deadline cannot wait): this process runs it
+            // a check whose answer needs a model call of seconds (the daemon explicitly deferred it: its deadline cannot wait; no answer at all
+            // means the daemon was down or unusable and every entry runs its Node hook): this process runs it
             // below, once the other hooks are running beside it; the Node hook only if it still defers
-            _ if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
+            Some((_, Answer::Defer)) if parsed.is_some() && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c)) => blocking.push(i),
             _ => started.push((i, start_node_for(e, &args.event, raw.as_bytes(), payload))),
         }
     }
@@ -863,6 +912,11 @@ pub fn hook_main(args: &[String]) -> i32 {
         // payload looks like, even invalid UTF-8 or over the cap: answer the neutral no-op after letting the host finish writing
         // A missing or malformed row is a neutral no-op only when the wrapper's own list agrees; otherwise the Node hooks decide
         // (a lost row must never turn into an allow where the wrapper would run hooks).
+        if let Some(o) = cold_start_kick(&a) {
+            crate::discard::harmless(std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())); // keep: a closed pipe leaves nobody to tell
+            mark_done();
+            return o.code;
+        }
         if let Some(o) = unlisted(&a.host, &a.event) {
             crate::discard::harmless(std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())); // keep: a closed pipe leaves nobody to tell
             crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell

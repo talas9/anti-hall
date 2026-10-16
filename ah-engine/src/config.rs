@@ -101,6 +101,10 @@ pub struct ClientConfig {
     pub crash_window: Duration,
     /// How long respawning stays stopped after a crash loop.
     pub crash_cooldown: Duration,
+    /// Spawn storm: `spawn_n` daemon starts within `spawn_window` count as a crash loop even when no crash was reported.
+    pub spawn_n: usize,
+    /// Window in which daemon starts are counted.
+    pub spawn_window: Duration,
     /// Node fallback hook is killed after this long (then plain allow: it is unavailable).
     pub fallback_timeout: Duration,
 }
@@ -117,6 +121,8 @@ impl ClientConfig {
             crash_n: num("client.crash_n") as usize,
             crash_window: secs("client.crash_window_s"),
             crash_cooldown: secs("client.crash_cooldown_s"),
+            spawn_n: num("client.spawn_n") as usize,
+            spawn_window: secs("client.spawn_window_s"),
             fallback_timeout: millis("client.fallback_ms"),
         }
     }

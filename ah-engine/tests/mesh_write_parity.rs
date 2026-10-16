@@ -14,6 +14,7 @@
 //! Isolation: HOME is a scratch directory, `ANTIHALL_INGEST_DRY_RUN=1`, `ANTIHALL_DEVSWARM_APP_DB=off`, the environment is
 //! cleared, the engine state directory is scratch; nothing under the real home is read or written.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use std::fs;
 use std::path::Path;
 use std::process::Command;

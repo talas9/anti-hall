@@ -272,7 +272,7 @@ fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) 
         let Some(J::Str(cmd)) = settings.get("statusLine").and_then(|s| s.get("command")).filter(|c| migrate::j_truthy(Some(c))) else { continue };
         let label = scope.str_field("label");
         if cmd.contains(defaults::text("doctor.statusline_marker")) {
-            doc.ok(defaults::render("doctor_msg.statusline_installed", &[("label", &label)]));
+            doc.warnl(defaults::render("doctor_msg.statusline_installed", &[("label", &label)]));
         } else {
             let shown = slice16_lossy(cmd, defaults::num("doctor.statusline_shown") as usize);
             doc.ok(defaults::render("doctor_msg.statusline_set", &[("label", &label), ("command", &shown)]));

@@ -2625,7 +2625,13 @@ function isTriviallySafeSegment(segment) {
 
 // Any write redirect (`>`, `>>`) or `tee` target that resolves outside the
 // scratchpad/tmp disqualifies the whole command, `&>file`/`&>>file` included.
-// `2>&1`/`>&2` fd-dup targets (no real path) are ignored.
+// `2>&1` is harmless when it feeds the bounded sink. Other fd-dups
+// (`>&2`, `1>&2`) route output around the sink and disqualify the carve-out.
+function hasFdDupAwayFromBoundedSink(segment) {
+  const s = neutralizeQuotedContents(segment).replace(/(^|\s)2>&1(?=\s|$)/g, ' ');
+  return /(^|\s)(?:[0-9]*)>&[0-9]+(?=\s|$)/.test(s);
+}
+
 function hasDisallowedWriteRedirect(segment, ctx) {
   const re = /(^|[^<>&])(&?>>?)\s*(\S+)/g;
   let m;
@@ -2692,6 +2698,7 @@ function isBoundedVerificationCommand(command, ctx) {
       }
     }
     if (hasDisallowedWriteRedirect(seg, ctx)) return false;
+    if (hasFdDupAwayFromBoundedSink(seg)) return false;
     let kind;
     // `2>&1` only merges stderr INTO the pipe (still bounded by the sink), so
     // the check shape is judged without it. Any other `>&` fd-dup (`>&2`,
@@ -3656,6 +3663,7 @@ function isBackgroundScratchScript(command, payload) {
     if (!BACKGROUND_CHAIN_DELIMS.has(delims[i])) return false;
     const seg = segments[i].trim();
     if (!seg) return false;
+    if (hasFdDupAwayFromBoundedSink(seg)) return false;
     if (isBackgroundScratchScriptSegment(seg, ctx)) {
       if (!background && !/(^|[^0-9&<>])>>?\s*\S/.test(neutralizeQuotedContents(seg).replace(/(^|\s)2>&1(?=\s|$)/g, ' '))) return false; // foreground: stdout must go to a file
       sawScript = true;
@@ -4471,6 +4479,7 @@ function classifyBashWorkImpl(command, payload, opts = {}, depth = 0, shared = n
   res.editBlocks = [...blocks];
   return res;
 }
+
 
 // Returns the decision ({exitCode, stdout, stderr}); every block is a RETURNED
 // io.blockDecision(), never an exit, so the fail-open try/catch blocks below

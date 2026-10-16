@@ -20,10 +20,11 @@
 //! times every worker thread, all of it in the C allocator's zone outside the heap counters; see DECISIONS.md, revision
 //! 1.111. The runtime allocates through the Rust allocator, so its heap is in `status --memory`'s live heap.
 //!
-//! Bounds (issue #21): a worker's interpreter holds only as many loaded checks as fit `script.runtime_soft_bytes` after a
-//! collection; past it the least recently called checks are unloaded (down to `script.runtime_unload_to_bytes`) and rebuilt from
+//! Bounds (issue #21): a worker's interpreter reports its size to the memory registry (holder `quickjs`, limits `mem.quickjs_*`,
+//! per worker) and holds only as many loaded checks as fit `mem.quickjs_soft_bytes` after a
+//! collection; past it the least recently called checks are unloaded (down to the low-water mark (`mem.quickjs_low_water_pct`)) and rebuilt from
 //! their files by their next call. The per-call heap ceiling is `script.call_memory_bytes` above the size after loading, never
-//! past the absolute `script.runtime_max_bytes`. Measured on a replay, the interpreter's size after a collection equals its size
+//! past the absolute `mem.quickjs_hard_bytes`. Measured on a replay, the interpreter's size after a collection equals its size
 //! before it (no garbage waits for the collector) and is flat once every check has been loaded, so the bound is on what is kept
 //! loaded, not on garbage.
 //!
@@ -77,6 +78,10 @@ struct Pool {
     /// When each loaded entry was last called (a per-pool counter), for least-recently-used unloading.
     used: HashMap<String, u64>,
     tick: u64,
+    /// This worker's share of the `quickjs` memory holder.
+    inst: crate::mem::Instance,
+    /// Calls since the last collection by [`maintain`].
+    calls: u64,
     /// Interrupt deadlines of the call in progress.
     deadline: Arc<Deadline>,
     epoch: Instant,
@@ -156,8 +161,21 @@ impl Pool {
             let now = epoch.elapsed().as_nanos() as u64;
             (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && now > wall) || (req != 0 && now > req)
         })));
-        Some(Pool { ctx: None, checks: HashMap::new(), used: HashMap::new(), tick: 0, deadline, epoch, rt })
+        Some(Pool { ctx: None, checks: HashMap::new(), used: HashMap::new(), tick: 0, inst: budget().instance(), calls: 0, deadline, epoch, rt })
     }
+}
+
+/// The `quickjs` holder of the memory registry (one instance per worker thread; the limits apply to each).
+fn budget() -> &'static crate::mem::Budget {
+    static BUDGET: std::sync::OnceLock<crate::mem::Budget> = std::sync::OnceLock::new();
+    BUDGET.get_or_init(|| {
+        crate::mem::global().register_instances(crate::mem::Spec::new(
+            "quickjs",
+            "mem.quickjs_soft_bytes",
+            "mem.quickjs_hard_bytes",
+            "mem.quickjs_low_water_pct",
+        ))
+    })
 }
 
 thread_local! {
@@ -396,6 +414,7 @@ fn limit_ms(name: &str, event: &str) -> u64 {
 /// files or the entry's files changed since.
 fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {
     pool.tick += 1;
+    pool.calls += 1;
     pool.used.insert(key.to_string(), pool.tick);
     let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
     if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
@@ -416,22 +435,70 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
         load_check(&ctx, key, own, entry)?;
         pool.checks.insert(key.to_string(), own.clone());
         pool.rt.run_gc();
-        let mut base = pool.rt.memory_usage().malloc_size.max(0) as usize;
-        let soft = defaults::num("script.runtime_soft_bytes") as usize;
-        if base > soft {
-            base = unload_cold(pool, &ctx, key, soft);
-        }
+        let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        let base = fit(pool, &ctx, key, base).ok_or("memory")?;
         // the ceiling is relative to what the scripts hold now, but never past the absolute per-runtime one
-        let limit = base.saturating_add(defaults::num("script.call_memory_bytes") as usize).min(defaults::num("script.runtime_max_bytes") as usize);
+        let limit = base.saturating_add(defaults::num("script.call_memory_bytes") as usize).min(pool.inst.hard_limit());
         pool.rt.set_memory_limit(limit);
     }
     pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or_else(|| "context".to_string())
 }
 
-/// Unload the least recently called entries (never `keep`) until the runtime holds at most `script.runtime_unload_to_bytes`, `script.unload_batch` entries per collection; returns the size it ends at. An unloaded
+/// Report the interpreter's `size` (just after a collection) to the registry and act on its answer: at the soft limit unload the
+/// coldest checks (never `keep`) down to the low-water mark; over the hard limit unload everything but `keep` and, if that is not
+/// enough, recycle the interpreter (`None`: the call that needed it fails open). Returns the size it ends at.
+fn fit(pool: &mut Pool, ctx: &Context, keep: &str, mut size: usize) -> Option<usize> {
+    match pool.inst.report(size) {
+        crate::mem::Action::None => {}
+        crate::mem::Action::Shrink(target) => {
+            size = unload_cold(pool, ctx, keep, target);
+            pool.inst.report(size);
+        }
+        crate::mem::Action::Recycle => {
+            size = unload_cold(pool, ctx, keep, 0);
+            if matches!(pool.inst.report(size), crate::mem::Action::Recycle) {
+                pool.checks.clear();
+                pool.used.clear();
+                pool.ctx = None;
+                pool.rt.run_gc();
+                pool.inst.report(pool.rt.memory_usage().malloc_size.max(0) as usize);
+                return None;
+            }
+        }
+    }
+    Some(size)
+}
+
+/// Between requests (the worker loop, after the reply went out; `idle`: no request is waiting): every `script.gc_every_calls`
+/// calls, and once when the worker goes idle after any call, collect this worker's interpreter, report its size to the memory
+/// registry and act on it ([`fit`]). QuickJS frees acyclic garbage at once but leaves cycles (closures, objects that point at
+/// each other) to a collector that otherwise runs only at 1.5 times its size after the previous run, and the `quickjs` holder was
+/// measured only when a check loaded: with every check loaded (about 5.7 MB a worker) up to about 2.8 MB of garbage per worker
+/// waited, unseen by the registry (the 30-minute soak's footprint rise). Its own collector stays the backstop within a call.
+pub fn maintain(idle: bool) {
+    POOL.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let Some(pool) = slot.as_mut() else { return };
+        if pool.calls == 0 || (!idle && pool.calls < defaults::num("script.gc_every_calls").max(1)) {
+            return;
+        }
+        pool.calls = 0;
+        pool.rt.run_gc();
+        let size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        match pool.ctx.as_ref().map(|(_, c)| c.clone()) {
+            Some(ctx) => {
+                crate::discard::harmless(fit(pool, &ctx, "", size).ok_or(())); // keep: a recycled interpreter is rebuilt by its next call
+            }
+            None => {
+                pool.inst.report(size);
+            }
+        }
+    })
+}
+
+/// Unload the least recently called entries (never `keep`) until the runtime holds at most `target` bytes (the registry's low-water mark), `script.unload_batch` entries per collection; returns the size it ends at. An unloaded
 /// entry is rebuilt from its files by its next call (`ensure_entry` finds it missing from `checks`).
-fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, soft: usize) -> usize {
-    let target = (defaults::num("script.runtime_unload_to_bytes") as usize).min(soft);
+fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, target: usize) -> usize {
     let batch = (defaults::num("script.unload_batch") as usize).max(1);
     let mut size = pool.rt.memory_usage().malloc_size.max(0) as usize;
     while size > target {
@@ -473,6 +540,9 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     let st = Settings::from_env(&env);
     let (libs, own) = resolve(name, &st.home)?;
     let key = format!("{name}#{func}");
+    let event = args.get("event").or_else(|| args.get("hookEventName")).or_else(|| args.pointer("/subject/event")).and_then(Value::as_str).unwrap_or("");
+    let check = args.get("checkId").or_else(|| args.get("check")).or_else(|| args.pointer("/check/id")).and_then(Value::as_str).unwrap_or(name);
+    let _boundary = crate::crash::enter("check", "", event, check, "");
     let r = POOL.with(|cell| -> Result<Value, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -514,7 +584,8 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     match r {
         Ok(v) => Some(v),
         Err(e) => {
-            crate::discard::note("script_error", &format!("{name}.{func}: {e}"));
+            let args: [(&str, &dyn std::fmt::Display); 5] = [("name", &name), ("func", &func), ("check", &check), ("event", &event), ("error", &e)];
+            crate::discard::note("script_error", &defaults::render("script.msg_call_error", &args));
             None
         }
     }
@@ -608,7 +679,7 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
             match (kind, delta) {
                 ("NOW", Some(d)) => Some((close, format!("{}", (now_ms + d) as i64))),
                 ("ISO", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d))),
-                ("DATE", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d)[..10].to_string())),
+                ("DATE", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d).get(..10).unwrap_or("").to_string())),
                 _ => None,
             }
         });

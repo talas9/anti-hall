@@ -156,7 +156,9 @@ pub fn phase(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, dry: b
             break;
         }
         let sum = summary(ctx, runner, st, s, &x.hash)?;
-        obj_mut(&mut report, "stores").set(&x.hash, sum);
+        if let Some(stores) = obj_mut(&mut report, "stores") {
+            stores.set(&x.hash, sum);
+        }
         done += 1;
     }
     let remaining = stores.iter().filter(|x| !report.get("stores").and_then(|r| r.get(&x.hash)).is_some_and(OVal::truthy)).count();

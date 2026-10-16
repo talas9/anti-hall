@@ -13,7 +13,7 @@ pub mod repos;
 #[cfg(test)]
 mod tests;
 
-use crate::cli::Parsed;
+use crate::{cli::Parsed, defaults};
 use cfg::Cfg;
 use serde_json::{Value, json};
 
@@ -36,15 +36,30 @@ pub fn note_cwd(eff: &crate::cfgstore::Effective, cwd: &str) {
     );
 }
 
-/// The `gh_poll` scheduled job (`ah-engine gh_poll --json`): one tick. Always exits 0 (a missing gh, a logged-out gh or a
-/// network that is down is a state shown by `gh status`, never an error of the job).
+/// True when the GitHub realtime poller has at least one recent hook-reported working directory to follow.
+pub fn has_recent_sessions(cfg: &Cfg, now: u64) -> bool {
+    !repos::recent(cfg, now).is_empty()
+}
+
+/// The `gh_poll` scheduled job (`ah-engine gh_poll --json`): one tick. No recent sessions are a skip; with recent sessions,
+/// a tick that leaves `gh status` non-ok is a failed job so the scheduler backs off.
 pub fn run_poll(p: &Parsed) -> i32 {
     let cfg = Cfg::load();
-    let report = poll::tick(&cfg, &api::GhRunner::new(&cfg), crate::health::now_ms(), false);
+    let (v, code) = poll_once(&cfg, &api::GhRunner::new(&cfg), crate::health::now_ms());
     if p.json {
-        println!("{}", json!({"polled": report.polled, "calls": report.calls, "edges": report.edges}));
+        println!("{v}");
     }
-    0
+    code
+}
+
+fn poll_once(cfg: &Cfg, runner: &dyn api::Runner, now: u64) -> (Value, i32) {
+    if !has_recent_sessions(cfg, now) {
+        return (json!({"skipped": true, "reason": defaults::text("msg.schedule_no_work")}), 0);
+    }
+    let report = poll::tick(cfg, runner, now, false);
+    let gh = poll::load(cfg).gh;
+    let code = i32::from(gh != "ok");
+    (json!({"polled": report.polled, "calls": report.calls, "edges": report.edges, "gh": gh}), code)
 }
 
 /// `ah-engine gh <status|segment|poll>`.

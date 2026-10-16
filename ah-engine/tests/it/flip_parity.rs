@@ -586,6 +586,11 @@ impl Rig {
             ("AH_ENGINE_DIR", self.root.join("state").display().to_string()),
             ("AH_ENGINE_VERSION", "flip-parity".to_string()),
             ("AH_ENGINE_DISPATCH_IN_PROCESS", "1".to_string()),
+            ("AH_ENGINE_WRAPPER_DIAG", self.root.join("wrapper-diag.log").display().to_string()),
+            // Contract: the production wrapper fails open after ~0.55 s (client.deadline_ms + slack + wrapper extra). This test proves
+            // parity of the ANSWERS of an in-process dispatch in a debug binary under many parallel rows, which can take longer than
+            // that on a loaded machine, so it runs the wrapper with the hook's own timeout as its budget (the test-only knob).
+            ("AH_HOOK_TIMEOUT_MS", (timeout * 1000).to_string()),
         ];
         if row.class == "fuzz" {
             // checks down: no built-in check answers (the daemon is never started), every entry runs as its fake Node hook, so
@@ -688,7 +693,7 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
     }
 }
 
-fn run_rows(rig: &Rig, rows: Vec<Row>, conc: usize) -> (usize, Vec<String>, usize) {
+fn run_rows(rig: &Rig, rows: Vec<Row>, conc: usize) -> (usize, Vec<String>, usize, String) {
     let rows = Arc::new(rows);
     let next = Arc::new(AtomicUsize::new(0));
     let fails = Arc::new(Mutex::new(Vec::new()));
@@ -711,17 +716,33 @@ fn run_rows(rig: &Rig, rows: Vec<Row>, conc: usize) -> (usize, Vec<String>, usiz
         }
     });
     let f = fails.lock().unwrap().clone();
-    (rows.len(), f, stricter.load(Ordering::SeqCst))
+    let diag = if f.is_empty() {
+        String::new()
+    } else {
+        let tail = |path: PathBuf| {
+            std::fs::read_to_string(path).unwrap_or_default().lines().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+        };
+        let log_tail = tail(rig.root.join("state/ah-engine.log"));
+        let wrapper_tail = tail(rig.root.join("wrapper-diag.log"));
+        let status = run_shell(&format!("{} status --json", env!("CARGO_BIN_EXE_ah-engine")), b"", &rig.env("new", &[]), Path::new("/tmp"), 5);
+        let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+        format!(
+            "\n\n--- thin-trigger diagnostics ---\nstate={}\nstatus code={} out={} err={}\nwrapper_tail=\n{}\nlog_tail=\n{}",
+            rig.root.join("state").display(),
+            status.code.map_or("sig".into(), |c| c.to_string()),
+            clip(&status.out, 400),
+            clip(&status.err, 400),
+            clip(&wrapper_tail, 4000),
+            clip(&log_tail, 4000)
+        )
+    };
+    (rows.len(), f, stricter.load(Ordering::SeqCst), diag)
 }
 
-fn report(name: &str, total: usize, fails: &[String], stricter: usize) {
+fn report(name: &str, total: usize, fails: &[String], stricter: usize, diag: &str) {
     println!("flip parity {name}: {}/{} rows identical ({} documented stricter fail-closed rows)", total - fails.len(), total, stricter);
-    assert!(
-        fails.is_empty(),
-        "{} of {total} rows differ between the old registry and the thin trigger:\n{}",
-        fails.len(),
-        fails.iter().take(12).cloned().collect::<Vec<_>>().join("\n")
-    );
+    let shown = fails.iter().take(12).cloned().collect::<Vec<_>>().join("\n");
+    assert!(fails.is_empty(), "{} of {total} rows differ between the old registry and the thin trigger:\n{}{}", fails.len(), shown, diag);
 }
 
 fn conc() -> usize {
@@ -777,8 +798,8 @@ fn recorded_commands_behave_identically_through_the_thin_trigger_with_the_real_n
             }
         }
     }
-    let (total, fails, stricter) = run_rows(&rig, rows, conc());
-    report("recorded commands (real Node hooks)", total, &fails, stricter);
+    let (total, fails, stricter, diag) = run_rows(&rig, rows, conc());
+    report("recorded commands (real Node hooks)", total, &fails, stricter, &diag);
 }
 
 // ---- corpus 2: combination fuzz with fake hooks ---------------------------------------------------------------------------
@@ -879,6 +900,48 @@ fn fake_targets(host: &str) -> Vec<(String, Value)> {
     v
 }
 
+/// A listener on the engine socket that answers every request with a frame the dispatcher cannot use (see the fuzz test).
+struct GarbageDaemon {
+    sock: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl GarbageDaemon {
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        ah_engine::discard::harmless(std::os::unix::net::UnixStream::connect(&self.sock)); // wakes the accept
+        ah_engine::discard::harmless(self.thread.join());
+        ah_engine::discard::harmless(std::fs::remove_file(&self.sock));
+    }
+}
+
+fn garbage_daemon(state: &std::path::Path) -> GarbageDaemon {
+    use ah_engine::frame::{Kind, encode};
+    let sock = ah_engine::paths::socket_in(state);
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    ah_engine::discard::harmless(std::fs::remove_file(&sock));
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = stop.clone();
+    let reply = encode(Kind::Ok, "this is not a dispatch reply");
+    let thread = std::thread::spawn(move || {
+        for s in listener.incoming().flatten() {
+            if flag.load(Ordering::SeqCst) {
+                return;
+            }
+            let reply = reply.clone();
+            std::thread::spawn(move || {
+                let mut s = s;
+                let mut b = Vec::new();
+                ah_engine::discard::harmless(s.read_to_end(&mut b));
+                ah_engine::discard::harmless(s.write_all(&reply));
+            });
+        }
+    });
+    GarbageDaemon { sock, stop, thread }
+}
+
 #[test]
 fn a_seeded_combination_fuzz_merges_identically_through_the_thin_trigger() {
     let rig = Rig::new("fuzz");
@@ -912,9 +975,14 @@ fn a_seeded_combination_fuzz_merges_identically_through_the_thin_trigger() {
             }
         }
     }
-    let (total, fails, stricter) = run_rows(&rig, rows, conc());
+    // Contract: an absent, hung or marked-down daemon makes the client fail open WITHOUT running any hook, so "checks down" can no
+    // longer be reached by not starting the daemon. A stand-in daemon that answers with something the dispatcher cannot use is what
+    // makes every entry run as its (fake) Node hook, which is what this fuzz needs to exercise the merge, cap and decision logic.
+    let stand_in = garbage_daemon(&rig.root.join("state"));
+    let (total, fails, stricter, diag) = run_rows(&rig, rows, conc());
+    stand_in.stop();
     assert!(total >= 100, "the fuzz covers many (host, event, tool) targets: {total}");
-    report("combination fuzz (fake hooks)", total, &fails, stricter);
+    report("combination fuzz (fake hooks)", total, &fails, stricter, &diag);
 }
 
 // ---- corpus 3: payload classes on every event of the thin file --------------------------------------------------------------
@@ -987,9 +1055,9 @@ fn every_event_of_the_thin_file_answers_like_the_old_registry_for_every_payload_
     let rig = Rig::new("classes");
     let rows = class_rows(&rig);
     assert!(rows.iter().any(|r| r.class == "over-cap") && rows.iter().any(|r| r.class == "invalid-utf8"));
-    let (total, fails, stricter) = run_rows(&rig, rows, conc());
+    let (total, fails, stricter, diag) = run_rows(&rig, rows, conc());
     assert!(stricter > 0, "the documented stricter rows are present");
-    report("payload classes on every thin event", total, &fails, stricter);
+    report("payload classes on every thin event", total, &fails, stricter, &diag);
 }
 
 #[test]

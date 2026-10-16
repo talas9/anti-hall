@@ -461,7 +461,7 @@ value = "cannot determine the working directory ({error}); pass --cwd <dir>"
 
 [migrate.ids]
 doc = "The step ids of the report (Node's), and the action word of the steps whose action differs from their id."
-value = { legacy = "migrate-legacy", legacy_action = "migrate-legacy-state", store = "migrate-devswarm-store", reply = "migrate-reply-state", gate = "migrate-gate-intents", archived = "migrate-auto-archived-state", lock = "sweep-lock-scratch", lock_action = "sweep-stale-lock-scratch-files", mesh = "fold-mesh-duplicates", settings = "migrate-settings-from-legacy", triage = "repair-jev-triage-cache", owner = "owner-key-migrate", recover = "recover-archive-intent", heal = "heal-registry-rows", drain = "sweep-drain-markers", promote = "promote-unclaimed", watermarks = "sweep-sibling-watermarks", nd = "reconcile-nd-cursors", summaries = "gc-stale-summaries", statusline = "migrate-statusline-engine" }
+value = { legacy = "migrate-legacy", legacy_action = "migrate-legacy-state", store = "migrate-devswarm-store", reply = "migrate-reply-state", gate = "migrate-gate-intents", archived = "migrate-auto-archived-state", lock = "sweep-lock-scratch", lock_action = "sweep-stale-lock-scratch-files", mesh = "fold-mesh-duplicates", settings = "migrate-settings-from-legacy", triage = "repair-jev-triage-cache", owner = "owner-key-migrate", recover = "recover-archive-intent", heal = "heal-registry-rows", drain = "sweep-drain-markers", promote = "promote-unclaimed", watermarks = "sweep-sibling-watermarks", nd = "reconcile-nd-cursors", summaries = "gc-stale-summaries" }
 
 [migrate.json_ext]
 doc = "The extension of a JSON state file."

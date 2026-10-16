@@ -15,7 +15,7 @@ Settings switches, the generated reference and the Jev classifier.
 | `ah-engine config` | `[validate <file>\|heal]` Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the... | main, codex, workspace, subagent (owner args: heal) |
 | `ah-engine docs` | `[--format md]` Print the generated reference: every command, setting, metric, impact kind, check and error code | main, codex, workspace, subagent |
 | `ah-engine finding-dedup` | `[--file <findings.json>]` Advisory duplicate-finding detector for the deadly-loop reviewers (L03, the port of scripts/finding-dedup.js): reads a JSON array of... | main, codex, workspace, subagent |
-| `ah-engine install-statusline` | `[--user\|--project] [--consolidate]` Put the anti-hall status line into the host's statusLine setting (L9a, the port of statusline/install-statusline.js): `--user` (default,... | main, codex |
+| `ah-engine install-statusline` | `` Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed statusLine and exits 0 | main, codex |
 | `ah-engine jev` | `<ask\|status\|scrub\|evidence>` The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is... | main, codex, workspace, subagent (owner args: ask, evidence) |
 | `ah-engine jev-report` | `[--json] [--days N] [--window 24h\|7d] [--by project\|session] [--project <name>] [--weekly] \| label <hash> [tp\|fp] \| prune-audit --days N` The Jev report of the /anti-hall:jev skill (the port of scripts/jev-report.js): per-integration calls, agreement, changed decisions,... | main, codex, workspace, subagent (owner args: label, prune-audit) |
 | `ah-engine jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|test\|mode\|review-due\|reviewed\|snooze> [--days <n>] [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key... | main, codex |
@@ -23,7 +23,7 @@ Settings switches, the generated reference and the Jev classifier.
 | `ah-engine phase` | `<set\|advance\|step\|agents\|update\|clear> [args]` Write or update the phase state the status line's phase bar shows (L9a, the port of statusline/phase.js): `set <code> <desc> <done>... | main, codex |
 | `ah-engine settings` | `<show\|get\|set\|reset\|judge\|tunables\|trust-command-allow\|trust-edit-allow> [args] [--json]` Show or change any anti-hall setting (L9a, the port of scripts/settings.js): `show [--section <key>] [--all]`, `get <section.key>`, `set... | main, codex, workspace, subagent (owner args: set, reset, judge, trust-command-allow, trust-edit-allow) |
 | `ah-engine statusline` | `(session JSON on stdin)` The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session... | main, codex, workspace, subagent |
-| `ah-engine uninstall-statusline` | `[--user\|--project] [--purge-base]` Take the anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved... | main, codex |
+| `ah-engine uninstall-statusline` | `[--user\|--project] [--purge-base]` Take an older anti-hall status line out of the host's settings (L9a, the port of statusline/uninstall-statusline.js): restores the saved... | main, codex |
 
 ## Guards
 

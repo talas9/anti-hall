@@ -293,7 +293,8 @@ impl Watcher {
             wake_cv: Condvar::new(),
         });
         let (s, poll, cap) = (Arc::clone(&shared), cfg.poll, cfg.max_entries);
-        let thread = std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)).ok();
+        let thread =
+            crate::discard::logged_ok("watch_thread_spawn", std::thread::Builder::new().name("ah-watch".into()).spawn(move || scan_loop(&s, poll, cap)));
         Watcher { cfg, shared, thread }
     }
 
@@ -380,7 +381,7 @@ impl Drop for Watcher {
         drop(lock(&self.shared.events).take()); // ends the OS watches and the callback's hold on the queue
         self.wake();
         if let Some(t) = self.thread.take() {
-            crate::discard::harmless(t.join().map_err(|_| ())); // keep: a scan thread that panicked has nothing left to report
+            crate::discard::logged("watch_scan_join", t.join().map_err(|_| "panic"));
         }
     }
 }

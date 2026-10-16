@@ -1,7 +1,7 @@
 'use strict';
-// The plugin must work with no engine binary: ah-hook.sh falls back to the Node hooks (non-guard events) and fails
-// closed on guard events (list overrides need AH_WRAPPER_TEST=1; the other cases use only the isolated HOME and a PATH
-// without ah-engine) it cannot answer. Also pins the shipped engine lock: when the plugin ships ah-engine.lock it
+// The plugin must work with no engine binary: ah-hook.sh fails open without running the Node fallback hooks when the engine
+// is absent. List overrides need AH_WRAPPER_TEST=1; the other cases use only the isolated HOME and a PATH
+// without ah-engine. Also pins the shipped engine lock: when the plugin ships ah-engine.lock it
 // must byte-equal the root lock and list every release target. Every spawn runs in an isolated temp HOME.
 
 require('../helpers/isolate-home.js');
@@ -38,24 +38,24 @@ function runWrapper(event, payload, extraEnv, args = []) {
   return r;
 }
 
-test('no engine, guard event, no usable fallback list: fails closed (exit 2)', { skip: !HAS_SH }, () => {
+test('no engine, guard event, no usable fallback list: fails open without hooks', { skip: !HAS_SH }, () => {
   const dir = scratch();
   const missing = path.join(dir, 'absent.list');
   const r = runWrapper('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } },
     { AH_WRAPPER_TEST: '1', AH_ENGINE_BIN: '/no/such/engine', AH_FALLBACK_LIST: missing }, ['--tool-from-payload']);
   fs.rmSync(dir, { recursive: true, force: true });
-  assert.strictEqual(r.status, 2, r.stderr);
-  assert.match(r.stderr, /fail closed for PreToolUse/);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stderr, '');
 });
 
-test('no engine, guard event, real Node fallback: a harmless call is allowed', { skip: !HAS_SH }, () => {
+test('no engine, guard event, real Node fallback: a harmless call is allowed without hand-over', { skip: !HAS_SH }, () => {
   const r = runWrapper('PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/etc/hosts' }, session_id: 'fallback-test', cwd: os.tmpdir() },
     {}, ['--tool-from-payload']);
   assert.strictEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, /engine fallback/);
+  assert.strictEqual(r.stderr, '');
 });
 
-test('no engine, non-guard event: the Node fallback hooks run', { skip: !HAS_SH }, () => {
+test('no engine, non-guard event: the Node fallback hooks do not run', { skip: !HAS_SH }, () => {
   const dir = scratch();
   const sentinel = path.join(dir, 'ran');
   const hook = path.join(dir, 'hook.sh');
@@ -66,7 +66,8 @@ test('no engine, non-guard event: the Node fallback hooks run', { skip: !HAS_SH 
   const ran = fs.existsSync(sentinel);
   fs.rmSync(dir, { recursive: true, force: true });
   assert.strictEqual(r.status, 0, r.stderr);
-  assert.ok(ran, 'the fallback hook did not run');
+  assert.strictEqual(r.stderr, '');
+  assert.strictEqual(ran, false, 'the fallback hook should not run when the engine is absent');
 });
 
 test('no engine, non-guard event, real Node fallback: exits 0 and never blocks', { skip: !HAS_SH }, () => {

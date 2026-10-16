@@ -24,7 +24,7 @@ Other `git` requests happen only when you run them: `/anti-hall:update` pulls fr
 
 - `~/.anti-hall/`: settings, skip file, caches, and logs. The Jev decision log holds hashes and verdicts, not prompt text. Optional redacted snippets (at most 200 characters) are off unless you enable `jev.audit.snippets`. The decision log rotates at 2 MB, and per-session state files are pruned after 7 days. Defect reports stay local.
 - `<repo>/.anti-hall/`: progress notes, history ledgers and handovers, which can quote your session.
-- Your account email: the optional statusline reads it from Claude Code's own `~/.claude.json` to show it in the status bar. It is displayed only, never sent anywhere. Hide it with `statusline.noEmail` (`ANTIHALL_STATUSLINE_NO_EMAIL=1`).
+- Legacy statusline cleanup: anti-hall no longer installs a Claude `statusLine`; `uninstall-statusline` may read old anti-hall statusline settings to remove them.
 
 ## Local telemetry (engine)
 
@@ -39,7 +39,7 @@ These are the notable things anti-hall runs and writes outside the project. Hook
 | Background units (launchd agent / systemd user unit / cron entry) for the optional DevSwarm ingest daemon, liveness supervisor and MCP reaper | Only if you run the matching `install-*` script | `~/Library/LaunchAgents/`, `~/.config/systemd/user/` or your crontab |
 | `claude plugin update anti-hall@anti-hall` | When you run `/anti-hall:update` and the harness registration is older than the latest release | the `claude` CLI |
 | `claude -p --resume <session> --dangerously-skip-permissions` | Only when you run the on-demand `devswarm-recover` CLI for one workspace | the `claude` CLI |
-| statusLine entry in `~/.claude/settings.json` | Only when you install the statusline (`/anti-hall:install-statusline`) | `~/.claude/settings.json` |
+| statusLine entry in `~/.claude/settings.json` | No longer written; uninstall only removes old anti-hall entries | `~/.claude/settings.json` |
 | `ah-engine serve`, a detached per-user background process with a Unix socket in a private directory (no network); `bootstrap.log` | Started by the first hook call once the engine binary is installed; exits on its memory cap, `ah-engine stop` or a newer build | `~/.anti-hall/ah-engine/` |
 | Launcher scripts that find the current plugin version | Written by the DevSwarm hooks in DevSwarm sessions | `~/.anti-hall/bin/` |
 | Local reads of `~/.claude.json` (`userID`, Fable availability) and the OMC usage cache | By the limit-conservation and model-availability hooks; never sent anywhere | `~/.claude.json`, `~/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json` |

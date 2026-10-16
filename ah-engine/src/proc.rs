@@ -84,11 +84,35 @@ pub fn kill_all() {
     }
 }
 
-fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
+/// Collect a helper's output: at most `mem.proc_output_max_bytes` are kept (the cut is marked with `mem.proc_output_marker`); the
+/// rest is read and dropped so the helper never blocks on a full pipe and the daemon never holds an unbounded buffer.
+fn drain(r: impl Read + Send + 'static) -> mpsc::Receiver<(Vec<u8>, bool)> {
+    drain_capped(r, defaults::num("mem.proc_output_max_bytes") as usize, defaults::text("mem.proc_output_marker").as_bytes().to_vec())
+}
+
+fn drain_capped(mut r: impl Read + Send + 'static, cap: usize, marker: Vec<u8>) -> mpsc::Receiver<(Vec<u8>, bool)> {
     let (tx, rx) = mpsc::channel();
+    let chunk_len = defaults::num("io.chunk_bytes") as usize;
     std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let clean = r.read_to_end(&mut b).is_ok();
+        let (mut b, mut chunk, mut cut, mut clean) = (Vec::new(), vec![0u8; chunk_len], false, true);
+        loop {
+            match r.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let room = cap.saturating_sub(b.len());
+                    b.extend_from_slice(&chunk[..n.min(room)]);
+                    cut |= n > room;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => {
+                    clean = false;
+                    break;
+                }
+            }
+        }
+        if cut {
+            b.extend_from_slice(&marker);
+        }
         crate::discard::harmless(tx.send((b, clean))); // keep: the receiver is gone; nobody is waiting for the result
     });
     rx
@@ -206,6 +230,18 @@ mod tests {
         let mut c = Command::new("/bin/sh");
         c.args(["-c", script]);
         c
+    }
+
+    #[test]
+    fn output_past_the_cap_is_cut_marked_and_the_rest_is_still_read() {
+        let mut data = vec![b'a'; 100_000];
+        data[0] = b'x';
+        let rx = drain_capped(std::io::Cursor::new(data), 1000, b"[cut]".to_vec());
+        let (kept, clean) = rx.recv().unwrap();
+        assert!(clean);
+        assert_eq!((kept.len(), kept[0], &kept[1000..]), (1005, b'x', &b"[cut]"[..]), "1000 bytes kept, then the marker");
+        let rx = drain_capped(std::io::Cursor::new(vec![b'b'; 1000]), 1000, b"[cut]".to_vec());
+        assert_eq!(rx.recv().unwrap().0.len(), 1000, "output exactly at the cap is not marked");
     }
 
     #[test]

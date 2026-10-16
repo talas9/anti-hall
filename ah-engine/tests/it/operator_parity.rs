@@ -1014,8 +1014,11 @@ fn install_agrees_with_node_on_unwritable_and_unreadable_files() -> R {
     let seed = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[])?;
     fs::set_permissions(seed.path().join(".claude/settings.json"), fs::Permissions::from_mode(0o444))?;
     let c = Inst { home: Some(seed.path()), cwd: None, env: &[] };
+    let before = snapshot(seed.path())?;
     let o = one(&c, true, &[])?;
-    assert_eq!(o.code, 1);
+    assert_eq!(o.code, 0);
+    assert!(o.stdout.contains("statusline installation has been retired"), "{}", o.stdout);
+    assert_eq!(before, snapshot(seed.path())?, "retired installer writes nothing");
     fs::set_permissions(seed.path().join(".claude/settings.json"), fs::Permissions::from_mode(0o600))?;
     // a read-only base directory: the base file cannot be written, the install goes on
     let seed2 = home_with(Some(r#"{"statusLine":{"type":"command","command":"echo hi"}}"#), &[(".anti-hall/keep", "")])?;
@@ -1037,9 +1040,9 @@ fn install_reports_a_settings_file_it_cannot_parse_and_writes_nothing() -> R {
         let mut cmd = Command::new(BIN);
         cmd.arg("install-statusline");
         let o = run(cmd, seed.path(), seed.path(), &[], "")?;
-        assert_eq!(o.code, 1, "{body:?}: {}", o.stderr);
-        assert!(o.stderr.contains("Could not parse"), "{body:?}: {}", o.stderr);
-        assert_eq!(before, snapshot(seed.path())?, "{body:?}: nothing written");
+        assert_eq!(o.code, 0, "{body:?}: {}", o.stderr);
+        assert!(o.stdout.contains("statusline installation has been retired"), "{body:?}: {}", o.stdout);
+        assert_eq!(before, snapshot(seed.path())?, "{body:?}: retired installer writes nothing");
         let mut cmd = Command::new(BIN);
         cmd.arg("uninstall-statusline");
         let o = run(cmd, seed.path(), seed.path(), &[], "")?;
@@ -1108,10 +1111,11 @@ fn install_agrees_with_node_in_the_project_scope() -> R {
     let h = home_with(None, &[])?;
     let mut cmd = Command::new(BIN);
     cmd.args(["install-statusline", "--project"]);
+    let before = snapshot(d.path())?;
     let o = run(cmd, h.path(), d.path(), &[], "")?;
-    assert_eq!(o.code, 1, "{}", o.stderr);
-    assert!(o.stderr.contains("EISDIR"), "{}", o.stderr);
-    assert_eq!(fs::read_to_string(d.path().join(".claude/settings.local.json"))?, "{}");
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(o.stdout.contains("statusline installation has been retired"), "{}", o.stdout);
+    assert_eq!(before, snapshot(d.path())?, "retired installer writes nothing");
     Ok(())
 }
 
@@ -1215,10 +1219,10 @@ fn the_installers_keep_the_mode_and_the_link_of_the_settings_file() -> R {
     let o = run(cmd, h.path(), h.path(), &[], "")?;
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(fs::symlink_metadata(&link)?.file_type().is_symlink(), "the link survives");
-    assert!(fs::read_to_string(&real)?.contains("\"statusLine\""), "the target is updated");
+    assert_eq!(fs::read_to_string(&real)?, "{\"keep\":1}\n", "retired installer leaves the target unchanged");
     assert_eq!(fs::metadata(&real)?.permissions().mode() & 0o777, 0o640, "the mode is kept");
     let bak = h.path().join(".claude/settings.json.bak-antihall");
-    assert_eq!(fs::read_to_string(bak)?, "{\"keep\":1}\n", "the backup holds the original");
+    assert!(!bak.exists(), "retired installer writes no backup");
     let leftovers: Vec<_> = fs::read_dir(real.parent().ok_or("no parent")?)?.flatten().filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
     assert!(leftovers.is_empty(), "no temporary file is left behind");
     Ok(())
@@ -1232,15 +1236,16 @@ fn the_installers_refuse_user_config_outside_a_temp_dir_under_a_test() -> R {
         for (home_env, refused) in [(Some("/ah-nonexistent-home"), true), (None, false)] {
             let env: Vec<(&str, &str)> = [Some((marker, "1")), home_env.map(|h| ("HOME", h))].into_iter().flatten().collect();
             let c = Inst { home: Some(h.path()), cwd: None, env: &env };
-            for install_it in [true, false] {
-                let o = one(&c, install_it, &[])?;
-                assert_eq!(o.stderr.contains("refused under a test"), refused, "{marker} {home_env:?}: {}", o.stderr);
-            }
+            let install = one(&c, true, &[])?;
+            assert_eq!(install.code, 0, "{marker} {home_env:?}: {}", install.stderr);
+            assert!(install.stdout.contains("statusline installation has been retired"), "{}", install.stdout);
+            let uninstall = one(&c, false, &[])?;
+            assert_eq!(uninstall.stderr.contains("refused under a test"), refused, "{marker} {home_env:?}: {}", uninstall.stderr);
         }
     }
     // without a marker the same home is not refused (it is simply missing)
     let c = Inst { home: None, cwd: None, env: &[("HOME", "/ah-nonexistent-home")] };
-    assert_eq!(one(&c, true, &[])?.code, 1);
+    assert_eq!(one(&c, true, &[])?.code, 0);
     Ok(())
 }
 
@@ -1362,16 +1367,14 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
     let cwd = project_cwd(&[(".claude/settings.json", r#"{"statusLine":{"type":"command","command":"echo committed"}}"#), (".gitignore", "x\n")], None)?;
     let state = home.path().join("state");
     let log = home.path().join("fake-node.log");
-    // Node agrees (the real script, on the scratch copy), for the user and the project scope and for the uninstaller
-    for args in [
-        vec!["install-statusline"],
-        vec!["install-statusline", "--project"],
-        vec!["install-statusline", "--consolidate"],
-        vec!["uninstall-statusline"],
-        vec!["uninstall-statusline", "--project", "--purge-base"],
-        vec!["install-statusline"],
-        vec!["install-statusline"],
-    ] {
+    // The retired installer does not start a shadow; uninstall still replays Node on the scratch copy.
+    for args in [vec!["install-statusline"], vec!["install-statusline", "--project"], vec!["install-statusline", "--consolidate"]] {
+        let o = engine_shadowed(home.path(), cwd.path(), None, &[], &args)?;
+        assert!(o.code == 0, "{args:?}: {} {}", o.stdout, o.stderr);
+        assert!(o.stdout.contains("statusline installation has been retired"), "{args:?}: {}", o.stdout);
+        assert!(shadow_dirs(&state).is_empty(), "{args:?}: retired installer starts no shadow");
+    }
+    for args in [vec!["uninstall-statusline"], vec!["uninstall-statusline", "--project", "--purge-base"]] {
         let o = engine_shadowed(home.path(), cwd.path(), None, &[], &args)?;
         assert!(o.code == 0, "{args:?}: {} {}", o.stdout, o.stderr);
         assert!(wait_shadow_done(&state), "the comparison finished: {args:?}");
@@ -1383,7 +1386,16 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
     fs::write(&fake, "#!/bin/sh\necho \"$HOME|$(pwd)\" >> \"$AH_FAKE_LOG\"\necho different\n")?;
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755))?;
     let before_cwd = snapshot(cwd.path())?;
+    let before_home = snapshot(home.path())?;
     let o = engine_shadowed(home.path(), cwd.path(), Some(&fake), &[("AH_FAKE_LOG", &log)], &["install-statusline", "--project"])?;
+    assert_eq!(o.code, 0);
+    assert!(o.stdout.contains("statusline installation has been retired"), "{}", o.stdout);
+    assert!(shadow_dirs(&state).is_empty(), "retired installer starts no shadow even with fake Node");
+    assert!(!log.exists(), "retired installer never calls Node");
+    assert_eq!(before_home, snapshot(home.path())?, "retired installer leaves user settings untouched");
+    assert_eq!(before_cwd, snapshot(cwd.path())?, "retired installer leaves project settings untouched");
+
+    let o = engine_shadowed(home.path(), cwd.path(), Some(&fake), &[("AH_FAKE_LOG", &log)], &["uninstall-statusline", "--project"])?;
     assert_eq!(o.code, 0);
     assert!(wait_shadow_done(&state), "the second comparison finished");
     let reports: Vec<_> = shadow_dirs(&state).into_iter().filter(|d| d.join("mismatch.txt").exists()).collect();
@@ -1394,10 +1406,16 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
     assert!(h.contains("/shadow/") && d.contains("/shadow/"), "Node ran in scratch directories: {seen}");
     assert_ne!(Path::new(h), home.path());
     assert_ne!(Path::new(d), cwd.path());
-    // the real files hold exactly the engine's write: the settings and the ignore file changed once, the engine's way
-    let after_cwd = snapshot(cwd.path())?;
-    assert_ne!(before_cwd, after_cwd, "the engine wrote the project's local settings");
-    assert_eq!(fs::read_to_string(cwd.path().join(".gitignore"))?.matches(".claude/settings.local.json").count(), 1);
+    // Contract (retired statusline): the REAL `uninstall-statusline --project` is the run that writes (it restores from the one-time
+    // backup, so the project settings legitimately differ from before it); the shadow only replays Node on the scratch copy. So the
+    // old "nothing changed" equality is replaced by what must still hold: the backup is never overwritten and nothing else moves.
+    assert_eq!(
+        fs::read_to_string(cwd.path().join(".claude/settings.json.bak-antihall"))?,
+        r#"{"statusLine":{"type":"command","command":"echo committed"}}"#,
+        "the one-time backup is never overwritten"
+    );
+    assert_eq!(fs::read_to_string(cwd.path().join(".gitignore"))?, "x\n", "the shadow touched nothing else");
+    assert_eq!(fs::read_to_string(cwd.path().join(".gitignore"))?.matches(".claude/settings.local.json").count(), 0);
     Ok(())
 }
 
@@ -1405,11 +1423,13 @@ fn a_sampled_installer_run_is_replayed_on_a_scratch_copy_and_never_writes_twice(
 fn an_installer_run_on_unreadable_settings_fails_like_node_and_leaves_no_shadow_behind() -> R {
     let home = home_with(Some("{bad"), &[])?;
     let state = home.path().join("state");
-    // the installer never defers (v1.0 lane L04): it reports the unreadable settings as the Node script does
+    // The retired installer never defers and writes nothing, even when legacy settings are unreadable.
+    let before = snapshot(home.path())?;
     let o = engine_shadowed(home.path(), home.path(), None, &[], &["install-statusline"])?;
-    assert_eq!(o.code, 1, "{} {}", o.stdout, o.stderr);
-    assert!(wait_shadow_done(&state));
-    assert!(shadow_dirs(&state).is_empty(), "Node failed the same way, so nothing is kept");
+    assert_eq!(o.code, 0, "{} {}", o.stdout, o.stderr);
+    assert!(o.stdout.contains("statusline installation has been retired"), "{}", o.stdout);
+    assert_eq!(before, snapshot(home.path())?, "retired installer leaves legacy settings untouched");
+    assert!(shadow_dirs(&state).is_empty(), "retired installer starts no shadow");
     Ok(())
 }
 

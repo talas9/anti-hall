@@ -11,6 +11,7 @@ Install, go-live, rollback and what still runs on Node: [`docs/AH-ENGINE.md`](..
 - What it is, what works today and what is **planned (D-n)**: [`docs/AH-ENGINE.md`](../docs/AH-ENGINE.md)
 - Every command, setting, metric, impact kind, check and error code (generated, cannot drift): [REFERENCE.md](REFERENCE.md)
 - The versioned design decision record (D1 to D70): [DECISIONS.md](DECISIONS.md)
+- October 2026 hardening: every failure, root cause, fix, test and status: [docs/HARDENING-2026-10.md](docs/HARDENING-2026-10.md)
 
 This directory is self-contained: its own Cargo workspace, CI (`.github/workflows/ah-engine.yml`), docs and tests. It is
 never a submodule (D69).

@@ -136,9 +136,12 @@ fn compare(name: &str, node: &str, rust: &str, fx: (&Fx, &Fx)) {
         let r: Vec<&String> = r.unwrap().iter().collect();
         assert_eq!(n, r, "{name}: {title}");
     }
-    // the statusline configuration finding is the first line of Node's section (the render checks follow it)
+    // The statusline installer is retired; Node and the engine still report the same configured/missing state, but their
+    // human severity prefix and legacy "custom" adjective differ while the owner is removing the feature.
+    let statusline_config =
+        |line: &str| line.trim_start().trim_start_matches('✅').trim_start_matches("⚠️").trim_start().replace("custom statusline set", "statusline set");
     let (n, r) = (section(&ns, "Statusline").unwrap(), section(&rs, "Statusline").unwrap());
-    assert_eq!(n.first(), r.first(), "{name}: statusline configuration finding");
+    assert_eq!(n.first().map(|s| statusline_config(s)), r.first().map(|s| statusline_config(s)), "{name}: statusline configuration finding");
     // every repair row of the engine that Node also has is a row of Node's, with the same status and text
     let heading = |s: &[(String, Vec<String>)]| s.iter().find(|(t, _)| t.starts_with("Repair")).cloned();
     let (nr, rr) = (heading(&ns).expect("node repair section"), heading(&rs).expect("rust repair section"));
@@ -205,7 +208,7 @@ fn workflow_templates_and_the_statusline_are_read_the_same_way() {
     let (_, node) = run_node(&a, &["--dry-run"]);
     let (_, rust) = run_rust(&b, &["--dry-run"]);
     compare("statusline-local", &node, &rust, (&a, &b));
-    assert!(section(&sections(&rust), "Statusline").unwrap()[0].contains("statusline installed (project-local)"));
+    assert!(section(&sections(&rust), "Statusline").unwrap()[0].contains("legacy anti-hall statusLine still configured (project-local)"));
 }
 
 #[test]

@@ -59,6 +59,12 @@ env = "AH_ENGINE_TICK_MS"
 unit = "ms"
 min = 10
 
+[schedule.cpu_backoff_ms]
+doc = "How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only."
+value = 60000
+unit = "ms"
+min = 0
+
 [schedule.backoff_shift_max]
 doc = "The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing."
 value = 30
@@ -101,6 +107,10 @@ value = ["maintain", "backup", "metrics_snapshot", "spool_drain", "telemetry_rol
 [schedule.subprocess_actions]
 doc = "Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started."
 value = ["maintain", "backup", "jev_sweep", "handovers", "agent_tick", "gh_poll", "refresh", "mcp_reaper", "engine_update"]
+
+[schedule.skip_without_work]
+doc = "Subprocess actions the scheduler skips when they have no recent session or pending-request work. The command itself still reports the skip reason for manual runs."
+value = ["gh_poll", "refresh"]
 
 [schedule.action_args]
 doc = "The command line (after the program name, before --json) of a subprocess action whose command is not just its name."

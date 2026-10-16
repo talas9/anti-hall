@@ -14,6 +14,7 @@
 //!   third copy: `node` is not on its PATH), and hand the verb to Node otherwise (the second copy), whose output is then
 //!   the engine's output. That is the exit-75 contract: 75 means "deferred, nothing written".
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};

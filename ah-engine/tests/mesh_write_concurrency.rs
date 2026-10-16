@@ -12,6 +12,7 @@
 //! gap-free, every reader cursor holds the highest value anyone wrote, a last consuming read sets the broadcast cursor to
 //! the head, no lock file is left behind, and `PRAGMA integrity_check` is ok.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

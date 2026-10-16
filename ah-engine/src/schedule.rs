@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -101,7 +102,7 @@ impl FileSource {
             },
         };
         let action = s("action");
-        let known = defaults::list("schedule.actions").contains(&action.as_str()) || (test_hooks && action == "test_sleep");
+        let known = defaults::list("schedule.actions").contains(&action.as_str()) || (test_hooks && matches!(action.as_str(), "test_sleep" | "test_panic"));
         if !known || (every_ms == 0 && every_key.is_empty()) {
             if !known {
                 crate::health::log_event(
@@ -251,6 +252,8 @@ pub enum Outcome {
     Timeout,
     /// The job's delivery does not exist yet (agent jobs, D45); not a failure.
     Planned(String),
+    /// There is no relevant session/request work for this tick.
+    Skipped(String),
 }
 
 impl Outcome {
@@ -260,11 +263,12 @@ impl Outcome {
             Outcome::Failed(_) => "failed",
             Outcome::Timeout => "timeout",
             Outcome::Planned(_) => "planned",
+            Outcome::Skipped(_) => "skipped",
         }
     }
     fn detail(&self) -> String {
         let d = match self {
-            Outcome::Ok(d) | Outcome::Failed(d) | Outcome::Planned(d) => d.clone(),
+            Outcome::Ok(d) | Outcome::Failed(d) | Outcome::Planned(d) | Outcome::Skipped(d) => d.clone(),
             Outcome::Timeout => defaults::text("msg.schedule_timeout").to_string(),
         };
         d.chars().take(defaults::num("schedule.detail_max") as usize).collect()
@@ -298,6 +302,7 @@ pub struct Scheduler {
     agents: Box<dyn AgentDelivery>,
     observe: Observer,
     setting: Setting,
+    backoff_until_ms: AtomicU64,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -362,6 +367,7 @@ impl Scheduler {
             agents,
             observe,
             setting,
+            backoff_until_ms: AtomicU64::new(0),
         };
         for j in &fresh_ones {
             let st = lk(&s.state).get(&j.name).cloned().unwrap_or_default();
@@ -401,11 +407,30 @@ impl Scheduler {
         self.wake.1.notify_all();
     }
 
+    /// Hold scheduled jobs until at least this far in the future (used by the daemon CPU self-check).
+    pub fn backoff_for(&self, ms: u64) {
+        if ms == 0 {
+            return;
+        }
+        self.backoff_until_ms.fetch_max(now_ms().saturating_add(ms), SeqCst);
+        self.poke();
+    }
+
     /// The ticker: until `stop` says so, start every due job, then sleep until the next one is due (at most
     /// `schedule.tick_ms`, and less when `run` asks).
     pub fn run_ticker(self: &Arc<Self>, stop: &dyn Fn() -> bool) {
         while !stop() {
             let now = now_ms();
+            let backed_off_until = self.backoff_until_ms.load(SeqCst);
+            if now < backed_off_until {
+                let wait = Duration::from_millis(backed_off_until.saturating_sub(now).min(defaults::num("schedule.tick_ms")).max(1));
+                let mut woke = lk(&self.wake.0);
+                if !*woke {
+                    woke = self.wake.1.wait_timeout(woke, wait).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+                }
+                *woke = false;
+                continue;
+            }
             let mut soonest = now + defaults::num("schedule.tick_ms");
             for spec in &self.jobs {
                 let spec = &self.effective(spec);
@@ -432,7 +457,22 @@ impl Scheduler {
                         drop(state);
                         self.save(spec, &snapshot); // committed before the run: a restart cannot run it again
                         let (me, spec) = (self.clone(), spec.clone());
-                        std::thread::spawn(move || me.execute(&spec, due_ms, attempt, catch_up));
+                        let run_spec = spec.clone();
+                        if let Err(e) = std::thread::Builder::new()
+                            .name(format!("ah-schedule-{}", spec.name))
+                            .spawn(move || me.execute(&run_spec, due_ms, attempt, catch_up))
+                        {
+                            crate::discard::note("schedule_spawn", &e.to_string());
+                            let snapshot = {
+                                let mut state = lk(&self.state);
+                                let st = state.entry(spec.name.clone()).or_default();
+                                st.running = false;
+                                st.clone()
+                            };
+                            self.save(&spec, &snapshot);
+                            (self.observe)(&spec.name, "failed", catch_up);
+                            self.poke();
+                        }
                         continue;
                     }
                 }
@@ -453,6 +493,8 @@ impl Scheduler {
     /// One run of `spec`, on its own thread: record it, run it within its timeout, then reschedule.
     fn execute(&self, spec: &JobSpec, due_ms: u64, attempt: u32, catch_up: bool) {
         let started = now_ms();
+        let _boundary = crate::crash::enter("job", "", "", "", &spec.name);
+        crate::health::write_crash_breadcrumb("job", "", "", 0, json!({"job": spec.name, "action": spec.action}));
         let id = match (&self.db, spec.persist) {
             (Some(db), true) => db
                 .write(Op::Sched(SchedOp::Start { job: spec.name.clone(), due_ms, started_ms: started, attempt }))
@@ -460,7 +502,10 @@ impl Scheduler {
                 .and_then(|s| s.parse::<i64>().ok()),
             _ => None,
         };
-        let outcome = self.perform(spec);
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.perform(spec))) {
+            Ok(outcome) => outcome,
+            Err(_) => Outcome::Failed(defaults::text("msg.schedule_panic").to_string()),
+        };
         let ended = now_ms();
         let st = {
             let mut state = lk(&self.state);
@@ -496,6 +541,8 @@ impl Scheduler {
         }
         if outcome.failed() {
             crate::health::log_event("schedule", status, &defaults::render("msg.schedule_failed", &[("job", &spec.name), ("detail", &detail)]));
+        } else if matches!(outcome, Outcome::Skipped(_)) {
+            crate::health::log_event("schedule", status, &defaults::render("msg.schedule_skipped", &[("job", &spec.name), ("detail", &detail)]));
         }
         (self.observe)(&spec.name, status, catch_up);
         let mut last = lk(&self.last);
@@ -521,6 +568,9 @@ impl Scheduler {
             return subprocess(&argv, timeout);
         }
         if defaults::list("schedule.subprocess_actions").contains(&spec.action.as_str()) {
+            if defaults::list("schedule.skip_without_work").contains(&spec.action.as_str()) && !has_work(&spec.action) {
+                return Outcome::Skipped(defaults::text("msg.schedule_no_work").to_string());
+            }
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).or_default_logged("current_exe");
             let mut argv = vec![exe];
             match defaults::raw("schedule.action_args").get(&spec.action) {
@@ -537,7 +587,10 @@ impl Scheduler {
         let work: &InProc = &self.inproc;
         std::thread::scope(|s| {
             s.spawn(move || {
-                crate::discard::harmless(tx.send(work(&action))); // keep: the receiver is gone; nobody is waiting for the result
+                let _boundary = crate::crash::enter("job-action", "", "", "", &action);
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&action)))
+                    .unwrap_or_else(|_| Err(defaults::text("msg.schedule_panic").to_string()));
+                crate::discard::harmless(tx.send(r)); // keep: the receiver is gone; nobody is waiting for the result
             });
             match rx.recv_timeout(timeout) {
                 Ok(Ok(d)) => Outcome::Ok(d),
@@ -606,6 +659,17 @@ fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
         Ok(o) => Outcome::Failed(String::from_utf8_lossy(&o.stderr).trim().to_string()),
         Err(crate::proc::Error::Timeout) => Outcome::Timeout,
         Err(e) => Outcome::Failed(e.into_io().to_string()),
+    }
+}
+
+fn has_work(action: &str) -> bool {
+    match action {
+        "gh_poll" => {
+            let cfg = crate::ghrt::cfg::Cfg::load();
+            crate::ghrt::has_recent_sessions(&cfg, crate::health::now_ms())
+        }
+        "refresh" => defaults::env_var("home").is_some_and(|h| crate::refresh::has_pending(std::path::Path::new(&h))),
+        _ => true,
     }
 }
 
@@ -736,6 +800,40 @@ mod tests {
         let s = Scheduler::new(&src, None, Box::new(|_| Ok(String::new())), Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num));
         let spec = s.jobs().iter().find(|j| j.name == "remind").unwrap().clone();
         assert!(matches!(s.perform(&spec), Outcome::Planned(_)));
+    }
+
+    #[test]
+    fn a_panicking_job_clears_running_and_records_failure() {
+        let d = crate::db::TempDir::new("sched-panic");
+        let p = d.0.join("schedules.json");
+        std::fs::write(&p, r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 1000, "timeout_ms": 2000, "retries": 1, "backoff_ms": 10, "backoff_max_ms": 10, "persist": false}}}"#).unwrap();
+        let src = FileSource { override_path: p, test_hooks: false };
+        let s = Scheduler::new(
+            &src,
+            None,
+            Box::new(|_| std::panic::resume_unwind(Box::new("job panic"))),
+            Box::new(PlannedDelivery),
+            Box::new(|_, _, _| {}),
+            Box::new(defaults::num),
+        );
+        let spec = s.jobs().iter().find(|j| j.name == "probe").unwrap().clone();
+        lk(&s.state).insert(spec.name.clone(), JobState { next_ms: now_ms(), running: true, ..Default::default() });
+        s.execute(&spec, now_ms(), 1, false);
+        let st = lk(&s.state).get("probe").cloned().unwrap();
+        assert!(!st.running, "panic boundary clears running");
+        assert_eq!(st.failures, 1, "panic is recorded as a failed run with backoff");
+        let last = lk(&s.last).get("probe").unwrap().result.clone();
+        assert_eq!(last["status"], "failed");
+        assert_eq!(last["detail"], defaults::text("msg.schedule_panic"));
+    }
+
+    #[test]
+    fn cpu_backoff_holds_the_ticker_until_the_future() {
+        let src = FileSource { override_path: crate::db::TempDir::new("sched-backoff").0.join("missing.json"), test_hooks: false };
+        let s = Scheduler::new(&src, None, Box::new(|_| Ok(String::new())), Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num));
+        let before = now_ms();
+        s.backoff_for(1000);
+        assert!(s.backoff_until_ms.load(SeqCst) >= before + 1000);
     }
 
     #[test]

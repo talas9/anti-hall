@@ -36,7 +36,7 @@ can call by name. Together they stop the assistant from:
 - **flooding your main conversation**: heavy commands and file edits go to helper agents,
   and runaway agent spawning is capped.
 
-Node.js 22+ is a temporary compatibility fallback during the migration and is removed in v1.0. There are no npm dependencies. It runs on macOS and Linux (including WSL on
+Node.js 22+ is a temporary compatibility fallback during the migration and is removed in v0.301. There are no npm dependencies. It runs on macOS and Linux (including WSL on
 Windows). Everything it keeps stays on your machine, apart from one update check, which
 you can turn off ([details](#network-and-privacy)).
 
@@ -58,7 +58,7 @@ you can turn off ([details](#network-and-privacy)).
 
 ## Install in one minute
 
-You need **Node.js 22 or newer** on your `PATH` (`node --version`) for now (no longer needed from v1.0). The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
+You need **Node.js 22 or newer** on your `PATH` (`node --version`) for now (no longer needed from v0.301). The engine binary is fetched for you (needs `curl` or `wget`, and `tar`).
 
 === "Claude Code"
 

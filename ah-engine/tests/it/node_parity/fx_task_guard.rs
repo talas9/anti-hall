@@ -581,13 +581,22 @@ pub(crate) fn corpus() -> (Vec<Scenario>, Scratch, BTreeSet<String>) {
     big("null-line-before", cat(vec![cc(1, "a"), vec!["null".into()], u(1, status("completed"))]), desc(1, "x"));
     big("window-cuts-a-line", cat(vec![cc(1, "a"), u(1, status("completed"))]), desc(1, "x"));
     {
-        // far before the window: beyond what the engine scans exactly (it must defer, never guess)
-        let ff: Vec<String> = (0..24000)
-            .map(|i| {
-                let t = tl.text(&format!("far {i} {}", "y".repeat(380)));
-                tl.asst(vec![t])
-            })
-            .collect();
+        // Far before the window: beyond the engine's exact backfill scan (it must defer, never guess).
+        // Keep this derived from the shipped limits so a tuning change cannot silently turn this into an answerable fixture.
+        let target = ah_engine::defaults::num("taskstate.tail_bytes")
+            .saturating_add(ah_engine::defaults::num("taskstate.backfill_exact_bytes"))
+            .saturating_add(1024 * 1024) as usize;
+        let mut ff = Vec::new();
+        let mut bytes = 0usize;
+        for i in 0usize.. {
+            let t = tl.text(&format!("far {i} {}", "y".repeat(380)));
+            let line = tl.asst(vec![t]);
+            bytes = bytes.saturating_add(line.len() + 1);
+            ff.push(line);
+            if bytes > target {
+                break;
+            }
+        }
         let mut lines = vec![tl.prompt("go")];
         lines.extend(cc(1, "ancient"));
         lines.extend(u(1, status("completed")));

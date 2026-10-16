@@ -177,16 +177,16 @@ function agSpawnMs() {
   return isFinite(v) && v > 0 ? v : ah.cfgNum('api_guard_v1.spawn_timeout_ms');
 }
 
-// Run one probe; the first timed-out, killed or skipped run is remembered for the notice. The run's record, or null.
-function agRun(st, bin, args, cwd) {
-  var r = JSON.parse(ahHost.spawnProbe(bin, args, cwd, agSpawnMs()));
+// Run one probe (`cached`: a version probe, whose answer the host keeps per daemon); the first timed-out, killed or skipped run is remembered for the notice. The run's record, or null.
+function agRun(st, bin, args, cwd, cached) {
+  var r = JSON.parse((cached ? ahHost.spawnProbeCached : ahHost.spawnProbe)(bin, args, cwd, agSpawnMs()));
   if (!r.found) return null;
   if (st.notice === null && (r.skipped || r.timedOut || r.signal !== null || r.overflow)) st.notice = { bin: bin, ms: agSpawnMs() };
   return r.skipped ? null : r;
 }
 
-function agJson(st, bin, args, cwd) {
-  var r = agRun(st, bin, args, cwd);
+function agJson(st, bin, args, cwd, cached) {
+  var r = agRun(st, bin, args, cwd, cached);
   if (r === null || r.timedOut || r.overflow || r.signal !== null || r.status !== 0) return null;
   try { return JSON.parse((r.stdout || '').trim()); } catch (e) { return null; }
 }
@@ -194,7 +194,7 @@ function agJson(st, bin, args, cwd) {
 function agPyBin(st) {
   var bins = agCfg('python_bins');
   for (var i = 0; i < bins.length; i++) {
-    var r = agRun(st, bins[i], agCfg('version_args'), null);
+    var r = agRun(st, bins[i], agCfg('version_args'), null, true);
     if (r !== null && !r.timedOut && !r.overflow && r.signal === null && r.status === 0 &&
       new RegExp(agCfg('python3_version_pattern')).test((r.stdout || '') + (r.stderr || ''))) return bins[i];
   }
@@ -212,7 +212,7 @@ function agVerifyPython(st, cands, bin) {
     if (spawns++ >= max) break;
     var group = groups[g];
     var checks = group.map(function (c) { return [c.receiverPath, c.attr]; });
-    var codes = agJson(st, bin, agCfg('python_args').concat([agCfg('python_probe'), JSON.stringify(checks)]), tmp);
+    var codes = agJson(st, bin, agCfg('python_args').concat([agCfg('python_probe'), JSON.stringify(checks)]), tmp, true);
     if (!Array.isArray(codes)) continue;
     group.forEach(function (c, i) { if (codes[i] === 0) fakes.push(c); });
   }
@@ -242,7 +242,7 @@ function agVerifyJs(st, cands, cwd) {
 }
 
 function agVersion(st, bin) {
-  var r = agRun(st, bin, agCfg('version_args'), null);
+  var r = agRun(st, bin, agCfg('version_args'), null, true);
   if (r === null || r.timedOut) return bin;
   return ((r.stdout || r.stderr) || '').trim().split('\n')[0] || bin;
 }
@@ -271,9 +271,11 @@ function agMain(p) {
     var pb = agPyBin(st);
     if (pb) { bins.push(pb); fakes = fakes.concat(agVerifyPython(st, py, pb)); }
   }
+  // verification comes first: the optional version text (fetched below, only for a block) never takes the time the verdict needs
   if (js.length) { bins.push(agCfg('node_bin')); fakes = fakes.concat(agVerifyJs(st, js, hookProc.cwd(p))); }
   if (!fakes.length) { var nt = agNotice(st); return nt ? { exact: { code: 0, out: '', err: nt } } : 'allow'; }
   var seen = new Set(), uniq = fakes.filter(function (f) { return seen.has(f.label) ? false : (seen.add(f.label), true); });
+  // the version line: a kept (cached) version, or when the remaining time cannot fetch one, the plain runtime name
   var vers = bins.map(function (b) { return agVersion(st, b); }).join(agCfg('version_joiner'));
   var reason = text.message('block', ah.cfg('api_guard.guard_name'), {
     what: text.render(agCfg('msg_what'), { versions: vers }), why: agCfg('msg_why'), instead: agCfg('msg_instead'),

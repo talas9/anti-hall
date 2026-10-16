@@ -76,6 +76,10 @@ value = "statusline.js"
 doc = "The uninstaller script named in the installer's closing hint."
 value = "uninstall-statusline.js"
 
+[slcfg.install_retired]
+doc = "Message printed by install-statusline after the anti-hall statusline was retired; the command is kept as a no-op so old docs and habits do not re-add statusLine."
+value = "anti-hall statusline installation has been retired; no statusLine setting was written. Use uninstall-statusline to clean up old installs."
+
 [slcfg.gitignore_file]
 doc = "The project's ignore file."
 value = ".gitignore"
@@ -201,7 +205,7 @@ doc = "A value shown under a note. Placeholders: text."
 value = "  {text}"
 
 [slcfg.note_project_2]
-doc = "Why the installer writes the local file."
+doc = "Legacy note for the retired installer when a committed project statusLine exists."
 value = "  Installing into settings.local.json so anti-hall takes precedence (local > project)."
 
 [slcfg.note_user_1]
@@ -624,10 +628,6 @@ value = "uninstall-statusline"
 doc = "The Node phase script, relative to the plugin root."
 value = "statusline/phase.js"
 
-[ops.script_install]
-doc = "The Node installer, relative to the plugin root."
-value = "statusline/install-statusline.js"
-
 [ops.script_uninstall]
 doc = "The Node uninstaller, relative to the plugin root."
 value = "statusline/uninstall-statusline.js"
@@ -682,41 +682,21 @@ doc = "Prefix of a working-directory-relative file in the installer shadow's sta
 value = "c:"
 
 [env.statusline_node_only]
-doc = "When non-empty the installer writes the Node-only status line command (as the Node installer does) and the upgrade leaves an existing one alone. Used by the parity tests, which compare the two installers' output."
+doc = "Legacy env name from the retired installer; it no longer re-enables statusLine writes."
 value = "ANTIHALL_STATUSLINE_NODE_ONLY"
 
 [slcfg.launcher_rel]
-doc = "The launcher an earlier engine installer named in the statusLine command (it ran the engine first and the Node script when the engine was absent or deferred), relative to the directory of the status line dispatcher. Only used to recognise that form for the migration."
+doc = "The launcher an earlier engine installer named in the statusLine command, relative to the directory of the status line dispatcher. Legacy recognition only; no migration writes it."
 value = "../scripts/ah-run.sh"
 
 [slcfg.command_launcher]
-doc = "The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Only used to recognise that form exactly for the migration."
+doc = "The launcher form of the statusLine command an earlier engine installer wrote. {launcher} {dispatcher}. Legacy recognition only; no migration writes it."
 value = 'sh "{launcher}" --stdin statusline -- "{dispatcher}"'
-
-[slcfg.mig_fixed]
-doc = "Migration row: an existing status line command now runs the engine directly. {path} {command}."
-value = "statusLine in {path} now runs the engine directly: {command}"
-
-[slcfg.mig_dry_run]
-doc = "Migration row (dry run): what would change. {path} {command}."
-value = "would update the statusLine in {path} to run the engine directly: {command}"
-
-[slcfg.mig_ambiguous]
-doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
-value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
-
-[slcfg.mig_backup_failed]
-doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
-value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
-
-[slcfg.mig_write_failed]
-doc = "Migration row: the settings file could not be written. {path}."
-value = "could not write {path}; the statusLine there is unchanged"
 
 # ---- v1.0: the engine's own status line command, and no deferral (L04) ---------------------------------------------------
 
 [slcfg.command_engine]
-doc = "The statusLine command the installer writes: the engine's own status line, no launcher and no Node script. {engine}."
+doc = "The legacy engine statusLine command recognised by uninstall/cleanup; the retired installer no longer writes it. {engine}."
 value = '"{engine}" statusline'
 
 [slcfg.engine_command_re]

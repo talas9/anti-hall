@@ -24,7 +24,7 @@ function seed(home, options, key, shape) {
 }
 const HEADLINE = ['safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard', 'autoHandover.enabled',
   'autoHandover.pct', 'jev.enabled', 'devswarm.supervisorMode', 'guards.modelRouting', 'limitConserve.mode'];
-const LOCKED_KEYS = ['devswarm.maintainerNotice.post', 'guards.allowAnthropicEnvKey', 'guards.allowSubagentMailbox', 'guards.editGuardAllow',
+const LOCKED_KEYS = ['devswarm.maintainerNotice.post', 'guards.allowAnthropicEnvKey', 'guards.allowSubagentMailbox', 'guards.broadKill', 'guards.editGuardAllow',
   'guards.gitAliasResolve', 'guards.gitReusedMessageCheck', 'guards.stashGuard', 'jev.allowLegacyKeyRead', 'jev.genericKeyVendor', 'safety.commandGuard', 'safety.editGuard', 'safety.gitGuard', 'safety.swarmGuard'];
 const eligible = () => SCHEMA.allSettings().filter((e) => e.pluginOption && !e.headline && !e.homeOnly);
 // n-th distinct valid non-default value for a setting (undefined when the type has no such value).

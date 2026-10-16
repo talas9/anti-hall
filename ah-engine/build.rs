@@ -8,7 +8,13 @@ mod keyscan;
 use std::path::Path;
 
 fn main() {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|e| panic!("CARGO_MANIFEST_DIR: {e}"));
+    let manifest = match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("CARGO_MANIFEST_DIR: {e}");
+            std::process::exit(1);
+        }
+    };
     let src = Path::new(&manifest).join("src");
     println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed={}", Path::new(&manifest).join("build_support").display());
@@ -20,6 +26,16 @@ fn main() {
         code.push_str(&format!("    ({k:?}, super::Kind::{}),\n", kind.name()));
     }
     code.push_str("];\n");
-    let out = Path::new(&std::env::var("OUT_DIR").unwrap_or_else(|e| panic!("OUT_DIR: {e}"))).join("required_keys.rs");
-    std::fs::write(&out, code).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+    let out_dir = match std::env::var("OUT_DIR") {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("OUT_DIR: {e}");
+            std::process::exit(1);
+        }
+    };
+    let out = Path::new(&out_dir).join("required_keys.rs");
+    if let Err(e) = std::fs::write(&out, code) {
+        eprintln!("write {}: {e}", out.display());
+        std::process::exit(1);
+    }
 }

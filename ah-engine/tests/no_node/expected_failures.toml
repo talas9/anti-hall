@@ -101,6 +101,12 @@ reason = "the skill tells the agent to write and run a Node helper script"
 # --- hook/claude/SessionStart
 [[node]]
 surface = "hook/claude/SessionStart"
+script = "hooks/progress-prune.js"
+lane = "L14b"
+reason = "a slow git check-ignore (past session.gitignore_probe_ms) on a loaded runner hands the hook back to Node by design"
+optional = true
+[[node]]
+surface = "hook/claude/SessionStart"
 script = "hooks/devswarm-child-role.js"
 lane = "L14b"
 reason = "the engine runs the Node twin of the child-role SessionStart check"
@@ -109,16 +115,19 @@ surface = "hook/claude/SessionStart"
 script = "hooks/verify-first-orch.js"
 lane = "L14b"
 reason = "the DevSwarm-active verify-first-orch path defers to the Node hook"
+optional = true
 [[node]]
 surface = "hook/claude/Stop"
 script = "hooks/devswarm-child-gate.js"
 lane = "L14b"
 reason = "the engine defers the child Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
+optional = true
 [[node]]
 surface = "hook/claude/Stop"
 script = "hooks/devswarm-parent-gate.js"
 lane = "L14b"
 reason = "the engine defers the Primary Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
+optional = true
 
 # --- hook/claude/UserPromptSubmit
 [[node]]
@@ -126,11 +135,13 @@ surface = "hook/claude/UserPromptSubmit"
 script = "hooks/devswarm-child-turn.js"
 lane = "L14b"
 reason = "the engine defers a DevSwarm child turn to the Node hook"
+optional = true
 [[node]]
 surface = "hook/claude/UserPromptSubmit"
 script = "hooks/devswarm-parent-inbox.js"
 lane = "L14a"
 reason = "the engine defers the active-Primary case to the Node hook"
+optional = true
 [[node]]
 surface = "hook/codex/PreToolUse"
 script = "hooks/edit-guard.js"
@@ -141,12 +152,20 @@ reason = "apply_patch edit-guard defers to the Node hook (exit 127 reaches the h
 # --- hook/codex/SessionStart
 [[node]]
 surface = "hook/codex/SessionStart"
+script = "hooks/progress-prune.js"
+lane = "L14b"
+reason = "a slow git check-ignore (past session.gitignore_probe_ms) on a loaded runner hands the hook back to Node by design"
+optional = true
+[[node]]
+surface = "hook/codex/SessionStart"
 script = "hooks/devswarm-child-role.js"
 lane = "L14b"
 reason = "the engine runs the Node twin of the child-role SessionStart check"
+optional = true
 [[node]]
 surface = "hook/codex/Stop"
 script = "hooks/devswarm-child-gate.js"
+optional = true
 lane = "L14b"
 reason = "the engine defers the child Stop gate to the Node hook (exit 127 reaches the host: unguarded)"
 
@@ -154,6 +173,7 @@ reason = "the engine defers the child Stop gate to the Node hook (exit 127 reach
 [[node]]
 surface = "hook/codex/UserPromptSubmit"
 script = "hooks/devswarm-parent-inbox.js"
+optional = true
 lane = "L14a"
 reason = "the engine defers the active-Primary case to the Node hook"
 [[node]]

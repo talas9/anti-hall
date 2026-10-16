@@ -59,3 +59,16 @@ fn refresh_without_requests_writes_no_cache() {
     assert!(!home.join(defaults::text("refresh.request_dir")).join(defaults::text("refresh.lock_file")).exists());
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn pending_refresh_requests_are_detected_before_spawning_the_job() {
+    let home = std::env::temp_dir().join(format!("ah-refresh-pending-{}-{}", std::process::id(), crate::health::now_ms()));
+    let req_dir = home.join(defaults::text("refresh.request_dir"));
+    std::fs::create_dir_all(&req_dir).unwrap();
+    assert!(!has_pending(&home));
+    std::fs::write(req_dir.join(format!("version{}", defaults::text("refresh.request_ext"))), r#"{"requestedAt": 10}"#).unwrap();
+    assert!(has_pending(&home));
+    std::fs::write(req_dir.join(defaults::text("refresh.handled_file")), r#"{"version": 10}"#).unwrap();
+    assert!(!has_pending(&home));
+    std::fs::remove_dir_all(&home).unwrap();
+}

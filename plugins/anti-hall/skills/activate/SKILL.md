@@ -1,27 +1,20 @@
 ---
 name: activate
-description: "First-time anti-hall setup: statusline, model routing. Use for \"activate anti-hall\", \"set up anti-hall\"."
+description: "First-time anti-hall setup: model routing and activation sentinel. Use for \"activate anti-hall\", \"set up anti-hall\"."
 ---
 
 # anti-hall:activate
 
 ## When to use
 
-One-shot idempotent anti-hall setup. Checks statusline installation, reports model-routing state, writes a sentinel so it doesn't repeat. Use when the user says "activate anti-hall", "set up anti-hall", "run first-time setup", or "anti-hall activate". NOT auto-run — user-invoked only.
+One-shot idempotent anti-hall setup. Reports model-routing state, writes a sentinel so it doesn't repeat, and does not install the retired statusline. Use when the user says "activate anti-hall", "set up anti-hall", "run first-time setup", or "anti-hall activate". NOT auto-run — user-invoked only.
 
 One-shot, idempotent first-time setup for anti-hall. Run this once after installing the
 plugin. It is **never** auto-invoked — always user-triggered. Re-running is safe (idempotent).
 
 ## What it does
 
-1. **Statusline check** — reads `~/.claude/settings.json` for an existing `statusLine`.
-   - If none: installs the anti-hall statusline at user scope (delegates to the
-     `install-statusline.js` script, same as `/anti-hall:install-statusline --user`).
-   - If one exists (conflict): reports the existing command and offers two choices:
-     - Accept: the existing line becomes **line 1** (anti-hall wraps it) — run the
-       installer and it will auto-wrap the current value.
-     - Skip: keep the existing statusline and install anti-hall at **project scope**
-       instead (`--project` into `.claude/settings.local.json`).
+1. **Statusline retired** — do not write Claude `statusLine`. If an older anti-hall statusline exists, tell the user `uninstall-statusline` remains available for cleanup.
 
 2. **Model-routing state** — strict mode is now the **default** (v0.35.0+). No action
    needed. Reports: `ANTIHALL_MODEL_ROUTING` is unset (strict) or set to `advisory`
@@ -33,31 +26,14 @@ plugin. It is **never** auto-invoked — always user-triggered. Re-running is sa
    timestamp and installed version so future runs report "already activated" and exit 0
    immediately. The sentinel is advisory — resetting it does not change any real config.
 
-4. **Restart reminder** — prints a single "restart Claude Code to apply" note when the
-   statusline was changed; skipped if already installed or no statusline change was made.
+4. **No restart reminder** — activation no longer changes `statusLine`.
 
 ## Steps
 
 1. **Check sentinel.** If `~/.anti-hall/activated.json` exists and is valid JSON,
    report the previous activation date + installed version and exit 0 (idempotent).
 
-2. **Check statusline.** Delegate a subagent to read `~/.claude/settings.json` and
-   report the current `statusLine` value (if any).
-
-   - **No existing statusLine:** delegate a subagent to run:
-     ```
-     sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" install-statusline --user
-     ```
-     Report its stdout verbatim. Set `statusline_changed = true`.
-
-   - **Existing statusLine present:** report it to the user and ask:
-     > "anti-hall can wrap this as line 1 (run the installer — it auto-wraps). Or
-     > install anti-hall at project scope only (settings.local.json, this repo). Or
-     > skip statusline setup entirely. Which do you prefer?"
-     
-     Depending on user's choice, delegate the appropriate installer invocation.
-     If user says "wrap" or "install globally": run `--user`. If "project scope": run
-     `--project`. If "skip": skip — set `statusline_changed = false`.
+2. **Do not install statusline.** If an old anti-hall `statusLine` is causing trouble, use `uninstall-statusline`; otherwise leave user settings untouched.
 
 3. **Report model-routing.** No action required. Print:
    > "Model-routing: STRICT (default, v0.35.0+). Omitted-model mechanical spawns are
@@ -82,9 +58,7 @@ plugin. It is **never** auto-invoked — always user-triggered. Re-running is sa
    console.log('Sentinel written.');
    ```
 
-5. **Restart reminder.** If `statusline_changed = true`:
-   > "**Restart Claude Code** (close and reopen) for the statusline to take effect.
-   > statusLine is read only at startup — there is no hot-reload."
+5. **No restart reminder.** There is no activation-time settings change.
 
 ## What stays opt-in (unchanged)
 
@@ -103,10 +77,5 @@ These are NOT touched by activate — they remain opt-in and require explicit us
 - **Never auto-run as a SessionStart side-effect.** This skill is user-invoked only.
   The always-on hooks (git-guard, api-guard, command-guard, model-routing-guard, etc.)
   are active from the moment the plugin is installed — no activation step needed for
-  them. This skill only covers the statusline (which requires writing settings) and
-  first-run orientation.
-- **Delegate all file I/O to subagents.** The coordinator (main thread) must not run
-  the installer directly — `command-guard` blocks heavy commands inline.
-- **Reuse install-statusline.js** — do not reimplement its logic. The installer
-  handles precedence checks, backup, gitignore, and the "already installed" exit-0
-  case itself.
+  them. This skill now covers first-run orientation only.
+- **Do not call install-statusline.** It is a retained no-op and must not be used as setup.

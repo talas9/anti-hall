@@ -18,6 +18,10 @@ value = "AH_ENGINE_DIR"
 doc = "A file the dispatcher creates once it has dispatched an event and decided its exit code (D87). The reliability wrapper sets it, so that an engine exit code of a hook's own (1, say) is told from an engine failure and is not answered by running every hook a second time."
 value = "AH_ENGINE_DONE_FILE"
 
+[env.wait_file]
+doc = "A file the client creates while it waits on the daemon and keeps when the daemon answered BUSY/ERR, so the call is handed to its Node hooks; it removes it when the daemon answered with nothing left for Node to decide (an OK reply whose entries defer to Node hooks keeps it until the call's final result is ready), gave no reply in the wait window, or none was there. The reliability wrapper sets it, so that its watchdog can tell a call that is still deciding (give it up to client.slow_fallback_max_ms) from a hung engine (kill at the normal budget)."
+value = "AH_ENGINE_WAIT_FILE"
+
 [env.rules]
 doc = "Overrides the rules file path."
 value = "AH_ENGINE_RULES"
@@ -125,9 +129,66 @@ value = "breaker.until"
 doc = "Marker holding the time until which respawning is stopped after a crash loop."
 value = "crashloop.until"
 
+[files.healthy_binary]
+doc = "Holds the sha256 of the engine binary that last stayed up for daemon.healthy_after_s. The integrity script promotes that binary to the known-good copy; a binary with no entry here has never proven itself."
+value = "healthy.binary"
+
+[files.crashloop_bin]
+doc = "Holds the size, modification time and sha256 of the binary the crash-loop rule tripped on. A cooldown ends early when the binary is replaced by a different one."
+value = "crashloop.bin"
+
+[files.rollback_request]
+doc = "Written when the crash-loop rule trips on a binary with no healthy history: asks the integrity script to restore the known-good binary. Holds the sha256 of the binary to replace."
+value = "rollback.request"
+
+[files.rollback_last]
+doc = "One line the integrity script writes when it rolls the engine binary back (time, reason, which binary was set aside). Shown by status and doctor."
+value = "rollback.last"
+
+[files.wrapper_fail_log]
+doc = "Epoch seconds, one per line, of the hook wrapper's engine failures (timeout, signal death, no answer). The integrity script counts them against rollback.fail_n."
+value = "wrapper.fails"
+
+[files.integrity_log]
+doc = "Log of the integrity script (checks, promotions, roll-backs), inside the state directory."
+value = "integrity.log"
+
+
 [files.run_marker]
 doc = "Written while a daemon runs; a leftover one with a dead pid is logged as one crash."
 value = "daemon.run"
+
+[files.cold_guard_notice]
+doc = "Holds the session id that already got the cold-start notice, so the notice is shown once per session (the next session overwrites it)."
+value = "cold-guard.notice"
+
+[files.daemon_down_marker]
+doc = "Short-lived client marker: when a hook client finds the daemon absent or hung, other clients skip connecting until this expires."
+value = "daemon.down.until"
+
+[files.slow_streak]
+doc = "Client marker holding the count of consecutive slow (late) daemon replies and when the streak began; a normal reply removes it."
+value = "daemon.slow.streak"
+
+[files.heartbeat]
+doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir); the watchdog thread touches its modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms)."
+value = "daemon.heartbeat"
+
+[files.heartbeat_suspect]
+doc = "Client suspicion carried between hook calls: when a stale heartbeat (client.heartbeat_stale_ms) was first seen (monotonic clock), and which heartbeat (modification time and generation). A later call confirms the hang only when that same heartbeat is still unchanged client.heartbeat_confirm_ms later."
+value = "daemon.heartbeat.suspect"
+
+[files.spawn_lock]
+doc = "Short-lived client single-flight lock: only the client that creates it attempts to restart a missing daemon."
+value = "daemon.spawn.lock"
+
+[files.crash_breadcrumb]
+doc = "Last request/job/check breadcrumb written at boundary entry so an abnormal exit can be reported with context on the next start."
+value = "crash-breadcrumb.json"
+
+[files.last_crash]
+doc = "Last panic or stale-run-marker crash report, shown by status and doctor."
+value = "last-crash.json"
 
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
@@ -253,6 +314,13 @@ value = 250
 env = "AH_ENGINE_WATCHDOG_TICK_MS"
 unit = "ms"
 
+[daemon.healthy_after_s]
+doc = "How long the daemon must stay up before its binary is recorded as having run healthy (files.healthy_binary). A binary that dies earlier never earns the record, so a roll-back may replace it."
+value = 30
+env = "AH_ENGINE_HEALTHY_AFTER_S"
+unit = "s"
+
+
 [daemon.nice]
 doc = "`nice` increment applied to the daemon process."
 value = 5
@@ -318,7 +386,7 @@ unit = "ms"
 
 [daemon.reply_slack_ms]
 doc = "Time kept back from a request's client deadline (client.deadline_ms, or what a dispatch request says) to write the reply: the inner budgets that could outlast the client's wait (a git call, a Jev consult) are clamped to the deadline minus this, so a slow dependency costs a fallback, not a lost answer."
-value = 150
+value = 50
 min = 0
 unit = "ms"
 
@@ -343,10 +411,22 @@ value = 200
 unit = "ms"
 
 [daemon.idle_exit_s]
-doc = "Seconds without any request after which the daemon exits (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. 0 by default: the daemon is always resident so the scheduler and mailbox keep running after every session closes (D7). A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms)."
-value = 0
+doc = "Seconds without any request after which the daemon exits cleanly (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. Default is 1800 (about 30 minutes), so a daemon with no sessions does not linger forever. A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms)."
+value = 1800
 env = "AH_ENGINE_IDLE_EXIT_S"
 unit = "s"
+
+[daemon.cpu_check_ms]
+doc = "How often the watchdog compares process CPU time to wall time for the sustained-CPU self-check; 0 disables the check."
+value = 30000
+unit = "ms"
+min = 1000
+
+[daemon.cpu_warn_pct]
+doc = "Warn and back off scheduled jobs when daemon CPU over daemon.cpu_check_ms exceeds this percent of one core; 0 disables the warning."
+value = 80
+unit = "%"
+min = 0
 
 [daemon.orphan_check_ms]
 doc = "How often a daemon checks that its state directory, its lock file (same inode) and its executable still exist; non-live daemons also check that their parent process and socket file still exist. Once one is gone it drains and exits, so a daemon whose files were removed under it (a test's temporary dir, an uninstall) never runs on unreachable."
@@ -363,6 +443,17 @@ unit = "ms"
 doc = "Exit status of a forced drain exit (sysexits EX_TEMPFAIL, 75); the next client call starts a fresh daemon."
 value = 75
 
+[daemon.thread_restart_max]
+doc = "Panics a daemon service thread may recover from before the daemon requests a clean restart."
+value = 3
+min = 0
+
+[daemon.thread_restart_backoff_ms]
+doc = "Sleep before a supervised daemon service thread restarts after a panic."
+value = 100
+min = 0
+unit = "ms"
+
 [daemon.start_fail_exit_code]
 doc = "Exit status when the daemon cannot start (sysexits EX_CONFIG, 78)."
 value = 78
@@ -370,14 +461,71 @@ value = 78
 # ---- client limits --------------------------------------------------------------------------------------
 
 [client.deadline_ms]
-doc = "Overall deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it."
-value = 2000
+doc = "Overall hook-client deadline for one engine exchange (connect, write, read); a hard watchdog thread enforces it so a hung daemon fails open quickly."
+value = 300
 env = "AH_ENGINE_DEADLINE_MS"
+max = 300
 unit = "ms"
 
 [client.deadline_slack_ms]
 doc = "Extra wait for the exchange thread to report after the deadline before the client declares a timeout."
-value = 50
+value = 10
+unit = "ms"
+
+[client.slow_fallback_max_ms]
+doc = "How long, measured from the engine start, a hook call keeps waiting for the daemon's own reply once client.deadline_ms has passed (a daemon that is alive answers late rather than never). The wrapper's watchdog waits the same bound (never past the hook's own timeout), so a delayed block still blocks. A reply that arrives in the window is used as is: the daemon's decision, no Node hook run (the daemon has already processed the request). Nothing by then fails the call open and counts toward client.slow_down_n; a late call never runs its Node hooks. A normal or unavailable daemon keeps the short fail-fast budget (client.deadline_ms + client.deadline_slack_ms + client.wrapper_extra_ms). 0 disables the extension."
+value = 3000
+env = "AH_ENGINE_SLOW_FALLBACK_MAX_MS"
+min = 0
+unit = "ms"
+
+[client.slow_wait_margin_ms]
+doc = "How much earlier than the wrapper's watchdog (client.slow_fallback_max_ms from the engine start) the client stops waiting for a late daemon reply, so the client fails open and counts the slow call itself instead of being killed by the watchdog first. Covers the client's own start-up before it begins to wait."
+value = 400
+unit = "ms"
+
+[client.down_marker_ttl_ms]
+doc = "How long other clients skip connecting after one client finds the daemon absent or failed, or hung (client.heartbeat_stale_ms) and not replaced, or after client.slow_down_n consecutive slow replies; this prevents hook pile-ups while a restart is attempted."
+value = 3000
+env = "AH_ENGINE_DOWN_MARKER_TTL_MS"
+unit = "ms"
+
+[client.slow_down_n]
+doc = "Consecutive slow (late) daemon replies within client.slow_window_ms after which the daemon is treated as wedged and marked down. A single call that gets no reply in the window never marks it down: it fails open and the next client asks the daemon again."
+value = 5
+env = "AH_ENGINE_SLOW_DOWN_N"
+min = 1
+
+[client.slow_window_ms]
+doc = "Window in which consecutive slow daemon replies are counted toward client.slow_down_n; a streak older than this starts over."
+value = 10000
+env = "AH_ENGINE_SLOW_WINDOW_MS"
+unit = "ms"
+
+[client.heartbeat_stale_ms]
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check."
+value = 1500
+env = "AH_ENGINE_HEARTBEAT_STALE_MS"
+min = 0
+unit = "ms"
+
+[client.heartbeat_confirm_ms]
+doc = "How long a stale daemon heartbeat (client.heartbeat_stale_ms) must stay unchanged, by the monotonic clock, before a client ends that daemon. The first stale sample only records a suspicion and fails open; any beat, a new daemon, or a wall-clock jump that only made a moving heartbeat read old resets it. Keep it at most client.down_marker_ttl_ms, so a stopped daemon is replaced by the first call after the down marker expires."
+value = 1000
+env = "AH_ENGINE_HEARTBEAT_CONFIRM_MS"
+min = 1
+unit = "ms"
+
+[client.heartbeat_poll_ms]
+doc = "While a hook call waits past its deadline for a late reply, how often it re-reads the daemon's heartbeat (client.heartbeat_stale_ms)."
+value = 100
+min = 1
+unit = "ms"
+
+[client.spawn_lock_ttl_ms]
+doc = "How old the single-flight daemon spawn lock may get before another client treats it as stale and may try one restart."
+value = 3000
+env = "AH_ENGINE_SPAWN_LOCK_TTL_MS"
 unit = "ms"
 
 [client.breaker_n]
@@ -416,11 +564,39 @@ value = 1800
 env = "AH_ENGINE_CRASH_COOLDOWN_S"
 unit = "s"
 
+[client.spawn_n]
+doc = "Daemon starts within the spawn window that count as a crash loop even when the daemon reported no crash (a binary that exits at once reports nothing). Respawning then stops for client.crash_cooldown_s."
+value = 6
+env = "AH_ENGINE_SPAWN_N"
+min = 1
+
+[client.spawn_window_s]
+doc = "Window in which daemon starts are counted for client.spawn_n."
+value = 60
+env = "AH_ENGINE_SPAWN_WINDOW_S"
+unit = "s"
+
+
 [client.fallback_ms]
 doc = "The Node fallback hook must finish, and its stdout and stderr must reach EOF, within this long. A hook still running at the deadline is killed (then plain allow, since it is unavailable); one that finished with output still unread is an error outcome, never an empty stdout."
 value = 8000
 env = "AH_ENGINE_FALLBACK_MS"
 unit = "ms"
+
+[client.cold_guard_wait_ms]
+doc = "How long a guard event (PreToolUse, PermissionRequest, Stop, SubagentStop) waits for a cold-starting daemon before it is let through with one notice per session; 0 turns the wait off. Prompts and advisories never wait. The wait never exceeds what the hook's own timeout leaves after the engine attempt. It is one absolute deadline: the kick, its kill grace and the socket poll all end within it, so a cold guard call takes at most this plus the normal engine attempt."
+value = 2000
+unit = "ms"
+
+[client.cold_guard_poll_ms]
+doc = "Poll interval of the cold-start wait for a guard event (the daemon socket appearing)."
+value = 50
+min = 1
+unit = "ms"
+
+[client.cold_guard_kick_event]
+doc = "Event name of the empty request the wrapper sends to start a cold daemon before a guard event waits for it; it names no hook, so it decides nothing."
+value = "ColdStartKick"
 
 [client.cold_start_wait_ms]
 doc = "How long a client with no fallback waits for a cold-started daemon before giving up (prints nothing)."
@@ -442,9 +618,15 @@ doc = "Largest hook payload the client reads from stdin."
 value = 8388608
 unit = "bytes"
 
-[client.slow_probe_ms]
-doc = "After an exchange times out, how long the client waits for a ping: a daemon that answers is slow but healthy (logged as client_slow, not counted toward the breaker); one that does not counts as a failure."
-value = 200
+[client.wrapper_extra_ms]
+doc = "Extra shell watchdog budget beyond the client deadline and client slack; this lets the client write the daemon-down marker and release the single-flight spawn lock before the wrapper kills it."
+value = 250
+min = 1
+unit = "ms"
+
+[client.wrapper_watchdog_poll_ms]
+doc = "Poll interval for the hook wrapper millisecond watchdog."
+value = 2
 min = 1
 unit = "ms"
 
@@ -476,13 +658,6 @@ value = 64
 doc = "Largest stored value."
 value = 65536
 unit = "bytes"
-
-[store.key_cache_cap]
-doc = "Most cwd-to-project-key mappings cached (cleared when full) so the hot path does not stat per request."
-value = 1024
-
-# ---- health and failure policy --------------------------------------------------------------------------
-
 [health.log_cap]
 doc = "Event log size above which it is trimmed to its last log_keep_lines lines."
 value = 65536
@@ -496,6 +671,10 @@ value = 200
 doc = "Longest kind, code or detail written to one log line (newlines and tabs become spaces)."
 value = 300
 unit = "chars"
+
+[health.judged_kinds]
+doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."
+value = ["crashloop", "crashloop_reset", "reset"]
 
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."
@@ -761,3 +940,97 @@ value = "defaults {file}: could not add missing {keys}: {err}"
 [defaults_load.msg_heal_none]
 doc = "Printed by `config heal` when no edited defaults file lacks a setting of the pristine copy."
 value = "nothing to heal: the edited defaults have every setting of the pristine copy"
+
+# ---- binary integrity and roll-back (hooks/ah-engine-integrity.sh) ---------------------------------------------------------
+# The script is POSIX sh and reads these keys itself (awk over this file, like the hook wrapper), so a broken binary cannot stop it.
+
+[rollback.hash_chunk]
+doc = "Bytes read at a time when the engine hashes its own binary (sha256)."
+value = 65536
+min = 4096
+unit = "bytes"
+
+[rollback.field_sep]
+doc = "Separator between the fields of the crash-loop binary record (files.crashloop_bin: size, modification time, sha256)."
+value = " "
+
+[rollback.line_end]
+doc = "Line terminator of the crash-loop binary record."
+value = "\n"
+
+[rollback.script]
+doc = "The integrity script, relative to the plugin root. verbs: record, accept, check, fail, status."
+value = "hooks/ah-engine-integrity.sh"
+
+[rollback.shell]
+doc = "The shell that runs the integrity script."
+value = "sh"
+
+[rollback.on_mismatch]
+doc = "1 = a binary whose sha256 differs from the one the installer recorded (swapped by hand) and that has never run healthy is rolled back to the known-good binary at the next check. 0 = never roll back on a mismatch alone (a local build you are developing). `accept` records the installed binary as the expected one."
+value = 1
+env = "AH_ENGINE_ROLLBACK_ON_MISMATCH"
+min = 0
+max = 1
+
+[rollback.fail_n]
+doc = "Engine failures seen by the hook wrapper (timeout, signal death, no answer) within rollback.fail_window_s that roll a never-healthy binary back. The wrapper counts them because a hung binary cannot count its own."
+value = 3
+env = "AH_ENGINE_ROLLBACK_FAIL_N"
+min = 1
+
+[rollback.fail_window_s]
+doc = "Window in which the wrapper's engine failures are counted for rollback.fail_n."
+value = 120
+env = "AH_ENGINE_ROLLBACK_FAIL_WINDOW_S"
+unit = "s"
+
+[rollback.bin_dir]
+doc = "Directory inside the state directory that holds the engine binary and its copies."
+value = "bin"
+
+[rollback.bin_name]
+doc = "File name of the installed engine binary."
+value = "ah-engine"
+
+[rollback.good_suffix]
+doc = "Suffix of the known-good copy of the binary (bin/ah-engine.good) and of its sha256 file (.good.sha256). Never deleted."
+value = ".good"
+
+[rollback.expected_suffix]
+doc = "Suffix of the file holding the sha256 the installer expects the installed binary to have (bin/ah-engine.expected)."
+value = ".expected"
+
+[rollback.accepted_suffix]
+doc = "Suffix added to the expected-sha file for the note that the operator vouched for exactly that binary (`accept`): a vouched-for binary is never rolled back."
+value = ".accepted"
+
+[rollback.sha_suffix]
+doc = "Suffix of the file holding the sha256 of the known-good copy (bin/ah-engine.good.sha256)."
+value = ".sha256"
+
+[rollback.aside_infix]
+doc = "A binary set aside by a roll-back is renamed bin/ah-engine.rolledback-<UTC time>-<sha prefix>; this is the word between. Set-aside binaries are never deleted."
+value = ".rolledback-"
+
+[rollback.install_lock]
+doc = "Directory (inside the state directory) of the ONE lock every writer of the engine binary shares: the integrity script's check and roll-back, the bootstrap's and ah-update's install and roll-back, and the recording of the expected sha256. Taken and given back through the integrity script's lock and unlock verbs."
+value = "install.lock"
+
+[rollback.lock_wait_s]
+doc = "How long an install, a roll-back by ah-update, or the recording of the expected sha256 waits for the install lock before giving up (the installer then fails and keeps the old binary)."
+value = 60
+env = "AH_ENGINE_INSTALL_LOCK_WAIT_S"
+unit = "s"
+
+[rollback.lock_hook_wait_s]
+doc = "How long the integrity check started by the hook wrapper waits for the install lock before skipping (the next run checks). A held lock never holds a session."
+value = 2
+env = "AH_ENGINE_INSTALL_LOCK_HOOK_WAIT_S"
+unit = "s"
+
+[rollback.lock_stale_s]
+doc = "An install lock held longer than this is broken (one whose holder process is gone is broken at once). Longer than the slowest install: ah-update's go_live_timeout_s."
+value = 900
+env = "AH_ENGINE_INSTALL_LOCK_STALE_S"
+unit = "s"

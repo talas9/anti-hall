@@ -52,6 +52,10 @@ slow-timeout = { period = "300s", terminate-after = 24 }
 heavy-sweeps = { max-threads = 3 }
 # Long soaks that measure the machine: one at a time, outside the default run.
 soak = { max-threads = 1 }
+# Wall-clock fail-open tests (the sub-second / 3 s bounds of the hook wrapper, the 20-parallel wrappers, the crash-loop and fail-closed
+# drills): each measures how long a process tree took, so two of them side by side, or beside a heavy sweep's workers, push it over
+# its bound (seen at -j 2 with load 11-13). One at a time, in every profile.
+wrapper-timing = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'test(/^memory_soak::/)'
@@ -61,4 +65,14 @@ slow-timeout = { period = "300s", terminate-after = 6 }
 [[profile.default.overrides]]
 filter = 'test(api_guard_matches_node) | test(codex_nudge_matches_node) | test(handover_resume_matches_node) | test(session_checks_match_node) | test(precompact_snapshot_matches_node) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz) | test(no_defaults_text_is_embedded) | test(the_sweep_selects_and_logs_exactly_what_node_does) | test(the_tracker_says_and_writes_exactly_what_node_does) | test(coordinator_post_matches_node) | test(git_audit_matches_node) | test(failure_nudge_matches_node) | test(edit_guard_matches_node) | test(codex_quota_detect_matches_node) | test(the_scan_matches_node_on_random_transcripts) | test(verify_first_through_the_dispatcher) | test(ctxbudget_checks_match_node) | test(the_store_free_cli_verbs_match_node) | test(tasklist_guard_matches_node) | test(session_end_mcp_reaper_script_matches_the_compiled_port) | test(command_guard_matches_node) | test(node_and_engine_outputs_match_for_model_routing_table) | test(child_drain_allow_is_node_silence) | test(reply_tracker_allow_is_node_silence) | test(operator_parity::phase_agrees_with_node)'
 test-group = 'heavy-sweeps'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.default.overrides]]
+filter = 'binary(it) & test(/^(reliability|crashloop_drill|fail_closed_matrix)::/)'
+test-group = 'wrapper-timing'
+
+# script_latency replays every golden case many times (about 275 s alone on a dev Mac, longer under load): its own slow-timeout, so the
+# default 180 s cut cannot TIMEOUT a gate. Its budget assertions are unchanged (their failures are tracked in R1).
+[[profile.default.overrides]]
+filter = 'binary(script_latency)'
 slow-timeout = { period = "300s", terminate-after = 6 }

@@ -41,7 +41,7 @@ Same as on Claude Code: `codex/hooks/hooks.json` (and what `install-codex.js` wr
 `sh ".../hooks/ah-hook.sh" <Event> --host codex`, for all ten events. The core is the `ah-engine` binary
 (`~/.anti-hall/ah-engine/bin/ah-engine`, downloaded once by the shared bootstrap and checked against the sha256 pinned in
 `ah-engine.lock`), the trigger asks it: the engine answers natively what it can prove identical to the Node hook and hands
-every other case, during the migration, to that temporary Node compatibility hook (removed in v1.0, when the engine is the only runtime). With no binary, or when the engine cannot answer, those Node
+every other case, during the migration, to that temporary Node compatibility hook (removed in v0.301, when the engine is the only runtime). With no binary, or when the engine cannot answer, those Node
 hooks run. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
 Claude, hot-reloaded, with last-known-good and pristine copies). `PermissionRequest`, `PostCompact` and `SubagentStart` have a
 thin trigger but no hook entries yet, so they answer with the neutral no-op. Opt out of the download with
@@ -130,11 +130,10 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.
 Feature launch is intentionally a Codex/OMX planning protocol, not a GSD wrapper, because GSD was removed from active Codex config.
 
-## Codex/OMX statusline
+## Codex/OMX status
 
-Claude Code supports command-backed `statusLine` renderers, so anti-hall can wrap
-an existing statusline and append the `AH: Vx.y.z` chip. Codex/OMX currently
-configures `[tui].status_line` as an ordered list of built-in item IDs only
+Claude Code supports command-backed `statusLine` renderers, but anti-hall no
+longer installs one. Codex/OMX configures `[tui].status_line` as an ordered list of built-in item IDs only
 (for example `model-with-reasoning`, `git-branch`, `context-remaining`,
 `codex-version`, token counters, and limit counters). No supported custom item
 ID or command-backed footer renderer is documented in the local Codex/OMX docs
@@ -143,8 +142,8 @@ used for this port.
 Codex-safe behavior:
 
 - anti-hall does **not** inject an unsupported `anti-hall-version` footer item
-- `anti-hall-install-statusline` documents the supported Codex/OMX HUD path
-- the Claude statusline installer remains unchanged for Claude Code
+- `anti-hall-install-statusline` is a retired no-op and points to cleanup for old installs
+- Claude cleanup remains available through `uninstall-statusline`
 
 ## Limits and escape hatches
 
@@ -154,7 +153,9 @@ On Codex, shell writes (`cat >`, `tee`, `sed -i` and similar) reach `edit-guard`
 
 ## Roadmap
 
-**Later: native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is planned for a future release, once the Rust engine has a Windows process-control layer and a non-shell hook wrapper.
+The ordered plan is in [`docs/ROADMAP.md`](https://github.com/talas9/anti-hall/blob/main/docs/ROADMAP.md).
+
+**Later (parked): native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is parked, not promised: it would need a Windows process-control layer and a non-shell hook wrapper in the Rust engine.
 
 ## Documentation
 

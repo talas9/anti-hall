@@ -1,20 +1,23 @@
 ---
 title: Uninstall
-description: Remove anti-hall from Claude Code or Codex, including the optional statusline and companions.
+description: Remove anti-hall from Claude Code or Codex, including legacy statusline cleanup and optional companions.
 ---
 
 # Uninstall
 
-## 1. Remove the statusline (if you installed it)
+## 1. Clean up an older anti-hall statusline (if present)
 
-Do this first, while the plugin files are still there. Ask the `install-statusline` skill
-to uninstall it, or run this from the plugin directory:
+New anti-hall installs no longer add Claude `settings.statusLine`. If an older install
+still has an anti-hall `statusLine`, do this first while the plugin files are still
+there. Run this from the plugin directory:
 
 ```bash
 node statusline/uninstall-statusline.js
 ```
 
-It puts back the `statusLine` you had before.
+It puts back the previous `statusLine` when a saved base command exists, otherwise it
+removes the old anti-hall entry. The retired installer/updater/doctor paths do not
+write or upgrade `statusLine`.
 
 ## 2. Remove the plugin
 

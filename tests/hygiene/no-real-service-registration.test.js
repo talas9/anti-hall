@@ -130,8 +130,7 @@ test('vulnerable call shapes (runRepairs env:{} dryRun:false; selfHeal with a pa
     fs.writeFileSync(path.join(home, 'Library', 'LaunchAgents', 'com.anti-hall.devswarm-supervisor.plist'), '<plist/>');
     fs.mkdirSync(path.join(home, '.config', 'systemd', 'user'), { recursive: true });
     fs.writeFileSync(path.join(home, '.config', 'systemd', 'user', 'anti-hall-devswarm-supervisor.timer'), '[Timer]\n');
-    // A settings.json in the fake home: the statusline repair installs into it,
-    // which proves where the installer child resolved HOME.
+    // A settings.json in the fake home: retired statusline repair must leave it untouched.
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}\n');
 
@@ -143,10 +142,9 @@ test('vulnerable call shapes (runRepairs env:{} dryRun:false; selfHeal with a pa
       cli.selfHeal({ home, cwd: repo, env: { DEVSWARM_REPO_ID: 'repo-hygiene' } });
     });
 
-    // Non-vacuity: the statusline installer child ran with the FAKE home
-    // (the pre-fix `env: {}` child resolved the REAL home instead).
+    // Non-vacuity: retired statusline repair did not write either fake or real HOME.
     const fakeSettings = path.join(home, '.claude', 'settings.json');
-    assert.ok(JSON.parse(fs.readFileSync(fakeSettings, 'utf8')).statusLine, 'installer children must resolve the fake HOME, proving the env reached them');
+    assert.ok(!JSON.parse(fs.readFileSync(fakeSettings, 'utf8')).statusLine, 'retired statusline repair must not write statusLine');
     assert.strictEqual(recorded(record), '', 'no launchctl/systemctl/crontab call may be issued under a test');
     assert.deepStrictEqual(realMentions(), before, 'no real-home unit/config may newly reference this checkout');
   } finally { rm(home); rm(repo); rm(bin); }

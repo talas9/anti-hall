@@ -348,7 +348,7 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], stdout: &str) {
         c.env(defaults::text("mesh_write.env_verify_nonce"), nonce);
     }
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-    crate::discard::harmless(c.spawn()); // keep: a verifier that does not start only leaves this call unverified
+    crate::discard::logged("mesh_verify_spawn", c.spawn().map(|_| ()));
 }
 
 /// The physical row with `hash`, every column but the rowid and the writing process's reader nonce (the detached checker

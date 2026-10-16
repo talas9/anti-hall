@@ -21,7 +21,7 @@ unit = "ms"
 
 [job.gh_poll]
 doc = "GitHub realtime tick: for each repo of a recent session, notice a push (HEAD or branch refs changed), poll what is due within the rate budget and record the edges (CI red or green, PR merged, changes requested). Runs as a subprocess so a timeout kills it and every gh call it started."
-value = { kind = "engine", action = "gh_poll", every_key = "schedule.gh_poll_ms", jitter_ms = 2000, timeout_ms = 120000, retries = 0, backoff_ms = 20000, backoff_max_ms = 120000, cooldown_ms = 20000, catch_up = "skip", persist = false }
+value = { kind = "engine", action = "gh_poll", every_key = "schedule.gh_poll_ms", jitter_ms = 2000, timeout_ms = 120000, retries = 3, backoff_ms = 20000, backoff_max_ms = 120000, cooldown_ms = 300000, catch_up = "skip", persist = false }
 
 # ---- cadence ----------------------------------------------------------------------------------------------
 

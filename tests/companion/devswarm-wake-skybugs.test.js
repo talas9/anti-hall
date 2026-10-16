@@ -42,7 +42,7 @@ test('resolveIdentity: the app row on the Primary\'s MAIN checkout resolves as t
     fs.mkdirSync(main, { recursive: true });
     writeDesc(home, { id: '76cf862f-4dbd-4a14-904b-b84c8e255743', worktreePath: main, sessionId: null });
     writeDesc(home, { id: 'primary-63f9261d', worktreePath: main, sessionId: 's' });
-    const io = { home, fs, readDescriptors, resolveMainWorktree: () => main, primaryWorkspaceId: () => 'primary-63f9261d' };
+    const io = { home, fs, readDescriptors, resolveContext: () => ({ mainWorktree: main, worktreeRoot: main, primaryMeshId: 'primary-63f9261d' }) };
     const id = wake.resolveIdentity({}, main, io);
     assert.deepStrictEqual({ role: id.role, id: id.id }, { role: 'primary', id: 'primary-63f9261d' });
   } finally { rm(home); }
@@ -56,7 +56,7 @@ test('resolveIdentity: a descriptor on a LINKED worktree is still a child', () =
     fs.mkdirSync(main, { recursive: true });
     fs.mkdirSync(linked, { recursive: true });
     writeDesc(home, { id: 'child-1', worktreePath: linked, sessionId: 's' });
-    const io = { home, fs, readDescriptors, resolveMainWorktree: () => main, primaryWorkspaceId: () => 'primary-63f9261d' };
+    const io = { home, fs, readDescriptors, resolveContext: () => ({ mainWorktree: main, worktreeRoot: main, primaryMeshId: 'primary-63f9261d' }) };
     const id = wake.resolveIdentity({}, linked, io);
     assert.deepStrictEqual({ role: id.role, id: id.id }, { role: 'child', id: 'child-1' });
   } finally { rm(home); }

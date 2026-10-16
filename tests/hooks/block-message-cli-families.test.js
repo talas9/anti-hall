@@ -114,17 +114,18 @@ test('CLI error lines (auto-handover-config, jev-setup, defect, phase) carry the
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
-test('statusline installer refuses under a test with the shared shape', () => {
+test('statusline installer is retired and writes no shared-shape block', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-cliFam-sl-'));
   try {
-    // A settings path outside any temp dir is refused under a test marker.
+    // The installer is a retained no-op. It must not resurrect the old settings-path refusal flow or write settings.
     const r = cp.spawnSync(process.execPath, [path.join(ROOT, 'statusline', 'install-statusline.js')], {
       cwd: home, encoding: 'utf8', timeout: 30000,
       env: { PATH: process.env.PATH, HOME: '/Users/nobody-antihall', USERPROFILE: '/Users/nobody-antihall', ANTIHALL_TEST_ISOLATION: '1' },
     });
-    const lines = assertShape(r.stderr, 'install-statusline', 'install-statusline');
-    assert.match(r.stderr, /refused under a test: .* is outside a temp dir/);
-    assert.ok(lines.some((l) => /^Do instead: isolate HOME\/cwd\.$/.test(l)));
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.stderr, '');
+    assert.match(r.stdout, /statusline installation has been retired/);
+    assert.match(r.stdout, /no statusLine setting was written/);
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 

@@ -145,6 +145,15 @@ fn count_recent(kinds: &[&str], window: Duration) -> usize {
     events().iter().filter(|e| e.ts >= floor && kinds.contains(&e.kind.as_str())).count()
 }
 
+/// Like [`count_recent`], but events at or before the last crash-loop trip or reset do not count: a loop that was already
+/// judged (and then waited out, reset by an operator, or left behind by a new binary) must not trip again on the same events.
+fn count_recent_after_trip(kinds: &[&str], window: Duration) -> usize {
+    let all = events();
+    let judged = all.iter().filter(|e| defaults::list("health.judged_kinds").contains(&e.kind.as_str())).map(|e| e.ts).max().unwrap_or(0);
+    let floor = now_ms().saturating_sub(window.as_millis() as u64).max(judged.saturating_add(1));
+    all.iter().filter(|e| e.ts >= floor && kinds.contains(&e.kind.as_str())).count()
+}
+
 // ---- classification ----------------------------------------------------------------------------
 
 /// Who can fix a failure.
@@ -191,6 +200,30 @@ pub fn record_failure(kind: &str, code: &str, reason: &str) {
 
 pub(crate) fn read_json(key: &str) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(state_file(key)).ok()?).ok()
+}
+
+/// Write the latest crash report. Used by the panic hook and by stale-run-marker reaping.
+pub fn write_crash_report(v: &Value) {
+    crate::discard::logged("crash_report_write", crate::atomic::write(state_file("last_crash"), v.to_string()));
+}
+
+/// The last recorded crash report.
+pub fn last_crash() -> Option<Value> {
+    read_json("last_crash")
+}
+
+/// Write the current boundary breadcrumb so an abort or SIGSEGV leaves useful context for the next start.
+pub fn write_crash_breadcrumb(request: &str, event: &str, check: &str, uptime_s: u64, memory: Value) {
+    let v = json!({
+        "ts": now_ms(),
+        "pid": std::process::id(),
+        "request": request,
+        "event": event,
+        "check": check,
+        "uptime_s": uptime_s,
+        "memory": memory,
+    });
+    crate::discard::logged("crash_breadcrumb_write", crate::atomic::write(state_file("crash_breadcrumb"), v.to_string()));
 }
 
 /// A healthy start clears an environment-class failure (the user fixed it); permanent ones stay.
@@ -241,7 +274,12 @@ pub fn pid_is_engine(pid: u32) -> bool {
     if !pid_alive(pid) {
         return false;
     }
-    let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default();
+    // Linux reports a replaced binary's `/proc/<pid>/exe` with a trailing " (deleted)"; a binary update must not disable this check.
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .map(|n| n.strip_suffix(" (deleted)").map(str::to_string).unwrap_or(n))
+        .unwrap_or_default();
     let cmd = process_command(pid);
     !exe.is_empty() && cmd.contains(&exe) && cmd.contains(&format!(" {}", defaults::text("health.serve_arg")))
 }
@@ -249,6 +287,138 @@ pub fn pid_is_engine(pid: u32) -> bool {
 /// Record that a daemon is running, so a later start can tell a crash from a clean exit.
 pub fn write_marker() {
     crate::discard::logged("run_marker_write", crate::atomic::write(state_file("run_marker"), std::process::id().to_string()));
+}
+
+/// The canonical state directory: the instance identity a heartbeat records and a client compares (two spellings of one
+/// directory, a symlinked temp dir for one, must not read as two instances).
+fn instance_dir() -> PathBuf {
+    let d = paths::dir();
+    std::fs::canonicalize(&d).unwrap_or(d)
+}
+
+/// Start the daemon's liveness heartbeat (`files.heartbeat`). The file names this process generation, one field per line: pid,
+/// start time and executable as the operating system reports them ([`crate::procid`]), and the instance (state dir); a field the
+/// system will not give is left empty, and a client then never signals that daemon. The executable is informational only: a binary
+/// update replaces it under a surviving daemon (Linux then reports `<path> (deleted)`), so it is not part of the generation. [`heartbeat`] touches its modification
+/// time at the start of every watchdog tick; a stopped or wedged process stops touching it.
+pub fn heartbeat_init() {
+    let pid = std::process::id();
+    let start = crate::procid::start(pid).map(|s| s.to_string()).unwrap_or_default();
+    let exe = crate::procid::exe(pid).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let ident = format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy());
+    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), ident));
+}
+
+/// One heartbeat: touch the file's modification time (no data written).
+pub fn heartbeat() {
+    if let Ok(f) = std::fs::File::options().write(true).open(state_file("heartbeat")) {
+        crate::discard::harmless(f.set_modified(std::time::SystemTime::now())); // keep: a missed beat only makes a slow reply fail open sooner
+    }
+}
+
+/// One reading of the daemon's heartbeat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Heartbeat {
+    /// The pid the heartbeat names.
+    pub pid: u32,
+    /// The whole file: the generation identity (pid, start time, executable, state dir).
+    pub ident: String,
+    /// Its modification time, nanoseconds since the epoch: changes on every beat.
+    pub mtime_ns: u128,
+    /// How old that modification time is by the wall clock (0 when it is in the future).
+    pub age: Duration,
+}
+
+impl Heartbeat {
+    /// The generation it names, as its OS start time, when the heartbeat belongs to this instance and records one; `None` = its
+    /// generation cannot be established here (another instance's file, a heartbeat from before generation identity, a field the
+    /// system would not give), and that daemon is never signalled. Identity is pid + start time + canonical state dir; the recorded
+    /// executable is skipped (a binary update changes its path under a live daemon).
+    pub(crate) fn generation(&self) -> Option<u64> {
+        let mut f = self.ident.lines().skip(1);
+        let start = f.next()?.parse::<u64>().ok()?;
+        f.next()?; // the executable: informational only
+        (std::path::Path::new(f.next()?) == instance_dir()).then_some(start)
+    }
+
+    /// True while `pid` is still the generation this heartbeat names: the same OS start time.
+    pub(crate) fn names_running(&self) -> bool {
+        self.generation().is_some_and(|start| crate::procid::start(self.pid) == Some(start))
+    }
+}
+
+/// The daemon's heartbeat, counted only when it names the pid that holds the singleton lock (the daemon now serving the socket).
+/// `None` = unknown (no heartbeat yet, a daemon still starting whose watchdog has not begun, a build from before the heartbeat,
+/// an unreadable file), which counts as alive.
+pub(crate) fn heartbeat_of_lock_holder() -> Option<Heartbeat> {
+    let p = state_file("heartbeat");
+    let ident = std::fs::read_to_string(&p).ok()?;
+    let pid: u32 = ident.lines().next()?.trim().parse().ok()?;
+    let holder: u32 = std::fs::read_to_string(paths::lock_for(&paths::socket())).ok()?.trim().parse().ok()?;
+    let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+    let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
+}
+
+/// The system-wide monotonic clock in milliseconds: comparable across the short-lived client processes (std's `Instant` is not
+/// serialisable) and never stepped by a wall-clock change.
+pub(crate) fn mono_ms() -> u64 {
+    // SAFETY: a zeroed timespec is a valid value of the plain C struct.
+    let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
+    // SAFETY: `ts` is a live, writable timespec; CLOCK_MONOTONIC is always available on the supported systems.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    (ts.tv_sec.max(0) as u64).saturating_mul(1000).saturating_add(ts.tv_nsec.max(0) as u64 / 1_000_000)
+}
+
+/// What one stale heartbeat sample means.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Hang {
+    /// First seen stale, or seen stale again within `client.heartbeat_confirm_ms`: the call fails open, nothing is signalled.
+    Suspected,
+    /// The same generation's heartbeat stayed unchanged for at least `client.heartbeat_confirm_ms` of monotonic time.
+    Confirmed(u64),
+}
+
+/// The suspicion file (`files.heartbeat_suspect`): `<mono ms first seen stale>\n<mtime ns>\n<identity>`.
+fn read_suspicion() -> Option<(u64, u128, String)> {
+    let t = std::fs::read_to_string(state_file("heartbeat_suspect")).ok()?;
+    let mut it = t.splitn(3, '\n');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.to_string()))
+}
+
+/// How long (monotonic ms) the suspicion has held this exact heartbeat (same generation, same modification time); `None` when
+/// the recorded suspicion is about another heartbeat, or there is none.
+fn suspicion_held(hb: &Heartbeat) -> Option<u64> {
+    let (first, mtime, ident) = read_suspicion()?;
+    (mtime == hb.mtime_ns && ident == hb.ident).then(|| mono_ms().checked_sub(first)).flatten()
+}
+
+/// Weigh one stale sample of `hb`. A hang is confirmed only when a suspicion raised earlier saw this same heartbeat (same
+/// generation, same modification time) at least `client.heartbeat_confirm_ms` ago by the monotonic clock: any beat in between,
+/// a new generation, or a wall-clock jump that only made a moving heartbeat read old, resets it. Otherwise the suspicion is
+/// (re)recorded for the next call.
+pub(crate) fn weigh_stale(hb: &Heartbeat) -> Hang {
+    match suspicion_held(hb) {
+        Some(held) if held >= defaults::num("client.heartbeat_confirm_ms") => Hang::Confirmed(held),
+        Some(_) => Hang::Suspected,
+        None => {
+            crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+            let line = format!("{}\n{}\n{}", mono_ms(), hb.mtime_ns, hb.ident);
+            crate::discard::logged("heartbeat_suspect_write", crate::atomic::write(state_file("heartbeat_suspect"), line));
+            Hang::Suspected
+        }
+    }
+}
+
+/// True while the recorded suspicion still holds `hb` unchanged for at least `client.heartbeat_confirm_ms` (re-checked under the
+/// spawn lock and again immediately before a signal).
+pub(crate) fn hang_confirmed(hb: &Heartbeat) -> bool {
+    suspicion_held(hb).is_some_and(|held| held >= defaults::num("client.heartbeat_confirm_ms"))
+}
+
+/// Drop the suspicion (the daemon it named was ended).
+pub(crate) fn clear_hang_suspicion() {
+    crate::discard::harmless(std::fs::remove_file(state_file("heartbeat_suspect"))); // keep: an absent suspicion is the goal state
 }
 
 /// Remove the run marker on a clean exit.
@@ -268,7 +438,12 @@ pub fn reap_marker() {
     let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
         crate::discard::harmless(std::fs::remove_file(&claim)); // keep: cleanup that raced; an absent file is the goal state
-        log_event("crash", "unknown", &defaults::render("msg.log_crash", &[("pid", &pid.to_string())]));
+        let breadcrumb = read_json("crash_breadcrumb").unwrap_or_else(|| json!({"context": "unknown"}));
+        let report = json!({"ts": now_ms(), "kind": "crash", "code": "unknown", "pid": pid, "breadcrumb": breadcrumb});
+        write_crash_report(&report);
+        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("context", &report)]);
+        log_event("crash", "unknown", &detail);
+        record_failure("crash", "unknown", &detail);
     }
 }
 
@@ -289,7 +464,19 @@ fn halt(key: &str, cooldown: Duration) {
 
 /// Time left in a crash-loop cooldown, if one is active.
 pub fn crashloop_remaining() -> Option<Duration> {
-    halted("crashloop_until")
+    let left = halted("crashloop_until")?;
+    if crate::binguard::cooldown_binary_replaced() {
+        clear_crashloop();
+        return None;
+    }
+    Some(left)
+}
+
+/// End the crash-loop cooldown (the binary was replaced, or the operator reset it): the stamp files go, the event log stays.
+fn clear_crashloop() {
+    for key in ["crashloop_until", "crashloop_bin", "rollback_request"] {
+        crate::discard::harmless(std::fs::remove_file(state_file(key))); // keep: cleanup that raced; an absent file is the goal state
+    }
 }
 
 /// Evaluate the crash-loop rule before (re)spawning: reap a dead daemon's marker, then if the daemon died
@@ -300,17 +487,26 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
         return true;
     }
     reap_marker();
-    let n = count_recent(&crashy(), cfg.crash_window);
-    if n < cfg.crash_n {
+    let n = count_recent_after_trip(&crashy(), cfg.crash_window);
+    // a binary that exits at once leaves no crash event, so the starts themselves are counted too: this many in this window
+    // is a loop whatever the daemon reported
+    let starts = count_recent_after_trip(&["client_spawn_attempt"], cfg.spawn_window);
+    if n < cfg.crash_n && starts < cfg.spawn_n {
         return false;
     }
+    // say which rule fired: the crashes within their window, or the starts within theirs
+    let (n, window) = if starts >= cfg.spawn_n && starts >= n { (starts, cfg.spawn_window) } else { (n, cfg.crash_window) };
     halt("crashloop_until", cfg.crash_cooldown);
+    let rolled = crate::binguard::on_crashloop_trip();
     // a crash loop caused by the environment keeps that cause; otherwise it is a permanent failure
     let env_code = events().into_iter().rev().find(|e| crashy().contains(&e.kind.as_str())).filter(|e| classify(&e.code).0 == Class::Env).map(|e| e.code);
-    let reason = defaults::render("msg.reason_crashloop", &[("n", &n.to_string()), ("secs", &cfg.crash_window.as_secs().to_string())]);
+    let reason = defaults::render("msg.reason_crashloop", &[("n", &n.to_string()), ("secs", &window.as_secs().to_string())]);
     let (kind, code) = ("crashloop".to_string(), env_code.unwrap_or_else(|| "crashloop".to_string()));
     log_event("crashloop", &code, &reason);
     record_failure(&kind, &code, &reason);
+    if rolled {
+        log_event("crashloop", "rollback_requested", defaults::text("msg.log_crashloop_rollback"));
+    }
     true
 }
 
@@ -336,7 +532,8 @@ pub fn breaker_failure(cfg: &ClientConfig, why: &str) {
 
 /// Operator reset: clear the breaker, the crash-loop cooldown and the failure record.
 pub fn reset() {
-    for key in ["breaker_until", "crashloop_until", "failure"] {
+    clear_crashloop();
+    for key in ["breaker_until", "failure"] {
         crate::discard::harmless(std::fs::remove_file(state_file(key))); // keep: cleanup that raced; an absent file is the goal state
     }
     log_event("reset", "-", defaults::text("msg.log_operator_reset"));
@@ -423,8 +620,10 @@ pub fn summary() -> Value {
         "restarts": {"total": total(&restarts), "by_reason": restarts, "last_rss_trip": last("rss"), "last_memory_breakdown": last("memory")},
         "crashloop": {"tripped": loop_left.is_some(), "remaining_s": loop_left.map(|d| d.as_secs() + 1), "last_trip": last("crashloop")},
         "breaker": {"open": breaker_left.is_some(), "remaining_s": breaker_left.map(|d| d.as_secs() + 1), "last_open": last("breaker_open")},
+        "rollback": {"last": crate::binguard::last_rollback(), "last_request": last("rollback_request")},
         "fallbacks": {"total": total(&fallbacks), "by_reason": fallbacks},
         "defaults": {"total": total(&defaults_fb), "by_reason": defaults_fb, "last": last_defaults},
+        "last_crash": last_crash(),
         "log": file(log_name()).display().to_string(),
     })
 }
@@ -515,6 +714,22 @@ pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_generation_does_not_depend_on_the_executable_path() {
+        // a binary update replaces the executable under a surviving daemon: same pid, start and dir must stay recoverable
+        let pid = std::process::id();
+        let start = crate::procid::start(pid).expect("own start time");
+        let beat = |start: u64, exe: &str| Heartbeat {
+            pid,
+            ident: format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy()),
+            mtime_ns: 0,
+            age: Duration::ZERO,
+        };
+        assert!(beat(start, "/old/place/ah-engine (deleted)").names_running(), "another exe path, same generation");
+        assert!(beat(start, "").names_running(), "an unrecorded exe, same generation");
+        assert!(!beat(start + 1, "/old/place/ah-engine").names_running(), "another start time is another generation");
+    }
 
     #[test]
     fn the_log_trim_keeps_the_tail_atomically_and_waits_for_no_one() {

@@ -599,7 +599,7 @@ test('resolveIdentity: descriptor cwd-match fallback when env is absent, matchin
 // same id, inconsistent role label depending only on cwd. The descriptor
 // cwd-match branch must now recognize a `primary-*`-id descriptor that is
 // ALSO the registered primary for this repo (per injected
-// resolveMainWorktree/primaryWorkspaceId) and label it `primary`, not `child`.
+// resolveContext) and label it `primary`, not `child`.
 test('resolveIdentity: a Primary-seat descriptor at the repo root resolves as primary, not child', () => {
   const home = tmpHome();
   try {
@@ -616,8 +616,7 @@ test('resolveIdentity: a Primary-seat descriptor at the repo root resolves as pr
     };
     const io = {
       home, fs, readDescriptors,
-      resolveMainWorktree: () => worktree,
-      primaryWorkspaceId: (wt) => (wt === worktree ? 'primary-deadbeef' : 'primary-wrong'),
+      resolveContext: () => ({ mainWorktree: worktree, worktreeRoot: worktree, primaryMeshId: 'primary-deadbeef' }),
     };
     // Armed from the repo ROOT (the descriptor's own worktreePath) — the
     // buggy code returned `child` here.
@@ -651,22 +650,20 @@ test('resolveIdentity: a primary-* id descriptor that is NOT the registered prim
     };
     const io = {
       home, fs, readDescriptors,
-      resolveMainWorktree: () => worktree,
-      primaryWorkspaceId: () => 'primary-deadbeef', // the REAL registered primary differs
+      resolveContext: () => ({ mainWorktree: worktree, worktreeRoot: worktree, primaryMeshId: 'primary-deadbeef' }), // the REAL registered primary differs
     };
     const identity = resolveIdentity({}, worktree, io);
     assert.deepStrictEqual({ role: identity.role, id: identity.id }, { role: 'child', id: 'primary-stale' });
   } finally { rm(home); }
 });
 
-test('resolveIdentity: falls back to Primary via injected resolveMainWorktree/primaryWorkspaceId', () => {
+test('resolveIdentity: falls back to Primary via injected resolveContext', () => {
   const home = tmpHome();
   try {
     const io = {
       home, fs,
       readDescriptors: () => [],
-      resolveMainWorktree: () => '/main/worktree',
-      primaryWorkspaceId: (wt) => 'primary-' + (wt === '/main/worktree' ? 'deadbeef' : 'wrong'),
+      resolveContext: () => ({ mainWorktree: '/main/worktree', worktreeRoot: '/main/worktree', primaryMeshId: 'primary-deadbeef' }),
     };
     const identity = resolveIdentity({}, '/some/cwd', io);
     assert.deepStrictEqual({ role: identity.role, id: identity.id }, { role: 'primary', id: 'primary-deadbeef' });
@@ -674,7 +671,7 @@ test('resolveIdentity: falls back to Primary via injected resolveMainWorktree/pr
 });
 
 test('resolveIdentity returns null when Primary fallback cannot resolve a main worktree', () => {
-  const io = { home: tmpHome(), fs, readDescriptors: () => [], resolveMainWorktree: () => null };
+  const io = { home: tmpHome(), fs, readDescriptors: () => [], resolveContext: () => null };
   const identity = resolveIdentity({}, '/nowhere', io);
   assert.strictEqual(identity, null);
 });
@@ -686,8 +683,7 @@ test('resolveIdentity returns null when Primary fallback cannot resolve a main w
 test('resolvePrimaryHashes: repoKey first, legacy hash as a DISTINCT fallback', () => {
   const io = {
     repoKeyForWorktree: () => 'anti-hall-abc123',
-    resolveMainWorktree: () => '/main/wt',
-    primaryWorkspaceId: () => 'primary-deadbeef',
+    resolveContext: () => ({ mainWorktree: '/main/wt', worktreeRoot: '/main/wt', primaryMeshId: 'primary-deadbeef' }),
     hashFromWorkspaceId: () => 'deadbeef',
   };
   const h = resolvePrimaryHashes('/some/cwd', io);
@@ -699,8 +695,7 @@ test('resolvePrimaryHashes: repoKey first, legacy hash as a DISTINCT fallback', 
 test('resolvePrimaryHashes: fallbackHash suppressed when it equals repoKey (never a redundant second read)', () => {
   const io = {
     repoKeyForWorktree: () => 'deadbeef',
-    resolveMainWorktree: () => '/main/wt',
-    primaryWorkspaceId: () => 'primary-deadbeef',
+    resolveContext: () => ({ mainWorktree: '/main/wt', worktreeRoot: '/main/wt', primaryMeshId: 'primary-deadbeef' }),
     hashFromWorkspaceId: () => 'deadbeef',
   };
   const h = resolvePrimaryHashes('/some/cwd', io);

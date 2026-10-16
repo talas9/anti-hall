@@ -29,6 +29,8 @@ ANTIHALL_PROCWATCH = "0"
 AH_ENGINE_PROCWATCH_MS = "0"
 ANTIHALL_SESSION_END_REAPER = "0"
 ANTIHALL_INGEST_DRY_RUN = "1"
+# This healthy-daemon fixture verifies native evaluation without Node; production deadline cutting is covered elsewhere.
+AH_ENGINE_SCRIPT_CUT_AT_DEADLINE = "0"
 LANG = "C"
 LC_ALL = "C"
 

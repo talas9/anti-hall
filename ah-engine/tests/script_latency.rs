@@ -2,8 +2,11 @@
 //! daemons or load the machine (the telemetry lane learned this). A scripted check may add at most `script.p95_budget_us`
 //! over the compiled port it replaced at the 95th percentile. The compiled port is gone, so the test holds the stricter
 //! bound: the script's OWN p95 over its whole golden corpus stays under the budget (the added latency cannot exceed it).
+//! The p95 budget failures of this bench on a shared dev machine are tracked in R1 (#22 work), not here: the assertions stay as they
+//! are, and `.config/nextest.toml` gives the test a long slow-timeout so a slow run cannot TIMEOUT the gate.
 //! Run in release, where the numbers mean something: `cargo test --release --test script_latency -- --nocapture`.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 use ah_engine::reqenv::RequestEnv;
 use serde_json::Value;

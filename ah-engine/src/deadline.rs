@@ -155,11 +155,20 @@ pub fn clamp(budget: Duration) -> Duration {
 mod tests {
     use super::*;
 
+    /// Start a request now, with the defaults already loaded: the first read of a setting parses the shipped file (hundreds of
+    /// milliseconds in a debug build), which would otherwise be spent inside the request window. The window is the fail-fast
+    /// client deadline (300 ms), not the former 2 s, so the cost of loading must not count against it.
+    fn begin_now() {
+        crate::defaults::num("client.deadline_ms");
+        crate::defaults::millis("daemon.reply_slack_ms");
+        begin(Instant::now());
+    }
+
     #[test]
     fn a_budget_is_cut_to_what_the_client_still_waits_and_untouched_outside_a_request() {
         let long = Duration::from_secs(60);
         assert_eq!(clamp(long), long, "no request: nothing is clamped");
-        begin(Instant::now());
+        begin_now();
         let left = remaining().unwrap();
         let client = Duration::from_millis(crate::defaults::num("client.deadline_ms"));
         assert!(left <= client && clamp(long) <= client, "{left:?}");
@@ -185,7 +194,7 @@ mod tests {
     #[test]
     fn a_native_scan_is_cut_only_inside_an_armed_call_past_its_deadline() {
         assert!(!cut_due(), "no request");
-        begin(Instant::now());
+        begin_now();
         set_cut_armed(true);
         assert!(!cut_due(), "the client still waits");
         client_deadline(0);
@@ -201,7 +210,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (a, b) = (dir.join("a.json"), dir.join("b.json"));
         let style = crate::atomic::Style::default();
-        begin(Instant::now());
+        begin_now();
         crate::atomic::write_after_reply(&a, "a", style).unwrap();
         let mark = staged_mark();
         crate::atomic::write_after_reply(&b, "b", style).unwrap();
@@ -222,20 +231,20 @@ mod tests {
         let f = dir.join("state.json");
         std::fs::write(&f, "old").unwrap();
         let style = crate::atomic::Style::default();
-        begin(Instant::now());
+        begin_now();
         crate::atomic::write_after_reply(&f, "new", style).unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "old", "staged, not yet in place");
         settle_staged(false); // the reply could not be written
         end();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "old", "an unwritten reply leaves the state as it was");
-        begin(Instant::now());
+        begin_now();
         crate::atomic::write_after_reply(&f, "new", style).unwrap();
         client_deadline(0); // the client has stopped waiting: it answers with the Node hooks
         settle_staged(true);
         end();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "old", "a reply nobody used leaves the state as it was");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file is left behind");
-        begin(Instant::now());
+        begin_now();
         crate::atomic::write_after_reply(&f, "new", style).unwrap();
         settle_staged(true);
         end();

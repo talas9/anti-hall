@@ -13,6 +13,7 @@
 //! * the fault cases corrupt an input (an unreadable inbox, a non-database store file, a cursor file of the wrong shape)
 //!   and still require the same two outcomes, so a fault is either reproduced exactly or left to Node untouched.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};

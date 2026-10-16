@@ -354,6 +354,54 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
     assert_eq!(crate::script::missing("sibling-sweep", "SessionStart"), Some(Verdict::Allow));
 }
 
+#[test]
+fn api_guard_rechecks_a_module_after_a_package_is_installed() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("agpkg");
+    let bin = format!("{h}/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let marker = format!("{h}/installed");
+    let body = format!("#!/bin/sh\ncase \"$1\" in --version|-V) echo 'Python 3.12.1';; *) if [ -e {marker} ]; then echo '[0]'; else echo '[2]'; fi;; esac\n");
+    std::fs::write(format!("{bin}/python3"), body).unwrap();
+    std::fs::set_permissions(format!("{bin}/python3"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", bin.as_str()), ("ANTIHALL_API_GUARD_THIRDPARTY", "1")]);
+    let p = json!({"tool_name": "Write", "tool_input": {"file_path": "x.py", "content": "import fakepkg\nfakepkg.no_such_fn()\n"}});
+    let go = || run_forced("api-guard", &p, &e).expect("a script").expect("an answer");
+    assert_eq!(go(), Verdict::Allow, "an absent package is not a fake attribute");
+    std::fs::write(&marker, "").unwrap();
+    assert_ne!(go(), Verdict::Allow, "the same call after the package is installed is checked again, not served from a kept allow");
+}
+
+/// Codex final N2: the verdict is verified before the optional version text is fetched, so a slow cold version probe can never
+/// starve the verification (it used to run first, eat the request's remaining time, and turn a deny into an unchecked allow).
+#[test]
+fn api_guard_verifies_before_the_version_probe_and_the_deny_survives_a_tight_budget() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("agorder");
+    let bin = format!("{h}/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = format!("{h}/calls");
+    // verification answers at once; the (cold) version probe takes far longer than the whole request window
+    let body = format!(
+        "#!/bin/sh\ncase \"$1\" in --version|-V) echo version >>{log}; sleep 3; echo v22.0.0;; *) echo verify >>{log}; echo '{{\"req\":{{\"fs\":[0]}},\"glob\":[]}}';; esac\n"
+    );
+    std::fs::write(format!("{bin}/node"), body).unwrap();
+    std::fs::set_permissions(format!("{bin}/node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", bin.as_str())]);
+    let p = json!({"tool_name": "Write", "tool_input": {"file_path": "x.js", "content": "require('fs').definitelyFake();\n"}});
+    // the defaults and the script are loaded before the window opens, so the window is spent on the probes alone
+    assert_eq!(run_forced("api-guard", &json!({"tool_name": "Bash"}), &e), Some(Some(Verdict::Allow)));
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(defaults::num("daemon.reply_slack_ms") + 1200);
+    let v = run_forced("api-guard", &p, &e);
+    crate::deadline::end();
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(calls.lines().next(), Some("verify"), "verification runs first: {calls:?}");
+    let Some(Some(Verdict::Exact(x))) = v else { panic!("a verdict: {v:?}") };
+    assert_eq!(x.code, 2, "the deny survives a version probe that cannot finish in budget: {x:?}");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 // ---- golden parity of the migrated checks ----
 
 #[test]
@@ -437,6 +485,13 @@ pub(super) fn golden_report(check: &str, limit: usize) {
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
         let l = golden::lay(c);
+        if check == "task-tracker" {
+            // The corpus was recorded on a 16-core machine, where the dispatch cap (cores - 2) is 14; the script reads the real core
+            // count, so a smaller runner wrote "cap 3". Pinning the setting to the recorded value makes the answer machine-independent.
+            let dir = format!("{}/.anti-hall", l.home);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/settings.json"), r#"{"guards":{"maxParallelDispatch":14}}"#).unwrap();
+        }
         let got = golden::run_case(check, &l, golden::repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
@@ -1325,8 +1380,8 @@ fn interpreter_memory_stays_in_a_band_over_many_calls() {
     let mut names: Vec<String> =
         std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
     names.sort();
-    let soft = defaults::num("script.runtime_soft_bytes") as i64;
-    let max = defaults::num("script.runtime_max_bytes") as i64;
+    let soft = defaults::num("mem.quickjs_soft_bytes") as i64;
+    let max = defaults::num("mem.quickjs_hard_bytes") as i64;
     let rounds = 6;
     let sizes = std::thread::spawn(move || {
         let e = env(&h);
@@ -1361,12 +1416,61 @@ fn interpreter_memory_stays_in_a_band_over_many_calls() {
     assert!(sizes[rounds - 1] as f64 <= sizes[1] as f64 * 1.05, "growth over calls: {sizes:?}");
 }
 
+/// R0 soak (train live18): cyclic garbage waited for QuickJS's own collector, which runs only at 1.5 times the size after its previous
+/// run, so a worker holding every check (~5.7 MB) kept up to ~2.8 MB of garbage the memory registry never saw, and the soak's footprint
+/// rose for the whole run. With `maintain` called after each request (as the daemon's worker loop does), the garbage waiting between
+/// calls stays within `script.gc_every_calls` calls' worth, however many calls are made. Measured WITHOUT a collection (the band test
+/// above measures after one, which is why it could not see this).
+#[test]
+fn cyclic_garbage_between_calls_stays_within_gc_every_calls() {
+    let h = home("gcevery");
+    let e = env(&h);
+    // ~2 MB held live (the entry keeps it referenced); each call leaves a few small cycles that only a collection frees
+    put_override(
+        &h,
+        "zz-cycles",
+        "var zzKeep = []; for (var i = 0; i < 4096; i++) zzKeep.push({i: i, s: 'k' + i, t: [i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7]});\n\
+         function decide() { for (var j = 0; j < 2; j++) { var a = {n: j}; var b = {a: a}; a.b = b; } return zzKeep.length ? null : {block: 'empty'}; }",
+    );
+    let every = defaults::num("script.gc_every_calls") as i64;
+    let p = json!({"tool_name": "Write"});
+    let (one, worst) = std::thread::spawn(move || {
+        let now = || POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.memory_usage().malloc_size)).expect("the thread ran scripts");
+        let gc = || POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.run_gc()));
+        run_forced("zz-cycles", &p, &e);
+        gc();
+        // the collector's own threshold as QuickJS sets it after a run at this size (1.5x), independent of how this thread got here
+        let base = now();
+        POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.set_gc_threshold(base as usize * 3 / 2)));
+        // one call's garbage, averaged over a few calls
+        let probe = 100;
+        for _ in 0..probe {
+            run_forced("zz-cycles", &p, &e);
+        }
+        let one = ((now() - base) / probe).max(1);
+        super::maintain(true);
+        let mut worst = 0;
+        for _ in 0..(5 * every) {
+            run_forced("zz-cycles", &p, &e);
+            super::maintain(false);
+            worst = worst.max(now() - base);
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        (one, worst)
+    })
+    .join()
+    .expect("the scripts ran");
+    // at most `every` calls' worth waits, plus one 4 KiB arena per QuickJS size class left partly used
+    let bound = every * one + 31 * 4096;
+    assert!(worst <= bound, "garbage waiting between calls grew to {worst} bytes, bound {bound} ({every} calls x {one} bytes + arenas)");
+}
+
 /// Issue #21: the regex cache is ONE cache bounded by estimated bytes: many distinct patterns cannot push it past its budget, and two
 /// threads asking for the same pattern share one compiled program.
 #[test]
 fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
-    let budget = defaults::num("script.regex_cache_bytes") as usize;
-    let max = defaults::num("script.regex_cache_max") as usize;
+    let budget = defaults::num("mem.regex_soft_bytes") as usize;
+    let max = defaults::num("mem.regex_max_entries") as usize;
     // each pattern is distinct and long enough that the budget (not the entry count) is what binds first
     let long = |i: usize| format!("zzcache{i}\\s+{}", "(?:a|b)x".repeat(40));
     for i in 0..(max * 3) {

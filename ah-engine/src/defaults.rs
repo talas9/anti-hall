@@ -35,6 +35,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+fn fatal_defaults(msg: String) -> ! {
+    eprintln!("{msg}");
+    std::process::abort();
+}
+
 /// A default's value: the TOML types the defaults use, as static data.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum V {
@@ -172,6 +177,7 @@ static CUR: RwLock<Option<Arc<Backend>>> = RwLock::new(None);
 static CLIENT: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static CACHE_WRITES: AtomicBool = AtomicBool::new(false);
+static AFTER_TO_DAEMON: AtomicBool = AtomicBool::new(false);
 
 /// Make [`init`] read the daemon's snapshot cache (the thin hook client) instead of parsing the plugin's files. Call before
 /// the first read.
@@ -197,10 +203,18 @@ fn cache_best_effort(d: &load::Data) {
     }
 }
 
+/// Make a load leave the heal and the last-known-good copy ([`load::after`]) to the daemon the hook client starts: that work
+/// writes and syncs every defaults file, over a second on a cold state directory, which ran out the wrapper's deadline before
+/// the client reached the daemon, so a cold call never started one. The daemon does it at its own start. A client that may
+/// not start a daemon (`env.nospawn`) still does it, as nothing else would.
+pub fn leave_after_load_to_daemon() {
+    AFTER_TO_DAEMON.store(true, Ordering::SeqCst);
+}
+
 /// What follows a load that may write (the daemon, a client that parsed the files): log its fallbacks, keep the
 /// last-known-good copy. In-process tests and one-off commands write nothing.
 fn after_load(report: &load::Report, root: &Path) {
-    if CACHE_WRITES.load(Ordering::SeqCst) {
+    if CACHE_WRITES.load(Ordering::SeqCst) && !(AFTER_TO_DAEMON.load(Ordering::SeqCst) && env_var("nospawn").is_none()) {
         load::after(report, root);
     }
 }
@@ -266,6 +280,7 @@ impl<T: 'static> Cache<T> {
         {
             return v;
         }
+        crate::mem::note_leak(std::mem::size_of::<T>());
         let v: &'static T = Box::leak(Box::new(build()));
         *w = Some((generation, v));
         v
@@ -358,9 +373,9 @@ fn backend() -> Arc<Backend> {
         return b;
     }
     if let Err(e) = init() {
-        panic!("shipped defaults unavailable: {e}");
+        fatal_defaults(format!("shipped defaults unavailable: {e}"));
     }
-    current().unwrap_or_else(|| panic!("init() installed a snapshot"))
+    current().unwrap_or_else(|| fatal_defaults("init() installed a snapshot".to_string()))
 }
 
 /// The entry for `key`, if shipped.
@@ -372,7 +387,7 @@ fn find(key: &str) -> Option<&'static Entry> {
 }
 
 fn entry(key: &str) -> &'static Entry {
-    find(key).unwrap_or_else(|| panic!("defaults key {key:?} is not shipped (a source reference the `defaults` tests should have caught)"))
+    find(key).unwrap_or_else(|| fatal_defaults(format!("defaults key {key:?} is not shipped (a source reference the `defaults` tests should have caught)")))
 }
 
 /// The entry for `key`, if shipped (without panicking).
@@ -394,7 +409,7 @@ pub fn raw(key: &str) -> &'static V {
 /// its `min`/`max`.
 pub fn num(key: &str) -> u64 {
     let e = entry(key);
-    let default = e.value.as_integer().unwrap_or_else(|| panic!("defaults key {key:?} is not an integer")).max(0) as u64;
+    let default = e.value.as_integer().unwrap_or_else(|| fatal_defaults(format!("defaults key {key:?} is not an integer"))).max(0) as u64;
     let mut v = e.env.and_then(|n| std::env::var(n).ok()).and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(default);
     if let Some(min) = e.min {
         v = v.max(min.max(0) as u64);
@@ -417,12 +432,12 @@ pub fn secs(key: &str) -> std::time::Duration {
 
 /// A string setting.
 pub fn text(key: &str) -> &'static str {
-    raw(key).as_str().unwrap_or_else(|| panic!("defaults key {key:?} is not a string"))
+    raw(key).as_str().unwrap_or_else(|| fatal_defaults(format!("defaults key {key:?} is not a string")))
 }
 
 /// A list-of-strings setting.
 pub fn list(key: &str) -> Vec<&'static str> {
-    raw(key).as_array().unwrap_or_else(|| panic!("defaults key {key:?} is not a list")).iter().filter_map(V::as_str).collect()
+    raw(key).as_array().unwrap_or_else(|| fatal_defaults(format!("defaults key {key:?} is not a list"))).iter().filter_map(V::as_str).collect()
 }
 
 /// A string setting split on whitespace (compact option-name sets).

@@ -168,6 +168,9 @@ t_wrapper_spawns() {
   # hooks dir stands in for the plugin so the repo tree is not touched.
   newhome wrap
   mkdir -p "$tmp/plug/hooks"; cp "$wrapper" "$boot" "$repo"/plugins/anti-hall/hooks/ah-fallback.list "$repo"/plugins/anti-hall/hooks/ah-fallback.map.json "$tmp/plug/hooks/"
+  # Contract: the fail-fast wrapper reads its client deadlines from the plugin's shipped engine/defaults/engine.toml and exits 0
+  # (fail open) before anything else when that file is missing, so the stand-in plugin ships it like the real one does.
+  mkdir -p "$tmp/plug/engine/defaults"; cp "$repo"/plugins/anti-hall/engine/defaults/engine.toml "$tmp/plug/engine/defaults/"
   write_lock "$tmp/plug/ah-engine.lock" "$ver" "$triple" "$good"
   printf '{}' | AH_BOOTSTRAP_UNAME_S=Linux AH_BOOTSTRAP_UNAME_M=x86_64 AH_BOOTSTRAP_LIBC=gnu sh "$tmp/plug/hooks/ah-hook.sh" SessionStart >/dev/null 2>&1 || true
   n=0
@@ -203,6 +206,23 @@ t_version_check_gets_the_plugin_root() {
   [ -x "$(engine)" ] && logf | grep -q 'ok: installed ah-engine 9.8.6'
 }
 
+# The install lock is shared with the integrity script and ah-update: while another holder keeps it, the bootstrap installs nothing
+# and records no failed attempt (no rate limit); once it is free the install runs under it, records the expected sha256 and frees it.
+t_shared_install_lock() {
+  newhome ilock; write_lock "$tmp/lock" "$ver" "$triple" "$good"
+  st=$HOME/.anti-hall/ah-engine; integ=$repo/plugins/anti-hall/hooks/ah-engine-integrity.sh
+  mkdir -p "$st"
+  sleep 60 & h=$!; tok="$h $(date +%s)"
+  AH_ENGINE_DIR=$st sh "$integ" lock "$tok" || { kill "$h"; return 1; }
+  AH_ENGINE_INSTALL_LOCK_WAIT_S=1 run || { kill "$h"; return 1; }
+  held_ok=1
+  { [ ! -e "$(engine)" ] && [ ! -f "$st/bootstrap.attempt" ] && logf | grep -q 'install lock is held'; } || held_ok=0
+  AH_ENGINE_DIR=$st sh "$integ" unlock "$tok"; kill "$h" 2>/dev/null; wait "$h" 2>/dev/null
+  [ "$held_ok" -eq 1 ] || return 1
+  run || return 1
+  [ -x "$(engine)" ] && [ "$(sed -n 1p "$st/bin/ah-engine.expected")" = "$(sha_of "$(engine)")" ] && [ ! -e "$st/install.lock" ]
+}
+
 # A downloaded binary that hangs and ignores TERM must not hang the bootstrap or hold its lock: it exits 0, logs the failure, installs nothing.
 t_hanging_binary_is_bounded() {
   newhome hang; v=9.8.5; n=ah-engine-v$v-$triple
@@ -217,6 +237,7 @@ t_hanging_binary_is_bounded() {
 }
 
 check t_good
+check t_shared_install_lock
 check t_hanging_binary_is_bounded
 check t_keeps_previous
 check t_marker_records_the_binary

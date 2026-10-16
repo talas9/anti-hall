@@ -160,7 +160,10 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
 /// the first time its code path runs, so a failure is a bug in the source, not a runtime condition. The tests that
 /// exercise each code path compile every such pattern, so an invalid one fails the build, not a user.
 pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
-    regex::Regex::new(pattern).unwrap_or_else(|e| panic!("{}: {e}", crate::defaults::text("msg.regex_literal_invalid")))
+    regex::Regex::new(pattern).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", crate::defaults::text("msg.regex_literal_invalid"));
+        std::process::abort();
+    })
 }
 
 /// Every built-in check, in a fixed order.

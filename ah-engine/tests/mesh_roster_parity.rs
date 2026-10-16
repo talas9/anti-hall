@@ -6,6 +6,7 @@
 //! termination signal (only the engine runs that one: Node would wait for it for ever), a child it does report, and no
 //! binary at all. A fixture app database and the split-brain fallback summary are in play where they could matter.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};

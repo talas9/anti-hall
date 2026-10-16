@@ -11,6 +11,7 @@
 //! happen at different instants. [`mask_log`] blanks exactly those two fields on both sides (the same patterns as the plugin's
 //! `devswarm_cli.log_masks`, which the Node witness applies); every other byte of the line, and the number of lines, must be equal.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

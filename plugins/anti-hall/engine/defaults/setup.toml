@@ -207,10 +207,6 @@ value = "listInstalledIngestUnits"
 doc = "The program `capability-scan` asks for the managed cron markers on Linux."
 value = "crontab"
 
-[setup.cap_statusline_marker]
-doc = "The file name a status line command must contain for the statusline capability to count as active."
-value = "statusline.js"
-
 [setup.cap_legacy_files]
 doc = "The legacy root progress and history files whose copy under .anti-hall/history/legacy is the state migration."
 value = [".anti-hall-progress.md", ".anti-hall-history.md"]
@@ -218,10 +214,6 @@ value = [".anti-hall-progress.md", ".anti-hall-history.md"]
 [setup.cap_how_companion]
 doc = "How a companion is enabled. Placeholder: file."
 value = 'node "${CLAUDE_PLUGIN_ROOT}/companion/{file}"'
-
-[setup.cap_how_statusline]
-doc = "How the status line is enabled."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."
@@ -805,29 +797,9 @@ doc = "The length of the hexadecimal tail of a per-project suffix."
 value = 6
 min = 1
 
-[setup.cap_status_project_files]
-doc = "The project-scope settings files a status line may be configured in, strongest first, relative to the working directory."
-value = [".claude/settings.local.json", ".claude/settings.json"]
-
-[setup.cap_status_user_files]
-doc = "The user-scope settings files a status line may be configured in, relative to the home directory."
-value = [".claude/settings.json"]
-
-[setup.cap_status_key]
-doc = "The settings member that configures the status line."
-value = "statusLine"
-
-[setup.cap_status_command_key]
-doc = "The member of the status-line setting that holds its command."
-value = "command"
-
 [setup.cap_legacy_dir]
 doc = "Where the legacy progress and history files are copied, relative to the project root."
 value = ".anti-hall/history/legacy"
-
-[setup.cap_name_statusline]
-doc = "The capability name of the status line."
-value = "statusline"
 
 [setup.cap_name_migrations]
 doc = "The capability name of the state migrations."

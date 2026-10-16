@@ -9,6 +9,7 @@
 //! with no Node on the PATH: it must exit 75, print nothing and write nothing. The background Node witness of each answered
 //! call must have logged a match.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

@@ -3,6 +3,7 @@
 //! process's resource usage and any other test running in the same process would be counted too. Run it alone and look at
 //! the `BENCH` line: `cargo test --release --test watch_bench -- --nocapture`.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 use ah_engine::defaults;
 use ah_engine::watch::poll::Filter;

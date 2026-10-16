@@ -4,6 +4,7 @@
 //! is passed on without a fallback. Scratch HOME and a fake plugin root with stub programs, so neither the real engine nor the
 //! user's home is touched.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

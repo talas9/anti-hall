@@ -49,6 +49,13 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
         self.bytes
     }
 
+    /// Estimated memory retained by the tier itself: item weights plus allocated collection storage.
+    pub fn retained_bytes(&self) -> usize {
+        self.bytes
+            .saturating_add(self.map.capacity().saturating_mul(std::mem::size_of::<(K, Slot<V>)>()))
+            .saturating_add(self.order.len().saturating_mul(std::mem::size_of::<(u64, K)>()))
+    }
+
     /// Items held.
     pub fn len(&self) -> usize {
         self.map.len()
@@ -113,6 +120,46 @@ impl<K: Hash + Eq + Clone, V: Clone> Tiered<K, V> {
                 self.evictions += 1;
             }
         }
+    }
+
+    /// Drop the least recently used item; its size, or `None` when empty.
+    pub fn pop_lru(&mut self) -> Option<usize> {
+        let (&t, _) = self.order.iter().next()?;
+        let victim = self.order.remove(&t)?;
+        let s = self.map.remove(&victim)?;
+        self.bytes -= s.size;
+        self.evictions += 1;
+        Some(s.size)
+    }
+
+    /// Drop least recently used items until at most `target` bytes are held; the bytes freed.
+    pub fn evict_to(&mut self, target: usize) -> usize {
+        let before = self.bytes;
+        while self.bytes > target && self.pop_lru().is_some() {}
+        before - self.bytes
+    }
+
+    /// Drop least recently used items and release spare capacity until retained memory is at most `target`.
+    pub fn evict_retained_to(&mut self, target: usize) -> usize {
+        let before = self.retained_bytes();
+        while self.retained_bytes() > target && self.pop_lru().is_some() {}
+        self.map.shrink_to_fit();
+        before.saturating_sub(self.retained_bytes())
+    }
+
+    /// Drop everything; the bytes freed.
+    pub fn clear(&mut self) -> usize {
+        let before = self.bytes;
+        self.map.clear();
+        self.map.shrink_to_fit();
+        self.order.clear();
+        self.bytes = 0;
+        before
+    }
+
+    /// The active values, cloned without changing recency.
+    pub fn values(&self) -> Vec<V> {
+        self.map.values().map(|s| s.value.clone()).collect()
     }
 
     /// Drop `k` from memory (SQLite keeps it).
@@ -219,6 +266,19 @@ mod tests {
         t.insert("k", 1, 40, None);
         t.insert("k", 2, 10, None);
         assert_eq!((t.bytes(), t.len(), t.get(&"k", 0)), (10, 1, Some(2)));
+    }
+
+    #[test]
+    fn retained_bytes_include_map_capacity_and_shrink_releases_it() {
+        let mut t: Tiered<String, String> = Tiered::new(10_000);
+        assert_eq!(t.retained_bytes(), 0);
+        for i in 0..100 {
+            t.insert(format!("k{i}"), "v".into(), 1, None);
+        }
+        assert!(t.retained_bytes() > t.bytes(), "retained bytes charge collection allocation");
+        t.evict_retained_to(0);
+        assert_eq!(t.len(), 0);
+        assert_eq!(t.retained_bytes(), 0, "shrink releases spare HashMap capacity");
     }
 
     #[test]

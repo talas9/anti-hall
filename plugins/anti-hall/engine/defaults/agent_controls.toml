@@ -622,9 +622,16 @@ value = "Override (only if the user explicitly confirmed this exact condition is
 # ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
 
 [agent_scan.cache_max_paths]
-doc = "How many transcripts the scan keeps a walk for between calls, so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first."
-value = 4
+doc = "How many walks the scan keeps between calls (one per transcript and window size), so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first."
+value = 12
 unit = "count"
+
+[agent_scan.window_slack_pct]
+doc = "How far, as a percent of the scan window, the kept walk of a transcript longer than the window may begin before the window start; past that it is rebuilt from the window start. The walk is used only while it provably gives the answer of a fresh scan of the exact window (nothing older than the window start touched a launch, a stop or a teammate event, and no call older than it has its answer inside it), so this only bounds what the walk holds. 0 reads every window afresh."
+value = 25
+min = 0
+max = 100
+unit = "percent"
 
 [agent_scan.cache_idle_ms]
 doc = "How long a kept walk may sit unused before it is dropped."

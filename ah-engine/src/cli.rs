@@ -207,6 +207,9 @@ pub fn run(args: &[String]) -> i32 {
     if hook || statusline || p.command == "serve" {
         defaults::write_cache_on_load();
     }
+    if hook {
+        defaults::leave_after_load_to_daemon();
+    }
     if let Err(e) = defaults::init() {
         if p.command == "doctor" {
             // the doctor must still diagnose a plugin whose defaults cannot load; it writes nothing and hands over to the shell doctor

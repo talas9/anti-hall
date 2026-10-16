@@ -243,8 +243,8 @@ doc = "A live self-test the engine could not decide itself: the check defers thi
 value = "{check}: the engine defers this self-test to its Node hook, so it was not exercised here"
 
 [doctor_msg.statusline_installed]
-doc = "The statusline is the anti-hall dispatcher. Placeholder: {label}."
-value = "statusline installed ({label}) -> anti-hall dispatcher"
+doc = "A legacy anti-hall statusLine is still configured. Placeholder: {label}."
+value = "legacy anti-hall statusLine still configured ({label}) -> uninstall-statusline can clean it up"
 
 [doctor_msg.statusline_set]
 doc = "A custom statusline is configured. Placeholders: {label}, {command}."
@@ -252,7 +252,7 @@ value = "statusline set ({label}) -> {command}…"
 
 [doctor_msg.statusline_none]
 doc = "No statusLine is configured."
-value = "no statusLine configured — run the install-statusline skill (then restart)"
+value = "no anti-hall statusLine configured (installer retired)"
 
 [doctor_msg.workflow_found]
 doc = "Saved Workflow templates exist. Placeholder: {files}."
@@ -975,6 +975,10 @@ value = "client circuit breaker open for {secs}s more ({reason}); hooks use the 
 [doctor_msg.failure_recorded]
 doc = "DMN-11. Placeholders: {class}, {reason}, {hint}."
 value = "last recorded failure ({class}): {reason} {hint}"
+
+[doctor_msg.last_crash]
+doc = "DMN-12. Placeholder: {crash}."
+value = "last crash: {crash}"
 
 [doctor_msg.config_fell_back]
 doc = "CF-02. Placeholders: {file}, {detail}, {layer}, {code}."

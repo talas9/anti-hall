@@ -996,7 +996,7 @@ async function main() {
     instead: 'verify it with a tool, or say what is unverified (\'I don\'t know, here is what I would check\'), then continue.',
   });
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   finish('block');
 }
 

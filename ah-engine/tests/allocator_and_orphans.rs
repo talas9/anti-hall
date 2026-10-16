@@ -1,5 +1,6 @@
 //! Row 9/10 integration checks: allocator selection and non-live daemon lifetime.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: panic output is the failure report.
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 mod common;
 

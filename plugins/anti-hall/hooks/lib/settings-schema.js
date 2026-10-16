@@ -482,7 +482,7 @@ const SECTIONS = [
   {
     key: 'statusline',
     label: 'Statusline',
-    description: 'The rich statusline (version chip, phase bar, account segment).',
+    description: 'Legacy statusline cleanup/render settings kept for older installs.',
     settings: [
       { key: 'base', type: 'string', default: '', env: 'ANTIHALL_STATUSLINE_BASE', pluginOption: 'statusline_base', pluginOptionLegacy: true, description: 'Shell command run as the line-1 base in consolidated statusline mode.' },
       { key: 'noEmail', type: 'boolean', default: false, env: 'ANTIHALL_STATUSLINE_NO_EMAIL', pluginOption: 'statusline_no_email', pluginOptionLegacy: true, description: 'Suppress the email segment in the statusline.' },

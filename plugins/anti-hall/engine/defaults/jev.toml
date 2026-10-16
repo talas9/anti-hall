@@ -376,12 +376,6 @@ unit = "bytes"
 doc = "Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls)."
 value = 4096
 min = 1
-
-[jev.lane_cap]
-doc = "How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap)."
-value = 8
-min = 1
-
 [jev.turn_ref_window_bytes]
 doc = "How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript)."
 value = 65536

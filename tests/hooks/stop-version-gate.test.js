@@ -41,6 +41,8 @@ function makeFixtureRoot(runningVersion) {
   fs.writeFileSync(path.join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: runningVersion }));
   fs.mkdirSync(path.join(root, 'skills', 'update', 'scripts'), { recursive: true });
   fs.copyFileSync(REAL_UPDATE_JS, path.join(root, 'skills', 'update', 'scripts', 'update.js'));
+  fs.mkdirSync(path.join(root, 'hooks', 'lib'), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'git-env.js'), path.join(root, 'hooks', 'lib', 'git-env.js'));
   return root;
 }
 
@@ -53,7 +55,7 @@ function makeHome() {
 function writeInstalledJson(home, version) {
   const p = path.join(home, '.claude', 'plugins', 'installed_plugins.json');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ plugins: { 'anti-hall@anti-hall': { version, scope: 'user' } } }));
+  fs.writeFileSync(p, JSON.stringify({ plugins: { 'anti-hall@anti-hall': [{ version, scope: 'user' }] } }));
 }
 
 test('isStale: installed_plugins.json AHEAD of the running version -> true', () => {

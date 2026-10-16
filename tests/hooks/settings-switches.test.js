@@ -116,6 +116,7 @@ const LOCKED_KEYS = [
   'safety.gitGuard', 'safety.commandGuard', 'safety.editGuard', 'safety.swarmGuard',
   'guards.stashGuard', 'guards.editGuardAllow', 'guards.allowSubagentMailbox',
   'guards.gitAliasResolve', 'guards.gitReusedMessageCheck',
+  'guards.broadKill',
   'devswarm.maintainerNotice.post',
 ];
 
@@ -124,6 +125,10 @@ const LOCKED_KEYS = [
 // able to widen where a key is read from), so they are exempt from the
 // /config-row + env checks below.
 const HOME_ONLY_LOCKED_KEYS = ['guards.allowAnthropicEnvKey', 'jev.allowLegacyKeyRead', 'jev.genericKeyVendor'];
+// Env-only safety switches have no native /config row. This preserves the
+// manifest contract that only headline settings are native rows while still
+// proving Codex can change them through ANTIHALL_* env.
+const ENV_ONLY_LOCKED_KEYS = ['guards.broadKill'];
 
 // Exact warning text per key (owner-specified wording, 2026-09-25 revision):
 // the template states the CONSEQUENCE of the risky change, not a generic
@@ -137,6 +142,7 @@ const EXPECTED_WARNING = {
   'guards.stashGuard': 'Turning off stash-guard means git stash commands that can silently drop uncommitted work will no longer be blocked. Ask the user to confirm, then re-run with --confirmed.',
   'guards.gitAliasResolve': 'Turning off git-alias-resolve means a git alias (or a shell alias) that runs a force push or an AI-credited commit will no longer be seen through. Ask the user to confirm, then re-run with --confirmed.',
   'guards.gitReusedMessageCheck': 'Turning off git-reused-message-check means a commit that reuses an AI-credited message (-C/-c <rev>, --amend, a commit template) will no longer be blocked before it runs. Ask the user to confirm, then re-run with --confirmed.',
+  'guards.broadKill': 'Turning off broad-kill means a broad pkill, killall, kill -9 -1 or a pattern kill from any agent (including subagents) will no longer be blocked, and can take down the user\'s dev servers and other agents\' processes. Ask the user to confirm, then re-run with --confirmed.',
   'guards.editGuardAllow': 'Adding foo to edit-guard\'s allow list means those files can be edited without edit-guard\'s protection. Ask the user to confirm, then re-run with --confirmed.',
   'guards.allowSubagentMailbox': 'Turning on allow-subagent-mailbox means subagents can read/ack the Primary\'s mailbox, which is normally blocked. Ask the user to confirm, then re-run with --confirmed.',
   'devswarm.maintainerNotice.post': 'Turning on maintainer-notice.post means this checkout would be allowed to post a maintainer notice that every project\'s Primary sees — the checkout-name check is a mistake guard, not authentication, so only turn this on in the anti-hall dev checkout. Ask the user to confirm, then re-run with --confirmed.',
@@ -433,13 +439,18 @@ test('SAFETY: every locked key is exactly the expected set; non-advanced ones ar
     const e = schema.findSetting(...split(k));
     assert.ok(e.homeOnly && !e.env && !e.pluginOption, k + ' must stay home-settings-only (no env override, no /config row)');
   }
+  for (const k of ENV_ONLY_LOCKED_KEYS) {
+    const e = schema.findSetting(...split(k));
+    assert.ok(e.env && !e.pluginOption, k + ' must stay env-only (no /config row)');
+  }
   const uc = require(path.join(PLUGIN, '.claude-plugin', 'plugin.json')).userConfig;
   for (const k of LOCKED_KEYS) {
     const [sec, key] = split(k);
     const e = schema.findSetting(sec, key);
     // Non-advanced keys are /config rows; advanced ones (pluginOptionLegacy) live in /anti-hall:settings only.
     // An advanced key added after the /config trim never had a plugin option at all.
-    if (e.pluginOptionLegacy) assert.ok(e.pluginOption && !uc[e.pluginOption], k + ' is advanced: no /config row, legacy read source only');
+    if (ENV_ONLY_LOCKED_KEYS.includes(k)) assert.ok(!e.pluginOption, k + ' is env-only: no /config row');
+    else if (e.pluginOptionLegacy) assert.ok(e.pluginOption && !uc[e.pluginOption], k + ' is advanced: no /config row, legacy read source only');
     else if (e.advanced && !e.pluginOption) assert.ok(true);
     else assert.ok(e.pluginOption && uc[e.pluginOption], k + ' must be a /config row so the human can change it natively');
     assert.ok(e.env, k + ' must keep an env override (Codex has no /config)');

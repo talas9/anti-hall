@@ -280,7 +280,7 @@ impl Drop for Events {
         // SAFETY: a one-byte write wakes the thread, which returns and closes its read end.
         unsafe { libc::write(self.wake_w, [1u8].as_ptr().cast(), 1) };
         if let Some(t) = self.thread.take() {
-            crate::discard::harmless(t.join().map_err(|_| ())); // keep: a backend thread that panicked has nothing left to report
+            crate::discard::logged("watch_kq_join", t.join().map_err(|_| "panic"));
         }
         let fds: Vec<RawFd> = lock(&self.state).by_fd.keys().copied().collect();
         for fd in fds {

@@ -65,19 +65,27 @@ jobs:
       - name: test.sh (gate)
         if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
         run: ./test.sh
-      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions) and the
-      # wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
+      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions), the
+      # archive-cap retention fixture, and the wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
       - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
         run: |
           cargo nextest run --release --profile ci --no-run
-          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
+          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/) | test(/^dssup_retention::the_archive_cap_evicts_what_node_evicts$/)'
           sh tests/wrapper.sh && sh tests/bootstrap.sh
       - name: test.sh (full)
         if: env.AH_FULL == 'true'
         run: ./test.sh
         env:
           AH_TEST_PROFILE: nightly
+      - name: Upload generated reference on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ah-engine-generated-reference-${{ matrix.os }}
+          path: ${{ runner.temp }}/ah-engine-generated-reference.md
+          retention-days: 7
+          if-no-files-found: ignore
       - run: cargo doc --no-deps
         if: matrix.os == 'ubuntu-latest'
         env:

@@ -3,7 +3,7 @@
 //! `cargo nextest run -E 'test(/^<name>::/)'`). Tests that set process-global state stay in their own binaries under
 //! `tests/` (`config_hotswap`, `runtime_config`, `jev_http`: they `set_var` HOME / proxy variables and rely on being alone in
 //! their process); see docs/DEVELOPMENT.md.
-#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod broad_kill;
 #[path = "../common/mod.rs"]
@@ -19,6 +19,7 @@ mod cascade_judge;
 mod codex_apply_patch_e2e;
 mod codex_scripts_parity;
 mod compiled_logic_gate;
+mod crashloop_drill;
 mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;
@@ -67,6 +68,8 @@ mod l03_cli_parity;
 mod launcher_parity;
 mod mcp_reaper_job;
 mod mcp_reaper_parity;
+mod mem_guard;
+mod mem_restart_e2e;
 mod memory_soak;
 mod mesh_parity;
 mod migrate_parity;

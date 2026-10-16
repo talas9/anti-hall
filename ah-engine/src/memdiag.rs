@@ -403,6 +403,7 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
     let missing: Vec<usize> = (0..workers).filter(|i| !reported.contains(&(*i as u64))).collect();
     let heap = crate::memstat::heap();
     let (tc_entries, tc_bytes) = crate::script::host_transcript::cache_usage();
+    let (sp_entries, sp_bytes) = crate::script::host_spawn::cache_usage();
     let (walks, walk_est, walk_read) = crate::checks::agent_scan::kept_usage();
     let mut snap = json!({
         "ts": crate::health::now_ms(), "pid": std::process::id(), "uptime_s": uptime_s,
@@ -417,6 +418,7 @@ pub fn capture(memory: Value, workers: usize, rss_cap_kb: u64, uptime_s: u64) {
         "pools": pools, "workers_missing": missing,
         "caches": {
             "transcript_tail": {"entries": tc_entries, "bytes": tc_bytes},
+            "spawn_probe": {"entries": sp_entries, "bytes": sp_bytes},
             "agent_scan_walks": {"transcripts": walks, "estimated_bytes": walk_est, "transcript_bytes_read": walk_read},
         },
         "memory": memory,

@@ -879,7 +879,7 @@ pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], ans: &Answer) {
     let mut c = Command::new(exe);
     c.arg(defaults::text("mesh_write.verb_mesh")).arg(defaults::text("devswarm_cli.witness_flag")).arg(scratch).arg(inv.now.to_string()).args(argv);
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-    crate::discard::harmless(c.spawn()); // keep: a witness that does not start only leaves this call unverified
+    crate::discard::logged("mesh_witness_spawn", c.spawn().map(|_| ()));
 }
 
 /// The witness process: `args` = scratch dir, clock, the verb's argv. Runs the real `devswarm.js` in the scratch home and

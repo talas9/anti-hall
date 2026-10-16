@@ -1,13 +1,13 @@
 ---
 name: anti-hall-install-statusline
-description: Install anti-hall statusline support where available. Use for "install the statusline" or OMC/anti-hall status.
+description: Retired anti-hall statusline installer guidance. Use for "install the statusline" or OMC/anti-hall status.
 ---
 
 # anti-hall statusline for Codex
 
 ## When to use
 
-Explain and install anti-hall statusline support where available. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
+Explain that the anti-hall statusline has been retired. Use when the user asks for the anti-hall statusline in Codex or wants OMC/anti-hall status visibility.
 
 ## Resolve the plugin root
 
@@ -24,10 +24,9 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-The existing anti-hall statusline installer (`statusline/install-statusline.js`) targets
-Claude Code `statusLine` settings only. It has no `--help`: running it performs a LIVE
-install into `~/.claude/settings.json` (or `./.claude/settings.local.json` with
-`--project`). Do not run it for a Codex-only setup; its usage is in the file's header comment.
+The anti-hall statusline installer is now a no-op and must not be used to set up
+Codex or Claude. It prints a retirement notice and writes no settings. The
+uninstaller remains available to clean up old Claude `statusLine` installs.
 
 Codex/OMX `[tui].status_line` uses documented built-in footer item IDs, not a command-backed renderer. Do **not** append an arbitrary `anti-hall-version` item unless Codex documents custom item support. For Codex, use these supported pieces:
 
@@ -46,4 +45,4 @@ node "$ANTI_HALL_ROOT/statusline/statusline.js"
 - OMX HUD/statusline built-ins through `omx hud` and `[tui].status_line`
 - OMC-compatible consolidated state is still read by anti-hall helpers when present.
 
-Do not write Claude `.claude/settings.json` when the user asked for Codex-only setup. If the user explicitly wants Claude statusline too, use the original Claude skill or script.
+Do not write Claude `.claude/settings.json` for statusline setup. If the user explicitly wants cleanup of an old Claude statusline, run the uninstall path only.

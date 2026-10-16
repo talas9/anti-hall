@@ -1,15 +1,21 @@
 //! D87 end to end: the per-event and per-entry hook configuration (`[events.*]`, `[entries.*]` in the engine's user file or a
 //! project file) as the real binary applies it to `ah-engine hook --event ...`, with the Node hooks replaced by small shell
-//! commands through `--fallback-map`. Each test has its own HOME and state directory; no daemon is started (every check runs as its Node
-//! hook: `AH_ENGINE_DISPATCH_IN_PROCESS=0` with `AH_ENGINE_NOSPAWN=1`).
+//! commands through `--fallback-map`. Each test has its own HOME and state directory; daemon-backed runs use a fake healthy
+//! daemon that answers ERR, so every check runs as its Node hook without treating the daemon as absent.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 struct Env {
     dir: PathBuf,
+    fake_daemon: Mutex<Option<(Arc<AtomicBool>, JoinHandle<()>)>>,
 }
 
 const POST_BASH: [&str; 7] = [
@@ -21,8 +27,8 @@ const POST_BASH: [&str; 7] = [
     "coordinator-work-guard:post",
     "agent-reminders",
 ];
-/// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: the tests run with
-/// the checks down (`AH_ENGINE_NOSPAWN=1`), so every entry runs as its Node command.
+/// Entries the engine answers itself in these tests' environment, so no Node command runs for them. None: daemon-backed
+/// tests use a fake healthy ERR reply, so every entry runs as its Node command.
 const POST_NATIVE: [&str; 0] = [];
 const PRE_BASH: [&str; 12] = [
     "compact-declaration-guard",
@@ -45,7 +51,7 @@ impl Env {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
-        Env { dir }
+        Env { dir, fake_daemon: Mutex::new(None) }
     }
 
     fn state(&self) -> PathBuf {
@@ -87,7 +93,44 @@ impl Env {
         self.run_as(true, event, map, payload, extra)
     }
 
+    /// A fake healthy daemon that refuses dispatch requests with ERR. This preserves Node fallback coverage without using an
+    /// absent daemon, because absent/down now deliberately fails open without Node hand-over.
+    fn ensure_non_ok_daemon(&self) {
+        let mut guard = self.fake_daemon.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return;
+        }
+        let sock = ah_engine::paths::socket_in(&self.state());
+        if let Some(parent) = sock.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        ah_engine::discard::harmless(std::fs::remove_file(&sock));
+        let listener = UnixListener::bind(&sock).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let alive = Arc::new(AtomicBool::new(true));
+        let thread_alive = Arc::clone(&alive);
+        *guard = Some((
+            alive,
+            std::thread::spawn(move || {
+                while thread_alive.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let mut body = Vec::new();
+                            ah_engine::discard::harmless(stream.read_to_end(&mut body));
+                            ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Err, "defer to node")));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(10)),
+                        Err(_) => break,
+                    }
+                }
+            }),
+        ));
+    }
+
     fn run_as(&self, in_process: bool, event: &str, map: &Path, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
+        if !in_process {
+            self.ensure_non_ok_daemon();
+        }
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["hook", "--event", event, "--fallback-map", map.to_str().unwrap()])
             .env_clear()
@@ -95,11 +138,10 @@ impl Env {
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
             .env("AH_ENGINE_VERSION", "dispatch-config")
-            // the plan (which entries run, in which order, under which configuration) is what is tested here, with every hook a
-            // fake: the checks run as their Node hooks (no daemon and none to start), because a check the engine answers itself
-            // would not run its fake and the ported entries would drop out of the plan's output
+            // The plan (which entries run, in which order, under which configuration) is what is tested here, with every hook a
+            // fake. Daemon-backed calls use a healthy daemon ERR reply so the checks defer to their Node-hook stand-ins.
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
-            .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
+            .env("AH_ENGINE_NOSPAWN", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
@@ -120,14 +162,19 @@ impl Env {
     }
 }
 
-impl Drop for Env {
-    fn drop(&mut self) {
-        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
-    }
-}
-
 fn post(cmd: &str, cwd: &Path) -> String {
     serde_json::json!({"session_id": "cfg", "cwd": cwd, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": cmd}, "tool_response": {}}).to_string()
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        ah_engine::discard::harmless(std::fs::remove_file(ah_engine::paths::socket_in(&self.state())));
+        if let Some((alive, handle)) = self.fake_daemon.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            alive.store(false, Ordering::Release);
+            ah_engine::discard::harmless(handle.join());
+        }
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
+    }
 }
 
 fn pre(cmd: &str, cwd: &Path) -> String {
@@ -299,7 +346,7 @@ fn a_guard_events_budget_defers_to_node_when_the_hooks_cannot_start_in_time() {
     let ran = e.dir.join("ran");
     let map = e.map("PreToolUse", &PRE_BASH, |_| format!("echo x >> '{}'; sleep 0.3", ran.display()));
     let payload = pre("ls", &e.dir);
-    let (code, _, err) = e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]);
+    let (code, _, err) = e.run("PreToolUse", &map, &payload, &[]);
     assert!(err.contains("budget"), "the budget reason is given: {err}");
     if ran.exists() {
         // review P1-1: a hook that already ran would run again in the wrapper's rerun: fail closed instead of 75
@@ -310,7 +357,7 @@ fn a_guard_events_budget_defers_to_node_when_the_hooks_cannot_start_in_time() {
     }
     // a budget that is not reached changes nothing
     e.config("[events.PreToolUse]\nbudget_ms = 600000\n");
-    assert_eq!(e.run_native("PreToolUse", &map, &payload, &[("AH_ENGINE_DISPATCH_IN_PROCESS", "0"), ("AH_ENGINE_NOSPAWN", "1")]).0, 0);
+    assert_eq!(e.run("PreToolUse", &map, &payload, &[]).0, 0);
 }
 
 #[test]

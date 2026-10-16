@@ -453,6 +453,12 @@ pub(crate) fn opts() -> Opts {
     o.tools = vec!["*"];
     o.node_flags = strs(&["--no-concurrent-recompilation", "--no-concurrent-sparkplug"]);
     o.state_files = Some(|_| regex::Regex::new(r"^\.anti-hall/inline-work-.*\.json$").unwrap());
+    // a main-thread handover message names the day's handover directory (`handovers/<date>/<session>`): the recorded Node answer has the
+    // day it was recorded, the engine's has today's
+    o.replay_mask = Some(|t| {
+        static DAY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"/handovers/\d{4}-\d\d-\d\d/").unwrap());
+        DAY.replace_all(t, "/handovers/<DAY>/").to_string()
+    });
     o
 }
 

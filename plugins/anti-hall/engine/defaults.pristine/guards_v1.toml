@@ -31,7 +31,7 @@ unit = "ms"
 
 [host_spawn.deadline_reserve_ms]
 doc = "Time kept back from the request's deadline when a spawned program's timeout is cut to it: the other checks of the event and the reply still need it."
-value = 600
+value = 60
 min = 0
 unit = "ms"
 
@@ -57,6 +57,43 @@ doc = "Largest stdout or stderr a spawned program may write; more marks the run 
 value = 262144
 min = 1024
 unit = "bytes"
+
+[host_spawn.cache_enabled]
+doc = "Whether `ahHost.spawnProbeCached` keeps completed probe answers (an interpreter's version line) per daemon. Off: every call runs the program."
+value = true
+
+[host_spawn.cache_ttl_ms]
+doc = "How long a kept probe answer is served before the program is run again (a changed interpreter file re-probes at once, whatever this says)."
+value = 600000
+min = 1
+unit = "ms"
+
+[host_spawn.max_workers]
+doc = "The most probe workers (kept-answer runs that outlive their request) alive at once, across all requests; a request that would exceed it fails open without starting one, so timed-out probes cannot pile up."
+value = 4
+min = 1
+
+[host_spawn.prewarm]
+doc = "Whether the daemon warms the probe cache at start (the interpreters' version probes the guards ask for first), on a background thread after the socket is listening, so the first guard call finds them kept instead of probing cold inside its deadline. Off: the first call probes."
+value = true
+
+[host_spawn.prewarm_programs]
+doc = "The programs whose version probe (the arguments of api_guard_v1.version_args) the start-up warm-up runs, in the daemon's own environment. Each must be one of host_spawn.programs."
+value = ["python3", "python"]
+
+[host_spawn.prewarm_timeout_ms]
+doc = "How long one start-up warm-up probe may run on its background thread (a probe cut here is not kept)."
+value = 15000
+min = 1
+unit = "ms"
+
+[host_spawn.cache_skip_stdout]
+doc = "A regular expression: a probe run whose stdout matches is not kept, because its answer depends on what is installed and the key cannot see that (the Python probe's `[..., 2, ...]` means a module or attribute could not be resolved; installing the package changes it). Empty keeps every finished run."
+value = '^\s*\[[^\]]*\b2\b'
+
+[host_spawn.cache_key_env]
+doc = "Request environment variables whose values are part of a kept probe answer's key, because they pick the interpreter version behind a shim (pyenv, asdf, virtualenv, conda); a different value probes again."
+value = ["PATH", "PYENV_VERSION", "ASDF_PYTHON_VERSION", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"]
 
 # ---- the hook process (engine/logic/lib/78-hook-proc.js) -------------------------------------------------------------------------
 

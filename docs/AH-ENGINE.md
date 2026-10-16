@@ -1,16 +1,16 @@
 # ah-engine
 
 `ah-engine` is anti-hall's core component: a small resident program that answers the hooks instead of a new Node process for every
-tool call. The Node hooks are a temporary compatibility fallback during the migration; v1.0 removes them and the engine is then the only runtime. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
+tool call. The Node hooks are a temporary compatibility fallback during the migration; v0.301 removes them and the engine is then the only runtime. This page explains what it is, why it exists, what works today and what is not built yet. Anything not built
 is marked **planned** with the number of its decision, for example planned (D33) for the scheduler; each number is an entry
 in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 The exact list of commands, settings, metrics and error codes is generated from the engine itself and lives in
 [`ah-engine/REFERENCE.md`](../ah-engine/REFERENCE.md).
 
-**Status: ready for release; the plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
+**Status: being brought back online (release v0.300.3); see the [roadmap](ROADMAP.md). The plugin installs it itself once a release pins it.** The plugin's hooks are one thin trigger
 per event (`hooks/ah-hook.sh <Event>`). When the engine binary is installed, the trigger asks the engine, which decides
 natively what it can prove identical to the Node hook and hands every other case to that Node hook, so it is never weaker
-than Node. While the migration lasts, when the binary is absent or cannot answer, the trigger runs the temporary Node compatibility hooks (removed in v1.0). The binary is
+than Node. While the migration lasts, when the binary is absent or cannot answer, the trigger runs the temporary Node compatibility hooks (removed in v0.301). The binary is
 fetched by a shell bootstrap, checked against a sha256 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
 Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
@@ -33,7 +33,7 @@ labelled with how it was measured in the README of `ah-engine/`.
    v
  ah-engine serve                                 (daemon, one per user, ~5 MB)
    |-- rules (JSON file)        regex rules: deny / warn / context
-   |-- checks (compiled in)     real logic a regex cannot express: the git and command checks
+   |-- checks (Rust + plugin JS)  real logic a regex cannot express: the git and command checks
    |-- telemetry                metrics (snapshots + rollups), the impact ledger, and the lock-free telemetry recorder, stored
    |-- project state            per-project mailbox and key-value pairs, in hot.db
    |-- memory layer             active key-value items (budgeted, TTL) + pub/sub channels
@@ -322,6 +322,17 @@ transcript file. When the resident-set cap trips (`diagnostics.mem_snapshot`) th
 allocator statistics, thread count, each worker's interpreter and regex cache, the transcript caches and the platform memory map.
 `ah-engine status --memory` prints the live figures, the latest snapshot and a summary of the log (top events and checks by total
 resident-set growth; a check's row counts every request it took part in, so rows overlap). Nothing here changes a decision.
+
+Memory budgets (issues #21 and #158, defaults file `mem.toml`). Every long-lived in-memory holder (the shared regex cache, each worker's
+QuickJS interpreter, the transcript-tail cache, the config values leaked on purpose) registers with one registry in `src/mem` and gets a
+soft and a hard limit from `mem.<holder>_soft_bytes` / `_hard_bytes` (and `_low_water_pct`); `mem.global_*` bounds the process. At the soft
+limit the holder is logged once and evicted (least recently used first) down to its low-water mark, with hysteresis, while requests keep
+being served. An insert that would cross the hard limit is refused (a cache miss; a script call fails open) and the holder is recycled; if
+the process total (or a holder that cannot shrink) then stays over its hard limit for `mem.global_restart_after_s`, the daemon drains and
+restarts cleanly with the reason in the event log. `ah-engine status --memory` lists each holder's bytes against its limits, the trigger
+counts and the global totals under `memory.budgets`. A guard test (`tests/it/mem_guard.rs`, allowlist `tests/mem_allowlist.txt`) fails the
+build when a long-lived collection appears outside `src/mem` without a stated bound. Helper-process output is cut at
+`mem.proc_output_max_bytes`.
 see [PRIVACY.md](../PRIVACY.md).
 
 **Go-live.** An engine check is trusted only after it has agreed with the Node hook it replaces. Before release the whole
@@ -423,7 +434,7 @@ arguments, is in the generated reference.
 | `ah-engine jev-report [--json] [--days N] [--window 24h\|7d] [--by project\|session] [--project <name>] [--weekly] [--since <iso>] [--until <iso>] [--exclude-window <iso>..<iso>] [--exclude-project <name>]`, `jev-report label <hash> [tp\|fp]`, `jev-report prune-audit --days N` | no | The port of `scripts/jev-report.js` (the Jev report of the `/anti-hall:jev` skill), byte-for-byte: the command reads the decision, triage, judge and supervision logs (every retained generation), the daily rollups, the human labels, `jev.json`, the budget settings and the cached Vercel credit balance, and the plugin script `engine/logic/rules/jev-report.js` aggregates and renders the text or `--json` report (KEEP / REVIEW / REMOVE verdicts included); `label` and `prune-audit` are the two forms that write the Jev logs, the report itself only refreshes the credit cache and the once-a-day low-credit latch. Every threshold, list and word is `jev_report.toml`; a run it cannot reproduce exits 75 and writes nothing, so `scripts/ah-run.sh jev-report` runs the Node script. |
 | `ah-engine statusline` | no | The port of `statusline/statusline.js` and its renderers (L9a): reads the session JSON on stdin, prints the two lines; runs from the `statusLine` setting through the thin launcher `scripts/ah-run.sh`, which tries the engine first and runs `statusline/statusline.js` when the engine is absent or answers exit 75 (the same stdin goes to whichever runs; see `install-statusline` and the `migrate-statusline-engine` step). Sampled shadow against Node, off the hot path (`ops.shadow_rate_statusline`, per thousand). |
 | `ah-engine phase <set\|advance\|step\|agents\|update\|clear> [args]` | no | The port of `statusline/phase.js` (L9a), byte-for-byte: writes the phase state (`~/.anti-hall/phase-state.json`) the status line's phase bar shows. Fails open like the script; a state that is not a JSON object, or `update` with a numeric key or `__proto__`, is left to Node (exit 75, nothing written). Replayed by Node in a scratch home (`ops.shadow_rate_phase`). |
-| `ah-engine install-statusline [--user\|--project] [--consolidate]` | no | The port of `statusline/install-statusline.js` (L9a): every Node safety kept (one-time backup never overwritten, other keys merged, a foreign statusLine wrapped as line 1, shell-metacharacter refusal, idempotent, test guard); the write is atomic and keeps the file's mode and link. The command it writes is the launcher form `sh "<plugin>/scripts/ah-run.sh" --stdin statusline -- "<plugin>/statusline/statusline.js"` when the plugin ships the launcher (the Node installer writes `node "<dispatcher>"`, and recognises the launcher form as anti-hall's because it still names `statusline.js`); `ANTIHALL_STATUSLINE_NODE_ONLY` makes it write the Node form, which the parity tests set. `ah-engine migrate` (and `doctor --repair`) has one engine-only step, `migrate-statusline-engine`, that rewrites an existing Node-only anti-hall command in place (user settings, and the project's two settings files) after the one-time backup: idempotent, fail-open (a command it cannot replace as one plain string is left as it is), no row when there is nothing to do. The command it writes is the launcher form `sh "<plugin>/scripts/ah-run.sh" --stdin statusline -- "<plugin>/statusline/statusline.js"` when the plugin ships the launcher (the Node installer writes `node "<dispatcher>"`, and recognises the launcher form as anti-hall's because it still names `statusline.js`); `ANTIHALL_STATUSLINE_NODE_ONLY` makes it write the Node form, which the parity tests set. `ah-engine migrate` (and `doctor --repair`) has one engine-only step, `migrate-statusline-engine`, that rewrites an existing Node-only anti-hall command in place (user settings, and the project's two settings files) after the one-time backup: idempotent, fail-open (a command it cannot replace as one plain string is left as it is), no row when there is nothing to do. A settings file Node's JSON parser would reject is left to Node (exit 75, nothing written). Its shadow runs the Node installer on a scratch copy of the settings files, never a second real write (`ops.shadow_rate_install`). |
+| `ah-engine install-statusline` | no | Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed `statusLine` and exits 0. |
 | `ah-engine uninstall-statusline [--user\|--project] [--purge-base]` | no | The port of `statusline/uninstall-statusline.js` (L9a): restores the saved original statusLine, else the settings backup, else removes the key; the shared base is kept unless `--purge-base`. Same safeties and shadow as the installer (`ops.shadow_rate_uninstall`). |
 | `ah-engine shadow-compare <dir>` | no | Internal: the detached half of a Node shadow; runs the Node version on a scratch home and logs a mismatch. |
 | `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
@@ -1185,7 +1196,17 @@ judgement calls do.
 - **Fallback, never a silent allow.** A truncated, empty, corrupt, late or busy reply, an open breaker or a crash loop all
   run the Node hook (D11). Replies are length-framed and checksummed.
 - **Breaker and crash loop.** Five failures in a minute open the breaker for a minute; four daemon deaths in ten minutes
-  stop respawning for half an hour. Both are recorded and reported once per session.
+  stop respawning for half an hour. Both are recorded and reported once per session. A binary that exits at once reports no
+  death, so the starts are counted too: six daemon starts in a minute (`client.spawn_n`, `client.spawn_window_s`) trip the same
+  stop. Events from before a trip or a reset never count toward the next one, and the stop ends early when the binary is
+  replaced by a different one.
+- **Damaged binary roll-back.** The daemon records its binary's sha256 once it has stayed up `daemon.healthy_after_s`; a
+  binary that did so is copied to `bin/ah-engine.good`. The installers (bootstrap, `ah-update.sh`) record the sha256 they
+  installed as the expected one. When the installed binary differs from the expected sha256, has never run healthy and is
+  failing (a crash-loop trip, or `rollback.fail_n` hook-wrapper failures in `rollback.fail_window_s`),
+  `hooks/ah-engine-integrity.sh` renames it to `bin/ah-engine.rolledback-<UTC time>-<sha8>` (never deleted) and restores the
+  known-good copy. A binary that ran healthy, or that matches the expected sha256, is never touched. `rollback.on_mismatch = 0`
+  turns it off. `sh hooks/ah-engine-integrity.sh status` shows what is known.
 - **Resource caps.** Bounded worker pool and queue (overflow answers busy, which means fallback), a per-request CPU budget,
   an RSS cap that restarts the daemon cleanly, `nice`, and per-session and per-project rate limits.
 - **Security.** The socket is mode 0600 in a private 0700 directory the daemon owner-checks; the peer's uid is checked;
@@ -1583,7 +1604,8 @@ An offline build from the vendored source tarball published with each release us
 
 Copy your build to `~/.anti-hall/ah-engine/bin/ah-engine`. The wrapper uses the binary at that path, and the bootstrap never
 overwrites a binary it did not install (it checks the marker `bootstrap.installed` and the recorded binary sha256), so a local
-build stays until you delete it. A binary-path override exists for the test suite only and is ignored otherwise.
+build stays until you delete it. Run `sh <plugin>/hooks/ah-engine-integrity.sh accept` after copying it: that records it as the
+expected binary and vouches for it, so a crash-looping build you are developing is never swapped for the known-good one. A binary-path override exists for the test suite only and is ignored otherwise.
 
 ## Verifying release artifacts
 

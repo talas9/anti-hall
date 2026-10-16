@@ -209,6 +209,7 @@ fn drive(host: &str) {
         "node_paths": expected::seen_json(&seen),
         "daemon_node_starts": daemon,
         "decision_mismatches": mismatched,
+        "engine_event_log_tail": w.event_log_tail(),
         "rows": rows,
     });
     expected::finish(&format!("hooks-{host}"), report, &problems);

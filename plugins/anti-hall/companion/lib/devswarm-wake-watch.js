@@ -73,7 +73,7 @@
 //                — do not use it as a lookup key for a child's own total.
 // This file only ever looks up `workspaces[id]` (never `workspaces[meshId]`),
 // and only ever derives `id` via DEVSWARM_BUILDER_ID (child) or
-// primaryWorkspaceId(resolveMainWorktree(cwd)) (Primary) — see resolveIdentity.
+// identity.js resolveContext(cwd).primaryMeshId (Primary) — see resolveIdentity.
 //
 // ============================================================================
 // Structure: a PURE core (tick + its helpers — no fs/clock/process/random) and
@@ -201,11 +201,12 @@ const path = require('path');
 
 const role = require('../../hooks/lib/devswarm-role.js');
 const supervisor = require('../devswarm-supervisor.js');
-const ingest = require('../install-devswarm-ingest.js');
 const store = require('./devswarm-store.js');
 const repokey = require('./devswarm-repokey.js');
 const pull = require('./devswarm-pull.js');
 const inboxCursor = require('./devswarm-inbox-cursor.js');
+const identityResolver = require('./identity.js');
+const { resolveHome } = require('./test-home-guard.js');
 const { devswarmRoot } = require('./liveness.js');
 
 // ---------------------------------------------------------------------------
@@ -287,7 +288,7 @@ function checkStaleVersion(ownVersion, env) {
   try {
     const upd = require(path.join(__dirname, '..', '..', 'skills', 'update', 'scripts', 'update.js'));
     if (!upd.isSemver(ownVersion)) return null;
-    const home = os.homedir();
+    const home = resolveHome(null, env || process.env);
     const paths = upd.resolvePaths(env || process.env, home);
     const jsonVersion = upd.versionFromInstalledJson(paths.installedJson);
     const candidates = [
@@ -908,6 +909,14 @@ function pollMsFromEnv(env) {
 // findGitToplevel() (devswarm-child-turn.js), which is NOT realpath'd, while
 // the primary/hash identity path DOES realpath. Comparing both forms on BOTH
 // sides is the only way a symlinked checkout doesn't silently fail to match.
+
+function resolveLocationContext(cwd, home, io) {
+  const ioo = io || {};
+  const opts = { home, fs: ioo.fs, spawn: ioo.spawn, missingPath: 'ancestor' };
+  if (typeof ioo.resolveContext === 'function') return ioo.resolveContext(cwd, opts);
+  return identityResolver.resolveContext(cwd, opts);
+}
+
 function realFormsOf(p, fsi) {
   const F = fsi || fs;
   const forms = new Set();
@@ -928,7 +937,7 @@ function resolveIdentity(env, cwd, io) {
   const e = env || process.env;
   const wd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
   const F = ioo.fs || fs;
-  const home = ioo.home || os.homedir();
+  const home = resolveHome(ioo.home, e);
 
   try {
     if (role.isChildWorkspace(e)) {
@@ -962,12 +971,10 @@ function resolveIdentity(env, cwd, io) {
         // that happens to look primary-shaped is never trusted blind.
         if (typeof d.id === 'string' && /^primary-/.test(d.id)) {
           try {
-            const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
-            const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
-            const main = resolveMainWorktree(wd, ioo.gitIo);
-            const registeredId = main ? primaryWorkspaceId(main) : null;
+            const ctx = resolveLocationContext(wd, home, ioo);
+            const registeredId = ctx && ctx.primaryMeshId;
             if (registeredId && registeredId === d.id) {
-              return { role: 'primary', id: d.id, home, cwd: wd, mainWorktree: main };
+              return { role: 'primary', id: d.id, home, cwd: wd, mainWorktree: ctx.mainWorktree || ctx.worktreeRoot || null };
             }
           } catch (_) { /* fall through to the child label below */ }
         }
@@ -978,14 +985,13 @@ function resolveIdentity(env, cwd, io) {
         // agent to re-arm, and the re-arm met its own lock ("REFUSED TO ARM: lock-held"). The Primary is the
         // Primary: take the id its tick, ingest and roster all use.
         try {
-          const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
-          const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
-          const main = /^primary-/.test(String(d.id)) ? null : resolveMainWorktree(wd, ioo.gitIo); // a primary-* record was settled above
+          const ctx = /^primary-/.test(String(d.id)) ? null : resolveLocationContext(wd, home, ioo); // a primary-* record was settled above
+          const main = ctx && (ctx.mainWorktree || ctx.worktreeRoot);
           if (main) {
             const mainForms = realFormsOf(main, F);
             let isMain = false;
             for (const f of dForms) { if (mainForms.has(f)) { isMain = true; break; } }
-            const primaryId = isMain ? primaryWorkspaceId(main) : null;
+            const primaryId = isMain ? ctx.primaryMeshId : null;
             if (primaryId) return { role: 'primary', id: primaryId, home, cwd: wd, mainWorktree: main };
           }
         } catch (_) { /* fall through to the child label below */ }
@@ -995,12 +1001,10 @@ function resolveIdentity(env, cwd, io) {
   } catch (_) { /* fall through to the Primary default */ }
 
   try {
-    const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
-    const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
-    const main = resolveMainWorktree(wd, ioo.gitIo);
-    if (!main) return null;
-    const id = primaryWorkspaceId(main);
-    if (!id) return null;
+    const ctx = resolveLocationContext(wd, home, ioo);
+    const main = ctx && (ctx.mainWorktree || ctx.worktreeRoot);
+    const id = ctx && ctx.primaryMeshId;
+    if (!main || !id) return null;
     return { role: 'primary', id, home, cwd: wd, mainWorktree: main };
   } catch (_) {
     return null;
@@ -1050,7 +1054,7 @@ function isOwnChildArchived(identity, env, io) {
       } catch (_) { worktreePath = null; }
     }
     if (!worktreePath) {
-      try { worktreePath = require('./identity.js').resolveContext(identity.cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
+      try { worktreePath = identityResolver.resolveContext(identity.cwd, { home, missingPath: 'ancestor' }).toplevel || null; } catch (_) { worktreePath = null; }
     }
     if (!worktreePath) return false;
     const projected = require('./row-eligibility.js').rowEligibility(
@@ -1081,8 +1085,6 @@ function isOwnChildArchived(identity, env, io) {
 function resolvePrimaryHashes(cwd, io) {
   const ioo = io || {};
   const repoKeyForWorktree = ioo.repoKeyForWorktree || repokey.repoKeyForWorktree;
-  const resolveMainWorktree = ioo.resolveMainWorktree || ingest.resolveMainWorktree;
-  const primaryWorkspaceId = ioo.primaryWorkspaceId || ingest.primaryWorkspaceId;
   const hashFromWorkspaceId = ioo.hashFromWorkspaceId || store.hashFromWorkspaceId;
 
   let repoKey = null;
@@ -1091,11 +1093,9 @@ function resolvePrimaryHashes(cwd, io) {
   let primaryId = null;
   let fallbackHash = null;
   try {
-    const main = resolveMainWorktree(cwd, ioo.gitIo);
-    if (main) {
-      primaryId = primaryWorkspaceId(main);
-      if (primaryId) fallbackHash = hashFromWorkspaceId(primaryId);
-    }
+    const ctx = resolveLocationContext(cwd, ioo.home || null, ioo);
+    primaryId = ctx && ctx.primaryMeshId;
+    if (primaryId) fallbackHash = hashFromWorkspaceId(primaryId);
   } catch (_) { /* leave primaryId/fallbackHash null */ }
 
   if (!repoKey && !fallbackHash) return null;
@@ -1576,7 +1576,7 @@ function isDevswarmActiveGate(env, cwd, io) {
   const ioo = io || {};
   const wd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
   const F = ioo.fs || fs;
-  const home = ioo.home || os.homedir();
+  const home = resolveHome(ioo.home, e);
 
   // (b) tier 1 of resolveIdentity's own fallback.
   try {

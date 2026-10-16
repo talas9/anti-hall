@@ -481,13 +481,14 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
         res.archived.extend(written.iter().cloned());
         if let Some(&last) = done.last() {
             let key = run.hash.to_string();
-            let entry = obj_mut(obj_mut(run.state, defaults::text("devswarm_sup.rt_state_stores")), &key);
-            let prev = match entry.get(defaults::text("devswarm_sup.rt_state_max_archived")) {
-                Some(OVal::Num(n)) if n.is_finite() => *n,
-                Some(OVal::Str(s)) => crate::checks::guardkit::text::js_number_of_str(s),
-                _ => 0.0,
-            };
-            entry.set(defaults::text("devswarm_sup.rt_state_max_archived"), OVal::Num(prev.max(last as f64)));
+            if let Some(entry) = obj_mut(run.state, defaults::text("devswarm_sup.rt_state_stores")).and_then(|stores| obj_mut(stores, &key)) {
+                let prev = match entry.get(defaults::text("devswarm_sup.rt_state_max_archived")) {
+                    Some(OVal::Num(n)) if n.is_finite() => *n,
+                    Some(OVal::Str(s)) => crate::checks::guardkit::text::js_number_of_str(s),
+                    _ => 0.0,
+                };
+                entry.set(defaults::text("devswarm_sup.rt_state_max_archived"), OVal::Num(prev.max(last as f64)));
+            }
         }
         let archived = if run.settings.archive {
             OVal::Arr(written.iter().map(|(f, n)| OVal::Obj(vec![("file".into(), OVal::Str(f.clone())), ("rows".into(), OVal::Num(*n as f64))])).collect())
@@ -511,14 +512,19 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
 }
 
 /// `state[key]` as a mutable object, created (empty) when missing or not an object.
-pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> &'a mut OVal {
-    if o.get(key).is_none_or(|v| !matches!(v, OVal::Obj(_))) {
-        o.set(key, OVal::Obj(Vec::new()));
+pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> Option<&'a mut OVal> {
+    if !matches!(o, OVal::Obj(_)) {
+        *o = OVal::Obj(Vec::new());
     }
-    match o {
-        OVal::Obj(v) => v.iter_mut().find(|(k, _)| k == key).map(|(_, x)| x).unwrap_or_else(|| unreachable!()),
-        _ => unreachable!(),
+    let OVal::Obj(v) = o else { return None };
+    if !v.iter().any(|(k, _)| k == key) {
+        v.push((key.to_string(), OVal::Obj(Vec::new())));
     }
+    let slot = v.iter_mut().find(|(k, _)| k == key).map(|(_, x)| x)?;
+    if !matches!(slot, OVal::Obj(_)) {
+        *slot = OVal::Obj(Vec::new());
+    }
+    Some(slot)
 }
 
 /// The write half of `pruneStore` for rows chosen from an agreed plan. `Err` only before or between batches, never inside the

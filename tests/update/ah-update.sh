@@ -37,7 +37,7 @@ case "\$1" in
   version) echo $2 ;;
   stop) echo stop >>"\$HOME/.anti-hall/fake-calls" ;;
   serve) echo serve >>"\$HOME/.anti-hall/fake-calls" ;;
-  status) echo ok ;;
+  status) grep -q serve "\$HOME/.anti-hall/fake-calls" 2>/dev/null && echo ok || exit 1 ;;
 esac
 exit 0
 EOS
@@ -186,6 +186,9 @@ check "live: a failing go-live puts the previous bundle back and exits 1" sh -c 
 rm -f "$kit/fail"
 lrun --channel dev --extract-to "$tmp/out-dev" >/dev/null 2>&1
 check "--extract-to on the dev channel records the pre-release commit" sh -c '[ "$('"$tmp"'/out-dev version)" = 6.0.0-dev ] && [ "$(cat '"$tmp"'/out-dev.commit)" = '"$commit"' ]'
+
+# ---- the ONE install lock shared with the integrity script and the bootstrap (forced interleavings) ---------------------------------
+check "install lock: integrity, update and bootstrap share one lock" sh "$repo/tests/update/install-lock.sh"
 
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

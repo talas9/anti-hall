@@ -1,7 +1,7 @@
 //! The compiled-regex cache behind `ah.re.*`: ONE cache for the whole process, bounded by estimated BYTES with
 //! least-recently-used eviction.
 //!
-//! Before, each worker thread kept its own cache (cleared only when it held `script.regex_cache_max` patterns), so every
+//! Before, each worker thread kept its own cache (cleared only when it held `mem.regex_max_entries` patterns), so every
 //! worker compiled and held its own copy of the same patterns: measured 139 distinct patterns = 3.3 MB of compiled
 //! programs per copy, four copies. A compiled `Regex` is `Send + Sync` and keeps its per-thread search state inside, so the
 //! program is shared through an `Arc` and each thread adds only its own scratch space.
@@ -11,38 +11,34 @@
 //! against measured programs). The compile itself is bounded too: `script.regex_size_limit` caps a program and
 //! `script.regex_dfa_size_limit` caps the lazy-DFA scratch each thread may grow for it.
 //!
-//! The lock is held for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the
-//! same pattern at once both compile it and the second insert replaces the first (identical programs).
+//! The cache is a [`crate::mem::BoundedCache`] registered as `regex`: soft and hard limits are `mem.regex_*`. The lock is held
+//! for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the same pattern at once
+//! both compile it and the second insert replaces the first (identical programs). A refused insert (hard limit) still returns
+//! the compiled pattern: the script is served, the pattern is just not kept.
 
 use super::host::err;
 use crate::checks::guardkit::jsre;
 use crate::defaults;
+use crate::mem::{BoundedCache, Spec};
 use regex::{Regex, RegexBuilder};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
-struct Entry {
-    re: Arc<Regex>,
-    weight: usize,
-    used: u64,
-}
+type Cache = BoundedCache<(String, String), Arc<Regex>>;
 
-#[derive(Default)]
-struct Cache {
-    map: HashMap<(String, String), Entry>,
-    bytes: usize,
-    tick: u64,
-}
-
-static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
-
-fn lock() -> std::sync::MutexGuard<'static, Option<Cache>> {
-    CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        BoundedCache::new(
+            crate::mem::global(),
+            Spec::new("regex", "mem.regex_soft_bytes", "mem.regex_hard_bytes", "mem.regex_low_water_pct").with_entries("mem.regex_max_entries"),
+        )
+    })
 }
 
 /// (patterns held, estimated bytes held) for the memory snapshot.
 pub fn usage() -> (usize, usize) {
-    lock().as_ref().map_or((0, 0), |c| (c.map.len(), c.bytes))
+    let c = cache();
+    (c.len(), c.bytes())
 }
 
 /// Translate and compile `src` for `flags`; the estimated weight of the result. `None` when the pattern is not valid.
@@ -68,36 +64,8 @@ fn compile(src: &str, flags: &str) -> Option<(Regex, usize)> {
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.
 pub(super) fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Regex>> {
     let key = (src.to_string(), flags.to_string());
-    {
-        let mut g = lock();
-        if let Some(c) = g.as_mut() {
-            c.tick += 1;
-            let t = c.tick;
-            if let Some(e) = c.map.get_mut(&key) {
-                e.used = t;
-                return Ok(e.re.clone());
-            }
-        }
-    }
-    let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
-    let re = Arc::new(re);
-    let (budget, max_entries) = (defaults::num("script.regex_cache_bytes") as usize, defaults::num("script.regex_cache_max") as usize);
-    let mut g = lock();
-    let c = g.get_or_insert_with(Cache::default);
-    if let Some(old) = c.map.remove(&key) {
-        c.bytes = c.bytes.saturating_sub(old.weight);
-    }
-    // least recently used first, until the new entry fits both bounds; an entry larger than the whole budget is not kept
-    while !c.map.is_empty() && (c.bytes.saturating_add(weight) > budget || c.map.len() >= max_entries) {
-        let Some(oldest) = c.map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()) else { break };
-        if let Some(e) = c.map.remove(&oldest) {
-            c.bytes = c.bytes.saturating_sub(e.weight);
-        }
-    }
-    if weight <= budget {
-        c.tick += 1;
-        c.bytes += weight;
-        c.map.insert(key, Entry { re: re.clone(), weight, used: c.tick });
-    }
-    Ok(re)
+    cache().get_or_compute(&key, || {
+        let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
+        Ok((Arc::new(re), weight))
+    })
 }

@@ -1485,21 +1485,16 @@ function runRepairs(opts) {
   // hooks/config.toml, launchd/systemd units, native hivecontrol queues) and
   // stays behind a user-typed `doctor --repair`.
   if (!migrationsOnly) {
-  // --- AUTO-SAFE: statusline-if-missing ------------------------------------
+  // --- retired: statusline install is no longer repaired --------------------
   try {
     const sl = scanStatusLine(cwd, home);
     if (sl.present) {
-      push('statusline', 'install-statusline', 'skipped', 'statusLine already configured — not touching a custom line (' + firstLine(sl.command).slice(0, 48) + ')');
-    } else if (dryRun) {
-      push('statusline', 'install-statusline', 'skipped', '[dry-run] would install the anti-hall statusline (--user)');
+      push('statusline', 'install-statusline', 'skipped', 'statusline install retired — existing statusLine left untouched (' + firstLine(sl.command).slice(0, 48) + ')');
     } else {
-      spawnInstaller(STATUSLINE_INSTALLER, ['--user'], cwd, env);
-      const after = scanStatusLine(cwd, home);
-      if (after.present) push('statusline', 'install-statusline', 'fixed', 'installed the anti-hall statusline (--user)');
-      else push('statusline', 'install-statusline', 'failed', 'statusline still absent after install (does ~/.claude/settings.json exist?)');
+      push('statusline', 'install-statusline', 'skipped', 'statusline install retired — no statusLine written');
     }
   } catch (e) {
-    push('statusline', 'install-statusline', 'failed', 'statusline repair raised: ' + errMsg(e));
+    push('statusline', 'install-statusline', 'skipped', 'statusline install retired — scan raised: ' + errMsg(e));
   }
 
   // --- AUTO-SAFE: codex hook refresh (only when config.toml exists) ---------

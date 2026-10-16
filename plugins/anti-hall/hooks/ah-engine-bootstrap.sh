@@ -142,7 +142,14 @@ fi
 now=$(date +%s 2>/dev/null || echo 0)
 tmp=
 lockdir=$dir/bootstrap.lock
+# The install lock is shared with the integrity script and ah-update (ONE lock for every writer of bin/); the integrity script owns
+# it (its lock/unlock verbs, its settings). bootstrap.lock above only keeps two bootstraps from downloading at once.
+integ=$here/ah-engine-integrity.sh
+itok="$$ $now"
+ilocked=0
+integrity() { AH_ENGINE_DIR=$dir AH_ENGINE_INSTALL_LOCK_TOKEN=$itok sh "$integ" "$@" </dev/null >/dev/null 2>&1; }
 cleanup() {
+  if [ "$ilocked" -eq 1 ]; then integrity unlock "$itok"; ilocked=0; fi
   [ -n "$tmp" ] && rm -rf "$tmp"
   rmdir "$lockdir" 2>/dev/null || true
 }
@@ -208,6 +215,10 @@ if [ -f "$attempt" ]; then
   fi
 fi
 
+# the binary as judged above (ours, or absent); it must still be the one there when the new one goes in
+seen=
+[ ! -f "$bin" ] || seen=$(sha256_of "$bin")
+
 # One bootstrap at a time; a lock older than 10 minutes is stale.
 if ! mkdir "$lockdir" 2>/dev/null; then
   if [ -n "$(find "$lockdir" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
@@ -258,12 +269,25 @@ vrc=$?
 reported=$(head -1 "$tmp/version.out" 2>/dev/null)
 case "$reported" in *"$version"*) ;; *) fail "downloaded binary does not run or reports '$reported', not $version" ;; esac
 
+# Hold the shared install lock from here to the record, so an integrity roll-back cannot act on the binary being replaced; a held
+# lock is not a failed attempt (no rate limit): the next session tries again.
+if [ -f "$integ" ]; then
+  integrity lock "$itok" || { say "skip: the engine install lock is held by another install or roll-back; the next session tries again"; exit 0; }
+  ilocked=1
+fi
+# what was judged above (ours, or absent) must still be what is there: an update or roll-back may have replaced it meanwhile
+now_sha=
+[ ! -f "$bin" ] || now_sha=$(sha256_of "$bin")
+[ "$now_sha" = "$seen" ] || { say "skip: $bin changed while the bootstrap was downloading; leaving it alone"; exit 0; }
 if [ -f "$bin" ]; then
   cp -p "$bin" "$tmp/prev" 2>/dev/null && mv -f "$tmp/prev" "$bin.prev" 2>/dev/null
 fi
 binsha=$(sha256_of "$tmp/ah-engine")
 mv -f "$tmp/ah-engine" "$bin" 2>/dev/null || fail "cannot install $bin"
 printf '%s %s\n' "$want" "$binsha" >"$marker"
+# remember this binary as the expected one (under this install's hold, so no check runs between the swap and the record), so a
+# later damaged copy can be told apart (and rolled back); never fails the install
+[ ! -f "$integ" ] || integrity record
 rm -f "$attempt"
 say "ok: installed ah-engine $version ($triple) at $bin"
 exit 0

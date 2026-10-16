@@ -60,6 +60,11 @@ large_timeout=10
 short_timeout=3
 long_sleep=30
 poll_limit=20
+# Pin a load-proof hook budget for every case: without it the wrapper uses the shipped 560 ms client deadline and a case
+# whose stand-in engine is merely slow to start (loaded machine) is killed and fails open, a different case each run.
+# Cases that need another budget set AH_HOOK_TIMEOUT_S/_MS on their own command line.
+AH_HOOK_TIMEOUT_S=$large_timeout
+export AH_HOOK_TIMEOUT_S
 
 check() {
   name=$1
@@ -316,7 +321,7 @@ test_an_engine_exit_code_without_the_done_mark_is_an_engine_failure() {
   AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/nomark.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/nomark.out" 2>"$tmp/nomark.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] && [ -e "$sentinel" ] && grep -q 'engine fallback' "$tmp/nomark.err"
+  [ "$rc" -eq 0 ] && [ ! -e "$sentinel" ] && [ ! -s "$tmp/nomark.out" ] && [ ! -s "$tmp/nomark.err" ]
 }
 
 test_missing_binary_fallback() {
@@ -325,7 +330,7 @@ test_missing_binary_fallback() {
   out=$tmp/missing.out
   err=$tmp/missing.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/missing.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = missing ] && grep -q 'engine fallback' "$err"
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_signal_fallback() {
@@ -335,7 +340,11 @@ test_signal_fallback() {
   out=$tmp/sig.out
   err=$tmp/sig.err
   AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/sig.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = signal ] && grep -q 'engine fallback' "$err"
+  # Contract: an engine killed by a signal fails open silently (exit 0, no output, no Node handoff).
+  if [ -s "$out" ] || [ -s "$err" ]; then
+    printf 'signal_fallback: out=[%s] err=[%s]\n' "$(cat "$out")" "$(cat "$err")" >&2
+    return 1
+  fi
 }
 
 test_engine_odd_exits_fallback() {
@@ -346,7 +355,7 @@ test_engine_odd_exits_fallback() {
     out=$tmp/odd-$mode.out
     err=$tmp/odd-$mode.err
     AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/odd-$mode.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err" || return 1
-    [ "$(cat "$out")" = "$mode" ] && grep -q 'engine fallback' "$err" || return 1
+    [ ! -s "$out" ] && [ ! -s "$err" ] || return 1
   done
 }
 
@@ -362,7 +371,7 @@ test_timeout_fallback() {
   wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || return 1
   pid=$(cat "$pidfile")
   wait_for_pids_gone "$poll_limit" "$pid" &&
-    [ "$(cat "$out")" = timeout ] && grep -q 'timed out' "$err"
+    [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_timeout_kills_engine_process() {
@@ -379,7 +388,7 @@ test_timeout_kills_engine_process() {
   wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || return 1
   set -- $(cat "$pidfile")
   wait_for_pids_gone "$poll_limit" "$1" "$2" &&
-    [ "$(cat "$out")" = fallback ] && [ ! -e "$marker" ] && [ ! -e "$grand_marker" ] && ! grep -q 'Terminated\|Killed' "$err"
+    [ ! -s "$out" ] && [ ! -e "$marker" ] && [ ! -e "$grand_marker" ] && [ ! -s "$err" ]
 }
 
 test_timeout_kills_fallback_process() {
@@ -461,7 +470,7 @@ test_tool_name_invalid_selects_all_non_guard() {
   out=$tmp/nonguard.out
   err=$tmp/nonguard.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/nonguard.list" sh "$wrapper" PostToolUse --tool-from-payload <"$input" >"$out" 2>"$err"
-  [ "$(cat "$out")" = bashedit ]
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_tool_name_huge_payload_fast() {
@@ -490,8 +499,107 @@ test_fallback_exit_code_matrix_rows() {
     AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/exit-$rc.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
     got=$?
     set -e
-    [ "$got" -eq 0 ] && [ "$(cat "$out")" = "rc$rc" ] || return 1
+    [ "$got" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ] || return 1
   done
+}
+
+# Several fallback hooks that each print one JSON object must reach the host as ONE valid JSON object.
+fb_merge_run() {
+  name=$1; shift
+  i=0; rows=
+  for body in "$@"; do
+    i=$((i + 1))
+    h=$(hook_script "$name-$i" "printf '%s\\n' '$body'")
+    rows="$rows*	$large_timeout	$h
+"
+  done
+  printf '@UserPromptSubmit\t%s\n%s' "$large_timeout" "$rows" >"$tmp/$name.list"
+  printf '{"hook_event_name":"UserPromptSubmit","prompt":"x"}' >"$tmp/$name.in"
+  # the fallback runs when the engine asks for it (exit 75); a missing engine now fails open silently (#159)
+  fe=$(make_engine "$name-engine" seventyfive)
+  AH_ENGINE_BIN="$fe" AH_FALLBACK_LIST="$tmp/$name.list" sh "$wrapper" UserPromptSubmit <"$tmp/$name.in" >"$tmp/$name.out" 2>"$tmp/$name.err"
+}
+
+test_fallback_merges_json_outputs() {
+  command -v jq >/dev/null 2>&1 || { echo 'jq missing: skipping' >&2; return 0; }
+  a='{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"A"}}'
+  b='{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"B"}}'
+  fb_merge_run fbm "$a" "$b" || return 1
+  [ "$(jq -s length <"$tmp/fbm.out")" = 1 ] || return 1
+  [ "$(jq -r '.hookSpecificOutput.additionalContext' <"$tmp/fbm.out")" = "$(printf 'A\n\nB')" ] || return 1
+  [ "$(jq -r '.hookSpecificOutput.hookEventName' <"$tmp/fbm.out")" = UserPromptSubmit ] || return 1
+  # a systemMessage, a quote and a backslash survive; an empty context between them is dropped
+  c='{"systemMessage":"m1","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"say \"hi\" \\ x"}}'
+  e='{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":""}}'
+  d='{"systemMessage":"m2","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"D"}}'
+  fb_merge_run fbm3 "$c" "$e" "$d" || return 1
+  [ "$(jq -s length <"$tmp/fbm3.out")" = 1 ] || return 1
+  [ "$(jq -r '.hookSpecificOutput.additionalContext' <"$tmp/fbm3.out")" = "$(printf 'say "hi" \\ x\n\nD')" ] || return 1
+  [ "$(jq -r '.systemMessage' <"$tmp/fbm3.out")" = "$(printf 'm1\nm2')" ] || return 1
+}
+
+test_fallback_merges_pretty_printed_json_outputs() {
+  command -v jq >/dev/null 2>&1 || { echo 'jq missing: skipping' >&2; return 0; }
+  a='{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "A"
+  }
+}'
+  b='{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "B"
+  }
+}'
+  fb_merge_run fbpp "$a" "$b" || return 1
+  [ "$(jq -s length <"$tmp/fbpp.out")" = 1 ] || return 1
+  [ "$(jq -r '.hookSpecificOutput.additionalContext' <"$tmp/fbpp.out")" = "$(printf 'A\n\nB')" ] || return 1
+  # a comma after the pair, with whitespace in between, must go too
+  c='{ "systemMessage" : "m" , "hookSpecificOutput": { "additionalContext" : "C" , "hookEventName": "UserPromptSubmit" } }'
+  fb_merge_run fbpp2 "$c" "$a" || return 1
+  [ "$(jq -s length <"$tmp/fbpp2.out")" = 1 ] || return 1
+  [ "$(jq -r '.hookSpecificOutput.additionalContext' <"$tmp/fbpp2.out")" = "$(printf 'C\n\nA')" ] || return 1
+}
+
+test_cold_engine_does_not_hold_host_stderr_open() {
+  # A host that collects the hook's stderr waits for EOF on that pipe. The wrapper keeps the host's stderr on fd 4 while the
+  # engine runs; the engine (and the daemon it detaches) must not inherit it, or EOF only arrives when the daemon exits.
+  # the stand-in detaches a sleeper into its own process group, as the daemon does, so the wrapper's group kill cannot reach it
+  p=$tmp/leak-engine.sh
+  cat >"$p" <<'ENGINE'
+#!/bin/sh
+cat >/dev/null
+( set -m; sleep 8 </dev/null >/dev/null 2>&1 & )
+exit 0
+ENGINE
+  chmod +x "$p"
+  start=$(date +%s)
+  AH_ENGINE_BIN="$p" AH_HOOK_TIMEOUT_S="$large_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" 2>&1 >/dev/null | cat >/dev/null
+  end=$(date +%s)
+  [ $((end - start)) -lt 4 ]
+}
+
+test_missing_engine_and_missing_defaults_fail_open() {
+  mkdir -p "$tmp/no-defaults-root"
+  for ev in PreToolUse Stop; do
+    set +e
+    AH_ENGINE_PLUGIN_ROOT="$tmp/no-defaults-root" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/no-list" sh "$wrapper" "$ev" --tool-from-payload <"$payload" >"$tmp/nodef.out" 2>"$tmp/nodef.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || return 1
+  done
+}
+
+test_fallback_two_empty_contexts_say_nothing() {
+  e='{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":""}}'
+  fb_merge_run fbe "$e" "$e" || return 1
+  [ ! -s "$tmp/fbe.out" ] || return 1
+  # one empty + one real: only the real one, still one object
+  command -v jq >/dev/null 2>&1 || return 0
+  a='{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"A"}}'
+  fb_merge_run fbe2 "$e" "$a" || return 1
+  [ "$(jq -s length <"$tmp/fbe2.out")" = 1 ] && [ "$(jq -r '.hookSpecificOutput.additionalContext' <"$tmp/fbe2.out")" = A ]
 }
 
 test_fallback_exit1_host_nonblocking_rows() {
@@ -535,7 +643,7 @@ test_exit0_json_block_wins_verbatim() {
   out=$tmp/json-block.out
   err=$tmp/json-block.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/json-block.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = "$deny" ] && ! grep -q sibling "$out"
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_first_json_block_wins_verbatim() {
@@ -549,7 +657,7 @@ test_first_json_block_wins_verbatim() {
   out=$tmp/first-json-block.out
   err=$tmp/first-json-block.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/first-json-block.list" sh "$wrapper" Stop <"$input" >"$out" 2>"$err"
-  [ "$(cat "$out")" = "$first" ] && ! grep -q second "$out"
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_fallback_signal_and_incomplete_fail_closed() {
@@ -564,7 +672,7 @@ test_fallback_signal_and_incomplete_fail_closed() {
     AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/$name-row.list" AH_HOOK_TIMEOUT_S="$short_timeout" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
     rc=$?
     set -e
-    [ "$rc" -eq 2 ] && [ ! -s "$out" ] || return 1
+    [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ] || return 1
   done
 }
 
@@ -575,7 +683,7 @@ test_fallback_timeout_discard_allows_other_hook() {
   out=$tmp/timeout-row.out
   err=$tmp/timeout-row.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/timeout-row.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = fast ]
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_temp_modes_and_owner() {
@@ -629,11 +737,11 @@ test_temp_refuses_bad_base_and_symlink_parent() {
   set -e
   # bad base mode refused; symlinked parent is canonicalised and works; symlinked final component refused;
   # world-writable parent without sticky refused; with sticky accepted
-  # (a refused private base no longer locks the user out: the wrapper warns and uses a verified mktemp -d dir instead, so the
-  # hook still runs; the refused base itself is never used)
-  [ "$rc1" -eq 0 ] && grep -q 'no private temp dir' "$err" && [ "$rc2" -eq 0 ] && [ "$(cat "$tmp/symlink.out")" = badbase ] \
-    && [ "$rc3" -eq 0 ] && grep -q 'no private temp dir' "$tmp/hostile.err" && [ "$rc4" -eq 0 ] && grep -q 'no private temp dir' "$tmp/open.err" \
-    && [ "$rc5" -eq 0 ] && ! grep -q 'no private temp dir' "$tmp/sticky.err"
+  # (a refused private base no longer locks the user out: without a usable engine, the wrapper fail-opens before handoff)
+  [ "$rc1" -eq 0 ] && grep -q 'no private temp dir' "$err" && [ ! -s "$out" ] && [ "$rc2" -eq 0 ] && [ ! -s "$tmp/symlink.out" ] \
+    && [ "$rc3" -eq 0 ] && grep -q 'no private temp dir' "$tmp/hostile.err" && [ ! -s "$tmp/hostile.out" ] \
+    && [ "$rc4" -eq 0 ] && grep -q 'no private temp dir' "$tmp/open.err" && [ ! -s "$tmp/open.out" ] \
+    && [ "$rc5" -eq 0 ] && ! grep -q 'no private temp dir' "$tmp/sticky.err" && [ ! -s "$tmp/sticky.out" ]
 }
 
 test_temp_sweep_old_keeps_fresh() {
@@ -694,8 +802,8 @@ test_temp_unusable_guard_blocks() {
   rc=$?
   set -e
   chmod 700 "$root"
-  # degraded: the unusable private base is skipped with a warning and the guard hook still runs
-  [ "$rc" -eq 0 ] && [ "$(cat "$out")" = bad ] && grep -q 'no private temp dir' "$err"
+  # degraded: the unusable private base is skipped with a warning; without a usable engine, no Node handoff runs
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && grep -q 'no private temp dir' "$err"
 }
 
 test_env_timeout_validation_guard_blocks() {
@@ -733,7 +841,7 @@ test_stop_active_synthetic_fail_closed_opens() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/no-list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" Stop <"$input" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && grep -q 'stop_hook_active' "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_stop_active_genuine_exit2_remains_verbatim() {
@@ -747,7 +855,7 @@ test_stop_active_genuine_exit2_remains_verbatim() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/stop-active-exit2.list" sh "$wrapper" Stop <"$input" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] && [ "$(cat "$out")" = '{"decision":"block","reason":"real"}' ] && grep -q real "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_guard_fail_closed_without_engine_or_nodes() {
@@ -757,7 +865,7 @@ test_guard_fail_closed_without_engine_or_nodes() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/no-list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] && [ ! -s "$out" ] && grep -q 'fail closed' "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_non_guard_missing_engine_without_nodes_fails_open() {
@@ -767,7 +875,7 @@ test_non_guard_missing_engine_without_nodes_fails_open() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/no-list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" PostToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && grep -q 'engine fallback' "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_guard_fail_closed_when_selected_hook_cannot_exec() {
@@ -778,7 +886,7 @@ test_guard_fail_closed_when_selected_hook_cannot_exec() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/noexec-guard.list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] && [ ! -s "$out" ] && grep -q 'fail closed' "$err" && ! grep -q '/no/such/node' "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_guard_fail_closed_when_selected_hook_not_executable() {
@@ -792,7 +900,7 @@ test_guard_fail_closed_when_selected_hook_not_executable() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/nonexec-file-guard.list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] && [ ! -s "$out" ] && grep -q 'fail closed' "$err" && ! grep -q "$nonexec" "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_non_guard_selected_hook_cannot_exec_fails_open() {
@@ -803,7 +911,7 @@ test_non_guard_selected_hook_cannot_exec_fails_open() {
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/noexec-nonguard.list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" PostToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && grep -q 'engine fallback' "$err" && ! grep -q '/no/such/node' "$err"
+  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_selected_exec_failure_does_not_override_runnable_hook() {
@@ -812,7 +920,7 @@ test_selected_exec_failure_does_not_override_runnable_hook() {
   out=$tmp/noexec-runnable.out
   err=$tmp/noexec-runnable.err
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/noexec-runnable.list" HOME="$tmp/no-home" PATH="/usr/bin:/bin:/usr/sbin:/sbin" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = runnable ] && grep -q 'engine fallback' "$err" && ! grep -q '/no/such/node' "$err"
+  [ ! -s "$out" ] && [ ! -s "$err" ]
 }
 
 test_engine_lookup_prefers_ah_engine_bin() {
@@ -1002,7 +1110,8 @@ test_unwritable_temp_base_guards_still_run() {
   rc=$?
   set -e
   chmod 700 "$ro"
-  [ "$rc" -eq 2 ] && grep -q 'degraded-block' "$tmp/degblock.err" && grep -q 'no private temp dir' "$tmp/degblock.err"
+  [ "$rc" -eq 0 ] && [ ! -s "$tmp/degblock.out" ] && ! grep -q 'degraded-block' "$tmp/degblock.err" \
+    && grep -q 'no private temp dir' "$tmp/degblock.err"
 }
 
 # Last resort: no temp dir can be made anywhere (mktemp shimmed to fail). Payload goes to each hook through a pipe.
@@ -1076,12 +1185,13 @@ test_hanging_engine_is_cut_at_timeout_not_before() {
     t0=$(now_ms)
     set +e
     AH_STARTED="$tmp/cut.started" AH_SLEEP_S=30 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/cut.list" AH_HOOK_TIMEOUT_S=2 AH_KILL_GRACE_S=1 "$shname" "$wrapper" Notification --tool-from-payload <"$payload" >"$tmp/cut.out" 2>"$tmp/cut.err"
+    rc=$?
     set -e
     t1=$(now_ms)
     ms=$((t1 - t0))
-    # cut no earlier than the 2 s timeout, and well before the engine's own 30 s sleep
-    if [ "$ms" -lt 2000 ] || [ "$ms" -gt 8000 ] || ! grep -q 'engine timed out' "$tmp/cut.err"; then
-      printf 'hanging engine under %s: ms=%s err=%s\n' "$shname" "$ms" "$(cat "$tmp/cut.err")" >&2
+    # Hung engines now fail open without Node handoff, and still return well before the engine's own 30 s sleep.
+    if [ "$rc" -ne 0 ] || [ "$ms" -gt 8000 ] || [ -s "$tmp/cut.out" ] || [ -s "$tmp/cut.err" ]; then
+      printf 'hanging engine under %s: rc=%s ms=%s out=%s err=%s\n' "$shname" "$rc" "$ms" "$(cat "$tmp/cut.out")" "$(cat "$tmp/cut.err")" >&2
       return 1
     fi
   done
@@ -1125,6 +1235,8 @@ test_unmatched_tool_runs_nothing_but_unparseable_selects_all() {
 }
 
 test_killed_wrapper_orphans_are_reaped() {
+  # Contract: the wrapper has a ~0.5 s fail-open deadline by default; this test needs the engine to outlive it so the wrapper can be
+  # SIGKILLed mid-run, hence the explicit AH_HOOK_TIMEOUT_MS. What it guards (orphan reaping) is unchanged.
   parent=$tmp/orphanparent
   mkdir "$parent"
   started=$tmp/orphan.started
@@ -1132,7 +1244,7 @@ test_killed_wrapper_orphans_are_reaped() {
   rm -f "$started" "$pidfile"
   : >"$tmp/orphan.list"
   e=$(make_engine orphan-engine hang)
-  TMPDIR="$parent" AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/orphan.list" AH_HOOK_TIMEOUT_S=60 sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/orphan.out" 2>"$tmp/orphan.err" &
+  TMPDIR="$parent" AH_STARTED="$started" AH_PIDFILE="$pidfile" AH_SLEEP_S="$long_sleep" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/orphan.list" AH_HOOK_TIMEOUT_S=60 AH_HOOK_TIMEOUT_MS=60000 sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/orphan.out" 2>"$tmp/orphan.err" &
   wrapper_pid=$!
   wait_for_file "$started" "$poll_limit" && wait_for_nonempty_file "$pidfile" "$poll_limit" || {
     kill_test_tree "$wrapper_pid"
@@ -1146,6 +1258,14 @@ test_killed_wrapper_orphans_are_reaped() {
   set -e
   # the watchdog notices the dead wrapper, kills the hook and its children, and removes the payload dir
   if ! wait_for_pids_gone 6 "$engine_pid" ${sleeper_pid:+"$sleeper_pid"}; then
+    root=$parent/ah-hook-$(id -u)
+    printf 'orphan reaper: engine=%s sleeper=%s engine_alive=' "$engine_pid" "${sleeper_pid:-}" >&2
+    kill -0 "$engine_pid" 2>/dev/null && printf yes >&2 || printf no >&2
+    printf ' sleeper_alive=' >&2
+    [ -n "$sleeper_pid" ] && kill -0 "$sleeper_pid" 2>/dev/null && printf yes >&2 || printf no >&2
+    printf ' run_dirs=' >&2
+    set -- "$root"/ah-wrapper-run.*
+    printf '%s\n' "$*" >&2
     kill -KILL "$engine_pid" ${sleeper_pid:+"$sleeper_pid"} 2>/dev/null || true
     return 1
   fi
@@ -1256,8 +1376,8 @@ test_no_node_hook_events_allow_without_engine() {
 }
 
 test_event_with_node_guards_stays_fail_closed_without_engine() {
-  # A list lacking the PreToolUse/Stop section is damaged: still fail closed. SubagentStop with a section whose
-  # hook cannot run also fails closed (the allow applies only when the event has no Node hooks at all).
+  # Without a usable engine, even damaged or unrunnable Node fallback lists now fail open. Healthy engine and in-process
+  # dispatch coverage lives in the Rust e2e tests; this shell wrapper no longer hands over to Node on engine absence.
   h=$(hook_script evguard 'exit 0')
   printf '@PostToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/missing-section.list"
   for ev in PreToolUse Stop; do
@@ -1265,14 +1385,14 @@ test_event_with_node_guards_stays_fail_closed_without_engine() {
     AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/missing-section.list" sh "$wrapper" "$ev" <"$payload" >"$tmp/ms.out" 2>"$tmp/ms.err"
     rc=$?
     set -e
-    [ "$rc" -eq 2 ] || return 1
+    [ "$rc" -eq 0 ] && [ ! -s "$tmp/ms.out" ] && [ ! -s "$tmp/ms.err" ] || return 1
   done
   printf '@SubagentStop\t%s\n*\t%s\t/no/such/hook-cmd-xyz\n' "$large_timeout" "$large_timeout" >"$tmp/subagent-row.list"
   set +e
   AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/subagent-row.list" sh "$wrapper" SubagentStop <"$payload" >"$tmp/sr.out" 2>"$tmp/sr.err"
   rc=$?
   set -e
-  [ "$rc" -eq 2 ] || return 1
+  [ "$rc" -eq 0 ] && [ ! -s "$tmp/sr.out" ] && [ ! -s "$tmp/sr.err" ] || return 1
   grep -q '^@Stop' "$repo/plugins/anti-hall/hooks/ah-fallback.list"
 }
 
@@ -1293,6 +1413,11 @@ check tool_name_structural_scanner test_tool_name_structural_scanner
 check tool_name_invalid_selects_all_non_guard test_tool_name_invalid_selects_all_non_guard
 check tool_name_huge_payload_fast test_tool_name_huge_payload_fast
 check fallback_exit_code_matrix_rows test_fallback_exit_code_matrix_rows
+check fallback_merges_json_outputs test_fallback_merges_json_outputs
+check fallback_merges_pretty_printed_json_outputs test_fallback_merges_pretty_printed_json_outputs
+check cold_engine_does_not_hold_host_stderr_open test_cold_engine_does_not_hold_host_stderr_open
+check missing_engine_and_missing_defaults_fail_open test_missing_engine_and_missing_defaults_fail_open
+check fallback_two_empty_contexts_say_nothing test_fallback_two_empty_contexts_say_nothing
 check fallback_exit1_host_nonblocking_rows test_fallback_exit1_host_nonblocking_rows
 check shell_started_126_127_are_host_nonblocking test_shell_started_126_127_are_host_nonblocking
 check exit0_json_block_wins_verbatim test_exit0_json_block_wins_verbatim
@@ -1337,6 +1462,242 @@ check temp_removed_on_hup test_temp_removed_on_hup
 check temp_removed_on_int test_temp_removed_on_int
 check no_node_hook_events_allow_without_engine test_no_node_hook_events_allow_without_engine
 check event_with_node_guards_stays_fail_closed_without_engine test_event_with_node_guards_stays_fail_closed_without_engine
+
+# ---- cold start: guard events wait for the daemon (client.cold_guard_wait_ms), everything else stays instant ----
+# cg_setup <wait_ms>: a short state dir (the socket path must stay under the socket limit), a plugin root whose defaults carry
+# the wait under test, and a stand-in engine. The stand-in logs every call; a kick (the wrapper's empty cold-start request) makes a
+# detached "daemon" bind the socket after $AH_COLD_READY_S; with the socket up a PreToolUse is denied, cold it fails open.
+cg_setup() {
+  cg_wait=$1
+  cg_dir=$(mktemp -d /tmp/ahcg.XXXXXX)
+  cg_root=$cg_dir/root
+  mkdir -p "$cg_root/engine"
+  cp -R "$repo/plugins/anti-hall/engine/defaults" "$cg_root/engine/defaults"
+  sed "/^\[client.cold_guard_wait_ms\]/,/^\$/s/^value = .*/value = $cg_wait/" "$repo/plugins/anti-hall/engine/defaults/engine.toml" >"$cg_root/engine/defaults/engine.toml"
+  cg_state=$cg_dir/s
+  mkdir -p "$cg_state"
+  cg_log=$cg_dir/calls.log
+  : >"$cg_log"
+  cg_engine=$cg_dir/engine.sh
+  cat >"$cg_engine" <<'ENG'
+#!/bin/sh
+payload=$(cat)
+printf '%s | %s\n' "$*" "$payload" >>"$AH_COLD_LOG"
+sock=$AH_ENGINE_DIR/e.sock
+case "$payload" in
+  *ColdStartKick*)
+    [ -z "${AH_COLD_HANG_KICK:-}" ] || sleep 30
+    if [ -n "${AH_COLD_READY_S:-}" ] && [ ! -S "$sock" ]; then
+      perl -MPOSIX -MIO::Socket::UNIX -e 'exit 0 if fork; POSIX::setsid(); select(undef, undef, undef, $ARGV[1]); unlink $ARGV[0]; $s = IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1); sleep 4' "$sock" "$AH_COLD_READY_S" </dev/null >/dev/null 2>&1
+    fi
+    exit 0 ;;
+esac
+[ -z "${AH_COLD_HANG_ALL:-}" ] || sleep 30
+if [ -S "$sock" ]; then
+  case "$payload" in
+    *PreToolUse*) printf 'denied-by-daemon\n' >&2; exit 2 ;;
+  esac
+fi
+exit 0
+ENG
+  chmod +x "$cg_engine"
+  printf '@PreToolUse\t10\n*\t10\ttrue\n@Stop\t10\n*\t10\ttrue\n@UserPromptSubmit\t10\n*\t10\ttrue\n' >"$cg_dir/list"
+}
+
+cg_cleanup() {
+  [ -n "${cg_dir:-}" ] && rm -rf "$cg_dir"
+  cg_dir=
+}
+
+# cg_run <event> <session> [env...]: runs the wrapper against the stand-in; prints "<rc> <ms>"; stdout/stderr land in $cg_dir/out, err
+cg_run() {
+  cg_ev=$1; cg_sid=$2; shift 2
+  printf '{"hook_event_name":"%s","session_id":"%s","tool_name":"Bash"}' "$cg_ev" "$cg_sid" >"$cg_dir/in"
+  cg_t0=$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000')
+  set +e
+  env AH_ENGINE_DIR="$cg_state" AH_ENGINE_PLUGIN_ROOT="$cg_root" AH_COLD_LOG="$cg_log" AH_ENGINE_BIN="$cg_engine" AH_FALLBACK_LIST="$cg_dir/list" \
+    AH_HOOK_TIMEOUT_S=10 AH_HOOK_TIMEOUT_MS=3000 "$@" sh "$wrapper" "$cg_ev" <"$cg_dir/in" >"$cg_dir/out" 2>"$cg_dir/err"
+  cg_rc=$?
+  set -e
+  cg_t1=$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000')
+  cg_ms=$((cg_t1 - cg_t0))
+}
+
+test_cold_guard_waits_for_a_daemon_that_comes_up() {
+  cg_setup 2000
+  cg_run PreToolUse sess-a AH_COLD_READY_S=0.5
+  ok=1
+  # the daemon's real decision (deny) is returned, within the cap (the 2000 ms wait plus the stand-in's own start-up)
+  [ "$cg_rc" -eq 2 ] && grep -q denied-by-daemon "$cg_dir/err" || ok=0
+  [ "$cg_ms" -lt 2000 ] || ok=0
+  [ "$(grep -c ColdStartKick "$cg_log")" -eq 1 ] || ok=0
+  [ "$ok" -eq 1 ] || printf 'cold guard ready: rc=%s ms=%s err=%s log=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" "$(cat "$cg_log")" >&2
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+test_cold_guard_gives_up_at_the_cap_with_one_notice_per_session() {
+  cg_setup 600
+  ok=1
+  cg_run PreToolUse sess-a
+  [ "$cg_rc" -eq 0 ] && [ ! -s "$cg_dir/out" ] || ok=0
+  grep -q 'was not checked' "$cg_dir/err" || ok=0
+  grep -q 'PreToolUse' "$cg_dir/err" || ok=0
+  # never past the cap (plus load slack), and not before it
+  [ "$cg_ms" -ge 500 ] && [ "$cg_ms" -lt 2500 ] || ok=0
+  first_ms=$cg_ms
+  # same session: waits again but stays quiet; another session: notice again
+  cg_run Stop sess-a
+  [ "$cg_rc" -eq 0 ] && ! grep -q 'was not checked' "$cg_dir/err" || ok=0
+  cg_run PreToolUse sess-b
+  [ "$cg_rc" -eq 0 ] && grep -q 'was not checked' "$cg_dir/err" || ok=0
+  [ "$ok" -eq 1 ] || printf 'cold guard cap: first_ms=%s rc=%s err=%s\n' "$first_ms" "$cg_rc" "$(cat "$cg_dir/err")" >&2
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+# One absolute cold deadline (Codex delta F2): a kick that hangs, and a kick plus engine that both hang, end within
+# client.cold_guard_wait_ms (kick budget plus its kill grace) with the cold-start notice, and run no second engine attempt (Codex
+# final Prior-2: the cap plus a real attempt was not the single deadline).
+test_cold_guard_hang_ends_within_the_cold_deadline_plus_engine_budget() {
+  cg_setup 2000
+  ok=1
+  eng_ms=560
+  slack_ms=800
+  bound=$((2000 + slack_ms))
+  cg_run PreToolUse sess-a AH_HOOK_TIMEOUT_MS=$eng_ms AH_COLD_HANG_KICK=1 AH_COLD_HANG_ALL=1
+  [ "$cg_rc" -eq 0 ] && [ "$cg_ms" -lt "$bound" ] || { ok=0; printf 'kick hang: rc=%s ms=%s bound=%s\n' "$cg_rc" "$cg_ms" "$bound" >&2; }
+  grep -q 'was not checked' "$cg_dir/err" || { ok=0; printf 'kick hang: no cold-start notice: %s\n' "$(cat "$cg_dir/err")" >&2; }
+  # the hung kick is the only engine call: no real attempt follows it
+  [ "$(wc -l <"$cg_log" | tr -d ' ')" -eq 1 ] || { ok=0; printf 'kick hang: engine calls: %s\n' "$(cat "$cg_log")" >&2; }
+  printf 'TIMING cold kick hang wall_ms=%s bound=%s\n' "$cg_ms" "$bound" >&2
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+test_cold_non_guard_event_never_waits() {
+  cg_setup 2000
+  cg_run UserPromptSubmit sess-a
+  ok=1
+  [ "$cg_rc" -eq 0 ] || ok=0
+  # no kick and one plain engine call: the cold daemon costs a prompt nothing
+  ! grep -q ColdStartKick "$cg_log" || ok=0
+  [ "$(wc -l <"$cg_log" | tr -d ' ')" -eq 1 ] || ok=0
+  [ ! -s "$cg_dir/err" ] || ok=0
+  [ "$ok" -eq 1 ] || printf 'cold prompt: rc=%s ms=%s err=%s log=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" "$(cat "$cg_log")" >&2
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+test_cold_guard_wait_respects_the_hook_budget_and_a_warm_daemon() {
+  cg_setup 2000
+  ok=1
+  # a hook budget that leaves no room after the engine attempt: no wait, no kick
+  printf '@PreToolUse\t1\n*\t1\ttrue\n' >"$cg_dir/list"
+  cg_run PreToolUse sess-a AH_HOOK_TIMEOUT_MS=900
+  [ "$cg_rc" -eq 0 ] && ! grep -q ColdStartKick "$cg_log" || ok=0
+  # a warm daemon (socket already bound): straight to the engine, no kick
+  : >"$cg_log"
+  printf '@PreToolUse\t10\n*\t10\ttrue\n' >"$cg_dir/list"
+  perl -MIO::Socket::UNIX -e '$s = IO::Socket::UNIX->new(Local => $ARGV[0], Listen => 1) or exit 1' "$cg_state/e.sock" || ok=0
+  cg_run PreToolUse sess-a
+  [ "$cg_rc" -eq 2 ] && ! grep -q ColdStartKick "$cg_log" || ok=0
+  # the wait is off at 0
+  rm -f "$cg_state/e.sock"
+  : >"$cg_log"
+  sed "/^\[client.cold_guard_wait_ms\]/,/^\$/s/^value = .*/value = 0/" "$repo/plugins/anti-hall/engine/defaults/engine.toml" >"$cg_root/engine/defaults/engine.toml"
+  cg_run PreToolUse sess-a
+  [ "$cg_rc" -eq 0 ] && ! grep -q ColdStartKick "$cg_log" || ok=0
+  [ "$ok" -eq 1 ] || printf 'cold guard budget: rc=%s log=%s\n' "$cg_rc" "$(cat "$cg_log")" >&2
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+# The wait is only for a daemon that can actually start: spawning switched off, an engine that is missing or cannot run, and one
+# that exits at once (its kick fails) all fail open straight away, not after the 2 s cap.
+test_cold_guard_does_not_wait_when_no_daemon_can_start() {
+  cg_setup 2000
+  ok=1
+  # spawn disabled: no kick at all
+  cg_run PreToolUse sess-a AH_ENGINE_NOSPAWN=1
+  [ "$cg_rc" -eq 0 ] && [ "$cg_ms" -lt 1000 ] && ! grep -q ColdStartKick "$cg_log" || { ok=0; printf 'nospawn: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  # a missing engine binary
+  cg_run PreToolUse sess-b AH_ENGINE_BIN="$cg_dir/no-such-engine"
+  [ "$cg_rc" -eq 0 ] && [ "$cg_ms" -lt 1000 ] || { ok=0; printf 'missing: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  # an engine that cannot run (not executable)
+  printf '#!/bin/sh\nexit 0\n' >"$cg_dir/noexec"
+  chmod 644 "$cg_dir/noexec"
+  cg_run PreToolUse sess-c AH_ENGINE_BIN="$cg_dir/noexec"
+  [ "$cg_rc" -eq 0 ] && [ "$cg_ms" -lt 1000 ] || { ok=0; printf 'noexec: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  # an engine that exits at once: its kick fails, so nothing is coming
+  printf '#!/bin/sh\ncat >/dev/null\nprintf "%%s\\n" "$*" >>"$AH_COLD_LOG"\nexit 1\n' >"$cg_dir/crash.sh"
+  chmod +x "$cg_dir/crash.sh"
+  : >"$cg_log"
+  cg_run PreToolUse sess-d AH_ENGINE_BIN="$cg_dir/crash.sh"
+  [ "$cg_rc" -eq 0 ] && [ "$cg_ms" -lt 1000 ] && grep -q ColdStartKick "$cg_log" || { ok=0; printf 'crash: rc=%s ms=%s log=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_log")" >&2; }
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+
+# Codex final N1: the watchdog's slow-window bound is the EFFECTIVE client.slow_fallback_max_ms (env override included), as the
+# engine client computes it. A stand-in that marks itself as waiting on the daemon (the wait file) and denies after 3500 ms is
+# killed at the shipped 3000 ms bound (fail open, rc 0) but must block once the override raises the bound past the deny.
+sw_setup() {
+  cg_setup 0
+  cat >"$cg_dir/slowdeny.sh" <<'ENG'
+#!/bin/sh
+cat >/dev/null
+[ -z "${AH_ENGINE_WAIT_FILE:-}" ] || : >"$AH_ENGINE_WAIT_FILE"
+sleep 3.5
+printf 'denied-after-wait\n' >&2
+exit 2
+ENG
+  chmod +x "$cg_dir/slowdeny.sh"
+}
+
+test_slow_window_bound_honours_the_env_override() {
+  sw_setup
+  ok=1
+  # shipped bound (3000 ms): the late deny is outside the window, the call fails open
+  cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500
+  [ "$cg_rc" -eq 0 ] || { ok=0; printf 'slow control: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  # raised bound: the deny at 3500 ms is inside the effective window and must block
+  cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500 AH_ENGINE_SLOW_FALLBACK_MAX_MS=6000
+  [ "$cg_rc" -eq 2 ] && grep -q denied-after-wait "$cg_dir/err" || { ok=0; printf 'slow raised: rc=%s ms=%s err=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" >&2; }
+  # an unusable override keeps the shipped bound, as the engine does (defaults::num falls back to the default)
+  cg_run PreToolUse sess-a AH_ENGINE_BIN="$cg_dir/slowdeny.sh" AH_HOOK_TIMEOUT_MS=500 AH_ENGINE_SLOW_FALLBACK_MAX_MS=junk
+  [ "$cg_rc" -eq 0 ] || { ok=0; printf 'slow junk: rc=%s ms=%s\n' "$cg_rc" "$cg_ms" >&2; }
+  cg_cleanup
+  [ "$ok" -eq 1 ]
+}
+check slow_window_bound_honours_the_env_override test_slow_window_bound_honours_the_env_override
+
+check cold_guard_waits_for_a_daemon_that_comes_up test_cold_guard_waits_for_a_daemon_that_comes_up
+check cold_guard_does_not_wait_when_no_daemon_can_start test_cold_guard_does_not_wait_when_no_daemon_can_start
+check cold_guard_gives_up_at_the_cap_with_one_notice_per_session test_cold_guard_gives_up_at_the_cap_with_one_notice_per_session
+check cold_guard_hang_ends_within_the_cold_deadline_plus_engine_budget test_cold_guard_hang_ends_within_the_cold_deadline_plus_engine_budget
+check cold_non_guard_event_never_waits test_cold_non_guard_event_never_waits
+check cold_guard_wait_respects_the_hook_budget_and_a_warm_daemon test_cold_guard_wait_respects_the_hook_budget_and_a_warm_daemon
+
+# The seconds override is a test knob: without AH_WRAPPER_TEST=1 it is dropped and the shipped 560 ms engine budget still applies.
+test_timeout_override_needs_the_test_gate() {
+  tg=$tmp/tgate-bin
+  mkdir -p "$tg"
+  printf '#!/bin/sh\ncat >/dev/null; sleep 3; exit 2\n' >"$tg/ah-engine"
+  chmod +x "$tg/ah-engine"
+  set +e
+  AH_WRAPPER_TEST= AH_HOOK_TIMEOUT_S=10 PATH="$tg:$PATH" sh "$wrapper" PreToolUse <"$payload" >"$tmp/tgate.out" 2>"$tmp/tgate.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 1
+  # with the gate the same override lets the engine finish and its exit 2 through
+  set +e
+  AH_HOOK_TIMEOUT_S=10 PATH="$tg:$PATH" sh "$wrapper" PreToolUse <"$payload" >"$tmp/tgate2.out" 2>"$tmp/tgate2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ]
+}
+check timeout_override_needs_the_test_gate test_timeout_override_needs_the_test_gate
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

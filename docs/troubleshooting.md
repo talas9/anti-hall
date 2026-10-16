@@ -28,8 +28,8 @@ only when they are present.
     so a new session starts.
 
 ??? question "The statusline does not show"
-    It is not installed automatically: run `/anti-hall:install-statusline`. Then restart
-    Claude Code once, because the `statusLine` setting is only read at startup.
+    The anti-hall statusline installer is retired. Use Claude/Codex built-in status
+    surfaces, or run `uninstall-statusline` to clean up an older anti-hall entry.
 
 ??? question "An update did not take effect"
     Run `/reload-plugins` after `/anti-hall:update`. Restart Claude Code only if a hook or

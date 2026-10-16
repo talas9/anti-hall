@@ -771,6 +771,16 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     sc.doctor(&[]).lacks("circuit breaker");
 }
 
+#[test]
+fn dmn_12_doctor_reports_last_crash_breadcrumb() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let state = sc.state();
+    fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("last-crash.json"), r#"{"kind":"crash","code":"unknown","breadcrumb":{"request":"D","event":"Stop","check":"task-guard"}}"#).unwrap();
+    sc.doctor(&[]).has("warn", &["last crash:", "\"request\":\"D\"", "\"event\":\"Stop\"", "\"check\":\"task-guard\""]);
+}
+
 /// A process that looks like an engine daemon to the pid check (`<name> serve` on its command line).
 fn fake_serve() -> std::process::Child {
     Command::new("sh").args(["-c", "sleep 30; :", "ah-engine", "serve"]).stdin(Stdio::null()).spawn().unwrap()

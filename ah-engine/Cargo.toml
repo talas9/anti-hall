@@ -80,6 +80,7 @@ opt-level = 3
 # Lint gate (clippy `-D warnings`, wired into test.sh). Rule ids are those of the Rust standards audit (rust-standards.md).
 #   E2   no unwrap/expect in non-test paths: a violated invariant is a Result or a stated `expect` with a one-line allow.
 #   E3   never silently discard a fallible result: use `crate::discard` (harmless / logged) instead of `let _ =`.
+#   E4   no panic!/unreachable! in non-test paths: return an error, defer, or make the failure observable instead.
 #   U1   every `unsafe` block carries a `// SAFETY:` comment, and an unsafe fn body still needs explicit unsafe blocks.
 #   LI1  dbg!/todo!/unimplemented! never ship.
 # Tests are exempt from E2 through clippy.toml (`allow-*-in-tests`). A targeted `#[allow(clippy::x)]` needs a one-line reason.
@@ -91,6 +92,8 @@ missing_docs = "deny"           # every public item is documented (was a crate a
 unwrap_used = "deny"                 # E2
 expect_used = "deny"                 # E2
 let_underscore_must_use = "deny"     # E3
+panic = "deny"                       # E4
+unreachable = "deny"                 # E4
 undocumented_unsafe_blocks = "deny"  # U1
 dbg_macro = "deny"                   # LI1
 todo = "deny"                        # LI1

@@ -71,12 +71,13 @@ impl Env {
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
     }
 
-    /// Keep asking until the daemon (not the Node fallback) answers: the first daemon call starts it and answers through Node.
+    /// Keep asking until the daemon (not the Node fallback) answers: the first daemon call starts it and answers through Node, or,
+    /// since the fail-fast client, prints nothing (exit 0) while the daemon is not up or has not answered within the client deadline.
     fn until_daemon_answers(&self, args: &[&str], payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
         let mut last = (0, String::new(), String::new());
         for _ in 0..80 {
             last = self.run(args, false, payload, extra);
-            if !last.1.contains("NODE-RAN") {
+            if !last.1.contains("NODE-RAN") && !(last.0 == 0 && last.1.is_empty()) {
                 return last;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
