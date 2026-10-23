@@ -39,7 +39,11 @@ value = "{tokens_k}k tokens for {outcome} outcome units; re-read {reread}%, repe
 
 [agent_waste.words]
 doc = "Words the sensor writes: the source of a decision (judge or formula), the actions (warn, hard) and the telemetry class."
-value = { judge = "judge", formula = "formula", warn = "warn", hard = "hard", class = "waste", fire = "fire", judged = "judge", no_goal = "unknown" }
+value = { judge = "judge", formula = "formula", warn = "warn", hard = "hard", class = "waste", fire = "fire", judged = "judge", no_goal = "unknown", head_outcome = "head_outcome" }
+
+[agent_waste.head]
+doc = "Where a worktree's checked-out commit is read (no process is run): the HEAD file, its `ref: ` prefix, the commondir file of a linked worktree, and packed-refs. A HEAD that moved while the agent's own commit and push counts did not (the coordinator committed for it) is the agent's outcome."
+value = { head = "HEAD", ref_prefix = "ref:", commondir = "commondir", packed = "packed-refs" }
 
 [agent_waste.outcome_window]
 doc = "Evidence line for the judge: the outcome units in the window. Placeholder: {outcome}."

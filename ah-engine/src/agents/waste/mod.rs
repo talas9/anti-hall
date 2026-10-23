@@ -62,6 +62,15 @@ pub struct Mark {
     /// The stall signals' reason (empty when neither fires); their level (0 ok, 1 soft, 2 hard) follows.
     #[serde(default)]
     pub stall: String,
+    /// The commit HEAD pointed to at the last look (empty = not looked yet), and the own commits and pushes counted then.
+    #[serde(default)]
+    pub head: String,
+    /// Own commits plus pushes at the last look (a change in HEAD with these unchanged was made by someone else).
+    #[serde(default)]
+    pub seen_commits: u64,
+    /// When a commit made by someone else in the agent's worktree last counted as its outcome: the sensor window starts here.
+    #[serde(default)]
+    pub reset_at: u64,
     /// The level of the stall signals.
     #[serde(default)]
     pub stall_level: u8,
@@ -150,7 +159,7 @@ fn stall_check(env: &Env, a: &mut Agent) {
 
 /// The window of one agent as the formula's input, or `None` while there is too little history to judge.
 pub fn input_of(a: &Agent, now: u64) -> Option<Input> {
-    let from = now.saturating_sub(lim("window_ms"));
+    let from = now.saturating_sub(lim("window_ms")).max(a.waste.reset_at);
     let first = a.samples.iter().find(|s| s.t >= from)?;
     let last = a.samples.last()?;
     if last.t.saturating_sub(first.t) < lim("min_span_ms") {
@@ -248,6 +257,53 @@ fn judge(env: &Env, a: &mut Agent, i: &Input, score: f64) -> bool {
         base(a).tok("kind", &a.kind).tok("phase", &o.phase).tok("verdict", &a.waste.verdict).num("ms", o.ms).num("conf_pct", (a.waste.confidence * 100.0) as u64),
     );
     true
+}
+
+/// The commit the worktree at (or above) `cwd` has checked out, read from the git files (no process): HEAD, then the ref it names in
+/// the loose refs or packed-refs of the common directory. `None` when there is no repository or the HEAD cannot be read.
+fn head_of(cwd: &str) -> Option<String> {
+    let spec = defaults::raw("agent_waste.head");
+    let mut dir = std::path::Path::new(cwd);
+    let gitdir = loop {
+        if let Some(g) = crate::dswire::facts::git_dir(&dir.to_string_lossy()) {
+            break g;
+        }
+        dir = dir.parent()?;
+    };
+    let common = match std::fs::read_to_string(gitdir.join(spec.str_field("commondir"))).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+        Some(rel) => gitdir.join(rel),
+        None => gitdir.clone(),
+    };
+    let head = std::fs::read_to_string(gitdir.join(spec.str_field("head"))).ok()?;
+    let head = head.trim();
+    let Some(name) = head.strip_prefix(spec.str_field("ref_prefix")) else { return Some(head.to_string()) };
+    let name = name.trim();
+    if let Ok(t) = std::fs::read_to_string(common.join(name)) {
+        return Some(t.trim().to_string());
+    }
+    let packed = std::fs::read_to_string(common.join(spec.str_field("packed"))).ok()?;
+    packed.lines().find_map(|l| l.split_once(' ').filter(|(_, r)| *r == name).map(|(sha, _)| sha.to_string()))
+}
+
+/// A commit made by someone else in the agent's own worktree (the coordinator committing for a tripped agent) is the agent's outcome:
+/// credit the commit weight, restart the sensor window, and the burn counter and breaker marker clear on this tick (the progress units
+/// are in the next sample). Seen as a HEAD change while the agent's own commit and push counts did not move. Called before sampling.
+pub(crate) fn note_head(env: &Env, a: &mut Agent) {
+    if a.cwd.is_empty() || !env.switch("agent_waste.setting") {
+        return;
+    }
+    let Some(h) = head_of(&a.cwd) else { return };
+    let own = a.commits + a.pushes;
+    let prev = std::mem::replace(&mut a.waste.head, h.clone());
+    let own_before = std::mem::replace(&mut a.waste.seen_commits, own);
+    if prev.is_empty() || prev == h || own != own_before {
+        return;
+    }
+    a.progress += defaults::raw("agent_tracker.weights").get("commit").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    a.commits += 1;
+    a.waste.seen_commits += 1;
+    a.waste.reset_at = env.now_ms;
+    rec(env, word("class"), word("head_outcome"), Outcome::Advise, base(a).tok("kind", &a.kind));
 }
 
 /// Evaluate one agent: refresh its mark, ask the judge when due, decide the action. `budget` is the judge calls left this tick.

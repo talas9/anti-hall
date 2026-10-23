@@ -591,6 +591,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
+        super::waste::note_head(env, &mut a);
         sample(&mut a, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
