@@ -112,7 +112,8 @@ pub(crate) fn parse_js(text: &str) -> Option<OVal> {
                 }
                 _ => {
                     // any other escape (including an escaped backslash) is copied whole, so `\\ud83d` stays text
-                    let take = rest.chars().take(2).map(char::len_utf8).sum::<usize>();
+                    let mut pair = rest.chars();
+                    let take = pair.next().map_or(0, char::len_utf8) + pair.next().map_or(0, char::len_utf8);
                     out.push_str(&rest[..take]);
                     i += take;
                 }
