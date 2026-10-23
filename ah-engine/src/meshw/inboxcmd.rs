@@ -76,7 +76,7 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
             return Ok(Found::Out(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }));
         }
     };
-    let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
+    let rows = ident::rows_of(&reader.roster().or_else(|e| ident::refuse_text("mesh_write.msg_registry_unreadable", &[("why", &e.to_string())]))?);
     // a fold-retired id: its mail is its survivor's, unless the id was registered again since or the survivor has no inbox
     // (then Node leaves the redirect alone and goes on to the label / refusal steps)
     let retired = if retired_redirect_exists(inv, &id) {
@@ -156,7 +156,10 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
             // a label whose row has no inbox: Node reports the literal id's refusal below
         }
     }
-    let has_messages = reader.message_count(&id).map_err(|e| ident::Defer(format!("store-read:{e}")))? > 0;
+    let has_messages = reader
+        .message_count(&id)
+        .or_else(|e| ident::refuse_text("mesh_write.msg_store_read_error", &[("id", &OVal::Str(id.clone()).stringify()), ("why", &e.to_string())]))?
+        > 0;
     let reason = if exact || has_messages { defaults::text("mesh_write.reason_no_inbox_path") } else { defaults::text("mesh_write.reason_unregistered") };
     let q = OVal::Str(id.clone()).stringify();
     let error = defaults::render(if exact || has_messages { "mesh_write.msg_no_inbox_path" } else { "mesh_write.msg_unregistered" }, &[("id", &q)]);
@@ -393,7 +396,7 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     // a store the count could not use is not written either: the NDJSON position alone moves
     let st = if c.unavail.is_none() { Some(common::open_store(inv, &c.store_key)?) } else { None };
     let rows = match &st {
-        Some(st) => ident::rows_of(&st.reader().roster().map_err(|e| ident::Defer(format!("registry:{e}")))?),
+        Some(st) => ident::rows_of(&st.reader().roster().or_else(|e| ident::refuse_text("mesh_write.msg_registry_unreadable", &[("why", &e.to_string())]))?),
         None => Vec::new(),
     };
     // the ownership gate: a caller that is a DIFFERENT registered row is refused (Node's); one that resolves to nothing acks the

@@ -157,7 +157,7 @@ pub(crate) fn text_or_null(d: &OVal, key: &str) -> R<Option<String>> {
     match d.get(key) {
         None | Some(OVal::Null) => Ok(None),
         Some(OVal::Str(t)) => Ok(Some(t.clone())),
-        Some(_) => defer("descriptor-field-shape"),
+        Some(_) => ident::refuse_text("mesh_write.msg_descriptor_field_shape", &[("field", key)]),
     }
 }
 
@@ -306,7 +306,7 @@ fn child_label_refusal(inv: &Inv, id: &str, worktree_flag: Option<&str>) -> Opti
         let repo_key = ident::repo_key_for_worktree(&inv.cwd)?;
         let rows = match repo_key.as_deref() {
             Some(k) => match tick::open_reader(inv, k)? {
-                Some(r) => ident::rows_of(&r.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?),
+                Some(r) => ident::rows_of(&r.roster().or_else(|e| ident::refuse_text("mesh_write.msg_registry_unreadable", &[("why", &e.to_string())]))?),
                 None => Vec::new(),
             },
             None => Vec::new(),
@@ -380,17 +380,23 @@ fn child_label_refusal(inv: &Inv, id: &str, worktree_flag: Option<&str>) -> Opti
 /// [`prepare_ex`] for the reconcile sweep, which has already run the project-wide fold: another registry row on the workspace's worktree
 /// is then one the fold deliberately LEFT (its descriptor, a live reader or a heartbeat anchors it; nothing may retire it), so it does
 /// not stop the pull.
-pub(crate) fn prepare_swept(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
-    plan_or_defer(prepare_ex(inv, id, desc, &PullArgs { rows_left_by_fold: true, ..PullArgs::default() })?)
+pub(crate) fn prepare_swept(inv: &Inv, id: &str, desc: Option<&OVal>) -> Result<Plan, Held> {
+    let prepared = prepare_ex(inv, id, desc, &PullArgs { rows_left_by_fold: true, ..PullArgs::default() }).map_err(|d| Held(d.0))?;
+    plan_or_held(prepared)
 }
 
+/// Why the reconcile sweep leaves a workspace's pull undone: a decision that keeps durable data in place (a refused ensure, a
+/// delivery log another reader or a spill holds), reported by its reason. Never a hand-off to Node: the workspace stays as it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held(pub String);
+
 /// The sweep stages a plan or hands the workspace back: a refusal of the ensure is the reason it was not drained.
-fn plan_or_defer(p: Prepared) -> R<Plan> {
+fn plan_or_held(p: Prepared) -> Result<Plan, Held> {
     match p {
         Prepared::Plan(p) => Ok(*p),
         Prepared::Refused(o) => {
             let why = ["reason", "error"].iter().find_map(|k| field_str(&o, k)).unwrap_or_else(|| defaults::text("mesh_write.action_pull").to_string());
-            Err(ident::Defer(why))
+            Err(Held(why))
         }
     }
 }
@@ -698,7 +704,8 @@ pub(crate) struct Declare {
 /// nothing is declared (Node's catch: an undeclared instance simply reads from the floor).
 pub(crate) fn plan_declare_ex(inv: &Inv, store: &MeshStore, id: &str) -> R<Declare> {
     let Some(reader) = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref()) else { return Ok(Declare::default()) };
-    let mut rows = crate::meshw::cursors::rows_of(store, id).map_err(|e| ident::Defer(format!("cursor-rows:{e}")))?;
+    // Node's declare is inside a try/catch: a cursor table that cannot be read leaves the instance undeclared (it reads from the floor)
+    let Ok(mut rows) = crate::meshw::cursors::rows_of(store, id) else { return Ok(Declare::default()) };
     let import = crate::meshw::cursors::needs_import(&rows);
     if import {
         let mut cx = crate::migrate::readercur::Cx::new(&inv.home.to_string_lossy());
@@ -787,18 +794,18 @@ impl Plan {
     /// The delivery-log half of the plan the reconcile sweep stages with: the open batches this pull will replay, and the states of the
     /// log it hands back (spilled batches, another reader's open batches). Still without writing. The pull itself does not stop on
     /// these: it absorbs a spill and adopts a foreign log under that reader's lock (see `pull_locked`).
-    pub(crate) fn check_wal(&mut self, inv: &Inv) -> R<()> {
+    pub(crate) fn check_wal(&mut self, inv: &Inv) -> Result<(), Held> {
         let root = devswarm_root(&inv.home);
         self.pending = match wal::pending(&self.wal) {
             Ok(p) => p,
-            Err(_) => return Err(ident::Defer("wal-unreadable".into())),
+            Err(_) => return Err(Held(defaults::text("mesh_write.held_wal_unreadable").into())),
         };
         if wal::spilled(&self.wal) > 0 {
-            return Err(ident::Defer("wal-spilled".into()));
+            return Err(Held(defaults::text("mesh_write.held_wal_spilled").into()));
         }
         let worktree = field_str(&self.ensured, defaults::text("mesh_write.field_worktree_path")).unwrap_or_else(|| self.cwd.clone());
         if foreign_open_batches(&root, &self.wal, &worktree) {
-            return Err(ident::Defer("wal-foreign".into()));
+            return Err(Held(defaults::text("mesh_write.held_wal_foreign").into()));
         }
         Ok(())
     }

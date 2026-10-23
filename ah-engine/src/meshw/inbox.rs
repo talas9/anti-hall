@@ -293,14 +293,12 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
 }
 
-/// [`plan_ack_ex`] for a caller that cannot print Node's refusal itself: a refusal is a [`Defer`] naming its reason.
+/// [`plan_ack_ex`] for a caller that cannot print Node's refusal itself: a refusal is the verb's own refusal ([`ident::refuse`]).
 pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh: Option<OVal>) -> R<AckPlan> {
     match plan_ack_ex(inv, id, rid, ack_as_owner, fresh)? {
         Acking::Go(p) => Ok(*p),
         Acking::Refused(o) => {
-            let reason =
-                o.0.iter().find_map(|(k, v)| (k == "reason").then(|| if let OVal::Str(r) = v { r.clone() } else { String::new() })).unwrap_or_default();
-            Err(Defer(reason))
+            ident::refuse(&o.done().stringify())
         }
     }
 }

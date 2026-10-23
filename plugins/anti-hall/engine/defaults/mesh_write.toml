@@ -2677,3 +2677,23 @@ value = "retryAfterMs"
 [mesh_write.ingest_owner_name]
 doc = "The `owner` word of that marker while the engine drains ingest."
 value = "engine"
+
+[mesh_write.msg_registry_unreadable]
+doc = "The refusal text of a verb whose workspace registry could not be read; `{why}` is the reason."
+value = "the workspace registry could not be read: {why}"
+
+[mesh_write.msg_descriptor_field_shape]
+doc = "The refusal text of a workspace descriptor whose field is not text; `{field}` is the field."
+value = "workspace descriptor field {field} is not text"
+
+[mesh_write.held_wal_unreadable]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log cannot be read."
+value = "wal-unreadable"
+
+[mesh_write.held_wal_spilled]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log holds spilled batches (the pull itself absorbs them under its lock)."
+value = "wal-spilled"
+
+[mesh_write.held_wal_foreign]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: another reader holds open batches in the delivery log."
+value = "wal-foreign"
