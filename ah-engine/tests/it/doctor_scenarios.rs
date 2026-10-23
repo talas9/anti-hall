@@ -131,10 +131,12 @@ impl Sc {
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
         copy_dir(&real.join("statusline"), &p.join("statusline"));
         // the libraries the DevSwarm hook self-tests run through: read-only links to the real ones (a test that edits one copies it first)
-        for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+        for dir in ["scripts", "skills", "agents", "assets", "monitors", "docs"] {
             symlink(real.join(dir), p.join(dir)).unwrap();
         }
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
+        // the Node tree sits beside the plugin (`nodeback.node_dir`); a copy, because tests remove and rewrite files in it
+        copy_dir(&real.join("../anti-hall-node"), &self.root.join("anti-hall-node"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());
         // the real `claude doctor` is not run from a test: the PATH has only the tools the doctor needs
@@ -1600,9 +1602,7 @@ fn ds_the_hook_tests_must_pass_and_no_syntax_check_starts_node() {
     sc.own_plugin();
     sc.stub_engine("0.1.0");
     sc.programs(&[], &[]);
-    // the hooks the self-tests run need the companion libraries and the scripts beside them
-    fs::remove_file(sc.plugin.join("companion")).unwrap();
-    copy_dir(&real_plugin().join("companion"), &sc.plugin.join("companion"));
+    // the hooks the self-tests run need the companion libraries and the scripts beside them: the staged Node tree has them
     // the engine doctor starts no Node, so it does not syntax-check the supervisor scripts
     let live = sc.plugin.join("../anti-hall-node/companion/lib/liveness.js");
     fs::write(&live, "function (((\n").unwrap();

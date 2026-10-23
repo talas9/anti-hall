@@ -281,7 +281,7 @@ pub(super) fn finish(o: std::process::Output) -> Out {
 
 pub(super) fn run_node(w: &World, o: &Opt, args: &[&str]) -> Out {
     let mut cmd = Command::new("node");
-    cmd.arg(plugin().join("skills/update/scripts/update.js")).args(args).current_dir(&w.home);
+    cmd.arg(plugin_node().join("skills/update/scripts/update.js")).args(args).current_dir(&w.home);
     envs(&mut cmd, w, o);
     finish(cmd.output().unwrap())
 }
