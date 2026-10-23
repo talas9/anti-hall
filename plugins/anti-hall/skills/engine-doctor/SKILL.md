@@ -11,14 +11,14 @@ Health check, repair, migrations and capability scans.
 
 | Verb | What it does | Roles |
 |---|---|---|
-| `ah-engine briefing` | `[--root <plugin dir>]` A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its... | main, codex, workspace, subagent |
-| `ah-engine capability-scan` | `[--root <plugin dir>]` A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped... | main, codex, workspace, subagent |
-| `ah-engine defect` | `<report\|list\|show\|rule\|archive\|backfill\|recurring\|similar> [flags] [--json]` File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list... | main, codex, workspace, subagent (owner args: rule, archive) |
+| `ah-engine briefing` | `[--root <plugin dir>]` A derived inventory of a plugin tree: every registered hook by event with the purpose from its own header comment, the skills, the... | main, codex, workspace, subagent |
+| `ah-engine capability-scan` | `[--root <plugin dir>]` A read-only gap report: for each opt-in capability of a plugin tree, whether it is shipped and whether it is active on this machine, and... | main, codex, workspace, subagent |
+| `ah-engine defect` | `<report\|list\|show\|rule\|archive\|backfill\|recurring\|similar> [flags] [--json]` File, list, show and rule anti-hall defect reports and query the bug history: `report`, `list [--mine|--open|--unfinished]`, `show... | main, codex, workspace, subagent (owner args: rule, archive) |
 | `ah-engine doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>] [--repair-ingest-orphans] [--repair-test-stores] [--repair-resurrected] [--apply]` The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the... | main, codex, workspace, subagent (owner args: --repair, --fix) |
-| `ah-engine harvest` | `[--dir <path>] [--stale-days <n>]` Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of... | main, codex, workspace, subagent |
+| `ah-engine harvest` | `[--dir <path>] [--stale-days <n>]` Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax, and flag the ones with no payback... | main, codex, workspace, subagent |
 | `ah-engine install-codex` | `[--global] [--dry-run] [--root <plugin dir>]` Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into... | main, codex |
 | `ah-engine migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state,... | main, codex |
-| `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty... | main, codex |
+| `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history... | main, codex |
 | `ah-engine refresh` | `[--force] [--home <dir>]` Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert),... | main, codex |
 | `ah-engine engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` Update the engine binary: runs the thin client's updater (ah-hook update) with the given arguments (--from FILE [--sha256 X] [--yes] |... | main, codex |
 
@@ -26,9 +26,9 @@ Health check, repair, migrations and capability scans.
 
 - `failure-root-cause-nudge`: Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals...
 - `fable-availability`: SessionStart: records whether a Fable model is available (from the host's model cache) in ~/.anti-hall/fable-availability.json and tells...
-- `version-alert`: SessionStart advisory: a newer anti-hall release is available or already mirrored locally (port of version-alert.js); a stale remote...
-- `claude-cli-version`: SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version (port of claude-cli-version.js); a stale...
-- `repo-self-drift`: SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago (port of...
+- `version-alert`: SessionStart advisory: a newer anti-hall release is available or already mirrored locally; a stale remote cache defers to Node, which...
+- `claude-cli-version`: SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version; a stale cache defers to Node, which...
+- `repo-self-drift`: SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago
 - `defect-nudge`: SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project...
 - `engine-role-guard`: PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload,...
 - `engine-role-note`: SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the...
@@ -45,7 +45,7 @@ Health check, repair, migrations and capability scans.
 - `versionAlerts.devswarm` = true: Switch: alert when the DevSwarm CLI drifted from the verified version (versionAlerts.devswarm)
 - `guards.repoSelfDrift` = true: Switch: anti-hall's own repo-drift self-check (guards.repoSelfDrift)
 - `versionAlerts.antiHall` = true: Switch: alert when a newer anti-hall release is available (versionAlerts.antiHall)
-- `guards.stopHookVersionDowngrade` = true: Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js)
+- `guards.stopHookVersionDowngrade` = true: Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on)
 - `maintenance.repairOnReload` = true: The switch maintenance.repairOnReload (on by default)
 - `codexNudge.enabled` = true: Where the Codex nudge switch is read from (codexNudge.enabled, default on)
 - `guards.codexQuotaDetect` = true: Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on)
