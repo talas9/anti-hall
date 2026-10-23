@@ -46,4 +46,21 @@ fn the_shims_have_no_node_and_run_the_engine_mesh_verb_without_node_on_the_path(
     assert!(!se.contains("node: command not found") && !se.contains("env: node"), "the shim reached for node: {se}");
     assert!(out.status.code().is_some(), "the shim ran to an exit code: {so} {se}");
     eprintln!("mesh workspaces via the shim: code {:?}\n{so}{se}", out.status.code());
+
+    // the command the guards print as their override (`<shim> skip <guard>`) runs with no node on the PATH, exits 0 and records the skip
+    let out = Command::new(engine_cli(&h))
+        .args(["skip", "edit-guard"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &home)
+        .env("AH_ENGINE_DIR", home.join("state"))
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .current_dir(&home)
+        .output()
+        .unwrap();
+    let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "the printed skip command runs: {so} {se}");
+    let skip = std::fs::read_to_string(home.join(".anti-hall/skip.json")).unwrap_or_default();
+    assert!(skip.contains("edit-guard"), "the skip is recorded: {skip:?} {so} {se}");
 }

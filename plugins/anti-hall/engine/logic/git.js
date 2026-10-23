@@ -117,8 +117,9 @@ function gmKey(key, args) {
   return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
 }
 function skipCmd(k) {
-  const script = ah.cfg('git.skip_script');
-  return text.render(ah.cfg('git.skip_command'), { script: (S.pluginRoot + '/' + script).split("'").join("'\\''"), key: k });
+  // the engine's executable DevSwarm shim under the home (it runs the engine's own `skip`; no Node is involved)
+  const cli = text.render(ah.cfg('devswarm_role.engine_cli'), { home: ah.env.get(ah.cfg('env.home')) || '' });
+  return text.render(ah.cfg('git.skip_command'), { script: cli.split("'").join("'\\''"), key: k });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -879,8 +879,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.setting_heredoc_data` | `6 entries` |  |  | Switch for data-heredoc masking. |
 | `git.setting_reused_message` | `6 entries` |  |  | Switch for the reused-commit-message check. |
 | `git.shell_verbs` | `bash, sh, zsh, dash, ksh, ash` |  |  | Shell programs whose `-c` argument is itself a script to scan. |
-| `git.skip_command` | `node '{script}' skip {key}` |  |  | Command that records a skip for a guard; {script} is the quoted script path and {key} the guard id. |
-| `git.skip_script` | `../anti-hall-node/scripts/devswarm.js` |  |  | Script, relative to the plugin directory, that records a skip for a guard. |
+| `git.skip_command` | `'{script}' skip {key}` |  |  | Command that records a skip for a guard; {script} is the engine shim path (quote-escaped, put inside single quotes here) and {key} the guard id. |
 | `git.word_alias` | `alias` |  |  | The word for a shell alias in notes. |
 | `git.word_function` | `function` |  |  | The word for a shell function in notes. |
 | `git.wrapper_value_opts` | `3 entries` |  |  | Options of the sudo, timeout and nice wrappers that take a value, so the word after them is not the wrapped command (git-guard.js SUDO_VAL and the timeout and nice branches). |
@@ -943,7 +942,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.codex_subagent` | `a sub-agent (spawn_agent)` |  |  | How the block messages name a worker on Codex (host-text.js CODEX_SUBAGENT). |
 | `command.control_keyword_prefix` | `^\s*(?:(?:do\|then\|else\|if\|while\|until\|!)\s+)+` |  |  | Leading shell keywords stripped before a segment is judged (command-guard.js CONTROL_KEYWORD_PREFIX_RE). |
 | `command.curl_bare_flags` | `--silent, --show-error, --fail` |  |  | Valueless curl flags of the token-authorized silent GET. |
-| `command.devswarm_cli_rel` | `../anti-hall-node/scripts/devswarm.js` |  |  | The devswarm CLI, relative to the plugin root. |
 | `command.devswarm_cli_verbs` | `hivecontrol, devswarm` |  |  | If any segment the DevSwarm read/send guards scan has one of these as its effective verb, the engine defers (command-guard.js DEVSWARM_CLI_VERBS). |
 | `command.devswarm_inbox_dir` | `inbox` |  |  | The inbox directory under the DevSwarm root (a raw read is blocked). |
 | `command.devswarm_root_rel` | `.anti-hall/devswarm` |  |  | The DevSwarm state root under the home directory. |
@@ -1024,7 +1022,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.msg_edit_notes` | `session notes/reports in .anti-hall/history/** or the scratchpad; repo docs n...` |  |  | What stays allowed (Claude). |
 | `command.msg_edit_notes_codex` | `session notes/reports in .anti-hall/history/**; repo docs need {sub} or a tru...` |  |  | What stays allowed (Codex). |
 | `command.msg_edit_override` | `{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry` |  |  | The override line ({skip} is the command above). |
-| `command.msg_edit_skip_cmd` | `node {cli} skip edit-guard` |  |  | The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path). |
+| `command.msg_edit_skip_cmd` | `{cli} skip edit-guard` |  |  | The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path). |
 | `command.msg_edit_what` | `Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write) blocked: the {who}...` |  |  | Heading of the Bash edit parity block ({who} is the next text). |
 | `command.msg_edit_who_coord` | `coordinator` |  |  | Who is blocked otherwise. |
 | `command.msg_edit_who_orch` | `orchestrator` |  |  | Who is blocked when DevSwarm is active. |

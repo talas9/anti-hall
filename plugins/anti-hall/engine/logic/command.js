@@ -672,10 +672,8 @@ LIB['./lib/jev-assist.js'] = { scrubSecrets: function (t) { return ah.scrub(t); 
 
 LIB['./lib/skip-cmd.js'] = {
   skipCommand: function (key) {
-    // the plugin's own devswarm CLI, quoted; the plugin root must be known to name it
-    var real = S.pluginRoot ? ah.fs.realpath(S.pluginRoot) : null;
-    if (real === null) { ah.unable('command:skip_cmd_root'); real = S.pluginRoot || ''; } // the CLI is named from the plugin root as given
-    var cli = path.join(real, ah.cfg('command.devswarm_cli_rel'));
+    // the engine's executable DevSwarm shim under the home, quoted (it runs the engine's own `skip`; no Node is involved)
+    var cli = text.render(ah.cfg('devswarm_role.engine_cli'), { home: ah.env.get(ah.cfg('env.home')) || '' });
     return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), { cli: "'" + cli.replace(/'/g, "'\\''") + "'" });
   },
 };

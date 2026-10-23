@@ -65,17 +65,27 @@ fn strs(v: &[String]) -> OVal {
     OVal::Arr(v.iter().map(|x| s(x)).collect())
 }
 
+/// The `i`-th configured text, empty when the list is shorter than expected (a short config list must not panic the verb).
+fn nth<'a>(v: &[&'a str], i: usize) -> &'a str {
+    v.get(i).copied().unwrap_or("")
+}
+
+/// Capture group `i` of a match, empty when the group did not take part.
+fn cap<'a>(c: &regex::Captures<'a>, i: usize) -> &'a str {
+    c.get(i).map_or("", |m| m.as_str())
+}
+
 // ---- argv ----------------------------------------------------------------------------------------------------------------
 
 /// `hasSpawnFlag(rest, short, long)`.
 fn has_flag(rest: &[&str], pair: &[&str]) -> bool {
-    let (short, long) = (pair[0], pair[1]);
+    let (short, long) = (nth(pair, 0), nth(pair, 1));
     rest.iter().any(|a| *a == short || *a == long || a.starts_with(&format!("{long}=")))
 }
 
 /// `extractFlagValue(rest, short, long)`: the first match's value.
 fn flag_value(rest: &[&str], pair: &[&str]) -> Option<String> {
-    let (short, long) = (pair[0], pair[1]);
+    let (short, long) = (nth(pair, 0), nth(pair, 1));
     for (i, a) in rest.iter().enumerate() {
         if *a == short || *a == long {
             return rest.get(i + 1).map(|v| (*v).to_string());
@@ -155,7 +165,7 @@ fn default_branch_ref(runner: &dyn Runner, cwd: &str) -> Option<String> {
     if !r.ok() {
         return None;
     }
-    re("devswarm_cli.sp_default_ref_re", false).captures(js_trim(&r.stdout)).map(|c| c[1].to_string())
+    re("devswarm_cli.sp_default_ref_re", false).captures(js_trim(&r.stdout)).map(|c| cap(&c, 1).to_string())
 }
 
 /// The repository's common git dir (shared by its worktrees), or `None`.
@@ -302,7 +312,7 @@ fn source_freshness(inv: &Inv, runner: &dyn Runner, rest: &[&str]) -> SourceChec
         }
     };
     let words = tl("devswarm_cli.sp_commit_words");
-    let plural = |k: i64| if k == 1 { words[0] } else { words[1] };
+    let plural = |k: i64| if k == 1 { nth(&words, 0) } else { nth(&words, 1) };
     // a submodule's stale default branch says so (it is named by its path in the superproject)
     let submodule = ident::resolve_context(cwd, false).ok().and_then(|c| {
         let sub = c.kind.starts_with(defaults::text("mesh_write.kind_submodule_prefix"));
@@ -340,7 +350,7 @@ fn source_freshness(inv: &Inv, runner: &dyn Runner, rest: &[&str]) -> SourceChec
         Some(at) => {
             let dirty = git_in(runner, &at, &tl("devswarm_cli.sp_git_status"), quick).out();
             if dirty.as_deref() != Some("") {
-                let mod_dir = re("devswarm_cli.sp_moddir_re", false).captures(&at).map(|c| c[1].to_string());
+                let mod_dir = re("devswarm_cli.sp_moddir_re", false).captures(&at).map(|c| cap(&c, 1).to_string());
                 if submodule.is_some() || mod_dir.is_some() {
                     let line = match (&submodule, mod_dir) {
                         (Some(_), _) | (None, None) => stale.clone(),
@@ -389,7 +399,8 @@ fn js_parse_int(x: &str) -> Option<i64> {
 /// `submodulePathsFor(cwd)`: the `path = ...` of every submodule `.gitmodules` declares, `None` when there is none.
 fn submodule_paths(cwd: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(Path::new(cwd).join(t("devswarm_cli.sp_gitmodules"))).ok()?;
-    let paths: Vec<String> = jsre::compile_multiline(t("devswarm_cli.sp_gitmodules_path_re"), false).captures_iter(&text).map(|c| c[1].to_string()).collect();
+    let paths: Vec<String> =
+        jsre::compile_multiline(t("devswarm_cli.sp_gitmodules_path_re"), false).captures_iter(&text).map(|c| cap(&c, 1).to_string()).collect();
     (!paths.is_empty()).then_some(paths)
 }
 
@@ -399,8 +410,8 @@ fn submodule_git_dir(common: &str, wt: &str, sub: &str) -> PathBuf {
     if let Ok(text) = std::fs::read_to_string(Path::new(wt).join(t("devswarm_cli.sp_gitmodules"))) {
         let path_re = jsre::compile_multiline(t("devswarm_cli.sp_gitmodules_path_re"), false);
         for c in re("devswarm_cli.sp_gitmodules_section_re", false).captures_iter(&text) {
-            if path_re.captures(&c[2]).is_some_and(|p| &p[1] == sub) {
-                let cand = modules.join(&c[1]);
+            if path_re.captures(cap(&c, 2)).is_some_and(|p| cap(&p, 1) == sub) {
+                let cand = modules.join(cap(&c, 1));
                 if cand.exists() {
                     return cand;
                 }
@@ -430,20 +441,20 @@ fn fetch_missing_commit(runner: &dyn Runner, mod_git: &str, sha: &str) -> Result
     };
     let f1 = git_in(runner, mod_git, &tl("devswarm_cli.sp_git_fetch_origin"), long);
     if f1.status != Some(0) {
-        errs.push(why(&f1, texts[0]));
+        errs.push(why(&f1, nth(&texts, 0)));
     }
     if have() {
         return Ok(true);
     }
     let f2 = git_in(runner, mod_git, &with(&tl("devswarm_cli.sp_git_fetch_origin"), &[sha]), long);
     if f2.status != Some(0) {
-        errs.push(why(&f2, texts[1]));
+        errs.push(why(&f2, nth(&texts, 1)));
     }
     if have() {
         return Ok(true);
     }
     let joined = errs.into_iter().filter(|e| !e.is_empty()).collect::<Vec<_>>().join("; ");
-    Err(if joined.is_empty() { texts[2].to_string() } else { joined })
+    Err(if joined.is_empty() { nth(&texts, 2).to_string() } else { joined })
 }
 
 /// `preflightSubmoduleCommits(cwd, rest)`: `(fetched [(path, sha)], failed [(path, sha, error)])`.
@@ -501,7 +512,7 @@ impl Failure {
 /// The byte index `units` UTF-16 code units before `idx` (JavaScript's `slice` counts those).
 fn back_utf16(text: &str, idx: usize, units: usize) -> usize {
     let mut left = units;
-    for (i, c) in text[..idx].char_indices().rev() {
+    for (i, c) in text.get(..idx).unwrap_or("").char_indices().rev() {
         let w = c.len_utf16();
         if w > left {
             return i + c.len_utf8();
@@ -519,16 +530,16 @@ fn echoes(text: &str) -> Vec<&str> {
     let head = t("devswarm_cli.sp_echo_head");
     let mut out = Vec::new();
     let mut from = 0usize;
-    while let Some(p) = text[from..].find(head) {
+    while let Some(p) = text.get(from..).unwrap_or("").find(head) {
         let start = from + p;
         let after = start + head.len();
-        if text[after..].chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if text.get(after..).unwrap_or("").chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
             from = after;
             continue;
         }
-        let rest = &text[after..];
+        let rest = text.get(after..).unwrap_or("");
         let stop = [rest.find("\\n"), rest.find('\n')].into_iter().flatten().min().unwrap_or(rest.len());
-        out.push(&text[start..after + stop]);
+        out.push(text.get(start..after + stop).unwrap_or(""));
         from = after + stop;
         if from >= text.len() {
             break;
@@ -550,11 +561,11 @@ fn parse_failures(raw: &str, stderr: &str, cwd: &str) -> Vec<Failure> {
     let keys = tl("devswarm_cli.sp_fail_key_prefixes");
     let mut seen: Vec<String> = Vec::new();
     for c in re("devswarm_cli.sp_fail_exists_re", false).captures_iter(&text) {
-        let p = c[1].to_string();
+        let p = cap(&c, 1).to_string();
         if !(known(&p) || mentions_worktree) {
             continue;
         }
-        let key = format!("{}{p}", keys[0]);
+        let key = format!("{}{p}", nth(&keys, 0));
         if seen.contains(&key) {
             continue;
         }
@@ -570,23 +581,23 @@ fn parse_failures(raw: &str, stderr: &str, cwd: &str) -> Vec<Failure> {
         if exists_line.is_match(whole) {
             continue;
         }
-        let line = js_trim(&c[1]).to_string();
+        let line = js_trim(cap(&c, 1)).to_string();
         let mentions_path = paths.as_ref().is_some_and(|ps| ps.iter().any(|sp| line.contains(sp.as_str())));
         let idx = c.get(0).map_or(0, |m| m.start());
-        let before = &text[back_utf16(&text, idx, tnum("devswarm_cli.sp_fail_lookback") as usize)..idx];
+        let before = text.get(back_utf16(&text, idx, tnum("devswarm_cli.sp_fail_lookback") as usize)..idx).unwrap_or("");
         let echo = echoes(before).last().copied();
-        let after_echo = echo.and_then(|e| before.rfind(e).map(|at| &before[at + e.len()..])).unwrap_or("");
+        let after_echo = echo.and_then(|e| before.rfind(e).map(|at| before.get(at + e.len()..).unwrap_or(""))).unwrap_or("");
         let tied = echo.is_some() && !after_echo.contains(fatal);
         if !(worktree_word.is_match(&line) || mentions_path || tied) {
             continue;
         }
         let mut fail_path = None;
         if tied && let Some(pm) = echo.and_then(|e| echo_path.captures(e)) {
-            let p = &pm[1];
+            let p = cap(&pm, 1);
             let p = p.strip_prefix(['\'', '"']).unwrap_or(p);
             fail_path = Some(p.strip_suffix(['\'', '"']).unwrap_or(p).to_string());
         }
-        let key = format!("{}{line}", keys[1]);
+        let key = format!("{}{line}", nth(&keys, 1));
         if seen.contains(&key) {
             continue;
         }
@@ -620,7 +631,7 @@ fn repair_one(runner: &dyn Runner, f: &Failure, text: &str, branch: &str, sub_pa
     if f.error != t("devswarm_cli.sp_fail_already_exists") && !missing_object {
         return Ok(None);
     }
-    let wt = &p[..p.len() - (sub.len() + 1)];
+    let wt = p.get(..p.len().saturating_sub(sub.len() + 1)).unwrap_or("");
     let Some(common) = common_dir(wt) else { return Ok(None) };
     let mod_git = submodule_git_dir(&common, wt, sub);
     let mod_git_s = mod_git.to_string_lossy().to_string();
@@ -632,7 +643,7 @@ fn repair_one(runner: &dyn Runner, f: &Failure, text: &str, branch: &str, sub_pa
     let mut b = branch.to_string();
     let mut sha: Option<String> = None;
     let pat = t("devswarm_cli.sp_echo_add_re").replace("{path}", &regex::escape(p));
-    if let Some(cm) = regex::Regex::new(&pat).ok().and_then(|r| r.captures(text).map(|c| (c[1].to_string(), c[2].to_string()))) {
+    if let Some(cm) = regex::Regex::new(&pat).ok().and_then(|r| r.captures(text).map(|c| (cap(&c, 1).to_string(), cap(&c, 2).to_string()))) {
         b = cm.0;
         sha = Some(cm.1);
     }
@@ -640,7 +651,12 @@ fn repair_one(runner: &dyn Runner, f: &Failure, text: &str, branch: &str, sub_pa
         return Ok(None);
     }
     if sha.is_none() {
-        let g = git_in(runner, wt, &with(&tl("devswarm_cli.sp_git_branch_exists")[..1], &[&format!("{}:{sub}", t("devswarm_cli.sp_head_ref"))]), long);
+        let g = git_in(
+            runner,
+            wt,
+            &with(tl("devswarm_cli.sp_git_branch_exists").get(..1).unwrap_or(&[]), &[&format!("{}:{sub}", t("devswarm_cli.sp_head_ref"))]),
+            long,
+        );
         let v = js_trim(&g.stdout).to_string();
         if g.status == Some(0) && re("devswarm_cli.sp_sha_re", false).is_match(&v) {
             sha = Some(v);
@@ -779,7 +795,7 @@ fn to_base36(mut v: u64) -> String {
     let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut out = Vec::new();
     loop {
-        out.push(digits[(v % 36) as usize]);
+        out.push(digits.get((v % 36) as usize).copied().unwrap_or(b'0'));
         v /= 36;
         if v == 0 {
             break;
@@ -830,12 +846,13 @@ fn created_path(raw: &str) -> Option<String> {
         return None;
     }
     // `parsed.path || parsed.worktreePath || (nested && (nested.path || nested.worktreePath))`: the first truthy one, then a string check
-    let top = keys[1..].iter().find_map(|k| v.get(k).filter(|x| x.truthy()).cloned());
+    let top = keys.get(1..).unwrap_or(&[]).iter().find_map(|k| v.get(k).filter(|x| x.truthy()).cloned());
     let found = match top {
         Some(x) => Some(x),
-        None => {
-            v.get(keys[0]).filter(|n| matches!(n, OVal::Obj(_))).and_then(|nested| keys[1..].iter().find_map(|k| nested.get(k).filter(|x| x.truthy()).cloned()))
-        }
+        None => v
+            .get(nth(&keys, 0))
+            .filter(|n| matches!(n, OVal::Obj(_)))
+            .and_then(|nested| keys.get(1..).unwrap_or(&[]).iter().find_map(|k| nested.get(k).filter(|x| x.truthy()).cloned())),
     };
     match found {
         Some(OVal::Str(p)) if !p.is_empty() => Some(p),
@@ -872,7 +889,7 @@ fn write_plan(inv: &Inv, runner: &dyn Runner, rest: &[&str], wt: Option<&str>, m
     let reasons = tl("devswarm_cli.sp_plan_reasons");
     let failed = |e: String| {
         let mut o = Obj::default();
-        o.put("written", OVal::Bool(false)).put("reason", s(reasons[2])).put("error", s(&e));
+        o.put("written", OVal::Bool(false)).put("reason", s(nth(&reasons, 2))).put("error", s(&e));
         o.done()
     };
     let steps = match planverbs::parse_steps(&brief) {
@@ -913,7 +930,9 @@ fn write_plan(inv: &Inv, runner: &dyn Runner, rest: &[&str], wt: Option<&str>, m
         }
         (empty, _, _) => {
             let mut o = Obj::default();
-            o.put("written", OVal::Bool(false)).put("reason", s(if empty { reasons[1] } else { reasons[0] })).put("hint", s(t("devswarm_cli.sp_plan_hint")));
+            o.put("written", OVal::Bool(false))
+                .put("reason", s(if empty { nth(&reasons, 1) } else { nth(&reasons, 0) }))
+                .put("hint", s(t("devswarm_cli.sp_plan_hint")));
             if setting(inv, "devswarm_cli.sp_set_plan_required").as_bool() == Some(true) {
                 o.put("required", OVal::Bool(true));
             }
@@ -924,7 +943,7 @@ fn write_plan(inv: &Inv, runner: &dyn Runner, rest: &[&str], wt: Option<&str>, m
 
 /// `parseScope(text)`: the globs of the first `scope:` line.
 fn re_scope(brief: &str) -> Vec<String> {
-    jsre::compile_multiline(t("devswarm_cli.sp_scope_re"), true).captures(brief).map(|c| planverbs::split_globs(&c[1])).unwrap_or_default()
+    jsre::compile_multiline(t("devswarm_cli.sp_scope_re"), true).captures(brief).map(|c| planverbs::split_globs(cap(&c, 1))).unwrap_or_default()
 }
 
 /// The launch-evidence poll (`checkSpawnLaunch`): `{launched, evidence, waitedMs, windowMs[, launchWindowClamped, launchWindowRequestedMs]}`.
@@ -959,7 +978,7 @@ fn check_launch(inv: &Inv, mesh_id: &str, since: i64) -> Launch {
         devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{mesh_id}{}", defaults::text("mesh_write.json_suffix")));
     let evidence_now = || -> Option<&'static str> {
         if crate::dssup::liveness::heartbeat_ts(&inv.home, mesh_id).is_some_and(|ts| ts.is_finite() && ts >= since as f64) {
-            return Some(ev[0]);
+            return Some(nth(&ev, 0));
         }
         if let Some(st) = &store
             && let Ok(rows) = st.reader().roster()
@@ -976,14 +995,14 @@ fn check_launch(inv: &Inv, mesh_id: &str, since: i64) -> Launch {
                 _ => true,
             };
             if set("sessionId") {
-                return Some(ev[1]);
+                return Some(nth(&ev, 1));
             }
             if set("inboxPath") {
-                return Some(ev[2]);
+                return Some(nth(&ev, 2));
             }
         }
         if ident::read_descriptor(&inv.home, mesh_id).is_some() && mtime_ms(&desc_path).is_some_and(|m| m >= since as f64) {
-            return Some(ev[3]);
+            return Some(nth(&ev, 3));
         }
         None
     };
@@ -1181,7 +1200,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
     let preflight = preflight_submodules(runner, &inv.cwd, rest);
     let preflight_ms = clock(inv) - pre_start;
     let create_start = clock(inv);
-    let res = gated_call(inv, runner, defaults::list("devswarm_act.argv_create")[1], &args, std::time::Duration::from_millis(timeout_ms));
+    let res = gated_call(inv, runner, nth(&defaults::list("devswarm_act.argv_create"), 1), &args, std::time::Duration::from_millis(timeout_ms));
     let create_ms = clock(inv) - create_start;
     if !res.call.ok {
         let error = if res.call.timed_out {
@@ -1218,7 +1237,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
         if registered && let Some(title) = title.as_deref().filter(|x| !x.is_empty()) {
             let mut targs: Vec<&str> = tl("devswarm_cli.sp_hc_update_title");
             targs.extend([branch, title]);
-            let verb = targs[1];
+            let verb = nth(&targs, 1);
             titled = gated_call(inv, runner, verb, &targs, defaults::millis("devswarm_cli.hc_unbounded_ms")).call.ok;
             if titled {
                 crate::dssup::appsync::state::write_name(&inv.home, &id, title, clock(inv));
@@ -1333,7 +1352,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
         let note = if failures.is_empty() {
             String::new()
         } else {
-            let what = failures[0].path.clone().unwrap_or_else(|| failures[0].error.clone());
+            let what = failures.first().map(|f| f.path.clone().unwrap_or_else(|| f.error.clone())).unwrap_or_default();
             tpl("devswarm_cli.sp_launch_submodule_note", &[("what", &what)])
         };
         let target = mesh_id.clone().unwrap_or_else(|| branch.to_string());

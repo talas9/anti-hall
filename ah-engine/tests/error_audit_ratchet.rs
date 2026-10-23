@@ -167,10 +167,7 @@ fn indexing_slicing_count_only_goes_down() {
         let text = code_only(&non_test_text(&file));
         count += indexing_sites(&text);
     }
-    // 1337 -> 1392 for v0.301.0: the Node-to-engine ports added native modules (dev: 1152 sites). About half of the new sites are
-    // string-key lookups on a serde_json::Value in the sampled files, which answer Null and cannot panic. New indexing in them
-    // should still go to .get(); this number only goes down from here.
-    assert!(count <= 1392, "indexing/slicing ratchet is {count}, expected <= 1392");
+    assert!(count <= 1337, "indexing/slicing ratchet is {count}, expected <= 1337");
 }
 
 fn indexing_sites(text: &str) -> usize {

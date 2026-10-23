@@ -444,15 +444,11 @@ value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or
 
 [command.msg_edit_skip_cmd]
 doc = "The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path)."
-value = "node {cli} skip edit-guard"
+value = "{cli} skip edit-guard"
 
 [command.msg_edit_override]
 doc = "The override line ({skip} is the command above)."
 value = "{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
-
-[command.devswarm_cli_rel]
-doc = "The devswarm CLI, relative to the plugin root."
-value = "../anti-hall-node/scripts/devswarm.js"
 
 [command.cd_delims]
 doc = "The delimiters after which a leading cd carries into the next segment (command-guard.js cdAwareContexts)."

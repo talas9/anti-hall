@@ -574,11 +574,8 @@ pub(super) fn golden_report(check: &str, limit: usize) {
         let got = golden::verdict_json(&got, &l);
         // a frozen "defer" (the script could not answer; Node was to decide) is now decided by the check's failure policy: an allow, or a block for a fail-closed guard
         let policy = c["expect"] == json!({"v": "defer"}) && (got == json!({"v": "allow"}) || got["v"] == "block");
-        // the one declared intended difference (a1cc0db2): the frozen Node text tells agents to run `node scripts/devswarm.js`, the
-        // engine names the shim that needs no Node
-        let expect: serde_json::Value = serde_json::from_str(&c["expect"].to_string().replace("node scripts/devswarm.js", "~/.anti-hall/bin/devswarm.js"))
-            .unwrap_or_else(|_| c["expect"].clone());
-        let mut ok = got == expect || policy;
+        let expect = golden::intended(&c["expect"]);
+        let mut ok = golden::intended(&got) == expect || policy;
         if ok && c.get("watch").is_some() {
             let w = golden::watched_all_pub(c, &l);
             ok = w == c["writes"];

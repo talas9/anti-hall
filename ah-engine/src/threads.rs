@@ -202,12 +202,18 @@ pub fn snapshot_json() -> Value {
 /// busiest first, and every work counter per second. A thread born inside the window counts from zero.
 pub fn report(a: &Value, b: &Value, wall_us: u64) -> Value {
     let wall = wall_us.max(1) as f64;
-    let before = |tid: u64| a["threads"].as_array().and_then(|v| v.iter().find(|t| t["tid"] == json!(tid))).and_then(|t| t["cpu_us"].as_u64()).unwrap_or(0);
+    let before = |tid: u64| {
+        a.get("threads")
+            .and_then(Value::as_array)
+            .and_then(|v| v.iter().find(|t| t.get("tid") == Some(&json!(tid))))
+            .and_then(|t| t.get("cpu_us")?.as_u64())
+            .unwrap_or(0)
+    };
     let mut rows: Vec<(String, u64, f64, u64)> = Vec::new();
-    for t in b["threads"].as_array().map(Vec::as_slice).unwrap_or_default() {
-        let (tid, cpu) = (t["tid"].as_u64().unwrap_or(0), t["cpu_us"].as_u64().unwrap_or(0));
+    for t in b.get("threads").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
+        let (tid, cpu) = (t.get("tid").and_then(Value::as_u64).unwrap_or(0), t.get("cpu_us").and_then(Value::as_u64).unwrap_or(0));
         let d = cpu.saturating_sub(before(tid));
-        rows.push((t["name"].as_str().unwrap_or_default().to_string(), tid, 100.0 * d as f64 / wall, cpu));
+        rows.push((t.get("name").and_then(Value::as_str).unwrap_or_default().to_string(), tid, 100.0 * d as f64 / wall, cpu));
     }
     rows.sort_by(|x, y| y.2.total_cmp(&x.2));
     let round = |p: f64| (p * 100.0).round() / 100.0;
