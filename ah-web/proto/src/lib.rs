@@ -84,6 +84,9 @@ pub struct Pulse {
     /// The plugin version the engine loaded (`CTL pulse` `plugin_version`); empty when not reported.
     #[serde(default)]
     pub plugin_version: String,
+    /// The build version the hook client (ah-hook) last reported to the engine; empty before its first call.
+    #[serde(default)]
+    pub hook_version: String,
 }
 
 /// One line of the activity feed, already in plain language.

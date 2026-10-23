@@ -197,14 +197,17 @@ fn asks_for_help(args: &[String]) -> bool {
 
 /// Run the command line (arguments after the program name); returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
-    let p = parse(args);
+    let mut p = parse(args);
+    if p.command == "--version" {
+        p.command = "version".into();
+    }
     // the registry itself is a shipped table, so the defaults are loaded first. The thin hook client reads the daemon's snapshot
     // cache (parsing the plugin's files per call would double its start-up, D17); everything else reads the files.
     let hook = p.command == "hook";
     // the version is a build fact, not a setting: it answers before (and without) any defaults, so a smoke test needs no plugin root
     if p.command == "version" {
         defaults::use_cache();
-        let v = if defaults::init().is_ok() { crate::version() } else { env!("CARGO_PKG_VERSION").to_string() };
+        let v = if defaults::init().is_ok() { crate::version() } else { crate::build_version().to_string() };
         emit(&p, v.clone(), json!({"version": v}));
         return 0;
     }
