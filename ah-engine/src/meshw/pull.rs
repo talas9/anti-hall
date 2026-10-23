@@ -1429,4 +1429,23 @@ mod tests {
         assert!(within("read_descriptor", move || read_descriptor(&home, "w1").is_none()));
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
+
+    #[test]
+    fn a_descriptor_field_that_is_not_text_is_the_verbs_own_refusal() {
+        let d = OVal::parse(r#"{"sessionId":7,"worktreePath":null,"inboxPath":"/x"}"#).unwrap();
+        assert_eq!(text_or_null(&d, "worktreePath").unwrap(), None);
+        assert_eq!(text_or_null(&d, "inboxPath").unwrap().as_deref(), Some("/x"));
+        let Err(refusal) = text_or_null(&d, "sessionId") else { panic!("a numeric field must be refused") };
+        let body = ident::refusal_body(&refusal).expect("a refusal, not a deferral");
+        let o = OVal::parse(body).unwrap();
+        assert!(matches!(o.get("ok"), Some(OVal::Bool(false))));
+        assert!(matches!(o.get("error"), Some(OVal::Str(e)) if e.contains("sessionId")));
+    }
+
+    #[test]
+    fn a_sweep_hold_names_its_reason_from_the_settings() {
+        for k in ["mesh_write.held_wal_unreadable", "mesh_write.held_wal_spilled", "mesh_write.held_wal_foreign"] {
+            assert!(!defaults::text(k).is_empty(), "{k}");
+        }
+    }
 }
