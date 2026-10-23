@@ -51,6 +51,14 @@ value = { args = "", read_only = true, status = "implemented" }
 doc = "Send a control verb (with its arguments) to the daemon: ping, reload, stop, status, or profile (switch per-check CPU and allocation profiling on for a limited time, off, or report it)."
 value = { args = "<ping|reload|stop|status|profile on [sample|full] [--for <dur>]|profile off|profile status>", read_only = false, status = "implemented" }
 
+[cmd.topology]
+doc = "The system topology for the dashboard: the hook clients, the engine, its stores (config, state, logs, databases, transcript reads) and its thread groups as nodes and links, with per-client calls, latency p50/p95, timeouts, fail-opens and cold starts, per-store reads, writes, bytes, errors and last access, per-worker busy time and queue depth, a health word per node, and the registry's own measured overhead. The registry lives in the daemon, so with none running it says so."
+value = { args = "[--json]", read_only = true, status = "implemented" }
+
+[cmd.node]
+doc = "Dashboard node actions, each audited in telemetry and the action log: `agent request-progress <session> [--text <t>]` queues a progress request through the reminder and wake route, `agent ping-heartbeat <session>` reports whether the session is live, its wake stamp and its reminder backlog; `proc list|status [name]` shows the engine's managed processes and `proc stop|restart <name> --confirm` acts on the recorded pid only (verified against its start stamp and executable, SIGTERM only); `engine reload-config` asks the running daemon to reload its configuration."
+value = { args = "<agent|proc|engine> <action> [target] [--confirm] [--text <t>] [--json]", read_only = false, status = "implemented" }
+
 [cmd.stop]
 doc = "Ask the daemon to drain and exit."
 value = { args = "", read_only = false, status = "implemented" }

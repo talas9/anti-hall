@@ -63,12 +63,20 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
 pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
     let tmp = tmp_path(path, style);
+    let bytes_len = bytes.as_ref().len() as u64;
     if let Err(e) = stage(&tmp, bytes, style) {
+        if !style.bootstrap {
+            crate::topology::file_write(path, 0, false);
+        }
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
         return Err(e);
     }
-    replace(&tmp, path, style)
+    let r = replace(&tmp, path, style);
+    if !style.bootstrap {
+        crate::topology::file_write(path, bytes_len, r.is_ok());
+    }
+    r
 }
 
 /// [`write_styled`] for state that silences a later answer (a Stop block's loop counter, a nudge's once-only cap). Inside a
@@ -86,9 +94,16 @@ pub fn write_after_reply(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style:
         return write_styled(path, bytes, style);
     }
     let tmp = tmp_path(path, style);
+    let bytes_len = bytes.as_ref().len() as u64;
     if let Err(e) = stage(&tmp, bytes, style) {
+        if !style.bootstrap {
+            crate::topology::file_write(path, 0, false);
+        }
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
         return Err(e);
+    }
+    if !style.bootstrap {
+        crate::topology::file_write(path, bytes_len, true);
     }
     crate::deadline::stage(tmp, path.to_path_buf(), style);
     Ok(())

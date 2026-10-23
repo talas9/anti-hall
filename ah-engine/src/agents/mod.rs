@@ -16,6 +16,7 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod ctl;
 mod facts;
 mod live;
 mod signals;
@@ -32,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub use ctl::{heartbeat, request_progress};
 pub use status::run_cmd;
 
 pub(crate) fn lim(k: &str) -> u64 {

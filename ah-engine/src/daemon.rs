@@ -466,6 +466,15 @@ impl Shared {
         )
     }
 
+    /// The topology report (src/topology.rs) with the pool's queue and busy workers; the in-process call for the web server.
+    pub fn topology_json(&self) -> serde_json::Value {
+        crate::topology::report(crate::topology::Gauges {
+            queue_depth: self.depth.load(SeqCst) as u64,
+            busy_workers: self.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64,
+            workers: self.busy_since.len() as u64,
+        })
+    }
+
     fn status(&self) -> String {
         let rss_now = limits::rss_kb();
         let rules = self.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -681,6 +690,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
         Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
+        Some(v) if v == defaults::text("topology.ctl_verb") => (Reply::Ok(sh.topology_json().to_string()), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("profile") => (Reply::Ok(crate::obs::profile::ctl(args)), After::Continue),
@@ -1451,6 +1461,13 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             },
         );
     }
+    let how = match &reply {
+        Reply::Busy => crate::topology::Served::FailOpen,
+        Reply::Err(why) if !why.is_empty() => crate::topology::Served::FailOpen,
+        _ if late => crate::topology::Served::Timeout,
+        _ => crate::topology::Served::Ok,
+    };
+    crate::topology::served(session.as_deref(), how, started.elapsed().as_micros() as u64);
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,
