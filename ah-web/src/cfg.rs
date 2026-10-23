@@ -129,6 +129,7 @@ pub struct Settings {
     pub live_col_gap: f32,
     pub live_row_gap: f32,
     pub health_cache_ms: u64,
+    pub footprint_fallback_ms: u64,
     pub health_cpu_soft_permille: u64,
     pub health_cpu_hard_permille: u64,
     pub health_holders_max: usize,

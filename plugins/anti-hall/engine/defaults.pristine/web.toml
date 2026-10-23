@@ -518,6 +518,10 @@ unit = "ms"
 doc = "A Health reading is shared between tabs for this long (ms), so several open tabs ask the engine once."
 value = 1000
 
+[web.footprint_fallback_ms]
+doc = "For an engine whose pulse has no footprint, the header reads it from the engine status at most this often (ms)."
+value = 15000
+
 [web.health_cpu_soft_permille]
 doc = "Engine CPU soft bar, parts per thousand of one core (the engine's normal-load budget: 2 percent)."
 value = 20

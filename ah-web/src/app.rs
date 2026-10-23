@@ -28,6 +28,8 @@ pub struct App {
     pub live_map: Mutex<Option<(Instant, ah_web_proto::LiveMap)>>,
     /// The last Health reading and when it was taken (a second tab within `web.health_cache_ms` shares it).
     pub health: Mutex<Option<(Instant, ah_web_proto::Health)>>,
+    /// The footprint read from `status` for an engine whose pulse has none, and when.
+    pub footprint: Mutex<Option<(Instant, Option<u64>)>>,
 }
 
 impl App {
@@ -49,6 +51,7 @@ impl App {
             model: Mutex::new(model),
             live_map: Mutex::new(None),
             health: Mutex::new(None),
+            footprint: Mutex::new(None),
         }
     }
 

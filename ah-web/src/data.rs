@@ -108,6 +108,19 @@ fn mesh_db(s: &Settings) -> Option<String> {
     p.is_file().then(|| p.display().to_string())
 }
 
+/// The footprint for an engine whose pulse does not carry one: read from `status` at most every `web.footprint_fallback_ms` (the
+/// document is large), kept between reads.
+async fn footprint_fallback(app: &App, s: &Settings) -> Option<u64> {
+    if let Some((at, v)) = *app.footprint.lock().unwrap_or_else(|p| p.into_inner())
+        && at.elapsed() < Duration::from_millis(s.footprint_fallback_ms)
+    {
+        return v;
+    }
+    let v = ctl::call(&app.socket, "status", Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes).await.ok().and_then(|d| d.get("footprint_kb").and_then(Value::as_u64));
+    *app.footprint.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), v));
+    v
+}
+
 /// Which sources are due this round (each has its own interval, so a quiet one costs the engine nothing).
 #[derive(Clone, Copy, Default)]
 struct Due {
@@ -143,7 +156,11 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
             f.engine_ok = Some(false);
             return f;
         };
-        f.pulse = Some(pulse(&p));
+        let mut pl = pulse(&p);
+        if pl.footprint_kb.is_none() {
+            pl.footprint_kb = footprint_fallback(app, s).await;
+        }
+        f.pulse = Some(pl);
         f.engine_ok = Some(true);
     }
     if due.agents {
