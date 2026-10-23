@@ -246,6 +246,7 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
         }
 
         pub fn draw(&mut self, f: &Frame) {
+            let t_start = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
             let px = ((f.w * f.dpr) as u32).max(1);
             let py = ((f.h * f.dpr) as u32).max(1);
             if (px, py) != self.size {
@@ -295,9 +296,10 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                 }
             }
             let t0 = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
+            let (cpu_ms, nverts) = ((t0 - t_start) as f64, verts.len() as f64);
             self.queue.submit([enc.finish()]);
             self.queue.present(tex);
-            // submit-to-done time of this frame, kept in `globalThis.__ah_gpu_ms` (last 600) for the performance check
+            // submit-to-done time of this frame, kept in `globalThis.__ah_gpu_ms` (last 600) as [submit-to-done, CPU encode, vertex count] for the performance check
             self.queue.on_submitted_work_done(move || {
                 let now = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
                 let g = js_sys::global();
@@ -310,7 +312,8 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                         a
                     }
                 };
-                arr.push(&wasm_bindgen::JsValue::from_f64(now - t0));
+                let row = js_sys::Array::of3(&wasm_bindgen::JsValue::from_f64(now - t0), &wasm_bindgen::JsValue::from_f64(cpu_ms), &wasm_bindgen::JsValue::from_f64(nverts));
+                arr.push(&row);
                 if arr.length() > 600 {
                     arr.shift();
                 }
