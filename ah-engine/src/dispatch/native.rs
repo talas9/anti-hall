@@ -52,7 +52,7 @@ pub struct Meta {
 pub enum Answer {
     /// The check decided; this is what the Node hook would have produced.
     Decided(HookResult, Vec<checks::RouteMeta>),
-    /// The Node hook must decide (the check deferred, panicked, or does not apply).
+    /// The check gave no answer (it deferred, panicked, does not apply, or was dropped under load): the call goes on without it.
     Defer,
 }
 

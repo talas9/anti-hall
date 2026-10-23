@@ -275,7 +275,10 @@ impl Telemetry {
 
     /// The `telemetry` control verb: `summary` or `events`, with `window=`, `kind=`, `limit=`.
     pub fn telemetry_json(&self, sub: &str, window: &str, kind: &str, limit: usize) -> Value {
-        let days = report::window_days(window);
+        let days = match report::check_window(window) {
+            Ok(d) => d,
+            Err(e) => return json!({"error": e}),
+        };
         let now = now_ms();
         match sub {
             "events" => report::events_json(self.tel.as_ref(), Some(&self.rec), kind, days, limit, now),
@@ -363,7 +366,10 @@ impl Telemetry {
             Verdict::Block(_) => self.impact("block", check, rule_id, project),
             Verdict::Advisory(_) => self.impact("advisory", check, rule_id, project),
             Verdict::Exact(_) if decision == "block" || decision == "advisory" => self.impact(decision, check, rule_id, project),
-            Verdict::Defer => self.impact("fallback", check, "defer", project),
+            Verdict::Defer => {
+                let why = crate::budget::take_drop_reason().unwrap_or_else(|| defaults::text("telemetry.no_answer_reason").to_string());
+                self.impact("fallback", check, &why, project)
+            }
             Verdict::Allow | Verdict::Exact(_) | Verdict::Routed(_, _) => {}
         }
     }
@@ -448,11 +454,15 @@ impl Telemetry {
         self.impact_json_in(filter, recent, "")
     }
 
-    /// The `impact` command's body, with the NET savings section (D77) for the last `window` (`7d`, `36h`; empty: the
+    /// The `impact` command's body, with the NET savings section (D77) for the last `window` (`7d`; empty: the
     /// default). When routing decisions exist, the model-routing saving carries the computed estimate.
     pub fn impact_json_in(&self, filter: &ImpactFilter, recent: usize, window: &str) -> Value {
+        let days = match report::check_window(window) {
+            Ok(d) => d,
+            Err(e) => return json!({"error": e}),
+        };
         let mut v = crate::impact::summary(&*self.store, filter, recent);
-        let net = report::net_json(self.tel.as_ref(), Some(&self.rec), report::window_days(window), now_ms());
+        let net = report::net_json(self.tel.as_ref(), Some(&self.rec), days, now_ms());
         if net["routing"]["decisions"].as_u64().unwrap_or(0) > 0 {
             let r = &mut v["savings"]["model_routing"];
             r["estimated_usd"] = net["routing"]["net_usd"].clone();

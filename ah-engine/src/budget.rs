@@ -30,10 +30,21 @@ pub fn note_shed_skipped() {
 static DROPPED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
 static DROPPED_LOGGED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
 
+thread_local! {
+    /// The reason of the last answer this thread dropped, until the observer of that check takes it ([`take_drop_reason`]).
+    static LAST_DROP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The reason the check just observed gave no answer (shed, client_gone, hard_deadline, check_deferred, cpu_budget, ...), once.
+pub fn take_drop_reason() -> Option<String> {
+    LAST_DROP.with(|l| l.borrow_mut().take())
+}
+
 /// A check of `event` gave no answer, for `reason`: counted (this daemon and lifetime), and logged at most once per
 /// `diagnostics.abandoned_log_interval_ms` per check and reason. A guard event's drop is its own kind (`guard_answer_dropped`) so it
 /// stands out; the dispatcher then applies the check's failure policy (`script.failure_mode_by_check`).
 pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
+    LAST_DROP.with(|l| *l.borrow_mut() = Some(reason.to_string()));
     let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
     crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
     let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());

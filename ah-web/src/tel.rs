@@ -779,11 +779,18 @@ fn gaps(raw: &Raw, c: &TelCfg, number: &NumFmt) -> Vec<Gap> {
     let defers = raw.daily(&|s| num(&s["by_outcome"]["defer"]));
     if let Some(p) = c.periods.first() {
         let pr = pair(&defers, p, raw.day_fraction(), c);
-        let unable = num(&raw.status["node_handback"]["native_unable"]);
+        // since this daemon started, by why the check gave no answer ("guard:cpu_budget" and "optional:cpu_budget" count as one reason)
+        let mut by_reason: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+        for (k, v) in raw.status["answers_dropped"]["this_daemon"]["by_reason"].as_object().into_iter().flatten() {
+            *by_reason.entry(k.rsplit(':').next().unwrap_or(k).to_string()).or_default() += num(v);
+        }
+        let mut reasons: Vec<(String, f64)> = by_reason.into_iter().filter(|(_, v)| *v > 0.0).collect();
+        reasons.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let reasons = if reasons.is_empty() { c.text("gap_defers_none") } else { reasons.iter().map(|(k, v)| format!("{k} {}", n(*v))).collect::<Vec<_>>().join(", ") };
         out.push(Gap {
             id: "defers".into(),
             label: c.text("gap_defers"),
-            text: c.fill("gap_defers_text", &[("cur", n(pr.cur)), ("prev", n(pr.prev)), ("unable", n(unable))]),
+            text: c.fill("gap_defers_text", &[("cur", n(pr.cur)), ("prev", n(pr.prev)), ("reasons", reasons)]),
             tone: if pr.cur > 0.0 { "warn" } else { "ok" }.into(),
         });
     }

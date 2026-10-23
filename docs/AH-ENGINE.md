@@ -881,7 +881,7 @@ names live in `telemetry.fields` in `telemetry.toml`). Emit with `telemetry::emi
 | action_id | `action_id` | The idempotency key of the action (cut to `telemetry.token_max_len`). A `mistake` carries the `action_id` of the `act` it refers to. |
 
 The DevSwarm action layer (`dsact`) emits an `act` event for every action it attempts, including refusals, with the ledger
-outcome word as the `reason`. `ah-engine devswarm ledger [--json] [--since 7d|36h|<days>]` (every role may run it; switch:
+outcome word as the `reason`. `ah-engine devswarm ledger [--json] [--since 7d|<days>]` (every role may run it; switch:
 `devswarm_act.audit_enabled`, on) is the one report: per feature the runs, done, failed, refused, success rate
 (done / finished), refusals by reason, mistaken actions and mistake rate (distinct mistaken actions / done), p50 and p95
 latency; the action ledger (outcomes per kind, keys started and never finished); and the Node witness agreement from

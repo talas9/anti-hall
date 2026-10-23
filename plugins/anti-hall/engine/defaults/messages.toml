@@ -663,6 +663,10 @@ value = "literal regex is valid (compiled by the tests that run its code path)"
 doc = "Printed when a planned command is run. Placeholders: {command}, {decision}."
 value = "{command} is planned ({decision}) and is not implemented yet"
 
+[msg.window_bad]
+doc = "Printed when a --window / --since value is not a whole number of days (the telemetry data is kept in per-day buckets, so hours and minutes cannot be honoured). Placeholder: {window}."
+value = "unsupported window '{window}': telemetry is kept per day, so use a number of days like 7d (or just 7)"
+
 [msg.cli_unknown]
 doc = "Printed to stderr for an unknown command. Placeholder: {command}."
 value = "ah-engine: unknown command '{command}'"

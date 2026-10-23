@@ -82,7 +82,10 @@ fn guard_blocks(rest: &[String], need: usize) -> Value {
     if window.is_empty() {
         window = flag(rest, "since");
     }
-    let days = crate::telemetry::report::window_days(&window);
+    let days = match crate::telemetry::report::check_window(&window) {
+        Ok(d) => d,
+        Err(e) => return json!({"error": e}),
+    };
     let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
     let rows: Vec<Value> = crate::telemetry::cli::open_existing()
         .map(|t| t.blocks(since, need))

@@ -17,24 +17,25 @@ use crate::defaults;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// A window like `7d`, `36h` or `14` (days) as whole days (at least 1); `None` when it is not one of those shapes.
+/// A window like `7d` or `14` (days); `None` when it is not one of those shapes. The data is kept in per-day buckets, so a finer
+/// unit (`36h`, `15m`) is refused rather than silently rounded to whole days.
 pub fn parse_window(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num, unit) = match s.strip_suffix('d') {
-        Some(n) => (n, 24),
-        None => match s.strip_suffix('h') {
-            Some(n) => (n, 1),
-            None => (s, 24),
-        },
-    };
-    let n: u64 = num.parse().ok()?;
-    Some((n * unit).div_ceil(24).max(1))
+    let num = s.strip_suffix('d').unwrap_or(s);
+    num.parse::<u64>().ok().map(|n| n.max(1))
 }
 
-/// The window in days: the requested one, else `telemetry.default_window_days`.
+/// The window in days for a user-given value: empty means `telemetry.default_window_days`; anything that is not days is an error
+/// naming the accepted form.
+pub fn check_window(requested: &str) -> Result<u64, String> {
+    if requested.trim().is_empty() {
+        return Ok(defaults::num("telemetry.default_window_days"));
+    }
+    parse_window(requested).ok_or_else(|| defaults::render("msg.window_bad", &[("window", &requested)]))
+}
+
+/// The window in days: the requested one, else `telemetry.default_window_days` (callers that take a user's value check it with
+/// [`check_window`] first).
 pub fn window_days(requested: &str) -> u64 {
     parse_window(requested).unwrap_or_else(|| defaults::num("telemetry.default_window_days"))
 }
@@ -340,10 +341,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_parse_in_days_and_hours() {
+    fn windows_parse_in_days_only() {
         assert_eq!(parse_window("7d"), Some(7));
-        assert_eq!(parse_window("36h"), Some(2));
-        assert_eq!(parse_window("1h"), Some(1));
+        assert_eq!(parse_window("36h"), None);
+        assert_eq!(parse_window("15m"), None);
         assert_eq!(parse_window("14"), Some(14));
         assert_eq!(parse_window("soon"), None);
         assert_eq!(parse_window(""), None);

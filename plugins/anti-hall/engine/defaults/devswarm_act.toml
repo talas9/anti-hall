@@ -390,7 +390,7 @@ doc = "Which ledger outcome words map to which telemetry outcome of an `act` eve
 value = { allow = ["done"], block = ["refused", "stale", "in-doubt", "unavailable"], error = ["failed"], timeout = ["timeout"] }
 
 [devswarm_act.audit_default_days]
-doc = "The default window of the audit in days (`--since 7d`, `36h` or a day count overrides it)."
+doc = "The default window of the audit in days (`--since 7d` or a day count overrides it)."
 value = 7
 min = 1
 max = 365

@@ -43,6 +43,9 @@ fn open_for_write() -> Result<TelDb, String> {
 pub fn run(rest: &[String]) -> (Value, i32) {
     let sub = rest.first().filter(|w| !w.starts_with("--")).map(String::as_str).unwrap_or("summary");
     let window = flag(rest, "window");
+    if let Err(e) = report::check_window(&window) {
+        return (json!({"error": e}), 64);
+    }
     match sub {
         "summary" | "events" => {
             let (kind, limit) = (flag(rest, "kind"), flag(rest, "limit"));

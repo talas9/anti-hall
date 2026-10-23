@@ -173,6 +173,10 @@ value = "rule"
 doc = "The `e` label used when the hook event is unknown."
 value = "-"
 
+[telemetry.no_answer_reason]
+doc = "The reason stored with a no-answer impact row when the check was dropped outside the dispatcher (which names its own: shed, client_gone, hard_deadline, check_deferred, cpu_budget)."
+value = "no_answer"
+
 [telemetry.net_method]
 doc = "How the NET figure of `impact` is computed, shown next to it."
 value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"
