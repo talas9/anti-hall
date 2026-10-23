@@ -9,7 +9,7 @@
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{self, Defer, Env, R, defer};
+use crate::meshw::ident::{self, Defer, Env, R};
 use crate::meshw::idlock::devswarm_root;
 use crate::meshw::store::MeshStore;
 use std::path::{Path, PathBuf};
@@ -60,13 +60,22 @@ fn num_of(v: Option<&OVal>) -> Option<f64> {
     }
 }
 
-/// `seatRefusal(ctx)`: `Ok(())` when Node would not refuse. A live seat held by another session needs Node's liveness
-/// evidence (session files, app terminals, heartbeats), so any other holder defers.
+/// `seatRefusal(ctx)`: `Ok(())` when Node would not refuse. A refusal is the verb's own answer (exit 2, `primary-seat-conflict`),
+/// carried by [`ident::refuse`]: only a LIVE holder of the Primary seat that is not this session blocks (any other verdict of
+/// Node's `seatVerdict` - closed, unknown, corrupt, none, own - does not).
 pub fn seat_check(inv: &Inv) -> R<()> {
-    let Some(sid) = inv.env("mesh_write.env_session_id").filter(|s| !s.is_empty()) else { return Ok(()) };
-    // primaryCheckout: resolveContext WITHOUT the superproject cache, so a nested checkout always needs git -> defer
+    match seat_refusal(inv)? {
+        None => Ok(()),
+        Some(refusal) => ident::refuse(&refusal.done().stringify()),
+    }
+}
+
+/// `seatRefusal(ctx)` as the refusal's fields (`ok`, `reason`, `holder`, `id`, `error`), `None` when Node would not refuse.
+pub fn seat_refusal(inv: &Inv) -> R<Option<Obj>> {
+    let Some(sid) = inv.env("mesh_write.env_session_id").filter(|s| !s.is_empty()) else { return Ok(None) };
+    // primaryCheckout: resolveContext WITHOUT the memo, `missingPath: 'ancestor'`
     let c = ident::resolve_context(&inv.cwd, true)?;
-    let Some(wt) = c.worktree_root.clone() else { return Ok(()) };
+    let Some(wt) = c.worktree_root.clone() else { return Ok(None) };
     let b = ident::builder_for_worktree(&inv.home, &inv.env, &wt)?;
     let bt = b.as_ref().and_then(|b| b.builder_type.as_deref()).map(str::trim).unwrap_or("");
     let is_primary = if !bt.is_empty() {
@@ -75,26 +84,54 @@ pub fn seat_check(inv: &Inv) -> R<()> {
         c.main_worktree.as_deref().map(|m| ident::realpath(m).unwrap_or_else(|| m.to_string())).as_deref() == Some(wt.as_str())
     };
     if !is_primary {
-        return Ok(());
+        return Ok(None);
     }
     let id = ident::mesh_id_for_real_path(&wt);
     let desc = read_json(
         &devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))),
     );
-    let Some(desc @ OVal::Obj(_)) = desc else { return Ok(()) };
+    let Some(desc @ OVal::Obj(_)) = desc else { return Ok(None) };
+    // `desc.sessionId && !String(desc.sessionId).startsWith('unclaimed:') ? String(desc.sessionId) : ''`
     let holder = match desc.get(defaults::text("mesh_write.field_session_id")) {
-        Some(OVal::Str(s)) if !s.is_empty() && !s.starts_with(defaults::text("mesh_write.unclaimed_prefix")) => s.clone(),
-        Some(v @ (OVal::Num(_) | OVal::Bool(true))) if v.truthy() => return defer("seat-holder"),
+        Some(v) if v.truthy() => ident::js_to_string(v),
         _ => String::new(),
     };
-    if holder.is_empty() || holder == sid {
-        return Ok(());
+    if holder.is_empty() || holder.starts_with(defaults::text("mesh_write.unclaimed_prefix")) || holder == sid {
+        return Ok(None);
     }
-    defer("seat-holder")
+    // holderLiveness: only a session record naming the holder with a live process is a conflict; every other outcome is "closed" or
+    // "unknown", which Node does not refuse on
+    if crate::dssup::liveness::session_state(&inv.home, &holder)? != Some(true) {
+        return Ok(None);
+    }
+    // a session with its OWN registered identity on this worktree (a declared builder row recording this very session) acts as itself
+    if let Some(rk) = ident::repo_key_for_worktree(&inv.cwd)?
+        && let Some(reader) = crate::meshw::tick::open_reader(inv, &rk)?
+        && let Ok(roster) = reader.roster()
+    {
+        let rows = ident::rows_of(&roster);
+        if let Some(me) = ident::declared_self_id(&inv.env, &inv.cwd, &rows)?
+            && rows.iter().any(|r| r.id == me && r.session_id.as_deref() == Some(sid))
+        {
+            return Ok(None);
+        }
+    }
+    let cli = crate::checks::devswarm_role::text::engine_cli(&inv.home.to_string_lossy());
+    let error = defaults::render("devswarm_role.seat_notice_conflict", &[("holder", &holder), ("id", &id), ("cli", &cli)]);
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("reason", s(defaults::text("mesh_write.reason_seat_conflict")))
+        .put("holder", s(&holder))
+        .put("id", s(&id))
+        .put("error", s(&error));
+    Ok(Some(o))
 }
 
-/// `selfHeal(ctx)`'s outcome as the fields `withSelfHeal` adds to a result, in Node's order. Only the outcomes that read
-/// and spawn nothing are reproduced: no worktree, a healthy daemon, or a stale one that Node would not try to heal.
+/// `selfHeal(ctx)`'s outcome as the fields `withSelfHeal` adds to a result, in Node's order. No worktree, a healthy daemon, or a
+/// stale one all answer from the disk. What Node does next for a stale daemon (spawn the Node ingest installer, behind the
+/// launchd-disabled probe and the cooldown mark) belongs to the retired Node ingest unit: the engine drains ingest itself, so a
+/// stale daemon ends in `daemonWarning: stale` (what Node answers when the engine owns ingest, or the project is not registered),
+/// with the cooldown of an earlier attempt reported as Node reports it.
 pub fn self_heal(inv: &Inv) -> R<Vec<(String, OVal)>> {
     let c = ident::resolve_context(&inv.cwd, true)?;
     // `.toplevel` of the caller's context: the nearest checkout
@@ -105,10 +142,40 @@ pub fn self_heal(inv: &Inv) -> R<Vec<(String, OVal)>> {
     if daemon_healthy(inv, repo_key.as_deref())? {
         return Ok(vec![(defaults::text("mesh_write.heal_healthy").into(), OVal::Bool(true))]);
     }
-    if !crate::checks::spawnctx::devswarm_active(&inv.settings()) || repo_key.is_none() {
-        return Ok(vec![(defaults::text("mesh_write.heal_warning").into(), OVal::Str(defaults::text("mesh_write.heal_stale").into()))]);
+    let stale = || (defaults::text("mesh_write.heal_warning").to_string(), OVal::Str(defaults::text("mesh_write.heal_stale").into()));
+    let Some(repo_key) = repo_key.filter(|_| crate::checks::spawnctx::devswarm_active(&inv.settings())) else { return Ok(vec![stale()]) };
+    if engine_owns_ingest(inv) {
+        return Ok(vec![stale()]);
     }
-    defer("self-heal")
+    let cooldown = defaults::num("mesh_write.self_heal_cooldown_ms") as f64;
+    if let Some(last) = last_heal_attempt(inv, &repo_key) {
+        let elapsed = inv.now as f64 - last;
+        if elapsed < cooldown {
+            return Ok(vec![
+                stale(),
+                (defaults::text("mesh_write.heal_cooldown_flag").to_string(), OVal::Bool(true)),
+                (defaults::text("mesh_write.heal_retry_after").to_string(), OVal::Num((cooldown - elapsed).max(0.0))),
+            ]);
+        }
+    }
+    Ok(vec![stale()])
+}
+
+/// `ingestHealth.engineOwnsIngest(home)`: the engine's ownership marker names the engine and is still inside its own lifetime.
+fn engine_owns_ingest(inv: &Inv) -> bool {
+    let Some(m @ OVal::Obj(_)) = read_json(&devswarm_root(&inv.home).join(defaults::text("mesh_write.ingest_owner_file"))) else { return false };
+    let owner = matches!(m.get("owner"), Some(OVal::Str(o)) if o == defaults::text("mesh_write.ingest_owner_name"));
+    match (num_of(m.get("ts")), num_of(m.get("validForMs"))) {
+        (Some(ts), Some(valid)) => owner && inv.now as f64 - ts <= valid,
+        _ => false,
+    }
+}
+
+/// `lastAttemptAt` of the project's self-heal cooldown file (`selfHealCooldownElapsed`), `None` for no usable record.
+fn last_heal_attempt(inv: &Inv, repo_key: &str) -> Option<f64> {
+    let file = format!("{}{repo_key}{}", defaults::text("mesh_write.self_heal_file_prefix"), defaults::text("mesh_write.json_suffix"));
+    let rec = read_json(&devswarm_root(&inv.home).join(defaults::text("mesh_write.self_heal_dir")).join(file))?;
+    num_of(rec.get("lastAttemptAt"))
 }
 
 fn pid_alive(pid: f64) -> bool {
@@ -149,9 +216,11 @@ pub(crate) fn daemon_healthy(inv: &Inv, repo_key: Option<&str>) -> R<bool> {
     let last_ok = num_of(b.get("lastMonitorOkMs"));
     let started = num_of(b.get("startedAtMs"));
     let window = || -> R<f64> {
-        let min = crate::checks::guardkit::settings::get_number(&inv.settings(), defaults::raw("mesh_write.setting_monitor_no_ok_fail_min"));
+        let entry = defaults::raw("mesh_write.setting_monitor_no_ok_fail_min");
+        let mut min = crate::checks::guardkit::settings::get_number(&inv.settings(), entry);
         if !(min.is_finite() && min > 0.0) {
-            return defer("monitor-window");
+            // `monitorNoOkWindowMs`: a setting that is no positive number reads as the default window
+            min = entry.get("default").and_then(crate::defaults::V::as_integer).unwrap_or(0) as f64;
         }
         Ok(min * defaults::num("mesh_write.ms_per_minute") as f64)
     };
@@ -167,55 +236,72 @@ pub(crate) fn daemon_healthy(inv: &Inv, repo_key: Option<&str>) -> R<bool> {
     Ok(!(consecutive >= defaults::num("mesh_write.monitor_failure_threshold") as f64 || ok_stale || no_ok_since_start))
 }
 
-/// The store a verb writes, settled the way `openStore` settles it: only a store whose `BACKEND` marker says sqlite (or
-/// an explicit sqlite override) is opened; a journal store, or a marker of another backend, defers; a project with no store at all gets a
-/// new sqlite one.
-pub fn open_store(inv: &Inv, repo_key: &str) -> R<MeshStore> {
-    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(repo_key);
-    let forced = inv.env("mesh_write.env_store_backend").map(|s| s.trim().to_lowercase()).unwrap_or_default();
+/// The backend `resolveStoreBackend(dir)` settles on: a forced `ANTIHALL_DEVSWARM_STORE_BACKEND` wins outright; else the store
+/// directory's `BACKEND` marker (only `sqlite` and `journal` count); else whichever physical form already holds data (a non-empty
+/// database before a non-empty journal directory), else sqlite, which is then pinned by writing the marker. `true` is sqlite.
+fn resolve_backend(inv: &Inv, dir: &Path) -> bool {
     let sqlite = defaults::text("mesh.backend_sqlite");
-    if forced != sqlite {
-        if !forced.is_empty() && forced == defaults::text("mesh_write.backend_journal") {
-            return defer("journal-backend");
-        }
-        let marker = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).map(|s| s.trim().to_lowercase()).unwrap_or_default();
-        if marker != sqlite {
-            // a project with no store at all (no marker, no database, no journal): `resolveStoreBackend` creates it as sqlite
-            let empty = marker.is_empty()
-                && std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).is_err()
-                && !std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut r| r.next().is_some());
-            if !empty {
-                return defer("store-backend");
-            }
-            init_new_store(inv, repo_key)?;
+    let journal = defaults::text("mesh_write.backend_journal");
+    let forced = inv.env("mesh_write.env_store_backend").map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if forced == sqlite || forced == journal {
+        return forced == sqlite;
+    }
+    let marker = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if marker == sqlite || marker == journal {
+        return marker == sqlite;
+    }
+    let has_db = std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).is_ok_and(|m| m.len() > 0);
+    let has_journal = std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut r| r.next().is_some());
+    let chosen_sqlite = has_db || !has_journal;
+    pin_backend(dir, if chosen_sqlite { sqlite } else { journal });
+    chosen_sqlite
+}
+
+/// `writeBackendMarker(dir, backend)`: best effort, as Node's (a failure only means the next open infers again).
+fn pin_backend(dir: &Path, backend: &str) {
+    if std::fs::create_dir_all(dir).is_ok() {
+        let marker = dir.join(defaults::text("mesh.backend_marker"));
+        let tmp = marker.with_extension(format!("{}.{}.tmp", std::process::id(), now_ms()));
+        if std::fs::write(&tmp, backend).is_ok() {
+            crate::discard::harmless(std::fs::rename(&tmp, &marker)); // keep: best-effort like Node's, the next open infers again
         }
     }
+}
+
+/// The refusal of a project whose store is on the legacy journal backend (see `reason_legacy_journal_store`).
+fn legacy_journal<T>(repo_key: &str) -> R<T> {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("reason", s(defaults::text("mesh_write.reason_legacy_journal_store")))
+        .put("error", s(&defaults::render("mesh_write.msg_legacy_journal_store", &[("repo_key", &repo_key)])));
+    ident::refuse(&o.done().stringify())
+}
+
+/// The store a verb writes, settled the way `openStore` settles it ([`resolve_backend`]): a sqlite store is opened (created when the
+/// project has none, and then pinned to sqlite); a store on the legacy journal backend, which only a Node older than 22.5 wrote, is
+/// the verb's own refusal (`legacy-journal-store`, exit 2), never a hand-over.
+pub fn open_store(inv: &Inv, repo_key: &str) -> R<MeshStore> {
+    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(repo_key);
+    if !resolve_backend(inv, &dir) {
+        return legacy_journal(repo_key);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("store-dir:{e}")))?;
     let db = inv.store_override.clone().unwrap_or_else(|| dir.join(defaults::text("mesh_write.store_file")));
     MeshStore::open(&db).map_err(|e| Defer(format!("store-open:{e}")))
 }
 
 /// The first creation of a project's store (`resolveStoreBackend` on a fresh directory): the directory and the sqlite marker, so that
-/// [`open_store`] then opens (creating) the database. A directory that already holds a journal store, or any other backend, defers.
+/// [`open_store`] then opens (creating) the database. A directory on the legacy journal backend is the same refusal as [`open_store`]'s.
 pub fn init_new_store(inv: &Inv, repo_key: &str) -> R<()> {
     let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(repo_key);
-    let forced = inv.env("mesh_write.env_store_backend").map(|s| s.trim().to_lowercase()).unwrap_or_default();
-    if !forced.is_empty() && forced != defaults::text("mesh.backend_sqlite") {
-        return defer("journal-backend");
-    }
-    let has_db = std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).is_ok_and(|m| m.len() > 0);
-    let has_journal = std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut r| r.next().is_some());
-    if has_journal || (!has_db && std::fs::metadata(dir.join(defaults::text("mesh.backend_marker"))).is_ok_and(|m| m.len() > 0) && !dir_marker_is_sqlite(&dir)) {
-        return defer("store-backend");
+    if !resolve_backend(inv, &dir) {
+        return legacy_journal(repo_key);
     }
     std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("store-dir:{e}")))?;
-    if !dir_marker_is_sqlite(&dir) {
-        std::fs::write(dir.join(defaults::text("mesh.backend_marker")), defaults::text("mesh.backend_sqlite")).map_err(|e| Defer(format!("store-marker:{e}")))?;
+    if !dir.join(defaults::text("mesh.backend_marker")).exists() {
+        pin_backend(&dir, defaults::text("mesh.backend_sqlite"));
     }
     Ok(())
-}
-
-fn dir_marker_is_sqlite(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).is_ok_and(|m| m.trim().to_lowercase() == defaults::text("mesh.backend_sqlite"))
 }
 
 /// Jev triage might label an arrival (`jev-triage.js` `loadTriageConfig(home).enabled` can be true): Node then appends
@@ -261,6 +347,108 @@ pub fn jev_pending_answer(inv: &Inv, from: &str, to: &str) -> bool {
         Some(o @ OVal::Obj(_)) => o.get(&format!("{from}\u{1}{to}")).is_some_and(OVal::truthy),
         _ => false,
     }
+}
+
+/// `jev-triage.js` `recordAnswered({home, from, to})`: `from` is about to answer `to`. When `to` earlier sent `from` a labeled
+/// message with no answer recorded, the pair is dropped from the pending map, the time-to-answer is logged to the triage log and a
+/// joinable outcome row goes to the Jev decision log. Best effort and silent, as Node's (a failure never touches the send).
+pub fn jev_record_answered(inv: &Inv, from: &str, to: &str) {
+    let ah = inv.home.join(defaults::text("mesh_write.dir_anti_hall"));
+    let pending_path = ah.join(defaults::text("mesh_write.dir_state")).join(defaults::text("mesh_write.jev_pending_file"));
+    let Some(OVal::Obj(mut all)) = read_json(&pending_path) else { return };
+    let key = format!("{from}\u{1}{to}");
+    let Some(pending) = all.iter().rev().find(|(k, _)| *k == key).map(|(_, v)| v.clone()) else { return };
+    if !pending.truthy() {
+        return;
+    }
+    let ts = pending.get("ts");
+    let ts_num = match ts {
+        Some(OVal::Num(x)) => *x,
+        Some(OVal::Str(t)) => crate::checks::guardkit::text::js_number_of_str(t),
+        Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
+        Some(OVal::Null) => 0.0,
+        _ => f64::NAN,
+    };
+    let latency = inv.now as f64 - ts_num;
+    all.retain(|(k, _)| *k != key);
+    if let Some(dir) = pending_path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: best-effort, Node's writePending swallows it
+    }
+    let tmp = format!("{}.tmp.{}", pending_path.display(), std::process::id());
+    if std::fs::write(&tmp, OVal::Obj(all).stringify()).is_ok() {
+        crate::discard::harmless(std::fs::rename(&tmp, &pending_path)); // keep: best-effort, as Node's
+    }
+    let num_or_null = |x: f64| if x.is_finite() { OVal::Num(x) } else { OVal::Null };
+    let mut row = vec![
+        ("ts".to_string(), OVal::Str(crate::checks::jsport::date::to_iso(inv.now as f64).unwrap_or_default())),
+        ("type".to_string(), OVal::Str(defaults::text("mesh_write.jev_answered_type").to_string())),
+    ];
+    for field in ["urgency", "kind"] {
+        if let Some(v) = pending.get(field) {
+            row.push((field.to_string(), v.clone()));
+        }
+    }
+    row.push(("latencyMs".to_string(), num_or_null(latency)));
+    let log = ah.join(defaults::text("mesh_write.dir_logs")).join(defaults::text("mesh_write.jev_triage_log_file"));
+    let env = crate::jev::settings::Env::from_pairs(inv.env.clone());
+    let keep = crate::jev::settings::JevSettings::resolve(&inv.home, crate::jev::settings::Sources::load(&inv.home, env.clone())).log_rotated_files;
+    let line = OVal::Obj(row).stringify();
+    if let Some(dir) = log.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the triage log is advisory
+    }
+    rotate_if_over(&log, defaults::num("mesh_write.jev_triage_log_max_bytes"), keep);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+        use std::io::Write;
+        crate::discard::harmless(f.write_all(format!("{line}\n").as_bytes())); // keep: the triage log is advisory
+    }
+    let ts_text = match ts {
+        Some(v) => ident::js_to_string(v),
+        None => defaults::text("mesh_write.js_undefined").to_string(),
+    };
+    let digest = ring::digest::digest(&ring::digest::SHA256, format!("{key}\u{1}{ts_text}").as_bytes());
+    let h: String = crate::meshw::store::hex(digest.as_ref()).chars().take(32).collect();
+    if let Some(lane) = crate::jev::shared::lane(&inv.home, &env) {
+        lane.record_outcome(
+            defaults::text("mesh_write.jev_outcome_id"),
+            &h,
+            defaults::text("mesh_write.jev_outcome_value"),
+            Some(defaults::text("mesh_write.jev_outcome_source")),
+            crate::jev::shared::project_for(Some(&inv.cwd)).as_deref(),
+        );
+    }
+}
+
+/// `shiftRotated(p, keep)` once `p` is over `max` bytes: `p.(keep-1)` onto `p.keep`, ..., `p` onto `p.1`.
+fn rotate_if_over(p: &Path, max: u64, keep: u64) {
+    if std::fs::metadata(p).map_or(true, |m| m.len() <= max) {
+        return;
+    }
+    let gen_path = |n: u64| PathBuf::from(format!("{}.{n}", p.display()));
+    for i in (1..keep.max(1)).rev() {
+        crate::discard::harmless(std::fs::rename(gen_path(i), gen_path(i + 1))); // keep: a gap in the chain is fine
+    }
+    crate::discard::harmless(std::fs::rename(p, gen_path(1))); // keep: on failure the row lands in the oversized file
+}
+
+/// A direct send would have queued its text for Jev arrival labelling (`enqueueArrival`). The queue was drained by a detached
+/// Node worker, which is not part of the live path, so nothing is queued; the skip is counted so it is seen.
+pub fn jev_arrival_skipped() {
+    crate::metrics::bump(defaults::text("mesh_write.metric_jev_arrival_skipped"), &[]);
+}
+
+/// A sent message is child activity: refresh the sender's plan progress clock (`planLib.noteActivity`) when the sender has a plan.
+/// Best effort like Node's `try/catch`: any failure, deferral included, is dropped and never changes the send result.
+pub fn note_sender_activity(inv: &Inv, from: &str, text: &str, now: f64) {
+    let run = || -> R<()> {
+        let Some(found) = crate::meshw::plan::find(inv, from)? else { return Ok(()) };
+        crate::meshw::plan::update_with(inv, &found.key, |cur| {
+            let Some(mut plan) = cur else { return Ok(((), None)) };
+            let refreshed = crate::meshw::plan::note_activity(&mut plan, text, now);
+            Ok(((), refreshed.then_some(plan)))
+        })?;
+        Ok(())
+    };
+    crate::discard::harmless(run()); // keep: Node's planLib update here is `catch (_) { /* best-effort */ }`
 }
 
 /// `planRefFor` + `findPlan`: whether the sender has a plan file (Node then records plan activity; the engine defers).
@@ -421,7 +609,161 @@ pub fn exists(p: &Path) -> bool {
     p.exists()
 }
 
-/// `defer` re-export for the verbs.
-pub fn later<T>(code: &str) -> R<T> {
-    defer(code)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-common-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    fn git_init(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        let st = std::process::Command::new("git").current_dir(dir).args(["init", "-q", "-b", "main"]).env("GIT_CONFIG_NOSYSTEM", "1").status().unwrap();
+        assert!(st.success());
+    }
+
+    fn inv_in(home: &Path, cwd: &Path, env: &[(&str, &str)]) -> Inv {
+        Inv {
+            home: home.to_path_buf(),
+            write_home: home.to_path_buf(),
+            env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            now: 1_000_000_000,
+            stdin: None,
+            store_override: None,
+        }
+    }
+
+    /// A Primary checkout whose descriptor records `holder`, and a harness session record naming it with process `pid`.
+    fn primary_seat(tag: &str, holder: &str, pid: u32) -> (PathBuf, PathBuf, String) {
+        let home = scratch(tag);
+        let wt = home.join("repo");
+        git_init(&wt);
+        let wt = wt.canonicalize().unwrap();
+        let id = ident::mesh_id_for_real_path(&wt.to_string_lossy());
+        let dir = devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), serde_json::json!({"id": id, "sessionId": holder}).to_string()).unwrap();
+        let sessions = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("rec.json"), serde_json::json!({"sessionId": holder, "pid": pid}).to_string()).unwrap();
+        (home, wt, id)
+    }
+
+    /// 2026-10-23: a live holder of the Primary seat made every send/ack from another session a hand-over to Node (exit 69). It is
+    /// Node's own refusal: exit 2, `primary-seat-conflict`, the holder and the Primary id.
+    #[test]
+    fn another_sessions_live_seat_is_the_verbs_own_refusal() {
+        let (home, wt, id) = primary_seat("seat-live", "holder-1", std::process::id());
+        let me = [(defaults::text("mesh_write.env_session_id"), "me-2")];
+        let inv = inv_in(&home, &wt, &me);
+        let o = seat_refusal(&inv).unwrap().expect("a live holder blocks");
+        let v = o.done();
+        assert_eq!(v.get("ok"), Some(&OVal::Bool(false)));
+        assert_eq!(v.get("reason"), Some(&OVal::Str("primary-seat-conflict".into())));
+        assert_eq!(v.get("holder"), Some(&OVal::Str("holder-1".into())));
+        assert_eq!(v.get("id"), Some(&OVal::Str(id)));
+        let err = seat_check(&inv).unwrap_err();
+        assert!(ident::refusal_body(&err).is_some_and(|b| b.contains("primary-seat-conflict")), "{err:?}");
+        // the holder itself, a dead holder and a holder with no session record are not refused
+        let own = [(defaults::text("mesh_write.env_session_id"), "holder-1")];
+        assert!(seat_refusal(&inv_in(&home, &wt, &own)).unwrap().is_none());
+        std::fs::remove_file(home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir")).join("rec.json")).unwrap();
+        assert!(seat_refusal(&inv).unwrap().is_none(), "no record naming the holder is not a live one");
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    #[test]
+    fn a_dead_holder_is_not_a_conflict() {
+        let (home, wt, _) = primary_seat("seat-dead", "holder-1", 999_999_999);
+        let me = [(defaults::text("mesh_write.env_session_id"), "me-2")];
+        assert!(seat_refusal(&inv_in(&home, &wt, &me)).unwrap().is_none());
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    /// The backend settles as Node settles it: a database with no marker is sqlite (and the marker is written), a journal-only
+    /// directory is the legacy journal (a refusal, not a hand-over), a forced backend wins.
+    #[test]
+    fn the_store_backend_is_settled_from_the_marker_then_the_disk() {
+        let home = scratch("backend");
+        let mk = |key: &str| devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(key);
+        let inv = inv_in(&home, &home, &[]);
+        // no store at all: a new sqlite store, pinned
+        assert!(open_store(&inv, "fresh").is_ok());
+        assert_eq!(std::fs::read_to_string(mk("fresh").join("BACKEND")).unwrap().trim(), "sqlite");
+        // a database with no marker (an older store): sqlite, and pinned from now on
+        std::fs::create_dir_all(mk("olddb")).unwrap();
+        std::fs::write(mk("olddb").join(defaults::text("mesh_write.store_file")), b"x").unwrap();
+        assert!(resolve_backend(&inv, &mk("olddb")));
+        assert_eq!(std::fs::read_to_string(mk("olddb").join("BACKEND")).unwrap().trim(), "sqlite");
+        // a journal directory with data and no database: the legacy journal, refused with its own reason
+        std::fs::create_dir_all(mk("jnl").join("journal")).unwrap();
+        std::fs::write(mk("jnl").join("journal").join("a.ndjson"), b"{}\n").unwrap();
+        let err = open_store(&inv, "jnl").map(|_| ()).unwrap_err();
+        assert!(ident::refusal_body(&err).is_some_and(|b| b.contains("legacy-journal-store")), "{err:?}");
+        // a marker of another word is not a backend: the disk decides
+        std::fs::create_dir_all(mk("odd")).unwrap();
+        std::fs::write(mk("odd").join("BACKEND"), "postgres").unwrap();
+        assert!(resolve_backend(&inv, &mk("odd")));
+        // a forced backend wins over the marker
+        let forced = inv_in(&home, &home, &[(defaults::text("mesh_write.env_store_backend"), "journal")]);
+        assert!(!resolve_backend(&forced, &mk("fresh")));
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    /// A stale daemon ends in `stale`; a recent installer attempt is reported as a cooldown with its remaining time.
+    #[test]
+    fn a_stale_daemon_with_a_recent_attempt_reports_the_cooldown() {
+        let home = scratch("heal");
+        let repo = home.join("repo");
+        git_init(&repo);
+        let repo = repo.canonicalize().unwrap();
+        let key = ident::repo_key_for_worktree(&repo.to_string_lossy()).unwrap().unwrap();
+        let env = [(defaults::text("spawn_ctx.devswarm_repo_env"), "x")];
+        let inv = inv_in(&home, &repo, &env);
+        let stale = self_heal(&inv).unwrap();
+        assert_eq!(stale, vec![("daemonWarning".to_string(), OVal::Str("stale".into()))]);
+        let dir = devswarm_root(&home).join(defaults::text("mesh_write.self_heal_dir"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("ingest-{key}.json")), serde_json::json!({"lastAttemptAt": inv.now - 10_000}).to_string()).unwrap();
+        let cooling = self_heal(&inv).unwrap();
+        assert_eq!(cooling.len(), 3);
+        assert_eq!(cooling[1], ("daemonHealCooldown".to_string(), OVal::Bool(true)));
+        assert_eq!(cooling[2], ("retryAfterMs".to_string(), OVal::Num(50_000.0)));
+        // an engine that owns ingest ends it quietly
+        std::fs::write(devswarm_root(&home).join("ingest-owner.json"), serde_json::json!({"owner": "engine", "ts": inv.now - 1000, "validForMs": 3_600_000}).to_string()).unwrap();
+        assert_eq!(self_heal(&inv).unwrap(), stale);
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    /// `monitorNoOkWindowMs`: a setting that is no positive number reads as the default window, not as a hand-over.
+    #[test]
+    fn a_nonsense_monitor_window_reads_as_the_default() {
+        let home = scratch("window");
+        let ah = home.join(defaults::text("mesh_write.dir_anti_hall"));
+        std::fs::create_dir_all(&ah).unwrap();
+        std::fs::write(ah.join(defaults::text("mesh_write.settings_file")), r#"{"devswarm": {"monitorNoOkFailMin": -5}}"#).unwrap();
+        let root = devswarm_root(&home);
+        let beat = root.join(defaults::text("mesh_write.dir_heartbeats"));
+        let locks = root.join(defaults::text("mesh_write.dir_locks"));
+        std::fs::create_dir_all(&beat).unwrap();
+        std::fs::create_dir_all(&locks).unwrap();
+        let inv = inv_in(&home, &home, &[]);
+        let pid = f64::from(std::process::id());
+        let rk = "repo-abc123";
+        let now = inv.now as f64;
+        std::fs::write(
+            beat.join(format!("{}{rk}.json", defaults::text("mesh_write.ingest_beat_prefix"))),
+            serde_json::json!({"ts": now, "pid": pid, "consecutiveMonitorFailures": 0, "lastMonitorOkMs": now - 5.0 * 60_000.0}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(locks.join(format!("{}{rk}.lock", defaults::text("mesh_write.ingest_lock_prefix"))), serde_json::json!({"pid": pid}).to_string()).unwrap();
+        assert!(daemon_healthy(&inv, Some(rk)).unwrap(), "5 minutes since the last good poll is inside the 10 minute default");
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
 }

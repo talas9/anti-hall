@@ -425,6 +425,13 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
             emit(ans.stdout.as_bytes());
             ans.code
         }
+        Next::Refuse(body) => {
+            // Node's `Object.assign({ action: cmd }, refusal)`: the verb's name first, then the refusal's own fields
+            let cmd = serde_json::to_string(a.positionals.first().map_or("", String::as_str)).unwrap_or_default();
+            let fields = body.strip_prefix('{').unwrap_or(&body);
+            emit(format!("{{\"action\":{cmd},{fields}\n").as_bytes());
+            defaults::num("mesh_write.exit_refused") as i32
+        }
         Next::CommittedFailure => {
             eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
             defaults::num("mesh_write.exit_committed_failure") as i32
@@ -437,6 +444,8 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
 pub enum Next {
     /// The engine answered: print this and exit with its code.
     Print(Answer),
+    /// The verb's own refusal (a JSON object without its `action`), printed with `mesh_write.exit_refused`.
+    Refuse(String),
     /// It did not act and wrote nothing: nothing more can be done (there is no Node to run the verb).
     Unable,
     /// It wrote and then failed: report, and never run the verb again (that would write twice).
@@ -449,8 +458,12 @@ pub fn next_step(r: std::thread::Result<R<Answer>>, committed: bool) -> (Next, S
     let w = |k: &str| defaults::text(k).to_string();
     match r {
         Ok(Ok(ans)) => (Next::Print(ans), w("mesh_write.on_native"), String::new()),
-        Ok(Err(e)) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), e.0),
-        Ok(Err(e)) => (Next::Unable, w("mesh_write.shadow_defer"), e.0),
+        Ok(Err(d)) if ident::refusal_body(&d).is_some() => {
+            let body = ident::refusal_body(&d).unwrap_or_default().to_string();
+            (Next::Refuse(body), w("mesh_write.result_refused"), String::new())
+        }
+        Ok(Err(Defer(d))) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d),
+        Ok(Err(Defer(d))) => (Next::Unable, w("mesh_write.shadow_defer"), d),
         Err(_) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), String::new()),
         Err(_) => (Next::Unable, w("mesh_write.shadow_panic"), String::new()),
     }
@@ -508,6 +521,16 @@ mod tests {
         let (n, result, _) = next_step(panicked(), false);
         assert!(is_unable(&n));
         assert_eq!(result, defaults::text("mesh_write.shadow_panic"));
+    }
+
+    #[test]
+    fn a_verbs_own_refusal_is_printed_not_abandoned() {
+        for committed in [false, true] {
+            let (n, result, _) = next_step(Ok(ident::refuse("{\"ok\":false,\"reason\":\"x\"}")), committed);
+            assert!(matches!(&n, Next::Refuse(b) if b == "{\"ok\":false,\"reason\":\"x\"}"));
+            assert_eq!(result, defaults::text("mesh_write.result_refused"));
+        }
+        assert!(ident::refusal_body(&ident::Defer("some-case".into())).is_none(), "an ordinary deferral is no refusal");
     }
 
     #[test]
