@@ -39,6 +39,19 @@ esac
 EOF
   chmod +x "$1"
 }
+mk_hook() { # path, tag: a stub thin client (integrity accept, the maintenance hold, else the engine's hook verb)
+  cat >"$1" <<EOF
+#!/bin/sh
+# $2
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "\$1" | cut -d' ' -f1; else shasum -a 256 "\$1" | cut -d' ' -f1; fi; }
+[ "\$1 \$2" = "integrity accept" ] && { sha "\$AH_ENGINE_DIR/bin/ah-engine" >"\$AH_ENGINE_DIR/bin/ah-engine.expected"; exit 0; }
+D=\${AH_ENGINE_DIR:-\$HOME/.anti-hall/ah-engine}
+u=\$(cat "\$D/daemon.down.until" 2>/dev/null)
+if [ -n "\$u" ] && [ "\$u" -gt \$(( \$(date +%s) * 1000 )) ] 2>/dev/null; then echo passthrough >>"\$D/hold.passthrough"; exit 0; fi
+exec "\$D/bin/ah-engine" hook "\$@"
+EOF
+  chmod +x "$1"
+}
 mk_root() { # dir: a plugin root with defaults, pristine, hook wrapper stub
   mkdir -p "$1/engine/defaults" "$1/engine/defaults.pristine" "$1/hooks"
   for d in defaults defaults.pristine; do
@@ -46,6 +59,7 @@ mk_root() { # dir: a plugin root with defaults, pristine, hook wrapper stub
     printf '[a.old]\nvalue = 1\n' >"$1/engine/$d/a.toml"
   done
   printf '[files.daemon_down_marker]\nvalue = "daemon.down.until"\n' | tee "$1/engine/defaults/engine.toml" >"$1/engine/defaults.pristine/engine.toml"
+  printf '{\n "hooks": {\n  "PreToolUse": [{"hooks": [{\n   "type": "command",\n   "command": "[ -x \\"$HOME/.anti-hall/ah-engine/bin/ah-hook\\" ] && exec \\"$HOME/.anti-hall/ah-engine/bin/ah-hook\\" PreToolUse || exec sh \\"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\\" PreToolUse",\n   "timeout": 10\n  }]}]\n }\n}\n' >"$1/hooks/hooks.json"
   cat >"$1/hooks/ah-hook.sh" <<'EOF'
 #!/bin/sh
 D=${AH_ENGINE_DIR:-$HOME/.anti-hall/ah-engine}
@@ -69,19 +83,15 @@ setup() { # fresh fake machine under $T/$1
   CACHE=$H/.claude/plugins/cache/live/anti-hall/1
   mkdir -p "$E/bin" "$H/.claude/plugins"
   mk_engine "$E/bin/ah-engine" "a.old"
-  cat >"$E/bin/ah-hook" <<'EOF'
-#!/bin/sh
-sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-[ "$1 $2" = "integrity accept" ] && sha "$AH_ENGINE_DIR/bin/ah-engine" >"$AH_ENGINE_DIR/bin/ah-engine.expected"
-exit 0
-EOF
-  chmod +x "$E/bin/ah-hook"
+  mk_hook "$E/bin/ah-hook" v1
   mk_root "$MKT"; mk_root "$CACHE"
   printf '{\n "plugins": {\n  "anti-hall@other": [{"installPath": "%s/wrong"}],\n  "anti-hall@anti-hall-engine-live": [\n   {\n    "scope": "user",\n    "installPath": "%s",\n    "version": "1"\n   }\n  ]\n }\n}\n' "$H" "$CACHE" >"$H/.claude/plugins/installed_plugins.json"
   mkdir -p "$W/new"
   mk_engine "$W/new/ah-engine" "a.old wire.ack"
   mk_new_defaults "$W/new/defaults" 1
+  mk_hook "$W/new/ah-hook" v2
   OLDSHA=$(sha "$E/bin/ah-engine"); NEWSHA=$(sha "$W/new/ah-engine")
+  OLDHOOK=$(sha "$E/bin/ah-hook"); NEWHOOK=$(sha "$W/new/ah-hook")
 }
 run() { # args...: the script against the scratch home only
   HOME=$H AH_DEPLOY_HOME=$H AH_DEPLOY_PROBE_N=2 AH_DEPLOY_CALL_TIMEOUT=3 AH_DEPLOY_STOP_WAIT_S=3 sh "$SCRIPT" "$@"
@@ -127,6 +137,11 @@ ok "good: staging (all roots + binary) precedes the one commit pass, which prece
 ok "good: no staged temp file is left behind" test -z "$(find "$MKT" "$CACHE" "$E/bin" -name '*.deploy.*' -o -name '*.new.*' 2>/dev/null)"
 ok "good: stopped twice" test "$(grep -c "stop the engine" "$BK/deploy.log")" -eq 2
 ok "good: no defaults.error written" test ! -e "$E/defaults.error"
+ok "good: the ah-hook next to the new binary is the default client" has "new ah-hook: $W/new/ah-hook" "$W/check.out"
+ok "good: live ah-hook is the new client" test "$(sha "$E/bin/ah-hook")" = "$NEWHOOK"
+ok "good: old ah-hook kept as .prev" test "$(sha "$E/bin/ah-hook.prev")" = "$OLDHOOK"
+ok "good: ah-hook sha verified" has "verify: ah-hook sha matches" "$BK/deploy.log"
+ok "good: hooks.json of every root verified" test "$(grep -c 'verify: every hook command of .* runs' "$BK/deploy.log")" -eq 2
 
 # --- 4. rollback (on the good deploy) -------------------------------------------------------------------------------
 after=$(tree_sum)
@@ -137,6 +152,7 @@ ok "rollback: --yes exits 0" test $rc -eq 0
 ok "rollback: reports OK" has "ROLLBACK OK" "$W/rb.out"
 ok "rollback: binary is the old one again" test "$(sha "$E/bin/ah-engine")" = "$OLDSHA"
 ok "rollback: integrity record is the old sha" test "$(tr -d ' \n' <"$E/bin/ah-engine.expected")" = "$OLDSHA"
+ok "rollback: ah-hook is the old client again" test "$(sha "$E/bin/ah-hook")" = "$OLDHOOK"
 for r in "$MKT" "$CACHE"; do
   ok "rollback: a.toml is back to the old value" has "value = 1" "$r/engine/defaults/a.toml"
   ok "rollback: the file the deploy added is gone from the root" test ! -e "$r/engine/defaults/wire.toml"
@@ -170,11 +186,26 @@ ok "extra key: --deploy --yes without --allow-drop refuses and changes nothing" 
 
 # --- 5. a guard failing open in the cache root is caught -------------------------------------------------------------
 setup failopen
-printf '#!/bin/sh\nexit 0\n' >"$CACHE/hooks/ah-hook.sh"       # the root Claude runs lets the force-push through
+printf '#!/bin/sh\nexit 0\n' >"$W/new/ah-hook"; chmod +x "$W/new/ah-hook"       # the client the deploy installs lets the force-push through
 run --deploy "$W/new/ah-engine" "$W/new/defaults" --yes >"$W/deploy.out" 2>&1; rc=$?
 ok "fail-open: the deploy reports failure" test $rc -ne 0
 ok "fail-open: the probe failure is named" has "force-push probe blocked 0/2" "$W/deploy.out"
 ok "fail-open: the exact rollback command is printed" has "engine-deploy.sh --rollback --from" "$W/deploy.out"
+
+# --- 5b. a hooks.json that does not run the installed client is caught; --hook names the client explicitly ------------------
+setup hookjson
+sed -i.bak 's#bin/ah-hook#bin/ah-other#g' "$CACHE/hooks/hooks.json"
+mk_hook "$W/elsewhere-hook" v3
+run --deploy "$W/new/ah-engine" "$W/new/defaults" --hook "$W/elsewhere-hook" --yes >"$W/deploy.out" 2>&1; rc=$?
+ok "hooks.json: the deploy fails when a root does not run the installed client" test $rc -ne 0
+ok "hooks.json: the failing root is named" has "do not run" "$W/deploy.out"
+ok "hooks.json: --hook installed the named client" test "$(sha "$E/bin/ah-hook")" = "$(sha "$W/elsewhere-hook")"
+setup hookmissing
+run --check "$W/new/ah-engine" "$W/new/defaults" --hook "$W/nonexistent" >"$W/check.out" 2>&1; rc=$?
+ok "hook: --check refuses a missing --hook file" test $rc -ne 0
+rm -f "$W/new/ah-hook"
+run --check "$W/new/ah-engine" "$W/new/defaults" >"$W/check.out" 2>&1; rc=$?
+ok "hook: no client next to the binary and no --hook leaves the live client" has "the live client stays" "$W/check.out"
 
 # --- 6. a hook arriving mid-deploy (the 2026-10-22 race) ---------------------------------------------------------------
 win() { # a hook through the cache root, then log whether it started a daemon

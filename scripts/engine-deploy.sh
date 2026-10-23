@@ -1,9 +1,12 @@
 #!/bin/sh
 # engine-deploy.sh: put a new ah-engine binary live together with its plugin defaults, in the one safe order.
 #
-#   sh scripts/engine-deploy.sh --check    <new-binary> <new-defaults>              read-only pre-check
-#   sh scripts/engine-deploy.sh --deploy   <new-binary> <new-defaults> [--yes] [--allow-drop] [--scope tree|defaults]
+#   sh scripts/engine-deploy.sh --check    <new-binary> <new-defaults> [--hook <ah-hook>]       read-only pre-check
+#   sh scripts/engine-deploy.sh --deploy   <new-binary> <new-defaults> [--hook <ah-hook>] [--yes] [--allow-drop] [--scope tree|defaults]
 #   sh scripts/engine-deploy.sh --rollback [--from <backup-dir>] [--yes]
+#
+# --hook <path> is the thin client (ah-hook) to install or upgrade together with the engine; default: the `ah-hook` next to <new-binary>
+# (none there and no --hook: the live client is left as it is). It is staged, committed and backed up (bin/ah-hook.prev) like the engine.
 #
 # <new-defaults> is the new plugin's defaults: a plugin root, its engine/ directory, or the defaults directory itself (the
 # directory that holds index.toml; defaults.pristine is taken from its sibling when there is one, else the same files).
@@ -19,11 +22,12 @@
 #           Exits non-zero on any problem.
 # --deploy  dry run by default (runs --check and prints the plan); with --yes: check, set the maintenance hold, stop the
 #           engine, sync into every root (each replaced file is copied to the backup first, never deleted), swap the binary
-#           (the old one stays as bin/ah-engine.prev), record it with `ah-hook integrity accept`, stop AGAIN (kills any daemon a hook
+#           (the old one stays as bin/ah-engine.prev; the thin client likewise, as bin/ah-hook.prev), record it with `ah-hook integrity accept`, stop AGAIN (kills any daemon a hook
 #           started from the old binary in the window), re-sync, release the hold, start the new binary, then verify: sha
 #           matches, the RUNNING daemon is a new process whose executable is the new binary, force-push probe blocked through
 #           the plugin root Claude runs, `status --json` running with no new defaults fallback since the start, defaults.error not
-#           stamped after the new binary started (an error the old binary wrote in the commit window is not counted), roots identical. A failed step prints the exact --rollback command; nothing is rolled back on its own.
+#           stamped after the new binary started (an error the old binary wrote in the commit window is not counted), roots identical,
+#           the installed ah-hook has the new client's sha and every hook command of each live root's hooks.json runs that very file. A failed step prints the exact --rollback command; nothing is rolled back on its own.
 #           Maintenance hold: the launcher's own "daemon down" marker (files.daemon_down_marker in the state dir) is set to a time
 #           in the future, so hooks pass through and start nothing while the engine is stopped and the binary is swapped. It
 #           carries a TTL (AH_DEPLOY_HOLD_TTL_S, refreshed at every step) so a crashed deploy can never leave the guards off.
@@ -60,6 +64,8 @@ H=${AH_DEPLOY_HOME:-${HOME:-}}
 [ -n "$H" ] || { echo "engine-deploy: no HOME" >&2; exit 2; }
 ENGINE_DIR=${AH_DEPLOY_ENGINE_DIR:-$H/.anti-hall/ah-engine}
 BIN=$ENGINE_DIR/bin/ah-engine
+HOOK=$ENGINE_DIR/bin/ah-hook
+HOOK_ARG=; HOOK_NEW=; HOOKSHA=
 BK_ROOT=${AH_DEPLOY_BACKUP_ROOT:-$ENGINE_DIR/deploys}
 MKT_ROOT=${AH_DEPLOY_MKT_ROOT:-$H/.anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall}
 INSTALLED=${AH_DEPLOY_INSTALLED_JSON:-$H/.claude/plugins/installed_plugins.json}
@@ -115,6 +121,35 @@ resolve_roots() {
   done
   # a hook runs from the cache root Claude installed: that one answers the force-push probe (the last root listed)
   PROBE_ROOT=$(printf '%s\n' "$ROOTS" | tail -n 1)
+}
+
+# resolve_hook NEW: the thin client to install: --hook, else the ah-hook next to the new engine binary, else none (client unchanged)
+resolve_hook() {
+  HOOK_NEW=; HOOKSHA=
+  if [ -n "$HOOK_ARG" ]; then
+    [ -f "$HOOK_ARG" ] && [ -x "$HOOK_ARG" ] || die "new ah-hook missing or not executable: $HOOK_ARG"
+    HOOK_NEW=$HOOK_ARG
+  elif [ -f "$(dirname "$1")/ah-hook" ] && [ -x "$(dirname "$1")/ah-hook" ]; then HOOK_NEW=$(dirname "$1")/ah-hook; fi
+  [ -n "$HOOK_NEW" ] && HOOKSHA=$(sha "$HOOK_NEW")
+  return 0
+}
+
+# hooks_reach_client ROOT: every hook command of the root's hooks.json files (Claude and Codex) runs the installed ah-hook; prints the
+# number of commands that do not (0 = all do), or "none" when the root has no such command at all. The command word is the path
+# after `[ -x "..." ] && exec "..."`; $HOME in it is the deploy's home.
+hooks_reach_client() {
+  _bad=0; _all=0
+  for hj in "$1/hooks/hooks.json" "$1/codex/hooks/hooks.json"; do
+    [ -f "$hj" ] || continue
+    while IFS= read -r line; do
+      case $line in *'"command":'*) ;; *) continue ;; esac
+      _all=$((_all + 1))
+      p=$(printf '%s\n' "$line" | sed -n 's/.*exec \\"\([^"\\]*ah-hook\)\\".*/\1/p' | head -n 1)
+      case $p in '$HOME'/*) p=$H/${p#'$HOME'/} ;; esac
+      [ "$p" = "$HOOK" ] || _bad=$((_bad + 1))
+    done <"$hj"
+  done
+  if [ "$_all" -eq 0 ]; then echo none; else echo "$_bad"; fi
 }
 
 # --- new defaults -----------------------------------------------------------------------------------------------------
@@ -285,12 +320,17 @@ OLD_MISS=0
 do_check() {
   NEW=$1
   [ -f "$NEW" ] && [ -x "$NEW" ] || die "new binary missing or not executable: $NEW"
-  resolve_src "$2"; resolve_roots
+  resolve_src "$2"; resolve_roots; resolve_hook "$NEW"
   mkscratch; mkdir -p "$SCRATCH/home"; : >"$SCRATCH/empty.toml"
   newsha=$(sha "$NEW"); livesha=$(sha "$BIN")
   note "== engine-deploy check"
   note "new binary : $NEW  sha $(printf '%s' "$newsha" | cut -c1-12)"
   note "live binary: $BIN  sha $(printf '%s' "$livesha" | cut -c1-12)$([ "$newsha" = "$livesha" ] && echo '  (IDENTICAL to the new one)')"
+  if [ -n "$HOOK_NEW" ]; then
+    livehook=$(sha "$HOOK")
+    note "new ah-hook: $HOOK_NEW  sha $(printf '%s' "$HOOKSHA" | cut -c1-12)"
+    note "live ah-hook: $HOOK  sha $(printf '%s' "$livehook" | cut -c1-12)$([ "$HOOKSHA" = "$livehook" ] && echo '  (IDENTICAL to the new one)')"
+  else note "ah-hook: no new client given (none next to the new binary, no --hook); the live client stays"; fi
   v=$(eng_scratch "$NEW" "$SCRATCH/none" version --json) || true
   note "new binary version: $(printf '%s' "$v" | head -c 120)"
   note "new defaults: $SRC_DEF  (pristine: $SRC_PRI); scope: $SCOPE$([ "$SCOPE" = tree ] && echo " ($SRC_TREE)")"
@@ -301,6 +341,12 @@ do_check() {
     out=$(eng_scratch "$NEW" "$r" config validate "$SCRATCH/empty.toml"); rc=$?
     if [ $rc -eq 0 ]; then note "  new binary on this root AS IS: loads (no key is missing)"
     else note "  new binary on this root AS IS: REFUSES (rc $rc: $(printf '%s' "$out" | head -n 1 | cut -c1-200)) -- swapping the binary before the keys would cause exactly this"; fi
+    hr=$(hooks_reach_client "$r")
+    case $hr in
+      0) note "  hooks.json of this root: every hook command runs $HOOK" ;;
+      none) note "  hooks.json of this root: no hook command found" ;;
+      *) note "  hooks.json of this root: $hr hook command(s) do not run $HOOK (the plugin tree sync below may fix that)" ;;
+    esac
     ADDED=0; DROPPED=0; FILES_CHANGED=0
     diff_dir "$SRC_DEF" "$r/engine/defaults" "defaults"
     diff_dir "$SRC_PRI" "$r/engine/defaults.pristine" "defaults.pristine"
@@ -484,6 +530,20 @@ verify_live() { # returns 0 when every check passes; prints each
     if [ "$mm" != 0 ]; then step "verify FAILED: $mm synced file(s) of $r differ from the new $SCOPE source"; ok=1; fi
   done
   [ "$ok" -eq 0 ] && step "verify: plugin roots serve identical defaults and match the new $SCOPE source (after the final re-sync)"
+  # the thin client: the installed file is the new one, and every hook command of every live root runs it
+  if [ -n "$HOOK_NEW" ]; then
+    hs=$(sha "$HOOK")
+    if [ "$hs" = "$HOOKSHA" ]; then step "verify: ah-hook sha matches the new one"; else step "verify FAILED: ah-hook sha $hs != $HOOKSHA"; ok=1; fi
+  fi
+  [ -x "$HOOK" ] || { step "verify FAILED: $HOOK is not an executable file"; ok=1; }
+  for r in $ROOTS; do
+    hr=$(hooks_reach_client "$r")
+    case $hr in
+      0) step "verify: every hook command of $r runs $HOOK" ;;
+      none) step "verify FAILED: no hook command found in the hooks.json files of $r"; ok=1 ;;
+      *) step "verify FAILED: $hr hook command(s) of $r do not run $HOOK"; ok=1 ;;
+    esac
+  done
   # the RUNNING daemon: a process that did not exist before the final stop, running the new binary
   dp=$(daemon_pid)
   if [ -z "$dp" ] || ! kill -0 "$dp" 2>/dev/null; then step "verify FAILED: no live daemon pid in $ENGINE_DIR/$RUN_MARKER"; ok=1
@@ -554,6 +614,7 @@ do_deploy() {
   note "1 stop the engine ($BIN stop)"
   i=0; for r in $ROOTS; do i=$((i + 1)); note "2.$i sync engine/defaults + engine/defaults.pristine$([ "$SCOPE" = tree ] && echo " + the whole plugin tree$([ -n "$SRC_NODE" ] && echo " + the Node backup tree at $r/$NODE_REL")") of $r (replaced files copied to the backup first, nothing deleted)"; done
   note "3 binary: $BIN -> keep as $BIN.prev; install $NEW"
+  if [ -n "$HOOK_NEW" ]; then note "3b ah-hook: $HOOK -> keep as $HOOK.prev; install $HOOK_NEW"; fi
   note "4 integrity record (accept) with $ENGINE_DIR/bin/ah-hook integrity accept"
   note "5 stop AGAIN, re-sync every root, release the hold, start the new binary"
   note "6 verify: sha, integrity record, roots identical after the re-sync, running daemon = new process on the new sha, force-push probe x$PROBE_N via $PROBE_ROOT, status running, no defaults fallback since the start, no defaults.error stamped after the new binary started"
@@ -608,12 +669,27 @@ do_deploy() {
   fi
   printf 'B\t%s\t%s\n' "$BIN" "$had" >>"$MAN"
   cp -p "$NEW" "$BIN.new.$$" && chmod +x "$BIN.new.$$" || fail_deploy "cannot stage the new binary at $BIN"
+  hhad=0
+  if [ -n "$HOOK_NEW" ]; then
+    step "stage the thin client"
+    if [ -e "$HOOK" ]; then
+      hhad=1
+      if [ -e "$HOOK.prev" ]; then cp -p "$HOOK.prev" "$BK/ah-hook.prev.before" || fail_deploy "cannot back up the old ah-hook .prev"; fi
+      cp -p "$HOOK" "$HOOK.prev.new.$$" || fail_deploy "cannot keep the old ah-hook as .prev"
+    fi
+    printf 'H\t%s\t%s\n' "$HOOK" "$hhad" >>"$MAN"
+    cp -p "$HOOK_NEW" "$HOOK.new.$$" && chmod +x "$HOOK.new.$$" || fail_deploy "cannot stage the new ah-hook at $HOOK"
+  fi
 
   step "commit: rename the staged files and the binary into place"
   commit_pending || fail_deploy "a staged file could not be renamed into place"
   PEND=
   [ "$had" = 1 ] && { mv "$BIN.prev.new.$$" "$BIN.prev" || fail_deploy "cannot keep the old binary as .prev"; }
   mv "$BIN.new.$$" "$BIN" || fail_deploy "cannot install the new binary at $BIN"
+  if [ -n "$HOOK_NEW" ]; then
+    [ "$hhad" = 1 ] && { mv "$HOOK.prev.new.$$" "$HOOK.prev" || fail_deploy "cannot keep the old ah-hook as .prev"; }
+    mv "$HOOK.new.$$" "$HOOK" || fail_deploy "cannot install the new ah-hook at $HOOK"
+  fi
   step "swap done"
 
   integ=$ENGINE_DIR/bin/ah-hook
@@ -656,6 +732,9 @@ do_rollback() {
   note "== rollback of $from"
   nf=$(grep -c '^F' "$from/manifest.tsv"); note "restore $nf defaults file(s) from the backup (files the deploy added are moved aside, not deleted)"
   if [ -e "$BIN.prev" ]; then note "restore the binary: $BIN.prev -> $BIN"; else note "no $BIN.prev: the binary stays as it is"; fi
+  if grep -q '^H' "$from/manifest.tsv"; then
+    if [ -e "$HOOK.prev" ]; then note "restore the thin client: $HOOK.prev -> $HOOK"; else note "no $HOOK.prev: the thin client stays as it is"; fi
+  fi
   if [ "$YES" != 1 ]; then note "dry run: nothing was changed. Add --yes to roll back."; exit 0; fi
   RB=$from/rollback-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$RB/replaced" "$RB/added" || die "cannot create $RB"
   DLOG=$RB/rollback.log
@@ -689,6 +768,13 @@ do_rollback() {
       step "integrity record accepted for the restored binary"
     fi
   fi
+  if grep -q '^H' "$from/manifest.tsv"; then
+    if [ -e "$HOOK.prev" ]; then
+      cp -p "$HOOK" "$RB/replaced/ah-hook" 2>/dev/null
+      cp -p "$HOOK.prev" "$HOOK.rb.$$" && mv "$HOOK.rb.$$" "$HOOK" || die "cannot restore the thin client from $HOOK.prev"
+      step "ah-hook restored from $HOOK.prev (sha $(sha "$HOOK" | cut -c1-12))"
+    else step "no $HOOK.prev: the thin client stays as it is"; fi
+  fi
   step "ROLLBACK OK: the next hook call starts the restored engine"
   exit 0
 }
@@ -705,6 +791,7 @@ while [ $# -gt 0 ]; do
     --yes) YES=1 ;;
     --allow-drop) ALLOW_DROP=1 ;;
     --scope) shift; SCOPE=${1:-}; [ -n "$SCOPE" ] || usage ;;
+    --hook) shift; HOOK_ARG=${1:-}; [ -n "$HOOK_ARG" ] || usage ;;
     --from) shift; FROM=${1:-}; [ -n "$FROM" ] || usage ;;
     -h|--help) usage ;;
     -*) usage ;;
