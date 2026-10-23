@@ -4,14 +4,14 @@
 //! `companion/lib/devswarm-live-children.js`, over the parts of `row-eligibility.js` / `row-state.js` /
 //! `devswarm-archived.js` they use.
 //!
-//! One source stays with Node: the supervisor's active-list cache (`hivecontrol-active.json`), consulted only for a worktree
-//! under the DevSwarm repos root that the app database has no opinion on. Where it could change the answer the engine reports
-//! [`Live::Unsure`] and the verb is left to Node.
+//! The supervisor's active-list cache (`hivecontrol-active.json`, `isAppArchived` of `companion/lib/devswarm-archived-cache.js`) is
+//! read for a worktree under the DevSwarm repos root that the app database has no opinion on: a fresh snapshot of the project that
+//! lists neither the child's id nor its worktree, and is at least the grace newer than the child's descriptor, calls it archived.
 use super::who::{Proc, read_descriptors, str_member};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::J;
 use crate::defaults;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::migrate::j_string;
 use std::path::Path;
@@ -105,8 +105,6 @@ pub enum Live {
     Yes,
     /// Positive proof of zero live children: the idle-skip applies.
     No,
-    /// The answer depends on a source the engine does not read: leave the verb to Node.
-    Unsure,
 }
 
 fn held_ids(p: &Proc) -> Vec<String> {
@@ -130,6 +128,77 @@ fn under_repos_root(path: &str, cwd: &str) -> bool {
     crate::checks::guardkit::jsre::compile(text("wake_watch.repos_root_re"), false).is_match(&normalized)
 }
 
+/// `normalizeWorktreePath(p)`: `path.resolve` (against the working directory), then the real path when it exists.
+fn normalize_wt(p: &str, cwd: &str) -> String {
+    let resolved = ident::resolve(cwd, p);
+    ident::realpath(&resolved).unwrap_or(resolved)
+}
+
+/// `resolveArchivedCacheMaxAgeMs(env)`: the variable when it is a positive integer, else a multiple of the reconcile sweep interval.
+fn active_max_age_ms(p: &Proc) -> f64 {
+    let from_env = p
+        .env
+        .get(text("wake_watch.env_active_max_age"))
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|n| *n > 0.0);
+    if let Some(n) = from_env {
+        return n;
+    }
+    let sec = crate::checks::guardkit::settings::get_num(&p.st, defaults::raw("devswarm_sup.set_reconcile_sec"));
+    let sweep = if sec.is_finite() && sec > 0.0 { sec * 1000.0 } else { defaults::num("wake_watch.sweep_fallback_ms") as f64 };
+    defaults::num("wake_watch.active_max_age_mult") as f64 * sweep
+}
+
+/// `isAppArchived({ home, repoKey, id, worktreePath })` for a row under the app's repos root: the project's snapshot is fresh and
+/// holds records, lists none with the row's id or worktree, and is at least the grace newer than the row's descriptor (a row the
+/// snapshot predates is not archived by its absence). Every unknown answers no.
+fn absent_from_active_list(p: &Proc, repo_key: &str, id: &str, worktree: &str) -> bool {
+    let Some(snap @ J::Obj(_)) = read_json(&devswarm_root(&p.home).join(text("wake_watch.active_cache_file"))) else { return false };
+    let Some(J::Num(fetched_at)) = snap.get("fetchedAt").filter(|v| matches!(v, J::Num(n) if n.is_finite())) else { return false };
+    let age = now_ms() as f64 - fetched_at;
+    if !(age >= 0.0 && age <= active_max_age_ms(p)) {
+        return false;
+    }
+    let Some(J::Obj(by_repo)) = snap.get("byRepoKey") else { return false };
+    let Some(J::Arr(records)) = by_repo.iter().rev().find(|(k, _)| k == repo_key).map(|(_, v)| v) else { return false };
+    let mut listed: Vec<(String, Option<String>)> = Vec::new();
+    for r in records {
+        if !matches!(r, J::Obj(_) | J::Arr(_)) {
+            continue;
+        }
+        let rid = match r.get("id") {
+            None | Some(J::Null) => String::new(),
+            Some(x) => j_string(x),
+        };
+        if rid.is_empty() {
+            continue;
+        }
+        let rwt = match r.get("worktreePath") {
+            Some(J::Str(w)) if !w.is_empty() => Some(normalize_wt(w, &p.cwd)),
+            _ => None,
+        };
+        listed.push((rid, rwt));
+    }
+    if listed.is_empty() {
+        return false;
+    }
+    let want = normalize_wt(worktree, &p.cwd);
+    if listed.iter().any(|(rid, rwt)| rid == id || rwt.as_deref() == Some(want.as_str())) {
+        return false;
+    }
+    let first_seen = std::fs::metadata(devswarm_root(&p.home).join(text("mesh_write.dir_workspaces")).join(format!("{id}{}", text("mesh_write.json_suffix"))))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .filter(|ms| ms.is_finite());
+    let Some(first_seen) = first_seen else { return false };
+    let grace = crate::checks::guardkit::settings::get_num(&p.st, defaults::raw("wake_watch.set_archived_grace_ms"));
+    fetched_at - first_seen >= grace
+}
+
 /// `liveChildState` with `excludeHeldIgnored`, answered as the idle-skip needs it.
 fn live_children(p: &Proc) -> R<Live> {
     let descriptors = read_descriptors(&p.home);
@@ -140,7 +209,6 @@ fn live_children(p: &Proc) -> R<Live> {
     let self_real = ident::realpath(&p.cwd).unwrap_or_else(|| p.cwd.clone());
     let held = held_ids(p);
     let ignore_dir = devswarm_root(&p.home).join(text("wake_watch.dir_archive_ignore"));
-    let mut unsure = false;
     for d in &descriptors {
         let (Some(wt), Some(id)) = (str_member(d, "worktreePath"), str_member(d, "id")) else { continue };
         let d_real = ident::realpath(&wt).unwrap_or_else(|| wt.clone());
@@ -164,17 +232,16 @@ fn live_children(p: &Proc) -> R<Live> {
             None => {}
         }
         // no opinion from the app database: only the supervisor's active-list cache could still call it archived, and only for
-        // a worktree under the DevSwarm repos root while that cache exists
-        if under_repos_root(&wt, &p.cwd) && devswarm_root(&p.home).join(text("wake_watch.active_cache_file")).exists() {
-            unsure = true;
+        // a worktree under the DevSwarm repos root
+        if under_repos_root(&wt, &p.cwd) && absent_from_active_list(p, &self_key, &id, &wt) {
             continue;
         }
         return Ok(Live::Yes);
     }
-    Ok(if unsure { Live::Unsure } else { Live::No })
+    Ok(Live::No)
 }
 
-/// `idleSkipApplies(home, cwd, { env })` for a Primary: `No` means "arm", `Yes`/`Unsure` need Node's line.
+/// `idleSkipApplies(home, cwd, { env })` for a Primary: `NotApplicable` means "arm", `Applies` is Node's one idle line.
 pub fn idle_skip(p: &Proc) -> R<IdleSkip> {
     if p.switched_off("wake_watch.set_idle_skip") {
         return Ok(IdleSkip::NotApplicable);
@@ -182,7 +249,6 @@ pub fn idle_skip(p: &Proc) -> R<IdleSkip> {
     Ok(match live_children(p)? {
         Live::Yes => IdleSkip::NotApplicable,
         Live::No => IdleSkip::Applies,
-        Live::Unsure => return defer("active-list-cache"),
     })
 }
 
@@ -193,4 +259,50 @@ pub enum IdleSkip {
     NotApplicable,
     /// No live child: Node prints its one idle line and exits.
     Applies,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    const KEY: &str = "proj-aaaaaaaa";
+
+    fn proc_in(tag: &str) -> Proc {
+        let home = std::env::temp_dir().join(format!("ah-arch-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&home).unwrap();
+        let home_s = home.to_string_lossy().into_owned();
+        Proc { home, cwd: home_s.clone(), env: Default::default(), st: crate::checks::git::util::Settings { home: home_s, env: Default::default() }, root: String::new() }
+    }
+
+    /// The active-list snapshot and the child's descriptor, `age` old.
+    fn seed(p: &Proc, fetched_ago_ms: f64, listed: &[(&str, &str)], descriptor_age: Duration) {
+        let root = devswarm_root(&p.home);
+        std::fs::create_dir_all(root.join("workspaces")).unwrap();
+        let recs: Vec<String> = listed.iter().map(|(id, wt)| format!(r#"{{"id":"{id}","worktreePath":"{wt}"}}"#)).collect();
+        let snap = format!(r#"{{"fetchedAt":{},"byRepoKey":{{"{KEY}":[{}]}},"recordCount":{}}}"#, now_ms() as f64 - fetched_ago_ms, recs.join(","), recs.len());
+        std::fs::write(root.join(text("wake_watch.active_cache_file")), snap).unwrap();
+        let f = std::fs::File::create(root.join("workspaces").join("child-1.json")).unwrap();
+        f.set_modified(SystemTime::now() - descriptor_age).unwrap();
+    }
+
+    /// A fresh snapshot of the project that lists neither the id nor the worktree, and is older than the grace past the descriptor, is
+    /// Node's `isAppArchived`: the child is not live (this used to hand the whole verb to Node).
+    #[test]
+    fn a_child_absent_from_a_fresh_active_list_reads_as_archived_in_the_app() {
+        let p = proc_in("absent");
+        let hour = Duration::from_secs(3600);
+        seed(&p, 1000.0, &[("someone-else", "/w/other")], 2 * hour);
+        assert!(absent_from_active_list(&p, KEY, "child-1", "/w/child"));
+        assert!(!absent_from_active_list(&p, "other-key", "child-1", "/w/child"), "no snapshot of this project is no evidence");
+        seed(&p, 1000.0, &[("child-1", "/w/else")], 2 * hour);
+        assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "listed by id");
+        seed(&p, 1000.0, &[("x", "/w/child")], 2 * hour);
+        assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "listed by worktree");
+        seed(&p, 1000.0, &[("x", "/w/other")], Duration::from_secs(60));
+        assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "a child the snapshot barely predates is not archived by its absence");
+        seed(&p, 10.0 * 3600.0 * 1000.0, &[("x", "/w/other")], 20 * hour);
+        assert!(!absent_from_active_list(&p, KEY, "child-1", "/w/child"), "a stale snapshot is ignored");
+    }
 }

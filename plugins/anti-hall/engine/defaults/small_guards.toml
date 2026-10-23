@@ -1898,12 +1898,32 @@ value = '''
 💡 anti-hall · devswarm-archive-request: your parent asks you to archive this workspace. Confirm with YOUR user, then run `{cli} archive {id}`. NEVER auto-archive.'''
 
 [devswarm_prompt.proto_key]
-doc = "A descriptor key the engine does not merge (JavaScript would set the prototype); a descriptor that holds it is left to the Node hook."
+doc = "A descriptor key JavaScript reads as the prototype of the merged object (JSON.parse makes it an own field, Object.assign then sets the prototype): the child-turn registration merges it the same way."
 value = "__proto__"
 
 [devswarm_prompt.escape_marker]
 doc = "The text that marks a JSON escape sequence; a descriptor the engine's parser rejects and that holds one is left to the Node hook (JavaScript may parse it)."
 value = "\\u"
+
+[devswarm_prompt.skip_descriptor_unreadable]
+doc = "The cause logged when the child's old descriptor cannot be merged because it is no regular file (a FIFO, socket or device a read could block on) or is over the read cap; the registration is left for the turn and retried on the next. The refusal reason follows."
+value = "descriptor not merged: "
+
+[devswarm_prompt.skip_descriptor_surrogate]
+doc = "The cause logged when the child's old descriptor holds a lone-surrogate JSON escape (JavaScript parses it, a Rust string cannot carry it), so rewriting it would change its text; the registration is left for the turn."
+value = "descriptor holds a lone-surrogate escape"
+
+[devswarm_prompt.skip_phantom_marker]
+doc = "Why a truncated-id phantom descriptor is kept: an archive marker of that id already exists."
+value = "archive marker already exists"
+
+[devswarm_prompt.skip_phantom_unread]
+doc = "Why a truncated-id phantom descriptor is kept this turn: its partition still holds unread mail that has not been forwarded to the registered id."
+value = "unread mail not forwarded yet"
+
+[devswarm_prompt.skip_phantom_lock]
+doc = "Why a truncated-id phantom descriptor is kept this turn: its workspace lock stayed busy."
+value = "workspace lock busy"
 
 [devswarm_prompt.log_verb]
 doc = "The verb name the registration's summary-refresh failures are logged under."

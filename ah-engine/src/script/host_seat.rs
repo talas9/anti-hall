@@ -15,7 +15,7 @@ use crate::defaults;
 use crate::dssup::liveness;
 use crate::meshw::args::{Args, FlagVal};
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::{idlock, lifeverbs};
 use rquickjs::{Ctx, Function, Object};
 use serde_json::{Value, json};
@@ -78,10 +78,11 @@ fn stale_resume(home: &Path, worktree: &str, cur: &str, handover: Option<&Value>
         return Ok(Value::Null);
     }
     let list = sessions_for(home, worktree)?;
-    let sid_re = regex::Regex::new(defaults::text("devswarm_parent.drift_sid_re")).map_err(|_| ident::Defer("regex".into()))?;
+    // a pattern that does not compile (a broken override) matches no id
+    let sid_re = regex::Regex::new(defaults::text("devswarm_parent.drift_sid_re")).ok();
     let mine = match list.iter().find(|s| s.id == cur) {
         Some(s) => Some(s.last_ms),
-        None if sid_re.is_match(cur) => {
+        None if sid_re.as_ref().is_some_and(|re| re.is_match(cur)) => {
             let file = project_dir(home, worktree).join(format!("{cur}{}", defaults::text("devswarm_sup.lv_transcript_ext")));
             std::fs::metadata(file).ok().map(|m| liveness::mtime_ms(&m)).filter(|m| m.is_finite())
         }
@@ -144,15 +145,16 @@ fn na() -> Value {
 }
 
 /// The text of a JSON number or string field as JavaScript spells it; `None` for absent, null, `false`, `0` and `""`.
-fn js_text(v: Option<&OVal>) -> R<Option<String>> {
-    Ok(match v {
+fn js_text(v: Option<&OVal>) -> Option<String> {
+    match v {
         None | Some(OVal::Null) | Some(OVal::Bool(false)) => None,
         Some(OVal::Str(s)) if s.is_empty() => None,
         Some(OVal::Str(s)) => Some(s.clone()),
         Some(OVal::Num(n)) if *n == 0.0 || n.is_nan() => None,
         Some(OVal::Num(n)) => Some(crate::checks::jsport::num::to_js_string(*n)),
-        Some(_) => return defer("seat-session-type"),
-    })
+        // a truthy boolean, array or object reads as its `String()`
+        Some(x @ (OVal::Bool(true) | OVal::Arr(_) | OVal::Obj(_))) => Some(super::host_parentinbox::js_text(x)),
+    }
 }
 
 /// `seatVerdict`.
@@ -173,7 +175,7 @@ pub(crate) fn seat_verdict(inv: &Inv, session: &str, now: f64) -> R<Value> {
     // a descriptor that exists but cannot be read is not "never registered": it is never registered over
     let corrupt = desc.is_none() && desc_file.exists();
     let holder = match desc.as_ref().map(|d| js_text(d.get(defaults::text("mesh_write.field_session_id")))) {
-        Some(r) => r?.filter(|s| !s.starts_with(defaults::text("mesh_write.synthetic_session_prefix"))).unwrap_or_default(),
+        Some(r) => r.filter(|s| !s.starts_with(defaults::text("mesh_write.synthetic_session_prefix"))).unwrap_or_default(),
         None => String::new(),
     };
     let handover = newest_handover(&wt);
@@ -230,7 +232,7 @@ fn adopt_seat(inv: &Inv, session: &str, now: f64, real: bool) -> R<Value> {
     let desc_file = idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let cursor = ident::read_bounded(&desc_file)?
         .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
-        .and_then(|d| js_text(d.get(defaults::text("mesh_write.field_cursor_path"))).ok().flatten());
+        .and_then(|d| js_text(d.get(defaults::text("mesh_write.field_cursor_path"))));
     let mut a = Args { positionals: vec![defaults::text("devswarm_cli.verb_register_primary").to_string()], ..Args::default() };
     let mut put = |k: &str, val: String| {
         a.flags.insert(defaults::text(k).to_string(), vec![FlagVal::S(val)]);
@@ -247,7 +249,7 @@ fn adopt_seat(inv: &Inv, session: &str, now: f64, real: bool) -> R<Value> {
             if ok { Ok(json!({"verdict": v, "adopted": true})) } else { Ok(json!({"verdict": seat_verdict(inv, session, now)?, "adopted": false})) }
         }
         // what the registration could not decide is not a write: the seat is not adopted this session (the script counts it)
-        Err(ident::Defer(why)) => Ok(json!({"verdict": v, "adopted": false, "why": why})),
+        Err(d) => Ok(json!({"verdict": v, "adopted": false, "why": d.0})),
     }
 }
 
@@ -271,7 +273,7 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         Function::new(c.clone(), |cwd: String, session: String, now: f64| -> rquickjs::Result<String> {
             with_settings(|st| match seat_verdict(&inv_of(st, &cwd, &session, now), &session, now) {
                 Ok(v) => v.to_string(),
-                Err(ident::Defer(why)) => unsure(&why),
+                Err(d) => unsure(&d.0),
             })
         })?,
     )?;
@@ -280,10 +282,24 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         Function::new(c.clone(), |cwd: String, session: String, now: f64, real: bool| -> rquickjs::Result<String> {
             with_settings(|st| match adopt_seat(&inv_of(st, &cwd, &session, now), &session, now, real) {
                 Ok(v) => v.to_string(),
-                Err(ident::Defer(why)) => unsure(&why),
+                Err(d) => unsure(&d.0),
             })
         })?,
     )?;
     h.set("fileExec", Function::new(c.clone(), |rel: String| -> rquickjs::Result<bool> { Ok(exec_bit(&rel)) })?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The seat holder is `desc.sessionId && !String(...).startsWith(...) ? String(...) : ''`: truthy `true`, arrays and objects have text.
+    #[test]
+    fn a_session_field_of_any_truthy_shape_has_the_text_javascript_gives_it() {
+        assert_eq!(js_text(Some(&OVal::Bool(true))).as_deref(), Some("true"));
+        assert_eq!(js_text(Some(&OVal::Arr(vec![OVal::Num(1.0), OVal::Num(2.0)]))).as_deref(), Some("1,2"));
+        assert_eq!(js_text(Some(&OVal::Obj(Vec::new()))).as_deref(), Some(defaults::text("devswarm_parent.js_object_text")));
+        assert_eq!((js_text(Some(&OVal::Bool(false))), js_text(Some(&OVal::Num(0.0))), js_text(Some(&OVal::Null)), js_text(None)), (None, None, None, None));
+    }
 }

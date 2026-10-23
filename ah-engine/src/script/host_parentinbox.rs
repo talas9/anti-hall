@@ -1,7 +1,7 @@
 //! Host primitives of the `devswarm-parent-inbox` check for a Primary that runs inside a git checkout (roadmap #68 part 2B).
 //! The script (`engine/logic/devswarm-parent-inbox.js`) holds every decision and text; these functions hold no rule, threshold or
-//! message, they only extract what it asks for. They write nothing. A shape the engine cannot read exactly as JavaScript does is
-//! `{"unsure": true}`, which the script turns into a deferral to the Node hook before anything is written.
+//! message, they only extract what it asks for. They write nothing. An answer an upstream reader cannot give is
+//! `{"unsure": true}`, which the script counts and logs with its cause before the turn goes on.
 //!
 //! | raw function | what it does |
 //! |---|---|
@@ -28,7 +28,7 @@ use crate::defaults;
 use crate::dssup::appsync::snap::{self, Snap};
 use crate::dssup::liveness;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::rosterrows::Windows;
 use rquickjs::{Ctx, Function, Object};
@@ -128,14 +128,35 @@ fn ws_of(id: Option<&str>, wt: Option<&str>, now: f64) -> R<Value> {
 // the archive state of a row
 // ---------------------------------------------------------------------------------------------------------------------
 
-fn real_sid(v: Option<&OVal>) -> R<Option<String>> {
-    Ok(match v {
+/// `String(v)` of a parsed value: an array joins its elements with commas (null as nothing), an object reads as the shipped object text.
+pub(super) fn js_text(v: &OVal) -> String {
+    match v {
+        OVal::Null => String::new(),
+        OVal::Str(t) => t.clone(),
+        OVal::Num(x) => crate::checks::jsport::num::to_js_string(*x),
+        OVal::Bool(b) => b.to_string(),
+        OVal::Arr(items) => items.iter().map(js_text).collect::<Vec<_>>().join(","),
+        OVal::Obj(_) => defaults::text("devswarm_parent.js_object_text").to_string(),
+    }
+}
+
+/// `realSid(v)`: the session id as text; `None` for absent, null or empty.
+fn real_sid(v: Option<&OVal>) -> Option<String> {
+    match v {
         None | Some(OVal::Null) => None,
-        Some(OVal::Str(t)) => (!t.is_empty()).then(|| t.clone()),
-        Some(OVal::Num(x)) => Some(crate::checks::jsport::num::to_js_string(*x)),
-        Some(OVal::Bool(b)) => Some(b.to_string()),
-        Some(_) => return defer("session-type"),
-    })
+        Some(x) => Some(js_text(x)).filter(|t| !t.is_empty()),
+    }
+}
+
+/// A pattern of the shipped settings; one that does not compile (a broken override) matches nothing, and says so.
+fn pattern(key: &'static str) -> Option<regex::Regex> {
+    match regex::Regex::new(defaults::text(key)) {
+        Ok(re) => Some(re),
+        Err(e) => {
+            crate::discard::note("parentinbox.pattern", &format!("{key}: {e}"));
+            None
+        }
+    }
 }
 
 fn same_path(a: &str, b: &str) -> bool {
@@ -169,11 +190,11 @@ fn marker_archived(home: &Path, id: &str, wt: Option<&str>, sid: Option<&str>) -
             return Ok(false);
         }
     }
-    let Some(marker_sid) = real_sid(desc.get(defaults::text("mesh_write.field_session_id")))? else { return Ok(true) };
+    let Some(marker_sid) = real_sid(desc.get(defaults::text("mesh_write.field_session_id"))) else { return Ok(true) };
     let live_sid = match sid.filter(|s| !s.is_empty()) {
         Some(s) => Some(s.to_string()),
         None => match read_val(&root.join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", json_suffix()))) {
-            Some(d) if obj_like(&d) => real_sid(d.get(defaults::text("mesh_write.field_session_id")))?,
+            Some(d) if obj_like(&d) => real_sid(d.get(defaults::text("mesh_write.field_session_id"))),
             _ => None,
         },
     };
@@ -236,7 +257,7 @@ fn gate_superseded(w: &Windows, home: &Path, id: &str, desc_wt: Option<&str>, de
         }
     }
     let Some(marker) = marker else { return Ok(false) };
-    let marker_sid = real_sid(marker.get(defaults::text("mesh_write.field_session_id")))?;
+    let marker_sid = real_sid(marker.get(defaults::text("mesh_write.field_session_id")));
     let desc_sid = desc_sid.filter(|s| !s.is_empty()).map(str::to_string);
     if marker_sid.is_none() || desc_sid.is_none() || marker_sid == desc_sid {
         return Ok(true);
@@ -359,22 +380,22 @@ fn finish_of(inv: &Inv, id: &str, wt: Option<&str>) -> R<Value> {
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// The refresh the hook makes when the ingest daemon is not healthy: `deriveSummary` over a store that holds something. The text is
-/// what Node writes; the script writes it once nothing else can defer the turn.
+/// what Node writes; the script writes it once nothing else is left to settle.
 fn derive_text(inv: &Inv, key: &str) -> R<Value> {
     let dir = crate::meshw::union::store_dir(&inv.home, key);
     let db = dir.join(defaults::text("mesh_write.store_file"));
     if !db.exists() {
-        // no store at all is Node's null; a journal store or a marker with no database is Node's to read
-        if dir.join(defaults::text("mesh.backend_marker")).exists()
-            || std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut d| d.next().is_some())
-        {
-            return defer("store-backend");
+        // no store at all is Node's null (its read-only open provisions nothing); a journal store is a backend only a Node older than
+        // 22.5 writes, which the engine neither reads nor refreshes: the summary on disk stands, as when Node finds no rows
+        if std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut d| d.next().is_some()) {
+            crate::discard::note("parentinbox.journal_store", key);
         }
         return Ok(json!({"text": Value::Null}));
     }
     let store = crate::meshw::common::open_store(inv, key)?;
     let reader = store.reader();
-    let has_rows = !reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?.is_empty() || !reader.workspace_ids().is_empty();
+    // a registry or workspace list that cannot be read counts as no rows (Node's try/catch leaves `hasRows` false)
+    let has_rows = reader.roster().map(|r| !r.is_empty()).unwrap_or(false) || !reader.workspace_ids().is_empty();
     if !has_rows {
         return Ok(json!({"text": Value::Null}));
     }
@@ -418,13 +439,13 @@ fn head_cwd(file: &Path) -> R<Option<String>> {
         }
     }
     let head = String::from_utf8_lossy(&buf[..n]).into_owned();
-    let re = regex::Regex::new(defaults::text("devswarm_parent.drift_cwd_re")).map_err(|_| ident::Defer("regex".into()))?;
+    let Some(re) = pattern("devswarm_parent.drift_cwd_re") else { return Ok(None) };
     let Some(m) = re.captures(&head) else { return Ok(None) };
-    match serde_json::from_str::<String>(&format!("\"{}\"", &m[1])) {
+    let quoted = format!("\"{}\"", &m[1]);
+    match serde_json::from_str::<String>(&quoted) {
         Ok(c) => Ok(Some(c)),
-        // JSON.parse reads a lone-surrogate escape that serde rejects
-        Err(_) if m[1].contains("\\u") => defer("drift-cwd-escape"),
-        Err(_) => Ok(None),
+        // JSON.parse reads a lone-surrogate escape that serde rejects; the lone surrogate matches no character of a real path, so U+FFFD stands for it
+        Err(_) => Ok(super::host_childturn::without_lone_surrogates(&quoted).and_then(|q| serde_json::from_str::<String>(&q).ok())),
     }
 }
 
@@ -435,11 +456,11 @@ pub(super) fn sessions_for(home: &Path, worktree: &str) -> R<Vec<Session>> {
     let mut names: Vec<String> = rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
     names.sort();
     let ext = defaults::text("devswarm_sup.lv_transcript_ext");
-    let sid_re = regex::Regex::new(defaults::text("devswarm_parent.drift_sid_re")).map_err(|_| ident::Defer("regex".into()))?;
+    let sid_re = pattern("devswarm_parent.drift_sid_re");
     let mut files: Vec<Session> = Vec::new();
     for n in names {
         let Some(id) = n.strip_suffix(ext) else { continue };
-        if !sid_re.is_match(id) {
+        if !sid_re.as_ref().is_some_and(|re| re.is_match(id)) {
             continue;
         }
         let Ok(md) = std::fs::metadata(dir.join(&n)) else { continue };
@@ -478,7 +499,7 @@ fn drift_of(home: &Path, worktree: &str, anchor: &str, current: &str, transcript
             if let Some(t) = transcript.filter(|t| !t.is_empty()) {
                 cands.push(std::path::PathBuf::from(t));
             }
-            if regex::Regex::new(defaults::text("devswarm_parent.drift_sid_re")).map_err(|_| ident::Defer("regex".into()))?.is_match(current) {
+            if pattern("devswarm_parent.drift_sid_re").is_some_and(|re| re.is_match(current)) {
                 cands.push(project_dir(home, worktree).join(format!("{current}{}", defaults::text("devswarm_sup.lv_transcript_ext"))));
             }
             cands.iter().find_map(|p| std::fs::metadata(p).ok().map(|m| liveness::mtime_ms(&m)).filter(|m| m.is_finite()))
@@ -592,4 +613,45 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         })?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `realSid(v)` is `String(v)`: an array joins with commas (null as nothing), an object reads as the shipped text, `[]` is empty.
+    #[test]
+    fn a_session_id_field_of_any_shape_reads_as_javascript_spells_it() {
+        let arr = OVal::Arr(vec![OVal::Str("a".into()), OVal::Null, OVal::Num(2.0), OVal::Arr(vec![OVal::Bool(true)])]);
+        assert_eq!(real_sid(Some(&arr)).as_deref(), Some("a,,2,true"));
+        assert_eq!(real_sid(Some(&OVal::Obj(Vec::new()))).as_deref(), Some(defaults::text("devswarm_parent.js_object_text")));
+        assert_eq!(real_sid(Some(&OVal::Arr(Vec::new()))), None);
+        assert_eq!((real_sid(None), real_sid(Some(&OVal::Null)), real_sid(Some(&OVal::Str(String::new())))), (None, None, None));
+    }
+
+    /// A transcript whose recorded `cwd` holds a lone-surrogate escape parses in JavaScript; the session still counts.
+    #[test]
+    fn a_transcript_cwd_with_a_lone_surrogate_escape_still_reads() {
+        let dir = std::env::temp_dir().join(format!("ah-pi-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("t.jsonl");
+        std::fs::write(&f, "{\"type\":\"user\",\"cwd\":\"/w/\\ud800x\"}\n").unwrap();
+        assert_eq!(head_cwd(&f).unwrap().as_deref(), Some("/w/\u{FFFD}x"));
+        std::fs::write(&f, "{\"cwd\":\"/w/ok\"}\n").unwrap();
+        assert_eq!(head_cwd(&f).unwrap().as_deref(), Some("/w/ok"));
+    }
+
+    /// A project whose store is journal-backed (a backend only a Node older than 22.5 writes) has nothing the engine refreshes: no text.
+    #[test]
+    fn a_journal_only_store_has_no_refresh_text_instead_of_a_handoff() {
+        let home = std::env::temp_dir().join(format!("ah-pi-derive-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let key = "proj-12345678";
+        let dir = crate::meshw::union::store_dir(&home, key);
+        let journal = dir.join(defaults::text("devswarm_role.pg_journal_dir"));
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("a.ndjson"), "{}\n").unwrap();
+        let inv = Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
+        assert_eq!(derive_text(&inv, key).unwrap(), json!({"text": Value::Null}));
+    }
 }

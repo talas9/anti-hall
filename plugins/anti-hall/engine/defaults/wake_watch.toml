@@ -152,8 +152,24 @@ doc = "End of the temporary file a cursor is written to before the rename."
 value = ".tmp"
 
 [wake_watch.active_cache_file]
-doc = "The supervisor's cache of the hivecontrol active list, under the DevSwarm state directory. While it exists the engine does not decide the idle-skip for a worktree the app database has no opinion on: Node does."
+doc = "The supervisor's cache of the hivecontrol active list, under the DevSwarm state directory (isAppArchived reads it for a worktree under the app's repos root that the app database has no opinion on)."
 value = "hivecontrol-active.json"
+
+[wake_watch.env_active_max_age]
+doc = "The variable that overrides how old the active-list cache may be and still be believed (a positive integer, milliseconds)."
+value = "ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS"
+
+[wake_watch.active_max_age_mult]
+doc = "How many reconcile-sweep intervals old the active-list cache may be and still be believed (one missed sweep is tolerated, two is not)."
+value = 2
+
+[wake_watch.sweep_fallback_ms]
+doc = "The reconcile-sweep interval the cache age bound uses when the setting is no positive number: 15 minutes."
+value = 900000
+
+[wake_watch.set_archived_grace_ms]
+doc = "The setting devswarm.archivedGraceMs: how much newer than a child's descriptor the active-list snapshot must be before the child's absence from it reads as archived (milliseconds)."
+value = { section = "devswarm", key = "archivedGraceMs", type = "number", min = 0, default = 600000, env = "ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS" }
 
 [wake_watch.manifest_rel]
 doc = "The plugin manifest that names the build the watcher runs, relative to the plugin root."
