@@ -55,7 +55,7 @@ value = "nudge"
 
 [agent_nudge.cmd]
 doc = "The command a nudge tells the parent to answer with (works the same from Claude Code and Codex shells)."
-value = "\"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents nudge"
+value = "\"$HOME/.anti-hall/ah-engine/bin/ah-hook\" agents nudge"
 
 [agent_nudge.health_integration]
 doc = "The Jev evidence integration that judges whether a flagged child is really unhealthy (jev_evidence.toml evidence.cfg)."
