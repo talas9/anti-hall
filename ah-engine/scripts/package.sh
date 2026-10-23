@@ -9,7 +9,9 @@ triple="$1"; out="$2"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
-bin="$root/target/$triple/release/ah-engine"
+. "$root/scripts/lib-target.sh"
+tdir="$(cargo_target_dir "$root")" || { echo "package.sh: cannot resolve the cargo target directory" >&2; exit 1; }
+bin="$tdir/$triple/release/ah-engine"
 [ -f "$bin" ] || { echo "package.sh: build $triple first ($bin missing)" >&2; exit 1; }
 
 name="ah-engine-v${version}-${triple}"
