@@ -151,15 +151,26 @@ fn burn(env: &Env, a: &Agent, now: u64, soft: bool) -> Option<Raised> {
 
 /// Mirror the hard flag into the small marker file the `burn-breaker` check reads on every tool call (one file per agent key, so
 /// the hot path never parses the tracker state). Removed when the flag is down; a stale one expires by `burn.marker_ttl_ms`.
-fn mark_breaker(env: &Env, a: &Agent, hard: Option<&Raised>) {
+fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
     if !env.act {
         return;
     }
     let dir = env.dir().join(defaults::text("burn.marker_dir"));
     let file = dir.join(format!("{}{}", sinks::key_of(&a.id), defaults::text("burn.marker_ext")));
-    match hard {
-        Some((tokens, _)) => {
-            let body = serde_json::json!({ "ts": env.now_ms, "tokens": tokens, "agent": a.id });
+    // the hard condition that holds now: the token line first, else the waste sensor's hard mark (its score is NOT a token count)
+    let body = match (burn, super::waste::is_hard(a)) {
+        (Some((tokens, _)), _) => Some(serde_json::json!({ "ts": env.now_ms, "agent": a.id, "source": "burn", "tokens": tokens, "tokens_text": sinks::count(*tokens) })),
+        (None, true) => {
+            let tokens = super::waste::window_tokens(a, env.now_ms);
+            Some(serde_json::json!({
+                "ts": env.now_ms, "agent": a.id, "source": "waste", "tokens": tokens, "tokens_text": sinks::count(tokens),
+                "score": a.waste.score as u64, "hard": super::waste::hard_line(), "reason": a.waste.reason,
+            }))
+        }
+        (None, false) => None,
+    };
+    match body {
+        Some(body) => {
             if std::fs::create_dir_all(&dir).is_ok() {
                 crate::discard::harmless(crate::atomic::write(&file, body.to_string())); // keep: the marker is a cache of the flag; the next tick rewrites it
             }
@@ -341,13 +352,13 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         "hung" => defaults::render("msg.agent_hung", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("tool", &f.text)]),
         "looping" => defaults::render("msg.agent_looping", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("what", &f.text)]),
         "token_waste" => {
-            defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
+            defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
         }
         "burn_soft" => {
-            defaults::render("burn.msg_soft", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
+            defaults::render("burn.msg_soft", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
         }
         "burn_hard" => {
-            defaults::render("burn.msg_hard", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
+            defaults::render("burn.msg_hard", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
         }
         "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
@@ -595,8 +606,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         sample(&mut a, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
-        let waste_hard = super::waste::is_hard(&a).then(|| (a.waste.score as u64, String::new()));
-        mark_breaker(env, &a, raised.get("burn_hard").or(waste_hard.as_ref()));
+        mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {
             st.day(env).burned += (a.tin + a.tout).saturating_sub(prev);

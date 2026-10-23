@@ -2,7 +2,7 @@
 // (ah-engine, src/agents/signals.rs) keeps the hard burn flag of an agent that spent burn.hard_tokens_no_outcome tokens since its last
 // commit, finished step, passing check or new file, and mirrors it in <state>/agent-tracker/breaker/<agent key>.json. While that marker
 // is fresh this check blocks the SUBAGENT's tool calls except commit, push, status commands and SendMessage (its report); the main
-// session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome.
+// session is never blocked (no agent_id in its payload). The marker is removed by the tracker when the agent produces an outcome, and at once by this check when the agent runs an allowed git commit.
 // Every name, number, pattern and text is in burn.toml. A failure of this script allows (script.failure_mode_by_check).
 'use strict';
 
@@ -21,6 +21,14 @@ function bbAllowedBash(cmd) {
   return seen > 0;
 }
 
+// True when some segment of the command is a git commit (burn.lift_bash_re): the outcome the block asks for.
+function bbCommits(cmd) {
+  var plain = cmd.replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
+  var parts = plain.split(new RegExp(ah.cfg('burn.separator_re')));
+  for (var i = 0; i < parts.length; i++) if (ah.re.test(ah.cfg('burn.lift_bash_re'), 'r', parts[i])) return true;
+  return false;
+}
+
 function decide(p) {
   if (p === null || typeof p !== 'object') return 'allow';
   var id = p[ah.cfg('burn.agent_field')];
@@ -31,7 +39,8 @@ function decide(p) {
   if (!home) return 'allow';
   var paths = ah.cfg('agent_tracker.paths'), key = '', max = ah.cfg('agent_reminders.key_max');
   for (var i = 0; i < id.length && i < max; i++) key += /[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_';
-  var marker = ah.path.join(home, ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key + ah.cfg('burn.marker_ext'));
+  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key + ah.cfg('burn.marker_ext');
+  var marker = ah.path.join(home, rel);
   if (ah.fs.size(marker) === null) return 'allow';
   var raw = ah.fs.readText(marker), m;
   if (raw === null) return 'allow';
@@ -41,10 +50,18 @@ function decide(p) {
   if (ah.cfg('burn.allowed_tools').indexOf(tool) >= 0) return 'allow';
   if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0) {
     var cmd = p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
-    if (cmd !== '' && bbAllowedBash(cmd)) return 'allow';
+    if (cmd !== '' && bbAllowedBash(cmd)) {
+      // a commit is the outcome the block asks for: lift it now; the tracker counts the commit on its next tick and raises it again only if the hard condition still holds
+      if (bbCommits(cmd)) ah.state.remove(rel);
+      return 'allow';
+    }
   }
+  // the heading names the condition that really holds: the token line (tokens_text) or the waste sensor's hard mark (score, never a token count)
+  var what = m.source === 'waste'
+    ? text.render(ah.cfg('burn.msg_what_waste'), { score: String(m.score), hard: String(m.hard), tokens: String(m.tokens_text), reason: String(m.reason) })
+    : text.render(ah.cfg('burn.msg_what'), { tokens: String(m.tokens_text !== undefined ? m.tokens_text : m.tokens) });
   var reason = text.message('block', ah.cfg('burn.guard_name'), {
-    what: text.render(ah.cfg('burn.msg_what'), { tokens: String(m.tokens) }),
+    what: what,
     why: ah.cfg('burn.msg_why'),
     instead: ah.cfg('burn.msg_instead'),
     override: ah.cfg('burn.msg_override'),

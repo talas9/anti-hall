@@ -373,6 +373,16 @@ pub(crate) fn is_hard(a: &Agent) -> bool {
     !a.waste.action.is_empty() && a.waste.action == word("hard")
 }
 
+/// The tokens the sensor counted in the agent's current window (what the score is made of), for the breaker's message.
+pub(crate) fn window_tokens(a: &Agent, now: u64) -> u64 {
+    input_of(a, now).map_or(0, |i| i.tokens)
+}
+
+/// The hard score threshold, for the breaker's message.
+pub(crate) fn hard_line() -> u64 {
+    formula::Params::load().hard as u64
+}
+
 /// The advisory text for a raised signal.
 pub(crate) fn text(who: &str, a: &Agent, evidence: u64, stored: &str) -> String {
     let mut parts = stored.splitn(3, '|');
