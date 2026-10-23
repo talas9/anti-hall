@@ -32,6 +32,9 @@ pub fn router(app: Shared) -> Router {
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
         .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
+        .route("/api/telemetry", get(tel_doc))
+        .route("/api/impact", get(impact_doc))
+        .route("/api/telemetry/export", get(tel_export))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -333,4 +336,49 @@ async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
     }
     let s = app.settings();
     Json(crate::live::map(&app, &s).await).into_response()
+}
+
+/// `GET /api/telemetry`: the Telemetry screen's document.
+async fn tel_doc(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    match crate::tel::telemetry(&app).await {
+        Ok(d) => Json(&*d).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// `GET /api/impact`: the Impact screen's document.
+async fn impact_doc(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    match crate::tel::impact(&app).await {
+        Ok(d) => Json(&*d).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    table: String,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    q: String,
+}
+
+/// `GET /api/telemetry/export?table=&format=csv|json&q=`: one table as a download.
+async fn tel_export(State(app): State<Shared>, headers: HeaderMap, Query(q): Query<ExportQuery>) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let Ok(doc) = crate::tel::telemetry(&app).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, app.settings().msg_busy.clone()).into_response();
+    };
+    match crate::tel::export(&doc, &q.table, &q.format, &q.q) {
+        Some((name, mime, body)) => ([(header::CONTENT_TYPE, mime.to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))], body).into_response(),
+        None => (StatusCode::NOT_FOUND, app.settings().msg_not_found.clone()).into_response(),
+    }
 }

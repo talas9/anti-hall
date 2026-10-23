@@ -1,0 +1,212 @@
+# ah-engine shipped defaults for the Command Center's Telemetry and Impact screens (ah-web). Format: see the header of engine.toml.
+# `ah-web` reads this file next to web.toml (start-up, and again when it changes); the compiled server and page carry none of these
+# numbers, sentences or metric definitions. Edit here, reload the page.
+#
+# Metric sources (what a daily series is read from, one engine `telemetry summary` window per day):
+#   invocations              all hook decisions
+#   outcome:<name>           decisions with that outcome (allow, advise, block, defer, error, skip, timeout)
+#   kind:<name>              events of that kind (check, act, agent, jev, route, spill, ...)
+#   hook:<check>:n           times one check ran
+#   hook:<check>:<outcome>   times one check ended in that outcome
+#   jev:calls                Jev judgements asked
+
+[webtel.series_days]
+doc = "How many days (today included) the daily series and the period comparisons look back. Needs the engine's telemetry retention to cover it."
+value = 14
+unit = "days"
+min = 2
+max = 30
+
+[webtel.cache_s]
+doc = "Seconds the built Telemetry and Impact documents are reused before the engine is asked again (one build costs one engine read per day of history)."
+value = 20
+unit = "s"
+min = 1
+
+[webtel.events_rows]
+doc = "Raw telemetry events fetched for the Events table (newest first)."
+value = 400
+min = 10
+max = 5000
+
+[webtel.table_rows_max]
+doc = "Most rows one table carries to the page and into an export."
+value = 1000
+min = 10
+max = 100000
+
+[webtel.spark_points]
+doc = "Most points a sparkline draws (the newest days)."
+value = 14
+min = 2
+
+[webtel.cmd_timeout_ms]
+doc = "How long a helper engine command (coverage, usage) may run before its part is left out."
+value = 8000
+unit = "ms"
+min = 500
+
+[webtel.z_threshold]
+doc = "How many robust standard deviations from a metric's own rolling median a day must be to count as unusual."
+value = 3.5
+min = 1.0
+
+[webtel.mad_scale]
+doc = "The factor that turns the median absolute deviation into a standard deviation for normally spread data."
+value = 1.4826
+
+[webtel.mad_floor_frac]
+doc = "The smallest spread, as a fraction of the median, used when a metric's days are nearly identical (so a flat metric does not flag every wobble)."
+value = 0.1
+min = 0.0
+
+[webtel.min_history_days]
+doc = "Days before today a metric needs before it is judged at all."
+value = 5
+min = 2
+
+[webtel.min_day_fraction]
+doc = "Today is judged only once this fraction of the (UTC) day has passed; before that its count is too small to project."
+value = 0.25
+min = 0.01
+max = 1.0
+
+[webtel.min_abs_change]
+doc = "An unusual day must also differ from the median by at least this many events."
+value = 20
+min = 1
+
+[webtel.min_rel_change]
+doc = "An unusual day must also differ from the median by at least this fraction of the median."
+value = 0.3
+min = 0.0
+
+[webtel.anomalies_max]
+doc = "Most anomalies listed."
+value = 6
+min = 1
+
+[webtel.movers_max]
+doc = "Most rows per top-movers list."
+value = 6
+min = 1
+
+[webtel.headline_checks]
+doc = "How many of the most-blocking checks get their own headline."
+value = 3
+min = 1
+
+[webtel.heat_rows]
+doc = "Most checks in the day-by-check heatmap."
+value = 14
+min = 2
+
+[webtel.mover_measures]
+doc = "What top movers are ranked on: the per-check figure (`n` runs, or an outcome), its label and glossary text key, and whether a check that is unusual on it is also listed as an anomaly."
+value = [
+  { id = "block", measure = "block", anomaly = true, label = "Blocks", hint = "gl_mover_block" },
+  { id = "runs", measure = "n", anomaly = false, label = "Runs", hint = "gl_mover_runs" },
+]
+
+[webtel.metrics]
+doc = "The metric cards: id, label, source (see the header), unit (count, us, bytes, usd, tokens), good (which direction is better: down, up or neutral) and the glossary text key."
+value = [
+  { id = "decisions", label = "Hook decisions", source = "invocations", unit = "count", good = "neutral", hint = "gl_decisions" },
+  { id = "blocks", label = "Blocked", source = "outcome:block", unit = "count", good = "neutral", hint = "gl_blocks" },
+  { id = "advisories", label = "Advised", source = "outcome:advise", unit = "count", good = "neutral", hint = "gl_advisories" },
+  { id = "errors", label = "Errors", source = "outcome:error", unit = "count", good = "down", hint = "gl_errors" },
+  { id = "defers", label = "Deferred", source = "outcome:defer", unit = "count", good = "down", hint = "gl_defers" },
+  { id = "timeouts", label = "Timeouts", source = "outcome:timeout", unit = "count", good = "down", hint = "gl_timeouts" },
+  { id = "acts", label = "Autonomous actions", source = "kind:act", unit = "count", good = "neutral", hint = "gl_acts" },
+  { id = "routes", label = "Model routing", source = "kind:route", unit = "count", good = "neutral", hint = "gl_routes" },
+  { id = "jev", label = "Jev judgements", source = "jev:calls", unit = "count", good = "neutral", hint = "gl_jev" },
+]
+
+[webtel.periods]
+doc = "The period comparisons of the Impact screen: `cur` and `prev` are [from, to) in days ago (0 = today so far). A period that includes today is compared per day, so a part-day is not set against a whole one."
+value = [
+  { id = "day", label = "Today vs yesterday", cur = [0, 1], prev = [1, 2] },
+  { id = "week", label = "This week vs last week", cur = [0, 7], prev = [7, 14] },
+]
+
+[webtel.prevention]
+doc = "Impact rows for what the guards stopped: id, label, the checks whose `outcome` decisions are summed, and the glossary text key."
+value = [
+  { id = "guard_blocks", label = "Guard blocks", hooks = ["*"], outcome = "block", hint = "gl_i_guard_blocks" },
+  { id = "burn_breaker", label = "Burn-breaker trips", hooks = ["burn-breaker"], outcome = "block", hint = "gl_i_burn_breaker" },
+  { id = "refused_spawns", label = "Refused spawns", hooks = ["swarm-guard", "model-routing-guard", "orch-on-spawn"], outcome = "block", hint = "gl_i_refused_spawns" },
+  { id = "blocked_suites", label = "Blocked test suites", hooks = ["lane-test-guard"], outcome = "block", hint = "gl_i_blocked_suites" },
+  { id = "git_blocks", label = "Blocked git actions", hooks = ["git-guard", "uncommitted-guard", "merge-gate"], outcome = "block", hint = "gl_i_git_blocks" },
+  { id = "advice", label = "Advisories given", hooks = ["*"], outcome = "advise", hint = "gl_i_advice" },
+]
+
+[webtel.failures]
+doc = "Impact rows for what went wrong: id, label, source (see the header) and the glossary text key."
+value = [
+  { id = "errors", label = "Errors", source = "outcome:error", hint = "gl_errors" },
+  { id = "timeouts", label = "Timeouts", source = "outcome:timeout", hint = "gl_timeouts" },
+  { id = "defers", label = "Deferred to the fallback", source = "outcome:defer", hint = "gl_defers" },
+]
+
+[webtel.usage_cmd]
+doc = "The engine command that prints the weekly-limit usage (JSON: weekly, fiveHour, resetsAt)."
+value = ["codex-limit-status"]
+
+[webtel.coverage_cmd]
+doc = "The engine command that prints which features the dashboard covers (JSON)."
+value = ["describe", "--coverage", "--json"]
+
+[webtel.week_hours]
+doc = "Hours in the weekly limit window (the forecast spreads the used share over the part of it already elapsed)."
+value = 168
+unit = "h"
+
+[webtel.forecast_bad_pct]
+doc = "A projected weekly use above this percentage is shown as a warning."
+value = 100
+unit = "%"
+
+[webtel.forecast_warn_pct]
+doc = "A projected weekly use above this percentage is shown as a caution."
+value = 85
+unit = "%"
+
+[webtel.fmt_us]
+doc = "How a duration in microseconds is written (the same step format as web.number_units)."
+value = { decimals = 1, units = [ { suffix = " us", from = 0, div = 1 }, { suffix = " ms", from = 1000, div = 1000 }, { suffix = " s", from = 1000000, div = 1000000 } ] }
+
+[webtel.fmt_bytes]
+doc = "How a size in bytes is written."
+value = { decimals = 1, units = [ { suffix = " B", from = 0, div = 1 }, { suffix = " kB", from = 1000, div = 1000 }, { suffix = " MB", from = 1000000, div = 1000000 }, { suffix = " GB", from = 1000000000, div = 1000000000 } ] }
+
+[webtel.fmt_age]
+doc = "How an age in seconds is written (followed by the 'ago' text)."
+value = { decimals = 0, units = [ { suffix = " s", from = 0, div = 1 }, { suffix = " min", from = 60, div = 60 }, { suffix = " h", from = 3600, div = 3600 }, { suffix = " d", from = 86400, div = 86400 } ] }
+
+[webtel.uc_per_usd]
+doc = "How many of the engine's cost units (cost_uc, as Jev records them) make one US dollar."
+value = 1000000.0
+
+[webtel.usd_decimals]
+doc = "Digits after the point for a dollar figure."
+value = 3
+
+[webtel.apex]
+doc = "The Full tier's chart library: a single vendored file (ApexCharts 4.7.0, MIT; later 5.x releases are under a revenue-limited community license and are not used) served from this server (script-src 'self', no CDN) and loaded only when the Telemetry or Impact screen opens. `file` is under the static directory. Colours are hex because the library blends them; the page theme picks the dark or light set."
+value = { file = "vendor/apexcharts.min.js", version = "4.7.0", palette = ["#4f8cff", "#3fb950", "#d29922", "#f85149", "#a371f7", "#39c5cf", "#db61a2", "#8b949e"], ok = "#3fb950", warn = "#d29922", bad = "#f85149", info = "#4f8cff", neutral = "#8b949e", dark = { fg = "#c9d1d9", grid = "#30363d" }, light = { fg = "#24292f", grid = "#d0d7de" }, height_main = 300, height_small = 220, zoom = true, animations = true }
+
+[webtel.texts]
+doc = "Every sentence and label of the two screens. `h_*` are headline templates ({name} placeholders are filled by the server); `gl_*` are the glossary tooltips of the metrics."
+value = { title_telemetry = "Telemetry", title_impact = "Impact", nav_telemetry = "Telemetry", nav_impact = "Impact", loading = "Reading the engine's records...", engine_down = "The engine is not reachable, so there is nothing to show yet.", refresh = "Refresh", updated = "updated", ago = "ago", headlines = "What happened", kpis = "Key figures", anomalies = "Unusual compared with each metric's own recent days", anomalies_none = "Nothing unusual: every metric is within its own recent range.", movers = "Top movers", movers_none = "Not enough history to rank movers yet.", movers_up = "up", movers_down = "down", today = "today", median = "usual day", forecast = "Weekly limit", forecast_none = "No weekly usage figure is available, so there is no burn forecast.", forecast_no_reset = "The weekly figure is known but not when it resets, so it cannot be projected.", tables = "Details", table_filter = "Filter rows", table_rows = "rows", export_csv = "CSV", export_json = "JSON", chart = "Chart", spark = "Trend", drill = "Open the full chart", back = "Back", lite_note = "Lite view: sparklines and tables only.", chart_days = "Daily totals", chart_heat = "Which checks acted on which day", chart_gauge = "Weekly limit used", chart_loading = "Loading the chart library...", chart_failed = "The chart library could not be loaded; the table below has the same numbers.", series_today = "today so far", col_check = "Check", col_kind = "Kind", col_runs = "Runs", col_allow = "Allowed", col_advise = "Advised", col_block = "Blocked", col_defer = "Deferred", col_error = "Errors", col_mean = "Mean time", col_p50 = "Median time", col_p95 = "Slow (95%)", col_p99 = "Slowest (99%)", col_injected = "Injected", col_agent = "Agent", col_name = "Name", col_tokens = "Tokens", col_outcomes = "Outcomes", col_per_outcome = "Tokens per outcome", col_commits = "Commits", col_guard = "Guard fires", col_files = "Files edited", col_tests = "Tests passed", col_time = "Time", col_event = "Event", col_outcome = "Outcome", col_ms = "Took", col_integration = "Integration", col_calls = "Calls", col_cost = "Cost", col_mode = "Mode", col_day = "Day", tab_checks = "Checks", tab_agents = "Agents", tab_events = "Raw events", tab_jev = "Jev", tab_days = "Per day", h_totals = "{decisions} hook decisions today so far: {blocks} blocked, {advise} advised, {errors} errors.", h_block_check = "{check} blocked {n} times today.", h_no_blocks = "No guard blocked anything today so far.", h_agents = "{agents} tracked agents spent {tokens} tokens in total; {committers} produced commits.", h_agents_none = "No tracked agent has spent tokens yet.", h_cost_top = "The costliest agent ({agent}) used {tokens} tokens for {outcomes} outcomes.", h_jev = "Jev made {n} judgements today so far, at a cost of {usd}.", h_anomaly_high = "{label} is running high: {value} today so far (about {projected} for the whole day) against {median} on a usual day.", h_anomaly_low = "{label} is running low: {value} today so far (about {projected} for the whole day) against {median} on a usual day.", h_forecast = "Weekly limit: {used}% used; at this pace {projected}% by the reset.", h_forecast_unknown = "Weekly limit: {used}% used (reset time unknown).", h_engine_down = "The engine could not be read just now.", f_used = "used", f_projected = "projected at reset", f_hours = "hours into the window", f_method = "Straight-line projection: the share used so far divided by the part of the window already elapsed.", gl_decisions = "One answer the engine gave to one hook event: allow, advise, block, defer and so on.", gl_blocks = "Decisions that stopped an action before it happened.", gl_advisories = "Decisions that let the action go ahead but told the agent something.", gl_errors = "Decisions where a check failed to run; the engine let the action through (fail-open).", gl_defers = "Decisions the engine could not make itself and handed to the fallback path.", gl_timeouts = "Decisions that ran out of time.", gl_acts = "Things the engine did on its own: nudges, sweeps, archives, wake-ups.", gl_routes = "Times the engine checked or changed which model a sub-agent should use.", gl_jev = "Questions put to the Jev judge, whatever its answer.", gl_mover_block = "Checks whose number of blocks changed the most against their usual day.", gl_mover_runs = "Checks whose number of runs changed the most against their usual day.", gl_i_guard_blocks = "Every decision that stopped an action, across all checks.", gl_i_burn_breaker = "Times the burn breaker stopped agents that were spending tokens with nothing to show.", gl_i_refused_spawns = "Sub-agent or workspace launches refused by the swarm, model or orchestration guards.", gl_i_blocked_suites = "Test or build runs refused because a heavy suite was already running or was not allowed from that agent.", gl_i_git_blocks = "Commits, pushes or merges refused by the git guards.", gl_i_advice = "Times a check advised an agent without stopping it.", gl_i_note = "Counts are what the engine recorded; a block is a prevented action, not a measured saving.", impact_prevention = "Prevention", impact_savings = "Savings", impact_failures = "Failures", impact_gaps = "Gaps", impact_waterfall = "Spent, prevented, net", impact_period = "Period", impact_cur = "This period", impact_prev = "Before", impact_rate_note = "Compared per day, so a part-day is not set against a whole one.", impact_measured = "measured", impact_estimate = "estimate", impact_formula = "How it is worked out", impact_range = "Range", impact_no_range = "A single estimate; the engine reports no range.", impact_no_measured = "No measured saving is recorded: a saving is shown only against a real baseline, and none exists yet.", impact_status = "Basis", impact_spent = "Spent", impact_prevented = "Prevented", impact_net = "Net", impact_jev_cost = "Jev judgements", impact_injection = "Injected context", impact_routing_up = "Routing to dearer models", impact_routing_saved = "Routing to cheaper models", impact_measured_savings = "Measured benchmark savings", gap_coverage = "Dashboard coverage", gap_coverage_text = "{covered} of {features} engine features can be seen and edited here; {unmatched} are not mapped to a screen and {unready} lack a setting the screen needs.", gap_defers = "Deferred decisions", gap_defers_text = "{cur} decisions went to the fallback this period ({prev} before); {unable} could not be made natively since the engine started.", gap_budgets = "Budgets breached", gap_budgets_text = "{breaches} budget breaches since the engine started; over now: {over}.", gap_budgets_none = "no budget is over now", gap_unavailable = "not available", unit_usd = "$", no_data = "no data" }
+
+[webtel.export_path]
+doc = "The route that downloads one table: `?table=<id>&format=csv|json&q=<filter>`."
+value = "/api/telemetry/export"
+
+[webtel.telemetry_path]
+doc = "The route the Telemetry screen reads."
+value = "/api/telemetry"
+
+[webtel.impact_path]
+doc = "The route the Impact screen reads."
+value = "/api/impact"

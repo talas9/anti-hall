@@ -10,6 +10,7 @@ mod data;
 mod live;
 mod model;
 mod server;
+mod tel;
 
 use app::App;
 use std::io::{Read, Write};
