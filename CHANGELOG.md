@@ -8,6 +8,10 @@ the update.
 
 ## Unreleased
 
+### Documentation
+
+- **Recommended handover and compaction setup.** Docs (settings and handover skills for Claude and Codex, `docs/GUIDE.md`, `llms.txt`) now describe firing the handover about 5% of the window before auto-compact: `autoHandover.pct` 93 against Claude auto-compact at 98% for 200k models; `autoHandover.maxTokens` 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000` for 1M models. Shipped defaults are unchanged (pct 85, no token ceiling). Also corrects stale "170k tokens" claims. The PreCompact "since the last handover" delta is documented as planned only.
+
 ### Added
 
 - **An idle coordinating session is woken when an agent it launched goes idle with open work, loops, burns tokens or a watched process ends (#256).** New route target `wake` (config rows in `agent_tracker.targets`), the Monitor `ah-engine agents wake-watch --auto` armed at SessionStart (off switch `agents.wakeWatch`), and the config-defined signals `idle_open_task` and `watched_exit`. `monitor_unarmed` now sees a live wake-watch and is one short line.

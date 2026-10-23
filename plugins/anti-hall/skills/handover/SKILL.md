@@ -18,6 +18,8 @@ that never passes a user prompt gets the same directive once at a `Stop`
 (`hooks/auto-handover-pause-nag.js`, shared latch, never while `stop_hook_active`). If you're reading this
 skill because that directive fired, follow it exactly as written; nothing else changes.
 
+**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. Shipped defaults stay 85% and no token ceiling; see the `settings` skill, "Recommended setup".
+
 Prepares a session handover: perishable job state (goal, current position, next
 executable step, decisions, dead ends, verification status) written to disk so a
 fresh session — with no memory of this one — can resume correctly and completely.
@@ -322,6 +324,8 @@ the newest `HANDOVER*.md`. It is mechanical (a hook cannot make the model
 write), never a substitute for this skill, and never blocks compaction. The
 resume hook names it — as NEWER than the handover when work happened after the
 handover, or as the only pointer when no handover exists for the session.
+
+Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 **Compact Instructions (optional, recommended).** Claude Code lets a
 "Compact Instructions" section in `CLAUDE.md` steer every compaction summary,
