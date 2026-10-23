@@ -114,7 +114,7 @@ jobs:
         id: claude1
         if: steps.cred.outputs.ok1 == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1
+        uses: anthropics/claude-code-action@e4a6faad497d33dbc7144135c75e41f82f0bf6c0 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
@@ -179,7 +179,7 @@ jobs:
         id: claude2
         if: always() && steps.cred.outputs.ok2 == 'true' && steps.claude1.outcome != 'success' && steps.why1.outputs.failover == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1
+        uses: anthropics/claude-code-action@e4a6faad497d33dbc7144135c75e41f82f0bf6c0 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
