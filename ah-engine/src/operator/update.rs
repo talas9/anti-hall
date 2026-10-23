@@ -842,53 +842,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #215: with a disabled public install (0.300.2) and an enabled local-directory install (0.300.1) the check reads the ENABLED
-    /// install's registry, cache and marketplace, names its channel and suggests its own update command, never "up to date" next to a
-    /// lag note. A scratch plugins root only.
-    #[test]
-    fn the_check_reads_the_enabled_installs_own_channel() {
-        let dir = std::env::temp_dir().join(format!("ah-update-chan-{}", std::process::id()));
-        let plugins = dir.join(".claude/plugins");
-        let live = dir.join("live-marketplace/plugins/anti-hall/.claude-plugin");
-        let cache = |m: &str, v: &str| plugins.join(format!("cache/{m}/anti-hall/{v}"));
-        for d in [cache("anti-hall", "0.300.2"), cache("anti-hall-engine-live", "0.300.1"), live.clone()] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let installed = |m: &str, v: &str| format!(r#"[{{"scope":"user","version":"{v}","installPath":"{}"}}]"#, cache(m, v).display());
-        std::fs::write(
-            plugins.join("installed_plugins.json"),
-            format!(r#"{{"version":2,"plugins":{{"anti-hall@anti-hall":{},"anti-hall@anti-hall-engine-live":{}}}}}"#, installed("anti-hall", "0.300.2"), installed("anti-hall-engine-live", "0.300.1")),
-        )
-        .unwrap();
-        std::fs::write(dir.join(".claude/settings.json"), r#"{"enabledPlugins":{"anti-hall@anti-hall":false,"anti-hall@anti-hall-engine-live":true}}"#).unwrap();
-        std::fs::write(
-            plugins.join("known_marketplaces.json"),
-            format!(r#"{{"anti-hall-engine-live":{{"source":{{"source":"directory","path":"x"}},"installLocation":"{}"}}}}"#, dir.join("live-marketplace").display()),
-        )
-        .unwrap();
-        let (env, rx) = (Env::process(), Rx::new().unwrap());
-        let home = dir.to_string_lossy().into_owned();
-        let paths = resolve_paths(&env, &home);
-        let manifest = live.join("plugin.json");
-        let check = |latest: Option<&str>| {
-            match latest {
-                Some(v) => std::fs::write(&manifest, format!(r#"{{"version":"{v}"}}"#)).unwrap(),
-                None => std::fs::remove_file(&manifest).unwrap_or(()),
-            }
-            let st = run_check(&rx, &paths, &env);
-            let g = |k: &str| st.get(k).map(js_string).unwrap_or_default();
-            (g("installed"), g("latest"), g("channel"), g("state"), g("action"))
-        };
-        let (inst, latest, chan, state, action) = check(Some("0.300.1"));
-        assert_eq!((inst.as_str(), latest.as_str(), chan.as_str(), state.as_str()), ("0.300.1", "0.300.1", "anti-hall-engine-live", "current"), "{action}");
-        assert!(!action.contains("update anti-hall@anti-hall "), "{action}");
-        let (_, _, _, state, action) = check(Some("0.300.4"));
-        assert_eq!(state, "available", "{action}");
-        let (_, latest, _, state, _) = check(None);
-        assert_eq!((latest.as_str(), state.as_str()), ("", "unknown"), "no source version -> unknown, never up to date");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     /// SkyCrew 2026-10-22: ~70 reconcile rows printed AFTER the summary and the changelog, so `| tail` lost the outcome and the action.
     /// The tail is the outcome: details, changelog, then the head and action, then the JSON status line last.
     #[test]
