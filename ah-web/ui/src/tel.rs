@@ -392,7 +392,7 @@ fn GaugeChart(forecast: Forecast, ui: TelUi, texts: BTreeMap<String, String>) ->
         "series": [forecast.used_pct.min(100.0).round()],
         "labels": [tt(&texts, "f_used")],
         "colors": [if tone.is_null() { cfg["info"].clone() } else { tone }],
-        "plotOptions": { "radialBar": { "hollow": { "size": "62%" }, "dataLabels": { "value": { "formatter": null } } } },
+        "plotOptions": { "radialBar": { "hollow": { "size": "62%" } } },
     }));
     let opts = Memo::new(move |_| o.to_string());
     view! { <ApexChart opts=opts ui=ui unit="pct".to_string() texts=texts fallback=ViewFn::from(|| view! { <></> }) /> }
