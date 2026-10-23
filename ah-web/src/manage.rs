@@ -14,6 +14,7 @@ pub struct Cfg {
     pub describe_timeout_ms: u64,
     pub write_timeout_ms: u64,
     pub history_limit: usize,
+    pub rows_max: usize,
     pub stats_limit: usize,
     pub key_max_chars: usize,
     pub value_max_chars: usize,
@@ -48,7 +49,7 @@ impl Cfg {
 
     /// What the page needs at start: its texts and the few limits it shows.
     pub fn for_page(&self) -> Value {
-        json!({ "ui": self.ui, "jev_modes": self.jev_modes, "safety_categories": self.safety_categories, "guard_categories": self.guard_categories, "jev_prefix": self.jev_setting_prefix })
+        json!({ "ui": self.ui, "jev_modes": self.jev_modes, "safety_categories": self.safety_categories, "guard_categories": self.guard_categories, "rows_max": self.rows_max, "jev_prefix": self.jev_setting_prefix })
     }
 }
 
