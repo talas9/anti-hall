@@ -351,7 +351,7 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     }
     let (installed, latest) = (s(&status, "installed"), s(&status, "latest"));
     let available = !installed.is_empty() && !latest.is_empty() && version_nums(&latest) > version_nums(&installed);
-    let c = UpdateCheck { ok: out.status.success(), installed, latest, message: s(&status, "action").chars().take(o.update_text_max).collect(), available, checked_ms: now_ms(), reused: false };
+    let c = UpdateCheck { ok: out.status.success(), installed, latest, message: s(&status, "action").chars().take(o.update_text_max).collect(), available, channel: s(&status, "channel"), state: s(&status, "state"), checked_ms: now_ms(), reused: false };
     *last = Some((Instant::now(), c.clone()));
     Json(c).into_response()
 }

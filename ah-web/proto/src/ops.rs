@@ -93,6 +93,12 @@ pub struct UpdateCheck {
     pub message: String,
     /// True when `latest` is newer than `installed`, as the engine judged it.
     pub available: bool,
+    /// The marketplace the checked install came from (`anti-hall`, `anti-hall-engine-live`, ...).
+    #[serde(default)]
+    pub channel: String,
+    /// The engine's verdict: `available`, `current`, `unknown`, `lagging` or `failed`.
+    #[serde(default)]
+    pub state: String,
     pub checked_ms: u64,
     /// The last check was reused (the minimum gap had not passed).
     pub reused: bool,

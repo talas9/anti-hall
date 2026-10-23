@@ -305,9 +305,14 @@ fn UpdatesScreen() -> impl IntoView {
                 Some(c) if !c.ok => view! { <p class="fb fb-bad" role="status">{tx("ops_check_failed")} " " <span class="fb-note">{c.message.clone()}</span></p> }.into_any(),
                 Some(c) => view! {
                     <dl class="kv">
-                        <dt>{tx("ops_check_installed")}</dt><dd>{c.installed.clone()}</dd>
-                        <dt>{tx("ops_check_latest")}</dt><dd>{c.latest.clone()}</dd>
-                        <dt>{tx("ops_check_result")}</dt><dd>{if c.available { tx("ops_check_available") } else { tx("ops_check_current") }}</dd>
+                        {(!c.channel.is_empty()).then(|| view! { <dt>{tx("ops_check_channel")}</dt><dd>{c.channel.clone()}</dd> })}
+                        <dt>{tx("ops_check_installed")}</dt><dd>{if c.installed.is_empty() { tx("ops_ver_unknown") } else { c.installed.clone() }}</dd>
+                        <dt>{tx("ops_check_latest")}</dt><dd>{if c.latest.is_empty() { tx("ops_ver_unknown") } else { c.latest.clone() }}</dd>
+                        <dt>{tx("ops_check_result")}</dt><dd>{match c.state.as_str() {
+                            "unknown" | "lagging" => tx(&format!("ops_check_{}", c.state)),
+                            _ if c.available => tx("ops_check_available"),
+                            _ => tx("ops_check_current"),
+                        }}</dd>
                         <dt>{tx("ops_check_at")}</dt><dd>{since(c.checked_ms)}</dd>
                     </dl>
                     <p class="soft-note">{c.message.clone()}</p>
