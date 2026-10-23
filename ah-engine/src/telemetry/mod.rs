@@ -58,6 +58,7 @@ enum Staged {
     Record(Kind, String, String, Outcome, u64, u64),
     Event(Event),
     Impact(ImpactEvent),
+    Block(crate::storage::BlockRow),
 }
 
 thread_local! {
@@ -112,6 +113,37 @@ pub fn decision_name(v: &Verdict) -> &'static str {
     }
 }
 
+/// Whose call a check ran for (the hook payload's session, subagent and tool).
+#[derive(Debug, Clone, Default)]
+pub struct Who {
+    /// The session id.
+    pub session: String,
+    /// The subagent id (empty for the main thread).
+    pub agent: String,
+    /// The tool name.
+    pub tool: String,
+    /// The hook event, when the caller knows it better than the check label does (empty: use the check's own).
+    pub event: String,
+}
+
+impl Who {
+    /// Read the three fields from a hook payload (`hook.session_keys`, `hook.agent_keys`, `hook.tool_keys`).
+    pub fn of(p: &Value) -> Who {
+        let pick = |list: &str| defaults::list(list).into_iter().find_map(|k| p.get(k).and_then(Value::as_str)).unwrap_or("").to_string();
+        Who { session: pick("hook.session_keys"), agent: pick("hook.agent_keys"), tool: pick("hook.tool_keys"), event: String::new() }
+    }
+}
+
+/// The message of a block verdict (a block, or an exit-2 answer), `None` for anything else.
+fn block_text(v: &Verdict) -> Option<&str> {
+    match v {
+        Verdict::Block(t) => Some(t),
+        Verdict::Exact(x) if x.code == 2 => Some(&x.err),
+        Verdict::Routed(inner, _) => block_text(inner),
+        _ => None,
+    }
+}
+
 impl Telemetry {
     fn sink(&self, item: Staged) {
         match staged(item) {
@@ -119,6 +151,7 @@ impl Telemetry {
             Some(Staged::Record(k, h, e, o, us, ib)) => self.rec.record(k, &h, &e, o, us, ib),
             Some(Staged::Event(ev)) => self.rec.event(ev),
             Some(Staged::Impact(ev)) => self.store.record_impact(ev),
+            Some(Staged::Block(row)) => self.store.record_block(row),
         }
     }
 
@@ -278,6 +311,12 @@ impl Telemetry {
     /// A built-in check finished while serving hook event `event`: count the run, time it, record its telemetry (outcome,
     /// latency, bytes injected) and the impact of a block or advisory.
     pub fn observe_check_in(&self, event: &str, check: &str, rule_id: &str, verdict: &Verdict, micros: u64, project: &str) {
+        self.observe_check_who(event, check, rule_id, verdict, micros, project, &Who::default());
+    }
+
+    /// [`Telemetry::observe_check_in`] that also says whose call it was, so a block can be asked about afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_check_who(&self, event: &str, check: &str, rule_id: &str, verdict: &Verdict, micros: u64, project: &str, who: &Who) {
         let decision = decision_name(verdict);
         let effective;
         let verdict = match verdict {
@@ -304,6 +343,21 @@ impl Telemetry {
             m.inc("check_calls", &[("check", check)]);
             m.inc("check_decisions", &[("check", check), ("decision", decision)]);
             m.observe("check_latency_us", &[("check", check)], micros);
+        }
+        if let Some(text) = block_text(verdict) {
+            let cap = defaults::num("telemetry.block_reason_chars") as usize;
+            let reason: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(cap).collect();
+            self.sink(Staged::Block(crate::storage::BlockRow {
+                ts_ms: now_ms(),
+                guard: check.into(),
+                rule: rule_id.into(),
+                event: if who.event.is_empty() { event.into() } else { who.event.clone() },
+                session: who.session.clone(),
+                agent: who.agent.clone(),
+                tool: who.tool.clone(),
+                project: project.into(),
+                reason,
+            }));
         }
         match verdict {
             Verdict::Block(_) => self.impact("block", check, rule_id, project),

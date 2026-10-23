@@ -907,6 +907,18 @@ value = "serve"
 doc = "Payload fields that can carry the event name, tried in order (Claude Code and Codex send `hook_event_name`)."
 value = ["hook_event_name", "hookEventName", "event"]
 
+[hook.session_keys]
+doc = "Payload fields that can carry the session id, tried in order (recorded with a guard block)."
+value = ["session_id", "sessionId"]
+
+[hook.agent_keys]
+doc = "Payload fields that can carry the subagent id, tried in order (recorded with a guard block; absent on the main thread)."
+value = ["agent_id", "agentId"]
+
+[hook.tool_keys]
+doc = "Payload fields that can carry the tool name, tried in order (recorded with a guard block)."
+value = ["tool_name", "toolName"]
+
 [hook.warn_prefix]
 doc = "Prefix of a `warn` rule's message in agent-visible output."
 value = "anti-hall warning: "

@@ -754,6 +754,8 @@ struct DaemonObserver<'a> {
     project: &'a str,
     /// The hook event being served (telemetry labels every check and rule with it).
     event: &'a str,
+    /// Whose call is being served (blocks are recorded with it).
+    who: telemetry::Who,
 }
 
 /// What a check that just finished read and noted (task #66 step 0): its transcript bytes and latency by transcript size class,
@@ -802,7 +804,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
         if matches!(verdict, crate::checks::Verdict::Defer) {
             crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
         }
-        self.t.observe_check_in(self.event, check, rule_id, verdict, micros, self.project);
+        self.t.observe_check_who(self.event, check, rule_id, verdict, micros, self.project, &self.who);
     }
 
     fn rule(&self, rule_id: &str, action: crate::rules::Action) {
@@ -933,7 +935,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
     let (start, budget) = cpu_budget(cfg);
     let over = move || over_cpu_budget(start, budget);
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
-    let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event };
+    let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event, who: telemetry::Who::of(&p) };
     let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs, env) {
         Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
@@ -1005,7 +1007,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
         if let Verdict::Routed(_, routes) = &v {
-            let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event: &meta.event };
+            let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event: &meta.event, who: telemetry::Who::default() };
             for r in routes {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
@@ -1018,7 +1020,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         // an entry whose id is its check name names no rule of its own: record none, so the dashboard has no duplicate rule hop
         let rule = if e.id == check { "" } else { e.id.as_str() };
         crate::web::decisions::push(&meta.event, check, rule, session, &v, micros);
-        sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
+        sh.telemetry.observe_check_who(defaults::text("telemetry.no_event_label"), check, &e.id, &v, micros, &phash, &telemetry::Who { event: meta.event.clone(), ..telemetry::Who::of(&p) });
     };
     let (start_cpu, budget) = cpu_budget(cfg);
     let over = || over_cpu_budget(start_cpu, budget);
@@ -2483,7 +2485,7 @@ mod tests {
     #[test]
     fn forced_delegation_route_and_delegate_events_are_linkable_and_ledger_ready() {
         let t = Telemetry::new();
-        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse", who: telemetry::Who::default() };
         let route = crate::checks::RouteMeta {
             requested_model: "opus".into(),
             parent_model: "opus".into(),
@@ -2514,7 +2516,7 @@ mod tests {
     #[test]
     fn a_blocking_route_without_delegation_is_serialized_as_a_block() {
         let t = Telemetry::new();
-        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse", who: telemetry::Who::default() };
         let route = crate::checks::RouteMeta {
             requested_model: "sonnet".into(),
             parent_model: "opus".into(),
