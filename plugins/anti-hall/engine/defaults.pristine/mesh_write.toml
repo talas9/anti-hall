@@ -1905,7 +1905,7 @@ min = 1
 max = 65536
 
 [mesh_write.file_read_max_bytes]
-doc = "Largest mesh file a read through a path from a descriptor or a session record may take (a durable inbox, a cursor file, a harness session record). A larger file, and anything that is no regular file (a FIFO, socket or device, whose read could block a worker for good), is not read: the hook's answer goes to Node."
+doc = "Soft limit on a mesh file read through a path from a descriptor or a session record (a durable inbox, a cursor file, a harness session record). A larger regular file is still read, but counted and logged (`mesh_descriptor_read_skipped`, reason `read_why_over_soft`); see `file_read_hard_max_bytes` for the hard limit."
 value = 16777216
 min = 1024
 
@@ -2215,3 +2215,108 @@ value = "retired-redirect-unresolvable-caller"
 [mesh_write.msg_redirect_unresolvable]
 doc = "The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted)."
 value = "inbox ack {id} was redirected to survivor {survivor} after a fold, but the caller could not be verified as that survivor — refusing so an unrelated/unresolvable caller cannot advance the survivor's NDJSON cursor (pass --ack-as-owner to override)"
+
+[mesh_write.jev_triage_log_file]
+doc = "Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message."
+value = "jev-triage.ndjson"
+
+[mesh_write.jev_triage_log_max_bytes]
+doc = "Size past which the Jev triage log is rotated before a row is appended (jev-triage.js CACHE_LOG_MAX_BYTES)."
+value = 1048576
+min = 1
+
+[mesh_write.jev_answered_type]
+doc = "The `type` of the Jev triage log row written when a labeled message is answered."
+value = "answered"
+
+[mesh_write.jev_outcome_id]
+doc = "The integration id of the Jev outcome row an answered labeled message records."
+value = "triage"
+
+[mesh_write.jev_outcome_value]
+doc = "The outcome of that row."
+value = "answered"
+
+[mesh_write.jev_outcome_source]
+doc = "The source of that row."
+value = "triage-answer-latency"
+
+[mesh_write.metric_jev_arrival_skipped]
+doc = "Counter bumped when a direct send would have queued its text for Jev arrival labelling: the queue's drain worker was a Node process, which is not part of the live path, so nothing is queued."
+value = "mesh_jev_arrival_skipped"
+
+[mesh_write.file_read_hard_max_bytes]
+doc = "Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`)."
+value = 536870888
+min = 1024
+
+[mesh_write.site_read_bounded]
+doc = "The site named in the count and log of a bounded mesh file read made without a more specific site."
+value = "read_bounded"
+
+[mesh_write.read_why_not_regular]
+doc = "The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device)."
+value = "not-a-regular-file"
+
+[mesh_write.read_why_over_hard]
+doc = "The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`."
+value = "file-over-hard-cap"
+
+[mesh_write.read_why_over_soft]
+doc = "The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read."
+value = "file-over-soft-cap"
+
+[mesh_write.refusal_prefix]
+doc = "What starts the reason of a deferral that is really the verb's own refusal (Node's `{ ok: false, ... }` result, exit `exit_refused`): the rest of the reason is the refusal's JSON body. Such a reason is printed, never handed on."
+value = "refusal:"
+
+[mesh_write.exit_refused]
+doc = "Exit code of a verb's own refusal (Node's `{ ok: false }` result)."
+value = 2
+min = 1
+max = 255
+
+[mesh_write.result_refused]
+doc = "Log result of a call the verb refused itself."
+value = "refused"
+
+[mesh_write.reason_seat_conflict]
+doc = "The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat."
+value = "primary-seat-conflict"
+
+[mesh_write.reason_legacy_journal_store]
+doc = "The reason a verb refuses a project whose mesh store is pinned to (or forced onto) the legacy journal backend, which only a Node older than 22.5 wrote and which no longer has a reader."
+value = "legacy-journal-store"
+
+[mesh_write.msg_legacy_journal_store]
+doc = "The refusal text of that case: {repo_key} is the project's store."
+value = "the mesh store of project {repo_key} uses the legacy journal backend (written by a Node older than 22.5), which this version cannot read or write; nothing was done. Move its data into the sqlite store with `doctor --repair`, or remove the BACKEND marker and the journal directory if the store holds nothing you need"
+
+[mesh_write.heal_cooldown_flag]
+doc = "The self-heal result field set while the cooldown of an earlier installer attempt has not elapsed (`daemonHealCooldown`)."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_retry_after]
+doc = "The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`)."
+value = "retryAfterMs"
+
+[mesh_write.self_heal_dir]
+doc = "Directory under the DevSwarm state directory that holds the self-heal cooldown files (register.js selfHealCooldownPath)."
+value = "self-heal"
+
+[mesh_write.self_heal_file_prefix]
+doc = "What starts the name of a project's self-heal cooldown file: `<this><repoKey>.json`."
+value = "ingest-"
+
+[mesh_write.self_heal_cooldown_ms]
+doc = "How long after an installer attempt the next one waits (register.js SELF_HEAL_COOLDOWN_MS)."
+value = 60000
+min = 1000
+
+[mesh_write.ingest_owner_file]
+doc = "The ownership marker of ingest in the DevSwarm state directory (ingest-health.js ingestOwnerPath); the same file `devswarm_ingest.owner_file` names."
+value = "ingest-owner.json"
+
+[mesh_write.ingest_owner_name]
+doc = "The `owner` word of that marker while the engine drains ingest."
+value = "engine"
