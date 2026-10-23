@@ -142,6 +142,11 @@ fn throttled(src: Signal<Vec<String>>, ms: u32) -> RwSignal<HashSet<String>> {
     out
 }
 
+/// KNOWN, NOT ROOT-CAUSED (GH #279): cards of nodes that were in the FIRST data set stayed at the origin although `pos` (and the
+/// minimap, which reads it) held the right positions, and the layout effect logged once for several structure changes. So the card
+/// `style` closures did not pick up the `pos` write, and/or the layout effect did not re-run on a structure change. Not isolated
+/// (time-boxed). Two mitigations: `pos` is filled before the first card renders, and this fallback gives every node its pinned spot.
+///
 /// Positions with the pinned position of every node the layout has not placed yet (a node that arrives after the first layout still
 /// shows where its data pins it, not at the origin).
 fn effective_pos(pos: &Pos, d: &GraphData) -> Pos {
