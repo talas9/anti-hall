@@ -47,32 +47,41 @@ pub fn fill(ctx: &Ctx, repo_key: &str) -> usize {
         if present.contains(b.id.as_str()) {
             continue;
         }
-        let Some(held) = idlock::acquire(home, &b.id) else { continue };
-        let done = (|| -> Option<()> {
-            let st = crate::meshw::common::open_store(&inv, repo_key).ok()?;
-            if st.registry_row(&b.id).ok()?.is_some() {
-                return None;
-            }
-            let row = RegistryRow { id: b.id.clone(), worktree_path: Some(wt.to_string()), ..RegistryRow::default() };
-            st.upsert_registry(&row, ctx.now, |_, _| true).ok()?;
-            if let Some(why) = crate::meshw::summary::derive_after_write(&st, &inv, repo_key) {
-                crate::discard::note("dssup_labelfill_derive", &why);
-            }
-            Some(())
-        })();
-        held.release();
-        if done.is_some() {
+        let done = write_row(&inv, repo_key, &b.id, wt);
+        if done {
             filled += 1;
-            let msg = defaults::render("devswarm_recon.lf_msg", &[("id", &b.id), ("label", &label.id), ("worktree", &wt)]);
-            log_line(
-                ctx,
-                defaults::text("devswarm_recon.log_component_reconcile"),
-                defaults::text("devswarm_recon.lf_op"),
-                defaults::text("devswarm_recon.log_level_info"),
-                &msg,
-                &json!({"id": b.id, "label": label.id, "worktreePath": wt}),
-            );
+            log_line(ctx, defaults::text("devswarm_recon.log_component_reconcile"), defaults::text("devswarm_recon.lf_op"), defaults::text("devswarm_recon.log_level_info"), &filled_msg(&b.id, &label.id, wt), &filled_ctx(&b.id, &label.id, wt));
         }
     }
     filled
+}
+
+/// The log message of a filled row.
+pub(crate) fn filled_msg(id: &str, label: &str, wt: &str) -> String {
+    defaults::render("devswarm_recon.lf_msg", &[("id", &id), ("label", &label), ("worktree", &wt)])
+}
+
+/// The log context of a filled row.
+pub(crate) fn filled_ctx(id: &str, label: &str, wt: &str) -> serde_json::Value {
+    json!({"id": id, "label": label, "worktreePath": wt})
+}
+
+/// Write the registry row `id` (the app id) for the worktree `wt` of the store `repo_key`: under the id's own lock, idempotent (an
+/// existing row is left alone), no deletion, no app database write. Whether this call wrote it.
+pub(crate) fn write_row(inv: &crate::meshw::common::Inv, repo_key: &str, id: &str, wt: &str) -> bool {
+    let Some(held) = idlock::acquire(&inv.home, id) else { return false };
+    let done = (|| -> Option<()> {
+        let st = crate::meshw::common::open_store(inv, repo_key).ok()?;
+        if st.registry_row(id).ok()?.is_some() {
+            return None;
+        }
+        let row = RegistryRow { id: id.to_string(), worktree_path: Some(wt.to_string()), ..RegistryRow::default() };
+        st.upsert_registry(&row, inv.now, |_, _| true).ok()?;
+        if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, repo_key) {
+            crate::discard::note("dssup_labelfill_derive", &why);
+        }
+        Some(())
+    })();
+    held.release();
+    done.is_some()
 }

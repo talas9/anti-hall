@@ -687,10 +687,33 @@ fn app_fields(o: &mut Obj, leg: &AppLeg, id: &str) -> bool {
 fn app_only(inv: &Inv, raw: &str, id: &str) -> R<Option<Answer>> {
     let Some(key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return Ok(None) };
     let Ok(rows) = crate::dssup::recon::view::registry(&inv.home, &key) else { return Ok(None) };
-    let Some(wt) = rows.iter().find(|r| r.row.id == id).and_then(|r| r.row.worktree_path.clone()).filter(|w| !w.is_empty()) else { return Ok(None) };
+    let wt_of = |key: &str| rows.iter().find(|r| r.row.id == key).and_then(|r| r.row.worktree_path.clone()).filter(|w| !w.is_empty());
+    let (wt, from_label) = match wt_of(id) {
+        Some(wt) => (wt, false),
+        // a label-only row (a phantom, not yet filled by the sweep): its worktree is the workspace's; the app id's row is written below
+        None => match wt_of(raw).filter(|w| ident::primary_workspace_id(w).ok().as_deref() == Some(raw)) {
+            Some(wt) => (wt, true),
+            None => return Ok(None),
+        },
+    };
     let leg = attempt(inv, id, Some(&wt), None)?;
     if !leg.attempted {
         return Ok(None);
+    }
+    if from_label && crate::dssup::recon::labelfill::write_row(inv, &key, id, &wt) {
+        let st = inv.settings();
+        let env = crate::dssup::recon::apply::Env { home: &inv.home, now: inv.now, st: &st, log_dir: None };
+        let op = Op::Log {
+            component: text("devswarm_recon.log_component_reconcile").into(),
+            op: text("devswarm_recon.lf_op").into(),
+            level: text("devswarm_recon.log_level_info").into(),
+            msg: crate::dssup::recon::labelfill::filled_msg(id, raw, &wt),
+            ctx: crate::dssup::recon::labelfill::filled_ctx(id, raw, &wt).to_string(),
+        };
+        crate::discard::harmless(match crate::dssup::recon::apply::unit(&env, &Unit { label: "log".into(), lock: None, ops: vec![op] }, &crate::dssup::recon::Hooks::none()) {
+            UnitEnd::Failed(w) => Err(w),
+            _ => Ok(()),
+        }); // keep: a log line that cannot be written never fails the archive
     }
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(leg.ok)).put("action", s(text("devswarm_cli.action_archive"))).put("id", s(raw)).put("descriptorArchived", OVal::Bool(false));
