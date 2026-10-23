@@ -312,16 +312,7 @@ fn cases() -> Vec<Case> {
             expect: vec!["\"meshBroadcast\""],
             code: 0,
         },
-        Case {
-            name: "summary-journal-backend",
-            cwd: "child",
-            argv: hb(&["--summary", "x"]),
-            extra: vec![("ANTIHALL_DEVSWARM_STORE_BACKEND", s("journal"))],
-            setup: nothing(),
-            native: false,
-            expect: vec!["\"meshBroadcast\""],
-            code: 0,
-        },
+        // (a store on the legacy journal backend is the verb's own refusal, exit 2: see `meshw::common::tests`)
         // ---------------- --step with a plan ----------------
         Case {
             name: "step-1-doing",

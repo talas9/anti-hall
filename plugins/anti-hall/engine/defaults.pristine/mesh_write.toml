@@ -1159,8 +1159,6 @@ max = 31536000000
 doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
 value = "DEVSWARM_SOURCE_BRANCH"
 
-
-
 [mesh_write.plugin_manifest_dir]
 doc = "Directory of the plugin manifest under the plugin root."
 value = ".claude-plugin"
@@ -1665,10 +1663,6 @@ value = "unknown"
 
 # ---- plain roster (scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHumanText; companion/lib/devswarm-pull.js defaultRun) ----
 
-[mesh_write.roster_flags]
-doc = "The flags plain `roster` may carry for the engine to answer it; any other flag is Node's."
-value = ["all", "json"]
-
 [mesh_write.roster_flag_all]
 doc = "The roster flag that includes archived rows in the text rendering."
 value = "all"
@@ -1891,7 +1885,7 @@ min = 1
 max = 65536
 
 [mesh_write.file_read_max_bytes]
-doc = "Largest mesh file a read through a path from a descriptor or a session record may take (a durable inbox, a cursor file, a harness session record). A larger file, and anything that is no regular file (a FIFO, socket or device, whose read could block a worker for good), is not read: the hook's answer goes to Node."
+doc = "Soft limit on a mesh file read through a path from a descriptor or a session record (a durable inbox, a cursor file, a harness session record). A larger regular file is still read, but counted and logged (`mesh_descriptor_read_skipped`, reason `read_why_over_soft`); see `file_read_hard_max_bytes` for the hard limit."
 value = 16777216
 min = 1024
 
@@ -1950,6 +1944,7 @@ value = ".gitmodules"
 [mesh_write.gitmodules_path_key]
 doc = "The key of a submodule's path in .gitmodules."
 value = "path"
+
 [mesh_write.msg_descriptor_read_skipped]
 doc = "The log line when a file named by a descriptor (or a receipt) was not read because it is no regular file or is over the read cap. {site} {reason} {path}."
 value = "mesh read skipped: site={site}, reason={reason}, path={path}"
@@ -2385,3 +2380,141 @@ value = "unable to open database file"
 [mesh_write.msg_store_unreadable]
 doc = "The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}."
 value = "store for workspace {id} could not be opened: {error}"
+
+[mesh_write.jev_triage_log_file]
+doc = "Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message."
+value = "jev-triage.ndjson"
+
+[mesh_write.jev_triage_log_max_bytes]
+doc = "Size past which the Jev triage log is rotated before a row is appended (jev-triage.js CACHE_LOG_MAX_BYTES)."
+value = 1048576
+min = 1
+
+[mesh_write.jev_answered_type]
+doc = "The `type` of the Jev triage log row written when a labeled message is answered."
+value = "answered"
+
+[mesh_write.jev_outcome_id]
+doc = "The integration id of the Jev outcome row an answered labeled message records."
+value = "triage"
+
+[mesh_write.jev_outcome_value]
+doc = "The outcome of that row."
+value = "answered"
+
+[mesh_write.jev_outcome_source]
+doc = "The source of that row."
+value = "triage-answer-latency"
+
+[mesh_write.metric_jev_arrival_skipped]
+doc = "Counter bumped when a direct send would have queued its text for Jev arrival labelling: the queue's drain worker was a Node process, which is not part of the live path, so nothing is queued."
+value = "mesh_jev_arrival_skipped"
+
+[mesh_write.file_read_hard_max_bytes]
+doc = "Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`)."
+value = 536870888
+min = 1024
+
+[mesh_write.site_read_bounded]
+doc = "The site named in the count and log of a bounded mesh file read made without a more specific site."
+value = "read_bounded"
+
+[mesh_write.read_why_not_regular]
+doc = "The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device)."
+value = "not-a-regular-file"
+
+[mesh_write.read_why_over_hard]
+doc = "The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`."
+value = "file-over-hard-cap"
+
+[mesh_write.read_why_over_soft]
+doc = "The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read."
+value = "file-over-soft-cap"
+
+[mesh_write.refusal_prefix]
+doc = "What starts the reason of a deferral that is really the verb's own refusal (Node's `{ ok: false, ... }` result, exit `exit_refused`): the rest of the reason is the refusal's JSON body. Such a reason is printed, never handed on."
+value = "refusal:"
+
+[mesh_write.exit_refused]
+doc = "Exit code of a verb's own refusal (Node's `{ ok: false }` result)."
+value = 2
+min = 1
+max = 255
+
+[mesh_write.result_refused]
+doc = "Log result of a call the verb refused itself."
+value = "refused"
+
+[mesh_write.reason_seat_conflict]
+doc = "The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat."
+value = "primary-seat-conflict"
+
+[mesh_write.reason_legacy_journal_store]
+doc = "The reason a verb refuses a project whose mesh store is pinned to (or forced onto) the legacy journal backend, which only a Node older than 22.5 wrote and which no longer has a reader."
+value = "legacy-journal-store"
+
+[mesh_write.msg_legacy_journal_store]
+doc = "The refusal text of that case: {repo_key} is the project's store."
+value = "the mesh store of project {repo_key} uses the legacy journal backend (written by a Node older than 22.5), which this version cannot read or write; nothing was done. Move its data into the sqlite store with `doctor --repair`, or remove the BACKEND marker and the journal directory if the store holds nothing you need"
+
+[mesh_write.heal_cooldown_flag]
+doc = "The self-heal result field set while the cooldown of an earlier installer attempt has not elapsed (`daemonHealCooldown`)."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_retry_after]
+doc = "The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`)."
+value = "retryAfterMs"
+
+[mesh_write.self_heal_dir]
+doc = "Directory under the DevSwarm state directory that holds the self-heal cooldown files (register.js selfHealCooldownPath)."
+value = "self-heal"
+
+[mesh_write.self_heal_file_prefix]
+doc = "What starts the name of a project's self-heal cooldown file: `<this><repoKey>.json`."
+value = "ingest-"
+
+[mesh_write.self_heal_cooldown_ms]
+doc = "How long after an installer attempt the next one waits (register.js SELF_HEAL_COOLDOWN_MS)."
+value = 60000
+min = 1000
+
+[mesh_write.ingest_owner_file]
+doc = "The ownership marker of ingest in the DevSwarm state directory (ingest-health.js ingestOwnerPath); the same file `devswarm_ingest.owner_file` names."
+value = "ingest-owner.json"
+
+[mesh_write.ingest_owner_name]
+doc = "The `owner` word of that marker while the engine drains ingest."
+value = "engine"
+
+[mesh_write.jev_outcome_hash_len]
+doc = "How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage)."
+value = 32
+min = 1
+
+[mesh_write.msg_store_unavailable]
+doc = "The refusal text of that case: {what} names the thing, {detail} is the operating system's or database's own message."
+value = "{what} is unavailable ({detail}); nothing was done"
+
+[mesh_write.what_store_dir]
+doc = "What the refusal names when a project's store directory cannot be created."
+value = "the mesh store directory"
+
+[mesh_write.what_store]
+doc = "What the refusal names when a project's store cannot be opened."
+value = "the mesh store"
+
+[mesh_write.what_registry]
+doc = "What the refusal names when a project's registry cannot be read."
+value = "the workspace registry"
+
+[mesh_write.what_append]
+doc = "What the refusal names when a message cannot be appended to the store."
+value = "the message table"
+
+[mesh_write.what_messages]
+doc = "What the refusal names when the broadcast messages cannot be read."
+value = "the broadcast messages"
+
+[mesh_write.msg_not_regular]
+doc = "The refusal text of a mesh file that is a FIFO, socket or device: {path}."
+value = "{path} is not a regular file (a FIFO, socket or device); it was not read and nothing was done"

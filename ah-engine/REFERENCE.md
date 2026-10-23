@@ -344,8 +344,6 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js). |
 | `engine-role-guard` | PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment). |
 | `broad-kill-guard` | PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed. |
-| `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
-| `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
@@ -376,8 +374,6 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `procwatch-advisory` | SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting). |
 | `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js). |
-| `burn-breaker` | PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status commands and SendMessage (the report). |
-| `uncommitted-guard` | PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only: warns past git.soft_uncommitted_lines and blocks past git.max_uncommitted_lines uncommitted lines in the subagent's worktree (commit first). |
 
 ## Settings
 
@@ -2076,7 +2072,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.cache_max_depth` | `128` |  |  | Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
-| `jev.default_modes` | `22 entries` |  |  | Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36). |
+| `jev.default_modes` | `21 entries` |  |  | Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36). |
 | `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
 | `jev.drain_poll_ms` | `2` |  | ms | How often `drain` checks whether the asynchronous queue has emptied (tests and shutdown only). |
 | `jev.endpoint_typesafe` | `https://api.typesafe.ai/v1/systemone` |  |  | TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint). |
@@ -2273,7 +2269,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `evidence.answer_key` | `answer` |  |  | The field of a Haiku reply that holds its answer. |
-| `evidence.cfg` | `4 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received a usage-limit pause or a workspace the app shows as paused each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command or the same error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
+| `evidence.cfg` | `3 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received a usage-limit pause or a workspace the app shows as paused each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command or the same error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
 | `evidence.confidence_key` | `confidence` |  |  | The field of a Haiku reply that holds its confidence. |
 | `evidence.date_chars` | `10` |  |  | Characters of an ISO timestamp that make its UTC date, which the per-day Haiku cap counts by. |
 | `evidence.dur_placeholder` | `{dur}` |  |  | The placeholder in a question that the caller's `dur` text (how long there was no progress) replaces. |
@@ -2349,7 +2345,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUse` | `9 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `5 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `28 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `24 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
@@ -2360,7 +2356,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `16 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `12 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
@@ -3343,46 +3339,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.summary` | `Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while ...` |  |  | One-line description of the devswarm-comms-guard check in the generated reference. |
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
-
-### spawn_guards.toml / spawn_ceiling
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `spawn_ceiling.base` | `12` |  |  | The ceiling at full usage headroom: a spawn is blocked when this many agents already run. |
-| `spawn_ceiling.control_re` | `[\x00-\x1f\x7f]+` |  |  | JavaScript regex source (global): control characters cut from an agent description before it is shown. |
-| `spawn_ceiling.desc_max` | `60` |  |  | How many characters of an agent description the message keeps. |
-| `spawn_ceiling.floor` | `2` |  |  | The ceiling never drops below this, whatever the usage. |
-| `spawn_ceiling.guard_name` | `spawn-ceiling` |  |  | Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json). |
-| `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
-| `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
-| `spawn_ceiling.msg_instead` | `wait for or stop a finished or idle agent above, then spawn; the ceiling rise...` |  |  | What to do instead of spawning past the ceiling. |
-| `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
-| `spawn_ceiling.msg_what` | `{n} agents are already running (ceiling now {ceiling}): {names}{more}.` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
-| `spawn_ceiling.msg_why` | `More agents than that rarely add outcome; each one costs tokens whether or no...` |  |  | Why the ceiling block applies. |
-| `spawn_ceiling.setting` | `6 entries` |  |  | The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op. |
-| `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
-| `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
-| `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
-
-### spawn_guards.toml / spawn_usage
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `spawn_usage.block_pct` | `92` |  |  | Hard threshold (spawn_block_pct): at or above this usage percent new agent spawns are blocked until the limit resets. |
-| `spawn_usage.bucket_names` | `5-hour, weekly` |  |  | The name each bucket has in the messages, parallel to bucket_pct. |
-| `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
-| `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
-| `spawn_usage.guard_name` | `spawn-usage` |  |  | Guard name in the messages and the skip file. |
-| `spawn_usage.msg_block_instead` | `finish the work already running, do small steps inline, or wait for the reset...` |  |  | What to do instead of the blocked spawn. |
-| `spawn_usage.msg_block_what` | `the {limit} usage limit is at {pct}% (hard threshold {cap}%, {resets}); new a...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
-| `spawn_usage.msg_block_why` | `A spawn past this point can exhaust the limit and stop all work, including ag...` |  |  | Why the hard block applies. |
-| `spawn_usage.msg_resets_at` | `resets at {at}` |  |  | The reset clause when the reset time is known; {at} is an ISO time to the minute (UTC). |
-| `spawn_usage.msg_resets_unknown` | `reset time unknown` |  |  | The reset clause when the reset time is not in the usage cache. |
-| `spawn_usage.msg_soft_instead` | `use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents,...` |  |  | What to do instead, in the soft advice. |
-| `spawn_usage.msg_soft_what` | `the {limit} usage limit is at {pct}% ({resets}).` |  |  | What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what. |
-| `spawn_usage.msg_soft_why` | `Headroom is getting short; tokens spent without a matching outcome (commits, ...` |  |  | Why the soft advice applies. |
-| `spawn_usage.setting` | `6 entries` |  |  | The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op. |
-| `spawn_usage.soft_pct` | `75` |  |  | Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents. |
 
 ### spawn_guards.toml / swarm_guard
 
@@ -4384,64 +4340,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
 
-### lane_waste.toml / lane_test
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `lane_test.cargo_commands` | `cargo` |  |  | Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run). |
-| `lane_test.cargo_narrow_flags` | `--test, -E, --filter-expr` |  |  | Flags that narrow a cargo test run to one named target or expression (the next word names it): --test <integration test file>, -E / --filter-expr <nextest filter expression>, --doc is not narrow. |
-| `lane_test.cargo_no_run_flags` | `--no-run, --list, --help, -h` |  |  | Flags that make cargo test only build the test binaries and run nothing: not a suite run. |
-| `lane_test.cargo_suite_flags` | `--workspace, --all` |  |  | Flags that make a cargo test run suite-scale even with a filter word (every package of the workspace). |
-| `lane_test.cargo_test_subcommands` | `test, t, nextest` |  |  | The cargo subcommands that run tests. Without a narrowing filter they run the whole suite. |
-| `lane_test.cargo_toolchain_re` | `^\+\S+$` |  |  | A word between cargo and its subcommand that is a toolchain selector (cargo +nightly test), not the subcommand. Regular expression (Rust syntax). |
-| `lane_test.cargo_value_flags` | `27 items` |  |  | Flags of cargo test and nextest that take the next word as their value (so that word is not a test filter). |
-| `lane_test.guard_name` | `lane-test-guard` |  |  | The guard id the lane test guard answers to in skip.json and in its messages. |
-| `lane_test.msg_instead` | `run cargo check, commit, verification happens at deploy; a filtered single-mo...` |  |  | What to do instead. |
-| `lane_test.msg_override` | `the user sets guards.allowTestSuites, turns the guard off with guards.laneTes...` |  |  | How the user can lift the block (shown on the last line). |
-| `lane_test.msg_what` | ``{cmd}` is blocked: a subagent does not run suite-scale tests ({label}).` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
-| `lane_test.msg_why` | `Suite runs queue behind the shared build lock and keep every waiting agent re...` |  |  | Why suite runs are blocked for subagents. |
-| `lane_test.nextest_other_words` | `list, archive, show-config, self, help` |  |  | Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run. |
-| `lane_test.nextest_run_words` | `run, r` |  |  | Words after nextest that run tests and are not a filter (nextest run); the filter comes after them. |
-| `lane_test.rules` | `7 items` |  |  | Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message. |
-| `lane_test.summary` | `PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo t...` |  |  | One-line description of the lane-test-guard check in the generated reference. |
-| `lane_test.sw` | `6 entries` |  |  | Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands. |
-| `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
-
-### lane_waste.toml / lane_waste
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
-| `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
-| `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
-| `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
-| `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
-| `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
-| `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
-| `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
-| `lane_waste.wrappers` | `16 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
-
-### lane_waste.toml / queued_wait
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `queued_wait.bg_field` | `run_in_background` |  |  | The Bash tool input field that starts the command in the background. |
-| `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
-| `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
-| `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
-| `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
-| `queued_wait.msg_instead_bg` | `run it in the foreground under the lock (`lockf <lockfile> ...`): if the lock...` |  |  | What to do instead of a background heavy command. |
-| `queued_wait.msg_instead_sleep` | `run the command in the foreground, or end your turn and let the completion no...` |  |  | What to do instead of a long sleep or poll loop. |
-| `queued_wait.msg_override` | `the user turns the guard off with guards.queuedWaitGuard, or skips it for a s...` |  |  | How the user can lift the block (shown on the last line). |
-| `queued_wait.msg_what_bg` | ``{cmd}` is blocked: a subagent does not start build or test commands in the b...` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
-| `queued_wait.msg_what_loop` | ``{cmd}` is blocked: a poll loop sleeping {secs}s per round (limit {max}s).` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
-| `queued_wait.msg_what_sleep` | ``{cmd}` is blocked: it waits {secs}s (limit {max}s).` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
-| `queued_wait.msg_why` | `An agent that waits keeps acting: every poll or re-read re-sends its whole co...` |  |  | Why background heavy commands and poll loops are blocked. |
-| `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
-| `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
-| `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
-| `queued_wait.sw` | `6 entries` |  |  | Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops. |
-
 ### broad_kill.toml / broad_kill
 
 | Key | Default | Env override | Unit | What it is |
@@ -4473,65 +4371,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `broad_kill.wrappers` | `14 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (sudo pkill, env X=1 killall, nohup pkill). |
 | `broad_kill.xargs_commands` | `xargs` |  |  | Commands that run another command with arguments read from standard input. |
 | `broad_kill.xargs_value_flags` | `13 items` |  |  | Flags of xargs that take the next word as their value (so it is not the command it runs). |
-
-### burn.toml / burn
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `burn.agent_field` | `agent_id` |  |  | Hook payload field that names a subagent; a call without it is the main session and is never blocked. |
-| `burn.allowed_bash_re` | `^\s*git(?:\s+-C\s+\S+)?\s+(?:commit\|add\|push\|status\|log\|diff\|show\|rev-parse\|b...` |  |  | A command a blocked subagent may still run: it must start with git commit, add, push, status, log, diff, show, rev-parse or branch (optionally after `git -C <dir>`). Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to "". |
-| `burn.allowed_tools` | `SendMessage` |  |  | Tools a blocked subagent may still call: SendMessage carries its final report. |
-| `burn.bash_tools` | `Bash` |  |  | Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks. |
-| `burn.forbidden_bash_re` | `[;&\|`<>\n\r]\|\$\(` |  |  | What makes an otherwise allowed command a chain or a hidden command: a separator, pipe, redirect, background, backtick, newline or $( outside quoted text. Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to "". |
-| `burn.guard_name` | `burn-breaker` |  |  | The guard id the burn-breaker check answers to in skip.json and in its messages. |
-| `burn.hard_tokens_no_outcome` | `3000000` |  |  | Hard line: tokens spent since the last outcome, within the waste window, at which the subagent's tool calls are blocked (see burn.allowed_tools and burn.allowed_bash_re). 0 = no hard line. |
-| `burn.marker_dir` | `breaker` |  |  | Directory under the tracker directory that holds one marker file per agent while its hard flag is up. |
-| `burn.marker_ext` | `.json` |  |  | Extension of a marker file. |
-| `burn.marker_ttl_ms` | `7200000` |  |  | A marker older than this is ignored by the check and removed by the tracker (an agent that left the state without clearing its flag). |
-| `burn.msg_hard` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
-| `burn.msg_instead` | `Commit what works (plain `git commit -m` with a quoted message), report (Send...` |  |  | What to do instead. |
-| `burn.msg_override` | `the user turns the breaker off with `agents.burnBreaker` or skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
-| `burn.msg_soft` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Soft advisory, delivered to the agent at its next tool call and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
-| `burn.msg_what` | `This tool call is blocked: you spent about {tokens} tokens with no commit, fi...` |  |  | Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome. |
-| `burn.msg_why` | `Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about ...` |  |  | Why the breaker blocks. |
-| `burn.quoted_re` | `(?:'[^']*')\|(?:"(?:[^"\\$`]\|\\.)*")` |  |  | Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by "" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax). |
-| `burn.soft_tokens_no_outcome` | `1500000` |  |  | Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit). |
-| `burn.summary` | `PreToolUse on every tool, subagents only: while the agent tracker holds the h...` |  |  | One-line description of the burn-breaker check in the generated reference. |
-| `burn.sw` | `5 entries` |  |  | Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker check allow every call. |
-
-### uncommitted_guard.toml / git
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `git.max_uncommitted_lines` | `300` |  |  | Hard line: uncommitted lines (insertions plus deletions against HEAD, plus the lines of untracked files) in a subagent's worktree at which its edits are blocked until it commits. 0 = no hard line. |
-| `git.soft_uncommitted_lines` | `200` |  |  | Soft line: uncommitted lines at which the subagent is warned to commit. 0 = no soft line. |
-
-### uncommitted_guard.toml / uncommitted
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `uncommitted.agent_field` | `agent_id` |  |  | Hook payload field that names a subagent; a call without it is the main session and is never judged. |
-| `uncommitted.argv_diff` | `-C, {dir}, diff, HEAD, --shortstat` |  |  | Git arguments ({dir} is the directory) that print the summary of the tracked changes against HEAD. |
-| `uncommitted.argv_untracked` | `7 items` |  |  | Git arguments ({dir} is the directory) that list the untracked files that are not ignored, one per line. |
-| `uncommitted.cache_ttl_ms` | `15000` |  |  | How long a count under the soft line is trusted per directory. A count at or over a line is always re-read before it blocks, so a commit lifts the block at once. |
-| `uncommitted.deletions_re` | `(\d+) deletions?\(-\)` |  |  | The deletions count in the summary line. Regular expression (JavaScript and Rust syntax); group 1 is the number. |
-| `uncommitted.event` | `PreToolUse` |  |  | The hook event name the soft warning is attached to when the payload names none. |
-| `uncommitted.git_timeout_ms` | `4000` |  |  | Bound of one git call. |
-| `uncommitted.guard_name` | `uncommitted-guard` |  |  | The guard id the uncommitted-guard check answers to in skip.json and in its messages. |
-| `uncommitted.insertions_re` | `(\d+) insertions?\(\+\)` |  |  | The insertions count in the summary line. Regular expression (JavaScript and Rust syntax); group 1 is the number. |
-| `uncommitted.lines_per_unread_file` | `50` |  |  | Lines counted for an untracked file that was not read (too many files, too large, unreadable). |
-| `uncommitted.max_untracked_files` | `40` |  |  | Most untracked files whose lines are counted (the rest count as uncommitted_lines_per_unread_file lines each). |
-| `uncommitted.msg_instead` | `Commit what works now (git add and git commit are allowed), then continue edi...` |  |  | What to do instead. |
-| `uncommitted.msg_override` | `the user turns the guard off with `guards.uncommittedWork`, skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
-| `uncommitted.msg_soft` | `anti-hall uncommitted-guard: your worktree holds {lines} uncommitted lines (s...` |  |  | Soft warning added to the agent's context. Placeholders: {lines} uncommitted lines now, {soft} the soft line, {max} the hard line. |
-| `uncommitted.msg_what` | `This edit is blocked: your worktree holds {lines} uncommitted lines (the limi...` |  |  | Heading of the block. Placeholders: {lines} uncommitted lines now, {max} the hard line. |
-| `uncommitted.msg_why` | `Uncommitted work is lost when an agent stops, is killed or runs out of budget...` |  |  | Why the guard blocks. |
-| `uncommitted.soft_warn_every_ms` | `120000` |  |  | Least time between two soft warnings for one directory. |
-| `uncommitted.state_dir` | `.anti-hall/uncommitted` |  |  | Where the per-directory counts are cached, relative to the user home. |
-| `uncommitted.state_ext` | `.json` |  |  | Extension of a cache file. |
-| `uncommitted.summary` | `PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents...` |  |  | One-line description of the uncommitted-guard check in the generated reference. |
-| `uncommitted.sw` | `5 entries` |  |  | Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted. |
-| `uncommitted.untracked_read_max` | `200000` |  |  | Largest untracked file read to count its lines; a larger one counts as uncommitted_lines_per_unread_file lines. |
 
 ### devswarm_gates.toml / devswarm_gates
 
@@ -4760,7 +4599,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `340 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `332 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -5667,7 +5506,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.archive_request_marker` | `[[ANTIHALL_ARCHIVE_REQUEST]]` |  |  | Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER). |
 | `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
 | `mesh_write.boolean_only_flags` | `9 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
-| `mesh_write.broadcast_merge_cap` | `50` |  |  | How many of the newest broadcasts `--with-broadcasts` merges into a read. |
 | `mesh_write.broadcast_partition` | `*mesh-broadcast*` |  |  | The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID). |
 | `mesh_write.builder_type_primary` | `primary` |  |  | The builder type of a Primary checkout. |
 | `mesh_write.busy_retries` | `5` |  |  | Attempts of a write that meets SQLITE_BUSY after the busy timeout (Node's SQLITE_BUSY_MAX_RETRIES). |
@@ -5695,6 +5533,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.cursor_log_old_suffix` | `.1` |  |  | Suffix of the file that receives the records rotated out of a journal. |
 | `mesh_write.cursor_log_older_soft_bytes` | `8388608` |  |  | Soft limit on a cursor journal's older file (`.1`): past it the rotation notes the size (warn and count); nothing is ever deleted or replaced for it. |
 | `mesh_write.cursor_log_unknown_key` | `unknown` |  |  | Journal file name used when the project key is missing or unsafe. |
+| `mesh_write.cursor_max_digits` | `15` |  |  | Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node). |
 | `mesh_write.cursor_namespaces` | `store, nd` |  |  | The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox. |
 | `mesh_write.cursor_ns_nd` | `nd` |  |  | The reader_cursors namespace of the durable NDJSON inbox side. |
 | `mesh_write.cursor_ns_store` | `store` |  |  | The reader_cursors namespace of the store side. |
@@ -5752,6 +5591,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.ev_respawn_progress` | `respawn-progress` |  |  | Supervision event type: first step progress in a respawned workspace. |
 | `mesh_write.ev_step` | `step` |  |  | Supervision event type: a child reported a step status change. |
 | `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
+| `mesh_write.exit_refused` | `2` |  |  | Exit code of a verb's own refusal (Node's `{ ok: false }` result). |
 | `mesh_write.exit_unable` | `69` |  |  | Exit code of a mesh verb the engine could not do or that is switched off: nothing was written, and the failure is a visible error (sysexits EX_UNAVAILABLE, 69), not the former silent deferral code 75. Never used after a write: see exit_committed_failure. |
 | `mesh_write.field_cursor_path` | `cursorPath` |  |  | Descriptor field naming the durable inbox's cursor file. |
 | `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
@@ -5766,7 +5606,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.field_worktree_path` | `worktreePath` |  |  | A descriptor's worktree field. |
 | `mesh_write.fifo_test_bound_ms` | `10000` |  | ms | How long a test waits for a read of a FIFO before it calls the read blocked. |
 | `mesh_write.file_cron_found_mail` | `cron-found-mail.jsonl` |  |  | The cron-found-mail measurement file under the DevSwarm state directory (core.js cronFoundMailPath). |
-| `mesh_write.file_read_max_bytes` | `16777216` |  |  | Largest mesh file a read through a path from a descriptor or a session record may take (a durable inbox, a cursor file, a harness session record). A larger file, and anything that is no regular file (a FIFO, socket or device, whose read could block a worker for good), is not read: the hook's answer goes to Node. |
+| `mesh_write.file_read_hard_max_bytes` | `536870888` |  |  | Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`). |
+| `mesh_write.file_read_max_bytes` | `16777216` |  |  | Soft limit on a mesh file read through a path from a descriptor or a session record (a durable inbox, a cursor file, a harness session record). A larger regular file is still read, but counted and logged (`mesh_descriptor_read_skipped`, reason `read_why_over_soft`); see `file_read_hard_max_bytes` for the hard limit. |
 | `mesh_write.flag_ack` | `ack` |  |  | roster's consume flag. |
 | `mesh_write.flag_ack_after_print` | `ack-after-print` |  |  | The `inbox read-primary` flag that acks the receipt it files in the same call (the ack's result is printed as `autoAck`). |
 | `mesh_write.flag_ack_as_owner` | `ack-as-owner` |  |  | The flag that skips the ownership check of ack-primary. |
@@ -5782,7 +5623,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_help` | `help` |  |  | Help flag name. |
 | `mesh_write.flag_json` | `json` |  |  | Raw JSON output flag. |
 | `mesh_write.flag_last` | `last` |  |  | mesh read's newest-N flag. |
-| `mesh_write.flag_legacy_ack_now` | `legacy-ack-now` |  |  | The flag that makes `inbox read-primary` ack in the same call (the old read-and-ack, kept for one release). |
 | `mesh_write.flag_limit` | `limit` |  |  | The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1). |
 | `mesh_write.flag_message` | `message` |  |  | send's body flag. |
 | `mesh_write.flag_message_file` | `message-file` |  |  | send's body-from-file flag. |
@@ -5799,12 +5639,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_status` | `status` |  |  | The heartbeat flag that names a step's status. |
 | `mesh_write.flag_step` | `step` |  |  | The heartbeat flag that records plan progress; with it the call goes to Node. |
 | `mesh_write.flag_summary` | `summary` |  |  | The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node. |
+| `mesh_write.flag_tail` | `tail` |  |  | A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node. |
 | `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
 | `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
 | `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
 | `mesh_write.flag_wip` | `wip` |  |  | The repeatable heartbeat flag for work in progress. |
-| `mesh_write.flag_with_broadcasts` | `with-broadcasts` |  |  | The flag that merges the project's broadcasts into a non-acking read. |
 | `mesh_write.floor_reader` | `#floor` |  |  | The reader name of the floor row in `reader_cursors` (FLOOR). |
 | `mesh_write.format_text` | `text` |  |  | The value of `--format` that selects the plain-text rendering. |
 | `mesh_write.forward_prefix` | `[forwarded from archived ` |  |  | ARCHIVED_FORWARD_PREFIX_RE's literal start: a row whose body begins so is a forward whose original hash Node derives; the engine leaves such a row to Node. |
@@ -5826,8 +5666,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.hb_urgency_default` | `low` |  |  | The urgency of a heartbeat --summary broadcast when --urgency is not given. |
 | `mesh_write.hc_message_count` | `workspace, message-count` |  |  | The hivecontrol arguments of the non-destructive count of unread native messages. |
 | `mesh_write.hc_read_messages` | `workspace, read-messages` |  |  | The hivecontrol arguments of the destructive read of the native queue (it marks what it prints as read). |
+| `mesh_write.heal_cooldown_flag` | `daemonHealCooldown` |  |  | The self-heal result field set while the cooldown of an earlier installer attempt has not elapsed (`daemonHealCooldown`). |
 | `mesh_write.heal_healthy` | `daemonHealthy` |  |  | The self-heal field of a healthy daemon. |
 | `mesh_write.heal_no_worktree` | `no-worktree` |  |  | daemonWarning when the cwd is not in a checkout. |
+| `mesh_write.heal_retry_after` | `retryAfterMs` |  |  | The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`). |
 | `mesh_write.heal_stale` | `stale` |  |  | daemonWarning when the ingest daemon looks stale or missing. |
 | `mesh_write.heal_warning` | `daemonWarning` |  |  | The self-heal field naming a daemon problem. |
 | `mesh_write.heartbeat_callers_argv` | `4` |  |  | How many of the caller's leading arguments a line records. |
@@ -5840,7 +5682,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.held_partitions_key` | `heldPartitions` |  |  | settings.json key of the owner-held partition ids. |
 | `mesh_write.held_partitions_option` | `` |  |  | Plugin option of devswarm.heldPartitions (it has none: empty). |
 | `mesh_write.held_partitions_option_default` | `` |  |  | Manifest default of that plugin option (unused while it has none). |
-| `mesh_write.hint_filter_requires_peek` | `use --peek, then a plain `mesh read` to consume` |  |  | The `hint` of that refusal. |
 | `mesh_write.history_seq` | `0` |  |  | The baseline `mesh history` reads from. |
 | `mesh_write.hivecontrol_bin` | `hivecontrol` |  |  | The hivecontrol executable, found on PATH. |
 | `mesh_write.hivecontrol_cache_file` | `capabilities.json` |  |  | The file under the DevSwarm root where the capability probe of the hivecontrol binary is cached. |
@@ -5861,17 +5702,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.id_lock_release_tries` | `5` |  |  | Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES). |
 | `mesh_write.id_lock_stale_ms` | `900000` |  |  | A lock older than this is taken over whoever holds it (Node's LOCK_STALE_MS, 15 minutes). |
 | `mesh_write.id_lock_step_ms` | `25` |  |  | Pause between those retries, in milliseconds (Node: 25). |
-| `mesh_write.inbox_positionals` | `3` |  |  | The words of `inbox <sub> <id>` that mean something (the command, the subcommand, the id); any further word is ignored, as Node ignores it. |
 | `mesh_write.inbox_read_limit` | `2000` |  |  | DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node. |
 | `mesh_write.ingest_beat_prefix` | `ingest-` |  |  | File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath). |
 | `mesh_write.ingest_beat_stale_ms` | `180000` |  |  | An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes). |
 | `mesh_write.ingest_lock_prefix` | `ingest-project-` |  |  | File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath). |
-| `mesh_write.io_errors` | `7 entries` |  |  | Node's error code and description of each filesystem failure a receipt write can report: [code, description]. |
+| `mesh_write.ingest_owner_file` | `ingest-owner.json` |  |  | The ownership marker of ingest in the DevSwarm state directory (ingest-health.js ingestOwnerPath); the same file `devswarm_ingest.owner_file` names. |
+| `mesh_write.ingest_owner_name` | `engine` |  |  | The `owner` word of that marker while the engine drains ingest. |
+| `mesh_write.jev_answered_type` | `answered` |  |  | The `type` of the Jev triage log row written when a labeled message is answered. |
 | `mesh_write.jev_cache_file` | `jev-triage.json` |  |  | Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath). |
 | `mesh_write.jev_file` | `jev.json` |  |  | Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath). |
 | `mesh_write.jev_hash_hex` | `32` |  |  | Hex characters of a triage cache key (jev-triage.js hashMessage: sha256, first 32). |
+| `mesh_write.jev_outcome_hash_len` | `32` |  |  | How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage). |
+| `mesh_write.jev_outcome_id` | `triage` |  |  | The integration id of the Jev outcome row an answered labeled message records. |
+| `mesh_write.jev_outcome_source` | `triage-answer-latency` |  |  | The source of that row. |
+| `mesh_write.jev_outcome_value` | `answered` |  |  | The outcome of that row. |
 | `mesh_write.jev_pending_file` | `jev-triage-pending.json` |  |  | Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath). |
 | `mesh_write.jev_question_kind` | `question-needs-answer` |  |  | The triage label kind of a message that asks a question (jev-triage.js). |
+| `mesh_write.jev_triage_log_file` | `jev-triage.ndjson` |  |  | Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message. |
+| `mesh_write.jev_triage_log_max_bytes` | `1048576` |  |  | Size past which the Jev triage log is rotated before a row is appended (jev-triage.js CACHE_LOG_MAX_BYTES). |
 | `mesh_write.js_false` | `false` |  |  | JavaScript's text for false, as a tick line prints a boolean. |
 | `mesh_write.js_null` | `null` |  |  | `String(null)`. |
 | `mesh_write.js_true` | `true` |  |  | JavaScript's text for true, as a tick line prints a boolean. |
@@ -5921,34 +5769,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mesh_never_read_read_cmd` | `inbox messages {pid}` |  |  | The command that reads one sibling partition directly. Placeholder: {pid}. |
 | `mesh_write.mesh_never_read_read_sep` | ` ; ` |  |  | The separator of the direct-read commands in the never-read hint. |
 | `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
+| `mesh_write.metric_jev_arrival_skipped` | `mesh_jev_arrival_skipped` |  |  | Counter bumped when a direct send would have queued its text for Jev arrival labelling: the queue's drain worker was a Node process, which is not part of the live path, so nothing is queued. |
 | `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
 | `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD). |
 | `mesh_write.month_names` | `12 items` |  |  | Month abbreviations of that start time, January first (what Date.parse reads). |
 | `mesh_write.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (the unit conversion of that setting). |
-| `mesh_write.msg_ack_not_owner` | `ack-primary refused: this caller does not own {id} (use --ack-as-owner to ove...` |  |  | The refusal of an ack-primary by a caller that does not own the id. Placeholder: {id} (JSON-quoted). |
 | `mesh_write.msg_ack_refused` | `inbox ack refused ({cause}): caller {caller} does not own workspace {id} (pas...` |  |  | The refusal of an `inbox ack` by a caller that does not own the workspace. Placeholders: {cause}, {caller} and {id} (JSON-quoted), {rawid} (as typed). |
 | `mesh_write.msg_ack_to_not_number` | `--to must be a number` |  |  | What `inbox ack --to` reports when its value is not a number. |
 | `mesh_write.msg_committed_failure` | `ah-engine mesh: the write was committed but the engine failed before printing...` |  |  | Stderr line for that case. |
-| `mesh_write.msg_context_different` | `, but the current context resolves to a DIFFERENT project {caller}` |  |  | The tail of the project-context-mismatch error when the current context resolves to another project. Placeholder: {caller} (JSON-quoted). |
-| `mesh_write.msg_context_unresolved` | `, but the current context could not resolve a project (non-git cwd?)` |  |  | The tail of the project-context-mismatch error when the current context resolves to no project. |
 | `mesh_write.msg_cursor_log_older_soft` | `{path}: the older cursor journal is {bytes} bytes, past its soft limit; nothi...` |  |  | The note when a cursor journal's older file passes its soft limit. {path} {bytes}. |
 | `mesh_write.msg_descriptor_read_skipped` | `mesh read skipped: site={site}, reason={reason}, path={path}` |  |  | The log line when a file named by a descriptor (or a receipt) was not read because it is no regular file or is over the read cap. {site} {reason} {path}. |
 | `mesh_write.msg_detail` | `verb={verb} argv=[{argv}] reason={reason}` |  |  | The reason text of an abandoned mesh call (event log + counters): which verb, its first words and why. Placeholders: {verb}, {argv}, {reason}. |
 | `mesh_write.msg_disabled` | `ah-engine mesh: ERROR: the mesh write verbs are switched off (mesh.engine_wri...` |  |  | stderr line when the mesh write verbs are switched off (mesh.engine_writes = off). Nothing was done; the exit code is mesh_write.exit_unable. Placeholder: {site}. |
-| `mesh_write.msg_filter_requires_peek` | `--last/--since would consume unread broadcasts they do not show; use --peek, ...` |  |  | The refusal of a consuming mesh read given `--last` or `--since`. |
-| `mesh_write.msg_io_error` | `{code}: {what}, {syscall} '{path}'` |  |  | Node's message of a failed filesystem call. Placeholders: {code}, {what}, {syscall}, {path}. |
-| `mesh_write.msg_io_error_other` | `{error}, {syscall} '{path}'` |  |  | The message of a filesystem failure that has no Node code in `io_errors`. Placeholders: {error}, {syscall}, {path}. |
-| `mesh_write.msg_last_invalid` | `--last must be a positive integer (got {got})` |  |  | The refusal of a mesh read whose `--last` is not a positive number. Placeholder: {got} (JSON-quoted). |
+| `mesh_write.msg_legacy_journal_store` | `the mesh store of project {repo_key} uses the legacy journal backend (written...` |  |  | The refusal text of that case: {repo_key} is the project's store. |
 | `mesh_write.msg_mesh_read_hint` | `consumed broadcasts stay re-readable without moving any cursor: `mesh history...` |  |  | `hint` of a consuming mesh read. |
-| `mesh_write.msg_missing_receipt` | `--receipt <readReceiptId> (from `inbox read-primary`) is required` |  |  | The refusal of an ack-primary without `--receipt`. |
 | `mesh_write.msg_no_inbox_path` | `no inboxPath for workspace {id} (registered, but never given an --inbox path ...` |  |  | The refusal text for a registered id that never got an inbox path. Placeholder: {id} (JSON-quoted). |
-| `mesh_write.msg_no_random` | `random bytes unavailable` |  |  | The receipt error of a read that could not draw random bytes for the receipt id. |
+| `mesh_write.msg_not_regular` | `{path} is not a regular file (a FIFO, socket or device); it was not read and ...` |  |  | The refusal text of a mesh file that is a FIFO, socket or device: {path}. |
 | `mesh_write.msg_not_verified` | `send appended a row (hash {hash}) but the readback against partition {partiti...` |  |  | `error` of that send. Placeholders: {hash}, {partition} (JSON-quoted). |
-| `mesh_write.msg_project_mismatch` | `workspace {id} is registered under project {registered}{context} — run this f...` |  |  | The project-context-mismatch error of a read or ack. Placeholders: {id}, {registered} (JSON-quoted) and {context} (one of the two tails above). |
-| `mesh_write.msg_promote_owner_key` | `invalid store key in the descriptor (ownerKey is not a string)` |  |  | The registry write error of a promotion whose descriptor names an `ownerKey` that is not a string (no store can be opened under it). |
-| `mesh_write.msg_promote_registry_stderr` | `[devswarm] registry write failed for {id}: {error}` |  |  | The stderr line of a promotion whose registry write failed after the descriptor was promoted. Placeholders: {id} and {error}. |
-| `mesh_write.msg_promote_store` | `store unavailable: {reason}` |  |  | The registry write error of a promotion whose store could not be opened. Placeholder: {reason}. |
 | `mesh_write.msg_pull_count_failed` | `message-count failed` |  |  | What `inbox pull` reports when the message count failed without saying why. |
 | `mesh_write.msg_pull_ensure_failed` | `the workspace registration could not be written` |  |  | What `inbox pull` reports when the ensure's writes failed and the pull was skipped. |
 | `mesh_write.msg_pull_lock_held` | `another pull holds the lock` |  |  | What `inbox pull` reports when another pull holds the workspace's pull lock. |
@@ -5957,10 +5795,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_pull_replay_failed` | `WAL replay failed (batch kept pending, no new native read)` |  |  | What `inbox pull` reports when a pending delivery-log batch could not be replayed (nothing further is read). |
 | `mesh_write.msg_pull_shortfall` | `devswarm-pull: reception shortfall for {id} — message-count={count} recovered...` |  |  | What a pull prints to stderr when the batch held fewer messages than the count promised. {id} {count} {recovered} {lost} {wal} {entry}. |
 | `mesh_write.msg_pull_wal_unwritable` | `delivery WAL not writable ({why}): {wal} — destructive native read refused` |  |  | What `inbox pull` reports when the delivery log cannot be appended and fsynced (the destructive read is refused). Placeholders: {why} and {wal}. |
-| `mesh_write.msg_receipt_belongs` | `receipt belongs to {owner}` |  |  | The refusal of an ack-primary for a receipt issued to another id. Placeholder: {owner} (the receipt's id, JSON). |
-| `mesh_write.msg_receipt_corrupt` | `read receipt is corrupt: its {key} is not a usable {what}` |  |  | The error of an ack whose receipt holds a move no cursor can take (a {what} that is not usable, in the field {key}); Node throws there and prints the exception. |
-| `mesh_write.msg_receipt_expired` | `receipt is older than {hours}h — re-run `inbox read-primary {id}` and then it...` |  |  | The refusal of an ack-primary for an expired receipt. Placeholders: {hours} and {id}. |
-| `mesh_write.msg_receipt_other_reader` | `receipt was issued to a different reader — a receipt acks only for the reader...` |  |  | The refusal of an ack-primary for a receipt issued to another reader. Placeholder: {id}. |
 | `mesh_write.msg_redirect_live` | `refusing to ack retired id {id} — it redirects to {survivor}, whose owner is ...` |  |  | The refusal of an `inbox ack` on a retired id whose survivor is live. Placeholders: {id} and {survivor} (JSON-quoted). |
 | `mesh_write.msg_redirect_live_log` | `refused: retired id {id} redirects to LIVE owner {survivor}` |  |  | The journal error of an `inbox ack` refused for a live survivor. Placeholders: {id} (the retired id) and {survivor}. |
 | `mesh_write.msg_redirect_unresolvable` | `inbox ack {id} was redirected to survivor {survivor} after a fold, but the ca...` |  |  | The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted). |
@@ -5968,15 +5802,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_seen_watermark_failed` | `could not write caller-scoped seen watermark` |  |  | The error of a seen watermark that could not be written. |
 | `mesh_write.msg_send_label_no_reader` | `stored in {to}, but no session reads that partition yet: it is a worktree lab...` |  |  | `warning` of a send whose recipient is a worktree label row that no session reads yet (a spawn pre-registers the label; the child registers under its own id). Placeholder: {to}. |
 | `mesh_write.msg_sender_fallback` | `mesh sender fallback: where={where}, partition={id}, messages={n}` |  |  | The log line when a message got its sender from a fallback instead of its own branch. {where} {id} (the partition) {n} (messages). |
-| `mesh_write.msg_seq_bare` | `--seq requires a value (got a bare flag, which would otherwise silently fall ...` |  |  | The refusal of a mesh read given `--seq` with no value. |
-| `mesh_write.msg_seq_invalid` | `--seq must be a non-negative integer (got {got})` |  |  | The refusal of a mesh read whose `--seq` is not a non-negative number. Placeholder: {got} (JSON-quoted). |
 | `mesh_write.msg_sibling_dup` | `suppressed a logically-duplicate sibling row (weak key match)` |  |  | The central-log message of a sibling row suppressed as a logical duplicate. |
-| `mesh_write.msg_since_invalid` | `--since must be an ISO 8601 timestamp or a duration like 30m/2h/1d (got {got})` |  |  | The refusal of a mesh read whose `--since` is neither a duration nor a date. Placeholder: {got} (JSON-quoted). |
-| `mesh_write.msg_store_failure` | `store failure: {reason}` |  |  | The error a verb reports (exit 2) when the store itself fails (an unreadable or corrupt database); Node reports the thrown exception the same way. Placeholder: {reason}. |
-| `mesh_write.msg_store_unopened` | `store for workspace {id} could not be opened: devswarm store unavailable (ERR...` |  |  | The error of a read or ack whose store could not be opened. Placeholders: {id} (JSON-quoted), {dir} (the project's store directory) and {error} (SQLite's message). |
-| `mesh_write.msg_store_unreadable` | `store for workspace {id} could not be opened: {error}` |  |  | The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}. |
+| `mesh_write.msg_store_unavailable` | `{what} is unavailable ({detail}); nothing was done` |  |  | The refusal text of that case: {what} names the thing, {detail} is the operating system's or database's own message. |
 | `mesh_write.msg_unable` | `ah-engine mesh: ERROR: this verb or case cannot be done by the engine ({site}...` |  |  | stderr line when the engine cannot answer a mesh verb (an unported verb, a case it cannot do, no plugin context). Nothing was written; the exit code is mesh_write.exit_unable. Placeholders: {site}, where it gave up; {detail}, which call and why. |
-| `mesh_write.msg_unknown_receipt` | `no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run...` |  |  | The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is). |
 | `mesh_write.msg_unregistered` | `workspace {id} is not registered and has no messages (no descriptor, no regis...` |  |  | The refusal text for an unregistered id. Placeholder: {id} (JSON-quoted). |
 | `mesh_write.msg_verb_not_ok` | `verb returned ok:false` |  |  | The central-log message of a verb that returned `ok: false` without an error or a reason. |
 | `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
@@ -5999,6 +5827,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
 | `mesh_write.origin_ndjson` | `ndjson` |  |  | The `origin` of a row that came from the NDJSON inbox. |
 | `mesh_write.origin_store` | `store` |  |  | The `origin` of a store row in a union read. |
+| `mesh_write.peek_primary_unread_flags` | `format, ack-after-print` |  |  | The flags `inbox read-primary` accepts that a peek does not (a text rendering, an immediate ack): a peek carrying one is Node's, since Node ignores them in its own way. |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
 | `mesh_write.plan_activity_keep` | `5` |  |  | How many recent activity signatures a plan keeps (ACTIVITY_KEEP). |
 | `mesh_write.plan_bad_status_text` | `--status must be one of {list}` |  |  | The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses. |
@@ -6041,24 +5870,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
 | `mesh_write.read_ack_hint` | ``inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s...` |  |  | The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}. |
-| `mesh_write.reason_bad_last` | `bad-last` |  |  | The `reason` of a mesh read whose `--last` is not a positive number. |
-| `mesh_write.reason_bad_seq` | `bad-seq` |  |  | The `reason` of a mesh read whose `--seq` is bare or not a non-negative number. |
-| `mesh_write.reason_bad_since` | `bad-since` |  |  | The `reason` of a mesh read whose `--since` is neither a duration nor a date. |
-| `mesh_write.reason_filter_requires_peek` | `filter-requires-peek` |  |  | The `reason` of a consuming mesh read given `--last` or `--since`. |
+| `mesh_write.read_primary_flags` | `format, json, session, limit, ack-after-print` |  |  | The flags `inbox read-primary` may carry for the engine to answer it; any other flag (an ownership override, `--legacy-ack-now`, `--unread`, `--with-broadcasts`) is Node's. |
+| `mesh_write.read_why_not_regular` | `not-a-regular-file` |  |  | The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device). |
+| `mesh_write.read_why_over_hard` | `file-over-hard-cap` |  |  | The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`. |
+| `mesh_write.read_why_over_soft` | `file-over-soft-cap` |  |  | The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read. |
+| `mesh_write.reason_legacy_journal_store` | `legacy-journal-store` |  |  | The reason a verb refuses a project whose mesh store is pinned to (or forced onto) the legacy journal backend, which only a Node older than 22.5 wrote and which no longer has a reader. |
 | `mesh_write.reason_logical_dup` | `logical-dup` |  |  | The log reason of a sibling row suppressed as a logical duplicate. |
-| `mesh_write.reason_missing_receipt` | `missing-receipt` |  |  | The `reason` of an ack-primary without `--receipt`. |
 | `mesh_write.reason_no_inbox_path` | `no-inbox-path` |  |  | The reason of an inbox read of an id that is registered (or has messages) but never got an inbox path. |
-| `mesh_write.reason_no_project` | `no-project` |  |  | The `reason` of a mesh read from a directory that is in no project. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
-| `mesh_write.reason_project_mismatch` | `project-context-mismatch` |  |  | The `reason` of a read or ack from another project than the id's own. |
-| `mesh_write.reason_receipt_expired` | `receipt-expired` |  |  | The `reason` of an ack-primary for a receipt past its lifetime. |
-| `mesh_write.reason_receipt_owner` | `receipt-owner-mismatch` |  |  | The `reason` of an ack-primary for a receipt issued to another id or another reader. |
 | `mesh_write.reason_redirect_live` | `redirect-to-live-owner` |  |  | The reason of an `inbox ack --ack-as-owner` on a retired id whose survivor is live. |
 | `mesh_write.reason_redirect_unresolvable` | `retired-redirect-unresolvable-caller` |  |  | The reason of an `inbox ack` on a retired id by a caller not verifiable as the survivor. |
-| `mesh_write.reason_store_unavailable` | `store-unavailable` |  |  | The `reason` of a read or ack whose store could not be opened. |
-| `mesh_write.reason_unknown_receipt` | `unknown-receipt` |  |  | The `reason` of an ack-primary for a receipt that does not exist. |
+| `mesh_write.reason_seat_conflict` | `primary-seat-conflict` |  |  | The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat. |
+| `mesh_write.reason_store_unavailable` | `store-unavailable` |  |  | The reason of a verb refused because a store, registry or message table it needs cannot be opened, read or written (Node throws there too). |
 | `mesh_write.reason_unregistered` | `unregistered-workspace` |  |  | The reason of an inbox read of an id with no descriptor, no registry row and no messages. |
-| `mesh_write.receipt_error_hint` | `read-only: nothing was acked, and the read receipt could not be written ({err...` |  |  | The `ackHint` of a read-primary result whose read receipt could not be written. Placeholders: {error} (the filesystem error) and {id}. |
 | `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
 | `mesh_write.receipt_keep_ms` | `604800000` |  |  | READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node. |
 | `mesh_write.receipt_ttl_ms` | `86400000` |  |  | Age past which a read receipt can no longer be acked (READ_RECEIPT_TTL_MS, 24 hours). |
@@ -6068,6 +5892,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.ref_outcome_mesh` | `mesh` |  |  | The `outcome` label of a workspace reference that was a mesh label (`primary-<hash>`). |
 | `mesh_write.ref_outcome_none` | `none` |  |  | The `outcome` label of a workspace reference nothing resolved (the verb's own not-registered answer follows). |
 | `mesh_write.ref_outcome_prefix` | `prefix` |  |  | The `outcome` label of a workspace reference that was the unique prefix of one workspace id (the short id the roster prints). |
+| `mesh_write.refusal_prefix` | `refusal:` |  |  | What starts the reason of a deferral that is really the verb's own refusal (Node's `{ ok: false, ... }` result, exit `exit_refused`): the rest of the reason is the refusal's JSON body. Such a reason is printed, never handed on. |
 | `mesh_write.repo_key_hex` | `6` |  |  | Hex characters of the common-dir hash in a repoKey. |
 | `mesh_write.repo_name_fallback` | `repo` |  |  | A repo name that sanitizes to nothing. |
 | `mesh_write.repo_name_max` | `40` |  |  | Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN). |
@@ -6083,15 +5908,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.reserved_id_suffix` | `.base` |  |  | A fresh registration whose id ends with this is refused (cursors.js reservedIdToken). |
 | `mesh_write.reserved_id_tokens` | `#, .seen-, .inst-, .nd-` |  |  | A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files (cursors.js RESERVED_ID_TOKENS). |
 | `mesh_write.result_committed` | `committed-failure` |  |  | Log result of a call that failed after its write was committed. |
+| `mesh_write.result_refused` | `refused` |  |  | Log result of a call the verb refused itself. |
 | `mesh_write.retire_pin_age_ms` | `60000` |  |  | A foreign reader row must be this old before an ack looks for proof that its process ended (RETIRE_PIN_AGE_MS). |
 | `mesh_write.roster_children_args` | `workspace, list, children` |  |  | The hivecontrol arguments roster uses to list the native children (LIST_CHILDREN). |
 | `mesh_write.roster_children_key` | `children` |  |  | The wrapper key of a `hivecontrol workspace list` answer that is an object rather than a bare array. |
 | `mesh_write.roster_flag_all` | `all` |  |  | The roster flag that includes archived rows in the text rendering. |
-| `mesh_write.roster_flags` | `all, json` |  |  | The flags plain `roster` may carry for the engine to answer it; any other flag is Node's. |
 | `mesh_write.roster_none_text` | `no live workspaces` |  |  | What plain `roster` prints (text rendering) when there is no live workspace and nothing archived. |
 | `mesh_write.row_fields` | `fromBranch, message, createdAt, status` |  |  | The fields of a native message copied into an NDJSON inbox line, in line order (after the hash, before the sender). |
 | `mesh_write.row_hash_field` | `_h` |  |  | The field of an NDJSON inbox line that carries the message's content hash. |
 | `mesh_write.row_sender_field` | `sender` |  |  | The field of an NDJSON inbox line that names the sender (the Primary's id: the whole queue is the Primary's outbound). |
+| `mesh_write.self_heal_cooldown_ms` | `60000` |  |  | How long after an installer attempt the next one waits (register.js SELF_HEAL_COOLDOWN_MS). |
+| `mesh_write.self_heal_dir` | `self-heal` |  |  | Directory under the DevSwarm state directory that holds the self-heal cooldown files (register.js selfHealCooldownPath). |
+| `mesh_write.self_heal_file_prefix` | `ingest-` |  |  | What starts the name of a project's self-heal cooldown file: `<this><repoKey>.json`. |
 | `mesh_write.send_lock_attempts` | `3` |  |  | Whole lock acquisitions a direct send tries before reporting lockBusy (Node's SEND_LOCK_RETRY_ATTEMPTS). |
 | `mesh_write.send_lock_max_shift` | `8` |  |  | Cap on the backoff exponent (a guard; Node's 3 attempts never reach it). |
 | `mesh_write.send_lock_retry_base_ms` | `150` |  |  | Backoff base between those attempts: base * 2^attempt plus up to base of jitter (Node's SEND_LOCK_RETRY_BASE_MS). |
@@ -6111,17 +5939,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.short_nonce_len` | `6` |  |  | Hex characters of the short form of a reader key in the cursor journal (shortInstanceNonce: sha1, first 6). |
 | `mesh_write.site_pull_descriptor` | `pull-descriptor` |  |  | The `site` label of a skipped read of a workspace descriptor by a pull. |
 | `mesh_write.site_pull_inbox` | `pull-inbox` |  |  | The `site` label of a skipped read of a durable inbox that a pull was about to append to. |
+| `mesh_write.site_read_bounded` | `read_bounded` |  |  | The site named in the count and log of a bounded mesh file read made without a more specific site. |
 | `mesh_write.site_read_cursor` | `read-cursor` |  |  | The `site` label of a skipped read of a cursor file (the NDJSON read position). |
 | `mesh_write.site_receipt` | `read-receipt` |  |  | The `site` label of a skipped read of a read receipt. |
 | `mesh_write.step_stall_default_min` | `30` |  |  | Minutes of the step stall window when no setting is given (devswarm.stepStallMin). |
 | `mesh_write.step_stall_env` | `ANTIHALL_DEVSWARM_STEP_STALL_MIN` |  |  | The environment variable of the devswarm.stepStallMin setting. |
 | `mesh_write.step_stall_key` | `stepStallMin` |  |  | The settings.json key (in the devswarm section) of the step stall window. |
 | `mesh_write.step_stall_option` | `devswarm_step_stall_min` |  |  | The plugin option name of the step stall window. |
-| `mesh_write.store_cantopen_message` | `unable to open database file` |  |  | SQLite's message when a database file cannot be opened at all (Node wraps it with the store directory; any other message surfaces as is). |
-| `mesh_write.store_error_prefix` | `store read failed: ` |  |  | The words the engine's store error puts before SQLite's own message (stripped to get that message). |
-| `mesh_write.store_failure_prefixes` | `8 items` |  |  | The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node. |
 | `mesh_write.store_file` | `devswarm.db` |  |  | File name of a per-repo store (`devswarm.db`). |
-| `mesh_write.store_unavailable_code` | `ERR_SQLITE_ERROR` |  |  | The `storeUnavailableReason` of a store that could not be opened (the error code `node:sqlite` gives every database failure). |
 | `mesh_write.summary_failed` | `summary-failed` |  |  | Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file). |
 | `mesh_write.summary_pending_questions_cap` | `200` |  |  | Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP). |
 | `mesh_write.summary_recent_cap` | `50` |  |  | Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP). |
@@ -6177,7 +6002,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.wal_reason_shortfall` | `shortfall` |  |  | The reason of the record that closes a batch that held fewer messages than the count promised. |
 | `mesh_write.wal_reason_unparseable` | `unparseable` |  |  | The reason of the record that closes a replayed batch that parsed to nothing. |
 | `mesh_write.wal_suffix` | `.ndjson` |  |  | File-name suffix of a delivery log. |
-| `mesh_write.with_broadcasts_ignored` | `acking verb; use `inbox messages <id> --with-broadcasts` (non-acking)` |  |  | The `withBroadcastsIgnored` note of an acking read that was given `--with-broadcasts`. |
+| `mesh_write.what_append` | `the message table` |  |  | What the refusal names when a message cannot be appended to the store. |
+| `mesh_write.what_messages` | `the broadcast messages` |  |  | What the refusal names when the broadcast messages cannot be read. |
+| `mesh_write.what_registry` | `the workspace registry` |  |  | What the refusal names when a project's registry cannot be read. |
+| `mesh_write.what_store` | `the mesh store` |  |  | What the refusal names when a project's store cannot be opened. |
+| `mesh_write.what_store_dir` | `the mesh store directory` |  |  | What the refusal names when a project's store directory cannot be created. |
 | `mesh_write.write_seq_column` | `write_seq` |  |  | The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn). |
 | `mesh_write.xdg_default` | `.config` |  |  | Its default under the home directory. |
 
@@ -6349,7 +6178,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `77 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `73 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -6358,7 +6187,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.exec_timeout_scale` | `1` | `AH_ENGINE_SCRIPT_EXEC_SCALE` |  | Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.failure_mode_by_check` | `24 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
+| `script.failure_mode_by_check` | `20 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
 | `script.failure_mode_closed` | `closed` |  |  | The failure-mode value that blocks on a guard event (any other value allows). |
 | `script.failure_mode_default` | `open` |  |  | Failure mode of a check not listed in script.failure_mode_by_check. |
 | `script.gc_every_calls` | `1000` |  |  | Calls after which a worker collects its script interpreter's garbage and reports the size to the memory registry (between requests, after the reply went out; also once when the worker goes idle). QuickJS frees most garbage at once but leaves cycles (closures, objects that point at each other) to its own collector, which runs only at 1.5 times the size after its last run: about 2.8 MB of waiting garbage per worker with every check loaded. The registry then unloads cold checks if the interpreter grew past mem.quickjs_soft_bytes. |
@@ -6707,7 +6536,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `340 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `332 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -7858,9 +7687,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.channels` | `7 entries` |  |  | The names of the delivery channels, as they appear in telemetry and the status table. |
 | `agent_tracker.claude_cli` | `15 entries` |  |  | The Claude Code CLI as a data source, used only where it beats parsing a transcript. bin: the program name (the environment variable named by env.claude_bin overrides it); version_args: how its version is read; agents_args: the JSON listing of background and interactive sessions (verified: no human-formatted output is ever parsed); verified: the Claude Code version each source was last verified on (a different version re-probes the source before it is trusted, and a failed probe falls back to the transcripts); busy / waiting / blocked / failed: the status words the listing uses; fields: the listing's field names. |
 | `agent_tracker.codex` | `5 entries` |  |  | Field names of a Codex rollout file (Codex's format): its first line is a session_meta record whose payload carries the session id and the working directory. |
-| `agent_tracker.cooldowns` | `11 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
-| `agent_tracker.cost_limit` | `50` |  |  | The most agents the cost report (`telemetry summary`, key `agent_cost`) lists, most tokens first. |
-| `agent_tracker.cost_outcome_units` | `commits + pushes + finished steps + passing test runs + files edited` |  |  | What the cost report counts as an outcome when it divides an agent's tokens (input plus output): the work units the tracker keeps per agent. |
+| `agent_tracker.cooldowns` | `8 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
 | `agent_tracker.counts` | `7 entries` |  |  | Names of the summary counts in the status JSON. Live = not done. sessions: main and workspace sessions (matches the claude processes in `ps`), subagents, teammates, codex; headless: one-shot runs left out; done_hidden: finished agents older than limits.done_keep_ms left out of the list. |
 | `agent_tracker.devswarm_fields` | `17 entries` |  |  | Field names of the DevSwarm descriptor, plan and wake-watch lock files the tracker reads (the DevSwarm format). |
 | `agent_tracker.fmt` | `10 entries` |  |  | Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. |
@@ -7870,15 +7697,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.meta` | `5 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; team: the team; finished: true once the host recorded the agent as finished. |
 | `agent_tracker.owner_setting` | `6 entries` |  |  | Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file. |
 | `agent_tracker.paths` | `30 entries` |  |  | Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name). |
-| `agent_tracker.patterns` | `7 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited). |
+| `agent_tracker.patterns` | `5 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited). |
 | `agent_tracker.primary_prefix` | `primary-` |  |  | The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch. |
 | `agent_tracker.registry` | `9 entries` |  |  | The host's registry of live sessions (agent_tracker.paths.sessions: one JSON file per running process, removed when it exits) as a liveness source: a session whose process is alive is running or waiting, never done, however old its transcript. Fields: pid, session (the session id), cwd, started (ms), status, name. busy / waiting / blocked: the status words (the same words as claude_cli's, plus the registry's own: shell = a shell command is running). A status in none of the lists decides nothing and the transcript does. |
 | `agent_tracker.remind_setting` | `6 entries` |  |  | Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent. |
 | `agent_tracker.roles` | `2 entries` |  |  | The names of the derived role of a session in the status JSON: primary (it coordinates at least one other agent) and solo (it does not). |
 | `agent_tracker.roster` | `7 entries` |  |  | The host's team roster as a liveness source for teammates: <dir>/<team>/<file> lists the members of an agent team (field `members`, each with a `name`); the host removes a teammate when it is stopped or finishes, but writes nothing into the teammate's own transcript, which reads running for as long as it is tracked. A teammate whose meta file names a team and whose name is missing from that team's readable roster, or is listed with a `joined` time later than the agent's start plus rejoin_slack_ms (the name belongs to a newer spawn), is finished. grace_ms: how long a teammate must have been followed before its absence counts (the roster is written at spawn, but a tick may read it between the two writes). A roster that is missing or unreadable decides nothing. |
-| `agent_tracker.routes` | `11 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
+| `agent_tracker.routes` | `8 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
 | `agent_tracker.setting` | `6 entries` |  |  | Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing. |
-| `agent_tracker.signals` | `11 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
+| `agent_tracker.signals` | `8 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
 | `agent_tracker.sources` | `4 entries` |  |  | The names of where an agent's numbers come from (process: a live process in the host's session registry; codex: a Codex rollout file), as they appear in telemetry and the status JSON. |
 | `agent_tracker.spam` | `4 entries` |  |  | Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder). |
 | `agent_tracker.states` | `4 entries` |  |  | The names of an agent's states: running, waiting (finished its turn, or the host says it waits for input), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window). |
@@ -7917,23 +7744,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.agent_tick_ms` | `60000` | `AH_ENGINE_AGENT_TICK_MS` | ms | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
-
-### agent_waste.toml / agent_waste
-
-| Key | Default | Env override | Unit | What it is |
-|---|---|---|---|---|
-| `agent_waste.judge_sections` | `4 entries` |  |  | Headings-free section names of the evidence pack sent to the judge (must match the sections of evidence.cfg.agentWaste). |
-| `agent_waste.limits` | `12 entries` |  |  | Bounds of one evaluation. window_ms: the rolling window tokens, outcomes and calls are compared over. min_span_ms: the least history in the window before an agent is scored. min_tokens: tokens spent in the window below which nothing is wasted. cache_read_pct: how much a cache-read token counts toward the spend, in percent. eps_pct: the epsilon of the formula, in hundredths of an outcome unit (progress units are those of agent_tracker.weights: commit, step, test, file). judge_cooldown_ms: least time between two judge calls about one agent (a verdict is also trusted for twice this). max_judge_per_tick: judge calls one tracker tick may make, all agents. goal_cap: characters of the goal sent to the judge. call_cap: most recent tool calls summarised for the judge. line_cap: characters of one summarised call. fail_cap: failed commands in the window at which the failing-streak factor is full. min_calls: tool calls in the window below which the ratios are not trusted (they count as zero). |
-| `agent_waste.multipliers` | `5 entries` |  |  | How much each ratio (0 to 1) raises the score, in percent: factor = 1 + weight/100 * ratio. reread: Reads and Greps of something already read in the window. repeat: identical tool inputs. poll: sleep, status and listing loops. wait: time blocked on a lock or a background task. fail: failed commands in the window over fail_cap. |
-| `agent_waste.outcome_lifetime` | `lifetime: {commits} commits, {checks} passing checks, {steps} steps done, {fi...` |  |  | Evidence line for the judge: the agent's lifetime outcomes. Placeholders: {commits}, {checks}, {steps}, {files}. |
-| `agent_waste.outcome_window` | `window: {outcome} outcome units` |  |  | Evidence line for the judge: the outcome units in the window. Placeholder: {outcome}. |
-| `agent_waste.patterns` | `4 entries` |  |  | How calls are classified (the recent-call label is `<Tool> <what>`, matched case-insensitively from its start). reads: tool names that read. poll: label prefixes that poll (sleep, status checks, listing loops). wait: label substrings that wait on a lock or a background task. wait_tools: tool names that wait for a background task. |
-| `agent_waste.policy` | `3 entries` |  |  | What a confirmed waste does, by agent kind. hard_kinds: kinds that are escalated to a hard action (the burn breaker may pause or block them); every other kind (the main session and the Primary, Codex sessions, heartbeats) is only warned and the owner is told. waste_verdicts: judge verdicts that count as waste; ok_verdicts: verdicts that clear it. |
-| `agent_waste.reason_fmt` | `{tokens_k}k tokens for {outcome} outcome units; re-read {reread}%, repeated {...` |  |  | The one-line reason built from the signals. Placeholders: {tokens_k}, {outcome}, {reread}, {repeat}, {poll}, {wait}, {fail} (percentages for the ratios). |
-| `agent_waste.relief` | `2 entries` |  |  | Roles expected to read a lot spend tokens without outcome by design: an agent whose name contains one of these words (case-insensitive) has its score divided by divisor_pct/100. |
-| `agent_waste.setting` | `6 entries` |  |  | Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste. |
-| `agent_waste.thresholds` | `2 entries` |  |  | Score thresholds, in thousands of tokens per outcome unit after the multipliers: soft (ask the judge, warn if it confirms) and hard (act on the formula alone when the judge is unavailable, and escalate a confirmed verdict). Calibrated so the 2026-10-23 incident pattern (1.5-7.7M tokens in 30 minutes, no commit, many re-reads, queued on a lock) scores far over hard while a productive lane (about 1M tokens, 3 commits, few re-reads) scores far under soft. |
-| `agent_waste.words` | `8 entries` |  |  | Words the sensor writes: the source of a decision (judge or formula), the actions (warn, hard) and the telemetry class. |
 
 ### devswarm_act.toml / devswarm_act
 
@@ -8907,6 +8717,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.log_file` | `devswarm.jsonl` |  |  | The shared log file under the logs directory. |
 | `devswarm_cli.log_level_error` | `error` |  |  | The level of a refusal entry. |
 | `devswarm_cli.log_level_info` | `info` |  |  | The level of an event entry. |
+| `devswarm_cli.log_level_warn` | `warn` |  |  | The level of a warning entry of the central log. |
 | `devswarm_cli.log_levels` | `debug, info, warn, error` |  |  | The log levels from the lowest rank to the highest (anti-hall-log.js LEVEL_RANK). |
 | `devswarm_cli.log_lock_boot_slop_s` | `5` |  |  | Two boot times this close are one boot (lock.js BOOT_SLOP_S). |
 | `devswarm_cli.log_lock_reclaim_stale_ms` | `5000` |  |  | A takeover marker of the rotate lock older than this is abandoned (lock.js RECLAIM_STALE_MS). |
@@ -8988,6 +8799,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.msg_regprim_no_worktree` | `register-primary must run inside a git worktree (or pass --worktree <path>)` |  |  | The refusal outside a git worktree without --worktree. |
 | `devswarm_cli.msg_respawn_not_primary` | `respawn runs only from the session that holds the Primary seat (seat: {seat})` |  |  | The refusal of respawn from a session that does not hold the Primary seat. {seat}. |
 | `devswarm_cli.msg_respawn_usage` | `usage: devswarm.js respawn <id> [--dry-run]` |  |  | The refusal of respawn without a safe id. |
+| `devswarm_cli.msg_roster_native_dropped` | `dropped {count} native child(ren) whose repositoryId did not match this repo ...` |  |  | The warning when native children of another repository are dropped from the roster: {count}. |
+| `devswarm_cli.msg_roster_no_project` | `roster must run from inside a git worktree of a DevSwarm project (the mesh st...` |  |  | The refusal text of `roster` run outside any project. |
 | `devswarm_cli.msg_rr_list_failed` | `hivecontrol workspace list all failed: {error}` |  |  | The refusal when the workspace list failed. {error}. |
 | `devswarm_cli.msg_rr_missing` | `hivecontrol workspace records are missing expected field(s): {fields} — refus...` |  |  | The refusal when the records lack a field the report needs. {fields}. |
 | `devswarm_cli.msg_rr_no_project` | `reconcile-registry must run inside a git worktree (the mesh registry is per-p...` |  |  | The refusal of reconcile-registry outside a git worktree. |
@@ -9007,13 +8820,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.msg_send_multi_combine` | `send with several --to recipients cannot be combined with --broadcast or --to...` |  |  | The refusal of a send with several recipients combined with a broadcast or the Primary. |
 | `devswarm_cli.msg_send_multi_failed` | `{failed} of {total} recipient(s) failed` |  |  | The summary error of a multi-recipient send where some failed: `{failed}` of `{total}`. |
 | `devswarm_cli.msg_send_multi_row_failed` | `send failed` |  |  | The error of a multi-recipient row whose result names neither an error nor a reason. |
+| `devswarm_cli.msg_send_multi_stdin_unreadable` | `send --message-stdin could not be read: {why}` |  |  | The refusal of a send to several recipients whose `--message-stdin` cannot be read: `{why}` is the operating system's message. |
+| `devswarm_cli.msg_send_no_primary_worktree` | `send --to-primary: cwd is not inside a resolvable git worktree` |  |  | The refusal text of that case. |
 | `devswarm_cli.msg_send_no_project` | `send must run from inside a git worktree of a DevSwarm project (the mesh stor...` |  |  | send's refusal outside a project. |
 | `devswarm_cli.msg_send_prefix_ambiguous` | `send --to {to} is a prefix of more than one registered workspace id ({candida...` |  |  | The refusal of a send whose `--to` is a prefix of several registered workspace ids: `{to}` is the recipient, quoted; `{candidates}` the full ids. |
 | `devswarm_cli.msg_send_primary_unregistered` | `send --to-primary: no registered Primary workspace for this project (run `reg...` |  |  | The refusal of `send --to-primary` when the project has no registered Primary. |
 | `devswarm_cli.msg_send_question_broadcast` | `send --question is only valid for a direct message (--to/--to-primary), not -...` |  |  | send's refusal of --question on a broadcast. |
+| `devswarm_cli.msg_send_rows_ambiguous` | `send --to {to} matches more than one registered workspace row ({candidates}) ...` |  |  | The refusal of a send whose `--to` names two different registered rows (the exact id of one, the mesh label of another) or several rows of one id: `{to}` is the recipient, quoted; `{candidates}` the ids. |
 | `devswarm_cli.msg_send_self` | `send --to{suffix} cannot address the sender itself` |  |  | send's refusal of a message to the sender itself. {suffix} is `-primary` for --to-primary. |
 | `devswarm_cli.msg_send_source_many` | `send accepts exactly one of --message, --message-file, or --message-stdin` |  |  | send's refusal of more than one message source. |
 | `devswarm_cli.msg_send_source_none` | `send requires exactly one of --message TEXT, --message-file <path>, or --mess...` |  |  | send's refusal of no message source. |
+| `devswarm_cli.msg_send_stdin_unreadable` | `send --message-stdin could not read fd 0: {why}` |  |  | The refusal of a send whose `--message-stdin` cannot be read: `{why}` is the operating system's message. |
 | `devswarm_cli.msg_send_target_many` | `send accepts --to <meshId> OR --to-primary OR --broadcast, not more than one` |  |  | send's refusal of more than one target mode. |
 | `devswarm_cli.msg_send_target_none` | `send requires --to <meshId>, --to-primary, or --broadcast` |  |  | send's refusal of no target mode. |
 | `devswarm_cli.msg_send_unregistered` | `send --to {to} is not a registered mesh workspace` |  |  | The refusal of a send whose recipient is no registered mesh workspace: `{to}` is the recipient, quoted. |
@@ -9114,6 +8931,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.reason_no_session` | `no-session` |  |  | Reason of a `primary takeover` that was asked without a session id. |
 | `devswarm_cli.reason_not_primary_checkout` | `not-primary-checkout` |  |  | The reason a takeover is refused outside the Primary checkout. |
 | `devswarm_cli.reason_primary_unregistered` | `primary-unregistered` |  |  | The reason word of that refusal. |
+| `devswarm_cli.reason_send_no_primary_worktree` | `no-primary-worktree` |  |  | The reason `send --to-primary` refuses when the working directory is in no resolvable git worktree. |
 | `devswarm_cli.reason_unregistered_recipient` | `unregistered-recipient` |  |  | The reason word of that refusal. |
 | `devswarm_cli.recovery_op` | `archive` |  |  | The `op` the recovery marker of an archive names. |
 | `devswarm_cli.reg_retire_fields` | `retiredDuplicates, forwardedMessages, leftDuplicates, pendingDuplicates` |  |  | The fields a registration adds when it folded other registry rows of the same worktree into its id: the retired ids, the forwarded message count, the rows left (descriptor-backed), the rows not done this pass. |
@@ -9145,12 +8963,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ret_sub_run` | `run` |  |  | The retention subcommand that prunes (or, with --dry-run, reports what it would prune). |
 | `devswarm_cli.ret_sub_status` | `status` |  |  | The retention subcommand that shows the settings, phase, store sizes and archive size. |
 | `devswarm_cli.rr_active_list_file` | `hivecontrol-active.json` |  |  | The supervisor's cache of the app's active workspaces, under the DevSwarm root (devswarm-archived-cache.js CACHE_BASENAME). A roster that would have to read it goes to Node. |
+| `devswarm_cli.rr_active_max_age_mult` | `2` |  |  | How many reconcile sweep intervals old the active-list snapshot may be (resolveArchivedCacheMaxAgeMs: twice the sweep). |
 | `devswarm_cli.rr_app_live_cmd` | `hivecontrol workspace archive {target}` |  |  | The command that archives one workspace in the app. `{target}` is its branch (else its id). |
 | `devswarm_cli.rr_app_live_cmd_sep` | ` ; ` |  |  | What joins the archive commands in the message above. |
 | `devswarm_cli.rr_app_live_message` | `app still shows {count} workspace(s) you archived — run: {cmds}` |  |  | The message about workspaces the app still shows. `{count}` is how many, `{cmds}` the commands that archive them. |
 | `devswarm_cli.rr_children_key` | `children` |  |  | The key under which the list may hold its records. |
 | `devswarm_cli.rr_day_ms` | `86400000` |  |  | Milliseconds in a day: the unit of the `idle Nd` hint. |
 | `devswarm_cli.rr_dir_retired` | `retired` |  |  | The directory of fold tombstones under the DevSwarm root (retired/<id>.json). |
+| `devswarm_cli.rr_dir_token_usage` | `token-usage` |  |  | Directory under the DevSwarm state directory of the supervisor's per-plan token usage files (devswarm-token-usage.js statePath). |
+| `devswarm_cli.rr_env_active_max_age` | `ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS` |  |  | The variable that sets how old the supervisor's active-list snapshot may be and still be believed (positive integer milliseconds); otherwise twice the reconcile sweep interval. |
 | `devswarm_cli.rr_env_hide_archived` | `ANTIHALL_ROSTER_HIDE_ARCHIVED` |  |  | The variable that, set to the value below, makes the roster text list archived rows too. |
 | `devswarm_cli.rr_env_idle_ms` | `ANTIHALL_DEVSWARM_IDLE_MS` |  |  | The environment variable that sets the wide idle window of a workspace whose transcript does not resolve (liveness.js idleThresholdMs). |
 | `devswarm_cli.rr_env_repo_id` | `DEVSWARM_REPO_ID` |  |  | The variable that scopes `hivecontrol workspace list children` to a repository; the trusted lookup runs without it. |
@@ -9196,12 +9017,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_verbs` | `inbox, heartbeat, roster, mesh` |  |  | The CLI verbs a mailbox-class `devswarm.js` command may run. |
 | `devswarm_cli.rr_mb_watch_script` | `devswarm-wake-watch.js` |  |  | The file name of the wake watcher a mailbox monitor runs. |
 | `devswarm_cli.rr_mb_word_extra` | `_@%+=:,./~-` |  |  | The characters, besides ASCII letters and digits, a plain word of a mailbox command may hold. |
+| `devswarm_cli.rr_native_fold_op` | `roster-native-fold` |  |  | The central-log operation of a native child dropped from the roster. |
 | `devswarm_cli.rr_no_output` | `no output` |  |  | The text after a failed workspace list that printed no error. |
 | `devswarm_cli.rr_repos_root_re` | `[\\/]\.devswarm[\\/]repos[\\/]` |  |  | The path segment under which the DevSwarm app keeps its worktrees (devswarm-archived-cache.js DEVSWARM_REPOS_ROOT_RE); only such a worktree can be archived by absence from the app's active list. |
-| `devswarm_cli.rr_set_dormant_ms` | `6 entries` |  |  | How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is not read by the engine (Node skips it); the roster then goes to Node. |
+| `devswarm_cli.rr_set_archived_grace_ms` | `7 entries` |  |  | How much older than the active-list snapshot a row must be before its absence from that snapshot reads as archived in the app (Node: devswarm.archivedGraceMs, devswarm-archived-cache.js resolveArchivedGraceMs). |
+| `devswarm_cli.rr_set_dormant_ms` | `7 entries` |  |  | How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is no reading of the setting, as in Node (`exclusiveMin`): the next tier answers, last the default. |
 | `devswarm_cli.rr_source_archived` | `archived` |  |  | The `source` of a roster row for an archived workspace. |
+| `devswarm_cli.rr_source_fallback` | `store-fallback` |  |  | The `source` of the roster row of a Primary found in the legacy hash bucket's summary (the split-brain fold). |
+| `devswarm_cli.rr_source_native` | `native` |  |  | The `source` of a roster row for a native hivecontrol child no store row represents. |
 | `devswarm_cli.rr_source_store` | `store` |  |  | The `source` of a roster row read from the store. |
 | `devswarm_cli.rr_split_gap_ms` | `60000` |  |  | Two instance nonces count as concurrent only when their activity is within this many milliseconds of each other (roster-diag.js INSTANCE_SPLIT_CONCURRENT_GAP_MS). |
+| `devswarm_cli.rr_sweep_fallback_ms` | `900000` |  |  | The reconcile sweep interval used when the setting reads as no positive number (FALLBACK_SWEEP_INTERVAL_MS). |
 | `devswarm_cli.rr_text_active` | `active` |  |  | The status cell of a row without hints. |
 | `devswarm_cli.rr_text_dash` | `—` |  |  | The cell of an unknown value. |
 | `devswarm_cli.rr_text_header` | `\\| workspace \\| status \\| finish \\| unread \\| last \\|, \\|---\\|---\\|---\\|---\\|...` |  |  | The two header lines of the roster text table. |
@@ -9213,15 +9039,27 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_text_status_max` | `3` |  |  | How many hints the status cell shows. |
 | `devswarm_cli.rr_text_status_sep` | `, ` |  |  | What joins the hints in the status cell. |
 | `devswarm_cli.rr_text_unread_bcast` | `{direct} (+{bcast} bcast)` |  |  | The unread cell of a row with unread broadcasts. `{direct}` and `{bcast}` are the counts. |
+| `devswarm_cli.rr_tok_kilo` | `k` |  |  | The unit of a token total of a thousand or more. |
+| `devswarm_cli.rr_tok_kilo_at` | `1000` |  |  | The token total from which fmt counts in thousands. |
+| `devswarm_cli.rr_tok_mega` | `M` |  |  | The unit of a token total of a million or more (devswarm-token-usage.js fmt). |
+| `devswarm_cli.rr_tok_mega_at` | `1000000` |  |  | The token total from which fmt counts in millions. |
+| `devswarm_cli.rr_tok_sep` | ` · ` |  |  | What separates the plan label from the token total on a roster plan label. |
+| `devswarm_cli.rr_tok_suffix` | ` tok` |  |  | What follows the token total on a roster plan label. |
+| `devswarm_cli.rr_tok_tenth_div` | `100000` |  |  | fmt rounds a million-count to a tenth: the total is divided by this (a tenth of a million), rounded, then divided by `rr_tok_tenths`. |
+| `devswarm_cli.rr_tok_tenths` | `10` |  |  | The number of tenths in a whole, in that rounding. |
+| `devswarm_cli.rr_tr_big_number` | `1e308` |  |  | What a number past the range of a double becomes in a transcript line (JavaScript reads it as Infinity; only its being non-zero is ever looked at). |
 | `devswarm_cli.rr_tr_block_text` | `text` |  |  | The type of a content block that carries text. |
 | `devswarm_cli.rr_tr_block_tool_result` | `tool_result` |  |  | The type of a content block that answers a tool call. |
 | `devswarm_cli.rr_tr_block_tool_use` | `tool_use` |  |  | The type of a content block that calls a tool. |
-| `devswarm_cli.rr_tr_defer_errors` | `hex escape, out of range, recursion limit` |  |  | Parser error texts for a transcript line JavaScript would still read (a lone surrogate escape, a number out of range, nesting past the parser limit): the roster is then answered by Node. |
+| `devswarm_cli.rr_tr_defer_errors` | `hex escape, out of range, recursion limit` |  |  | Parser error texts for a transcript line JavaScript would still read (a lone surrogate escape, a number out of range, nesting past the parser limit): the line is read after a repair that changes only that part (see `rr_tr_lone_surrogate`, `rr_tr_big_number`, `rr_tr_max_depth`). |
 | `devswarm_cli.rr_tr_expecting` | `a transcript value` |  |  | What the transcript parser names as the thing it reads, in its own error text. |
 | `devswarm_cli.rr_tr_fresh_ms` | `300000` |  | ms | A transcript written within this long counts as fresh: a fresh transcript with an unresolved ordinary tool call is a running tool, not a wait (Node: DEFAULT_BUSY_FRESH_MS). |
 | `devswarm_cli.rr_tr_future_skew_ms` | `60000` |  | ms | A transcript time this far ahead of the clock is not trusted as fresh (Node: FUTURE_SKEW_MS). |
 | `devswarm_cli.rr_tr_inert_text` | `-` |  |  | Stands for the text of a prompt block whose text is a number, true or an object: JavaScript's String() of those never begins like a notification or a hook prompt. |
-| `devswarm_cli.rr_tr_iso_pattern` | `^\d{4}-(0[1-9]\|1[0-2])-(0[1-9]\|1\d\|2[0-8])T([01]\d\|2[0-3]):[0-5]\d:[0-5]\d(\....` |  |  | The form of an entry time the roster is sure JavaScript's Date.parse reads: an ISO stamp in UTC (day 1..28 so every month is valid). An entry time of another form is left to Node unless another entry has one of this form. |
+| `devswarm_cli.rr_tr_iso_pattern` | `^\d{4}-(0[1-9]\|1[0-2])-(0[1-9]\|1\d\|2[0-8])T([01]\d\|2[0-3]):[0-5]\d:[0-5]\d(\....` |  |  | The form of an entry time the roster is sure JavaScript's Date.parse reads: an ISO stamp in UTC (day 1..28 so every month is valid). An entry time of another form is read by the `Date.parse` rules. |
+| `devswarm_cli.rr_tr_lone_surrogate` | `\ufffd` |  |  | What a lone surrogate escape in a transcript line becomes (JavaScript keeps the lone surrogate; text here cannot). |
+| `devswarm_cli.rr_tr_max_depth` | `1000` |  |  | How deeply nested a transcript line may be and still be read (JavaScript's JSON.parse has no such limit; no real transcript line nests anywhere near this). A deeper line is skipped, counted and logged. |
+| `devswarm_cli.rr_tr_metric_skipped` | `mesh_roster_transcript_line_skipped` |  |  | Counter bumped when a transcript line is skipped because it could not be read. |
 | `devswarm_cli.rr_tr_notification_tag` | `<task-notification>` |  |  | What a background-task notification prompt begins with. |
 | `devswarm_cli.rr_tr_plan_field` | `plan` |  |  | The field of the plan approval tool's input that holds the plan. |
 | `devswarm_cli.rr_tr_question_field` | `question` |  |  | The field of a question (or of the question tool's input) that holds the question text. |
@@ -9239,10 +9077,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.seat_state_na` | `n/a` |  |  | The seat state of a caller that is not in the project's Primary checkout (a child worktree, or no git worktree at all). |
 | `devswarm_cli.seat_state_own` | `own` |  |  | Seat verdict: the Primary anchor already records the asking session. |
 | `devswarm_cli.send_cc_target` | `primary` |  |  | The log target id of the copy to the Primary. |
-| `devswarm_cli.send_fs_errors` | `4 entries` |  |  | The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is left to Node. |
+| `devswarm_cli.send_fs_error_other` | `{message}, open {path}` |  |  | How a failed read of the message file is worded when the operating system error is not in `send_fs_errors`: `{message}` is the operating system's own text and `{path}` the path in single quotes. |
+| `devswarm_cli.send_fs_errors` | `9 entries` |  |  | The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is worded by `send_fs_error_other`. |
 | `devswarm_cli.send_multi_type` | `multi` |  |  | The `type` of the result of a send to several recipients. |
 | `devswarm_cli.send_prefix_candidates_sep` | `, ` |  |  | The separator between the candidate ids in that refusal. |
 | `devswarm_cli.send_self_primary_suffix` | `-primary` |  |  | What --to-primary adds to `--to` in that refusal. |
+| `devswarm_cli.send_stdin_unavailable_why` | `EBADF: bad file descriptor, read` |  |  | The operating system's message when standard input was not read at all (a closed descriptor). |
 | `devswarm_cli.set_spawn_strict` | `6 entries` |  |  | Whether spawn refuses a create option with no value or an option-shaped value. Node: devswarm.spawnStrictFlagValues. |
 | `devswarm_cli.short_max` | `100` |  |  | Longest line of the short index, in UTF-16 units; a longer synopsis is cut and ends with the ellipsis. |
 | `devswarm_cli.short_verb_line` | `{verb} — {synopsis}` |  |  | One verb of the short index: `{verb}` and `{synopsis}`. |
@@ -11543,7 +11383,6 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.agent_wake_reason_off` | Why the wake-watch did not arm: a switch is off (agents.tracker or agents.wakeWatch). |
 | `msg.agent_wake_refused` | Printed by a wake-watch started by hand (not --auto) that declines to arm. Placeholder: {reason}. |
 | `msg.agent_watched_exit` | Wake advisory: a background shell task an agent started has ended. Placeholders: {agent}, {kind}, {count}, {task}. |
-| `msg.agent_waste` | Advisory: an agent spends tokens without matching outcomes. Placeholders: {agent}, {kind}, {score}, {source} (judge or formula), {verdict}, {window}, {reason}. |
 
 ## Metrics
 

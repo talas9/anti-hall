@@ -78,6 +78,10 @@ fn coerce(entry: &V, raw: &str) -> Option<Value> {
         return crate::checks::guardkit::settings::token(t).map(Value::Bool);
     }
     let n: f64 = t.parse().ok().filter(|f: &f64| f.is_finite())?;
+    // `exclusiveMin`: a value at or below it is not a valid reading of the setting, so the next tier answers (Node's `coerceValue`)
+    if entry.get("exclusive_min").and_then(V::as_integer).is_some_and(|m| n <= m as f64) {
+        return None;
+    }
     let min = entry.get("min").and_then(V::as_integer).map(|m| m as f64);
     let max = entry.get("max").and_then(V::as_integer).map(|m| m as f64);
     let n = min.map_or(n, |m| n.max(m));
