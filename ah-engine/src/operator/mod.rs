@@ -13,6 +13,7 @@ pub mod engine_update;
 pub mod install_codex;
 pub mod post_update;
 pub mod postpull;
+pub mod routine;
 pub mod update;
 
 use crate::defaults;

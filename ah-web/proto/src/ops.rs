@@ -122,6 +122,21 @@ pub struct UpdateCheck {
     pub checked_ms: u64,
     /// The last check was reused (the minimum gap had not passed).
     pub reused: bool,
+    /// The build version the running engine reports (`<plugin version>+<branch>.<sha>`), not just the plugin's manifest version.
+    #[serde(default)]
+    pub build_version: String,
+    /// Where the installed engine came from: `release`, `local` (a local build) or `manual`.
+    #[serde(default)]
+    pub source: String,
+    /// When it was installed, seconds since the epoch; 0 when unknown.
+    #[serde(default)]
+    pub installed_at: u64,
+    /// The latest GitHub release of the channel (its version, or its tag when it has none); empty when it could not be read.
+    #[serde(default)]
+    pub latest_release: String,
+    /// The latest release is newer than the RUNNING build (plugin version first).
+    #[serde(default)]
+    pub engine_available: bool,
 }
 
 /// One normalised log line.

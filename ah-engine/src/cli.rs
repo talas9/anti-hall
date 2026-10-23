@@ -209,7 +209,7 @@ pub fn run(args: &[String]) -> i32 {
     if p.command == "version" {
         defaults::use_cache();
         let v = if defaults::init().is_ok() { crate::version() } else { crate::build_version().to_string() };
-        emit(&p, v.clone(), json!({"version": v}));
+        emit(&p, v.clone(), json!({"version": v, "features": crate::FEATURES}));
         return 0;
     }
     // an explicit `--plugin-root <dir>` decides which plugin's files are read, before anything is loaded

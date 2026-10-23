@@ -417,3 +417,7 @@ value = "[wake-watch] engine binary replaced, restarting from {path}"
 [wake_watch.diag_rebin_failed]
 doc = "Printed (stderr) when the watcher could not re-execute the replaced binary; it ends (exit 1) and must be re-armed. {path}, {why}."
 value = "[wake-watch] cannot restart from the replaced binary {path}: {why}; re-arm the watcher.\n"
+
+[wake_watch.env_rebin]
+doc = "Environment variable a watcher sets (to the time, seconds since the epoch) on the successor it starts after its engine binary was replaced; the post-update check reads it to tell a watcher that already re-executed from one still on the old image."
+value = "AH_WAKE_WATCH_REBIN"

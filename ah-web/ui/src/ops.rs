@@ -315,6 +315,9 @@ fn UpdatesScreen() -> impl IntoView {
                         {(!c.channel.is_empty()).then(|| view! { <dt>{tx("ops_check_channel")}</dt><dd>{c.channel.clone()}</dd> })}
                         <dt>{tx("ops_check_installed")}</dt><dd>{if c.installed.is_empty() { tx("ops_ver_unknown") } else { c.installed.clone() }}</dd>
                         <dt>{tx("ops_check_latest")}</dt><dd>{if c.latest.is_empty() { tx("ops_ver_unknown") } else { c.latest.clone() }}</dd>
+                        {(!c.build_version.is_empty()).then(|| view! { <dt>{tx("ops_check_build")}</dt><dd>{c.build_version.clone()}</dd> })}
+                        {(!c.source.is_empty()).then(|| view! { <dt>{tx("ops_check_source")}</dt><dd>{tx(&format!("ops_source_{}", c.source))}</dd> })}
+                        {(!c.latest_release.is_empty()).then(|| view! { <dt>{tx("ops_check_release")}</dt><dd>{c.latest_release.clone()}{c.engine_available.then(|| format!(" ({})", tx("ops_check_available")))}</dd> })}
                         <dt>{tx("ops_check_result")}</dt><dd>{match c.state.as_str() {
                             "unknown" | "lagging" => tx(&format!("ops_check_{}", c.state)),
                             _ if c.available => tx("ops_check_available"),

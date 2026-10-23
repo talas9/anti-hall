@@ -101,6 +101,10 @@ pub fn version() -> String {
     defaults::env_var("version").unwrap_or_else(|| build_version().to_string())
 }
 
+/// What this build can do that an updater must know before it hands work to it (`version --json` lists them): a build fact, not a setting.
+/// `install-routine`: `update --from-local <dir>` / `update --rollback` are the ONE install routine.
+pub const FEATURES: &[&str] = &["install-routine"];
+
 /// The version this binary was built as: `<plugin version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
 /// version when the build had no checkout to read).
 pub fn build_version() -> &'static str {

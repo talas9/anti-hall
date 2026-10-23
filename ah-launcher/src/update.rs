@@ -97,6 +97,17 @@ struct Uc {
     setting_auto: Vec<String>,
     words_on: Vec<String>,
     arg_finish_restart: String,
+    engine_verb_update: String,
+    flag_from_local: String,
+    flag_source: String,
+    flag_yes: String,
+    flag_force: String,
+    source_release: String,
+    source_file: String,
+    stage_dir: String,
+    asset_name: String,
+    routine_feature: String,
+    engine_version_json: Vec<String>,
 }
 
 fn text(s: &Settings, k: &str) -> Result<String, String> {
@@ -187,6 +198,17 @@ impl Uc {
             setting_auto: l("setting_auto_words")?,
             words_on: l("words_on")?,
             arg_finish_restart: t("arg_finish_restart")?,
+            engine_verb_update: t("engine_verb_update")?,
+            flag_from_local: t("engine_flag_from_local")?,
+            flag_source: t("engine_flag_source")?,
+            flag_yes: t("engine_flag_yes")?,
+            flag_force: t("engine_flag_force")?,
+            source_release: t("install_source_release")?,
+            source_file: t("install_source_file")?,
+            stage_dir: t("stage_dir")?,
+            asset_name: t("asset_name")?,
+            routine_feature: t("routine_feature")?,
+            engine_version_json: l("engine_version_json_args")?,
         })
     }
 }
@@ -210,6 +232,8 @@ struct Opt {
     live_select: Option<String>,
     launcher: Option<PathBuf>,
     finish_restart: bool,
+    check_release: bool,
+    force: bool,
 }
 
 fn parse(c: &Uc, args: &[String]) -> Result<Opt, String> {
@@ -228,6 +252,8 @@ fn parse(c: &Uc, args: &[String]) -> Result<Opt, String> {
             "--extract-to" => o.extract_to = Some(PathBuf::from(val())),
             "--no-restart" => o.no_restart = true,
             "--no-plugin" => o.no_plugin = true,
+            "--check-release" => o.check_release = true,
+            "--force" => o.force = true,
             "--live-select" => o.live_select = Some(val()),
             "--launcher" => o.launcher = Some(PathBuf::from(val())),
             "--config" => {
@@ -663,7 +689,7 @@ impl U<'_> {
         }
         // ---- argument sanity
         let n = usize::from(self.o.from.is_some()) + usize::from(self.o.channel.is_some()) + usize::from(self.o.rollback);
-        if n == 0 {
+        if n == 0 && !self.o.check_release {
             return self.usage_err("msg.updater_usage_nothing", &[]);
         }
         if n > 1 {
@@ -708,6 +734,9 @@ impl U<'_> {
         }
         // ---- environment
         self.live = self.kit.join(&self.c.kit_state).is_file() && self.kit.join(&self.c.kit_script).is_file();
+        if self.o.check_release {
+            return self.check_release();
+        }
         if self.o.rollback {
             return self.rollback();
         }
@@ -1137,6 +1166,12 @@ impl U<'_> {
             self.say(&self.m("msg.updater_already_current", &[("bin", &bin.display().to_string()), ("sha", &newsha)]));
             return 0;
         }
+        // the ONE install routine (the engine's `update --from-local`): it keeps a rollback copy, validates the running result and rolls
+        // back by itself. This client only fetched and verified; it installs by itself only when the routine cannot be started.
+        let source = if channel.is_empty() { self.c.source_file.clone() } else { self.c.source_release.clone() };
+        if let Some(code) = self.delegate_install(&new_engine, have_hook.then_some(new_hook.as_path()), &source) {
+            return code;
+        }
         let staged = bin.with_extension(format!("new.{}", std::process::id()));
         if fs::copy(&new_engine, &staged).is_err() {
             return self.fail("msg.updater_cannot_copy_new", &[("bin", &bin.display().to_string()), ("bindir", &bindir.display().to_string())]);
@@ -1164,6 +1199,107 @@ impl U<'_> {
         let prev_note = if cursha.is_empty() { String::new() } else { self.m("msg.updater_prev_note", &[("bin", &bin.display().to_string())]) };
         self.say(&self.m("msg.updater_updated", &[("bin", &bin.display().to_string()), ("version", &self.smoke_version.clone()), ("label", &src_label), ("sha", &newsha), ("prev_note", &prev_note)]));
         self.restart_daemon();
+        0
+    }
+
+    /// Hand the verified binaries to the NEW engine's install routine in a staging directory. `None`: the routine could not be started
+    /// (the caller then installs the old way); `Some(code)`: it ran, and its exit code is the update's.
+    fn delegate_install(&mut self, engine: &Path, hook: Option<&Path>, source: &str) -> Option<i32> {
+        let stage = self.tmp.join(&self.c.stage_dir);
+        fs::create_dir_all(&stage).ok()?;
+        let staged_engine = stage.join(&self.c.member_engine);
+        fs::copy(engine, &staged_engine).ok()?;
+        make_exec(&staged_engine);
+        if let Some(h) = hook {
+            let sh = stage.join(&self.c.member_hook);
+            fs::copy(h, &sh).ok()?;
+            make_exec(&sh);
+        }
+        // the engine that runs the routine: the new one when it has it, else the installed one; with neither, the caller installs itself
+        let runner = [staged_engine.clone(), self.bin.clone()].into_iter().find(|e| self.has_routine(e))?;
+        let mut cmd = Command::new(&runner);
+        cmd.arg(&self.c.engine_verb_update)
+            .arg(&self.c.flag_from_local)
+            .arg(&stage)
+            .arg(&self.c.flag_source)
+            .arg(source)
+            .arg(&self.c.flag_yes)
+            .env(self.s.text("env.dir"), &self.dir)
+            .env(self.s.text("env.plugin_root"), self.kit_plugin_root());
+        if self.o.force {
+            cmd.arg(&self.c.flag_force);
+        }
+        if self.o.auto {
+            // the job runs under the daemon being replaced: the routine finishes detached, its output goes to the update log
+            let log = fs::OpenOptions::new().create(true).append(true).open(&self.log).ok();
+            cmd.stdin(Stdio::null()).process_group(0);
+            match log.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
+                Some((out, err)) => cmd.stdout(out).stderr(err),
+                None => cmd.stdout(Stdio::null()).stderr(Stdio::null()),
+            };
+            cmd.spawn().ok()?;
+            self.say(&self.m("msg.updater_routine_scheduled", &[("log", &self.log.display().to_string())]));
+            return Some(0);
+        }
+        // the routine's own lines are the report; the update lock and scratch stay ours until it is done
+        let status = cmd.status().ok()?;
+        status.code().or(Some(1))
+    }
+
+    /// Does this engine binary advertise the install routine (`version --json` lists `routine_feature`)? An older build does not, and
+    /// its `update` verb is a different command that must never be handed these arguments.
+    fn has_routine(&self, engine: &Path) -> bool {
+        if !engine.is_file() {
+            return false;
+        }
+        let out = self.tmp.join("features.out");
+        let st = self.tmp.join("state");
+        let (root, dirk) = (self.s.text("env.plugin_root"), self.s.text("env.dir"));
+        let envs = [(root.as_str(), self.proot.as_path()), (dirk.as_str(), st.as_path())];
+        let mut argv = vec![engine.display().to_string()];
+        argv.extend(self.c.engine_version_json.iter().cloned());
+        matches!(self.run_in(&argv, &envs, Some(&out), self.limit), Ran::Done(0))
+            && fs::read_to_string(&out).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(t.lines().next().unwrap_or_default()).ok()).is_some_and(|v| v["features"].as_array().is_some_and(|f| f.iter().any(|x| x.as_str() == Some(self.c.routine_feature.as_str()))))
+    }
+
+    /// `--check-release`: one JSON line about the latest release of the channel (the engine has no network code, so `update --check
+    /// --json` asks this). Changes nothing.
+    fn check_release(&mut self) -> i32 {
+        let channel = self.o.channel.clone().unwrap_or_else(|| self.c.default_channel.clone());
+        let prefix = if channel == self.c.ch_dev { self.c.pre_dev.clone() } else { self.c.pre_stable.clone() };
+        let out = |v: serde_json::Value| {
+            let _ = writeln!(std::io::stdout(), "{v}");
+        };
+        if !self.have_downloader() {
+            out(serde_json::json!({"channel": channel, "error": self.m("msg.updater_no_downloader", &[]).lines().next().unwrap_or_default()}));
+            return 1;
+        }
+        let list = self.tmp.join("releases.out");
+        let url = fill(&self.s.text("updater.releases_url"), &[("api", &self.c.api_base), ("repo", &self.c.repo), ("per_page", &self.c.per_page.to_string())]);
+        if !self.fetch(&url, &list) {
+            let what = self.m("msg.updater_cannot_reach", &[("api", &self.c.api_base.clone()), ("repo", &self.c.repo.clone()), ("channel", &channel), ("unchanged", "")]);
+            out(serde_json::json!({"channel": channel, "error": what.lines().next().unwrap_or_default()}));
+            return 1;
+        }
+        let triple = crate::install::platform_triple(self.s, self.test);
+        let releases = fs::read_to_string(&list).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).unwrap_or_default();
+        let found = releases.as_array().into_iter().flatten().find(|r| {
+            r.get("tag_name").and_then(|t| t.as_str()).is_some_and(|t| t.starts_with(&prefix) && t.len() > prefix.len() && t[prefix.len()..].chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')))
+        });
+        let Some(r) = found else {
+            out(serde_json::json!({"channel": channel, "tag": null, "asset_available": false}));
+            return 0;
+        };
+        let tag = r.get("tag_name").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+        let asset = fill(&self.c.asset_name, &[("tag", &tag), ("triple", &triple)]);
+        let assets: Vec<&str> = r.get("assets").and_then(|a| a.as_array()).into_iter().flatten().filter_map(|a| a.get("name").and_then(|n| n.as_str())).collect();
+        out(serde_json::json!({
+            "channel": channel, "tag": tag,
+            "version": (channel == self.c.ch_stable).then(|| tag[self.c.pre_stable.len()..].to_string()),
+            "published": r.get("published_at"), "prerelease": r.get("prerelease"),
+            "asset": asset, "asset_available": assets.contains(&asset.as_str()),
+            "sums_available": assets.contains(&self.c.sums_asset.as_str()), "assets": assets,
+        }));
         0
     }
 

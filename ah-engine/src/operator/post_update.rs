@@ -93,15 +93,35 @@ fn kind_of(words: &[String]) -> Option<Kind> {
     }
 }
 
-fn procs(table: &mut Table) -> Vec<Proc> {
-    table
-        .list()
-        .into_iter()
+/// Which processes belong to THIS install: the ones that run a file in its binary directory, or that were started with its state
+/// directory. Every other anti-hall process on the machine (another install, a scratch engine of somebody else) is not ours to touch.
+struct Scope {
+    bin_dir: Option<PathBuf>,
+    state: PathBuf,
+}
+
+fn scope() -> Scope {
+    let state = paths::dir();
+    Scope { bin_dir: std::fs::canonicalize(state.join(t("rollback.bin_dir"))).ok(), state }
+}
+
+fn mine(table: &mut Table, sc: &Scope, pid: u32, exe: Option<&PathBuf>) -> bool {
+    if let (Some(dir), Some(exe)) = (&sc.bin_dir, exe)
+        && std::fs::canonicalize(exe).is_ok_and(|c| c.starts_with(dir))
+    {
+        return true;
+    }
+    table.environ(pid).iter().any(|(k, v)| k == defaults::env_name("dir") && Path::new(v) == sc.state)
+}
+
+fn procs(table: &mut Table, sc: &Scope) -> Vec<Proc> {
+    let rows = table.list();
+    rows.into_iter()
         .filter_map(|row| {
             let words: Vec<String> = row.cmd.split_whitespace().map(str::to_string).collect();
             let kind = kind_of(&words)?;
             let exe = procid::exe(row.pid);
-            Some(Proc { row, kind, exe, words })
+            mine(table, sc, row.pid, exe.as_ref()).then_some(Proc { row, kind, exe, words })
         })
         .collect()
 }
@@ -271,7 +291,8 @@ fn sweep(o: &Opts, live: u32, bin: &Path, home: &str, rep: &mut Report) {
     let roots = scratch_roots(home);
     let own = ancestry();
     let mut table = Table::new();
-    let all = procs(&mut table);
+    let sc = scope();
+    let all = procs(&mut table, &sc);
     let exe_of = |p: &Proc| p.exe.as_ref().map(|e| e.to_string_lossy().into_owned()).or_else(|| p.words.first().cloned()).unwrap_or_default();
     let mut gone: HashSet<u32> = HashSet::new();
     // old and scratch daemons
@@ -336,7 +357,7 @@ fn sweep(o: &Opts, live: u32, bin: &Path, home: &str, rep: &mut Report) {
     }
     // no daemon but the verified one may remain
     if !o.dry {
-        let left = procs(&mut Table::new()).iter().filter(|p| p.kind == Kind::Daemon && p.row.pid != live && !own.contains(&p.row.pid)).count();
+        let left = procs(&mut Table::new(), &sc).iter().filter(|p| p.kind == Kind::Daemon && p.row.pid != live && !own.contains(&p.row.pid)).count();
         if left > 0 {
             rep.problems.push(defaults::render("post_update.problem_daemons_left", &[("n", &left)]));
         }
@@ -461,15 +482,18 @@ fn human(rep: &Report, verified: bool, dry: bool) -> String {
     out.join("\n")
 }
 
-/// `post-update-check [--dry-run] [--expect-sha <hex>] [--json]`.
-pub fn run(p: &Parsed) -> i32 {
-    let o = match parse(p) {
-        Ok(o) => o,
-        Err(e) => {
-            super::warn(&e);
-            return 2;
-        }
-    };
+/// What one pass found: `verified` is true when no problem was recorded; `value` is the JSON report (`post-update-check --json`).
+pub(crate) struct Outcome {
+    pub verified: bool,
+    pub problems: Vec<String>,
+    pub value: Value,
+    pub human: String,
+}
+
+/// Verify the live daemon, then (unless `dry`) stop what must not run and clean old artifacts. `expect`: the sha the installed binary must
+/// have (default: the recorded `.expected` file).
+pub(crate) fn evaluate(dry: bool, expect: Option<String>) -> Outcome {
+    let o = Opts { dry, expect };
     let home = defaults::env_var("home").unwrap_or_default();
     let bin = paths::dir().join(t("rollback.bin_dir")).join(t("rollback.bin_name"));
     let mut rep = Report { problems: Vec::new(), daemon: Value::Null, stopped: Vec::new(), reexeced: Vec::new(), left: Vec::new(), cleaned: Vec::new() };
@@ -482,9 +506,36 @@ pub fn run(p: &Parsed) -> i32 {
         "verified": verified, "dry_run": o.dry, "problems": rep.problems, "daemon": rep.daemon,
         "stopped": rep.stopped, "reexeced": rep.reexeced, "left": rep.left, "cleaned": rep.cleaned,
     });
-    let line = if p.json { value.to_string() } else { human(&rep, verified, o.dry) };
+    let human = human(&rep, verified, o.dry);
+    Outcome { verified, problems: rep.problems, value, human }
+}
+
+/// How many `ah-engine serve` daemons run (the process table, not the socket).
+pub(crate) fn daemon_count() -> usize {
+    procs(&mut Table::new(), &scope()).iter().filter(|p| p.kind == Kind::Daemon).count()
+}
+
+/// Stop the process `pid` (TERM, then KILL after the grace), only while it is still the process now seen. True when it is gone.
+pub(crate) fn stop_pid(pid: u32) -> bool {
+    match Table::new().one(pid) {
+        Some(row) => stop(&row).is_some(),
+        None => true,
+    }
+}
+
+/// `post-update-check [--dry-run] [--expect-sha <hex>] [--json]`.
+pub fn run(p: &Parsed) -> i32 {
+    let o = match parse(p) {
+        Ok(o) => o,
+        Err(e) => {
+            super::warn(&e);
+            return 2;
+        }
+    };
+    let out = evaluate(o.dry, o.expect);
+    let line = if p.json { out.value.to_string() } else { out.human };
     if super::out(&format!("{line}\n")).is_err() {
         return 1;
     }
-    i32::from(!verified)
+    i32::from(!out.verified)
 }

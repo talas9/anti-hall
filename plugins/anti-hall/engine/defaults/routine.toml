@@ -1,0 +1,501 @@
+# ah-engine shipped defaults for the install routine (`ah-engine update --from-local <dir> | --rollback`, src/operator/routine.rs): the ONE
+# install used by the GitHub-release path (the thin client downloads and verifies, then calls it), the local-build path and
+# scripts/engine-deploy.sh. Format: see the header of engine.toml. Every name, limit and text of the routine is here; nothing is compiled in.
+
+# ---- command line ------------------------------------------------------------------------------------------------------------
+
+[routine.flag_from_local]
+doc = "Install from a local build directory (its layout: routine.*_candidates)."
+value = "--from-local"
+
+[routine.flag_engine_bin]
+doc = "The engine binary to install, when it is not at one of routine.engine_candidates under the --from-local directory."
+value = "--engine-bin"
+
+[routine.flag_hook_bin]
+doc = "The thin client (ah-hook) to install, when it is not at one of routine.hook_candidates."
+value = "--hook-bin"
+
+[routine.flag_tree]
+doc = "The plugin tree (a directory holding routine.tree_marker) to install, when it is not at one of routine.tree_candidates."
+value = "--tree"
+
+[routine.flag_deploy]
+doc = "With --rollback: the saved copy (a directory under routine.deploys_dir) to restore; default the newest."
+value = "--deploy-dir"
+
+[routine.flag_source]
+doc = "Where the build came from, recorded in the install record (one of routine.sources)."
+value = "--source"
+
+[routine.flag_check]
+doc = "Pre-check only: the same checks as an install, nothing changed."
+value = "--check"
+
+[routine.flag_rollback]
+doc = "Restore the previous install from its saved copy (also what the automatic rollback does)."
+value = "--rollback"
+
+[routine.flag_yes]
+doc = "Do it. Without it the routine prints what it would do and changes nothing."
+value = "--yes"
+
+[routine.flag_force]
+doc = "Allow installing a lower version than the one running (a downgrade). An automatic rollback never needs it."
+value = "--force"
+
+[routine.flag_allow_leftovers]
+doc = "Owner override: install a plugin tree although the entry-path audit lists js/sh leftovers (the override is printed)."
+value = "--allow-entry-leftovers"
+
+[routine.sources]
+doc = "The values of the install record's `source`: `release` (downloaded and verified by the thin client), `local` (a local build) and `manual` (a binary put there by hand: the record does not match what is installed)."
+value = ["release", "local", "manual"]
+
+[routine.source_local]
+doc = "The source recorded when --source is not given."
+value = "local"
+
+[routine.source_manual]
+doc = "The source reported for an installed binary that no install record vouches for."
+value = "manual"
+
+# ---- layout of a local build directory ----------------------------------------------------------------------------------------
+
+[routine.engine_candidates]
+doc = "Where the engine binary is looked for under the --from-local directory (first existing file wins): the directory itself, then a cargo build of the repository checkout."
+value = ["ah-engine", "bin/ah-engine", "ah-engine/target/release/ah-engine", "target/release/ah-engine"]
+
+[routine.hook_candidates]
+doc = "Where the thin client is looked for under the --from-local directory. Absent = the installed client stays."
+value = ["ah-hook", "bin/ah-hook", "ah-launcher/target/release/ah-hook", "target/release/ah-hook"]
+
+[routine.tree_candidates]
+doc = "Where the plugin tree is looked for under the --from-local directory (a directory that holds routine.tree_marker). Absent = binaries only; the installed plugin stays."
+value = ["plugin", "plugins/anti-hall", "."]
+
+[routine.tree_marker]
+doc = "The file whose presence makes a directory a plugin tree / plugin root."
+value = "engine/defaults/index.toml"
+
+[routine.defaults_dirs]
+doc = "The plugin sub-directories synced first and taken whole (the engine reads them at start and on change)."
+value = ["engine/defaults", "engine/defaults.pristine"]
+
+[routine.tree_skip_dirs]
+doc = "Directory names the plugin-tree sync never enters."
+value = [".git", "node_modules"]
+
+[routine.tree_skip_substrings]
+doc = "A relative path containing one of these is not synced (backups, staging files, editor files)."
+value = [".bak", ".deploy.", ".DS_Store"]
+
+# ---- where it installs --------------------------------------------------------------------------------------------------------
+
+[routine.env_roots]
+doc = "Environment variable naming the plugin roots to install into (colon separated); when set it replaces the lookup below. Tests and scratch homes use it."
+value = "AH_DEPLOY_ROOTS"
+
+[routine.home_token]
+doc = "The placeholder for the home directory in the paths below."
+value = "{home}"
+
+[routine.installed_json]
+doc = "The harness plugin registry the cache root a hook runs from is read from."
+value = "{home}/.claude/plugins/installed_plugins.json"
+
+[routine.plugin_key]
+doc = "The registry entry whose installPath is a plugin root to keep in step with the binary, besides the root the engine itself loads."
+value = "anti-hall@anti-hall-engine-live"
+
+[routine.default_roots]
+doc = "More plugin roots to keep in step (used when they exist)."
+value = ["{home}/.anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall"]
+
+[routine.state_file]
+doc = "The install record in the state directory: {version, sha, source, time, built_at, previous}. The Updates page and `update --check --json` read it."
+value = "install.json"
+
+[routine.deploys_dir]
+doc = "Directory in the state directory that holds the saved copy of every install (its manifest, the replaced files, the previous binaries)."
+value = "deploys"
+
+[routine.manifest_file]
+doc = "File name of an install's manifest inside its saved-copy directory."
+value = "manifest.json"
+
+[routine.files_dir]
+doc = "Sub-directory of a saved copy that holds the replaced plugin files."
+value = "files"
+
+[routine.added_dir]
+doc = "Sub-directory of a saved copy where files the install had added are moved aside by a rollback (never deleted)."
+value = "added"
+
+[routine.keep_deploys]
+doc = "How many saved copies of past installs are kept; older ones are removed at the end of a successful install."
+value = 3
+min = 1
+
+[routine.stage_infix]
+doc = "Between a file's name and the process id in the name of its staging file (renamed into place at commit)."
+value = ".deploy."
+
+[routine.tmp_ext]
+doc = "Extension of the temporary file of an atomic write of the record, manifest or hold marker."
+value = "tmp"
+
+[routine.scratch_prefix]
+doc = "Prefix of the routine's scratch directory under the temp dir (removed at the end)."
+value = "ah-install-"
+
+[routine.empty_toml]
+doc = "Name of the empty file `config validate` is given in the pre-check."
+value = "empty.toml"
+
+# ---- timings ------------------------------------------------------------------------------------------------------------------
+
+[routine.call_timeout_s]
+doc = "Longest any one command of the routine (the new binary's version, validate, audit, the guard probe) may run."
+value = 30
+unit = "s"
+
+[routine.stop_wait_s]
+doc = "How long a stopped daemon gets to exit before it is stopped by its verified pid."
+value = 10
+unit = "s"
+
+[routine.start_wait_s]
+doc = "How long the new daemon gets to answer a ping after it was started."
+value = 30
+unit = "s"
+
+[routine.settle_s]
+doc = "Wait between the new daemon answering and the validation, so the first ticks, jobs and hooks have run before the log is read."
+value = 5
+unit = "s"
+
+[routine.hold_ttl_s]
+doc = "Lifetime of the maintenance hold (hooks start no engine while the binary is swapped); refreshed at each step. 0 = no hold. A crashed install leaves the guards off for at most this long."
+value = 180
+unit = "s"
+
+[routine.detail_chars]
+doc = "Characters of an event detail or error text shown in a problem line."
+value = 160
+
+# ---- commands -----------------------------------------------------------------------------------------------------------------
+
+[routine.ctl_stop]
+doc = "The control verb that asks the running daemon to exit."
+value = "stop"
+
+[routine.audit_args]
+doc = "Arguments of the new binary's entry-path audit of the plugin tree being installed ({root} is the tree). Exit 0 = clean, 1 = leftovers."
+value = ["audit", "entry-paths", "--root", "{root}", "--no-live"]
+
+[routine.root_token]
+doc = "The placeholder for the tree in routine.audit_args."
+value = "{root}"
+
+[routine.hook_version_args]
+doc = "Arguments with which the new thin client reports its version (a smoke test: it must exit 0)."
+value = ["--version"]
+
+[routine.integrity_accept_args]
+doc = "Arguments with which the installed thin client records the installed binaries as the expected ones."
+value = ["integrity", "accept"]
+
+[routine.release_check_args]
+doc = "Arguments with which the thin client reports the latest GitHub release (one JSON line); it is the only part that touches the network."
+value = ["update", "--check-release"]
+
+[routine.release_check_timeout_s]
+doc = "Longest `update --check --json` waits for the thin client's latest-release lookup."
+value = 25
+unit = "s"
+
+# ---- validation ---------------------------------------------------------------------------------------------------------------
+
+[routine.probe_event]
+doc = "The hook event the guard probe sends to the installed thin client."
+value = "PreToolUse"
+
+[routine.probe_payload]
+doc = "The probe's hook input: a force push to main, which a working guard blocks. {cwd} is the scratch directory."
+value = '{"session_id":"install-probe","cwd":"{cwd}","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main","description":"Push"},"tool_use_id":"toolu_install_probe"}'
+
+[routine.probe_file]
+doc = "Name of the file (in scratch) the probe input is written to."
+value = "probe.json"
+
+[routine.probe_root_env]
+doc = "The variable through which the harness names the plugin root a hook runs from."
+value = "CLAUDE_PLUGIN_ROOT"
+
+[routine.probe_n]
+doc = "How many probe calls in a row must all be blocked."
+value = 3
+min = 1
+
+[routine.probe_block_code]
+doc = "The exit code of a blocked hook call."
+value = 2
+
+[routine.bad_event_kinds]
+doc = "Engine-log event kinds that, logged since the new daemon started, fail the validation (a panic, a crash, a failed start, a config error, a defaults fallback)."
+value = ["panic", "thread_panic", "crash", "start_fail", "watchdog", "config_invalid", "defaults_fallback", "defaults_heal_skipped", "rss"]
+
+[routine.job_event_kind]
+doc = "The event kind a scheduler job outcome is logged under."
+value = "schedule"
+
+[routine.failed_job_codes]
+doc = "The outcome codes of that kind that count as a failed job."
+value = ["failed", "timeout"]
+
+# ---- words -------------------------------------------------------------------------------------------------------------------
+
+[routine.word_same]
+doc = "Said when the new engine binary is identical to the installed one (only the plugin files change)."
+value = "(same binary: only the plugin files change)"
+
+[routine.word_up]
+doc = "The daemon answered after the install."
+value = "daemon up"
+
+[routine.word_down]
+doc = "The daemon did not answer after the install."
+value = "daemon NOT answering"
+
+[routine.word_no_client]
+doc = "Reported as the latest-release error when no thin client is installed."
+value = "no thin client installed"
+
+[routine.no_code]
+doc = "Shown for a command that did not exit (it timed out or could not start)."
+value = "no exit"
+
+[routine.why_plugin_lower]
+doc = "Why an install is a downgrade: the plugin version is lower."
+value = "its plugin version is lower"
+
+[routine.why_build_older]
+doc = "Why an install is a downgrade: same plugin version, older build."
+value = "same plugin version, older build"
+
+# ---- messages ----------------------------------------------------------------------------------------------------------------
+
+[routine.msg_bad_arg]
+doc = "Unknown argument. {arg}."
+value = "update: unknown argument {arg}\nusage: update --from-local <dir> [--engine-bin F] [--hook-bin F] [--tree D] [--source release|local|manual] [--check] [--yes] [--force] [--allow-entry-leftovers] [--json]\n       update --rollback [--deploy-dir D] [--yes]"
+
+[routine.msg_flag_value]
+doc = "A flag lacks its value. {flag}."
+value = "update: {flag} needs a value"
+
+[routine.msg_bad_source]
+doc = "--source got an unknown word. {source}, {allowed}."
+value = "update: unknown source {source} (allowed: {allowed})"
+
+[routine.msg_no_source]
+doc = "Neither --from-local nor --engine-bin was given."
+value = "update: name what to install: --from-local <dir> (a local build) or --engine-bin <file>"
+
+[routine.msg_no_engine]
+doc = "No engine binary under the directory. {dir}."
+value = "update: no ah-engine binary under {dir} (looked at the places routine.engine_candidates lists); build it, or pass --engine-bin <file>"
+
+[routine.msg_not_file]
+doc = "A named file is missing. {path}."
+value = "update: {path} is not a file"
+
+[routine.msg_bad_tree]
+doc = "The tree has no marker file. {path}, {marker}."
+value = "update: {path} is not a plugin tree (no {marker})"
+
+[routine.msg_scratch]
+doc = "The scratch directory cannot be made. {path}."
+value = "update: cannot make the scratch directory {path}"
+
+[routine.msg_stage_failed]
+doc = "Staging a file failed. {path}, {why}."
+value = "update: cannot stage {path}: {why}; nothing was changed"
+
+[routine.msg_commit_failed]
+doc = "A staged file could not be renamed into place. {path}, {why}."
+value = "update: cannot put {path} in place: {why}"
+
+[routine.msg_restore_failed]
+doc = "A saved file could not be put back. {path}, {why}."
+value = "update: cannot restore {path}: {why}"
+
+[routine.msg_backup_missing]
+doc = "The saved copy of a file is gone. {path}."
+value = "update: the saved copy {path} is missing"
+
+[routine.msg_no_manifest]
+doc = "No manifest in the saved-copy directory. {dir}."
+value = "update: {dir} has no readable manifest"
+
+[routine.msg_no_deploy]
+doc = "Nothing to roll back. {dir}."
+value = "update: no saved copy of an earlier install under {dir}; name one with --deploy-dir"
+
+[routine.msg_stop_failed]
+doc = "The running daemon could not be stopped."
+value = "update: the running daemon would not stop; nothing was changed"
+
+[routine.msg_record_failed]
+doc = "The install record could not be written. {why}."
+value = "update: installed, but the install record could not be written: {why}"
+
+[routine.msg_downgrade]
+doc = "A downgrade is refused. {running}, {target}, {why}, {flag}."
+value = "update: refused: this is a downgrade ({why}).\n  running: {running}\n  target:  {target}\n  a downgrade requires {flag}; nothing was changed"
+
+# ---- lines of the run --------------------------------------------------------------------------------------------------------
+
+[routine.line_new_binary]
+doc = "The new binary passed its smoke test. {path}, {version}, {sha}."
+value = "new engine: {version} (sha {sha}) {path}"
+
+[routine.line_new_hook]
+doc = "The new thin client passed its smoke test. {path}, {version}."
+value = "new client: {version} {path}"
+
+[routine.line_audit_clean]
+doc = "The entry-path audit is clean. {root}."
+value = "entry-path audit: clean ({root})"
+
+[routine.line_audit_override]
+doc = "The audit found leftovers and the override was given. {root}."
+value = "entry-path audit: LEFTOVERS ALLOWED by --allow-entry-leftovers (owner override) in {root}"
+
+[routine.line_root_ok]
+doc = "The new binary loads the new defaults on this root. {root}."
+value = "defaults: the new engine loads the new defaults on {root}"
+
+[routine.line_no_roots]
+doc = "No plugin root was found to install into."
+value = "plugin roots: none found; only the binaries are installed"
+
+[routine.line_running]
+doc = "What runs now. {version}, {sha}, {source}."
+value = "running now: {version} (sha {sha}, source {source})"
+
+[routine.line_problem]
+doc = "One problem. {text}."
+value = "PROBLEM: {text}"
+
+[routine.line_check_failed]
+doc = "The pre-check found problems; nothing was changed."
+value = "CHECK FAILED: nothing was changed"
+
+[routine.line_check_ok]
+doc = "The pre-check passed. {roots}, {same}."
+value = "CHECK OK: {roots} plugin root(s) {same}; nothing was changed"
+
+[routine.line_dry_plan]
+doc = "Without --yes: what would happen. {roots}, {same}."
+value = "dry run: would install into {roots} plugin root(s) {same}; add --yes to do it"
+
+[routine.line_dry]
+doc = "Without --yes on a rollback."
+value = "dry run: nothing was changed; add --yes to roll back"
+
+[routine.line_downgrade_forced]
+doc = "A downgrade went ahead because of --force. {running}, {target}."
+value = "downgrade allowed by --force: {running} -> {target}"
+
+[routine.line_staged]
+doc = "Staging is done. {files}, {roots}."
+value = "staged: {files} plugin file(s) across {roots} root(s), binaries saved"
+
+[routine.line_installed]
+doc = "The files and binaries are in place. {sha}, {started}."
+value = "installed: sha {sha}, {started}"
+
+[routine.line_validated]
+doc = "Validation passed. {pid}."
+value = "validated: one daemon (pid {pid}) on the new binary, client round trip and guards answer, nothing bad in the log since the start"
+
+[routine.line_auto_rollback]
+doc = "Validation failed: going back. {sha}."
+value = "VALIDATION FAILED for sha {sha}: rolling back to the saved copy"
+
+[routine.line_restored]
+doc = "Files restored. {n}, {dir}."
+value = "restored {n} file(s) from {dir}"
+
+[routine.line_rolled_back_ok]
+doc = "The rollback worked and validates. {sha}, {version}."
+value = "ROLLED BACK: the previous engine {version} (sha {sha}) is running and validated"
+
+[routine.line_rolled_back_bad]
+doc = "The rollback did not validate. {sha}, {version}."
+value = "ROLLED BACK but the previous engine {version} (sha {sha}) does NOT validate: run `ah-engine doctor`"
+
+[routine.line_rollback_failed]
+doc = "A rollback failed. {why}."
+value = "ROLLBACK FAILED: {why}"
+
+[routine.line_rollback_plan]
+doc = "A manual rollback is about to restore this copy. {dir}."
+value = "rollback of the install saved in {dir}"
+
+[routine.line_rollback_ok]
+doc = "A manual rollback validated. {sha}."
+value = "ROLLBACK OK: engine sha {sha} is running and validated"
+
+[routine.line_summary]
+doc = "The one summary line of a successful install. {version}, {sha}, {source}, {files}, {kept}, {deploy}."
+value = "INSTALLED {version} (sha {sha}, source {source}): {files} plugin file(s) changed; {kept} saved copy(ies) kept, newest {deploy}"
+
+[routine.problem_new_binary]
+doc = "The new engine binary does not run. {path}, {got}."
+value = "the new engine {path} does not answer `version` (got: {got})"
+
+[routine.problem_new_hook]
+doc = "The new thin client does not run. {path}, {got}."
+value = "the new client {path} does not report its version (got: {got})"
+
+[routine.problem_audit]
+doc = "The entry-path audit found leftovers. {root}."
+value = "entry-path audit: the plugin tree {root} has js/sh/wrong-entry leftovers (table above); fix them, or pass --allow-entry-leftovers as the explicit owner override"
+
+[routine.problem_audit_run]
+doc = "The audit could not run. {code}, {out}."
+value = "entry-path audit could not run (exit {code}): {out}"
+
+[routine.problem_scratch]
+doc = "The scratch copy of a root failed. {root}."
+value = "cannot copy {root} to scratch for the defaults check"
+
+[routine.problem_root]
+doc = "The new binary refuses the new defaults on a root. {root}, {code}, {out}."
+value = "the new engine refuses the plugin defaults on {root} (exit {code}): {out}"
+
+[routine.problem_commit]
+doc = "Putting the files in place failed."
+value = "the files could not be put in place"
+
+[routine.problem_daemons]
+doc = "More or fewer than one daemon runs. {n}."
+value = "{n} engine daemon(s) run; exactly 1 must"
+
+[routine.problem_no_hook]
+doc = "No thin client to probe the guards with."
+value = "no thin client installed: the guards cannot be probed"
+
+[routine.problem_probe]
+doc = "The guard probe was not blocked every time. {blocked}, {n}."
+value = "guard probe: a force push to main was blocked {blocked}/{n} times (a guard fails open)"
+
+[routine.problem_event]
+doc = "A bad row in the engine log since the start. {kind}, {code}, {detail}."
+value = "engine log since the start: {kind} {code} {detail}"
+
+[routine.problem_defaults_error]
+doc = "The defaults error file was written since the start. {text}."
+value = "defaults.error written since the start: {text}"

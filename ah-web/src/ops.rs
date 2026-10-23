@@ -448,7 +448,28 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     }
     let (installed, latest) = (s(&status, "installed"), s(&status, "latest"));
     let available = !installed.is_empty() && !latest.is_empty() && version_nums(&latest) > version_nums(&installed);
-    let c = UpdateCheck { ok: out.status.success(), installed, latest, message: s(&status, "action").chars().take(o.update_text_max).collect(), available, channel: s(&status, "channel"), state: s(&status, "state"), checked_ms: now_ms(), reused: false };
+    // what the engine itself runs: the build version (not just the plugin manifest), where it came from, the latest release
+    let eng = status.get("engine").cloned().unwrap_or(Value::Null);
+    let build_version = s(&eng, "build_version");
+    let rel = eng.get("latest_release").cloned().unwrap_or(Value::Null);
+    let latest_release = [s(&rel, "version"), s(&rel, "tag")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
+    let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && version_nums(&s(&rel, "version")) > version_nums(&build_version);
+    let c = UpdateCheck {
+        ok: out.status.success(),
+        installed,
+        latest,
+        message: s(&status, "action").chars().take(o.update_text_max).collect(),
+        available,
+        channel: s(&status, "channel"),
+        state: s(&status, "state"),
+        checked_ms: now_ms(),
+        reused: false,
+        build_version,
+        source: s(&eng, "source"),
+        installed_at: eng.get("installed_at").and_then(Value::as_u64).unwrap_or(0),
+        latest_release,
+        engine_available,
+    };
     *last = Some((Instant::now(), c.clone()));
     Json(c).into_response()
 }

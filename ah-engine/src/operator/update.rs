@@ -791,6 +791,10 @@ pub fn run(p: &Parsed) -> i32 {
 }
 
 fn go(p: &Parsed) -> Result<i32, String> {
+    // the install routine (`--from-local`, `--rollback`) is its own module: one routine for every update path
+    if super::routine::wanted(p) {
+        return Ok(super::routine::run_routine(p));
+    }
     let rx = Rx::new()?;
     let env = Env::process();
     let Some(home) = crate::setup::home_dir(&env) else { return Err(t("update_msg.no_home").into()) };
@@ -803,7 +807,17 @@ fn go(p: &Parsed) -> Result<i32, String> {
     }
     if is_check {
         let status = run_check(&rx, &paths, &env);
-        out(&format!("{}\n", render_human(&rx, &status, "")))?;
+        let text = render_human(&rx, &status, "");
+        // the last line is the JSON status: with --json it also carries what the engine itself runs and where it came from
+        let (head, last) = text.rsplit_once('\n').map_or(("", text.as_str()), |(h, l)| (h, l));
+        let last = match serde_json::from_str::<serde_json::Value>(last) {
+            Ok(mut v) if p.json && v.is_object() => {
+                v["engine"] = super::routine::engine_facts();
+                v.to_string()
+            }
+            _ => last.to_string(),
+        };
+        out(&format!("{}{last}\n", if head.is_empty() { String::new() } else { format!("{head}\n") }))?;
         return Ok(0);
     }
     let core = run_core(&rx, &env, &home, &paths, post_pull_only);
