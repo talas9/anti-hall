@@ -691,7 +691,7 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
     let p1 = plugin.clone();
     view! {
         <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
-            {move || format!("v{}", engine().unwrap_or_else(|| n1.clone()))}
+            {move || engine().map(|e| format!("v{e}")).unwrap_or_else(|| n1.clone())}
         </button>
         <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
             <dl class="kv">

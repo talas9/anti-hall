@@ -2,12 +2,12 @@
 button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-main { gap: 10px; }
 .live { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
-.live-stats { display: grid; grid-template-columns: minmax(120px, 160px) minmax(120px, 160px) minmax(0, 1fr); gap: 8px; }
+.live-stats { display: grid; grid-template-columns: repeat(3, minmax(110px, 150px)) minmax(0, 1fr); gap: 8px; }
 .live-block { color: var(--red); }
 .live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
 .live-top li { display: flex; gap: 6px; }
 .live-top li b { color: var(--cyan); font-weight: 600; }
-.live-cols { display: grid; grid-template-columns: repeat(4, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+.live-cols { display: grid; grid-template-columns: repeat(6, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
 .live-graph { flex: 1 1 auto; min-height: 520px; height: calc(100vh - 400px); }
 .live .ahg {
   --ah-line: var(--line); --ah-panel: var(--panel); --ah-text: var(--text); --ah-muted: var(--muted);
