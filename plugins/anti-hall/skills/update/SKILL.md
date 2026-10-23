@@ -31,13 +31,13 @@ takes effect in-session — this skill does not over-promise.
 - **Version authority** — `plugins/anti-hall/.claude-plugin/plugin.json` in the clone.
   `CHANGELOG.md` (repo root) carries one `## <version>` section per release.
 - **DevSwarm ingest daemon's baked script path** — `install-devswarm-ingest.js`'s daemon
-  unit bakes the **marketplace clone's own `companion/devswarm-ingest.js`** (this is the
+  unit bakes the **marketplace clone's own the engine ingest duty** (this is the
   ONE path this skill `git pull --ff-only`s in place — never a version-pinned cache dir,
   which is a NEW directory per release). That is what makes the daemon survive an update
   without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
   a daemon installed before this fix shipped.
 
-## What the helper does (`skills/update/scripts/update.js`)
+## What the helper does (`ah-hook update`)
 
 Runs inside the thin client (`ah-hook update`), macOS + Linux (Windows is not supported), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
@@ -82,7 +82,7 @@ its own purposes).
      --ff-only`ed **in place**) so a fresh install never goes stale again — but a daemon
      installed *before* this fix shipped is still pointed at a path that may now be gone,
      and needs a one-time re-bake. `healIngestDaemon` runs ONLY under the same
-     DevSwarm-session-only gate `hooks/lib/doctor-repair.js`'s own GATED ingest fix uses
+     DevSwarm-session-only gate `doctor-repair`'s own GATED ingest fix uses
      (`isDevswarmActive(env) && resolveWorktree(cwd) !== null`) and reuses that module's
      already-tested classify/detect helpers rather than re-deriving the logic; it re-runs
      the (freshly-pulled) installer only when the unit is genuinely `wrong-path` or
@@ -160,7 +160,7 @@ its own purposes).
      up on the NEXT `update`/`doctor` call rather than lost: every one of these stages is
      independently idempotent/resumable (fold/heal/fold-archived-rows persist their own
      resume markers; the one-time-per-version stages simply re-attempt next call). As of
-     v0.96.1, the periodic supervisor sweep (`companion/devswarm-supervisor.js`) also picks
+     v0.96.1, the periodic supervisor sweep (the engine supervisor duty) also picks
      up `fold-all-stores`, `heal-orphan-partitions`, `fold-archived-rows` and (v0.102.1)
      `heal-registry-rows` — one deferred
      stage per supervisor pass, within `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default

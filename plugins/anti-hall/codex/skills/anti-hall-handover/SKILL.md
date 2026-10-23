@@ -13,13 +13,13 @@ Codex-native mirror of the Claude `handover` skill — same artifact contract
 and templates; only platform phrasing differs (no `/compact` references,
 `AGENTS.md` instead of `CLAUDE.md`).
 
-**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit, shared
+**Triggered automatically, too.** `auto-handover` (UserPromptSubmit, shared
 verbatim with the Claude plugin) watches the main agent's estimated context usage and, at
 93% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
 `ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-settings` skill to change it), injects
 a directive to run THIS skill's contract yourself, right now, without asking the user
 first — same self-write mandate as below. A long autonomous turn that never passes a
-user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause-nag.js`,
+user prompt gets the same directive once at a `Stop` (`auto-handover-pause-nag`,
 shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
 
@@ -125,7 +125,7 @@ consolidated schema):
    written, one of `auto-threshold` / `user-request` / `restart-pending` /
    `task-boundary`, plus the current context % if known. Source the % from a
    statusline if shown, or from `~/.anti-hall/auto-handover/<tag>.json`
-   (`hooks/lib/auto-handover-state.js`'s per-session latch, shared verbatim
+   (`auto-handover-state`'s per-session latch, shared verbatim
    with the Claude plugin — `firedPct` is the % it crossed the threshold at;
    `<tag>` is the session id from "Session id" below). Use `auto-threshold`
    ONLY when that file's `fired` is `true` for this session, or the
@@ -325,7 +325,7 @@ continuation (official Codex hooks reference, learn.chatgpt.com/docs/hooks).
 `handover-resume.js` is registered on `SessionStart` with no matcher, so it
 fires there too.
 
-**PreCompact safety net.** `hooks/precompact-snapshot.js` (registered on Codex's
+**PreCompact safety net.** `precompact-snapshot` (registered on Codex's
 own `PreCompact` event) writes `PRECOMPACT-<n>.md` into this session's handover
 dir right before every compaction: `pwd`, git branch/HEAD/dirty files, a
 task-list snapshot when the transcript has one, the last 10 user messages

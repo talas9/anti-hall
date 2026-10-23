@@ -26,9 +26,9 @@ All commands below run as `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-roo
 
 On Claude Code the native `/config` panel (the plugin's options screen) carries only the
 headline switches, the safety guards and the API keys; every other setting is reached
-through this skill's `scripts/settings.js`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
+through this skill's `ah-hook settings`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
 On Codex, run `show` (one table per category), then `show --section <category> [--all]`;
-change with `set` / `reset`. This skill (over `scripts/settings.js`) is the ONLY way to see or change a
+change with `set` / `reset`. This skill (over `ah-hook settings`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
 On Claude Code, a non-default value stored in Claude Code's plugin options by earlier versions is copied into `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that runs the migration (safety keys are copied as human-confirmed values), and still resolves until then; `/anti-hall:settings` is the place to see and change every setting.
@@ -181,8 +181,8 @@ have no switch on purpose, and why.
 
 ## Auto-handover (`autoHandover` section)
 
-The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
-`hooks/auto-handover-pause-nag.js`) is **on by default at 93%** of this session's actual context window (plus an absolute `maxTokens` ceiling of 500000 that
+The auto-handover trigger (`auto-handover` + the Stop-time
+`auto-handover-pause-nag`) is **on by default at 93%** of this session's actual context window (plus an absolute `maxTokens` ceiling of 500000 that
 only bites on 1M windows — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
 and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
 further points and at a quiet pause (at most once per `nagQuietMin` minutes, and
@@ -202,7 +202,7 @@ handover was saved: refresh the handover and offer to park the rest.
 
 **Decisive compact/new prompt (v0.109.5, `decisivePrompt`, on by default).** At a
 turn-ending Stop point (the fire-once or the natural-pause nag in
-`hooks/auto-handover-pause-nag.js`), once this session's `HANDOVER*.md` exists and
+`auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
 `tasklist-guard.js` uses), the directive tells the agent to END its
@@ -319,9 +319,9 @@ Every subcommand takes `--json`:
 ## What this skill never does
 
 - Never edits `~/.anti-hall/settings.json` (or any legacy config file) by hand —
-  always through `scripts/settings.js`.
+  always through `ah-hook settings`.
 - Never deletes a legacy config file (e.g. `~/.anti-hall/jev.json`) — anti-hall
   forward-migrates its values into `settings.json` once but always leaves the
   legacy file in place.
-- Never invents a setting or value not in the schema — `scripts/settings.js show`
+- Never invents a setting or value not in the schema — `ah-hook settings show`
   is the source of truth.

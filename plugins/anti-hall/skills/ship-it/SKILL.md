@@ -122,7 +122,7 @@ proceed without. Interactively (no autonomy granted), present the intent note an
 `ExitPlanMode` approval** — plan mode is read-only for the repo, so the file lands the moment
 the gate clears, before any code. Write **one** file: `PLAN.md` at the repo root. (GSD's
 `.planning/` convention is discontinued as of 2026-07-03 — no longer written to or read from;
-an explicit, copy-only `scripts/migrate-state.js --planning` can copy existing
+an explicit, copy-only ``ah-hook migrate` --planning` can copy existing
 `.planning/` content into `.anti-hall/history/legacy/planning/`; nothing does it automatically.) It carries the design through `/clear` and compaction.
 This single file is the durable memory — **not** an artifact graph, not a file per phase.
 
@@ -287,7 +287,7 @@ Read/Write/Edit tools, not the workflow script) maintains
 
 - **`plan_hash`** — `crypto.createHash('sha256').update(planMdContent).digest('hex')`, the same
   `createHash(...).update(...).digest('hex')` shape already used throughout the plugin's hooks
-  (e.g. `hooks/tasklist-guard.js`) — `sha256` here (vs. the `sha1` those hooks use) because this
+  (e.g. `tasklist-guard`) — `sha256` here (vs. the `sha1` those hooks use) because this
   hashes the full `PLAN.md` content for drift detection, not a short session/dedup signal.
 - **`status`** per phase: `pending | running | done | failed`.
 - **`gate`** per phase: `"locked" | "not-run"`. Set to `"locked"` **only** immediately after
@@ -297,11 +297,11 @@ Read/Write/Edit tools, not the workflow script) maintains
   §5); `gate` is the independent record that the deadly-loop actually ran and converged.
 - **`escalations`** — a counter; see Step 5's build→plan escalation cap below.
 - **Heartbeats are NOT reinvented.** Spawned build/review agents already write
-  `~/.anti-hall/agents/<id>.json` (`{id, ts, status, step}`), and `hooks/agent-watchdog.js`
+  `~/.anti-hall/agents/<id>.json` (`{id, ts, status, step}`), and `agent-watchdog`
   already scans that directory for staleness (20-minute default). A phase's `running` status
   just points at that agent's id — check liveness by running `agent-watchdog.js`, don't add a
   second heartbeat mechanism. Run it inline from the coordinator: `command-guard` carves a
-  narrow exception for `hooks/agent-watchdog.js` (and `statusline/phase.js`), so these two
+  narrow exception for `agent-watchdog` (and `statusline/phase.js`), so these two
   coordinator-owned helpers are exempt from the `node` script heavy-command block.
 
 **On resume** (after `/clear`/compaction, having already read `PLAN.md` per above): also read
@@ -450,9 +450,9 @@ the returned `confirmed`/`residue` groups for members with `severity:'P2'` — r
 owner is choosing to accept rather than block on, which would otherwise vanish once the phase
 is done. Append them to `.anti-hall/ship-it/<slug>/decisions.md`, one entry per finding, using
 the same idempotent check-then-append pattern already used by
-`hooks/session-history-index.js` (read the file first; skip an already-recorded finding) and
+`session-history-index` (read the file first; skip an already-recorded finding) and
 the mkdir-then-`fs.appendFileSync(..., { flag: 'a' })` shape already used by
-`hooks/progress-prune.js`. No new script — this is a coordinator action with its own
+`progress-prune`. No new script — this is a coordinator action with its own
 Read/Write/Edit tools, same as `STATE.json`.
 
 **Build→plan escalation cap (L only).** Not every non-convergence is another fix-wave: if the
@@ -516,7 +516,7 @@ required gate.
 - **L (and M when release-worthy) — auto-summarize, before the final wrap-up below.**
   Write a session-history entry via the **existing** per-session system —
   `.anti-hall/history/<date>/<session-id>.md`, already maintained by
-  `hooks/tasklist-guard.js` and `hooks/session-history-index.js` — summarizing the shipped
+  `tasklist-guard` and `session-history-index` — summarizing the shipped
   change (do not invent a new ledger). At **L only**, also write
   `.anti-hall/ship-it/<slug>/SUMMARY.md`, mirroring `PLAN.md`'s Progress section into a
   terminal summary.

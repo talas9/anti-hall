@@ -7,11 +7,11 @@ description: "anti-hall operator guide: terms, rules, skills, CLI verbs, setting
 
 ## When to use
 
-The agent-facing operator guide to anti-hall — glossary of terms (Primary, child, mesh, partition, reader cursor/floor, archive vs close vs delete, twin, on/shadow/off, KEEP/REVIEW/REMOVE, handover, capability gate, …), the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`scripts/briefing.js`) of the hooks and skills actually installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", "how does the whole system work", or when onboarding an agent to install or run anti-hall. For "is it actually working / do the guards fire", use the `doctor` skill instead.
+The agent-facing operator guide to anti-hall — glossary of terms (Primary, child, mesh, partition, reader cursor/floor, archive vs close vs delete, twin, on/shadow/off, KEEP/REVIEW/REMOVE, handover, capability gate, …), the hard rules, every skill and CLI verb with when to use it, every setting with its default, and where to read more; plus a DERIVED live inventory (`ah-hook briefing`) of the hooks and skills actually installed. Use when the user asks "brief me on anti-hall", "what does X mean", "which command/setting does Y", "what's in this build", "how does the whole system work", or when onboarding an agent to install or run anti-hall. For "is it actually working / do the guards fire", use the `doctor` skill instead.
 
 Two parts: **(1) this guide** — terms, rules, skills, verbs, settings (read it before
 operating anti-hall, or when a term or option is unclear); **(2) a live inventory** —
-`scripts/briefing.js` enumerates the hooks, helpers, skills and DevSwarm substrate this
+`ah-hook briefing` enumerates the hooks, helpers, skills and DevSwarm substrate this
 installed build actually ships, from `hooks.json` and the files on disk (never a
 hardcoded list). Run it via a Haiku subagent (command-guard keeps heavy commands off the
 main thread): `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" briefing` (or `--json`). For "do
@@ -30,7 +30,7 @@ the guards fire?", use `doctor`.
 | handover | A self-written, lossless session record in `.anti-hall/handovers/` so a fresh session resumes cold. Auto-handover asks for one at 93% context by default, or 500000 tokens on 1M windows (5% before auto-compact; see the settings skill) (UserPromptSubmit, or once at a Stop). `precompact-snapshot.js` (PreCompact) also writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot before every compaction and never blocks it. |
 | known / unknown window | Whether the context window size is known (statusline figure, Codex rollout, env, sticky, inferred 1M). Unknown → a soft advisory only, never the mandatory handover directive. |
 | settings store | `~/.anti-hall/settings.json`; precedence env > file > stored plugin option > legacy file > default; grouped by category (`settings.js show`, then `show --section <category>`); Claude Code's `/config` only has the headline switches, the safety guards and the keys. `*` below = advanced (hidden unless `show --all`). |
-| repair / migration marker | Idempotent data repairs (`companion/lib/migrations.js`) stamped per version in `~/.anti-hall/update-sweep-state.json`; run by update, `doctor --repair`, and on reload. |
+| repair / migration marker | Idempotent data repairs (`migrations`) stamped per version in `~/.anti-hall/update-sweep-state.json`; run by update, `doctor --repair`, and on reload. |
 | Jev | Optional LLM classifier ("System One") consulted by some hooks. |
 | on / shadow / off | Jev per-integration mode: on = may change the outcome; shadow = asked and logged, outcome unchanged; off = not consulted. |
 | KEEP / REVIEW / REMOVE | `jev-report` verdict per integration from its measured value. |
@@ -39,7 +39,7 @@ the guards fire?", use `doctor`.
 | DevSwarm | Multi-workspace AI IDE; `hivecontrol` is its CLI. All DevSwarm features are dormant outside it. |
 | Primary | The DevSwarm workspace on the repo's main checkout that orchestrates. |
 | child | A workspace the Primary spawned (own worktree and branch). |
-| mesh | anti-hall's per-project message store shared by the Primary and its children; the only allowed channel (`devswarm.js send`/`inbox`). |
+| mesh | anti-hall's per-project message store shared by the Primary and its children; the only allowed channel (`ah-hook mesh send`/`inbox`). |
 | repoKey | The per-project store key (derived from the git common dir). |
 | partition | One mailbox inside the mesh store (per workspace, plus broadcast). |
 | reader cursor / floor | A reader's read position in a partition (`h:<pid>:<startMs>`); the `#floor` is the monotone position every live reader has passed. Unread = total − cursor. |
@@ -47,10 +47,10 @@ the guards fire?", use `doctor`.
 | stale anti-hall <v> | A workspace whose heartbeat records an older anti-hall build than this machine has; restart that session (not neglect). |
 | inbox grace | Fresh unread to a child is not nagged for `devswarm.inboxGraceSec` (120 s) unless it heartbeats first. |
 | harness registration | `installed_plugins.json`, the harness's record of which build to load; `update` refreshes it via `claude plugin update`, after which `/reload-plugins` loads the new build (restart only as the fallback). |
-| Primary seat | The Primary's mesh id (`primary-<hash>`, same partitions and cursors). A new session adopts it only when the holder has closed; while two sessions conflict, the other one's sends/acks/spawns/merges are refused until `devswarm.js primary takeover`. |
+| Primary seat | The Primary's mesh id (`primary-<hash>`, same partitions and cursors). A new session adopts it only when the holder has closed; while two sessions conflict, the other one's sends/acks/spawns/merges are refused until `ah-hook mesh primary takeover`. |
 | sender label | A message's `from`: a child sends as its workspace id, only the Primary checkout as `primary-<hash>`; old child labels map to the child via `sender-aliases.json`. |
 | twin / identity family | Several registry rows for one workspace (e.g. slug row + UUID row), grouped and retired together. |
-| archive (anti-hall) | `devswarm.js archive`: tombstone in anti-hall's registry; never touches the app. |
+| archive (anti-hall) | `ah-hook mesh archive`: tombstone in anti-hall's registry; never touches the app. |
 | archive / close / delete (app) | App archive = hidden + inactive, recoverable, worktree kept; close = inactive only (not archived); delete = row removed, permanent. |
 | auto-archive | Supervisor archives a child in the app only when done, merged, clean, drained, not the Primary, unfocused 10 min and idle (its own mailbox-wake/heartbeat/status pings do not count; real work does); always by explicit workspace id; DevSwarm >= 2.5.3. |
 | prune | Deleting archived workspaces: only an owner-approved exact id list with a plan nonce (`prune-archived`). Never automated. |
@@ -59,7 +59,7 @@ the guards fire?", use `doctor`.
 | capability gate | Every DevSwarm verb/table/column/app file is checked by version + detection; a missing surface sleeps and doctor names it. |
 | supervisor / ingest daemon | Opt-in companions: the periodic sweep (poke → escalate, app sync, auto-archive, retention) and the per-project monitor → store daemon. |
 | poke / escalate / recover | Recovery ladder: nudge a stale child, then tell the Primary; only `devswarm-recover.js <id>` ever kills. |
-| finish gates | `done`, `merged`, `tests_passed` (`devswarm.requiredGates`) set via `devswarm.js gate --set`. |
+| finish gates | `done`, `merged`, `tests_passed` (`devswarm.requiredGates`) set via `ah-hook mesh gate --set`. |
 
 ## Hard rules
 
@@ -69,7 +69,7 @@ the guards fire?", use `doctor`.
 - `archive`/`delete` via hivecontrol always name the workspace id (2.5.3 defaults to the CURRENT workspace otherwise).
 - DevSwarm messaging goes through the mesh only (no native `message-child`/`message-parent`, no `SendMessage` to a workspace).
 - Never call the DevSwarm app's local HTTP API or `hivecontrol workspace check-merge` from automation.
-- Change settings only via `/anti-hall:settings` / `scripts/settings.js`; never delete legacy config files.
+- Change settings only via `/anti-hall:settings` / `ah-hook settings`; never delete legacy config files.
 - Skips only on the user's explicit request; git-guard must be named.
 
 ## Skills (Claude `/anti-hall:<name>` · Codex `anti-hall-<name>`)
@@ -96,16 +96,16 @@ the guards fire?", use `doctor`.
 
 ## CLI verbs (run from the plugin root; heavy ones via a subagent)
 
-- `scripts/settings.js` — `show` [--all] [--section s] [--json] (list), `get <section.key>`, `set <section.key> <value>` (validated), `reset <section.key>` (drop the override), `judge on|off|status` (the opt-in semantic speculation-judge: sets `jev.semanticJudge`, reports the active backend and key visibility, prints the cost estimate), `trust-command-allow [<repo>] --confirmed` (trust a repo's `.anti-hall/command-allow.json` by content hash), `trust-edit-allow [<repo>] --confirmed` (trust a repo's `.anti-hall/edit-allow.json` doc-edit globs by content hash).
-- `scripts/auto-handover-config.js` — `get`, `set <1-99>`, `off`, `on`, `nag on|off`, `max-tokens <n>`, `nag-step <n>`, `nag-quiet <n>` (alias over `autoHandover.*`).
-- `scripts/jev-setup.js` — `status`, `enable`, `disable`, `set-key`, `test`, `mode <integration> on|shadow|off`.
-- `scripts/jev-report.js` — (no verb) the report [--json] [--window 24h|7d] [--by project|session] [--project <name>] [--weekly]; `label <hash> tp|fp`; `prune-audit` (trim audit snippets).
-- `scripts/defect.js` — `report`, `list`, `show`, `rule`, `archive`.
-- `hooks/doctor.js` — health check; `--repair` applies safe fixes. `skills/update/scripts/update.js` — update; `--check` compares only.
-- `scripts/devswarm.js` (`help <verb>` for detail) — mailbox: `send` (post to --to/--to-primary/--broadcast; `--quiet` for a one-line "sent seq N -> X, B bytes, ok"/loud "ok:false ..." instead of raw JSON; `--to <sibling> --cc-primary` also copies the Primary with the identical body, best-effort, reported under `ccPrimary`), `relay <seq|receipt> --to <id> [--note-file f]` (forward a message THIS caller already received, verbatim, with a provenance header — fails loud on a byte-length mismatch or an empty source body), `inbox` (count/read/pull/read-primary/ack-primary/peek-primary; `read-primary --format text` prints from/seq/body plain text instead of JSON, two-step ack default unchanged; opt-in `--ack-after-print` acks right after printing), `roster` (who is on the mesh), `mesh` (read the mesh), `heartbeat` (liveness + summary), `wake-directive` (reprint the wake instructions); registry: `register`, `ensure`, `register-primary` (Primary checkout only), `primary` (`status` shows the Primary seat; `takeover` demotes a conflicting session), `workspaces`, `migrate`, `migrate-owner-keys`, `reconcile`, `reconcile-registry`, `reconcile-active`, `reap-stale`, `reap-orphans`; lifecycle: `spawn` (create a workspace — raw argv tail forwarded to `hivecontrol workspace create`: `-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`, plus anti-hall's own `--from-local`; `help spawn` has the full detail), `merge`, `ready-check <sha>` (read-only verdict on a child's READY claim: fast-forward, submodule-pointer changes, watched-dir deletions, files outside an allowlist; never merges), `gate` (finish gates), `gate-intent` (state why a Stop block is intentional), `nudge`, `archive`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request` (ask a child to archive itself), `auto-archive` (show the plan), `prune-archived` (owner-approved delete), `retention` (status/run/restore), `notice` (the anti-hall dev agent's cross-project maintainer broadcast — `--post`/`--list`; refused unless `devswarm.maintainerNotice.post`=true and this checkout is anti-hall itself); app DB: `app-state`, `app-sync`, `sync-ui` (screenshot sync); health: `diagnose`, `healthcheck`, `logs`; `skip <guard> [--ttl m]` (user-requested skip only).
-- `scripts/devswarm.js` Meeseeks supervision (0.117.0) — `plan set <id> --steps …` / `plan show <id>` (step plan), `heartbeat <id> --step N --status doing|done|blocked`, child: `scope add <id> --glob G --note TEXT` (user-requested extra work), Primary: `correct <id> [--dry-run]` (send the straying correction, records warned_at), `respawn <id> [--dry-run]` (Primary-run only, after a warning + `devswarm.respawnGraceMin`: WIP pushed or parked on a new pushed park branch, handover, `<branch>-r<N>` spawned from the default branch, old id archived; never automatic, never kills), `supervision-report [--days N] [--json]` (warnings, corrections followed, extras, tokens per workspace/step, burn, respawns, Jev follow/override).
-- `companion/devswarm-recover.js <id>` — the only path that kills (one named, confirmed-wedged workspace).
-- Installers: `companion/install-reaper.js`, `install-devswarm-supervisor.js`, `install-devswarm-ingest.js`. The statusline installer is retired and writes nothing; use `statusline/uninstall-statusline.js` only to clean up older installs.
+- `ah-hook settings` — `show` [--all] [--section s] [--json] (list), `get <section.key>`, `set <section.key> <value>` (validated), `reset <section.key>` (drop the override), `judge on|off|status` (the opt-in semantic speculation-judge: sets `jev.semanticJudge`, reports the active backend and key visibility, prints the cost estimate), `trust-command-allow [<repo>] --confirmed` (trust a repo's `.anti-hall/command-allow.json` by content hash), `trust-edit-allow [<repo>] --confirmed` (trust a repo's `.anti-hall/edit-allow.json` doc-edit globs by content hash).
+- `ah-hook auto-handover-config` — `get`, `set <1-99>`, `off`, `on`, `nag on|off`, `max-tokens <n>`, `nag-step <n>`, `nag-quiet <n>` (alias over `autoHandover.*`).
+- `ah-hook jev-setup` — `status`, `enable`, `disable`, `set-key`, `test`, `mode <integration> on|shadow|off`.
+- `ah-hook jev-report` — (no verb) the report [--json] [--window 24h|7d] [--by project|session] [--project <name>] [--weekly]; `label <hash> tp|fp`; `prune-audit` (trim audit snippets).
+- `ah-hook defect` — `report`, `list`, `show`, `rule`, `archive`.
+- `ah-hook doctor` — health check; `--repair` applies safe fixes. `ah-hook update` — update; `--check` compares only.
+- `ah-hook mesh` (`help <verb>` for detail) — mailbox: `send` (post to --to/--to-primary/--broadcast; `--quiet` for a one-line "sent seq N -> X, B bytes, ok"/loud "ok:false ..." instead of raw JSON; `--to <sibling> --cc-primary` also copies the Primary with the identical body, best-effort, reported under `ccPrimary`), `relay <seq|receipt> --to <id> [--note-file f]` (forward a message THIS caller already received, verbatim, with a provenance header — fails loud on a byte-length mismatch or an empty source body), `inbox` (count/read/pull/read-primary/ack-primary/peek-primary; `read-primary --format text` prints from/seq/body plain text instead of JSON, two-step ack default unchanged; opt-in `--ack-after-print` acks right after printing), `roster` (who is on the mesh), `mesh` (read the mesh), `heartbeat` (liveness + summary), `wake-directive` (reprint the wake instructions); registry: `register`, `ensure`, `register-primary` (Primary checkout only), `primary` (`status` shows the Primary seat; `takeover` demotes a conflicting session), `workspaces`, `migrate`, `migrate-owner-keys`, `reconcile`, `reconcile-registry`, `reconcile-active`, `reap-stale`, `reap-orphans`; lifecycle: `spawn` (create a workspace — raw argv tail forwarded to `hivecontrol workspace create`: `-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`, plus anti-hall's own `--from-local`; `help spawn` has the full detail), `merge`, `ready-check <sha>` (read-only verdict on a child's READY claim: fast-forward, submodule-pointer changes, watched-dir deletions, files outside an allowlist; never merges), `gate` (finish gates), `gate-intent` (state why a Stop block is intentional), `nudge`, `archive`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request` (ask a child to archive itself), `auto-archive` (show the plan), `prune-archived` (owner-approved delete), `retention` (status/run/restore), `notice` (the anti-hall dev agent's cross-project maintainer broadcast — `--post`/`--list`; refused unless `devswarm.maintainerNotice.post`=true and this checkout is anti-hall itself); app DB: `app-state`, `app-sync`, `sync-ui` (screenshot sync); health: `diagnose`, `healthcheck`, `logs`; `skip <guard> [--ttl m]` (user-requested skip only).
+- `ah-hook mesh` Meeseeks supervision (0.117.0) — `plan set <id> --steps …` / `plan show <id>` (step plan), `heartbeat <id> --step N --status doing|done|blocked`, child: `scope add <id> --glob G --note TEXT` (user-requested extra work), Primary: `correct <id> [--dry-run]` (send the straying correction, records warned_at), `respawn <id> [--dry-run]` (Primary-run only, after a warning + `devswarm.respawnGraceMin`: WIP pushed or parked on a new pushed park branch, handover, `<branch>-r<N>` spawned from the default branch, old id archived; never automatic, never kills), `supervision-report [--days N] [--json]` (warnings, corrections followed, extras, tokens per workspace/step, burn, respawns, Jev follow/override).
+- `ah-hook devswarm recover --id <id> --request <request-id>` — the only path that kills (one named, confirmed-wedged workspace).
+- Units: `ah-hook units` lists and installs the reaper, supervisor and ingest units. The statusline installer is retired and writes nothing; use `ah-hook uninstall-statusline` only to clean up older installs.
 
 ## Settings (defaults; `*` = advanced)
 

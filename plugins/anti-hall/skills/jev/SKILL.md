@@ -13,7 +13,7 @@ Jev is anti-hall's opt-in classifier backend (see `docs/KB-jev-classifier.md` in
 full design). It is **default OFF** and, once enabled, only ever ADDS or RELAXES a
 decision within a trust rule the caller controls — see the KB doc's "Fallback
 semantics" section. This skill is the activation/config/status front door;
-`scripts/jev-setup.js` does the actual work and never prints the key.
+`ah-hook jev-setup` does the actual work and never prints the key.
 
 ## The credential never travels through the model
 
@@ -157,7 +157,7 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
   spend; otherwise it reports cost as `n/a`.
 - **Real** (automatic, when available): every Jev call already parses its own
   response for a gateway-reported cost or token usage (see
-  `hooks/lib/jev-client.js`'s `extractCostAndUsage` — verified against Vercel AI
+  `jev-client`'s `extractCostAndUsage` — verified against Vercel AI
   Gateway's docs at
   https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
   The TypeSafe "systemone" endpoint this build calls does **not** currently return
@@ -336,7 +336,7 @@ compact, ALWAYS-7-day summary: one line per integration with its current
 `[mode]`, KEEP/REVIEW/REMOVE suggestion, a short reason, and call count. Same
 thresholds as the full report, just condensed.
 
-Separately, a SessionStart hook (`hooks/jev-weekly-scorecard.js`) checks this
+Separately, a SessionStart hook (`jev-weekly-scorecard`) checks this
 automatically, AT MOST once every 7 days (a latch at
 `~/.anti-hall/state/jev-weekly-notice.json` enforces the cadence — the check
 runs at most once per week regardless of outcome, so a quiet week doesn't
@@ -365,7 +365,7 @@ per-session cron — a session cron dies with the session.
 A review becomes DUE for a `shadow` integration once it has run in shadow for
 `jev.reviewAfterDays` (default 7) AND logged at least `jev.reviewMinDecisions`
 (default 30) decisions, unless it is currently snoozed or was already reviewed
-within that same window. A SessionStart hook (`hooks/jev-review-reminder.js`,
+within that same window. A SessionStart hook (`jev-review-reminder`,
 main session only) and `doctor` both surface a due integration; the hook
 injects one line like:
 
@@ -404,7 +404,7 @@ For every integration except `triage` this comes from `jev-assist.ndjson`
 decision rows' `ms` field; the `triage` row is sourced from
 `jev-triage.ndjson`'s own classification rows' `ms` field instead (its real
 decisions never land in `jev-assist.ndjson` — a separate file/schema, see
-`hooks/lib/jev-triage.js` — so `buildReport` merges them in as their own
+`jev-triage` — so `buildReport` merges them in as their own
 `triage` integration, `backend` always one of `jev`/`cache`/`baseline-only`,
 never left `undefined`). Either way it is still **classifier latency**, NOT
 reply turnaround. The separate **"triage answer-time"** section underneath the
@@ -507,7 +507,7 @@ the headline switches). `jev-setup.js mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for
 back-compat); a pre-existing `jev.json integrations.<id>` value, or a pre-0.108.4
 settings.json `jev["integrations.<id>"]` value, keeps working and forward-migrates
-into the new key automatically (see `companion/lib/migrations.js`
+into the new key automatically (see `migrations`
 `migrateJevIntegrationsSection`) — nothing is ever deleted.
 
 ### All integrations
@@ -524,12 +524,12 @@ into the new key automatically (see `companion/lib/migrations.js`
 | `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` | yes | yes |
 | `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` | yes | yes |
 | `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
-| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
+| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — the engine supervisor duty identity-binds to `claude --resume` processes specifically |
 | `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
 | `findingDedup` | do two deadly-loop TRIO findings describe the same underlying issue | `advisory` | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (see CHANGELOG 0.108.4) | yes | yes |
 | `postHandoverGate` | does this new request fit in the remaining post-handover context budget | `advisory` | `off` — an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the agent's own size judgment plus the measured budget backstop, no gain over that baseline | yes | yes |
 | `speculationFramed` | when a deterministic speculation-guard hedge hit sits under a FRAMED heading/line prefix (Expected/Plan/"Should be \<verb\>:"/Unverified/"not yet measured"), is it a stated expectation/plan or an unverified claim presented as fact | `relax-block` (Jev may only turn the framed hit's block into a non-block; an unframed hedge never consults Jev) | `shadow` | yes | yes |
-| `dispatchTier` | how should each dispatchable task be dispatched: `workspace` / `workflow` / `subagent` (annotates the DISPATCH NOW line; the Primary makes the final call) | `advisory` (never blocks or forces) | `on` — advisory annotation only; asked `askDetached` when a task's text changes (PostToolUse TaskCreate/TaskUpdate); a no-workspaces repo (CLAUDE.md/AGENTS.md "no workspaces for real work", or `jev.dispatchTierNoWorkspaceRepos`) never gets `workspace`. Outcomes: followed/overridden, subagent one-lane vs escalated, workflow fan-out — `scripts/dispatch-report.js` | yes | n/a — Codex has no TaskCreate/Agent task tools, so there is nothing to annotate |
+| `dispatchTier` | how should each dispatchable task be dispatched: `workspace` / `workflow` / `subagent` (annotates the DISPATCH NOW line; the Primary makes the final call) | `advisory` (never blocks or forces) | `on` — advisory annotation only; asked `askDetached` when a task's text changes (PostToolUse TaskCreate/TaskUpdate); a no-workspaces repo (CLAUDE.md/AGENTS.md "no workspaces for real work", or `jev.dispatchTierNoWorkspaceRepos`) never gets `workspace`. Outcomes: followed/overridden, subagent one-lane vs escalated, workflow fan-out — `ah-hook dispatch-report` | yes | n/a — Codex has no TaskCreate/Agent task tools, so there is nothing to annotate |
 | `devswarmOnBrief` | is a child's off-scope work off its brief | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
 | `devswarmExtraSanctioned` | did the user ask for this off-scope work (threshold 0.9) | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
 | `devswarmWaitKind` | is an idle/stalled child stuck or waiting on CI/owner/peer | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
@@ -539,7 +539,7 @@ into the new key automatically (see `companion/lib/migrations.js`
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
 `codexNudgeSubstantial`/`findingDedup`/`postHandoverGate` use a real classifier call (`ask`/`askSync`/`askDetached`);
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
-both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
+both reuse an ALREADY-cached `jev-triage` label populated by a
 different surface that classified the same message earlier, so promoting either
 to `on` is a config change only, no extra cost. `supervisorBlockerLabel`'s
 sweep runs every ~90s but only asks/logs once per DISTINCT input (childId +
@@ -555,7 +555,7 @@ reported no label instead of the still-valid one). `mergeGateHedge` uses `askDet
 changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
 fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
 fail-open to the nudge) and a confident "trivial" verdict skips the nudge.
-`findingDedup` is called from `scripts/finding-dedup.js` (a standalone CLI, not a
+`findingDedup` is called from `ah-hook finding-dedup` (a standalone CLI, not a
 hook), one async `ask()` call per candidate finding pair, concurrency 4, capped at
 200 pairs per run — see the `deadly-loop`/`deadly-loop-multi` skills' Phase B3/step-5
 wiring. See `docs/KB-jev-classifier.md` §10 for the full table

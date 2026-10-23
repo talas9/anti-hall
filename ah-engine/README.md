@@ -136,11 +136,11 @@ Deliberate differences from the Node guard:
 
 ## Built-in checks: the small guards (`src/checks/guardkit`, one module per guard)
 
-`merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only) is a port of `hooks/merge-side-pick.js`. PostToolUse
+`merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only) is a port of `merge-side-pick`. PostToolUse
 records a one-sided conflict resolution (`--ours`, `--theirs`, `-X ours`, `-s ours`) and test runs per session; a push while
 a side-pick has no test run after it adds one advisory line. The shared helpers in `checks/guardkit` mirror
-`hooks/lib/settings.js` (a switch resolves env, then `settings.json`, then the plugin option, then the default),
-`hooks/skip-guard.js`, `hooks/lib/block-message.js`, and translate JavaScript regex sources kept in
+`settings` (a switch resolves env, then `settings.json`, then the plugin option, then the default),
+`skip-guard`, `block-message`, and translate JavaScript regex sources kept in
 `defaults/small_guards.toml` so `\s`, `\b`, `.` and the `i` flag keep their JavaScript meaning.
 
 Deliberate differences from the Node guard:
@@ -183,9 +183,9 @@ Deliberate differences from the Node guard:
   removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
 - `verify-first-subagent`, `verify-first-full` and `fable-availability` (context checks, never block; `checks/verify_first`,
   `checks/fable_availability`; parity test `tests/it/node_parity/verify_first.rs`): the protocol texts live in
-  `defaults/verify_first.toml`, copied from `hooks/verify-first-core.js`, and the harness fails when either side drifts. The
+  `defaults/verify_first.toml`, copied from `verify-first-core`, and the harness fails when either side drifts. The
   compact text names `<plugin root>/PROTOCOL.md`; the root is derived like Node does (the real location of
-  `hooks/verify-first-core.js`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
+  `verify-first-core`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
   defers for every hook (the dispatcher's rule). `fable-availability` writes the same state file as Node (key order
   `available`, `checkedAt`, `source`); a `~/.claude.json` the engine's reader rejects (after replacing unpaired surrogate
   escapes, which JSON.parse accepts) or nests deeper than its limit defers, so Node reads and writes it. The switches are the
@@ -268,7 +268,7 @@ Deliberate differences from the Node guard:
   younger than its window, a repair stamped at the running version or cooling down) and otherwise defers to the Node hook,
   which builds the report, reads the review log or takes the lock and starts the detached repair (D60: the repair
   implementation stays callable with the engine down). The engine never writes a state file for them. The list of default
-  migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `companion/lib/migrations.js`.
+  migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `migrations`.
   Codex registers the same three hooks, so the same checks answer its table; it registers neither `swarm-guard` nor
   `devswarm-comms-guard`.
 - Handover and Codex hook ports (`handover-resume`, `precompact-snapshot`, `codex-availability`, `codex-quota-detect`,
@@ -285,7 +285,7 @@ A check whose decision is editable plugin JavaScript is registered as a `Scripte
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
 
 Three Node hooks read the session transcript to learn which background agents and named teammates are running, and share
-one parser, `hooks/lib/agent-scan.js`. `checks/agent_scan` is its port. It streams the transcript tail line by line (the
+one parser, `agent-scan`. `checks/agent_scan` is its port. It streams the transcript tail line by line (the
 Node hook reads it whole), so a 64 MiB window never sits in the daemon's memory; what it keeps is the small state the walk
 needs, plus the answers to `TaskOutput` and `SendMessage` calls for the delivered-but-unnotified safety net, bounded by
 `agent_scan.retain_bytes`.
@@ -367,7 +367,7 @@ verdict on a written path, the repo's command allowlist, and git subprocesses fo
 also a stdout JSON line plus stderr, which the `Block` verdict cannot carry. So the check returns Allow only when Node
 allows the command whatever the context, and Defer otherwise (the client then runs the Node hook, D11):
 
-1. no DevSwarm or stash guard can fire (DevSwarm CLI verb in any scanned segment, `devswarm.js`, `stash`, or an
+1. no DevSwarm or stash guard can fire (DevSwarm CLI verb in any scanned segment, `ah-hook mesh`, `stash`, or an
    `inbox`/`store` path component in the command or the cwd);
 2. no write target the edit-guard parity branch would judge (redirects, tee, `sed -i`, `perl -i`, cp/mv, and inline
    interpreter code that might name one; targets with `$`, globs, braces or a leading `~` are skipped as in Node);

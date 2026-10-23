@@ -129,7 +129,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   `codexNudgeSubstantial` —
   all default `shadow`; `findingDedup` (advisory: do two deadly-loop TRIO findings
   describe the same underlying issue, called from the standalone
-  `scripts/finding-dedup.js` CLI, not a hook) defaults `on` — 65/65 correct at
+  `ah-hook finding-dedup` CLI, not a hook) defaults `on` — 65/65 correct at
   confidence ≥0.85 on a 30-day, 3-project offline benchmark, see CHANGELOG 0.108.4;
   `postHandoverGate` (advisory: does a new request fit in the remaining
   post-handover context budget, asked fire-and-forget from the shared
@@ -215,7 +215,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   before comparing their agreement/changed-rate numbers.
 - `ah-hook jev-report --weekly [--json]` — compact ALWAYS-7-day summary, one line
   per integration (`[mode]`, suggestion, short reason, calls). A SessionStart
-  hook (`hooks/jev-weekly-scorecard.js`, shared with the Claude port) checks
+  hook (`jev-weekly-scorecard`, shared with the Claude port) checks
   this automatically at most once every 7 days (latch:
   `~/.anti-hall/state/jev-weekly-notice.json`) and, ONLY in the interactive
   Primary session (never a DevSwarm child workspace), injects one line when an
@@ -266,7 +266,7 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   KEEP/REVIEW/REMOVE summary per integration. Two cost signals: `costPerCall` in
   `~/.anti-hall/jev.json` for a manual estimate (else `n/a`), and an automatic
   REAL cost parsed from each call's own response when the gateway reports one —
-  see `hooks/lib/jev-client.js`'s `extractCostAndUsage`
+  see `jev-client`'s `extractCostAndUsage`
   (https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
   The systemone endpoint this build calls does not currently return those
   fields, so set the `jev.prices` setting (`{"<model>": {"inPerMTok", "outPerMTok"}}` or a

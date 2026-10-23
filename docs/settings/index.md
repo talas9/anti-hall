@@ -8,7 +8,7 @@ description: Where anti-hall's settings live and the three ways to change them.
 Every anti-hall setting lives in one file, `~/.anti-hall/settings.json`, grouped into
 sections such as `guards`, `safety`, `autoHandover` and `statusline`. Nearly every hook
 has an on/off switch there; `settings.js show` lists the few parts that have none, and why. The full list, with defaults, is the
-[Settings reference](../../plugins/anti-hall-node/hooks/lib/settings-schema.js).
+[Settings reference](../../plugins/anti-hall/engine/defaults/settings_cli.toml).
 
 ## Three ways to change a setting
 

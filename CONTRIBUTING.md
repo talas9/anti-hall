@@ -12,7 +12,7 @@ Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin 
 | `plugins/anti-hall-node/` | The Node backup (not published): the original hooks, `doctor.js`, `lib/` |
 | `plugins/anti-hall/codex/` | The Codex port: `hooks/hooks.json`, `skills/`, `scripts/`, `install-codex.js` |
 | `plugins/anti-hall/skills/`, `agents/`, `scripts/`, `companion/`, `monitors/`, `statusline/` | Claude skills, agents, CLIs, opt-in companions, monitors, statusline |
-| `plugins/anti-hall-node/scripts/devswarm.js`, `scripts/devswarm-lib/` | `devswarm.js` is only the CLI dispatcher (`run`, `runArmed`'s verb switch, `main`, help text, the export object). The verb and helper implementations live in `scripts/devswarm-lib/*.js` (core, identity, cursors, fold, register, send, repair, archive, misc-verbs, roster-diag, spawn, reconcile, inbox-read, inbox-cmd, heartbeat-plan). Every lib file must stay at or below 256 KiB (262,144 bytes); `tests/hygiene/devswarm-lib-size.test.js` enforces it. Tests that assert on the source text read the whole unit through `tests/scripts/lib/devswarm-source.js`. |
+| `ah-hook mesh`, `scripts/devswarm-lib/` | `ah-hook mesh` is only the CLI dispatcher (`run`, `runArmed`'s verb switch, `main`, help text, the export object). The verb and helper implementations live in `scripts/devswarm-lib/*.js` (core, identity, cursors, fold, register, send, repair, archive, misc-verbs, roster-diag, spawn, reconcile, inbox-read, inbox-cmd, heartbeat-plan). Every lib file must stay at or below 256 KiB (262,144 bytes); `tests/hygiene/devswarm-lib-size.test.js` enforces it. Tests that assert on the source text read the whole unit through `tests/scripts/lib/devswarm-source.js`. |
 | `tests/` | The suite: `hooks/`, `hygiene/`, `codex/`, `companion/`, `scripts/`, `skills/`, `statusline/`, `e2e/`, `helpers/`, `fixtures/` |
 | `docs/` | `GUIDE.md` (extended guide, hook and settings tables) and the knowledge-base files |
 | `README.md`, `llms.txt`, `AGENTS.md` | Public docs, the LLM-readable index, and the cross-tool agent protocol |
@@ -27,7 +27,7 @@ Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on
 node --test                                         # the whole suite
 node --test tests/hygiene/docs-links.test.js        # one file
 node --test tests/hooks/git-guard.test.js tests/hygiene/docs-coverage.test.js   # a few files
-node plugins/anti-hall-node/hooks/doctor.js --check      # health check of a working copy
+ah-hook doctor --check      # health check of a working copy
 ```
 
 A green local run is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI, so run the full `node --test` locally before every push.
@@ -43,7 +43,7 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 
 1. Implement the check in the engine: its logic in `plugins/anti-hall/engine/logic/<name>.js` (run by the engine's script host) or a Rust built-in under `ah-engine/src/checks/`, with every value and text in `plugins/anti-hall/engine/defaults/*.toml` (both defaults directories). Do not add a Node hook. Register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
 2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall-node/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
-3. Add the user-facing setting to `plugins/anti-hall-node/hooks/lib/settings-schema.js`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
+3. Add the user-facing setting to `plugins/anti-hall/engine/defaults/settings_cli.toml`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
 5. `tests/hygiene/docs-coverage.test.js` derives these lists from the code and fails, naming what is undocumented and where it belongs. `tests/hygiene/docs-links.test.js` and `tests/hygiene/readme-doc-links.test.js` check links.
 6. Add a regression test in `tests/hooks/`. For a guard that blocks, include the dangerous forms that must stay blocked, not only the allowed one.
@@ -54,7 +54,7 @@ Hooks fail open: a parse, read or state error exits 0 without blocking or wedgin
 
 ### Settings
 
-Settings live in `~/.anti-hall/settings.json` and change only through `/anti-hall:settings` or `plugins/anti-hall-node/scripts/settings.js` (`show`, `get`, `set`, `reset`), never by hand ([AGENTS.md](AGENTS.md)). Resolution order: env, file, stored plugin option, legacy, default. Settings readers must honour an injected `HOME` and never fall back to `os.homedir()`; `tests/hygiene/settings-home-injection.test.js` enforces that.
+Settings live in `~/.anti-hall/settings.json` and change only through `/anti-hall:settings` or `ah-hook settings` (`show`, `get`, `set`, `reset`), never by hand ([AGENTS.md](AGENTS.md)). Resolution order: env, file, stored plugin option, legacy, default. Settings readers must honour an injected `HOME` and never fall back to `os.homedir()`; `tests/hygiene/settings-home-injection.test.js` enforces that.
 
 ## Both ports, always (dual-platform parity)
 
@@ -110,7 +110,7 @@ The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex m
 ## Before you open a pull request
 
 1. Run the files you touched, then `node --test` once.
-2. Run `node plugins/anti-hall-node/hooks/doctor.js --check`.
+2. Run `ah-hook doctor --check`.
 3. Fill in the pull request template honestly; "N/A, because ..." is a fine answer.
 
 ## Questions and problems

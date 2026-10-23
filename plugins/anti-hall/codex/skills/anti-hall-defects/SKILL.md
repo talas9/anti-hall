@@ -12,7 +12,7 @@ File, list, show, and rule on anti-hall's own defect reports via the durable, ho
 A durable, file-based, two-way channel for reporting bugs found in anti-hall itself back
 to the maintainer, and reading the maintainer's rulings back. It lives at
 `~/.anti-hall/defects/`, home-scoped (works from any repo), and is the SAME script and
-store as the Claude side (`hooks/lib/defect-store.js`, `scripts/defect.js`) — there is no
+store as the Claude side (`defect-store`, `ah-hook defect`) — there is no
 separate Codex implementation to drift from.
 
 ## Resolve the plugin root
@@ -32,7 +32,7 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 
 The Claude port surfaces open/regressed defect counts to the MAINTAINER via a live
 supervisor/monitor path in some contexts. **The Codex port has none of that** — its ONLY
-coverage is the shared `SessionStart` nudge (`hooks/defect-nudge.js`, wired identically
+coverage is the shared `SessionStart` nudge (`defect-nudge`, wired identically
 in `codex/hooks/hooks.json`), which fires once per 24h at session start, same as Claude.
 There is no additional low-latency wake path on Codex; do not imply one. If you need a
 fresher read than the once-per-24h nudge, run `list` directly (below) rather than waiting.

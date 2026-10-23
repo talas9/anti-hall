@@ -13,7 +13,7 @@ A durable, file-based, two-way channel for reporting bugs found in anti-hall its
 the guards, hooks, skills, statusline, or DevSwarm integration — back to the maintainer,
 and for reading the maintainer's rulings back. It lives at `~/.anti-hall/defects/`,
 **home-scoped** (works the same from any repo), and is deliberately NOT built on
-anti-hall's own DevSwarm messaging layer (see `hooks/lib/defect-store.js`'s header for
+anti-hall's own DevSwarm messaging layer (see `defect-store`'s header for
 why: a channel for reporting bugs in the messaging layer must not itself depend on that
 layer).
 
@@ -99,7 +99,7 @@ Optional fields on `report` and `rule`: `--component <path or module>` (normaliz
 `timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,
 `stale-path-or-version`, `platform-compat`, `wrong-default`, `other`.
 
-## `class` and `sev` (closed vocabularies — copied verbatim from `hooks/lib/defect-store.js`)
+## `class` and `sev` (closed vocabularies — copied verbatim from `defect-store`)
 
 - `class` (`CLASS_ENUM`, exactly these 8): `guard-false-positive`, `guard-miss`,
   `hook-crash`, `state-leak`, `messaging`, `doc`, `install`, `other`.
@@ -118,7 +118,7 @@ risks command injection or corruption. Two safe paths:
   ```js
   const { execFileSync } = require('child_process');
   execFileSync('node', [
-    'plugins/anti-hall-node/scripts/defect.js', 'report',
+    'ah-hook defect', 'report',
     '--class', 'hook-crash', '--sev', 'p1',
     '--sym', symptomText,       // raw string, no shell escaping needed — argv, not a shell line
     '--repro', reproText,

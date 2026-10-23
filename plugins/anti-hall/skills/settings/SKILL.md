@@ -11,7 +11,7 @@ Show or change any anti-hall setting. Use when the user says "anti-hall settings
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (autoHandover, guards, safety, context, maintenance, jev,
-jevIntegrations, limitConserve, devswarm, statusline, ...). `scripts/settings.js` is the
+jevIntegrations, limitConserve, devswarm, statusline, ...). `ah-hook settings` is the
 only thing that reads or writes it. Every hook anti-hall registers has an on/off switch
 (default = on, the old behaviour); `show` ends with the short list of parts that have no
 switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section holding
@@ -209,8 +209,8 @@ A question about ONE value ("what's the auto-handover threshold") is a single
 
 ## Auto-handover (`autoHandover` section)
 
-The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
-`hooks/auto-handover-pause-nag.js`) is **on by default at 93%** of this session's actual context window (plus an absolute `maxTokens` ceiling of 500000 that
+The auto-handover trigger (`auto-handover` + the Stop-time
+`auto-handover-pause-nag`) is **on by default at 93%** of this session's actual context window (plus an absolute `maxTokens` ceiling of 500000 that
 only bites on 1M windows — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
 and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
 further points and at a quiet pause (at most once per `nagQuietMin` minutes, and
@@ -230,7 +230,7 @@ handover was saved: refresh the handover and offer to park the rest.
 
 **Decisive compact/clear prompt (v0.109.5, `decisivePrompt`, on by default).** At a
 turn-ending Stop point (the fire-once or the natural-pause nag in
-`hooks/auto-handover-pause-nag.js`), once this session's `HANDOVER*.md` exists and
+`auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
 `tasklist-guard.js` uses), the directive tells the agent to END its
@@ -356,10 +356,10 @@ schema default `on`.
 ## What this skill never does
 
 - Never edits `~/.anti-hall/settings.json` (or any legacy config file) by hand —
-  always through `scripts/settings.js`, so validation and the atomic write always
+  always through `ah-hook settings`, so validation and the atomic write always
   run.
 - Never deletes a legacy config file (e.g. `~/.anti-hall/jev.json`) — anti-hall
   forward-migrates its values into `settings.json` once (see
-  `companion/lib/migrations.js`) but always leaves the legacy file in place.
-- Never invents a setting or value not in the schema — `scripts/settings.js show`
+  `migrations`) but always leaves the legacy file in place.
+- Never invents a setting or value not in the schema — `ah-hook settings show`
   is the source of truth for what exists and what it currently is.

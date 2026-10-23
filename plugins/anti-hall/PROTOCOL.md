@@ -101,4 +101,4 @@ INVOKE WHEN IT MATCHES (conditional skills, not every turn):
 
 If you are a teammate/background agent: SendMessage your final report to the coordinator BEFORE finishing — a bare turn-end silently loses it. NEVER end a turn waiting on a background task — its completion notification routes to the main session, not to you; run long commands foreground or poll the output file.
 
-Inside a DevSwarm child workspace: You are a subagent inside a DevSwarm child workspace: do NOT run devswarm.js inbox pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the mailbox; anything you learn goes back to your parent in your report.
+Inside a DevSwarm child workspace: You are a subagent inside a DevSwarm child workspace: do NOT run ah-hook mesh inbox pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the mailbox; anything you learn goes back to your parent in your report.

@@ -9,13 +9,13 @@ description: Write a lossless session handover. Use for "handover", "save sessio
 
 Use when the user says "prepare a handover", "handover", "write a handoff", "save session state", "hand this off", before /compact or /clear, at session end, or before ending work on a long task — writes a comprehensive, organized, minimal-but-lossless session handover so a fresh session can resume without re-deriving or guessing anything.
 
-**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit) watches the
+**Triggered automatically, too.** `auto-handover` (UserPromptSubmit) watches the
 main agent's estimated context usage and, at 93% by default (`autoHandover` section of
 `~/.anti-hall/settings.json`, or `ANTIHALL_AUTO_HANDOVER_PCT`; `/anti-hall:settings` skill
 to change it), injects a directive to run THIS skill's contract yourself, right now,
 without asking the user first — same self-write mandate as below. A long autonomous turn
 that never passes a user prompt gets the same directive once at a `Stop`
-(`hooks/auto-handover-pause-nag.js`, shared latch, never while `stop_hook_active`). If you're reading this
+(`auto-handover-pause-nag`, shared latch, never while `stop_hook_active`). If you're reading this
 skill because that directive fired, follow it exactly as written; nothing else changes.
 
 **Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. These are the shipped defaults (93% and 500000 tokens); see the `settings` skill, "Recommended setup".
@@ -121,7 +121,7 @@ consolidated schema):
    written, one of `auto-threshold` / `user-request` / `restart-pending` /
    `task-boundary`, plus the current context % if known. Source the % from the
    statusline (if shown), or from `~/.anti-hall/auto-handover/<tag>.json`
-   (`hooks/lib/auto-handover-state.js`'s per-session latch — `firedPct` is the
+   (`auto-handover-state`'s per-session latch — `firedPct` is the
    % it crossed the threshold at; `<tag>` is the session id, sanitized, or
    `sha1(transcript_path).slice(0,16)`, same scheme as "Session id" below).
    Use `auto-threshold` ONLY when that file's `fired` is `true` for this
@@ -316,7 +316,7 @@ handover SUPERSEDES the auto-compact summary and any legacy
 handover is not just documentation — it is what the next context actually
 resumes from.
 
-**PreCompact safety net.** `hooks/precompact-snapshot.js` (PreCompact, manual +
+**PreCompact safety net.** `precompact-snapshot` (PreCompact, manual +
 auto) writes `PRECOMPACT-<n>.md` into this session's handover dir right before
 every compaction: `pwd`, git branch/HEAD/dirty files, the task-list snapshot
 parsed from the transcript, the last 10 user messages verbatim, and a pointer to

@@ -44,7 +44,7 @@ Do instead: re-run the commit without that trailer.
 The four `safety.*` guards are **locked**: turning one off needs your direct request or a
 confirmation (see [Changing settings](../settings/index.md#safety-settings)). All settings,
 including the opt-in gates (`guards.mergeGate`, `guards.shipitGate`), are in the
-[Settings reference](../../plugins/anti-hall-node/hooks/lib/settings-schema.js).
+[Settings reference](../../plugins/anti-hall/engine/defaults/settings_cli.toml).
 
 ## Why the main session hands work off
 

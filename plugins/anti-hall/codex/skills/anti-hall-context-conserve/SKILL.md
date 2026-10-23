@@ -34,7 +34,7 @@ Project-local hooks are installed by `anti-hall-activate`:
 "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
 ```
 
-The installer registers `hooks/limit-conserve-inject.js` on `UserPromptSubmit` so conservation instructions are injected when active.
+The installer registers `limit-conserve-inject` on `UserPromptSubmit` so conservation instructions are injected when active.
 
 Manual controls:
 

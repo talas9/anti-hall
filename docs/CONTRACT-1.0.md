@@ -10,8 +10,8 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 332 in 20 sections | `plugins/anti-hall-node/hooks/lib/settings-schema.js` (`SECTIONS`) |
-| `devswarm.js` verbs | 47 | `plugins/anti-hall-node/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
+| Settings keys | 332 in 20 sections | `plugins/anti-hall/engine/defaults/settings_cli.toml` |
+| `ah-hook mesh` verbs | 47 | `ah-hook mesh` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
 | Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
@@ -19,7 +19,7 @@ right and this document gets a fix.
 
 ## 1. Settings keys
 
-**Schema:** `plugins/anti-hall-node/hooks/lib/settings-schema.js`. Each entry has `key`, `type`
+**Schema:** `plugins/anti-hall/engine/defaults/settings_cli.toml`. Each entry has `key`, `type`
 (`boolean`, `number`, `string`, `enum`, `csv`, `object`), `default`, and optionally `env`,
 `values`, `min`/`max`, `legacy`, `pluginOption`, `advanced`, `locked`, `homeOnly`. A key is
 addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArchive.mode`).
@@ -52,7 +52,7 @@ have an env override, 14 are `locked` (safety keys), 3 are `homeOnly`. The full 
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
 
-**Precedence** (`plugins/anti-hall-node/hooks/lib/settings.js`, `get()` and `resolveBelowFile()`),
+**Precedence** (the engine settings resolver, `ah-hook settings get`),
 highest first:
 
 1. **env**: the key's own env var (`entry.env`), then any deprecated `envAliases` (the canonical `ANTIHALL_*` name wins when both are set), when the value parses for the key's type. `guards.scanThrottle` and `maintenance.sessionEndReaper` keep their old `ANTI_HALL_SCAN_THROTTLE` / `ANTI_HALL_SESSION_END_REAPER` names as aliases.
@@ -86,13 +86,13 @@ chain; only writing them in the risky direction needs `--confirmed`.
 | Move a key into or out of `advanced` (display only; its plugin-option name stays readable) | PATCH |
 
 A removed key must keep being read as a legacy source for one MAJOR cycle, and its value
-forward-migrated (`companion/lib/migrations.js` `migrateSettingsFromLegacy`).
+forward-migrated (`migrations` `migrateSettingsFromLegacy`).
 
 ## 2. CLI verbs
 
-### `scripts/devswarm.js`
+### `ah-hook mesh`
 
-Source: the `run()` switch in `plugins/anti-hall-node/scripts/devswarm.js`. `devswarm.js help`
+Source: the `run()` switch in `ah-hook mesh`. `ah-hook mesh help`
 (and `help --short`, `help <verb>`, `<verb> --help`, `-h`) lists the verbs from that switch,
 and so does the `unknown command:` error, so neither can drift from the dispatcher. 47 verbs:
 
@@ -108,7 +108,7 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 `inbox` subcommands (`scripts/devswarm-lib/inbox-cmd.js`): `count`, `read`, `ack`, `pull`,
 `messages`, `read-primary`, `ack-primary`, `peek-primary`, `drain-primary-legacy`, `tick`.
 
-**Output and exit codes** (`main()` in `devswarm.js`):
+**Output and exit codes** (`main()` in `ah-hook mesh`):
 
 - Default stdout is **one JSON object** per call, `{ ok, action?, ... }`. Exit 0 when
   `ok` is true, 2 otherwise. Adding fields to that object is MINOR; removing or retyping
@@ -135,12 +135,12 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 
 | Script | Stable invocations | Machine-read output |
 |---|---|---|
-| `scripts/settings.js` | `show [--section K] [--all]`, `get <s.k>`, `set <s.k> <v> [--confirmed]`, `reset <s.k> [--confirmed]`, `judge on\|off\|status`, `trust-command-allow [<repo>]`, `trust-edit-allow [<repo>]` | `--json` on every verb; a gated write returns `{ok:false, needsConfirmation:true, warning}`; exit 1 on error |
-| `hooks/doctor.js` | plain (read-only), `--check`, `--repair` (alias `--fix`), `--dry-run`, `--quiet`, `--migrations-only`, `--logs`, `--confirmed` (only with `--prune-cache`) | exit 0 when every check passes, 1 otherwise |
-| `skills/update/scripts/update.js` | plain (full update), `--check` (no pull, no writes) | first stdout line is one JSON status object (test-only `ANTIHALL_MARKETPLACE_DIR` aside) `{installed, latest, updated, cacheSynced, action, ingestHeal?, reconcile?, harnessRegistered?}`; exit 1 only on a hard STOP (dirty clone, non-fast-forward) |
-| `scripts/migrate-state.js` | `[dir]`, `--planning`, `--mark-read`, `--restore-planning [--dir <wt>]` | copy-only; originals never deleted |
-| `scripts/capability-scan.js` | plain (human), `--json` | `--json` prints only the JSON report |
-| `scripts/coordinator-work-baseline.js` | `<transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` | `--json` prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}` |
+| `ah-hook settings` | `show [--section K] [--all]`, `get <s.k>`, `set <s.k> <v> [--confirmed]`, `reset <s.k> [--confirmed]`, `judge on\|off\|status`, `trust-command-allow [<repo>]`, `trust-edit-allow [<repo>]` | `--json` on every verb; a gated write returns `{ok:false, needsConfirmation:true, warning}`; exit 1 on error |
+| `ah-hook doctor` | plain (read-only), `--check`, `--repair` (alias `--fix`), `--dry-run`, `--quiet`, `--migrations-only`, `--logs`, `--confirmed` (only with `--prune-cache`) | exit 0 when every check passes, 1 otherwise |
+| `ah-hook update` | plain (full update), `--check` (no pull, no writes) | first stdout line is one JSON status object (test-only `ANTIHALL_MARKETPLACE_DIR` aside) `{installed, latest, updated, cacheSynced, action, ingestHeal?, reconcile?, harnessRegistered?}`; exit 1 only on a hard STOP (dirty clone, non-fast-forward) |
+| `ah-hook migrate` | `[dir]`, `--planning`, `--mark-read`, `--restore-planning [--dir <wt>]` | copy-only; originals never deleted |
+| `ah-hook capability-scan` | plain (human), `--json` | `--json` prints only the JSON report |
+| `ah-hook coordinator-work-baseline` | `<transcript.jsonl> [--from-line N] [--cwd DIR] [--json]` | `--json` prints `{calls, work, share, attemptedShare, wouldNudge, wouldBlock}` |
 
 `doctor.js` also has narrow, human-invoked repair flags (`--repair-ingest-orphans`,
 `--repair-test-stores`, `--repair-resurrected`, `--reclaim-ingest-lock`, `--prune-cache`,
@@ -156,7 +156,7 @@ Source: `plugins/anti-hall/hooks/hooks.json`. "May" lists what the script can em
 **block** (Stop `{"decision":"block"}`, or PreToolUse exit 2 / deny), **context**
 (`additionalContext` or an advisory message), **record** (writes state only; no model-facing
 output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
-`~/.anti-hall/skip.json` name (`hooks/skip-guard.js`).
+`~/.anti-hall/skip.json` name (`skip-guard`).
 
 | Hook | Event (matcher) | May | Setting | Skip | Codex |
 |---|---|---|---|---|---|
@@ -233,7 +233,7 @@ Not registered in `hooks.json` and so not covered: `doctor.js` (a CLI, section 2
 1. **skip file:** `~/.anti-hall/skip.json`, `{"<skip name>": <unix-ms expiry>}`. A
    broad `"all"` entry covers every guard except `git-guard`, `devswarm-read-guard` and
    `git-stash-guard` (`DESTRUCTIVE` in `skip-guard.js`), which must be named. Also written
-   by `devswarm.js skip <guard> [--ttl <minutes>]`.
+   by `ah-hook mesh skip <guard> [--ttl <minutes>]`.
 2. **setting:** the key in the table, through the normal precedence. Locked `safety.*`
    keys need `--confirmed` to turn off.
 3. **plugin:** disabling the plugin in the harness removes every hook.
@@ -253,7 +253,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   hooks, never silently shortened. One deliberate exception (cost-trim Phase 3): the default `context.protocolLevel=compact` sends a shorter core that keeps every load-bearing clause inline and points at the generated `PROTOCOL.md` for the rest; `context.protocolLevel=full` restores the complete text byte for byte on every channel (`tests/hygiene/cost-trim-goldens.test.js`).
 - **Loop-safe Stop gates.** A blocking Stop hook never wedges a session: each dedupes
   or caps its repeats (for example `speculation-guard` blocks once per message hash,
-  `codex-nudge` at most twice per session). The four on `hooks/lib/stop-policy.js`
+  `codex-nudge` at most twice per session). The four on `stop-policy`
   (`devswarm-parent-gate`, `devswarm-child-gate`, `auto-handover-pause-nag`,
   `compact-advice-guard`) also honour `stop_hook_active`.
 - **No network unless documented.** Hooks make no network calls except those listed in
@@ -273,25 +273,25 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 
 | Path | What | Source |
 |---|---|---|
-| `~/.anti-hall/settings.json` | `{ "<section>": { "<key>": value } }` | `hooks/lib/settings.js` |
-| `~/.anti-hall/skip.json` | `{ "<guard>": <unix-ms expiry> }` | `hooks/skip-guard.js` |
-| `~/.anti-hall/trusted-command-allow.json` | repo realpath to sha256 of the trusted allowlist | `hooks/lib/command-allow.js` |
-| `~/.anti-hall/defects/` | local defect reports | `hooks/lib/defect-store.js` |
-| `~/.anti-hall/logs/` | JSONL event and error logs | `companion/lib/anti-hall-log.js` |
-| `~/.anti-hall/devswarm/` | mesh root: `workspaces/`, `archived/`, `heartbeats/`, `store/<hash>/devswarm.db` (or `journal/` on the fallback backend), `summaries/`, `ignore.json`, `maintainer-notices.jsonl` | `companion/lib/liveness.js`, `companion/lib/devswarm-store.js` |
-| `~/.anti-hall/update-sweep-state.json` | per-version migration markers | `companion/lib/migrations.js` |
+| `~/.anti-hall/settings.json` | `{ "<section>": { "<key>": value } }` | `settings` |
+| `~/.anti-hall/skip.json` | `{ "<guard>": <unix-ms expiry> }` | `skip-guard` |
+| `~/.anti-hall/trusted-command-allow.json` | repo realpath to sha256 of the trusted allowlist | `command-allow` |
+| `~/.anti-hall/defects/` | local defect reports | `defect-store` |
+| `~/.anti-hall/logs/` | JSONL event and error logs | `anti-hall-log` |
+| `~/.anti-hall/devswarm/` | mesh root: `workspaces/`, `archived/`, `heartbeats/`, `store/<hash>/devswarm.db` (or `journal/` on the fallback backend), `summaries/`, `ignore.json`, `maintainer-notices.jsonl` | `liveness`, `devswarm-store` |
+| `~/.anti-hall/update-sweep-state.json` | per-version migration markers | `migrations` |
 | `~/.anti-hall/jev.json` | legacy Jev config, read-only fallback | `settings-schema.js` `legacy` |
-| `~/.anti-hall/coordinator-work-session-<id>.json` (+ `.lock`), `coordinator-work-metrics.json` (+ `.lock`), `coordinator-work-trips.log` (JSONL, rotated to `.1` at 1 MiB), `.coordinator-work-fold-stamp.json` | the main-thread work window: per-session state, folded per-version metrics, nudge/block trips | `hooks/lib/coordinator-work.js` |
-| `<repo>/.anti-hall/progress/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md` | `hooks/tasklist-guard.js` |
-| `<repo>/.anti-hall/history/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md`; `legacy/` | `hooks/task-lifecycle-log.js`, `scripts/migrate-state.js` |
-| `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |
-| `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `hooks/lib/command-allow.js` |
+| `~/.anti-hall/coordinator-work-session-<id>.json` (+ `.lock`), `coordinator-work-metrics.json` (+ `.lock`), `coordinator-work-trips.log` (JSONL, rotated to `.1` at 1 MiB), `.coordinator-work-fold-stamp.json` | the main-thread work window: per-session state, folded per-version metrics, nudge/block trips | `coordinator-work` |
+| `<repo>/.anti-hall/progress/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md` | `tasklist-guard` |
+| `<repo>/.anti-hall/history/` | `INDEX.md` + `<YYYY-MM-DD>/<session>.md`; `legacy/` | `task-lifecycle-log`, `ah-hook migrate` |
+| `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `auto-handover-text`, `handover-find` |
+| `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `command-allow` |
 
 Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the optional engine's binary, state databases, local telemetry and last-known-good copies), every
 `*-state.json`, lock and marker files, the SQLite schema inside `devswarm.db`) is internal:
 its location and format may change in any release.
 
-**Migration guarantee** (`companion/lib/migrations.js` header; run by `update.js`,
+**Migration guarantee** (`migrations` header; run by `update.js`,
 `doctor --repair` and `repair-on-reload`):
 
 - **Idempotent.** Each migration is stamped in `update-sweep-state.json` only after
@@ -320,7 +320,7 @@ scripts** (`codex/hooks/hooks.json` points at `${PLUGIN_ROOT}/hooks/*.js`).
   (`tests/codex/codex-hook-parity.test.js`).
 - **Stop behaviour.** The shared Stop hooks run and fail open on a Codex-shaped payload
   (`tests/codex/codex-jev-hooks-parity.test.js`).
-- **Settings, CLIs, state.** The schema, precedence, `settings.js`, `devswarm.js` and every
+- **Settings, CLIs, state.** The schema, precedence, `settings.js`, `ah-hook mesh` and every
   path in section 4 are one code path on both.
 - **Skill paths.** Codex skills resolve the plugin root at run time
   (`tests/codex/skill-paths.test.js`).
@@ -345,9 +345,9 @@ These may change in any release, including a PATCH:
 - **Internal modules:** everything under `hooks/lib/`, `companion/lib/`,
   `scripts/devswarm-lib/`, and every exported function. Only the CLIs and hook scripts are
   public.
-- **Skill-run helper scripts:** `scripts/defect.js`, `jev-report.js`, `jev-setup.js`,
+- **Skill-run helper scripts:** `ah-hook defect`, `jev-report.js`, `jev-setup.js`,
   `briefing.js`, `dispatch-report.js`, `auto-handover-config.js`, `finding-dedup.js`,
-  `harvest-debt.js`, `devswarm-store-leak-report.js`, `companion/devswarm-recover.js` and the
+  `harvest-debt.js`, `devswarm-store-leak-report.js`, `ah-hook devswarm recover` and the
   `companion/install-*.js` scripts. Skills invoke them, but their flags and output are not
   frozen; only the scripts in section 2 are stable CLIs.
 - **Message wording:** guard block reasons, advisory and nudge text, human report lines,
@@ -366,7 +366,7 @@ These may change in any release, including a PATCH:
 
 | Bump | Examples for this plugin |
 |---|---|
-| **MAJOR** | rename `safety.gitGuard`; change `guards.mergeGate`'s default to on; drop a `devswarm.js` verb or the `inbox tick --quiet` format; remove `ok` from the JSON envelope; move `settings.json`; rename a skip name; make a context hook block; delete data in an automatic path; raise the minimum Node version |
+| **MAJOR** | rename `safety.gitGuard`; change `guards.mergeGate`'s default to on; drop a `ah-hook mesh` verb or the `inbox tick --quiet` format; remove `ok` from the JSON envelope; move `settings.json`; rename a skip name; make a context hook block; delete data in an automatic path; raise the minimum Node version |
 | **MINOR** | add a setting, verb, flag, hook, skill or JSON field; add an enum value; add a documented opt-in network call; port a Claude-only hook to Codex; retune a default within its meaning |
 | **PATCH** | fix a false positive or a missed dangerous form; reword a message; fix docs; refactor internals; add a migration repairing an earlier bad state; test-only changes |
 

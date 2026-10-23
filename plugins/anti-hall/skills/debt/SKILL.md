@@ -40,7 +40,7 @@ function fakeRouter(x) { /* hard-coded 2-way switch, fine for now */ }
 
 ## What `/anti-hall:debt` does
 
-It runs `plugins/anti-hall-node/scripts/harvest-debt.js` (pure Node, cross-platform, no deps), which:
+It runs `ah-hook harvest` (pure Node, cross-platform, no deps), which:
 
 1. **Greps** the target tree (default cwd; `--dir <path>`) for `anti-hall:` markers across all
    comment styles, skipping `.git`, `node_modules`, dot-dirs, and binaries.

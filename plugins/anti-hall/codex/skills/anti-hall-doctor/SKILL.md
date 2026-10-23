@@ -42,7 +42,7 @@ Repair flags (mirror the Claude `doctor` skill): plain doctor is read-only; `--r
 `--fix` apply; `--dry-run` shows would-fix and writes nothing; `--check` is read-only;
 `--quiet` is the one-line verdict. When the user asks to repair/fix anti-hall, pass
 `--repair`. The all-store DevSwarm migrations come from ONE registry
-(`companion/lib/migrations.js`) shared with `update` and the supervisor and are stamped
+(`migrations`) shared with `update` and the supervisor and are stamped
 done per plugin version (`~/.anti-hall/update-sweep-state.json`), so a repeat `--repair`
 skips them with one marker read; deletion-class repairs (`--repair-resurrected`) are never
 in that set. `--prune-cache` (opt-in, never automatic) lists old plugin cache version dirs
@@ -64,7 +64,7 @@ spawns), so on Codex the daemon fixes report the manual command rather than acti
 matching the liveness supervisor's Claude-only status. Windows is not supported.
 
 `doctor.js` also carries the same DevSwarm **RUNTIME health checks** as the Claude side
-(`companion/lib/doctor-runtime.js`, same shared script): store/journal health across
+(`doctor-runtime`, same shared script): store/journal health across
 every PER-PROJECT store `store/<hash>/` (sqlite `quick_check` via an isolated
 `--no-warnings` read-only probe, journal torn-line scan, store↔summary parity),
 data staleness (gated on the daemon RUNNING + unread backlog —
@@ -85,8 +85,8 @@ binary itself cannot be resolved) is repaired by reinstalling; a slow or timing-
 (`monitorSlowReason()`) and is NEVER reinstalled or restarted — the daemon process is alive
 and its heartbeat is fresh, so reinstalling would only interrupt it without making
 `hivecontrol` respond any faster. The same shared predicate
-(`hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also drives the in-session
-hot-path banner on the Claude side (`companion/lib/ingest-health.js`'s `daemonHealth()`
+(`doctor-repair`'s exported `monitorFaultFor()`) also drives the in-session
+hot-path banner on the Claude side (`ingest-health`'s `daemonHealth()`
 returns `status:'failed'`, distinct from `'healthy'`/`'stale'`; the banner shows once per fault episode, tells a timeout to check or restart the DevSwarm app, and keeps the doctor call to action for config faults only) — and a no-other-consumer
 scan for a stray `hivecontrol workspace monitor` process (report-only, never kills). Since
 the DevSwarm gate is effectively always closed on Codex sessions, these checks are
