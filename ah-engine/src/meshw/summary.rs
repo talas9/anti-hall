@@ -614,7 +614,7 @@ pub(crate) fn held_ids(inv: &Inv) -> R<HashSet<String>> {
 }
 
 /// `jev-triage.js` `hashMessage(text)`.
-fn jev_hash(text: &str) -> String {
+pub(crate) fn jev_hash(text: &str) -> String {
     let d = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
     crate::meshw::store::hex(d.as_ref())[..defaults::num("mesh_write.jev_hash_hex") as usize].to_string()
 }

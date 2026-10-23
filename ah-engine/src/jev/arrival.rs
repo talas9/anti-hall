@@ -95,7 +95,10 @@ pub fn load_cfg(home: &Path, env: Env) -> Cfg {
     let merged = |key: &str| sources.settings.get("jev").and_then(|j| j.get(key)).or_else(|| sources.legacy.get(key));
     let switched_off = merged("triage") == Some(&serde_json::Value::Bool(false));
     let enabled = jev.mode(defaults::text("triage.integration"), false) != Mode::Off && !switched_off;
-    let budget_ms = merged("triageBudgetMs").and_then(serde_json::Value::as_f64).filter(|n| n.is_finite() && *n > 0.0).map_or(defaults::num("triage.default_timeout_ms"), |n| n as u64);
+    let budget_ms = merged("triageBudgetMs")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map_or(defaults::num("triage.default_timeout_ms"), |n| n as u64);
     let urgent_threshold = merged("triageUrgentThreshold")
         .and_then(serde_json::Value::as_f64)
         .filter(|n| (0.0..=1.0).contains(n))
@@ -312,7 +315,8 @@ pub fn triage_sync(home: &Path, items: &[Item], lim: &Limits, labeler: &dyn Labe
     }
     let p = paths(home);
     let Some(cache) = read_cache(&p.cache) else { return results };
-    let hashed: Vec<(usize, String, &str)> = items.iter().filter(|i| !crate::jev::js_trim(&i.text).is_empty()).map(|i| (i.key, hash_message(&i.text), i.text.as_str())).collect();
+    let hashed: Vec<(usize, String, &str)> =
+        items.iter().filter(|i| !crate::jev::js_trim(&i.text).is_empty()).map(|i| (i.key, hash_message(&i.text), i.text.as_str())).collect();
     let mut uncached: Vec<(usize, String, &str)> = Vec::new();
     for (key, hash, text) in hashed {
         match cache.iter().rev().find(|(k, _)| *k == hash).map(|(_, v)| v) {
@@ -364,7 +368,14 @@ pub fn triage_sync(home: &Path, items: &[Item], lim: &Limits, labeler: &dyn Labe
     results
 }
 
-fn label_and_cache(p: &Paths, cfg: &Cfg, lim: &Limits, labeler: &dyn Labeler, mine: &[(usize, String, &str)], results: &mut Vec<(usize, (Option<String>, Option<String>))>) {
+fn label_and_cache(
+    p: &Paths,
+    cfg: &Cfg,
+    lim: &Limits,
+    labeler: &dyn Labeler,
+    mine: &[(usize, String, &str)],
+    results: &mut Vec<(usize, (Option<String>, Option<String>))>,
+) {
     let mut asked: Vec<(String, String)> = Vec::new();
     for (_, hash, text) in mine {
         if !asked.iter().any(|(h, _)| h == hash) {
@@ -482,7 +493,8 @@ pub fn has_pending(home: &Path) -> bool {
 fn work_files(p: &Paths, own: &[PathBuf]) -> Vec<PathBuf> {
     let prefix = format!("{}{}", defaults::raw("jev_arrival.files").str_field("queue"), defaults::raw("jev_arrival.files").str_field("work_infix"));
     let Ok(rd) = std::fs::read_dir(&p.cache_dir) else { return Vec::new() };
-    let mut v: Vec<PathBuf> = rd.filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)).map(|e| e.path()).filter(|f| !own.contains(f)).collect();
+    let mut v: Vec<PathBuf> =
+        rd.filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().starts_with(&prefix)).map(|e| e.path()).filter(|f| !own.contains(f)).collect();
     v.sort();
     v
 }
@@ -683,4 +695,259 @@ pub fn run_cmd(home: &Path) -> i32 {
         )
     );
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn home(enabled: bool) -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let h = std::env::temp_dir().join(format!("ah-arrival-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(h.join(".anti-hall")).unwrap();
+        if enabled {
+            std::fs::write(h.join(".anti-hall/jev.json"), r#"{"enabled":true}"#).unwrap();
+        }
+        h
+    }
+
+    fn lim() -> Limits {
+        Limits { queue_max_bytes: 1 << 20, text_max_chars: 1000, batch_size: 2, max_batches: 50, max_wall_ms: 60_000, max_attempts: 3, cache_max_entries: 500, ..Limits::shipped() }
+    }
+
+    fn label(kind: &str, urgency: &str) -> Label {
+        Label { kind: Some(kind.into()), urgency: Some(urgency.into()), backend: "jev".into(), ms: 7, transport: Some("vercel".into()), fell_back: false }
+    }
+
+    /// Never calls Jev: a text with a question mark is a question, anything else an fyi.
+    #[derive(Default)]
+    struct Stub {
+        calls: Mutex<Vec<Vec<String>>>,
+        skip: AtomicBool,
+        no_label: AtomicBool,
+        panic_once: AtomicBool,
+    }
+
+    impl Labeler for Stub {
+        fn label(&self, items: &[(String, String)], _: u64, _: f64) -> Vec<(String, Option<Label>)> {
+            self.calls.lock().unwrap().push(items.iter().map(|(_, t)| t.clone()).collect());
+            if self.panic_once.swap(false, Ordering::SeqCst) {
+                panic!("the worker died after claiming, before writing");
+            }
+            if self.skip.load(Ordering::SeqCst) {
+                return Vec::new(); // the budget cut everything off
+            }
+            items
+                .iter()
+                .map(|(h, t)| {
+                    let l = if self.no_label.load(Ordering::SeqCst) {
+                        None
+                    } else if t.contains('?') {
+                        Some(label("question-needs-answer", "urgent"))
+                    } else {
+                        Some(label("fyi", "normal"))
+                    };
+                    (h.clone(), l)
+                })
+                .collect()
+        }
+    }
+
+    impl Stub {
+        fn asked(&self) -> usize {
+            self.calls.lock().unwrap().iter().map(Vec::len).sum()
+        }
+    }
+
+    fn cache_of(h: &Path) -> Vec<(String, J)> {
+        read_cache(&paths(h).cache).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_queued_arrival_is_labelled_into_the_cache_the_reader_uses() {
+        let h = home(true);
+        let (l, s) = (lim(), Stub::default());
+        assert_eq!(enqueue(&h, "can you review the diff?", &l), Enqueued::Queued);
+        assert_eq!(enqueue(&h, "all green", &l), Enqueued::Queued);
+        let sum = run_worker(&h, &l, &s);
+        assert_eq!((sum.ended, sum.labelled, sum.batches), (Ended::Drained, 2, 1));
+        let p = paths(&h);
+        assert!(!p.queue.exists() && !p.lock.exists() && work_files(&p, &[]).is_empty(), "queue, lock and private copies are gone");
+        // the reader (meshw/summary.rs): the cache is keyed by its hash, and a question carries kind question-needs-answer
+        let q = "can you review the diff?";
+        assert_eq!(hash_message(q), crate::meshw::summary::jev_hash(q), "the writer and the reader hash alike");
+        let file = std::fs::read_to_string(&p.cache).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&file).unwrap();
+        assert_eq!(v[hash_message(q)]["kind"], defaults::text("mesh_write.jev_question_kind"));
+        assert_eq!(v[hash_message(q)]["urgency"], "urgent");
+        assert_eq!(v[hash_message("all green")]["kind"], "fyi");
+        assert!(v[hash_message(q)]["_seq"].is_number());
+        // the entry has Node's field order, and a labelled text is not queued again
+        assert!(file.contains(&format!("\"{}\":{{\"urgency\":\"urgent\",\"kind\":\"question-needs-answer\",\"_seq\":", hash_message(q))), "{file}");
+        assert_eq!(enqueue(&h, q, &l), Enqueued::Cached);
+        // and the log row carries no body
+        let log = std::fs::read_to_string(&p.log).unwrap();
+        assert_eq!(log.lines().count(), 2);
+        assert!(!log.contains("review the diff") && log.contains(r#""backend":"jev""#) && log.contains(r#""transport":"vercel""#));
+    }
+
+    #[test]
+    fn nothing_is_written_while_triage_is_off_or_the_text_cannot_be_queued() {
+        let off = home(false);
+        assert_eq!(enqueue(&off, "hello?", &lim()), Enqueued::Disabled);
+        assert!(!paths(&off).cache_dir.exists(), "no write at all while off");
+        let s = Stub::default();
+        assert_eq!(run_worker(&off, &lim(), &s).ended, Ended::Off);
+        let on = home(true);
+        let small = Limits { queue_max_bytes: 10, text_max_chars: 5, ..lim() };
+        assert_eq!(enqueue(&on, "far too long a body", &small), Enqueued::TooLong);
+        assert_eq!(enqueue(&on, "short", &small), Enqueued::Queued);
+        assert_eq!(enqueue(&on, "next", &small), Enqueued::Full, "over the queue cap: labelled when a reader asks");
+        // jev.json switched triage off while Jev is on
+        std::fs::write(on.join(".anti-hall/jev.json"), r#"{"enabled":true,"triage":false}"#).unwrap();
+        assert_eq!(enqueue(&on, "again", &lim()), Enqueued::Disabled);
+    }
+
+    #[test]
+    fn the_batch_and_attempt_caps_bound_a_run() {
+        let h = home(true);
+        let s = Stub::default();
+        for i in 0..5 {
+            enqueue(&h, &format!("message {i}"), &lim());
+        }
+        let capped = Limits { batch_size: 1, max_batches: 2, ..lim() };
+        let sum = run_worker(&h, &capped, &s);
+        assert_eq!((sum.ended, sum.batches, sum.labelled, sum.skipped), (Ended::Capped, 2, 2, 3));
+        assert!(!paths(&h).lock.exists(), "the lock is released at the cap");
+        // the budget cuts every call off: each message is tried max_attempts times, then dropped, uncached
+        let h2 = home(true);
+        let s2 = Stub::default();
+        s2.skip.store(true, Ordering::SeqCst);
+        enqueue(&h2, "never reached", &lim());
+        let sum = run_worker(&h2, &lim(), &s2);
+        assert_eq!((sum.ended, sum.skipped, s2.asked()), (Ended::Drained, 1, lim().max_attempts as usize));
+        assert!(cache_of(&h2).is_empty(), "an unattempted message earns no permanent no-label verdict");
+        // the wall-time cap
+        let h3 = home(true);
+        struct Slow(Stub);
+        impl Labeler for Slow {
+            fn label(&self, i: &[(String, String)], b: u64, u: f64) -> Vec<(String, Option<Label>)> {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                self.0.label(i, b, u)
+            }
+        }
+        for i in 0..4 {
+            enqueue(&h3, &format!("slow {i}"), &lim());
+        }
+        let sum = run_worker(&h3, &Limits { batch_size: 1, max_wall_ms: 5, ..lim() }, &Slow(Stub::default()));
+        assert_eq!(sum.ended, Ended::Capped);
+        assert!(sum.batches >= 1 && sum.batches < 4);
+    }
+
+    #[test]
+    fn an_attempted_message_with_no_confident_label_is_cached_as_a_verdict() {
+        let h = home(true);
+        let s = Stub::default();
+        s.no_label.store(true, Ordering::SeqCst);
+        enqueue(&h, "meh", &lim());
+        let sum = run_worker(&h, &lim(), &s);
+        assert_eq!((sum.no_label, sum.labelled), (1, 0));
+        let c = std::fs::read_to_string(paths(&h).cache).unwrap();
+        assert!(c.contains(r#""nl":true"#), "{c}");
+        // honoured: never asked again
+        assert_eq!(enqueue(&h, "meh", &lim()), Enqueued::Cached);
+    }
+
+    #[test]
+    fn a_second_worker_yields_to_the_drain_lock_and_a_held_claim_skips_the_message() {
+        let h = home(true);
+        let (l, s) = (lim(), Stub::default());
+        enqueue(&h, "wait for me?", &l);
+        let p = paths(&h);
+        let held = nodelock::acquire(&p.lock.to_string_lossy(), l.drain).expect("take the drain lock");
+        let sum = run_worker(&h, &l, &s);
+        assert_eq!(sum.ended, Ended::Busy);
+        assert!(p.queue.exists() && s.asked() == 0, "the queue is untouched while another worker drains");
+        assert!(held.release());
+        // another process is labelling this text: the item is skipped, nothing is cached or asked
+        std::fs::create_dir_all(&p.claims).unwrap();
+        let claim_held = nodelock::acquire(&p.claims.join(hash_message("wait for me?")).to_string_lossy(), l.claim).expect("claim");
+        let got = triage_sync(&h, &[Item { key: 0, text: "wait for me?".into() }], &l, &s);
+        assert!(got.is_empty() && s.asked() == 0 && cache_of(&h).is_empty());
+        assert!(claim_held.release());
+        let sum = run_worker(&h, &l, &s);
+        assert_eq!((sum.ended, sum.labelled, s.asked()), (Ended::Drained, 1, 1));
+    }
+
+    #[test]
+    fn a_worker_that_dies_between_the_claim_and_the_write_loses_nothing_and_labels_nothing_twice() {
+        let h = home(true);
+        let s = Stub::default();
+        enqueue(&h, "first?", &lim());
+        enqueue(&h, "second", &lim());
+        s.panic_once.store(true, Ordering::SeqCst);
+        // the first run dies inside the labeller: the lock, the claims and the private copy of the queue stay behind
+        let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_worker(&h, &lim(), &s)));
+        assert!(died.is_err());
+        let p = paths(&h);
+        assert!(p.lock.exists() && !work_files(&p, &[]).is_empty() && !p.queue.exists() && cache_of(&h).is_empty());
+        assert!(has_pending(&h), "the dead worker's copy still counts as work");
+        // while the dead worker's lock is fresh, nobody else drains
+        assert_eq!(run_worker(&h, &lim(), &s).ended, Ended::Busy);
+        // once its lock and claims go stale, the next worker adopts the copy and labels each message exactly once
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let stale = |mut p: Params| {
+            p.stale_ms = 1;
+            p
+        };
+        let l = Limits { drain: stale(lim().drain), claim: stale(lim().claim), ..lim() };
+        let before = s.asked();
+        let sum = run_worker(&h, &l, &s);
+        assert_eq!((sum.ended, sum.labelled), (Ended::Drained, 2));
+        assert_eq!(s.asked() - before, 2, "each message is asked for once after the crash");
+        assert_eq!(cache_of(&h).len(), 2);
+        assert!(work_files(&p, &[]).is_empty() && !p.lock.exists());
+        // nothing left to do, and a rerun asks nothing
+        assert!(!has_pending(&h));
+        let again = s.asked();
+        run_worker(&h, &l, &s);
+        assert_eq!(s.asked(), again);
+    }
+
+    #[test]
+    fn the_cache_stays_bounded_with_a_sequence_that_only_grows() {
+        let h = home(true);
+        let s = Stub::default();
+        let p = paths(&h);
+        std::fs::create_dir_all(&p.cache_dir).unwrap();
+        // an older cache whose highest _seq is 40: new labels must sort above it, whatever process wrote them
+        std::fs::write(&p.cache, r#"{"old":{"kind":"fyi","_seq":40},"other":{"kind":"fyi","_seq":2}}"#).unwrap();
+        let l = Limits { cache_max_entries: 3, ..lim() };
+        for i in 0..4 {
+            enqueue(&h, &format!("msg {i}"), &l);
+        }
+        run_worker(&h, &l, &s);
+        let c = cache_of(&h);
+        assert_eq!(c.len(), 3, "bounded");
+        let seqs: Vec<f64> = c.iter().map(|(_, v)| seq_of(v)).collect();
+        assert!(seqs.iter().all(|q| *q > 2.0), "the lowest _seq went first: {seqs:?}");
+        assert!(c.iter().any(|(k, _)| *k == hash_message("msg 3")), "the newest label survives");
+        assert!(next_seq(&c) > 40.0);
+    }
+
+    #[test]
+    fn the_shipped_limits_are_read_from_the_defaults() {
+        let l = Limits::shipped();
+        assert_eq!(
+            (l.queue_max_bytes, l.text_max_chars, l.batch_size, l.max_batches, l.max_wall_ms, l.max_attempts, l.cache_max_entries),
+            (262144, 16000, 3, 60, 120000, 3, 500)
+        );
+        assert_eq!((l.drain.stale_ms, l.claim.stale_ms), (30000, 15000));
+        for k in ["queued", "disabled", "cached", "full", "too_long", "failed", "drained", "busy", "off", "capped", "lost_lock", "labelled", "no_label", "skipped"] {
+            assert!(!defaults::raw("jev_arrival.outcomes").str_field(k).is_empty(), "{k}");
+        }
+        assert!(crate::metrics::is_registered(defaults::text("jev_arrival.metric")));
+    }
 }

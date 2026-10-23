@@ -386,3 +386,45 @@ mod tests {
         assert_eq!(k, ["question-needs-answer", "blocker", "status-report", "done-report", "fyi"]);
     }
 }
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn ctx(haiku_only: bool, env: &[(&str, &str)]) -> (Ctx, Settings) {
+        let home = std::env::temp_dir().join(format!("ah-triage-api-{}-{}", std::process::id(), haiku_only));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let envm: HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: envm };
+        let jev = JevSettings::resolve(&home, Sources::load(&home, Env::from_pairs(Vec::<(String, String)>::new())));
+        let c = Ctx { home: home.clone(), st: Settings { home: st.home.clone(), env: st.env.clone() }, jev, haiku_only, urgent_threshold: 0.9, deadline: Instant::now() + Duration::from_secs(2) };
+        (c, st)
+    }
+
+    fn telemetry_text(c: &Ctx) -> String {
+        std::fs::read_to_string(c.home.join(defaults::text("paths.base_dir")).join(defaults::text("judge.telemetry_log"))).unwrap_or_default()
+    }
+
+    // The case that used to exit with the defer code: a key is visible, so Node's worker would have asked the Anthropic API.
+    // The engine answers natively: the item is classified with no confident label, and one telemetry row says why.
+    #[test]
+    fn a_visible_key_is_a_native_refusal_not_a_deferral() {
+        let (c, _) = ctx(false, &[("CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY", "k")]);
+        let client = crate::jev::assist::production_client(&c.home);
+        assert!(classify(&c, &client, "is the build green?").is_none());
+        let t = telemetry_text(&c);
+        assert!(t.contains(defaults::text("judge.err_api_refused")) && t.contains(defaults::text("judge.backend_api")), "{t}");
+        // without a key nothing is refused, so nothing is recorded
+        let (c2, _) = ctx(true, &[("ANTIHALL_JUDGE_BACKEND", "api"), ("CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY", "k")]);
+        let client2 = crate::jev::assist::production_client(&c2.home);
+        // the haiku backend routed to the API is refused the same way, and spawns no model
+        assert!(classify(&c2, &client2, "is the build green?").is_none());
+        assert!(telemetry_text(&c2).contains(defaults::text("judge.err_api_refused")));
+    }
+
+    #[test]
+    fn the_defer_word_and_exit_are_gone_from_the_triage_command() {
+        assert!(!defaults::has("msg.jev_triage_defer"));
+    }
+}
