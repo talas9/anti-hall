@@ -418,7 +418,8 @@ fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
 }
 
 fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64) {
-    if !env.act || !env.switch("agent_tracker.remind_setting") {
+    // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast
+    if !env.act || !env.switch("agent_tracker.remind_setting") || super::nudge::owns(env, a, sig) {
         return;
     }
     let now = env.now_ms;
@@ -571,8 +572,10 @@ fn take_deliveries(env: &Env, st: &mut State) {
         st.delivered_lines += 1;
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (agent, sig, ts) = (v["agent"].as_str().unwrap_or(""), v["signal"].as_str().unwrap_or(""), v["ts"].as_u64().unwrap_or(env.now_ms));
+        super::nudge::delivered(st, &v, ts);
         let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(sig)).map(|f| {
             f.delivered_at = ts;
+            f.delivered_to = v["key"].as_str().unwrap_or("").to_string();
             ts.saturating_sub(f.reminded_at) / fmtn("ms_per_s")
         });
         if env.act {
@@ -610,7 +613,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         series(env, &mut a);
         st.agents.insert(id, a);
     }
-    super::escalate::tick(env, st);
+    super::nudge::tick(env, st);
     super::lockwatch::tick(env, st);
     let keep = lim("day_retention");
     let today = now / fmtn("day_ms");

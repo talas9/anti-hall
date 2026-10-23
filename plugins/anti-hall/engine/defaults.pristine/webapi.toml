@@ -67,6 +67,14 @@ value = { source = "metrics", rows = "counters", filters = ["name:name"], params
 doc = "Every tracked agent with state, tokens, progress and flags; the document's summary and today's totals come back as meta."
 value = { source = "agents", rows = "agents", filters = ["state:state", "kind:kind", "agent:agent", "project:project"], params = [] }
 
+[webapi.source_nudges]
+doc = "Every kept nudge to a parent about an unhealthy child (open first, then the closed log): child, direct parent, trigger, evidence, delivery, answer, reason, snoozes, verified outcome and timings (task #207)."
+value = { source = "nudges", rows = "nudges", filters = ["child:child", "parent:parent", "trigger:trigger", "outcome:outcome", "answer:answer_class"], params = [] }
+
+[webapi.source_nudge_rollup]
+doc = "Nudge roll-ups for the Impact screen, one row per window (today, this daemon): sent by trigger, acted / said_not_done / snoozed / other / ignored / escalated percentages, median time to answer and to act, tokens spent after the nudge (acted vs not), and the parents that ignore most."
+value = { source = "nudges", rows = "rollup", filters = ["window:window"], params = [] }
+
 [webapi.source_health]
 doc = "The engine's status: version, uptime, memory, breaker and crash-loop state, counters (one row; the full document is in meta)."
 value = { source = "status", rows = "", filters = [], params = [] }

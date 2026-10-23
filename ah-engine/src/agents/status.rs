@@ -29,7 +29,7 @@ fn row(a: &super::Agent, now: u64, all: &std::collections::BTreeMap<&str, &super
         "tokens_in": a.tin, "tokens_out": a.tout, "cache_read": a.tcr, "cache_write": a.tcw, "tool_calls": a.tools,
         "progress": a.progress, "commits": a.commits, "files_edited": a.files.len(), "tests_passed": a.tests_pass, "steps_done": a.steps_done,
         "errors": a.errors, "step": a.step, "waste": {"score": a.waste.score.round(), "verdict": a.waste.verdict, "confidence": a.waste.confidence, "source": a.waste.source, "action": a.waste.action, "judge_calls": a.waste.judge_calls, "cell": super::waste::cell(a)}, "last_output_s": last, "partial": a.partial,
-        "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at, "escalated_at": f.escalated_at, "acted_at": f.acted_at})).collect::<Vec<_>>(),
+        "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at, "delivered_to": f.delivered_to})).collect::<Vec<_>>(),
         "workspace": a.ws.as_ref().map(|w| json!({"id": w.id, "watcher_armed": w.armed, "step": w.step})),
         "turn_ended": !a.running && a.pending.is_empty(), "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
         "role": session.then(|| if mine.is_empty() { roles.str_field("solo") } else { roles.str_field("primary") }),
@@ -159,6 +159,9 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     }
     if sub == "send" {
         return super::ctl::run_send(p);
+    }
+    if sub == defaults::text("agent_nudge.verb") {
+        return super::nudge::run_answer(p);
     }
     if sub != "status" && sub != "tick" {
         eprintln!("{}", defaults::render("msg.agent_usage", &[]));

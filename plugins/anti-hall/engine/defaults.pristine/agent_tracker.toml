@@ -1,8 +1,8 @@
 # ah-engine shipped defaults for the agent tracker (`src/agents`, `ah-engine agents`, the scheduled job `agent_tick`, the scripted check
 # `agent-reminders`). Format: see the header of engine.toml. The tracker follows every agent it can find (the main sessions, their
 # subagents and background tasks, DevSwarm workspaces), keeps a per-agent progress series, raises signals (hung, looping, token
-# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. A stuck agent its coordinator does not
-# handle is escalated to the owner and, past a limit, stopped by verified pid or stop request (agent_tracker.escalate; Primaries exempt).
+# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. An unhealthy child is reported to its direct
+# parent as a nudge (agent_nudge.toml); escalated to the owner and, past a limit, stopped by verified pid or stop request (Primaries exempt).
 # Every threshold, window, weight, pattern, path, word and text is tuned here, never in Rust.
 
 [job.agent_tick]
@@ -278,7 +278,7 @@ value = "unavailable, transcripts used"
 
 [msg.agent_usage]
 doc = "Usage line of `ah-engine agents`."
-value = "usage: ah-engine agents status [--json] | tick [--json] | wake-watch [--auto]"
+value = "usage: ah-engine agents status [--json] | tick [--json] | wake-watch [--auto] | send <id> [...] | nudge <child> stop|msg|snooze|other ..."
 
 [msg.agent_disabled]
 doc = "What a tick prints when the tracker switch is off."
@@ -324,23 +324,19 @@ value = "Progress requested from the dashboard: reply with a short status (what 
 doc = "The reminder an agent gets when the dashboard asks it to stop on its own."
 value = "Stop requested from the dashboard: finish or park what you are doing, report where you stopped, and do not start new work until told."
 
-# ---- escalation and action for stuck agents (task #207, src/agents/escalate.rs) ----------------------------------------------
+# ---- the owner's channel and the stop action for stuck agents (task #207, src/agents/escalate.rs; the nudge loop is agent_nudge.toml) ----------------------------------------------
 
 [agent_tracker.act_setting]
-doc = "Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, an agent whose escalated signal stays up past agent_tracker.escalate.act_after_ms is stopped by the means its kind allows (a one-shot Codex run: SIGTERM by the pid that holds its rollout open, re-checked; a DevSwarm workspace: the stop request of `agents send`; a subagent or teammate: a stop request to its live coordinator). Primaries are never acted on. Off, it is only escalated."
+doc = "Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, a child whose nudge was escalated to the owner and is still open past agent_tracker.escalate.act_after_ms is stopped by the means its kind allows (a one-shot Codex run: SIGTERM by the pid that holds its rollout open, re-checked; a DevSwarm workspace: the stop request of `agents send`; a subagent or teammate: a stop request to its live coordinator). Primaries are never acted on. Off, it is only escalated."
 value = { section = "agents", key = "actOnStuck", env = "ANTIHALL_AGENT_ACT_ON_STUCK", aliases = [], option = "", default = true }
 
 [agent_tracker.escalate]
-doc = "Escalation of stuck agents. signals: the tracker signals escalated. after_ms: a signal up this long (delivered or not) goes to the owner's channel, once per spell; it goes at once when the agent's coordinator has no live process (nobody would read its queue). act_after_ms: up this long, the action runs (agent_tracker.act_setting), once per spell. exempt_kinds: kinds never escalated or acted on (a Primary may run for hours; a DevSwarm Primary's workspace session is exempt by its descriptor prefix agent_tracker.primary_prefix). codex_hung_ms: a one-shot Codex run quiet this long with no terminal record is hung (the action and an owner notice, once). term_cmds: the command substrings a process must show to be signalled for a Codex row (one-shot runs only: a shared Codex server holds many sessions' rollouts and never matches)."
-value = { signals = ["hung"], after_ms = 1800000, act_after_ms = 3600000, exempt_kinds = ["main"], codex_hung_ms = 1800000, term_cmds = ["codex exec"] }
+doc = "The owner's channel and the stop action for stuck agents (src/agents/escalate.rs, used by the nudge loop of agent_nudge.toml). act_after_ms: a nudge that was escalated to the owner and is still open this long after it was first sent runs the action of the child's kind (agent_tracker.act_setting), once. exempt_kinds: kinds never nudged about or acted on (a Primary may run for hours; a DevSwarm Primary's session is exempt by its descriptor prefix agent_tracker.primary_prefix). codex_hung_ms: a one-shot Codex run quiet this long with no terminal record, whose process still holds its rollout open, is hung (a nudge to the session that launched it). term_cmds: the command substrings a process must show to be signalled for a Codex row (one-shot runs only: a shared Codex server holds many sessions' rollouts and never matches)."
+value = { act_after_ms = 3600000, exempt_kinds = ["main"], codex_hung_ms = 1800000, term_cmds = ["codex exec"] }
 
 [agent_tracker.escalate_words]
-doc = "Words the escalation writes: the telemetry class and events, the reasons, the action words, and the signal name of a hung Codex run."
-value = { class = "escalate", escalated = "escalated", acted = "acted", why_parent_down = "its coordinator has no live process", why_undelivered = "the reminder was never delivered", why_unhandled = "the reminder was delivered but nothing changed", why_codex_quiet = "the one-shot run went quiet with no end record", act_term = "term", act_stop_request = "stop_request", act_none = "none", codex_signal = "codex_hung" }
-
-[msg.agent_escalate]
-doc = "Notice on the owner's wake channel for an agent its coordinator did not handle. Placeholders: {kind}, {agent} (its name), {signal}, {age} (how long the signal is up), {parent} (its coordinator), {why} (one of agent_tracker.escalate_words why_*), {action} (empty, or one of the msg.agent_act_* sentences)."
-value = "agent tracker escalation: {kind} {agent} has been {signal} for {age} and {why} (coordinator {parent}). Check it and stop it if it is stuck.{action}"
+doc = "The action words the stop action writes to telemetry (field action)."
+value = { act_term = "term", act_stop_request = "stop_request", act_none = "none" }
 
 [msg.agent_act_codex]
 doc = "Appended to the escalation when a hung one-shot Codex run was sent SIGTERM. Placeholder: {pid}."

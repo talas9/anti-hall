@@ -21,6 +21,7 @@ mod escalate;
 mod facts;
 mod live;
 mod lockwatch;
+pub mod nudge;
 mod procs;
 mod signals;
 mod sinks;
@@ -39,6 +40,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, transcript_path};
+pub use nudge::document as nudge_document;
 pub use status::run_cmd;
 pub(crate) use status::document as status_document;
 
@@ -206,12 +208,9 @@ pub struct Flag {
     pub base_tokens: u64,
     /// The outcome was already recorded as not recovered.
     pub timed_out: bool,
-    /// When it was escalated to the owner's channel (0 = not yet; once per spell).
+    /// The session key the delivered row names (the parent that got it).
     #[serde(default)]
-    pub escalated_at: u64,
-    /// When the escalation layer acted on it (0 = not yet; once per spell).
-    #[serde(default)]
-    pub acted_at: u64,
+    pub delivered_to: String,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -292,9 +291,9 @@ pub struct Agent {
     /// `limits.dead_idle_ms` with no live parent): state `dead`, out of the live list. Decided afresh each tick; nothing is deleted.
     #[serde(default)]
     pub dead: bool,
-    /// When the escalation layer acted on it outside a flag (a hung one-shot Codex run): once per agent.
+    /// Its parent was told once that it died.
     #[serde(default)]
-    pub acted_at: u64,
+    pub dead_noticed: bool,
     /// The team a teammate belongs to (its meta file).
     #[serde(default)]
     pub team: String,
@@ -426,6 +425,18 @@ pub struct State {
     /// When the watchdog last ran.
     #[serde(default)]
     pub lock_checked: u64,
+    /// The open nudges, by child id.
+    #[serde(default)]
+    pub nudges: BTreeMap<String, nudge::Nudge>,
+    /// The closed nudges, oldest first (bounded by agent_nudge.limits.log_max).
+    #[serde(default)]
+    pub nudge_log: Vec<nudge::Nudge>,
+    /// Rows of the nudge answers file already read.
+    #[serde(default)]
+    pub nudge_answer_lines: u64,
+    /// Children the health judge called busy: no nudge until the time given.
+    #[serde(default)]
+    pub nudge_hold: BTreeMap<String, u64>,
 }
 
 impl State {

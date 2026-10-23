@@ -87,6 +87,7 @@ fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
             crate::client::ctl_json(&verb).unwrap_or_else(not_running)
         }
         "agents" => agents_doc(),
+        "nudges" => agents::nudge_document(),
         "status" => crate::client::status_value(),
         "history" => super::manage::history_doc(),
         other => json!({"error": format!("no source '{other}'")}),
