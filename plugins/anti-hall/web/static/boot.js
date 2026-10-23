@@ -8,7 +8,7 @@ const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const tier = mode === "lite" || (mode === "auto" && reduce) ? "lite" : "full";
 try {
   const page = await import(`/pkg/${tier}/ah_web_ui.js`);
-  await page.default();
+  await page.default({ module_or_path: `/pkg/${tier}/ah_web_ui_bg.wasm` });
 } catch (e) {
   const m = document.getElementById("boot-error");
   if (m) { m.hidden = false; m.textContent = "Dashboard failed to start: " + e; }

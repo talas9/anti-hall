@@ -383,6 +383,7 @@ pub fn Graph(
             skey.track();
             let d = data.get_untracked();
             let fresh = layout::compute(&d, mode, &cfg);
+            web_sys::console::log_1(&format!("DBG layout nodes={} fresh={} first={}", d.nodes.len(), fresh.len(), *first.borrow()).into());
             let mut cur = pos.get_untracked();
             cur.retain(|id, _| d.nodes.iter().any(|n| &n.id == id));
             let is_first = *first.borrow();

@@ -343,13 +343,13 @@ value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", ru
 
 [web.live_checks_max]
 doc = "Most check nodes the Live screen draws; the least recently fired are dropped first."
-value = 24
+value = 12
 min = 4
 max = 200
 
 [web.live_events_max]
 doc = "Most hook-event nodes the Live screen draws."
-value = 14
+value = 8
 min = 2
 max = 60
 
@@ -461,12 +461,12 @@ value = "engine/defaults/web_graph.toml"
 
 [web.live_col_gap]
 doc = "Distance between the Live screen's columns (events, checks, decisions), in graph units."
-value = 420
+value = 330
 min = 100
 max = 2000
 
 [web.live_row_gap]
 doc = "Distance between two rows of the Live screen, in graph units."
-value = 92
+value = 70
 min = 40
 max = 400

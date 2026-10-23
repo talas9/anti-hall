@@ -8,7 +8,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-top li { display: flex; gap: 6px; }
 .live-top li b { color: var(--cyan); font-weight: 600; }
 .live-cols { display: grid; grid-template-columns: repeat(4, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
-.live-graph { flex: 1 1 auto; min-height: 420px; height: calc(100vh - 430px); }
+.live-graph { flex: 1 1 auto; min-height: 520px; height: calc(100vh - 400px); }
 .live .ahg {
   --ah-line: var(--line); --ah-panel: var(--panel); --ah-text: var(--text); --ah-muted: var(--muted);
   --ah-bad: var(--red); --ah-ok: var(--green); --ah-warn: var(--amber);

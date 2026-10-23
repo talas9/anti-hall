@@ -19,7 +19,7 @@ wasm-bindgen-futures = "=0.4.79"
 web-sys = { version = "=0.3.106", features = [
   "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "DomRect",
   "PointerEvent", "MouseEvent", "WheelEvent", "KeyboardEvent", "EventTarget", "Event", "DomTokenList", "CssStyleDeclaration",
-  "Performance", "MediaQueryList", "ResizeObserver", "ResizeObserverEntry", "DomRectReadOnly", "Navigator",
+  "Performance", "console", "MediaQueryList", "ResizeObserver", "ResizeObserverEntry", "DomRectReadOnly", "Navigator",
 ] }
 js-sys = "0.3"
 send_wrapper = "0.6"
