@@ -222,6 +222,34 @@ fn heavy_spend_with_no_progress_is_token_waste_and_a_commit_clears_it() {
     assert!(!agent(&st2, "s1").flags.contains_key("token_waste"));
 }
 
+// ---- burn breaker (GH #270) ---------------------------------------------------------------------------------
+
+#[test]
+fn burn_without_outcome_warns_at_the_soft_line_blocks_at_the_hard_line_and_a_commit_resets_it() {
+    let h = home("burn");
+    let n = now0();
+    let p = sess(&h, "s1");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "thinking"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    // between the soft and the hard line: soft flag only, no marker
+    append(&p, &[asst(n + 19 * MIN, "m1", 2_000_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 20 * MIN]);
+    assert!(agent(&st, "s1").flags.contains_key("burn_soft") && !agent(&st, "s1").flags.contains_key("burn_hard"));
+    assert!(!marker.exists());
+    // past the hard line: the hard flag and the marker the burn-breaker check reads
+    append(&p, &[asst(n + 24 * MIN, "m2", 2_000_000, 10, json!([{"type": "text", "text": "reading more"}]), None)]);
+    ticks(&h, &mut st, &[n + 25 * MIN]);
+    assert!(agent(&st, "s1").flags.contains_key("burn_hard"), "{:?}", agent(&st, "s1").flags.keys().collect::<Vec<_>>());
+    assert!(marker.exists());
+    // a commit is an outcome: the count restarts and the marker goes
+    append(&p, &[tool(n + 26 * MIN, "m3", 10, "u1", "Bash", json!({"command": "git commit -m done"})), result(n + 27 * MIN, "u1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 28 * MIN]);
+    assert!(!agent(&st, "s1").flags.contains_key("burn_hard") && !agent(&st, "s1").flags.contains_key("burn_soft"));
+    assert!(!marker.exists());
+}
+
 // ---- drift --------------------------------------------------------------------------------------------------
 
 fn drift_lines(n: u64, path: &str) -> Vec<String> {

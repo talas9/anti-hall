@@ -535,6 +535,8 @@ value = [
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
   { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
+  { id = "burn-breaker", matcher = "", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker\"", timeout = 10, check = "burn-breaker" },
+  { id = "uncommitted-guard", matcher = "Write|Edit|MultiEdit|NotebookEdit", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/uncommitted-guard\"", timeout = 10, check = "uncommitted-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -626,6 +628,8 @@ value = [
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
   { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
+  { id = "burn-breaker", matcher = "", command = "sh \"${PLUGIN_ROOT}/hooks/burn-breaker\"", timeout = 10, check = "burn-breaker" },
+  { id = "uncommitted-guard", matcher = "apply_patch", command = "sh \"${PLUGIN_ROOT}/hooks/uncommitted-guard\"", timeout = 10, check = "uncommitted-guard" },
 ]
 
 [dispatch.hooks_codex_Stop]

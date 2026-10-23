@@ -12,6 +12,7 @@
   "PreToolUse": {
     "api-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
     "broad-kill-guard": "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"",
+    "burn-breaker": "sh \"${PLUGIN_ROOT}/hooks/burn-breaker\"",
     "command-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
@@ -21,7 +22,8 @@
     "merge-side-pick": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
     "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\""
+    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
+    "uncommitted-guard": "sh \"${PLUGIN_ROOT}/hooks/uncommitted-guard\""
   },
   "SessionStart": {
     "claude-cli-version": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/claude-cli-version.js\"",

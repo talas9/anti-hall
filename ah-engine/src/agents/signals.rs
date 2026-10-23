@@ -119,8 +119,70 @@ fn token_waste(a: &Agent, now: u64) -> Option<Raised> {
     if cur.t.saturating_sub(base.t) < lim("waste_min_span_ms") {
         return None;
     }
-    let tokens = (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct");
+    let tokens = spent(base, cur);
     (tokens >= lim("waste_min_tokens") && cur.progress - base.progress <= lim("waste_max_progress")).then(|| (tokens, String::new()))
+}
+
+/// The tokens spent between two samples (cache reads count `cache_read_pct` percent).
+fn spent(base: &Sample, cur: &Sample) -> u64 {
+    (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct")
+}
+
+/// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
+/// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
+pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
+    let from = now.saturating_sub(lim("waste_window_ms"));
+    let Some(cur) = a.samples.last() else { return 0 };
+    let start = a.samples.iter().rev().take_while(|s| s.t >= from && s.progress == cur.progress).last();
+    start.map_or(0, |b| spent(b, cur))
+}
+
+/// The burn breaker: tokens spent since the last outcome reached the soft band (`burn_soft`: warn) or the hard line (`burn_hard`:
+/// the agent's tool calls are blocked by the `burn-breaker` check except commit, push, status and its report).
+fn burn(env: &Env, a: &Agent, now: u64, soft: bool) -> Option<Raised> {
+    if !running(a) || a.kind == kind_name("heartbeat") || !env.switch("burn.sw") {
+        return None;
+    }
+    let (lo, hi) = (defaults::num("burn.soft_tokens_no_outcome"), defaults::num("burn.hard_tokens_no_outcome"));
+    let t = tokens_since_outcome(a, now);
+    let hit = if soft { lo > 0 && t >= lo && (hi == 0 || t < hi) } else { hi > 0 && t >= hi };
+    hit.then(|| (t, String::new()))
+}
+
+/// Mirror the hard flag into the small marker file the `burn-breaker` check reads on every tool call (one file per agent key, so
+/// the hot path never parses the tracker state). Removed when the flag is down; a stale one expires by `burn.marker_ttl_ms`.
+fn mark_breaker(env: &Env, a: &Agent, hard: Option<&Raised>) {
+    if !env.act {
+        return;
+    }
+    let dir = env.dir().join(defaults::text("burn.marker_dir"));
+    let file = dir.join(format!("{}{}", sinks::key_of(&a.id), defaults::text("burn.marker_ext")));
+    match hard {
+        Some((tokens, _)) => {
+            let body = serde_json::json!({ "ts": env.now_ms, "tokens": tokens, "agent": a.id });
+            if std::fs::create_dir_all(&dir).is_ok() {
+                crate::discard::harmless(crate::atomic::write(&file, body.to_string())); // keep: the marker is a cache of the flag; the next tick rewrites it
+            }
+        }
+        None => {
+            if file.exists() {
+                crate::discard::harmless(std::fs::remove_file(&file)); // keep: an absent marker is the goal state
+            }
+        }
+    }
+}
+
+/// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
+fn sweep_markers(env: &Env) {
+    let dir = env.dir().join(defaults::text("burn.marker_dir"));
+    let ttl = std::time::Duration::from_millis(defaults::num("burn.marker_ttl_ms"));
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > ttl);
+        if old {
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
+        }
+    }
 }
 
 fn drift(a: &Agent) -> Option<Raised> {
@@ -192,6 +254,8 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "hung" => hung(a, now),
             "looping" => looping(a),
             "token_waste" => token_waste(a, now),
+            "burn_soft" => burn(env, a, now, true),
+            "burn_hard" => burn(env, a, now, false),
             "drift" => drift(a),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
@@ -277,6 +341,12 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         "looping" => defaults::render("msg.agent_looping", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("what", &f.text)]),
         "token_waste" => {
             defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
+        }
+        "burn_soft" => {
+            defaults::render("burn.msg_soft", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
+        }
+        "burn_hard" => {
+            defaults::render("burn.msg_hard", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
         }
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
         "heartbeat_stale" => defaults::render("msg.agent_heartbeat_stale", &[("agent", &who), ("age", &age(f.evidence * fmtn("ms_per_s"))), ("step", &f.text)]),
@@ -520,6 +590,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         sample(&mut a, now);
         let raised = raise(env, &a, st, now);
+        mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {
             st.day(env).burned += (a.tin + a.tout).saturating_sub(prev);
@@ -532,6 +603,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     st.days.retain(|d, _| d.parse::<u64>().is_ok_and(|d| today.saturating_sub(d) <= keep));
     if env.act {
         sinks::compact(env);
+        sweep_markers(env);
         trim_series(env);
     }
 }

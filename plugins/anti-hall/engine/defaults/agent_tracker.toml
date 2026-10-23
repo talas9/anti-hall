@@ -87,7 +87,7 @@ value = { commit = 10, step = 5, test = 2, file = 1 }
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
-value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 } }
+value = { hung = { cooldown_ms = 1800000, max_per_day = 6 }, looping = { cooldown_ms = 1800000, max_per_day = 4 }, token_waste = { cooldown_ms = 3600000, max_per_day = 3 }, burn_soft = { cooldown_ms = 1800000, max_per_day = 4, confirm_ticks = 1 }, burn_hard = { cooldown_ms = 900000, max_per_day = 6, confirm_ticks = 1 }, drift = { cooldown_ms = 3600000, max_per_day = 3 }, heartbeat_stale = { cooldown_ms = 1800000, max_per_day = 6 }, monitor_unarmed = { cooldown_ms = 900000, max_per_day = 12 }, idle_open_task = { cooldown_ms = 3600000, max_per_day = 6, once = true, confirm_ticks = 1 }, watched_exit = { cooldown_ms = 60000, max_per_day = 50, once = true, confirm_ticks = 1 } }
 
 [agent_tracker.spam]
 doc = "Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder)."
@@ -99,11 +99,11 @@ value = { self = { to = "self", via = "queue" }, coordinator = { to = "coordinat
 
 [agent_tracker.routes]
 doc = "Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on)."
-value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"] }
+value = { hung = ["coordinator", "wake", "owner"], looping = ["coordinator", "wake", "owner"], token_waste = ["coordinator", "wake", "owner"], burn_soft = ["self", "coordinator", "wake"], burn_hard = ["self", "coordinator", "wake"], drift = ["self"], heartbeat_stale = ["coordinator", "wake"], monitor_unarmed = ["self"], idle_open_task = ["coordinator", "wake"], watched_exit = ["coordinator", "wake"] }
 
 [agent_tracker.signals]
 doc = "The signals the tick evaluates, in order. A name not listed here is never raised."
-value = ["hung", "looping", "token_waste", "drift", "heartbeat_stale", "monitor_unarmed", "idle_open_task", "watched_exit"]
+value = ["hung", "looping", "token_waste", "burn_soft", "burn_hard", "drift", "heartbeat_stale", "monitor_unarmed", "idle_open_task", "watched_exit"]
 
 [agent_tracker.kinds]
 doc = "The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file)."

@@ -254,6 +254,12 @@ pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "rol
 /// `broad-kill-guard` (PreToolUse on Bash, every agent; engine-only): blocks pkill, killall, `kill -9 -1` and the pattern kills.
 pub static BROAD_KILL_GUARD: Scripted = Scripted::new("broad-kill-guard", "broad_kill.summary");
 
+/// `burn-breaker` (PreToolUse on every tool, subagents only; engine-only): blocks a subagent's calls while its hard burn flag is up (GH #270).
+pub static BURN_BREAKER: Scripted = Scripted::new("burn-breaker", "burn.summary");
+
+/// `uncommitted-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only; engine-only): warns and then blocks a subagent whose worktree holds too many uncommitted lines (GH #270).
+pub static UNCOMMITTED_GUARD: Scripted = Scripted::new("uncommitted-guard", "uncommitted.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 

@@ -38,6 +38,8 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard"
 Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard"
+*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker"
+Write|Edit|MultiEdit|NotebookEdit	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/uncommitted-guard"
 @SessionEnd	5
 *	5	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/session-end-mcp-reaper.js"
 @SessionStart	10
