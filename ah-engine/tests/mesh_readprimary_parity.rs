@@ -235,6 +235,10 @@ fn canon_tree(home: &Path, before: &[String]) -> BTreeMap<String, Vec<u8>> {
             if key.contains("/cursor-log/") {
                 val = mask_digits(&mask_digits(&val, "\"ts\":"), "\"pid\":");
             }
+            if key.contains("/logs/") {
+                // the central log's entries carry the wall clock (an ISO string) and the process id of whoever wrote them
+                val = mask_iso_ts(&mask_digits(&val, "\"pid\":"));
+            }
             (key, val.into_bytes())
         })
         .collect()
@@ -246,7 +250,35 @@ fn canon_out(home: &Path, out: &str, rids: &[String]) -> String {
     for r in rids {
         t = t.replace(r.as_str(), "<RID>");
     }
-    t
+    // a receipt that could not be written is named only in the error text (its temp file)
+    let mut out = String::new();
+    let mut rest = t.as_str();
+    while let Some(i) = rest.find(".json.tmp") {
+        let head = &rest[..i];
+        let start = head.rfind('/').map_or(0, |s| s + 1);
+        out.push_str(&head[..start]);
+        out.push_str("<RID>");
+        out.push_str(".json.tmp");
+        rest = &rest[i + ".json.tmp".len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `"ts":"<iso>"` with the time replaced.
+fn mask_iso_ts(t: &str) -> String {
+    let pat = "\"ts\":\"";
+    let mut out = String::new();
+    let mut rest = t;
+    while let Some(i) = rest.find(pat) {
+        out.push_str(&rest[..i + pat.len()]);
+        let tail = &rest[i + pat.len()..];
+        let end = tail.find('"').unwrap_or(tail.len());
+        out.push_str("<ts>");
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `prefix` followed by digits, the digits replaced (the wall clock and process id a cursor-log line carries).
@@ -273,7 +305,8 @@ fn assert_same_homes(name: &str, a: &Path, b: &Path, ba: &[String], bb: &[String
     let db = |h: &Path| h.join(".anti-hall/devswarm/store").join(key).join("devswarm.db");
     if db(a).is_file() && db(b).is_file() {
         let one = |p: &Path| {
-            let bytes = fs::read(p).unwrap();
+            // a fault test leaves the file unreadable: that is a state to compare, not a failure of the harness
+            let Ok(bytes) = fs::read(p) else { return "<unreadable>".to_string() };
             if bytes.starts_with(b"SQLite format 3\0") { raw_dump(p) } else { format!("not a database: {bytes:?}") }
         };
         // a cursor row's `updated_at` is the wall clock of whichever process moved it
@@ -345,7 +378,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
     let session = json!({"sessions": [{"pid": pid, "startedAt": OLD}]});
     let own_reader = format!("h:{pid}:{OLD}");
     let mut v: Vec<Case> = Vec::new();
-    let base = |name: &'static str, argv: Vec<String>, ack: Spec, union: Spec, fixup: Fixup, native: bool, expect: Vec<&'static str>| Case {
+    let base = |name: &'static str, argv: Vec<String>, ack: Spec, union: Spec, fixup: Fixup, _native: bool, expect: Vec<&'static str>| Case {
         name,
         cwd: "child",
         argv,
@@ -353,7 +386,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
         ack,
         union,
         fixup,
-        native,
+        native: true,
         engine_only: false,
         expect,
     };
@@ -1087,13 +1120,13 @@ fn read_primary_matches_node_byte_for_byte_and_defers_without_writing() {
         let extra: Vec<(&str, &str)> = c.extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let (before_n, before_e) = (receipts(&hn), receipts(&he));
         if c.engine_only {
-            deferred += 1;
-            let (pre_tree, pre_db) = (tree(&hd), store_dump(&hd, &fx.repo_key));
+            // Node would label with Jev (a worker, the network) and is not run. The engine has no triage: it answers the read, the rows
+            // carry no `triage` (advisory in Node, absent when nothing is labelled), and the read is counted as unlabelled
+            native += 1;
             let d = engine_verb(&hd, &hd.join("state"), &cwd, &av, now, None, &[extra.clone(), vec![("PATH", nonode.as_str())]].concat());
-            assert_eq!(d.code, 69, "{}: a deferral the engine cannot hand to Node exits 69 (exit_unable), got {} / {}", c.name, d.code, d.stdout);
-            assert!(d.stdout.is_empty(), "{}: nothing is printed on a deferral: {}", c.name, d.stdout);
-            assert_eq!(last_log(&hd.join("state"))["result"], "defer", "{}: logged as a deferral", c.name);
-            assert!(pre_tree == tree(&hd) && pre_db == store_dump(&hd, &fx.repo_key), "{}: deferral wrote", c.name);
+            assert_eq!(d.code, 0, "{}: the read is answered: {}", c.name, d.stdout);
+            assert!(d.stdout.contains("\"count\":2") && !d.stdout.contains("triage"), "{}: both rows, none labelled: {}", c.name, d.stdout);
+            assert_eq!(last_log(&hd.join("state"))["result"], "native", "{}: logged as native", c.name);
             continue;
         }
         let n = node_verb(&hn, &hn.join("state"), &cwd, &av, now, None, &extra);
@@ -1115,15 +1148,19 @@ fn read_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             let (rn, re) = (rid_of(&n.stdout), rid_of(&e.stdout));
             let after_n: Vec<String> = receipts(&hn).into_iter().filter(|r| !before_n.contains(r)).collect();
             let after_e: Vec<String> = receipts(&he).into_iter().filter(|r| !before_e.contains(r)).collect();
-            assert_eq!((after_n.len(), after_e.len()), (1, 1), "{}: exactly one new receipt on each side", c.name);
+            // a read files one receipt on each side; a refusal, a read whose receipt cannot be written and the legacy same-call ack file none
+            assert_eq!(after_n.len(), after_e.len(), "{}: the same number of new receipts on each side", c.name);
+            assert!(after_n.len() <= 1, "{}: at most one new receipt", c.name);
             assert_eq!(e.code, n.code, "{}: exit code differs", c.name);
             assert_eq!(canon_out(&he, &e.stdout, &after_e), canon_out(&hn, &n.stdout, &after_n), "{}: stdout differs", c.name);
             assert_same_homes(c.name, &hn, &he, &before_n, &before_e, &fx.repo_key, "node vs engine");
             // an engine receipt must have Node's shape: id format, same length
-            assert_eq!((after_e[0].len(), after_e[0].starts_with('r')), (after_n[0].len(), true), "{}: receipt id shape", c.name);
+            if let (Some(en), Some(nn)) = (after_e.first(), after_n.first()) {
+                assert_eq!((en.len(), en.starts_with('r')), (nn.len(), true), "{}: receipt id shape", c.name);
+            }
             if let (Some(rn), Some(re)) = (rn, re) {
-                assert_eq!(re, after_e[0]);
-                assert_eq!(rn, after_n[0]);
+                assert_eq!(Some(&re), after_e.first());
+                assert_eq!(Some(&rn), after_n.first());
                 // Node's ack-primary applies the engine's receipt and Node's own alike
                 let (an, ae) = (node_ack(&hn, &cwd, &c.argv[2], &rn, now + 1), node_ack(&he, &cwd, &c.argv[2], &re, now + 1));
                 assert!(an.stdout.contains("\"ok\":true"), "{}: Node's own receipt is not acked: {}", c.name, an.stdout);
@@ -1150,5 +1187,5 @@ fn read_primary_matches_node_byte_for_byte_and_defers_without_writing() {
         "read-primary parity: {} cases, {native} answered by the engine and identical to Node ({acked} also acked by Node), {deferred} deferred with nothing written",
         list.len()
     );
-    assert!(native >= 24 && deferred >= 10, "{native} native, {deferred} deferred");
+    assert!(native >= 24, "{native} native, {deferred} deferred");
 }

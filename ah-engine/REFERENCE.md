@@ -5506,6 +5506,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.archive_request_marker` | `[[ANTIHALL_ARCHIVE_REQUEST]]` |  |  | Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER). |
 | `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
 | `mesh_write.boolean_only_flags` | `9 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
+| `mesh_write.broadcast_merge_cap` | `50` |  |  | How many of the newest broadcasts `--with-broadcasts` merges into a read. |
 | `mesh_write.broadcast_partition` | `*mesh-broadcast*` |  |  | The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID). |
 | `mesh_write.builder_type_primary` | `primary` |  |  | The builder type of a Primary checkout. |
 | `mesh_write.busy_retries` | `5` |  |  | Attempts of a write that meets SQLITE_BUSY after the busy timeout (Node's SQLITE_BUSY_MAX_RETRIES). |
@@ -5533,7 +5534,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.cursor_log_old_suffix` | `.1` |  |  | Suffix of the file that receives the records rotated out of a journal. |
 | `mesh_write.cursor_log_older_soft_bytes` | `8388608` |  |  | Soft limit on a cursor journal's older file (`.1`): past it the rotation notes the size (warn and count); nothing is ever deleted or replaced for it. |
 | `mesh_write.cursor_log_unknown_key` | `unknown` |  |  | Journal file name used when the project key is missing or unsafe. |
-| `mesh_write.cursor_max_digits` | `15` |  |  | Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node). |
 | `mesh_write.cursor_namespaces` | `store, nd` |  |  | The two cursor namespaces of `reader_cursors`, in Node's order (NAMESPACES): the store and the NDJSON inbox. |
 | `mesh_write.cursor_ns_nd` | `nd` |  |  | The reader_cursors namespace of the durable NDJSON inbox side. |
 | `mesh_write.cursor_ns_store` | `store` |  |  | The reader_cursors namespace of the store side. |
@@ -5621,6 +5621,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_help` | `help` |  |  | Help flag name. |
 | `mesh_write.flag_json` | `json` |  |  | Raw JSON output flag. |
 | `mesh_write.flag_last` | `last` |  |  | mesh read's newest-N flag. |
+| `mesh_write.flag_legacy_ack_now` | `legacy-ack-now` |  |  | The flag that makes `inbox read-primary` ack in the same call (the old read-and-ack, kept for one release). |
 | `mesh_write.flag_limit` | `limit` |  |  | The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1). |
 | `mesh_write.flag_message` | `message` |  |  | send's body flag. |
 | `mesh_write.flag_message_file` | `message-file` |  |  | send's body-from-file flag. |
@@ -5637,12 +5638,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_status` | `status` |  |  | The heartbeat flag that names a step's status. |
 | `mesh_write.flag_step` | `step` |  |  | The heartbeat flag that records plan progress; with it the call goes to Node. |
 | `mesh_write.flag_summary` | `summary` |  |  | The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node. |
-| `mesh_write.flag_tail` | `tail` |  |  | A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node. |
 | `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
 | `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
 | `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
 | `mesh_write.flag_wip` | `wip` |  |  | The repeatable heartbeat flag for work in progress. |
+| `mesh_write.flag_with_broadcasts` | `with-broadcasts` |  |  | The flag that merges the project's broadcasts into a non-acking read. |
 | `mesh_write.floor_reader` | `#floor` |  |  | The reader name of the floor row in `reader_cursors` (FLOOR). |
 | `mesh_write.format_text` | `text` |  |  | The value of `--format` that selects the plain-text rendering. |
 | `mesh_write.forward_prefix` | `[forwarded from archived ` |  |  | ARCHIVED_FORWARD_PREFIX_RE's literal start: a row whose body begins so is a forward whose original hash Node derives; the engine leaves such a row to Node. |
@@ -5678,6 +5679,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.held_partitions_key` | `heldPartitions` |  |  | settings.json key of the owner-held partition ids. |
 | `mesh_write.held_partitions_option` | `` |  |  | Plugin option of devswarm.heldPartitions (it has none: empty). |
 | `mesh_write.held_partitions_option_default` | `` |  |  | Manifest default of that plugin option (unused while it has none). |
+| `mesh_write.hint_filter_requires_peek` | `use --peek, then a plain `mesh read` to consume` |  |  | The `hint` of that refusal. |
 | `mesh_write.history_seq` | `0` |  |  | The baseline `mesh history` reads from. |
 | `mesh_write.hivecontrol_bin` | `hivecontrol` |  |  | The hivecontrol executable, found on PATH. |
 | `mesh_write.hivecontrol_cache_file` | `capabilities.json` |  |  | The file under the DevSwarm root where the capability probe of the hivecontrol binary is cached. |
@@ -5698,10 +5700,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.id_lock_release_tries` | `5` |  |  | Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES). |
 | `mesh_write.id_lock_stale_ms` | `900000` |  |  | A lock older than this is taken over whoever holds it (Node's LOCK_STALE_MS, 15 minutes). |
 | `mesh_write.id_lock_step_ms` | `25` |  |  | Pause between those retries, in milliseconds (Node: 25). |
+| `mesh_write.inbox_positionals` | `3` |  |  | The words of `inbox <sub> <id>` that mean something (the command, the subcommand, the id); any further word is ignored, as Node ignores it. |
 | `mesh_write.inbox_read_limit` | `2000` |  |  | DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node. |
 | `mesh_write.ingest_beat_prefix` | `ingest-` |  |  | File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath). |
 | `mesh_write.ingest_beat_stale_ms` | `180000` |  |  | An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes). |
 | `mesh_write.ingest_lock_prefix` | `ingest-project-` |  |  | File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath). |
+| `mesh_write.io_errors` | `7 entries` |  |  | Node's error code and description of each filesystem failure a receipt write can report: [code, description]. |
 | `mesh_write.jev_cache_file` | `jev-triage.json` |  |  | Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath). |
 | `mesh_write.jev_file` | `jev.json` |  |  | Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath). |
 | `mesh_write.jev_hash_hex` | `32` |  |  | Hex characters of a triage cache key (jev-triage.js hashMessage: sha256, first 32). |
@@ -5761,16 +5765,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD). |
 | `mesh_write.month_names` | `12 items` |  |  | Month abbreviations of that start time, January first (what Date.parse reads). |
 | `mesh_write.ms_per_minute` | `60000` |  |  | Milliseconds in a minute (the unit conversion of that setting). |
+| `mesh_write.msg_ack_not_owner` | `ack-primary refused: this caller does not own {id} (use --ack-as-owner to ove...` |  |  | The refusal of an ack-primary by a caller that does not own the id. Placeholder: {id} (JSON-quoted). |
 | `mesh_write.msg_ack_refused` | `inbox ack refused ({cause}): caller {caller} does not own workspace {id} (pas...` |  |  | The refusal of an `inbox ack` by a caller that does not own the workspace. Placeholders: {cause}, {caller} and {id} (JSON-quoted), {rawid} (as typed). |
 | `mesh_write.msg_ack_to_not_number` | `--to must be a number` |  |  | What `inbox ack --to` reports when its value is not a number. |
 | `mesh_write.msg_committed_failure` | `ah-engine mesh: the write was committed but the engine failed before printing...` |  |  | Stderr line for that case. |
+| `mesh_write.msg_context_different` | `, but the current context resolves to a DIFFERENT project {caller}` |  |  | The tail of the project-context-mismatch error when the current context resolves to another project. Placeholder: {caller} (JSON-quoted). |
+| `mesh_write.msg_context_unresolved` | `, but the current context could not resolve a project (non-git cwd?)` |  |  | The tail of the project-context-mismatch error when the current context resolves to no project. |
 | `mesh_write.msg_cursor_log_older_soft` | `{path}: the older cursor journal is {bytes} bytes, past its soft limit; nothi...` |  |  | The note when a cursor journal's older file passes its soft limit. {path} {bytes}. |
 | `mesh_write.msg_descriptor_read_skipped` | `mesh read skipped: site={site}, reason={reason}, path={path}` |  |  | The log line when a file named by a descriptor (or a receipt) was not read because it is no regular file or is over the read cap. {site} {reason} {path}. |
 | `mesh_write.msg_detail` | `verb={verb} argv=[{argv}] reason={reason}` |  |  | The reason text of an abandoned mesh call (event log + counters): which verb, its first words and why. Placeholders: {verb}, {argv}, {reason}. |
 | `mesh_write.msg_disabled` | `ah-engine mesh: ERROR: the mesh write verbs are switched off (mesh.engine_wri...` |  |  | stderr line when the mesh write verbs are switched off (mesh.engine_writes = off). Nothing was done; the exit code is mesh_write.exit_unable. Placeholder: {site}. |
+| `mesh_write.msg_filter_requires_peek` | `--last/--since would consume unread broadcasts they do not show; use --peek, ...` |  |  | The refusal of a consuming mesh read given `--last` or `--since`. |
+| `mesh_write.msg_io_error` | `{code}: {what}, {syscall} '{path}'` |  |  | Node's message of a failed filesystem call. Placeholders: {code}, {what}, {syscall}, {path}. |
+| `mesh_write.msg_io_error_other` | `{error}, {syscall} '{path}'` |  |  | The message of a filesystem failure that has no Node code in `io_errors`. Placeholders: {error}, {syscall}, {path}. |
+| `mesh_write.msg_last_invalid` | `--last must be a positive integer (got {got})` |  |  | The refusal of a mesh read whose `--last` is not a positive number. Placeholder: {got} (JSON-quoted). |
 | `mesh_write.msg_mesh_read_hint` | `consumed broadcasts stay re-readable without moving any cursor: `mesh history...` |  |  | `hint` of a consuming mesh read. |
+| `mesh_write.msg_missing_receipt` | `--receipt <readReceiptId> (from `inbox read-primary`) is required` |  |  | The refusal of an ack-primary without `--receipt`. |
 | `mesh_write.msg_no_inbox_path` | `no inboxPath for workspace {id} (registered, but never given an --inbox path ...` |  |  | The refusal text for a registered id that never got an inbox path. Placeholder: {id} (JSON-quoted). |
+| `mesh_write.msg_no_random` | `random bytes unavailable` |  |  | The receipt error of a read that could not draw random bytes for the receipt id. |
 | `mesh_write.msg_not_verified` | `send appended a row (hash {hash}) but the readback against partition {partiti...` |  |  | `error` of that send. Placeholders: {hash}, {partition} (JSON-quoted). |
+| `mesh_write.msg_project_mismatch` | `workspace {id} is registered under project {registered}{context} — run this f...` |  |  | The project-context-mismatch error of a read or ack. Placeholders: {id}, {registered} (JSON-quoted) and {context} (one of the two tails above). |
+| `mesh_write.msg_promote_owner_key` | `invalid store key in the descriptor (ownerKey is not a string)` |  |  | The registry write error of a promotion whose descriptor names an `ownerKey` that is not a string (no store can be opened under it). |
+| `mesh_write.msg_promote_registry_stderr` | `[devswarm] registry write failed for {id}: {error}` |  |  | The stderr line of a promotion whose registry write failed after the descriptor was promoted. Placeholders: {id} and {error}. |
+| `mesh_write.msg_promote_store` | `store unavailable: {reason}` |  |  | The registry write error of a promotion whose store could not be opened. Placeholder: {reason}. |
 | `mesh_write.msg_pull_count_failed` | `message-count failed` |  |  | What `inbox pull` reports when the message count failed without saying why. |
 | `mesh_write.msg_pull_ensure_failed` | `the workspace registration could not be written` |  |  | What `inbox pull` reports when the ensure's writes failed and the pull was skipped. |
 | `mesh_write.msg_pull_lock_held` | `another pull holds the lock` |  |  | What `inbox pull` reports when another pull holds the workspace's pull lock. |
@@ -5779,6 +5796,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_pull_replay_failed` | `WAL replay failed (batch kept pending, no new native read)` |  |  | What `inbox pull` reports when a pending delivery-log batch could not be replayed (nothing further is read). |
 | `mesh_write.msg_pull_shortfall` | `devswarm-pull: reception shortfall for {id} — message-count={count} recovered...` |  |  | What a pull prints to stderr when the batch held fewer messages than the count promised. {id} {count} {recovered} {lost} {wal} {entry}. |
 | `mesh_write.msg_pull_wal_unwritable` | `delivery WAL not writable ({why}): {wal} — destructive native read refused` |  |  | What `inbox pull` reports when the delivery log cannot be appended and fsynced (the destructive read is refused). Placeholders: {why} and {wal}. |
+| `mesh_write.msg_receipt_belongs` | `receipt belongs to {owner}` |  |  | The refusal of an ack-primary for a receipt issued to another id. Placeholder: {owner} (the receipt's id, JSON). |
+| `mesh_write.msg_receipt_corrupt` | `read receipt is corrupt: its {key} is not a usable {what}` |  |  | The error of an ack whose receipt holds a move no cursor can take (a {what} that is not usable, in the field {key}); Node throws there and prints the exception. |
+| `mesh_write.msg_receipt_expired` | `receipt is older than {hours}h — re-run `inbox read-primary {id}` and then it...` |  |  | The refusal of an ack-primary for an expired receipt. Placeholders: {hours} and {id}. |
+| `mesh_write.msg_receipt_other_reader` | `receipt was issued to a different reader — a receipt acks only for the reader...` |  |  | The refusal of an ack-primary for a receipt issued to another reader. Placeholder: {id}. |
 | `mesh_write.msg_redirect_live` | `refusing to ack retired id {id} — it redirects to {survivor}, whose owner is ...` |  |  | The refusal of an `inbox ack` on a retired id whose survivor is live. Placeholders: {id} and {survivor} (JSON-quoted). |
 | `mesh_write.msg_redirect_live_log` | `refused: retired id {id} redirects to LIVE owner {survivor}` |  |  | The journal error of an `inbox ack` refused for a live survivor. Placeholders: {id} (the retired id) and {survivor}. |
 | `mesh_write.msg_redirect_unresolvable` | `inbox ack {id} was redirected to survivor {survivor} after a fold, but the ca...` |  |  | The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted). |
@@ -5786,8 +5807,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_seen_watermark_failed` | `could not write caller-scoped seen watermark` |  |  | The error of a seen watermark that could not be written. |
 | `mesh_write.msg_send_label_no_reader` | `stored in {to}, but no session reads that partition yet: it is a worktree lab...` |  |  | `warning` of a send whose recipient is a worktree label row that no session reads yet (a spawn pre-registers the label; the child registers under its own id). Placeholder: {to}. |
 | `mesh_write.msg_sender_fallback` | `mesh sender fallback: where={where}, partition={id}, messages={n}` |  |  | The log line when a message got its sender from a fallback instead of its own branch. {where} {id} (the partition) {n} (messages). |
+| `mesh_write.msg_seq_bare` | `--seq requires a value (got a bare flag, which would otherwise silently fall ...` |  |  | The refusal of a mesh read given `--seq` with no value. |
+| `mesh_write.msg_seq_invalid` | `--seq must be a non-negative integer (got {got})` |  |  | The refusal of a mesh read whose `--seq` is not a non-negative number. Placeholder: {got} (JSON-quoted). |
 | `mesh_write.msg_sibling_dup` | `suppressed a logically-duplicate sibling row (weak key match)` |  |  | The central-log message of a sibling row suppressed as a logical duplicate. |
+| `mesh_write.msg_since_invalid` | `--since must be an ISO 8601 timestamp or a duration like 30m/2h/1d (got {got})` |  |  | The refusal of a mesh read whose `--since` is neither a duration nor a date. Placeholder: {got} (JSON-quoted). |
+| `mesh_write.msg_store_failure` | `store failure: {reason}` |  |  | The error a verb reports (exit 2) when the store itself fails (an unreadable or corrupt database); Node reports the thrown exception the same way. Placeholder: {reason}. |
+| `mesh_write.msg_store_unopened` | `store for workspace {id} could not be opened: devswarm store unavailable (ERR...` |  |  | The error of a read or ack whose store could not be opened. Placeholders: {id} (JSON-quoted), {dir} (the project's store directory) and {error} (SQLite's message). |
+| `mesh_write.msg_store_unreadable` | `store for workspace {id} could not be opened: {error}` |  |  | The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}. |
 | `mesh_write.msg_unable` | `ah-engine mesh: ERROR: this verb or case cannot be done by the engine ({site}...` |  |  | stderr line when the engine cannot answer a mesh verb (an unported verb, a case it cannot do, no plugin context). Nothing was written; the exit code is mesh_write.exit_unable. Placeholders: {site}, where it gave up; {detail}, which call and why. |
+| `mesh_write.msg_unknown_receipt` | `no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run...` |  |  | The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is). |
 | `mesh_write.msg_unregistered` | `workspace {id} is not registered and has no messages (no descriptor, no regis...` |  |  | The refusal text for an unregistered id. Placeholder: {id} (JSON-quoted). |
 | `mesh_write.msg_verb_not_ok` | `verb returned ok:false` |  |  | The central-log message of a verb that returned `ok: false` without an error or a reason. |
 | `mesh_write.mtype_broadcast` | `broadcast` |  |  | The `mtype` of a broadcast (also `send --type broadcast`). |
@@ -5810,7 +5838,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
 | `mesh_write.origin_ndjson` | `ndjson` |  |  | The `origin` of a row that came from the NDJSON inbox. |
 | `mesh_write.origin_store` | `store` |  |  | The `origin` of a store row in a union read. |
-| `mesh_write.peek_primary_unread_flags` | `format, ack-after-print` |  |  | The flags `inbox read-primary` accepts that a peek does not (a text rendering, an immediate ack): a peek carrying one is Node's, since Node ignores them in its own way. |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
 | `mesh_write.plan_activity_keep` | `5` |  |  | How many recent activity signatures a plan keeps (ACTIVITY_KEEP). |
 | `mesh_write.plan_bad_status_text` | `--status must be one of {list}` |  |  | The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses. |
@@ -5853,13 +5880,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.quiet_ok` | `sent seq {seq} -> {to}, {bytes} bytes, ok` |  |  | `send --quiet` line of a delivered send. Placeholders: {seq}, {to}, {bytes}. |
 | `mesh_write.quiet_unknown` | `(unknown)` |  |  | The {to} of a send with no recipient in the quiet line. |
 | `mesh_write.read_ack_hint` | ``inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s...` |  |  | The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}. |
-| `mesh_write.read_primary_flags` | `format, json, session, limit, ack-after-print` |  |  | The flags `inbox read-primary` may carry for the engine to answer it; any other flag (an ownership override, `--legacy-ack-now`, `--unread`, `--with-broadcasts`) is Node's. |
+| `mesh_write.reason_bad_last` | `bad-last` |  |  | The `reason` of a mesh read whose `--last` is not a positive number. |
+| `mesh_write.reason_bad_seq` | `bad-seq` |  |  | The `reason` of a mesh read whose `--seq` is bare or not a non-negative number. |
+| `mesh_write.reason_bad_since` | `bad-since` |  |  | The `reason` of a mesh read whose `--since` is neither a duration nor a date. |
+| `mesh_write.reason_filter_requires_peek` | `filter-requires-peek` |  |  | The `reason` of a consuming mesh read given `--last` or `--since`. |
 | `mesh_write.reason_logical_dup` | `logical-dup` |  |  | The log reason of a sibling row suppressed as a logical duplicate. |
+| `mesh_write.reason_missing_receipt` | `missing-receipt` |  |  | The `reason` of an ack-primary without `--receipt`. |
 | `mesh_write.reason_no_inbox_path` | `no-inbox-path` |  |  | The reason of an inbox read of an id that is registered (or has messages) but never got an inbox path. |
+| `mesh_write.reason_no_project` | `no-project` |  |  | The `reason` of a mesh read from a directory that is in no project. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
+| `mesh_write.reason_project_mismatch` | `project-context-mismatch` |  |  | The `reason` of a read or ack from another project than the id's own. |
+| `mesh_write.reason_receipt_expired` | `receipt-expired` |  |  | The `reason` of an ack-primary for a receipt past its lifetime. |
+| `mesh_write.reason_receipt_owner` | `receipt-owner-mismatch` |  |  | The `reason` of an ack-primary for a receipt issued to another id or another reader. |
 | `mesh_write.reason_redirect_live` | `redirect-to-live-owner` |  |  | The reason of an `inbox ack --ack-as-owner` on a retired id whose survivor is live. |
 | `mesh_write.reason_redirect_unresolvable` | `retired-redirect-unresolvable-caller` |  |  | The reason of an `inbox ack` on a retired id by a caller not verifiable as the survivor. |
+| `mesh_write.reason_store_unavailable` | `store-unavailable` |  |  | The `reason` of a read or ack whose store could not be opened. |
+| `mesh_write.reason_unknown_receipt` | `unknown-receipt` |  |  | The `reason` of an ack-primary for a receipt that does not exist. |
 | `mesh_write.reason_unregistered` | `unregistered-workspace` |  |  | The reason of an inbox read of an id with no descriptor, no registry row and no messages. |
+| `mesh_write.receipt_error_hint` | `read-only: nothing was acked, and the read receipt could not be written ({err...` |  |  | The `ackHint` of a read-primary result whose read receipt could not be written. Placeholders: {error} (the filesystem error) and {id}. |
 | `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
 | `mesh_write.receipt_keep_ms` | `604800000` |  |  | READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node. |
 | `mesh_write.receipt_ttl_ms` | `86400000` |  |  | Age past which a read receipt can no longer be acked (READ_RECEIPT_TTL_MS, 24 hours). |
@@ -5918,7 +5956,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.step_stall_env` | `ANTIHALL_DEVSWARM_STEP_STALL_MIN` |  |  | The environment variable of the devswarm.stepStallMin setting. |
 | `mesh_write.step_stall_key` | `stepStallMin` |  |  | The settings.json key (in the devswarm section) of the step stall window. |
 | `mesh_write.step_stall_option` | `devswarm_step_stall_min` |  |  | The plugin option name of the step stall window. |
+| `mesh_write.store_cantopen_message` | `unable to open database file` |  |  | SQLite's message when a database file cannot be opened at all (Node wraps it with the store directory; any other message surfaces as is). |
+| `mesh_write.store_error_prefix` | `store read failed: ` |  |  | The words the engine's store error puts before SQLite's own message (stripped to get that message). |
+| `mesh_write.store_failure_prefixes` | `8 items` |  |  | The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node. |
 | `mesh_write.store_file` | `devswarm.db` |  |  | File name of a per-repo store (`devswarm.db`). |
+| `mesh_write.store_unavailable_code` | `ERR_SQLITE_ERROR` |  |  | The `storeUnavailableReason` of a store that could not be opened (the error code `node:sqlite` gives every database failure). |
 | `mesh_write.summary_failed` | `summary-failed` |  |  | Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file). |
 | `mesh_write.summary_pending_questions_cap` | `200` |  |  | Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP). |
 | `mesh_write.summary_recent_cap` | `50` |  |  | Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP). |
@@ -5974,6 +6016,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.wal_reason_shortfall` | `shortfall` |  |  | The reason of the record that closes a batch that held fewer messages than the count promised. |
 | `mesh_write.wal_reason_unparseable` | `unparseable` |  |  | The reason of the record that closes a replayed batch that parsed to nothing. |
 | `mesh_write.wal_suffix` | `.ndjson` |  |  | File-name suffix of a delivery log. |
+| `mesh_write.with_broadcasts_ignored` | `acking verb; use `inbox messages <id> --with-broadcasts` (non-acking)` |  |  | The `withBroadcastsIgnored` note of an acking read that was given `--with-broadcasts`. |
 | `mesh_write.write_seq_column` | `write_seq` |  |  | The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn). |
 | `mesh_write.xdg_default` | `.config` |  |  | Its default under the home directory. |
 

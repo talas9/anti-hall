@@ -185,7 +185,13 @@ fn clamp_target(x: f64) -> i64 {
 /// floor, and recomputes the floor as `max(F, MIN(live declared))` (a headless caller moves it to its target when no
 /// live declared reader exists); then the legacy projection ([`dual_write`]).
 pub fn ack_for(st: &MeshStore, home: &Path, partition: &str, ns: &str, reader: Option<&str>, target: f64, procs: &mut Procs) -> Acked {
-    let now = common::now_ms();
+    ack_for_at(st, home, partition, ns, reader, target, procs, common::now_ms())
+}
+
+/// [`ack_for`] at the clock the caller names: `commitNdAck` hands `ackFor` the call's own `ctx.now`, where `commitInstanceAck` leaves it
+/// to the wall clock.
+#[allow(clippy::too_many_arguments)]
+pub fn ack_for_at(st: &MeshStore, home: &Path, partition: &str, ns: &str, reader: Option<&str>, target: f64, procs: &mut Procs, now: i64) -> Acked {
     let target = clamp_target(target);
     let floor_name = defaults::text("mesh_write.floor_reader");
     // retirement evidence is gathered OUTSIDE the transaction, and only when a FOREIGN declared row older than
