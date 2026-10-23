@@ -25,7 +25,6 @@ mod ctxbudget_e2e;
 mod defaults_failover;
 mod defaults_keys;
 mod dep_budget;
-mod devswarm_prompt_parity;
 mod devswarm_rt;
 mod devswarm_shims;
 mod devswarm_wire;

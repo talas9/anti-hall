@@ -261,8 +261,10 @@ fn hooks_section(doc: &mut Doc, root: &Path) {
         }
     }
     doc.ok(defaults::render("doctor_msg.hooks_valid", &[("n", &scripts.len())]));
+    // the registry's commands run the scripts from the Node tree beside the plugin (`nodeback.node_dir`), so a script counts as present there too
+    let node_hooks = root.join(defaults::text("nodeback.node_dir")).join(defaults::text("doctor.hooks_dir"));
     for f in scripts {
-        if hooks.join(&f).exists() {
+        if hooks.join(&f).exists() || node_hooks.join(&f).exists() {
             doc.ok(defaults::render("doctor_msg.hook_present", &[("file", &f)]));
         } else {
             doc.bad(defaults::render("doctor_msg.hook_missing", &[("file", &f)]));

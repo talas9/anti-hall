@@ -46,6 +46,7 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("telemetry", s(&[])),
         ("telemetry", s(&["summary"])),
         ("fallback", s(&["status"])),
+        ("shadow-compare", s(&[])),
         ("schedule", s(&["list"])),
         ("schedule", s(&["history"])),
         ("config", s(&[])),
