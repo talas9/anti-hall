@@ -192,7 +192,7 @@ pub fn event_as(inv: &Inv, component: &str, op: &str, msg: &str, ctx: Vec<(&str,
 
 /// `alog.logEvent('devswarm-cli', op, 'warn', msg, ctx)`: a warning entry without an error payload.
 pub fn warn_event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
+    write_entry(inv, defaults::text("devswarm_cli.log_component"), op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
 }
 
 #[cfg(test)]

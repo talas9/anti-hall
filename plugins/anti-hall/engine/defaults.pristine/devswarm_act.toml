@@ -553,6 +553,10 @@ value = "another trigger is already acting on {id}"
 doc = "Why an action was refused: the preconditions changed between the decision and the action."
 value = "preconditions changed between the decision and the action"
 
+[devswarm_act.msg_idle_uncertain]
+doc = "The g-idle blocker of an auto-archive candidate whose idleness cannot be proven (Node's idle rule can only be stricter than the engine's, never looser, so the workspace is held)."
+value = "held: idle uncertain"
+
 [metric.dsx_actions]
 doc = "Automatic archive and nag attempts of the DevSwarm expansion features, by feature and outcome (ok, refused, failed)."
 value = { kind = "counter", unit = "actions", labels = ["feature", "outcome"] }

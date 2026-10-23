@@ -53,6 +53,7 @@ function dsAutoArchive(p) {
   var idleMin = (typeof idle.ts === 'number') ? Math.floor((now - idle.ts) / 60000) : null;
   if (idle.pendingBackground) b.push(dsBlock('g-idle', 'background work the child launched (agent/Bash) has not reported completion'));
   else if (idle.openRealTurn) b.push(dsBlock('g-idle', 'an AI turn doing real work is still open'));
+  else if (idle.uncertain) b.push(dsBlock('g-idle', ah.cfg('devswarm_act.msg_idle_uncertain')));
   else if (typeof idle.ts !== 'number' || now - idle.ts < s.idleMin * 60000) {
     b.push(dsBlock('g-idle', typeof idle.ts !== 'number' ? 'no activity signal' : 'active ' + idleMin + 'm ago' + (idle.via === 'real-work' ? ' (real work)' : '')));
   }

@@ -236,10 +236,13 @@ fn cases(d: &Dirs, dbs: &Dbs) -> Vec<Case> {
         c("database-without-isactive", "arch-1", Some(&dbs.no_active), true, vec!["\"ok\":true"]),
         // ---- older schema: no isHidden, an inactive row is archived ----
         c("old-schema-without-ishidden", "arch-1", Some(&dbs.no_hidden), true, vec!["\"appArchived\":true"]),
-        // ---- values the engine does not convert like JavaScript are deferred, nothing written ----
-        c("relative-worktree-path", "child-1", Some(&dbs.relative), false, vec!["\"ok\":true"]),
-        c("text-flag-value", "child-1", Some(&dbs.text_flag), false, vec!["\"ok\":true"]),
-        c("blob-id", "child-1", Some(&dbs.blob_id), false, vec!["\"ok\":true"]),
+        // ---- values JavaScript converts in its own ways are read the same way ----
+        c("relative-worktree-path", "child-1", Some(&dbs.relative), true, vec!["\"ok\":true"]),
+        c("text-flag-value", "child-1", Some(&dbs.text_flag), true, vec!["\"ok\":true"]),
+        c("blob-id", "child-1", Some(&dbs.blob_id), true, vec!["\"ok\":true"]),
+        c("text-flag-zero-is-archived", "arch-1", Some(&dbs.text_flag), true, vec!["\"appArchived\":true"]),
+        c("blob-flag-and-real-id", "arch-1", Some(&dbs.odd_types), true, vec!["\"appArchived\":true"]),
+        c("integer-beyond-2-53-makes-the-snapshot-null", "arch-1", Some(&dbs.big_int), true, vec!["\"ok\":true"]),
         // ---- a database in WAL mode with its -wal file present (part of the cache signature) ----
         c("wal-database", "arch-1", Some(&dbs.wal), true, vec!["\"appArchived\":true"]),
         // ---- --step ----
@@ -293,7 +296,12 @@ fn cases(d: &Dirs, dbs: &Dbs) -> Vec<Case> {
         Case {
             pre_ms: Some(1_000),
             poison: Some(("\"states\":{".into(), "\"states\":[],\"x\":{".into())),
-            ..c("cache-states-of-the-wrong-shape", "arch-1", Some(main), false, vec!["\"ok\":true"])
+            ..c("cache-states-of-the-wrong-shape", "arch-1", Some(main), true, vec!["\"ok\":true"])
+        },
+        Case {
+            pre_ms: Some(1_000),
+            poison: Some(("\"states\":{".into(), "\"states\":[null,5,{\"active\":false,\"archived\":true,\"worktreePath\":7}],\"x\":{".into())),
+            ..c("cache-states-as-an-array-of-mixed-values", "arch-1", Some(main), true, vec!["\"ok\":true"])
         },
         // ---- a locked database reads as unavailable, at once ----
         Case { lock: true, ..c("database-exclusively-locked", "arch-1", Some(&dbs.locked), true, vec!["\"ok\":true"]) },
@@ -318,6 +326,8 @@ struct Dbs {
     relative: PathBuf,
     text_flag: PathBuf,
     blob_id: PathBuf,
+    odd_types: PathBuf,
+    big_int: PathBuf,
     wal: PathBuf,
     touch: PathBuf,
     locked: PathBuf,
@@ -337,6 +347,8 @@ fn build_dbs(fx: &Fx, d: &Dirs) -> (Dbs, rusqlite::Connection) {
         relative: r.join("relative.db"),
         text_flag: r.join("textflag.db"),
         blob_id: r.join("blobid.db"),
+        odd_types: r.join("oddtypes.db"),
+        big_int: r.join("bigint.db"),
         wal: r.join("wal.db"),
         touch: r.join("touch.db"),
         locked: r.join("locked.db"),
@@ -367,7 +379,21 @@ fn build_dbs(fx: &Fx, d: &Dirs) -> (Dbs, rusqlite::Connection) {
         )
         .unwrap();
         let c = rusqlite::Connection::open(&dbs.text_flag).unwrap();
-        c.execute_batch("CREATE TABLE builders (id TEXT, isActive TEXT, isHidden INTEGER); INSERT INTO builders VALUES ('child-1', '1', 0)").unwrap();
+        c.execute_batch(
+            "CREATE TABLE builders (id TEXT, isActive TEXT, isHidden INTEGER); INSERT INTO builders VALUES ('child-1', '1', 0), ('arch-1', '0', 1)",
+        )
+        .unwrap();
+        // a text flag of 0 is Number('0'); a blob flag prints as its bytes; a real id prints without a trailing zero
+        let c = rusqlite::Connection::open(&dbs.odd_types).unwrap();
+        c.execute_batch(
+            "CREATE TABLE builders (id, isActive, isHidden); INSERT INTO builders VALUES ('arch-1', x'00', ' 1 '), (1.5, 1, 0), (x'0102', '0x1', 0)",
+        )
+        .unwrap();
+        let c = rusqlite::Connection::open(&dbs.big_int).unwrap();
+        c.execute_batch(
+            "CREATE TABLE builders (id TEXT, isActive INTEGER, isHidden INTEGER, rank INTEGER); INSERT INTO builders VALUES ('arch-1', 0, 1, 9007199254740993)",
+        )
+        .unwrap();
         let c = rusqlite::Connection::open(&dbs.blob_id).unwrap();
         c.execute_batch("CREATE TABLE builders (id BLOB, isActive INTEGER, isHidden INTEGER); INSERT INTO builders VALUES (x'0102', 1, 0)").unwrap();
     }
@@ -469,5 +495,5 @@ fn app_database_heartbeats_match_node_byte_for_byte_and_defer_without_writing() 
         "app database parity: {} cases, {native} answered by the engine and identical to Node ({verified} confirmed by the background Node check), {deferred} deferred with nothing written",
         list.len()
     );
-    assert!(native >= 30 && deferred >= 4, "{native} native, {deferred} deferred");
+    assert!(native >= 38 && deferred == 0, "{native} native, {deferred} deferred");
 }

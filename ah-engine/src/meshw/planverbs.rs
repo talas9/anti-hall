@@ -211,7 +211,7 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
 }
 
 /// `addExtra(plan, glob, note, now)` -> changed.
-fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
+pub(crate) fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
     if !matches!(p.get("extras"), Some(OVal::Arr(_))) {
         p.set("extras", OVal::Arr(Vec::new()));
     }

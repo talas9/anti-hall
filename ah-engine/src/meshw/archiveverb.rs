@@ -654,6 +654,12 @@ fn apply_unit(inv: &Inv, label: &str, ops: Vec<Op>) -> UnitEnd {
 
 /// `archive <id>`.
 pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
+    archive_with(inv, a, None)
+}
+
+/// [`archive`] with Node's `opts.revalidate`: the caller's check of the descriptor, run INSIDE the workspace's lock immediately before
+/// the first write. A reason skips the archive (`{ ok: true, skipped: true, reason }`, nothing written).
+pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> R<Answer> {
     let raw = a.positionals.get(1).map(String::as_str).unwrap_or("");
     // already archived in anti-hall but still live in the app: archive the app side only
     if let Some(only) = app_only_archive(inv, raw)? {
@@ -683,7 +689,8 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
             return Ok(answer(2, o.done()));
         }
     };
-    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: None })
+    let adapt = |d: Option<&OVal>| d.and_then(|d| revalidate.and_then(|check| check(d)));
+    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: revalidate.map(|_| &adapt as &dyn Fn(Option<&OVal>) -> Option<String>) })
 }
 
 /// `cmdArchive(id, ctx, opts)`, under the workspace's own lock.
