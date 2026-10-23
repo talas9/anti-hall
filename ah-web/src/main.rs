@@ -11,6 +11,7 @@ mod health;
 mod live;
 mod manage;
 mod model;
+mod ops;
 mod server;
 
 use app::App;

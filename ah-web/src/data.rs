@@ -33,7 +33,7 @@ fn human_step(step: &str) -> String {
 }
 
 /// The agents of the engine's status document (finished agents are left out).
-pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
+pub fn reduce(doc: &Value, step_max: usize, idle_shell_state: &str) -> Vec<Agent> {
     doc
         .get("agents")
         .and_then(Value::as_array)
@@ -53,6 +53,8 @@ pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
                         step: human_step(&text(a, "step")).chars().take(step_max).collect(),
                         tokens_out: a.get("tokens_out").and_then(Value::as_u64).unwrap_or(0),
                         tool_calls: a.get("tool_calls").and_then(Value::as_u64).unwrap_or(0),
+                        // the registry says a shell is running and the transcript says the turn ended (engine field `turn_ended`)
+                        idle_shell: !idle_shell_state.is_empty() && text(a, "host_state") == idle_shell_state && a.get("turn_ended").and_then(Value::as_bool) == Some(true),
                         id,
                     }
                 })
@@ -170,7 +172,7 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
                 if doc.get("unchanged").is_none() && doc.get("error").is_none() {
                     f.generated_ms = doc.get("generated_ms").and_then(Value::as_u64);
                     f.rev = doc.get("rev").and_then(Value::as_str).map(str::to_string);
-                    f.agents = Some(reduce(&doc, s.step_max_chars));
+                    f.agents = Some(reduce(&doc, s.step_max_chars, &crate::ops::idle_shell_state(&app)));
                 }
             }
             Err(_) => {

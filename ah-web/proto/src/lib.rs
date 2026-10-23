@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod ops;
+
 /// The event stream the page subscribes to (a URL of this package's own protocol, not a setting).
 pub const STREAM_PATH: &str = "/api/stream";
 /// The server-sent event name carrying a [`Snapshot`] (on connect, and when a stream missed a change).
@@ -41,6 +43,10 @@ pub struct Agent {
     pub tokens_out: u64,
     /// Tool calls so far.
     pub tool_calls: u64,
+    /// The turn ended and only a shell command the agent started is still running (the registry says `shell`): shown as
+    /// "idle, shell running", not "running".
+    #[serde(default)]
+    pub idle_shell: bool,
 }
 
 /// The engine's vital signs (`CTL pulse`), reduced to what the header shows.
