@@ -8,9 +8,9 @@ the update.
 
 ## Unreleased
 
-### Documentation
+### Changed
 
-- **Recommended handover and compaction setup.** Docs (settings and handover skills for Claude and Codex, `docs/GUIDE.md`, `llms.txt`) now describe firing the handover about 5% of the window before auto-compact: `autoHandover.pct` 93 against Claude auto-compact at 98% for 200k models; `autoHandover.maxTokens` 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000` for 1M models. Shipped defaults are unchanged (pct 85, no token ceiling). Also corrects stale "170k tokens" claims. The PreCompact "since the last handover" delta is documented as planned only.
+- **Auto-handover now fires 5% of the window before auto-compact: shipped defaults `autoHandover.pct` 85 -> 93 and `autoHandover.maxTokens` 0 -> 500000.** The handover is written while the agent still has room. They pair with Claude Code's auto-compact at 98% (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=98`) for 200k models, and with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000` for 1M models (Claude Code clamps that value to the model window, so 200k models are unaffected). `pct` and `maxTokens` fire on whichever comes first, so the 500000 ceiling only bites on 1M sessions. On one machine, over 7 days and about 4.3k transcripts, turns above 550k context were 41% of input tokens, and a 55% cap simulated about 32% less input (a measured example, not a guarantee). Settings you set yourself are kept. Docs: settings, handover and system-briefing skills (Claude and Codex), `docs/GUIDE.md`, `llms.txt`; removes the stale "170k tokens" claim. The PreCompact "since the last handover" delta is documented as planned only.
 
 ### Added
 

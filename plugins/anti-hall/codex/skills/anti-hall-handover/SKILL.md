@@ -15,7 +15,7 @@ and templates; only platform phrasing differs (no `/compact` references,
 
 **Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit, shared
 verbatim with the Claude plugin) watches the main agent's estimated context usage and, at
-85% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
+93% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
 `ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-settings` skill to change it), injects
 a directive to run THIS skill's contract yourself, right now, without asking the user
 first — same self-write mandate as below. A long autonomous turn that never passes a
@@ -23,7 +23,7 @@ user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause
 shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
 
-**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. Shipped defaults stay 85% and no token ceiling; see the `anti-hall-settings` skill, "Recommended setup". Codex: leave `model_auto_compact_token_limit` alone; if you set it, hand over 5% of the window before it.
+**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. These are the shipped defaults (93% and 500000 tokens); see the `anti-hall-settings` skill, "Recommended setup". Codex: leave `model_auto_compact_token_limit` alone; if you set it, hand over 5% of the window before it.
 
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
@@ -380,7 +380,7 @@ final message depends on the `Trigger:` line you recorded above:
 - Never say "safe for a reset" (the 🟢 line) unless the threshold fired or
   context is genuinely high — that line reads as a stop-now signal, and
   a proactive save below threshold is not one (field incident: a session below
-  the 85% auto threshold invoked this skill because a restart was mentioned,
+  the auto threshold invoked this skill because a restart was mentioned,
   and the old unconditional "✅ HANDOVER COMPLETE — SAFE FOR CONTEXT
   COMPACTION/RESET NOW" wording was read as a premature signal to stop).
 

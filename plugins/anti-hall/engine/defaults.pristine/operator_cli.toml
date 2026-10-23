@@ -222,13 +222,13 @@ value = "autoHandover"
 [opcli.ahc_current]
 doc = "The settings `writeConfig` and `resolveEffective` read, in order, each as `name:default` (the default is JSON): the value a verb starts from."
 value = [
-  "enabled:true", "pct:85", "nag:true", "nagStepPct:5", "nagQuietMin:15", "maxTokens:0", "gateNewWork:true", "gateBudgetPct:5",
+  "enabled:true", "pct:93", "nag:true", "nagStepPct:5", "nagQuietMin:15", "maxTokens:500000", "gateNewWork:true", "gateBudgetPct:5",
   "decisivePrompt:true", "gateHousekeepingMarkers:\"\"",
 ]
 
 [opcli.ahc_default_pct]
 doc = "The threshold `on` restores when the stored one is not 1-99."
-value = 85
+value = 93
 
 [opcli.ahc_default_nag_step_pct]
 doc = "The nag step reported when the trigger is switched off by the environment."
