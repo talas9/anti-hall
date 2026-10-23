@@ -1280,7 +1280,7 @@ doc = "How long a locked app database is waited for: Node's node:sqlite waits no
 value = 0
 
 [mesh_write.app_max_exact_int]
-doc = "Integers beyond this magnitude are not exact JavaScript numbers; a database holding one in a column the verdict reads defers."
+doc = "Integers beyond this magnitude are not exact JavaScript numbers; node:sqlite throws on one in any column it selects, so a database holding one reads as no snapshot."
 value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
