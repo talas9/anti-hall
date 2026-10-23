@@ -343,7 +343,7 @@ impl Shared {
                 serde_json::json!({"counters": keep("counters"), "histograms": keep("histograms")})
             }),
             "trace" => serde_json::json!({"running": true, "entries": crate::obs::trace::snapshot()}),
-            other => crate::obs::diagverbs::local(other).unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
+            other => crate::obs::diagverbs::local(other, "").unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
         }
     }
 

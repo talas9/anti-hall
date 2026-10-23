@@ -211,3 +211,35 @@ value = "proc needs a numeric pid"
 [act.msg_unknown]
 doc = "Said for an unknown action."
 value = "unknown action: {what}"
+
+# ---- mesh traffic (CTL mesh-events, CTL mesh-msg) ------------------------------------------------------------------------------------
+
+[mesh_events.dir_component]
+doc = "The directory name a mesh store path must pass through (stores live under `~/.anti-hall/devswarm/store/<repo>/`)."
+value = "devswarm"
+
+[mesh_events.limit]
+doc = "Most message rows one `CTL mesh-events` call returns."
+value = 500
+min = 1
+
+[mesh_events.body_max]
+doc = "Most characters of a message body `CTL mesh-msg` returns."
+value = 4000
+min = 1
+
+[mesh_events.msg_no_db]
+doc = "Said when a mesh call names no store."
+value = "mesh calls need db=<path to a devswarm.db>"
+
+[mesh_events.msg_bad_db]
+doc = "Said when the store path is not a mesh store."
+value = "db is not a mesh store (a devswarm.db under a devswarm directory)"
+
+[mesh_events.msg_unreadable]
+doc = "Said when the mesh store cannot be opened read-only."
+value = "the mesh store could not be opened"
+
+[mesh_events.msg_no_id]
+doc = "Said when `mesh-msg` names no message id."
+value = "mesh-msg needs id=<message id>"

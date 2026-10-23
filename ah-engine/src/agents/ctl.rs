@@ -125,3 +125,9 @@ pub fn run_send(p: &Parsed) -> i32 {
     };
     crate::web::actions::finish(p, "agent", action, &id, false, done.map_err(|e| (false, e)))
 }
+
+/// The transcript file the tracker follows for agent `id` (from the last tick's state), when it has one.
+pub fn transcript_path(id: &str) -> Option<String> {
+    let env = env().ok()?;
+    load_state(&env).agents.get(id).map(|a| a.path.clone()).filter(|p| !p.is_empty())
+}

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub use ctl::{Send, document as web_document, heartbeat, send, session_pids};
+pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, transcript_path};
 pub use status::run_cmd;
 
 pub(crate) fn lim(k: &str) -> u64 {
