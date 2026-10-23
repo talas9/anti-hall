@@ -16,7 +16,7 @@ Settings switches, the generated reference and the Jev classifier.
 | `ah-engine docs` | `[--format md]` Print the generated reference: every command, setting, metric, impact kind, check and error code | main, codex, workspace, subagent |
 | `ah-engine finding-dedup` | `[--file <findings.json>]` Advisory duplicate-finding detector for the deadly-loop reviewers (L03, the port of scripts/finding-dedup.js): reads a JSON array of... | main, codex, workspace, subagent |
 | `ah-engine install-statusline` | `` Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed statusLine and exits 0 | main, codex |
-| `ah-engine jev` | `<ask\|status\|scrub\|evidence>` The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is... | main, codex, workspace, subagent (owner args: ask, evidence) |
+| `ah-engine jev` | `<ask\|status\|scrub\|evidence>` The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is... | main, codex, workspace, subagent (owner args: ask, evidence, arrival) |
 | `ah-engine jev-report` | `[--json] [--days N] [--window 24h\|7d] [--by project\|session] [--project <name>] [--weekly] \| label <hash> [tp\|fp] \| prune-audit --days N` The Jev report of the /anti-hall:jev skill (the port of scripts/jev-report.js): per-integration calls, agreement, changed decisions,... | main, codex, workspace, subagent (owner args: label, prune-audit) |
 | `ah-engine jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|test\|mode\|review-due\|reviewed\|snooze> [--days <n>] [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` Activate, configure and inspect the opt-in Jev classifier (D81, the port of scripts/jev-setup.js): `status` (resolved settings, key... | main, codex |
 | `ah-engine jev_sweep` | `` The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions... | main, codex |
@@ -46,7 +46,7 @@ Settings switches, the generated reference and the Jev classifier.
 - `jev.judgeBackend` = "api": How the judge reaches the model: jev.judgeBackend (env ANTIHALL_JUDGE_BACKEND), api (default), cli or auto (api when an Anthropic key is...
 - `jev.judgeModel` = "haiku": Where the model alias is read from: jev.judgeModel (env ANTIHALL_JUDGE_MODEL, plugin option jev_judge_model), default the alias haiku
 - `jev.speculationBackend` = "haiku": Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the...
-- `jev.triageBackend` = "jev": Which backend labels mesh messages: jev (default, today's behaviour: Jev first, the Anthropic API fills a missing label when a key is...
+- `jev.triageBackend` = "jev": Which backend labels mesh messages: jev (default: Jev first; a label Jev leaves open stays open, because the engine never calls the...
 - `context.verifyFirstSession` = true: Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on)
 - `context.verifyFirstTurn` = true: Where the on/off switch is read from (context.verifyFirstTurn, default on)
 - `guards.claimLedger` = true: Where the on/off switch is read from (guards.claimLedger, default on)

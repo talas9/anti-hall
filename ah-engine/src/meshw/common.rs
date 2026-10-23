@@ -343,7 +343,7 @@ pub fn init_new_store(inv: &Inv, repo_key: &str) -> R<()> {
 }
 
 /// Jev triage might label an arrival (`jev-triage.js` `loadTriageConfig(home).enabled` can be true): Node then appends
-/// to the arrival queue and may spawn a worker, which the engine does not; the send defers.
+/// to the arrival queue; the engine does the same (`jev_enqueue_arrival` decides exactly).
 pub fn jev_maybe_enabled(inv: &Inv) -> bool {
     let env_jev = inv.env("mesh_write.env_jev");
     if env_jev == Some(defaults::text("mesh_write.env_off_value")) {
@@ -457,7 +457,7 @@ pub fn jev_record_answered(inv: &Inv, from: &str, to: &str) {
 }
 
 /// `shiftRotated(p, keep)` once `p` is over `max` bytes: `p.(keep-1)` onto `p.keep`, ..., `p` onto `p.1`.
-fn rotate_if_over(p: &Path, max: u64, keep: u64) {
+pub(crate) fn rotate_if_over(p: &Path, max: u64, keep: u64) {
     if std::fs::metadata(p).map_or(true, |m| m.len() <= max) {
         return;
     }
@@ -468,10 +468,10 @@ fn rotate_if_over(p: &Path, max: u64, keep: u64) {
     crate::discard::harmless(std::fs::rename(p, gen_path(1))); // keep: on failure the row lands in the oversized file
 }
 
-/// A direct send would have queued its text for Jev arrival labelling (`enqueueArrival`). The queue was drained by a detached
-/// Node worker, which is not part of the live path, so nothing is queued; the skip is counted so it is seen.
-pub fn jev_arrival_skipped() {
-    crate::metrics::bump(defaults::text("mesh_write.metric_jev_arrival_skipped"), &[]);
+/// A freshly sent direct message is queued for Jev arrival labelling (`jev-triage.js` `enqueueArrival`); the scheduled job
+/// `jev_arrival` drains the queue, so the send never waits for Jev. Disabled or already-labelled texts write nothing.
+pub fn jev_enqueue_arrival(inv: &Inv, text: &str) {
+    crate::jev::arrival::enqueue(&inv.home, text, &crate::jev::arrival::Limits::shipped());
 }
 
 /// A sent message is child activity: refresh the sender's plan progress clock (`planLib.noteActivity`) when the sender has a plan.

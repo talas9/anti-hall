@@ -208,6 +208,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_INSTALL_LOCK_STALE_S` | `rollback.lock_stale_s` | An install lock held longer than this is broken (one whose holder process is gone is broken at once). Longer than the slowest install: ah-update's go_live_timeout_s. |
 | `AH_ENGINE_INSTALL_LOCK_TOKEN` |  | Set by an installer (ah-update.sh) for the integrity script: the token of the install lock it already holds, so recording the expected sha256 runs under the caller's hold instead of waiting on it. |
 | `AH_ENGINE_INSTALL_LOCK_WAIT_S` | `rollback.lock_wait_s` | How long an install, a roll-back by ah-update, or the recording of the expected sha256 waits for the install lock before giving up (the installer then fails and keeps the old binary). |
+| `AH_ENGINE_JEV_ARRIVAL_MS` | `schedule.jev_arrival_ms` | Interval of the jev_arrival job (how soon a queued arrival is labelled); the job does nothing while the queue is empty. 0 turns it off. |
 | `AH_ENGINE_JEV_SWEEP_MS` | `schedule.jev_sweep_ms` | Interval of the jev_sweep job; 0 turns it off. |
 | `AH_ENGINE_MAINTAIN_MS` | `schedule.maintain_ms` | Interval of the maintain job (D26); 0 turns it off. |
 | `AH_ENGINE_MAX_EVENTS` | `telemetry.max_events` | Most impact events kept in memory (oldest dropped first); counts per kind are kept exactly in separate counters. |
@@ -1389,8 +1390,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `schedule.action_args` | `3 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
-| `schedule.actions` | `16 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
+| `schedule.action_args` | `4 entries` |  |  | The command line (after the program name, before --json) of a subprocess action whose command is not just its name. |
+| `schedule.actions` | `17 items` |  |  | Actions a job may name; anything else in a user override is refused and logged. |
 | `schedule.backoff_shift_max` | `30` |  |  | The largest doubling exponent of a failed job's retry delay (backoff_ms times 2^(failures-1), at most this power), before the job's backoff_max_ms cap; it keeps the shift from overflowing. |
 | `schedule.backup_ms` | `0` | `AH_ENGINE_BACKUP_MS` | ms | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `schedule.cpu_backoff_ms` | `60000` |  | ms | How long scheduled jobs pause after the daemon sustained-CPU self-check warns; 0 logs only. |
@@ -1402,8 +1403,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `schedule.procwatch_ms` | `30000` | `AH_ENGINE_PROCWATCH_MS` | ms | Interval of the process watch job (resource sampling; orphan scans run every procwatch.scan_every_s); 0 turns it off. |
 | `schedule.run_wait_ms` | `5000` |  | ms | How long `schedule run <job>` waits for the run it asked for before answering that it is still running; below daemon.stuck_ms. |
 | `schedule.shadow_report_ms` | `86400000` | `AH_ENGINE_SHADOW_REPORT_MS` | ms | Interval of the daily Node-shadow agreement report job; 0 turns it off. |
-| `schedule.skip_without_work` | `gh_poll, refresh` |  |  | Subprocess actions the scheduler skips when they have no recent session or pending-request work. The command itself still reports the skip reason for manual runs. |
-| `schedule.subprocess_actions` | `9 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
+| `schedule.skip_without_work` | `gh_poll, refresh, jev_arrival` |  |  | Subprocess actions the scheduler skips when they have no recent session or pending-request work. The command itself still reports the skip reason for manual runs. |
+| `schedule.subprocess_actions` | `10 items` |  |  | Actions that run as an `ah-engine <action> --json` subprocess in its own process group, so a timeout kills it and everything it started. |
 | `schedule.telemetry_rollup_ms` | `86400000` | `AH_ENGINE_TELEMETRY_ROLLUP_MS` | ms | Interval of the telemetry rollup job (D78); 0 turns it off. |
 | `schedule.test_sleep_argv` | `sleep, 3600` |  |  | Command the test-only `test_sleep` action runs (accepted only when the test-hooks variable is set), to exercise timeouts. |
 | `schedule.tick_ms` | `1000` | `AH_ENGINE_TICK_MS` | ms | Longest the ticker sleeps between checks; it wakes earlier when a job is due sooner or `schedule run` asks. |
@@ -2160,6 +2161,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `judge.anthropic_legacy_env` | `ANTHROPIC_API_KEY` |  |  | The legacy key variable, which counts only when guards.allowAnthropicEnvKey is on in the home settings file. Only its presence is read here. |
 | `judge.arg_model` | `{model}` |  |  | The argv element replaced by the model alias. |
 | `judge.arg_system` | `{system}` |  |  | The argv element replaced by the system prompt of the call. |
+| `judge.backend_api` | `anthropic-api` |  |  | The backend name a telemetry row gives a call that needed the Anthropic Messages API, which the engine never makes. |
 | `judge.backend_auto` | `auto` |  |  | The judgeBackend value that picks api when an Anthropic key is visible, else cli. |
 | `judge.backend_cli` | `cli` |  |  | The judgeBackend value for the local Claude CLI, which the engine runs itself. |
 | `judge.backend_haiku_cli` | `haiku-cli` |  |  | The backend name a telemetry row gives a call through the Claude CLI. |
@@ -2169,6 +2171,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `judge.cli_bin` | `claude` |  |  | The program the judge runs, looked up on the PATH of the hook's own environment (Node: spawn('claude')). |
 | `judge.dispatch_blocking_checks` | `speculation-judge` |  |  | The checks the dispatcher process runs itself, once, when the daemon deferred them: their answer needs a model call of seconds, which the daemon's exchange deadline cannot wait for, but the dispatcher is a one-shot process under the hook's own timeout (the Stop hook allows 30 s; the CLI judge is cut at speculation_judge.timeout_ms). The speculation-judge script never defers in that process (a call it cannot make there is counted and allowed), so no Node hook is started for it. |
 | `judge.err_answer` | `answer` |  |  | Telemetry error word: the model's answer did not parse into the expected decision. |
+| `judge.err_api_refused` | `api-not-called` |  |  | Telemetry error word: a label the Jev answer left open would have been asked of the Anthropic Messages API (a key is visible), which the engine does not call; the label stays open, as it does when no key is visible. |
 | `judge.err_exit` | `exit` |  |  | Telemetry error word: the CLI exited non-zero or by a signal. |
 | `judge.err_output` | `output` |  |  | Telemetry error word: the CLI's output was not the JSON it promises, or reported is_error. |
 | `judge.err_spawn` | `spawn` |  |  | Telemetry error word: the CLI could not be started. |
@@ -2243,7 +2246,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `triage.backend_haiku` | `haiku` |  |  | The triageBackend value that skips Jev and asks the model alone. |
-| `triage.backend_setting` | `7 entries` |  |  | Which backend labels mesh messages: jev (default, today's behaviour: Jev first, the Anthropic API fills a missing label when a key is visible) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND. |
+| `triage.backend_setting` | `7 entries` |  |  | Which backend labels mesh messages: jev (default: Jev first; a label Jev leaves open stays open, because the engine never calls the Anthropic API, and with a key visible it counts an api-not-called row in the judge telemetry) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND. |
 | `triage.default_timeout_ms` | `2000` |  |  | The whole run's budget when the request names none (Node: 2000). |
 | `triage.default_urgent_threshold` | `0.9` |  |  | The confidence an urgent answer needs when the request names none (Node: 0.9). |
 | `triage.input_prefix` | `Message:\n\n` |  |  | Prefix of the message in the Haiku request (Node: 'Message:\n\n' + text). |
@@ -2324,6 +2327,52 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sweep.setting_warn_max` | `7 entries` |  |  | Where the most straying warnings per signal and step are read from: devswarm.strayWarnMax (0 turns warnings off) through the engine's settings layer; the advisory loop warning the sweep may add follows the same cap. |
 | `sweep.transcript` | `7 entries` |  |  | How a transcript line is read. arg_keys: the tool input fields tried in order for the one-line argument of a tool call. edit_tools: tools that edit a file (their file_path field is counted). revert_patterns: a command containing one counts as a revert. background_tools: tools that start a background job. usage_limit_patterns: a recent assistant text or tool error containing one (case-insensitive) means the child is paused on a usage limit. skip_prompt_prefixes: user lines that start this way are not owner prompts. task_note_prefix: a user line that starts this way is a background-task notification. |
 | `sweep.words` | `17 entries` |  |  | The words the sweep writes into evidence lines and its result. line_tool: {ago} {name} {arg}. line_text: {ago} {text}. line_msg: {ago} {dir} {ask} {text}. line_ci: {name} {status} {ago}. line_repeat: {cmd} {n}. line_error_repeat: {text} {n} (an error text seen again and again on the step). line_error: {text}. line_commit: {ago} {subject}. line_summary: {ago} {text}. dir_out and dir_in: the direction words of a mesh line; ask: written when the message asked for a reply. dur_m, dur_h, dur_d: the duration suffixes (minutes, hours, days); plan_state_done, plan_state_doing: the status words a plan step uses. result keys are fixed. |
+
+### jev_arrival.toml / jev_arrival
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev_arrival.files` | `4 entries` |  |  | File names under the anti-hall cache directory: the arrival queue (one JSON line {h, t} per message), the drain lock, the directory of per-hash in-flight claims, and the infix of a worker's private copy of the queue (<queue><infix><pid>.<n>) which is deleted only once its messages are handled, so a worker that dies hands them to the next one. |
+| `jev_arrival.limits` | `7 entries` |  |  | Bounds of arrival labelling (Node: the ARRIVAL_* and MAX_CACHE_ENTRIES constants of jev-triage.js). queue_max_bytes: over this size the queue takes no more arrivals (they are labelled when a reader asks). text_max_chars: a longer body (UTF-16 units) is not queued. batch_size: messages per triage call (keeps a batch inside the triage budget). max_batches, max_wall_ms: the most one worker run does. max_attempts: how often a message the budget or a claim skipped is retried within one run. cache_max_entries: the label cache keeps this many labels, the lowest _seq going first. |
+| `jev_arrival.metric` | `jev_arrival` |  |  | The name of the arrival-labelling counter. |
+| `jev_arrival.outcomes` | `14 entries` |  |  | The `outcome` label of the jev_arrival counter. Enqueue: queued, disabled, cached, full, too_long, failed. Worker run: drained, busy, off, capped, lost_lock. Per message: labelled, no_label, skipped (the budget or a claim cut it off). |
+| `jev_arrival.transports` | `vercel, typesafe` |  |  | The Jev vendor names a triage log row records as `transport` (Node: vercel, typesafe); any other is left out. |
+
+### jev_arrival.toml / jev_arrival_claim
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev_arrival_claim.lock_boot_slop_s` | `5` |  | s | A claim: two boot times closer than this many seconds are the same boot. |
+| `jev_arrival_claim.lock_reclaim_stale_ms` | `5000` |  | ms | A claim: a takeover marker older than this is itself taken over. |
+| `jev_arrival_claim.lock_release_step_ms` | `10` |  | ms | A claim: the pause between those tries. |
+| `jev_arrival_claim.lock_release_tries` | `5` |  |  | A claim: how many times a release tries to take the takeover marker. |
+| `jev_arrival_claim.lock_stale_ms` | `15000` |  | ms | A per-hash in-flight claim older than this belongs to a dead process and is taken over (Node: CLAIM_STALE_MS). |
+| `jev_arrival_claim.lock_step_ms` | `5` |  | ms | A claim: the pause between tries. |
+| `jev_arrival_claim.lock_wait_ms` | `0` |  | ms | A claim: how long to keep trying a claim another process holds (0: one look, the loser skips the message; the winner's label lands in the shared cache). |
+
+### jev_arrival.toml / jev_arrival_drain
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `jev_arrival_drain.lock_boot_slop_s` | `5` |  | s | The drain lock: two boot times closer than this many seconds are the same boot. |
+| `jev_arrival_drain.lock_reclaim_stale_ms` | `5000` |  | ms | The drain lock: a takeover marker older than this is itself taken over. |
+| `jev_arrival_drain.lock_release_step_ms` | `10` |  | ms | The drain lock: the pause between those tries. |
+| `jev_arrival_drain.lock_release_tries` | `5` |  |  | The drain lock: how many times a release tries to take the takeover marker. |
+| `jev_arrival_drain.lock_stale_ms` | `30000` |  | ms | The drain lock: a lock not refreshed for this long belongs to a dead worker and is taken over (Node: ARRIVAL_LOCK_STALE_MS). |
+| `jev_arrival_drain.lock_step_ms` | `5` |  | ms | The drain lock: the pause between tries. |
+| `jev_arrival_drain.lock_wait_ms` | `0` |  | ms | The drain lock: how long to keep trying a lock held by a live worker (0: one look, the holder drains the queue). |
+
+### jev_arrival.toml / job
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `job.jev_arrival` | `11 entries` |  |  | Drain the Jev arrival queue: label the direct messages that were sent since the last run, in small batches under the drain lock and the batch, wall-time and attempt caps of [jev_arrival.limits]. Runs as a subprocess (`ah-engine jev arrival`) so a timeout kills it and every model call it started; skipped while the queue is empty; 0 turns it off. |
+
+### jev_arrival.toml / schedule
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `schedule.jev_arrival_ms` | `5000` | `AH_ENGINE_JEV_ARRIVAL_MS` | ms | Interval of the jev_arrival job (how soon a queued arrival is labelled); the job does nothing while the queue is empty. 0 turns it off. |
 
 ### dispatch.toml / dispatch
 
@@ -5772,7 +5821,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.mesh_never_read_read_cmd` | `inbox messages {pid}` |  |  | The command that reads one sibling partition directly. Placeholder: {pid}. |
 | `mesh_write.mesh_never_read_read_sep` | ` ; ` |  |  | The separator of the direct-read commands in the never-read hint. |
 | `mesh_write.messages_added_columns` | `9 items` |  |  | The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`. |
-| `mesh_write.metric_jev_arrival_skipped` | `mesh_jev_arrival_skipped` |  |  | Counter bumped when a direct send would have queued its text for Jev arrival labelling: the queue's drain worker was a Node process, which is not part of the live path, so nothing is queued. |
 | `mesh_write.min_plausible_start_ms` | `1000000000000` |  |  | A recorded reader start time below this is not an epoch-milliseconds value, so no pid-reuse conclusion is drawn from it. |
 | `mesh_write.mode_on` | `on` |  |  | The `mode` of an on-mode record in the shadow log. |
 | `mesh_write.monitor_failure_threshold` | `3` |  |  | Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD). |
@@ -11456,7 +11504,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.jev_no_home` | Printed by `ah-engine jev` when the home directory variable is not set, because the settings and the log live under it. |
 | `msg.jev_unknown_question_type` | Why a Jev request was refused: its question type is neither noul nor choice. Placeholder: kind. |
 | `msg.jev_usage` | Usage line of `ah-engine jev`. |
-| `msg.jev_triage_defer` | Said on stderr when `jev triage` leaves the run to the Node worker (it would need the Anthropic API, which only Node calls); the exit code is dispatch.defer_exit. |
+| `msg.jev_arrival_done` | The one line `ah-engine jev arrival` prints: the outcome word of the run and its counts. |
 | `msg.cli_usage_restore` | The usage line of `restore`. |
 | `msg.cli_usage_schedule_run` | The usage line of `schedule run`. |
 | `msg.client_what_timeout` | What the client was doing when a socket option could not be set (the {what} of msg.client_io). |
@@ -11576,6 +11624,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `jev_slow` | counter | calls |  | Jev calls slower than the SOFT limit (jev.soft_ms); their answers were still used. |
 | `jev_timeouts` | counter | calls |  | Jev calls that ran out of their time budget. |
 | `jev_verdicts` | counter | decisions | id, verdict | What each Jev decision did, by integration and verdict: added or changed (an on-mode outcome moved), would-change (a shadow call that would have moved it), none (Jev agreed with the baseline) or no-answer (it failed or was skipped). |
+| `jev_arrival` | counter | events | outcome | Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes). |
 | `mesh_descriptor_read_skipped` | counter | reads | site, reason | Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason. |
 | `mesh_own_sends_excluded` | counter | counts |  | Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail). |
 | `mesh_pull_ts_fallback` | counter | batches |  | Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact). |

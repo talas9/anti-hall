@@ -2807,10 +2807,6 @@ value = "answered"
 doc = "The source of that row."
 value = "triage-answer-latency"
 
-[mesh_write.metric_jev_arrival_skipped]
-doc = "Counter bumped when a direct send would have queued its text for Jev arrival labelling: the queue's drain worker was a Node process, which is not part of the live path, so nothing is queued."
-value = "mesh_jev_arrival_skipped"
-
 [mesh_write.file_read_hard_max_bytes]
 doc = "Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`)."
 value = 536870888

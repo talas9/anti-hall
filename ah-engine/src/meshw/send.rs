@@ -1085,9 +1085,9 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     ])
     .done();
     common::write_send_receipt(&c.inv.write_home, c.now, &hash, &receipt);
-    // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage in Node (see `jev_arrival_skipped`)
+    // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage (see `jev_enqueue_arrival`)
     if inserted && !c.broadcast && !c.question && common::jev_maybe_enabled(c.inv) {
-        common::jev_arrival_skipped();
+        common::jev_enqueue_arrival(c.inv, c.message);
     }
     // a sent message is child activity: refresh the sender's plan progress clock (fresh text only), best effort
     if inserted {
