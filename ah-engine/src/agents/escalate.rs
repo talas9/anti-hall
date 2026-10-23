@@ -10,7 +10,6 @@
 //!
 //! Every limit, kind, word and text is in `engine/defaults/agent_tracker.toml`.
 use super::ctl::{self, Send};
-use super::sinks::wake_armed;
 use super::{Agent, Env, State, kind_name};
 use crate::defaults::{self, V};
 
@@ -30,12 +29,6 @@ pub(super) fn word(k: &str) -> &'static str {
 /// A Primary: exempt from the duration limits and never nudged about (the main session, or a DevSwarm Primary's session).
 pub(super) fn primary(a: &Agent) -> bool {
     list("exempt_kinds").contains(&a.kind.as_str()) || a.ws.as_ref().is_some_and(|w| w.id.starts_with(defaults::text("agent_tracker.primary_prefix")))
-}
-
-/// The owner's wake channel: the newest live main session with an armed wake-watch (never `except`).
-pub(super) fn owner_session(env: &Env, st: &State, except: &str) -> Option<String> {
-    let reachable = |m: &Agent| m.id != except && super::sources::proc_live(m) && wake_armed(env, &m.id);
-    st.agents.values().filter(|m| (m.kind == kind_name("main") || primary(m)) && reachable(m)).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone())
 }
 
 /// The processes that hold `path` open, with their command lines.
