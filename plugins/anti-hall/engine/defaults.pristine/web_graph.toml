@@ -496,9 +496,9 @@ doc = "Duration of the burst at a stop."
 value = 650.0
 
 [web.graph.fx.burst_count]
-doc = "Particles in a burst."
-value = 22
-min = 4
+doc = "Particles in a burst. 0 means no burst ring; the decision node's own glow flash still marks the decision."
+value = 0
+min = 0
 max = 96
 
 [web.graph.fx.burst_radius]
