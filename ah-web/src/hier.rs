@@ -39,6 +39,8 @@ fn find_root(s: &Settings, home: &str, path: &str) -> String {
             }
             if git.is_file() {
                 let pointed = std::fs::read_to_string(&git).ok().and_then(|t| t.trim().strip_prefix("gitdir:").map(|r| r.trim().to_string()));
+                // the pointer may be relative to the folder that holds the file
+                let pointed = pointed.map(|p| if Path::new(&p).is_absolute() { p } else { clean(&dir.join(&p)) });
                 return match pointed.as_deref().and_then(|p| p.find(&s.project_gitdir_split).map(|i| &p[..i])) {
                     Some(repo) if !repo.is_empty() => repo.to_string(),
                     _ => dir.display().to_string(),
@@ -54,6 +56,22 @@ fn find_root(s: &Settings, home: &str, path: &str) -> String {
         return format!("{}{}", &path[..i + s.project_workspace_marker.len()], keep.join("/"));
     }
     path.to_string()
+}
+
+/// A path with its `.` and `..` steps worked out (no file system access).
+fn clean(path: &Path) -> String {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.display().to_string()
 }
 
 fn base(path: &str) -> &str {

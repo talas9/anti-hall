@@ -125,3 +125,13 @@ impl Pacer {
         self.schedule();
     }
 }
+
+impl Drop for Pacer {
+    fn drop(&mut self) {
+        // a frame or timer already asked for may still fire after the graph is gone: its callback must outlive this pacer (it finds
+        // no pacer and does nothing) instead of being dropped under the browser, which throws "closure invoked after being dropped"
+        if let Some(tick) = self.tick.get_mut().take() {
+            tick.forget();
+        }
+    }
+}
