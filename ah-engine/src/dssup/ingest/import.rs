@@ -113,6 +113,13 @@ pub fn message_hash(workspace_id: &str, m: &OVal) -> String {
     format!("{}{}", defaults::text("devswarm_ingest.hash_prefix"), hex(d.as_ref()))
 }
 
+/// The hash a message carried before the dedupe was taken under the checkout's label (under the partition id): `Some` only when
+/// that differs from the label-scoped one. A machine that ran an earlier version holds inbox lines and store rows under it, so a
+/// message already seen that way is a duplicate, not new mail.
+pub fn legacy_hash(scope: &str, workspace_id: &str, m: &OVal) -> Option<String> {
+    (scope != workspace_id).then(|| message_hash(workspace_id, m))
+}
+
 /// One row to append.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
@@ -238,6 +245,20 @@ pub struct Imported {
 
 /// `ingestPayload(s, raw, {workspaceId, home, now})`.
 pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &str, now: i64) -> Result<Imported, Refused> {
+    ingest_payload_seen(store, home, workspace_id, raw, now, &std::collections::HashSet::new())
+}
+
+/// [`ingest_payload`] for a caller that also keeps the durable inbox: `inbox_hashes` are the hashes its lines already carry, so a
+/// message whose line was written under the partition-id hash gets its store row under that same hash (the two channels then
+/// still agree it is one message).
+pub fn ingest_payload_seen(
+    store: &MeshStore,
+    home: &Path,
+    workspace_id: &str,
+    raw: &str,
+    now: i64,
+    inbox_hashes: &std::collections::HashSet<String>,
+) -> Result<Imported, Refused> {
     let batch = parse_batch(raw);
     let scope = hash_scope(store.reader(), workspace_id);
     let mut rows = rows(workspace_id, &scope, &batch, now);
@@ -265,8 +286,24 @@ pub fn ingest_payload(store: &MeshStore, home: &Path, workspace_id: &str, raw: &
                 return Err(Refused::Gone);
             }
             let mut n = 0;
-            for r in &rows {
-                if store.append_message_from(&r.workspace_id, r.ts, Some(&r.hash), &r.body, r.sender.as_deref()).map_err(|e| Refused::Store(e.to_string()))? {
+            // rows an earlier version stored under the partition-id hash are already here
+            let mut old: std::collections::HashSet<String> = std::collections::HashSet::new();
+            if scope != workspace_id {
+                store.reader().for_each_message(workspace_id, 0, |m| {
+                    if let Some(h) = m["hash"].as_str() {
+                        old.insert(h.to_string());
+                    }
+                    true
+                }).map_err(|e| Refused::Store(e.to_string()))?;
+            }
+            for (r, m) in rows.iter().zip(&batch.messages) {
+                let legacy = legacy_hash(&scope, workspace_id, m);
+                // (re-offering it under that hash is the ignored insert Node makes, so the table's counters agree too)
+                let hash = match legacy {
+                    Some(l) if old.contains(&l) || inbox_hashes.contains(&l) => l,
+                    _ => r.hash.clone(),
+                };
+                if store.append_message_from(&r.workspace_id, r.ts, Some(&hash), &r.body, r.sender.as_deref()).map_err(|e| Refused::Store(e.to_string()))? {
                     n += 1;
                 }
             }

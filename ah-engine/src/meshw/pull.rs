@@ -615,7 +615,8 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
     let scope = import::hash_scope(p.store.reader(), &p.id);
     for m in &batch.messages {
         let h = import::message_hash(&scope, m);
-        if seen.contains(&h) {
+        // an inbox line written under the partition-id hash (before the label-scoped one) is the same message
+        if seen.contains(&h) || import::legacy_hash(&scope, &p.id, m).is_some_and(|l| seen.contains(&l)) {
             duplicate += 1;
             continue;
         }
@@ -657,6 +658,7 @@ fn ingest_raw(inv: &Inv, p: &Plan, raw: &str, at: &dyn Fn(&str)) -> Result<Inges
     let mut seen = inbox_hashes(&p.inbox).inspect_err(|why| {
         crate::metrics::bump("mesh_descriptor_read_skipped", &[("site", defaults::text("mesh_write.site_pull_inbox")), ("reason", why.as_str())]);
     })?;
+    let before = seen.clone();
     let (lines, imported, duplicate) = batch_lines(p, &batch, &mut seen);
     // DURABLE append precedes the WAL `done`: one append of the whole batch, a leading newline after a torn tail, then the fsync
     if !lines.is_empty() {
@@ -677,7 +679,7 @@ fn ingest_raw(inv: &Inv, p: &Plan, raw: &str, at: &dyn Fn(&str)) -> Result<Inges
     if fallbacks > 0 {
         crate::metrics::bump("mesh_pull_ts_fallback", &[]);
     }
-    if import::ingest_payload(&p.store, &inv.home, &p.id, raw, inv.now).is_ok()
+    if import::ingest_payload_seen(&p.store, &inv.home, &p.id, raw, inv.now, &before).is_ok()
         && let Some(why) = summary::derive_after_write(&p.store, inv, &p.repo_key)
     {
         crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
