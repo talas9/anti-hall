@@ -289,12 +289,15 @@ pub fn ingest_payload_seen(
             // rows an earlier version stored under the partition-id hash are already here
             let mut old: std::collections::HashSet<String> = std::collections::HashSet::new();
             if scope != workspace_id {
-                store.reader().for_each_message(workspace_id, 0, |m| {
-                    if let Some(h) = m["hash"].as_str() {
-                        old.insert(h.to_string());
-                    }
-                    true
-                }).map_err(|e| Refused::Store(e.to_string()))?;
+                store
+                    .reader()
+                    .for_each_message(workspace_id, 0, |m| {
+                        if let Some(h) = m["hash"].as_str() {
+                            old.insert(h.to_string());
+                        }
+                        true
+                    })
+                    .map_err(|e| Refused::Store(e.to_string()))?;
             }
             for (r, m) in rows.iter().zip(&batch.messages) {
                 let legacy = legacy_hash(&scope, workspace_id, m);
