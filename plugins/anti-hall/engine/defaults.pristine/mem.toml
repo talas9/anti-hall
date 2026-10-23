@@ -43,14 +43,14 @@ min = 0
 unit = "bytes"
 
 [mem.regex_soft_bytes]
-doc = "Estimated bytes of compiled regular expressions the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h, one every ~30 min, bursts under load). 16 MiB keeps them all."
-value = 16777216
+doc = "Estimated bytes of compiled regular expressions plus their per-thread search scratch (script.regex_scratch_bytes per worker) the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB of programs alone the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h). With the scratch counted (147 shipped patterns weigh about 27 MB at 4 workers) 48 MiB keeps them all."
+value = 50331648
 min = 262144
 unit = "bytes"
 
 [mem.regex_hard_bytes]
-doc = "Estimated bytes of compiled regular expressions at which the `ah.re.*` cache refuses an insert (the pattern is compiled and used, not kept) and is recycled."
-value = 33554432
+doc = "Estimated bytes of compiled regular expressions plus their per-thread search scratch at which the `ah.re.*` cache refuses an insert (the pattern is compiled and used, not kept) and is recycled."
+value = 83886080
 min = 262144
 unit = "bytes"
 
@@ -61,8 +61,8 @@ min = 1
 max = 100
 
 [mem.regex_max_entries]
-doc = "Compiled regular expressions the process-wide `ah.re.*` cache keeps at most (all workers share one cache); past it the least recently used pattern is dropped first."
-value = 512
+doc = "Compiled regular expressions the process-wide `ah.re.*` cache keeps at most (all workers share one cache); past it the least recently used pattern is dropped first, and its per-thread search caches go with it. 167 patterns are in use today."
+value = 256
 min = 8
 
 [mem.quickjs_soft_bytes]
