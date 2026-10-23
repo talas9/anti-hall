@@ -39,7 +39,7 @@ owner-approved prune and message retention. Per-component detail is in the
 anti-hall is a Claude Code **marketplace + plugin**, plus a separate Codex-native port,
 that keeps coding assistants from acting before they verify. It ships always-on Node
 hooks (mechanical guards no prompt can talk around), a set of evidence-driven workflow
-skills, with legacy statusline cleanup retained for older installs. A small Rust engine answers the hooks with Node.js 22+ as the fallback, no npm dependencies, **macOS · Linux**
+skills, with legacy statusline cleanup retained for older installs. A small Rust engine answers the hooks (no Node.js needed), no npm dependencies, **macOS · Linux**
 (Node ≥ 22 on `PATH` is the only prerequisite; Windows is not supported).
 
 It targets four predictable failure modes: **eagerness** (acting before investigating),
@@ -160,7 +160,7 @@ own accounts; the plugin does not spawn `gh` or `codex`.
 
 ## Install, verify and uninstall
 
-Prerequisite: **Node.js >= 22** on `PATH` (check with `node --version`).
+Prerequisite: `curl` or `wget` plus `tar` (the engine binary is fetched for you). Node.js is not needed.
 
 **Claude Code:**
 
@@ -247,7 +247,7 @@ Terms used below: **DevSwarm** is a multi-workspace orchestration app with a `hi
 
 ## What's inside and updating
 
-Repo layout, the `AGENTS.md` cross-tool mirror, the `node --test` suite, and the
+Repo layout, the `AGENTS.md` cross-tool mirror, how a change is verified, and the
 `/anti-hall:update` flow are documented in this guide ([Codex / cross-tool](#codex--cross-tool),
 [Test locally](#test-locally), the `update` skill under [Skills reference](#skills-reference-detailed)).
 The full plugin component reference is [plugins/anti-hall/README.md](../plugins/anti-hall/README.md).
@@ -1667,8 +1667,8 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 ## Test locally
 
 ```bash
-# Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 2693 pass +2 skipped (2695 total); CI runs the same on push/PR (.github/workflows/test.yml)
+# Health check of the installed plugin (there is no Node test suite; see E2E-TESTING.md):
+~/.anti-hall/ah-engine/bin/ah-hook doctor --check
 
 # Quick smoke-checks of individual checks (the engine runs one check on a payload from stdin):
 echo '{"hook_event_name":"SessionStart"}' | ~/.anti-hall/ah-engine/bin/ah-engine check verify-first-full  # full Iron-Law protocol + skill primer
