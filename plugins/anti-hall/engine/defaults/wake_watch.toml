@@ -405,3 +405,15 @@ value = "[wake-watch] no home directory; exiting.\n"
 doc = "Printed (stderr) when the working directory is gone; exit 1, as Node's uncaught `process.cwd()` failure does."
 value = "[wake-watch] the working directory is not readable; exiting.\n"
 
+
+[wake_watch.rebin_enabled]
+doc = "1: a watcher whose engine binary on disk was replaced (a deploy or an update) re-executes itself with the same arguments, so a fix takes effect without a manual re-arm. 0: it keeps running the binary it started from."
+value = 1
+
+[wake_watch.line_rebin]
+doc = "The watcher re-executed itself because its engine binary was replaced (its output continues on the same stream). {path}."
+value = "[wake-watch] engine binary replaced, restarting from {path}"
+
+[wake_watch.diag_rebin_failed]
+doc = "Printed (stderr) when the watcher could not re-execute the replaced binary; it ends (exit 1) and must be re-armed. {path}, {why}."
+value = "[wake-watch] cannot restart from the replaced binary {path}: {why}; re-arm the watcher.\n"

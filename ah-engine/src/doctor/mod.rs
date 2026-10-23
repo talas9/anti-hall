@@ -24,7 +24,7 @@
 //! reported when given; the Node doctor stays in place for them).
 mod detect;
 mod devswarm;
-mod facts;
+pub(crate) mod facts;
 mod install;
 mod jev;
 mod logs;
