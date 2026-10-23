@@ -174,8 +174,8 @@ doc = "The scheduler (D33): `list` the jobs with their next run and last result,
 value = { args = "<list|run <job>|history> [--job <name>] [--limit <n>]", read_only = false, read_only_args = ["list", "history"], status = "implemented" }
 
 [cmd.config]
-doc = "Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); versions, rollback and export are planned (D18, they need the config database)."
-value = { args = "[validate <file>|heal]", read_only = false, read_only_args = ["", "validate"], status = "implemented", planned_decision = "D18" }
+doc = "Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the settings they lack from the pristine copy, also in a version-controlled checkout); `set` / `reset` write one validated key into the settings.json layer (a registry setting through the settings store, any other shipped key checked against its default's type and bounds; locked keys refused; `set --check` validates only), `undo <id>` restores the value before a history row, `apply` makes a running daemon reload now, and `history` lists the config-history log (every write: ts, who, key, old, new, verb, result); the shipped defaults and the pristine copy are never written. Versions and export are planned (D18, they need the config database)."
+value = { args = "[validate <file>|heal|set <key> <value> [--check] [--confirmed]|reset <key> [--confirmed]|undo <id> [--confirmed]|apply|history [--limit <n>] [--key <k>] [--verb <v>]]", read_only = false, read_only_args = ["", "validate", "history"], status = "implemented", planned_decision = "D18" }
 
 [cmd.backup]
 doc = "Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given directory; prints its manifest."
@@ -212,3 +212,11 @@ value = { args = "[open|status] [--no-open] [--json]", read_only = false, read_o
 [cmd.diag]
 doc = "Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing."
 value = { args = "<cpu|mem|threads|hooks|mesh|jev|fs|locks|trace>", read_only = true, status = "implemented" }
+
+[cmd.describe]
+doc = "The engine's generated self-description for the dashboard and agents: the generated reference (commands, flags, env, metrics, impact kinds) plus the registry settings, config files and keys, checks (bindings, reads, switch, rebindable), event bindings, scripts, Jev integrations, switches, jobs, control verbs and query sources; `--part a,b` limits it, `--coverage` reports the features no screen selector (`web.coverage`) covers, the ones a screen shows but cannot edit, and the selectors that match nothing. Nothing in it is hand-kept."
+value = { args = "[--part <a,b,...>] [--coverage]", read_only = true, status = "implemented" }
+
+[cmd.query]
+doc = "Read-only, paginated query over the existing stores: `query <source> [--limit N] [--offset N] [--where field=value,...] [--since 7d] [--schema]`; `query sources` lists the sources (per-check stats, outcomes, kinds, events, counters, agents, health, config history) with their filters, and `--schema` shows one source's row fields."
+value = { args = "[<source>] [--limit <n>] [--offset <n>] [--where <field=value,...>] [--since <7d>] [--window <7d>] [--schema]", read_only = true, status = "implemented" }

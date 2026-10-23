@@ -102,6 +102,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("refresh", crate::refresh::run_cmd),
         ("units", crate::setup::units::cmd_units),
         ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
+        ("describe", crate::web::cmd_describe),
+        ("query", crate::web::cmd_query),
     ]
 }
 
@@ -627,6 +629,9 @@ fn cmd_proj(p: &Parsed) -> i32 {
 /// `config [--json]`: the effective config and where each value comes from (the running daemon's active version when
 /// one is up, else what a fresh start would load from the files); `config validate <file>`: check a user TOML file.
 fn cmd_config(p: &Parsed) -> i32 {
+    if let Some(code) = crate::web::cmd_config_write(p) {
+        return code;
+    }
     match p.rest.first().map(String::as_str) {
         None => {
             let mut v = client::ctl_json("config").map(|mut v| {
