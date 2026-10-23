@@ -20,7 +20,6 @@
   --red:       light-dark(oklch(0.55 0.2 15),    oklch(0.76 0.14 5));
   --idle:      light-dark(oklch(0.62 0.04 260),  oklch(0.56 0.06 260));
   --on-accent: oklch(0.15 0.03 250);
-  --top-h:     66px;
   --font-ui:   Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-head: "Space Grotesk", Inter, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -56,9 +55,7 @@ a { color: var(--cyan); }
 /* header */
 .top {
   display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
-  position: sticky; top: 0; z-index: 30;
   padding: 14px 24px;
-  min-height: var(--top-h);
   border-bottom: 1px solid var(--line);
   background: var(--bg);
 }
@@ -91,10 +88,9 @@ a { color: var(--cyan); }
 .nav {
   flex: 0 0 76px; display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 16px 0; border-right: 1px solid var(--line);
-  position: sticky; top: var(--top-h); align-self: flex-start;
-  height: calc(100vh - var(--top-h)); overflow-y: auto;
+  position: sticky; top: 0; align-self: flex-start;
+  height: 100vh; overflow-y: auto; background: var(--bg);
 }
-@media (max-width: 720px) { .nav { position: static; height: auto; overflow: visible; align-self: auto; } }
 .nav-item {
   width: 60px; min-height: 56px; border-radius: 12px; border: 1px solid transparent;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
@@ -246,17 +242,15 @@ a { color: var(--cyan); }
 
 .top .search { flex: 0 1 220px; min-width: 140px; }
 .logo { display: block; background: none; border-radius: 0; flex: 0 0 auto; }
-@media (min-width: 1280px) {
+/* one header row only where everything fits (measured: 1280 overflows by ~50px); below it the header wraps and the shell follows its height */
+@media (min-width: 1440px) {
   .top { flex-wrap: nowrap; gap: 12px; }
-  .top .search { flex: 0 1 200px; min-width: 120px; }
   .top .pills { flex-wrap: nowrap; }
-}
-@media (min-width: 1280px) {
   .top, .top * { white-space: nowrap; }
-  .top .search { flex: 0 1 160px; min-width: 90px; }
   .top .search input { min-width: 0; }
 }
-@media (min-width: 1280px) and (max-width: 1599px) { .brand-product { display: none; } }
+/* the product name only where there is room for it, at every width */
+@media (max-width: 1599px) { .brand-product { display: none; } }
 
 /* header at 1280: the tier switch and theme button never shrink; the search and the version badge give way first */
 .top .seg, .top .theme { flex: 0 0 auto; }
@@ -264,7 +258,7 @@ a { color: var(--cyan); }
   .top .grow { flex: 1 1 0; min-width: 0; }
   .top .pills { margin-left: 12px; flex: 0 1 auto; min-width: 0; }
   .top .ver { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-  .top .search { flex: 0 1 140px; min-width: 56px; }
+  .top .search { flex: 0 1 200px; min-width: 150px; }
 }
 
 /* every screen has the same width: the scrollbar's gutter is always reserved */
@@ -289,4 +283,28 @@ html { scrollbar-gutter: stable; }
 .hb-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0; font: 11px var(--font-mono); color: var(--muted); }
 .hb-legend span:not(:first-child)::before { content: "\25CF "; }
 @container main (max-width: 720px) { .tree-cols .c-brief { display: none; } }
-@media (min-width: 1100px) { .detail { position: sticky; top: var(--top-h); align-self: flex-start; max-height: calc(100vh - var(--top-h)); } }
+
+/* Layout. From 1100px up the shell is exactly one screen tall: the header takes its own (auto) height and the nav, the
+   content and the detail panel each scroll inside their own box, so nothing can sit under the header whatever its height.
+   Below that the page scrolls as a whole, the header scrolls away and the nav (a rail, or a bar on a phone) sticks to the top. */
+@media (min-width: 1100px) {
+  .shell { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+  .top { flex: 0 0 auto; }
+  .body { flex-wrap: nowrap; overflow: hidden; }
+  .nav { position: static; height: auto; align-self: stretch; }
+  .main { overflow-y: auto; min-height: 0; }
+  .detail { overflow-y: auto; min-height: 0; align-self: stretch; }
+}
+@media (max-width: 720px) {
+  .top { gap: 8px 10px; padding: 8px 12px; }
+  .top .search { display: none; }
+  .top .pills { order: 9; flex: 1 1 100%; margin: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .top .pill { flex: 0 0 auto; white-space: nowrap; }
+  .nav {
+    flex: 0 0 100%; flex-direction: row; justify-content: flex-start; gap: 4px; padding: 6px 8px;
+    height: auto; align-self: auto; overflow-x: auto; overflow-y: hidden; z-index: 20;
+    border-right: 0; border-bottom: 1px solid var(--line); scrollbar-width: none;
+  }
+  .nav-item { flex: 0 0 auto; width: 64px; min-height: 48px; }
+  .main { padding: 14px 12px; }
+}
