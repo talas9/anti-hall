@@ -157,7 +157,7 @@ fn compare(rx: &Rx, a: &str, b: &str) -> i32 {
 }
 
 /// The version the registry records for the ENABLED anti-hall install (the pin only when none is enabled; #216).
-fn version_from_installed_json(rx: &Rx, path: &str, settings_path: &str) -> Option<String> {
+fn version_from_installed_json(rx: &Rx, path: &str, settings_path: &str, only: Option<&str>) -> Option<String> {
     let data = read_json(path)?;
     if !matches!(data, J::Obj(_) | J::Arr(_)) {
         return None;
@@ -167,7 +167,10 @@ fn version_from_installed_json(rx: &Rx, path: &str, settings_path: &str) -> Opti
         _ => &data,
     };
     let settings = read_json(settings_path);
-    let (keys, _) = crate::install::select_keys(reg, settings.as_ref());
+    let keys = match only {
+        Some(k) => vec![k.to_string()],
+        None => crate::install::select_keys(reg, settings.as_ref()).0,
+    };
     keys.iter().find_map(|key| match reg.get(key)? {
         J::Arr(entries) => {
             let valid: Vec<&J> = entries.iter().filter(|e| matches!(e, J::Obj(_)) && semver_opt(rx, str_of(e.get("version")))).collect();
@@ -199,9 +202,9 @@ fn version_from_marketplace(rx: &Rx, path: &str) -> Option<String> {
 }
 
 /// The higher of the registry's version and the newest cache directory's; the marketplace manifest only when neither reads.
-fn resolve_installed(rx: &Rx, paths: &Paths) -> Option<String> {
-    let cache = newest_cache_version(rx, &paths.cache_root);
-    let json = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json);
+fn resolve_installed(rx: &Rx, paths: &Paths, chan: Option<&Chan>) -> Option<String> {
+    let cache = newest_cache_version(rx, chan.map_or(&paths.cache_root, |c| &c.cache_root));
+    let json = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json, chan.map(|c| c.key.as_str()));
     if let (Some(c), Some(j)) = (&cache, &json) {
         return Some(if compare(rx, c, j) >= 0 { c.clone() } else { j.clone() });
     }
@@ -225,9 +228,9 @@ pub(crate) fn compare_versions(a: &str, b: &str) -> i32 {
 }
 
 /// The registry and the cache both read, and disagree.
-fn installed_version_lag(rx: &Rx, paths: &Paths) -> Option<(String, String)> {
-    let cache = newest_cache_version(rx, &paths.cache_root)?;
-    let json = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json)?;
+fn installed_version_lag(rx: &Rx, paths: &Paths, chan: &Chan) -> Option<(String, String)> {
+    let cache = newest_cache_version(rx, &chan.cache_root)?;
+    let json = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json, Some(&chan.key))?;
     (compare(rx, &cache, &json) != 0).then_some((json, cache))
 }
 
@@ -373,6 +376,11 @@ fn with_action(mut base: Vec<(String, J)>, action: String) -> J {
     J::Obj(base)
 }
 
+/// `claude plugin update <key>` for one install.
+fn harness_cmd_for(key: &str) -> String {
+    format!("{} {} {key}", t("update.claude_bin"), defaults::list("update.harness_check_args").join(" "))
+}
+
 fn harness_cmd() -> String {
     format!("{} {}", t("update.claude_bin"), defaults::list("update.harness_args").join(" "))
 }
@@ -388,31 +396,89 @@ fn remote_version(m: &str) -> Result<Option<String>, String> {
     Ok(str_of(data.get("version")).map(str::to_string))
 }
 
-fn run_check(rx: &Rx, paths: &Paths) -> J {
-    let installed = resolve_installed(rx, paths);
-    let latest = match remote_version(&paths.marketplace) {
+/// The install a `--check` is about: the ENABLED one, with its own cache, marketplace and update command.
+struct Chan {
+    key: String,
+    name: String,
+    cache_root: String,
+    marketplace: String,
+    /// A `directory` marketplace has no remote: its own source tree is the latest.
+    local: bool,
+}
+
+/// The enabled install (when several are enabled, the one whose `installPath` holds the running plugin root) and the paths
+/// that belong to it. A scratch registry without the entries falls back to the public install's own paths.
+fn resolve_chan(paths: &Paths, env: &Env) -> Chan {
+    let data = read_json(&paths.installed_json);
+    let reg = data.as_ref().map(|d| match d.get("plugins") {
+        Some(p @ (J::Obj(_) | J::Arr(_))) => p.clone(),
+        _ => d.clone(),
+    });
+    let settings = read_json(&paths.settings_json);
+    let (keys, _) = reg.as_ref().map_or_else(|| (vec![t("wake_watch.install_fallback_key").to_string()], false), |r| crate::install::select_keys(r, settings.as_ref()));
+    let install_path = |k: &str| reg.as_ref().and_then(|r| match r.get(k) {
+        Some(J::Arr(e)) => e.iter().find_map(|x| str_of(x.get("installPath")).map(str::to_string)),
+        _ => None,
+    });
+    let root = env.get_nonempty(t("update.plugin_root_env")).unwrap_or_default();
+    let key = keys.iter().find(|k| !root.is_empty() && install_path(k).is_some_and(|p| root.starts_with(&p))).or_else(|| keys.first()).cloned().unwrap_or_default();
+    let (plugin, name) = key.split_once('@').map_or((key.as_str(), ""), |(p, n)| (p, n));
+    let plugins_root = Path::new(&paths.installed_json).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let fallback = key == t("wake_watch.install_fallback_key");
+    let cache_root = match install_path(&key).and_then(|p| Path::new(&p).parent().map(|d| d.to_string_lossy().into_owned())) {
+        Some(c) => c,
+        None if fallback => paths.cache_root.clone(),
+        None => join(&join(&join(&plugins_root, t("update.cache_dir")), name), plugin),
+    };
+    let known = read_json(&join(&plugins_root, t("update.known_marketplaces"))).and_then(|k| k.get(name).cloned());
+    let marketplace = match known.as_ref().and_then(|k| str_of(k.get("installLocation"))) {
+        Some(l) => l.to_string(),
+        None if fallback => paths.marketplace.clone(),
+        None => join(&join(&plugins_root, t("update.marketplaces_dir")), name),
+    };
+    let local = known.as_ref().and_then(|k| k.get("source")).and_then(|s| str_of(s.get("source"))) == Some(t("update.directory_source"));
+    Chan { key: key.clone(), name: name.to_string(), cache_root, marketplace, local }
+}
+
+fn run_check(rx: &Rx, paths: &Paths, env: &Env) -> J {
+    let chan = resolve_chan(paths, env);
+    let installed = resolve_installed(rx, paths, Some(&chan));
+    let with_chan = |status: J, state: &str| {
+        let J::Obj(mut m) = status else { return status };
+        m.push(("channel".into(), J::Str(chan.name.clone())));
+        m.push(("key".into(), J::Str(chan.key.clone())));
+        m.push(("state".into(), J::Str(state.to_string())));
+        J::Obj(m)
+    };
+    let latest = if chan.local {
+        let src = join(&join(&chan.marketplace, t("update.plugin_src_rel")), t("update.plugin_json_rel"));
+        Ok(version_from_marketplace(rx, &src))
+    } else {
+        remote_version(&chan.marketplace)
+    };
+    let latest = match latest {
         Ok(l) => l,
         Err(reason) => {
-            return with_action(status4(&installed, &None, false, false), defaults::render("update_msg.check_failed", &[("reason", &reason)]));
+            return with_chan(with_action(status4(&installed, &None, false, false), defaults::render("update_msg.check_failed", &[("reason", &reason)])), t("update.state_failed"));
         }
     };
     if !semver_opt(rx, installed.as_deref()) {
-        return with_action(status4(&None, &latest, false, false), t("update_msg.unknown_installed").into());
+        return with_chan(with_action(status4(&None, &latest, false, false), t("update_msg.unknown_installed").into()), t("update.state_unknown"));
     }
     let inst = installed.clone().unwrap_or_default();
-    let cmp = compare(rx, &inst, latest.as_deref().filter(|v| !v.is_empty()).unwrap_or(t("update.zero_version")));
-    let lag = installed_version_lag(rx, paths).map(|(json, cache)| {
-        let cmd = harness_cmd();
+    let lag = installed_version_lag(rx, paths, &chan).map(|(json, cache)| {
+        let cmd = harness_cmd_for(&chan.key);
         let key = if compare(rx, &json, &cache) < 0 { "update_msg.lag_behind" } else { "update_msg.lag_ahead" };
         defaults::render(key, &[("json", &json), ("cache", &cache), ("cmd", &cmd)])
     });
-    let head = if cmp < 0 {
-        let shown = latest.clone().unwrap_or_else(|| t("update.null_word").to_string());
-        defaults::render("update_msg.available", &[("installed", &inst), ("latest", &shown)])
-    } else {
-        t("update_msg.up_to_date").to_string()
+    let (head, state) = match latest.as_deref().filter(|v| !v.is_empty()) {
+        None => (defaults::render("update_msg.latest_unknown", &[("channel", &chan.name)]), t("update.state_unknown")),
+        Some(l) if compare(rx, &inst, l) < 0 => (defaults::render("update_msg.available", &[("installed", &inst), ("latest", &l)]), t("update.state_available")),
+        // a lagging registry is never reported as "up to date"
+        Some(_) if lag.is_some() => (t("update_msg.lag_head").to_string(), t("update.state_lagging")),
+        Some(_) => (t("update_msg.up_to_date").to_string(), t("update.state_current")),
     };
-    with_action(status4(&installed, &latest, false, false), format!("{head}{}", lag.unwrap_or_default()))
+    with_chan(with_action(status4(&installed, &latest, false, false), format!("{head}{}", lag.unwrap_or_default())), state)
 }
 
 // ---- harness registration ---------------------------------------------------------------------------------------------------
@@ -512,7 +578,7 @@ pub(super) fn progress(line: &str) {
 }
 
 fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> Core {
-    let installed = resolve_installed(rx, paths);
+    let installed = resolve_installed(rx, paths, None);
     if !skip_pull {
         let m = &paths.marketplace;
         match git(&words("update.git_status"), m) {
@@ -545,7 +611,7 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     }
     let inst = installed.clone().unwrap_or_default();
     let updated = latest.as_deref().is_some_and(|l| compare(rx, &inst, l) < 0);
-    let reg_version = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json);
+    let reg_version = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json, None);
     let quiet = stage_quiet(env, home);
     let name = t("update_msg.stage_harness");
     if !quiet {
@@ -736,7 +802,7 @@ fn go(p: &Parsed) -> Result<i32, String> {
         out(&format!("{}\n", paths.override_ignored))?;
     }
     if is_check {
-        let status = run_check(&rx, &paths);
+        let status = run_check(&rx, &paths, &env);
         out(&format!("{}\n", render_human(&rx, &status, "")))?;
         return Ok(0);
     }
@@ -770,9 +836,9 @@ mod tests {
         std::fs::write(&settings, r#"{"enabledPlugins":{"anti-hall@anti-hall":false,"anti-hall@anti-hall-engine-live":true}}"#).unwrap();
         let rx = Rx::new().unwrap();
         let (r, s) = (reg.to_string_lossy().into_owned(), settings.to_string_lossy().into_owned());
-        assert_eq!(version_from_installed_json(&rx, &r, &s).as_deref(), Some("0.300.1"));
+        assert_eq!(version_from_installed_json(&rx, &r, &s, None).as_deref(), Some("0.300.1"));
         std::fs::write(&settings, r#"{"enabledPlugins":{}}"#).unwrap();
-        assert_eq!(version_from_installed_json(&rx, &r, &s).as_deref(), Some("0.300.2"), "none enabled -> the pin");
+        assert_eq!(version_from_installed_json(&rx, &r, &s, None).as_deref(), Some("0.300.2"), "none enabled -> the pin");
         std::fs::remove_dir_all(&dir).ok();
     }
 

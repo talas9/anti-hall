@@ -593,3 +593,55 @@ value = "install-codex: cannot write {path}: {error}"
 [codex_install.err_home]
 doc = "Printed when --global is asked for and no home directory can be found."
 value = "install-codex: cannot find the home directory"
+
+[update.plugin_root_env]
+doc = "The variable that names the running plugin's root; with several enabled installs the check uses the one whose install path holds it."
+value = "CLAUDE_PLUGIN_ROOT"
+
+[update.cache_dir]
+doc = "The harness plugin cache directory under the plugins root (`<cache>/<marketplace>/<plugin>/<version>`)."
+value = "cache"
+
+[update.marketplaces_dir]
+doc = "The harness marketplaces directory under the plugins root, used when `known_marketplaces.json` has no install location."
+value = "marketplaces"
+
+[update.known_marketplaces]
+doc = "The harness file (under the plugins root) that records each marketplace's source and install location."
+value = "known_marketplaces.json"
+
+[update.directory_source]
+doc = "The `source.source` value of a marketplace that is a local directory: it has no remote, its own plugin manifest is the latest version."
+value = "directory"
+
+[update.harness_check_args]
+doc = "The harness arguments before the install key in the update command a `--check` suggests (`claude plugin update <key>`)."
+value = ["plugin", "update"]
+
+[update.state_available]
+doc = "The `state` of a `--check` status when a newer version exists."
+value = "available"
+
+[update.state_current]
+doc = "The `state` of a `--check` status when the install is the latest."
+value = "current"
+
+[update.state_unknown]
+doc = "The `state` of a `--check` status when the installed or latest version cannot be read."
+value = "unknown"
+
+[update.state_lagging]
+doc = "The `state` of a `--check` status when the version is current but the harness registry and cache disagree."
+value = "lagging"
+
+[update.state_failed]
+doc = "The `state` of a `--check` status when the check itself failed."
+value = "failed"
+
+[update_msg.latest_unknown]
+doc = "`--check` action when the install's marketplace has no readable source version (a local-directory marketplace has no remote)."
+value = "latest version unknown — the {channel} marketplace has no readable source version to compare with"
+
+[update_msg.lag_head]
+doc = "`--check` action head when the version is current but the harness registry and cache disagree (never worded as up to date)."
+value = "version is current but the harness registry and cache disagree"

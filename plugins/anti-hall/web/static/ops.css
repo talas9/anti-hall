@@ -10,6 +10,13 @@
 .ops-later { opacity: .6; border-style: dashed; }
 .ops-btn { flex: 0 0 auto; min-height: 36px; padding: 0 16px; }
 
+/* the Claude card's identity */
+.acct-who { display: flex; flex-direction: column; gap: 2px; }
+.acct-email { font: 600 14px var(--font-head); overflow-wrap: anywhere; }
+.acct-name { font-size: 12px; color: var(--dim); }
+.acct-id { margin: 0; font: 11px var(--font-mono); color: var(--muted); }
+.kv dd[title] { cursor: help; }
+
 /* gauges */
 .gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
 .gauge { --gc: var(--green); display: flex; align-items: center; gap: 16px; }
@@ -18,13 +25,13 @@
 .ring { flex: 0 0 auto; width: 92px; aspect-ratio: 1; position: relative; display: grid; place-items: center; transition: --p .7s ease; }
 .ring::before {
   content: ""; position: absolute; inset: 0; border-radius: 50%;
-  background: conic-gradient(var(--gc) calc(var(--p) * 1%), color-mix(in oklch, var(--line-2) 70%, transparent) 0);
+  background: conic-gradient(var(--gc) calc(var(--p) * 1%), color-mix(in oklch, var(--text) 22%, var(--panel)) 0);
   mask: radial-gradient(farthest-side, transparent calc(100% - 9px), #000 calc(100% - 8px));
 }
 .ring span { position: relative; font: 600 17px var(--font-mono); color: var(--text-hi); }
 .g-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
 .g-name { font: 600 14px var(--font-head); }
-.g-bar { display: none; height: 10px; border-radius: 6px; background: color-mix(in oklch, var(--line-2) 70%, transparent); overflow: hidden; }
+.g-bar { display: none; height: 10px; border-radius: 6px; background: color-mix(in oklch, var(--text) 22%, var(--panel)); overflow: hidden; }
 .g-bar i { display: block; height: 100%; background: var(--gc); }
 .g-pct { display: none; font: 600 18px var(--font-mono); }
 .g-reset { font: 12px var(--font-mono); color: var(--muted); }
@@ -41,7 +48,9 @@
 
 /* logs */
 .ops-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
-.ops-field { display: flex; flex-direction: column; gap: 2px; }
+.ops-field { display: flex; flex-direction: row; align-items: center; gap: 8px; min-height: 36px; }
+.ops-field .sect { margin: 0; white-space: nowrap; }
+.log-note { padding: 2px 8px 6px; font: 11px var(--font-mono); color: var(--muted); border-bottom: 1px dashed var(--line); margin-bottom: 4px; }
 .ops-field select, .ops-search { min-height: 36px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--card); color: var(--text); padding: 0 10px; font: inherit; }
 .ops-search { flex: 1 1 180px; min-width: 140px; }
 .ops-check { display: flex; align-items: center; gap: 6px; min-height: 36px; font-size: 12px; color: var(--dim); }

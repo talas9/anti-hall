@@ -162,6 +162,8 @@ struct Raw {
     impact: Value,
     events: Value,
     usage: Option<Value>,
+    /// When the weekly window resets, from the usage cache the Accounts screen reads (the one source for both screens).
+    weekly_resets_ms: Option<f64>,
     coverage: Option<Value>,
 }
 
@@ -194,7 +196,7 @@ async fn run_cmd(engine: &Path, args: &[String], limit: Duration) -> Option<Valu
 async fn read_raw(app: &App, cfg: &TelCfg) -> Raw {
     let s = app.settings();
     let (timeout, max) = (Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes);
-    let mut raw = Raw { at: Instant::now(), now_ms: now_ms(), engine_ok: false, sums: Vec::new(), status: Value::Null, impact: Value::Null, events: Value::Null, usage: None, coverage: None };
+    let mut raw = Raw { at: Instant::now(), now_ms: now_ms(), engine_ok: false, sums: Vec::new(), status: Value::Null, impact: Value::Null, events: Value::Null, usage: None, weekly_resets_ms: None, coverage: None };
     for n in 1..=cfg.series_days {
         match ctl::call(&app.socket, &format!("telemetry summary window={n}d"), timeout, max).await {
             Ok(v) => raw.sums.push(v),
@@ -207,6 +209,7 @@ async fn read_raw(app: &App, cfg: &TelCfg) -> Raw {
     raw.events = ctl::call(&app.socket, &format!("telemetry events window=1d limit={}", cfg.events_rows), timeout, max).await.unwrap_or(Value::Null);
     let limit = Duration::from_millis(cfg.cmd_timeout_ms);
     raw.usage = run_cmd(&app.engine, &cfg.usage_cmd, limit).await;
+    raw.weekly_resets_ms = crate::ops::weekly_reset_ms(app).await;
     raw.coverage = run_cmd(&app.engine, &cfg.coverage_cmd, limit).await;
     raw
 }
@@ -524,7 +527,9 @@ fn hook_series(raw: &Raw, measure: &str) -> Vec<(String, Vec<f64>)> {
 fn forecast(raw: &Raw, c: &TelCfg) -> Option<Forecast> {
     let usage = raw.usage.as_ref()?;
     let used = usage["weekly"].as_f64()?;
-    let resets = usage["resetsAt"].as_str().and_then(|t| humantime::parse_rfc3339(t).ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as f64);
+    // the usage cache's weekly reset first (what the Accounts gauge shows), the usage command's own only when the cache has none
+    let own = usage["resetsAt"].as_str().and_then(|t| humantime::parse_rfc3339(t).ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as f64);
+    let resets = raw.weekly_resets_ms.or(own);
     let hours_in = resets.map(|r| c.week_hours - ((r - raw.now_ms as f64) / 3_600_000.0).clamp(0.0, c.week_hours));
     let projected = hours_in.filter(|h| *h > 0.0).map(|h| used * c.week_hours / h);
     let tone = projected.map_or("info", |p| if p >= c.forecast_bad_pct { "bad" } else if p >= c.forecast_warn_pct { "warn" } else { "ok" });

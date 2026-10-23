@@ -44,8 +44,22 @@ pub struct ClaudeAccount {
     pub signed_in: bool,
     /// The first characters of the user id.
     pub fingerprint: String,
-    /// Allow-listed plan fields as (name, text).
-    pub fields: Vec<(String, String)>,
+    /// The account's e-mail address and display name, as the host file shows them (never a token).
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub name: String,
+    /// Allow-listed plan fields.
+    pub fields: Vec<AccountField>,
+}
+
+/// One plan field: the ui text key of its name, the text shown, and the raw value when the text is a mapped label (for a tooltip).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AccountField {
+    pub label_key: String,
+    pub text: String,
+    #[serde(default)]
+    pub raw: String,
 }
 
 /// Codex's login, from the existence of its login file only.
@@ -99,6 +113,12 @@ pub struct UpdateCheck {
     pub message: String,
     /// True when `latest` is newer than `installed`, as the engine judged it.
     pub available: bool,
+    /// The marketplace the checked install came from (`anti-hall`, `anti-hall-engine-live`, ...).
+    #[serde(default)]
+    pub channel: String,
+    /// The engine's verdict: `available`, `current`, `unknown`, `lagging` or `failed`.
+    #[serde(default)]
+    pub state: String,
     pub checked_ms: u64,
     /// The last check was reused (the minimum gap had not passed).
     pub reused: bool,
