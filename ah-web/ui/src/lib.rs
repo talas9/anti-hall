@@ -365,7 +365,7 @@ fn App(boot: Boot) -> impl IntoView {
     let selected = ctx.selected;
     let graph = RwSignal::new(false);
     let live_on = RwSignal::new(false);
-    let manage_on = RwSignal::new(false);
+    let manage_on = RwSignal::new(manage::hash().is_some());
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);

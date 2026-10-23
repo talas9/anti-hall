@@ -356,6 +356,13 @@ fn load(store: Store) {
     });
 }
 
+/// `#settings` or `#settings/<tab>` in the address opens this screen (and the tab, by its number in the tab row).
+pub fn hash() -> Option<Option<usize>> {
+    let h = web_sys::window()?.location().hash().ok()?;
+    let rest = h.strip_prefix("#settings")?;
+    Some(rest.strip_prefix('/').and_then(|n| n.parse().ok()))
+}
+
 /// The screen. Nothing is fetched or drawn while it is not the chosen one.
 #[component]
 pub fn ManageScreen(active: Signal<bool>) -> impl IntoView {
@@ -381,7 +388,7 @@ fn ManageLoader() -> impl IntoView {
 #[component]
 fn ManageBody() -> impl IntoView {
     let store = Store { data: RwSignal::new(None), hist: RwSignal::new(None) };
-    let tab = RwSignal::new(0usize);
+    let tab = RwSignal::new(hash().flatten().unwrap_or(0));
     load(store);
     let reload = Callback::new(move |()| load(store));
     let tabs = ["tab_settings", "tab_config", "tab_checks", "tab_jev", "tab_history"];
@@ -573,9 +580,10 @@ fn CheckRow(check: Value, reload: Callback<()>) -> impl IntoView {
                 <div class="mg-title">
                     <span class="mg-name">{name.clone()}</span>
                     {guard.then(|| view! { <span class="mg-badge warn">{mt("safety")}</span> })}
-                    {(!setting.is_empty()).then(|| view! { <span class="mg-badge">{mt("checks_switch")} " " {setting.clone()}</span> })}
+                    {(!setting.is_empty()).then(|| view! { <span class="mg-badge" title=text_of(&check, "setting_doc")>{mt("checks_switch")} " " {setting.clone()}</span> })}
                 </div>
                 <p class="mg-doc">{text_of(&check, "summary")}</p>
+                {(!setting.is_empty()).then(|| view! { <p class="mg-meta">{mt("checks_switch")} ": " {text_of(&check, "setting_doc")}</p> })}
                 <p class="mg-meta">
                     {mt("checks_events")} ": " {events.iter().map(|e| view! { <span class="mg-chip">{e.clone()}</span> }).collect_view()}
                     " \u{b7} " {match fires { Some(n) => format!("{n} {}{}", mt("checks_fires"), if blocks > 0 { format!(", {blocks} {}", mt("checks_block")) } else { String::new() }), None => mt("checks_fire_none") }}

@@ -104,6 +104,7 @@ pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
                         "setting": setting, "on": reg.and_then(|r| r.get("value")).cloned().or_else(|| sw.and_then(|x| x.get("value")).cloned()),
                         "registry": reg.is_some(), "category": reg.map(|r| s(r, "category")).unwrap_or_default(),
                         "safety_note": reg.map(|r| s(r, "safety_note")).unwrap_or_default(),
+                        "setting_doc": reg.map(|r| s(r, "description")).unwrap_or_default(),
                         "fires": f.and_then(|r| r.get("n")).cloned(), "outcomes": f.and_then(|r| r.get("outcomes")).cloned(), "p50_us": f.and_then(|r| r.get("p50_us")).cloned(),
                     })
                 })
