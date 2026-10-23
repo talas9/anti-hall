@@ -33,6 +33,8 @@ use serde_json::{Value, json};
 pub struct Nudge {
     /// The nudge id.
     pub id: String,
+    /// The short token the parent starts its answer with (unique among open nudges).
+    pub ref_id: String,
     /// The child agent's id.
     pub child: String,
     /// The child's name (its description), as the nudge shows it.
@@ -244,7 +246,7 @@ fn emit(env: &Env, event: &str, n: &Nudge) {
 }
 
 fn answer_line(n: &Nudge) -> String {
-    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child)])
+    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id)])
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
@@ -381,6 +383,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         let (direct, to, walked) = target(env, st, &a);
         let mut n = Nudge {
             id: format!("{:x}", crate::health::fnv(&format!("{}{now}", a.id))),
+            ref_id: new_ref(st, &a.id, now),
             child: a.id.clone(),
             child_name: if a.name.is_empty() { a.id.clone() } else { super::cap(&a.name, lim("name_cap")) },
             child_kind: kind_word(&a).into(),
@@ -574,7 +577,7 @@ fn take_answers(env: &Env, st: &mut State) {
         st.nudge_answer_lines += 1;
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         let child = v["child"].as_str().unwrap_or("");
-        let key = st.nudges.keys().find(|k| *k == child).cloned().or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
+        let key = st.nudges.keys().find(|k| *k == child).cloned().or_else(|| st.nudges.iter().find(|(_, n)| !n.ref_id.is_empty() && n.ref_id.eq_ignore_ascii_case(child)).map(|(k, _)| k.clone())).or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
         let Some(key) = key else { continue };
         let (class, text) = (v["answer"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
         record(env, st, &key, class, text, v["min"].as_u64().unwrap_or(0), src("verb"));
@@ -654,6 +657,51 @@ fn watch_parents(st: &mut State) {
     }
 }
 
+/// A short token for a new nudge: `limits.ref_len` characters of `agent_nudge.ref_alphabet`, unique among the open nudges.
+fn new_ref(st: &State, child: &str, now: u64) -> String {
+    let alpha: Vec<char> = defaults::text("agent_nudge.ref_alphabet").chars().collect();
+    if alpha.is_empty() {
+        return String::new();
+    }
+    for salt in 0..lim("ref_tries") {
+        let mut h = crate::health::fnv(&format!("{child}{now}{salt}"));
+        let r: String = (0..lim("ref_len")).map(|_| {
+            let c = alpha[(h % alpha.len() as u64) as usize];
+            h /= alpha.len() as u64;
+            c
+        }).collect();
+        if !st.nudges.values().any(|o| o.ref_id == r) {
+            return r;
+        }
+    }
+    String::new()
+}
+
+/// Parse a reply that starts with the nudge's ref: the text after the ref is `stop`, `msg <text>`, `snooze [N] [reason]` or `other
+/// <reason>` (no model), or free words (returned as the prose word for the nudgeReply judge). Returns (class, text, minutes).
+fn parse_ref_reply(after: &str) -> (String, String, u64) {
+    let rest = after.trim_start_matches(|c: char| c.is_whitespace() || ":-,.;".contains(c)).trim();
+    let (first, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let (first, tail) = (first.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase(), tail.trim());
+    if first == ans("stop") {
+        return (first, String::new(), 0);
+    }
+    if first == ans("msg") && !tail.is_empty() {
+        return (first, tail.to_string(), 0);
+    }
+    if first == ans("snooze") {
+        let (num, reason) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
+        return match num.parse::<u64>() {
+            Ok(m) => (first, reason.trim_start_matches(|c: char| c.is_whitespace() || "-:,.".contains(c) || c == '\u{2014}').to_string(), m),
+            Err(_) => (first, tail.to_string(), 0),
+        };
+    }
+    if first == ans("other") && !tail.is_empty() {
+        return (first, tail.to_string(), 0);
+    }
+    (ans("prose").to_string(), rest.to_string(), 0)
+}
+
 fn match_words(k: &str) -> Vec<String> {
     defaults::raw("agent_nudge.match").get(k).map(V::strings).unwrap_or_default().into_iter().map(|w| w.to_lowercase()).collect()
 }
@@ -723,6 +771,21 @@ fn take_turns(env: &Env, st: &mut State) {
         let Some(newest) = new.iter().map(|t| t.0).max() else { continue };
         if let Some(n) = st.nudges.get_mut(&id) {
             n.turns_from = newest;
+        }
+        let tag = n.ref_id.to_lowercase();
+        let tagged = new.iter().rev().filter(|t| t.1 == defaults::text("agent_nudge.match_text_kind")).find_map(|t| {
+            let at = if tag.is_empty() { None } else { t.2.to_lowercase().find(&tag) }?;
+            let after = t.2.get(at + tag.len()..).unwrap_or("");
+            Some(parse_ref_reply(after))
+        });
+        if let Some((class, text, min)) = tagged {
+            if class != ans("prose") || budget > 0 {
+                if class == ans("prose") {
+                    budget -= 1;
+                }
+                record(env, st, &id, class, super::cap(&text, lim("reason_cap")), min, src("ref"));
+                continue;
+            }
         }
         let tool = new.iter().filter(|t| t.1 == defaults::text("agent_nudge.match_tool_kind")).find_map(|t| tool_answer(&n, &t.2).map(|c| (c, t.2.replace('\t', " "))));
         if let Some((class, text)) = tool {
@@ -840,7 +903,7 @@ fn rollup(all: &[&Nudge], since: u64) -> Value {
     let mut top: Vec<(&str, u64)> = ignorers.into_iter().filter(|(_, c)| *c > 0).collect();
     top.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     top.truncate(lim("top_parents") as usize);
-    let by_source: serde_json::Map<String, Value> = [src("verb"), src("tool"), src("prose"), src("none")]
+    let by_source: serde_json::Map<String, Value> = [src("verb"), src("ref"), src("tool"), src("prose"), src("none")]
         .iter()
         .map(|k| ((*k).to_string(), json!(count(&|n| if n.answer_source.is_empty() { *k == src("none") } else { n.answer_source == *k }))))
         .collect();
