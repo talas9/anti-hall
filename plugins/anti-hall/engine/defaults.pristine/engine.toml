@@ -1723,6 +1723,50 @@ value = "{tag}-{triple}.tar.gz"
 doc = "URL of one release file. Placeholders: {base}, {tag}, {name}."
 value = "{base}/{tag}/{name}"
 
+[updater.engine_verb_update]
+doc = "The engine verb that runs the install routine. The updater, after it has fetched and verified a build, hands the binaries to the NEW engine's `update --from-local <staging dir> --source <word> --yes`."
+value = "update"
+
+[updater.engine_flag_from_local]
+doc = "The engine flag that names the directory holding the binaries to install."
+value = "--from-local"
+
+[updater.engine_flag_source]
+doc = "The engine flag that names where the build came from (recorded in the install record)."
+value = "--source"
+
+[updater.engine_flag_yes]
+doc = "The engine flag that makes the routine act (without it, it only plans)."
+value = "--yes"
+
+[updater.engine_flag_force]
+doc = "The engine flag that allows a downgrade (passed through from `ah-hook update --force`)."
+value = "--force"
+
+[updater.install_source_release]
+doc = "The source recorded for a build downloaded from a release channel and verified."
+value = "release"
+
+[updater.install_source_file]
+doc = "The source recorded for a build given as an offline file (`--from FILE`)."
+value = "manual"
+
+[updater.stage_dir]
+doc = "Name, inside the updater's scratch directory, of the staging directory handed to the install routine (the engine and the thin client under their release member names)."
+value = "stage"
+
+[updater.install_record_file]
+doc = "The install record the routine writes in the state directory ({version, sha, source, ...}); the automatic updater reads its `source`."
+value = "install.json"
+
+[updater.routine_feature]
+doc = "The feature word an engine build lists in `version --json` (`features`) when it has the install routine. The updater hands the staged build to an engine only when it lists this word; an older build's `update` is a different command."
+value = "install-routine"
+
+[updater.engine_version_json_args]
+doc = "Arguments with which an engine binary reports its version and features as JSON."
+value = ["version", "--json"]
+
 [updater.engine_verb_stop]
 doc = "The engine verb that tells a running daemon to exit."
 value = "stop"

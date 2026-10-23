@@ -5,7 +5,7 @@ in four steps:
 
 1. `cargo check` on the touched crate (`ah-engine`, `ah-launcher`).
 2. One release build of `ah-engine` and, when the client changed, of `ah-launcher`.
-3. Deploy to a live root with `scripts/engine-deploy.sh` (it stages, verifies the sha and keeps the previous binary as `.prev`).
+3. Deploy to a live root with `scripts/engine-deploy.sh` (a thin call to `ah-engine update --from-local`, the one install routine: pre-check, rollback copy, install, validation, automatic rollback, install record; `--rollback` restores the last saved copy).
 4. A live check: use the hook for real and read the result with `ah-hook doctor --check`, `ah-hook status` and
    `ah-hook diag hooks`.
 

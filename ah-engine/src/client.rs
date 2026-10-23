@@ -549,13 +549,19 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
 /// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started, logged with the OS
 /// error (review finding 18: a fork that failed with EAGAIN or ENOMEM was not on record).
 pub fn spawn_daemon() -> Option<std::process::Child> {
+    spawn_daemon_from(std::env::current_exe(), None)
+}
+
+/// Start a detached daemon from `exe` (the installer starts the binary it just installed, not itself). `plugin_root`, when given,
+/// is the plugin root the daemon loads: the installer may itself run against a different tree than the live one.
+pub fn spawn_daemon_from(exe: std::io::Result<PathBuf>, plugin_root: Option<&Path>) -> Option<std::process::Child> {
     if defaults::env_var("nospawn").is_some() {
         return None;
     }
     let spawn_failed = |e: std::io::Error| {
         log_fallback("spawn_fail", &format!("os{}", e.raw_os_error().unwrap_or(0)), &defaults::render("msg.log_daemon_spawn_failed", &[("err", &e)]));
     };
-    let exe = match std::env::current_exe() {
+    let exe = match exe {
         Ok(p) => p,
         Err(e) => {
             spawn_failed(e);
@@ -567,6 +573,9 @@ pub fn spawn_daemon() -> Option<std::process::Child> {
     // directory, never the starting hook's own (the daemon drops the rest itself too, see `daemonenv`; doing it here as well
     // keeps the process image, as `ps` shows it, free of the session's values).
     cmd.env_clear().envs(std::env::vars().filter(|(k, _)| crate::daemonenv::kept(k))).current_dir(crate::daemonenv::cwd(defaults::env_var("home").map(PathBuf::from)));
+    if let Some(root) = plugin_root {
+        cmd.env(defaults::env_name("plugin_root"), root);
+    }
     // The allocator is chosen before the daemon's first allocation, so the configured one travels in its environment.
     let alloc_env = defaults::text("diagnostics.allocator_env");
     if std::env::var_os(alloc_env).is_none() {

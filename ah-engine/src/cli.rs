@@ -93,6 +93,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("uninstall-statusline", crate::ops::cmd_uninstall_statusline),
         ("update", crate::operator::update::run),
         ("engine-update", crate::operator::engine_update::run),
+        ("post-update-check", crate::operator::post_update::run),
         ("install-codex", crate::operator::install_codex::run),
         ("codex-limit-status", crate::ops::cmd_codex_limit_status),
         ("codex-activate", crate::ops::cmd_codex_activate),
@@ -208,7 +209,7 @@ pub fn run(args: &[String]) -> i32 {
     if p.command == "version" {
         defaults::use_cache();
         let v = if defaults::init().is_ok() { crate::version() } else { crate::build_version().to_string() };
-        emit(&p, v.clone(), json!({"version": v}));
+        emit(&p, v.clone(), json!({"version": v, "features": crate::FEATURES}));
         return 0;
     }
     // an explicit `--plugin-root <dir>` decides which plugin's files are read, before anything is loaded

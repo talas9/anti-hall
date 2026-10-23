@@ -32,6 +32,7 @@
 pub mod arch;
 pub mod edge;
 pub mod read;
+pub mod rebin;
 pub mod stale;
 pub mod who;
 
@@ -327,6 +328,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         last_restamp_ok: Instant::now(),
         restamp_err_logged: false,
         recheck: archived_recheck(p),
+        bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
     };
     let code = run.run_loop(&watcher);
     cleanup(&cell, false);
@@ -372,6 +374,8 @@ struct Run<'a> {
     last_restamp_ok: Instant,
     restamp_err_logged: bool,
     recheck: Duration,
+    /// The engine binary this process was started from: its path and identity at start (see [`rebin`]).
+    bin: Option<(PathBuf, rebin::Ident)>,
 }
 
 /// What one tick decided.
@@ -454,6 +458,9 @@ impl Run<'_> {
         if let Some(flow) = self.stale_check() {
             return flow;
         }
+        if let Some(flow) = self.binary_check() {
+            return flow;
+        }
         let mut snap = if a.id.primary {
             let d = read::read_direct(&p.home, a.hashes.as_ref(), &a.id.id);
             Snapshot { ok: d.ok, error: d.error, total: d.total, ..Snapshot::default() }
@@ -506,6 +513,25 @@ impl Run<'_> {
             }
         }
         None
+    }
+
+    /// The engine binary on disk is a different file than the one this process started from (a deploy or an update replaced it):
+    /// release the lock and replace this process with the new binary, same arguments, same pid, same stdio. The successor takes the
+    /// lock itself. When the exec fails the lock is already gone, so a line is printed and the watcher ends: never a silent stale one.
+    fn binary_check(&mut self) -> Option<Flow> {
+        use std::os::unix::process::CommandExt;
+        let (path, start) = self.bin.clone()?;
+        if !rebin::changed(&path, Some(start)) {
+            return None;
+        }
+        if let Some(l) = locked(self.cell).lock.take() {
+            l.release();
+        }
+        cleanup(self.cell, true);
+        emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
+        let err = std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
+        diag(&defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
+        Some(Flow::Stop(1))
     }
 
     /// `attemptHandoff`: release the lock and replace this process with the engine running the newer build's plugin root
