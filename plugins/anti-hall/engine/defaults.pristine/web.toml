@@ -579,11 +579,11 @@ value = [
 
 [web.topo_warn_fail_pct]
 doc = "Share of failed calls (percent) at which a client or store turns amber on the Topology screen."
-value = 1.0
+value = 1
 
 [web.topo_bad_fail_pct]
 doc = "Share of failed calls (percent) at which a client or store turns red."
-value = 10.0
+value = 10
 
 [web.topo_idle_s]
 doc = "Seconds without a call after which a client or store reads as idle."
