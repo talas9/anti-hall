@@ -365,14 +365,23 @@ fn HeatChart(heat: Heat, day_ms: Vec<u64>, ui: TelUi, texts: BTreeMap<String, St
         .map(|(n, cells)| serde_json::json!({ "name": n, "data": day_ms.iter().zip(cells.iter()).map(|(d, v)| serde_json::json!({ "x": d, "y": v })).collect::<Vec<_>>() }))
         .collect();
     let rows = heat.checks.len() as u64;
+    let top = heat.cells.iter().flatten().copied().fold(0.0_f64, f64::max).max(1.0);
+    // the shades come from the configuration: the first is "none", the rest stand for equal shares of the busiest cell
+    let ramp = cfg["heat"][if is_dark() { "dark" } else { "light" }].as_array().cloned().unwrap_or_default();
+    let steps = ramp.len().saturating_sub(1).max(1) as f64;
+    let ranges: Vec<serde_json::Value> = ramp
+        .iter()
+        .enumerate()
+        .map(|(i, c)| if i == 0 { serde_json::json!({ "from": 0, "to": 0, "color": c }) } else { serde_json::json!({ "from": (top * (i as f64 - 1.0) / steps).max(f64::MIN_POSITIVE), "to": top * i as f64 / steps, "color": c }) })
+        .collect();
     let mut o = apex::base(&cfg, is_dark(), (rows * 30 + 70).max(cfg["height_small"].as_u64().unwrap_or(0)));
     apex::merge(&mut o, serde_json::json!({
         "chart": { "type": "heatmap", "toolbar": { "show": false } },
         "series": series,
         "xaxis": { "type": "datetime" },
-        "plotOptions": { "heatmap": { "radius": 3, "colorScale": { "min": 0 } } },
+        "plotOptions": { "heatmap": { "radius": 3, "enableShades": false, "colorScale": { "ranges": ranges } } },
         "colors": [cfg["info"]],
-        "stroke": { "width": 1 },
+        "stroke": { "width": 2, "colors": [cfg[if is_dark() { "dark" } else { "light" }]["cell_gap"].clone()] },
         "legend": { "show": false },
     }));
     let opts = Memo::new(move |_| o.to_string());
@@ -636,7 +645,7 @@ fn mover_row(r: &Mover, ui: &TelUi, texts: &BTreeMap<String, String>) -> impl In
             <span class="mover-name">{r.name.clone()}</span>
             <Spark series=r.series.clone() tone="neutral".to_string() />
             <span class="mover-val">{fmt_val(ui, texts, "count", r.value)}</span>
-            <span class="mover-delta">{delta_text(r.pct.or(Some(r.change)))}</span>
+            <span class="mover-delta">{match r.pct { Some(p) => delta_text(Some(p)), None => format!("{} {}", if r.change > 0.0 { "\u{25B2}" } else { "\u{25BC}" }, fmt_val(ui, texts, "count", r.change.abs())) }}</span>
         </div>
     }
 }

@@ -35,7 +35,9 @@ impl Chart {
         let opts = js_sys::JSON::parse(options).map_err(|_| "chart options".to_string())?;
         let f = Closure::<dyn Fn(f64) -> String>::new(move |v: f64| fmt(v)).into_js_value();
         let paths: [&[&str]; 3] = [&["yaxis", "labels", "formatter"], &["tooltip", "y", "formatter"], &["plotOptions", "radialBar", "dataLabels", "value", "formatter"]];
-        for path in paths {
+        // a heatmap's y axis names its rows: a number formatter there would turn the names into figures
+        let heat = Reflect::get(&opts, &JsValue::from_str("chart")).ok().and_then(|c| Reflect::get(&c, &JsValue::from_str("type")).ok()).and_then(|v| v.as_string()).as_deref() == Some("heatmap");
+        for path in paths.iter().skip(usize::from(heat)) {
             set_path(&opts, path, &f);
         }
         let chart = ApexCharts::new(el, &opts);

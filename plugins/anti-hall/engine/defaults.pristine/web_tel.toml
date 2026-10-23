@@ -96,6 +96,16 @@ doc = "An unusual day must also differ from the median by at least this fraction
 value = 0.3
 min = 0.0
 
+[webtel.pct_min_baseline]
+doc = "A change is shown as a percentage only when the usual figure it is measured against is at least this many events; below that the plain change is shown."
+value = 20
+min = 1
+
+[webtel.pct_cap]
+doc = "The largest percentage shown for a change; a larger one is shown as this."
+value = 1000
+min = 1
+
 [webtel.anomalies_max]
 doc = "Most anomalies listed."
 value = 6
@@ -208,7 +218,7 @@ value = 3
 
 [webtel.apex]
 doc = "The Full tier's chart library: a single vendored file (ApexCharts 4.7.0, MIT; later 5.x releases are under a revenue-limited community license and are not used) served from this server (script-src 'self', no CDN) and loaded only when the Telemetry or Impact screen opens. `file` is under the static directory. Colours are hex because the library blends them; the page theme picks the dark or light set."
-value = { file = "vendor/apexcharts.min.js", load_timeout_ms = 8000, version = "4.7.0", palette = ["#4f8cff", "#3fb950", "#d29922", "#f85149", "#a371f7", "#39c5cf", "#db61a2", "#8b949e"], ok = "#3fb950", warn = "#d29922", bad = "#f85149", info = "#4f8cff", neutral = "#8b949e", dark = { fg = "#c9d1d9", grid = "#30363d" }, light = { fg = "#24292f", grid = "#d0d7de" }, height_main = 300, height_brush = 90, height_small = 240, zoom = true, animations = true }
+value = { file = "vendor/apexcharts.min.js", load_timeout_ms = 8000, version = "4.7.0", palette = ["#4f8cff", "#3fb950", "#d29922", "#f85149", "#a371f7", "#39c5cf", "#db61a2", "#8b949e"], ok = "#3fb950", warn = "#d29922", bad = "#f85149", info = "#4f8cff", neutral = "#8b949e", dark = { fg = "#c9d1d9", grid = "#30363d", cell_gap = "#0d1117" }, light = { fg = "#24292f", grid = "#d0d7de", cell_gap = "#ffffff" }, heat = { dark = ["#161b22", "#1f3a6b", "#2b5aa8", "#3d7ae8", "#7fb0ff"], light = ["#eaeef2", "#c6dbff", "#8db8ff", "#4f8cff", "#1d5fd6"] }, height_main = 300, height_brush = 90, height_small = 240, zoom = true, animations = true }
 
 [webtel.texts]
 doc = "Every sentence and label of the two screens. `h_*` are headline templates ({name} placeholders are filled by the server); `gl_*` are the glossary tooltips of the metrics."

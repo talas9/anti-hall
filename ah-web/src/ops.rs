@@ -279,7 +279,17 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
         .map(|l| {
             l.iter()
                 .take(o.cost_rows)
-                .map(|a| CostRow { agent: s(a, "agent"), name: s(a, "name"), kind: s(a, "kind"), tokens: u(a, "tokens"), outcomes: u(a, "outcomes"), tokens_per_outcome: u(a, "tokens_per_outcome") })
+                .map(|a| {
+                    let mut row = CostRow { agent: s(a, "agent"), name: s(a, "name"), kind: s(a, "kind"), tokens: u(a, "tokens"), outcomes: u(a, "outcomes"), tokens_per_outcome: u(a, "tokens_per_outcome") };
+                    // a session id is named by the agent list (and a project's Primary is a Primary, whatever the report calls its kind)
+                    if let Some(live) = app.model().lookup(&row.agent, st.placeholder_id_chars) {
+                        if row.name.is_empty() {
+                            row.name = live.label.clone();
+                        }
+                        row.kind = if live.role == st.project_primary_role { "main".to_string() } else { live.kind.clone() };
+                    }
+                    row
+                })
                 .collect()
         })
         .unwrap_or_default();

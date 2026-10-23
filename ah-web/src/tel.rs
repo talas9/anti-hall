@@ -75,6 +75,8 @@ pub struct TelCfg {
     min_day_fraction: f64,
     min_abs_change: f64,
     min_rel_change: f64,
+    pct_min_baseline: f64,
+    pct_cap: f64,
     anomalies_max: usize,
     movers_max: usize,
     headline_checks: usize,
@@ -350,7 +352,9 @@ impl Judged {
 /// Today (the last point, projected to a whole day) against the median and spread of the days before it.
 fn judge(series: &[f64], first_active: usize, frac: f64, c: &TelCfg) -> Option<Judged> {
     let (today, before) = series.split_last()?;
-    let history = before.get(first_active..).unwrap_or_default();
+    // days the engine was not running say nothing about a usual day: only days with activity count
+    let history: Vec<f64> = before.get(first_active..).unwrap_or_default().iter().copied().filter(|v| *v > 0.0).collect();
+    let history = &history[..];
     if history.len() < c.min_history_days || frac < c.min_day_fraction {
         return None;
     }
@@ -388,8 +392,10 @@ fn tone_of(good: &str, j: Option<&Judged>, c: &TelCfg) -> &'static str {
     }
 }
 
-fn pct(change: f64, usual: f64) -> Option<f64> {
-    (usual > 0.0).then(|| change / usual * 100.0)
+/// The change as a percentage of the usual figure; none when that figure is too small for a percentage to mean anything (the page then
+/// shows the plain change), and never more than `pct_cap`.
+fn pct(change: f64, usual: f64, c: &TelCfg) -> Option<f64> {
+    (usual >= c.pct_min_baseline).then(|| (change / usual * 100.0).clamp(-c.pct_cap, c.pct_cap))
 }
 
 fn cell_text(v: &Value) -> Cell {
@@ -404,7 +410,13 @@ fn col(c: &TelCfg, key: &str, label_key: &str, kind: &str) -> Col {
     Col { key: key.into(), label: c.text(label_key), kind: kind.into() }
 }
 
-fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64]) -> Vec<Table> {
+/// What to call a cost-report agent: its own name, else the tracked agent its id belongs to, else the id.
+fn agent_name(a: &Value, names: &dyn Fn(&str) -> Option<String>) -> String {
+    let id = a["agent"].as_str().unwrap_or_default();
+    a["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).or_else(|| names(id)).unwrap_or_else(|| id.to_string())
+}
+
+fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str) -> Option<String>) -> Vec<Table> {
     let cap = c.table_rows_max;
     let mut out = Vec::new();
     // checks over the whole series window, busiest first
@@ -466,8 +478,8 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64]) -> Vec<Table> {
             .iter()
             .take(cap)
             .map(|a| {
-                let who = a["name"].as_str().filter(|n| !n.is_empty()).or(a["agent"].as_str()).unwrap_or_default();
-                vec![Cell::Text(who.into()), cell_text(&a["kind"]), cell_num(&a["tokens"]), cell_num(&a["outcomes"]), cell_num(&a["tokens_per_outcome"]), cell_num(&a["commits"]), cell_num(&a["guard_fires"]), cell_num(&a["files_edited"]), cell_num(&a["tests_passed"])]
+                let who = agent_name(a, names);
+                vec![Cell::Text(who), cell_text(&a["kind"]), cell_num(&a["tokens"]), cell_num(&a["outcomes"]), cell_num(&a["tokens_per_outcome"]), cell_num(&a["commits"]), cell_num(&a["guard_fires"]), cell_num(&a["files_edited"]), cell_num(&a["tests_passed"])]
             })
             .collect(),
     });
@@ -523,7 +535,7 @@ fn forecast(raw: &Raw, c: &TelCfg) -> Option<Forecast> {
     Some(Forecast { used_pct: used, projected_pct: projected, hours_in, tone: tone.into(), text })
 }
 
-fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
+fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Option<String>) -> TelDoc {
     let mut doc = TelDoc { generated_ms: raw.now_ms, engine_ok: raw.engine_ok, texts: c.texts.clone(), ui: c.ui(number), ..TelDoc::default() };
     if !raw.engine_ok || raw.sums.is_empty() {
         doc.headlines.push(Headline { tone: "bad".into(), text: c.text("h_engine_down") });
@@ -545,7 +557,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
             unit: m.unit.clone(),
             value: series.last().copied().unwrap_or(0.0),
             usual: j.as_ref().map(|j| j.usual),
-            delta_pct: j.as_ref().and_then(|j| pct(j.change(), j.usual)),
+            delta_pct: j.as_ref().and_then(|j| pct(j.change(), j.usual, c)),
             tone: tone_of(&m.good, j.as_ref(), c).into(),
             series,
         });
@@ -567,7 +579,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
                 anomalies.push(anomaly(c, &name, &format!("{name} ({})", m.label.to_lowercase()), &j, number));
             }
             if j.change().abs() >= c.min_abs_change {
-                rows.push(Mover { name, value: j.value, usual: j.usual, change: j.change(), pct: pct(j.change(), j.usual), series: tail(&series, c.spark_points) });
+                rows.push(Mover { name, value: j.value, usual: j.usual, change: j.change(), pct: pct(j.change(), j.usual, c), series: tail(&series, c.spark_points) });
             }
         }
         rows.sort_by(|a, b| b.change.abs().total_cmp(&a.change.abs()));
@@ -595,7 +607,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
         let committers = list.iter().filter(|a| num(&a["commits"]) > 0.0).count();
         doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_agents", &[("agents", n(num(&cost["totals"]["agents"]))), ("tokens", n(num(&cost["totals"]["tokens"]))), ("committers", committers.to_string())]) });
         if let Some(top) = list.first() {
-            let who = top["name"].as_str().filter(|x| !x.is_empty()).or(top["agent"].as_str()).unwrap_or_default();
+            let who = agent_name(top, names);
             doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_cost_top", &[("agent", who.chars().take(24).collect()), ("tokens", n(num(&top["tokens"]))), ("outcomes", n(num(&top["outcomes"])))]) });
         }
     } else {
@@ -604,13 +616,8 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
     if jev_calls(today) > 0.0 {
         doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_jev", &[("n", n(jev_calls(today))), ("usd", fmt_usd(jev_cost_uc(today) / c.uc_per_usd, c))]) });
     }
-    for a in anomalies.iter().take(c.anomalies_max) {
-        doc.headlines.push(Headline { tone: "warn".into(), text: a.text.clone() });
-    }
+    // the unusual figures and the weekly forecast have their own cards; the headlines do not repeat them
     doc.forecast = forecast(raw, c);
-    if let Some(f) = &doc.forecast {
-        doc.headlines.push(Headline { tone: f.tone.clone(), text: f.text.clone() });
-    }
     doc.anomalies = anomalies;
 
     // heatmap: the checks that blocked most over the window, day by day
@@ -619,7 +626,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
     by_total.truncate(c.heat_rows);
     doc.heat = Heat { checks: by_total.iter().map(|(n, _)| n.clone()).collect(), cells: by_total.into_iter().map(|(_, s)| s).collect() };
     doc.day_ms = raw.day_starts();
-    doc.tables = tables(raw, c, &doc.kpis, &doc.day_ms);
+    doc.tables = tables(raw, c, &doc.kpis, &doc.day_ms, names);
     doc
 }
 
@@ -787,7 +794,9 @@ pub async fn telemetry(app: &App) -> Result<Arc<TelDoc>, String> {
     if let Some((_, d)) = cache().tel.clone().filter(|(at, _)| at.elapsed() < Duration::from_secs(cfg.cache_s)) {
         return Ok(d);
     }
-    let doc = Arc::new(build_tel(&r, &cfg, &app.settings().number()));
+    let st = app.settings();
+    let resolve = |id: &str| app.model().lookup(id, st.placeholder_id_chars).map(|a| a.label);
+    let doc = Arc::new(build_tel(&r, &cfg, &st.number(), &resolve));
     cache().tel = Some((Instant::now(), doc.clone()));
     Ok(doc)
 }
