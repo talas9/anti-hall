@@ -102,6 +102,7 @@ pub struct Settings {
     pub plugin_manifest_rel: String,
     pub live_jev_log_rel: String,
     pub live_rules_max: usize,
+    pub live_scan_gap_ms: u64,
     pub live_jev_fx: BTreeMap<String, String>,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
@@ -138,6 +139,7 @@ impl Settings {
             col_gap: self.live_col_gap,
             row_gap: self.live_row_gap,
             rules_max: self.live_rules_max,
+            scan_gap_ms: self.live_scan_gap_ms,
             jev_fx: self.live_jev_fx.clone(),
         }
     }

@@ -294,8 +294,27 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                     pass.draw(0..verts.len() as u32, 0..1);
                 }
             }
+            let t0 = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
             self.queue.submit([enc.finish()]);
             self.queue.present(tex);
+            // submit-to-done time of this frame, kept in `globalThis.__ah_gpu_ms` (last 600) for the performance check
+            self.queue.on_submitted_work_done(move || {
+                let now = web_sys::window().and_then(|w| w.performance()).map_or(0.0, |p| p.now());
+                let g = js_sys::global();
+                let key = wasm_bindgen::JsValue::from_str("__ah_gpu_ms");
+                let arr = match js_sys::Reflect::get(&g, &key).ok().filter(|v| v.is_object()) {
+                    Some(a) => a.unchecked_into::<js_sys::Array>(),
+                    None => {
+                        let a = js_sys::Array::new();
+                        let _ = js_sys::Reflect::set(&g, &key, &a);
+                        a
+                    }
+                };
+                arr.push(&wasm_bindgen::JsValue::from_f64(now - t0));
+                if arr.length() > 600 {
+                    arr.shift();
+                }
+            });
         }
     }
 

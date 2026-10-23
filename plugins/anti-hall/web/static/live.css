@@ -42,3 +42,10 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="waiting"]::before { animation: ahCoreSpin 7s linear infinite; opacity: .8; }
 @keyframes ahCoreSpin { to { transform: rotate(360deg); } }
 .live .stat-v, .live .tl-age, .live .tl-check { font-variant-numeric: tabular-nums; }
+
+/* scan-line sweep: started by a real live decision (live.rs flips data-scan); Full only, never at rest */
+.live .ahg[data-tier="full"] .ahg-view::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 90px; pointer-events: none; opacity: 0; background: linear-gradient(to bottom, transparent, oklch(0.83 0.13 210 / .10) 70%, oklch(0.9 0.1 210 / .22) 100%); }
+.live .ahg[data-tier="full"] .ahg-view[data-scan="a"]::after { animation: ahScanA var(--ahg-scan-ms, 900ms) ease-out; }
+.live .ahg[data-tier="full"] .ahg-view[data-scan="b"]::after { animation: ahScanB var(--ahg-scan-ms, 900ms) ease-out; }
+@keyframes ahScanA { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }
+@keyframes ahScanB { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }

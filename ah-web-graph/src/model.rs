@@ -198,6 +198,15 @@ pub struct FxCfg {
     /// Wire width gain per message/s, and the largest multiple.
     pub wire_gain: f32,
     pub wire_gain_max: f32,
+    /// Background stars drawn behind the graph (0 = none). They are still; only panning or zooming moves them (parallax).
+    pub stars: usize,
+    pub star_size: f32,
+    pub star_alpha: f32,
+    /// Share of the camera's pan a star follows, nearest and farthest.
+    pub star_depth_near: f32,
+    pub star_depth_far: f32,
+    /// Length of the scan-line sweep that follows live activity (CSS animation time).
+    pub scan_ms: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]

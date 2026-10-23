@@ -586,3 +586,33 @@ value = "oklch(0.69 0.19 12)"
 [web.graph.theme.kinds.block.shape]
 doc = "Marker shape of the 'block' decision node: circle, square or diamond."
 value = "diamond"
+
+[web.graph.fx.stars]
+doc = "Background stars behind the Live graph (0 = none). They do not move on their own; panning or zooming shifts them (parallax)."
+value = 90
+min = 0
+max = 1000
+
+[web.graph.fx.star_size]
+doc = "Star size, as a multiple of the base particle size."
+value = 0.45
+
+[web.graph.fx.star_alpha]
+doc = "Star brightness (0..1)."
+value = 0.55
+
+[web.graph.fx.star_depth_near]
+doc = "Share of the camera pan the nearest stars follow."
+value = 0.12
+
+[web.graph.fx.star_depth_far]
+doc = "Share of the camera pan the farthest stars follow."
+value = 0.03
+
+[web.graph.fx.scan_ms]
+doc = "Length of the scan-line sweep that follows live activity."
+value = 900
+min = 100
+max = 5000
+unit = "ms"
+

@@ -236,6 +236,8 @@ pub struct LiveCfg {
     pub row_gap: f32,
     /// Most rule nodes drawn.
     pub rules_max: usize,
+    /// Least time between two scan-line sweeps, ms.
+    pub scan_gap_ms: u64,
     /// Jev mode -> effect colour key.
     pub jev_fx: std::collections::BTreeMap<String, String>,
 }

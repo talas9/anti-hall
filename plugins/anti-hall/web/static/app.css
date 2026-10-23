@@ -239,3 +239,15 @@ a { color: var(--cyan); }
 .ver-pop { padding: 12px 14px; min-width: 240px; }
 
 .top .search { flex: 0 1 220px; min-width: 140px; }
+.logo { display: block; background: none; border-radius: 0; flex: 0 0 auto; }
+@media (min-width: 1280px) {
+  .top { flex-wrap: nowrap; gap: 12px; }
+  .top .search { flex: 0 1 200px; min-width: 120px; }
+  .top .pills { flex-wrap: nowrap; }
+}
+@media (min-width: 1280px) {
+  .top, .top * { white-space: nowrap; }
+  .top .search { flex: 0 1 160px; min-width: 90px; }
+  .top .search input { min-width: 0; }
+}
+@media (min-width: 1280px) and (max-width: 1599px) { .brand-product { display: none; } }

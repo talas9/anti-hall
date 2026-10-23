@@ -488,3 +488,10 @@ max = 100
 [web.live_jev_fx]
 doc = "Effect colour key by Jev mode: on (may change the outcome), shadow (logged only), off."
 value = { on = "allow", shadow = "travel", off = "refused" }
+
+[web.live_scan_gap_ms]
+doc = "Least time between two scan-line sweeps over the Live graph (a sweep follows a real live decision)."
+value = 2500
+min = 100
+max = 60000
+unit = "ms"

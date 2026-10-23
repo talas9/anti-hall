@@ -90,6 +90,7 @@ struct Inner {
     dirty: bool,
     /// Bumped when the timeline changed, so the tick only copies it then.
     timeline_rev: u64,
+    last_scan: u64,
 }
 
 /// The outputs the screen reads; set while the screen is shown.
@@ -143,6 +144,7 @@ pub fn init(boot: &Boot) {
         local: Vec::new(),
         dirty: false,
         timeline_rev: 0,
+        last_scan: 0,
     };
     let h = Rc::new(Hub { inner: RefCell::new(inner), sink: Cell::new(None), timer: Cell::new(None), cb: RefCell::new(None), timeline_seen: Cell::new(0) });
     HUB.with(|slot| *slot.borrow_mut() = Some(h));
@@ -263,6 +265,9 @@ impl Inner {
             }
             *b.checks.entry(d.check.clone()).or_default() += 1;
         }
+        if live && self.mounted && !self.reduced {
+            self.scan();
+        }
         push_cap(&mut self.timeline, d.clone(), self.cfg.timeline_max);
         self.timeline_rev += 1;
         self.dirty = true;
@@ -272,6 +277,19 @@ impl Inner {
             if let Some(bus) = &self.bus {
                 bus.push(FxEvent { kind: FxKind::Decision, path: [agent, Some(ev), Some(ck), via, Some(dn)].into_iter().flatten().collect(), color: fx, travel_color: self.cfg.travel_fx.clone() });
             }
+        }
+    }
+
+    /// Start the scan-line sweep over the graph (CSS animates it), at most once per `scan_gap_ms`; called only for a real live decision.
+    fn scan(&mut self) {
+        let now = now_ms();
+        if now.saturating_sub(self.last_scan) < self.cfg.scan_gap_ms {
+            return;
+        }
+        self.last_scan = now;
+        if let Some(el) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.query_selector(".live .ahg-view").ok().flatten()) {
+            let flip = el.get_attribute("data-scan").as_deref() != Some("a");
+            let _ = el.set_attribute("data-scan", if flip { "a" } else { "b" });
         }
     }
 

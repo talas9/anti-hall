@@ -89,7 +89,7 @@ fn after(ms: u32, f: impl FnOnce() + 'static) {
 
 fn vars_css(cfg: &GraphConfig) -> String {
     let t = &cfg.theme;
-    let mut s = format!("--ahg-bg:{};--ahg-grid:{};--ahg-wire:{};--ahg-wire-hot:{};--ahg-particle:{};", t.bg, t.grid, t.wire, t.wire_hot, t.particle);
+    let mut s = format!("--ahg-scan-ms:{}ms;--ahg-bg:{};--ahg-grid:{};--ahg-wire:{};--ahg-wire-hot:{};--ahg-particle:{};", cfg.fx.scan_ms, t.bg, t.grid, t.wire, t.wire_hot, t.particle);
     for (k, v) in &t.kinds {
         s.push_str(&format!("--ahg-k-{k}:{};", v.color));
     }
@@ -491,6 +491,7 @@ pub fn Graph(
                 let (be, cfgc, active) = (be.clone(), cfgc.clone(), active.clone());
                 move |t_ms: f64| {
                     let (w, h) = vp.get_untracked();
+                    let hh_ = h;
                     let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0) as f32;
                     let ws = wires.get_untracked();
                     let d = data.get_untracked();
@@ -503,6 +504,25 @@ pub fn Graph(
                         })
                         .collect();
                     let mut parts = geom::particles(&d, &ws, &is_hot, (t_ms / 1000.0) as f32, &cfgc);
+                    {
+                        // stars: fixed screen positions (a hash of the index), shifted by a share of the camera pan; no motion of their own
+                        let c = cam.get_untracked();
+                        for i in 0..fxc.stars {
+                            let h = |m: u32| {
+                                let mut x = (i as u32).wrapping_mul(0x9E37_79B1) ^ m.wrapping_mul(0x85EB_CA6B);
+                                x ^= x >> 15;
+                                x = x.wrapping_mul(0x2C1B_3C6D);
+                                x ^= x >> 12;
+                                x = x.wrapping_mul(0x297A_2D39);
+                                x ^= x >> 15;
+                                (x >> 8) as f32 / 16_777_216.0
+                            };
+                            let depth = fxc.star_depth_far + (fxc.star_depth_near - fxc.star_depth_far) * h(3);
+                            let (sx, sy) = ((h(1) * w + c.x * depth).rem_euclid(w.max(1.0)), (h(2) * hh_ + c.y * depth).rem_euclid(hh_.max(1.0)));
+                            let tw = 0.5 + 0.5 * h(5);
+                            parts.insert(0, geom::Particle { pos: [(sx - c.x) / c.k, (sy - c.y) / c.k], hot: false, col: Some([0.75, 0.85, 1.0, fxc.star_alpha * tw]), r: fxc.star_size / (1.0f32).max(1.0) });
+                        }
+                    }
                     let more = {
                         let mut act = active.borrow_mut();
                         let mut fp = Vec::new();
