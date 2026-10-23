@@ -400,7 +400,8 @@ mod tests {
                 "ship-it-guard",
                 "procwatch-advisory",
                 "engine-role-guard",
-                "broad-kill-guard"
+                "broad-kill-guard",
+                "lane-test-guard"
             ]
         );
         assert_eq!(select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None), Vec::new(), "no entry matches Glob");

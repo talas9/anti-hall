@@ -1,0 +1,129 @@
+# Token-waste guards for subagents (GH #270), PreToolUse on Bash, Claude and Codex, engine-only (no Node twin): lane-test-guard keeps
+# a subagent from running suite-scale tests, queued-wait-guard keeps it from queueing heavy commands in the background and from
+# poll/sleep loops. Both judge SUBAGENTS only (the main session and a workspace child are never blocked). The decision logic is
+# engine/logic/lane-test-guard.js and queued-wait-guard.js over the shared command parser engine/logic/lib/52-lane-waste.js; every
+# list, pattern, number and text is here (D88).
+
+# ---- shared: the command parser ----------------------------------------------------------------------------
+
+[lane_waste.wrappers]
+doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...)."
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
+
+[lane_waste.wrapper_positional]
+doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file)."
+value = { timeout = 1, lockf = 1, flock = 1 }
+
+[lane_waste.prefix_words]
+doc = "Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch)."
+value = ["{", "!", "if", "then", "else", "elif", "do", "while", "until", "time"]
+
+[lane_waste.shells]
+doc = "Shell interpreters whose -c argument is itself a script, so a command inside it still counts."
+value = ["sh", "bash", "zsh", "dash", "ksh"]
+
+[lane_waste.script_flag_re]
+doc = "The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax)."
+value = '^-[A-Za-z]*c[A-Za-z]*$'
+
+[lane_waste.loop_openers]
+doc = "Shell words that open a loop; a command inside one runs repeatedly."
+value = ["while", "until", "for"]
+
+[lane_waste.loop_closer]
+doc = "The shell word that closes a loop."
+value = "done"
+
+[lane_waste.max_depth]
+doc = "How deep the guards follow nested sh -c scripts before they stop looking."
+value = 4
+min = 1
+max = 20
+
+[lane_waste.cmd_max]
+doc = "Characters of the offending command shown in a block message (longer is cut)."
+value = 120
+min = 20
+max = 1000
+
+# ---- lane-test-guard (suite-scale tests) -------------------------------------------------------------------
+
+[lane_test.sw]
+doc = "Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands."
+value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "ANTIHALL_LANE_TEST_GUARD", option = "", default = true }
+
+[lane_test.sw_allow_suites]
+doc = "Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
+value = { section = "guards", key = "allowTestSuites", type = "boolean", env = "ANTIHALL_ALLOW_TEST_SUITES", option = "", default = false }
+
+[lane_test.guard_name]
+doc = "The guard id the lane test guard answers to in skip.json and in its messages."
+value = "lane-test-guard"
+
+[lane_test.summary]
+doc = "One-line description of the lane-test-guard check in the generated reference."
+value = "PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed."
+
+[lane_test.cargo_commands]
+doc = "Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run)."
+value = ["cargo"]
+
+[lane_test.cargo_test_subcommands]
+doc = "The cargo subcommands that run tests. Without a narrowing filter they run the whole suite."
+value = ["test", "t", "nextest"]
+
+[lane_test.cargo_value_flags]
+doc = "Flags of cargo test and nextest that take the next word as their value (so that word is not a test filter)."
+value = ["-j", "--jobs", "-p", "--package", "--features", "-F", "--target", "--target-dir", "--manifest-path", "--profile", "--config", "-Z", "--color", "--message-format", "--cargo-profile", "--build-jobs", "--test-threads", "--partition", "--retries", "--run-ignored", "--archive-file", "--cargo-quiet", "--exclude", "--skip", "--bin", "--example", "--bench"]
+
+[lane_test.cargo_narrow_flags]
+doc = "Flags that narrow a cargo test run to one named target or expression (the next word names it): --test <integration test file>, -E / --filter-expr <nextest filter expression>, --doc is not narrow."
+value = ["--test", "-E", "--filter-expr"]
+
+[lane_test.cargo_suite_flags]
+doc = "Flags that make a cargo test run suite-scale even with a filter word (every package of the workspace)."
+value = ["--workspace", "--all"]
+
+[lane_test.cargo_toolchain_re]
+doc = "A word between cargo and its subcommand that is a toolchain selector (cargo +nightly test), not the subcommand. Regular expression (Rust syntax)."
+value = '^\+\S+$'
+
+[lane_test.nextest_run_words]
+doc = "Words after nextest that run tests and are not a filter (nextest run); the filter comes after them."
+value = ["run", "r"]
+
+[lane_test.nextest_other_words]
+doc = "Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run."
+value = ["list", "archive", "show-config", "self", "help"]
+
+[lane_test.cargo_no_run_flags]
+doc = "Flags that make cargo test only build the test binaries and run nothing: not a suite run."
+value = ["--no-run", "--list", "--help", "-h"]
+
+[lane_test.rules]
+doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message."
+value = [
+  { id = "node-test", label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
+  { id = "npm-test", label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { id = "test-sh", label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
+  { id = "make-test", label = "make test", re = '^make\s(?:\S+\s)*?(?:test|tests|check|gate|replay|soak)(?:\s|$)' },
+  { id = "pytest", label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
+  { id = "flutter-test", label = "flutter test", re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
+  { id = "replay-soak", label = "replay or soak runner", re = '^(?:\S*/)?(?:[\w.-]*[-_.])?(?:replay|soak)(?:[-_.][\w.-]*)?(?:\s|$)' },
+]
+
+[lane_test.msg_what]
+doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
+value = "`{cmd}` is blocked: a subagent does not run suite-scale tests ({label})."
+
+[lane_test.msg_why]
+doc = "Why suite runs are blocked for subagents."
+value = "Suite runs queue behind the shared build lock and keep every waiting agent re-sending its whole context; the 2026-10-23 token burn (about 60% of a weekly limit) was mostly lanes waiting on or re-reading suite runs."
+
+[lane_test.msg_instead]
+doc = "What to do instead."
+value = "run cargo check, commit, verification happens at deploy; a filtered single-module test (`cargo test <module>::`) is allowed."
+
+[lane_test.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "the user sets guards.allowTestSuites, turns the guard off with guards.laneTestGuard, or skips it for a session in skip.json as lane-test-guard."

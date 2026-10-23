@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 mod broad_kill;
+mod lane_waste;
 #[path = "../common/mod.rs"]
 mod common;
 mod event_budgets;

@@ -28,6 +28,7 @@
     "engine-role-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"",
     "git-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
     "inbox-read-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/inbox-read-guard.js\"",
+    "lane-test-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard\"",
     "merge-gate": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
     "merge-side-pick": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "model-routing-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/model-routing-guard.js\"",

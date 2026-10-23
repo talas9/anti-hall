@@ -17,6 +17,7 @@
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
     "engine-role-guard": "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"",
     "git-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
+    "lane-test-guard": "sh \"${PLUGIN_ROOT}/hooks/lane-test-guard\"",
     "merge-gate": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
     "merge-side-pick": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
