@@ -22,6 +22,8 @@ Bash	10	sh "${PLUGIN_ROOT}/hooks/engine-role-guard"
 Bash	10	sh "${PLUGIN_ROOT}/hooks/broad-kill-guard"
 *	10	sh "${PLUGIN_ROOT}/hooks/burn-breaker"
 apply_patch	10	sh "${PLUGIN_ROOT}/hooks/uncommitted-guard"
+Bash	10	sh "${PLUGIN_ROOT}/hooks/queued-wait-guard"
+Bash	10	sh "${PLUGIN_ROOT}/hooks/lane-test-guard"
 @SessionStart	10
 *	10	node "${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-full.js"
 *	10	node "${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-orch.js"

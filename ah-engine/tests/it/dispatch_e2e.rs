@@ -48,7 +48,9 @@ impl Env {
             "procwatch-advisory",
             "engine-role-guard",
             "broad-kill-guard",
-            "burn-breaker",
+            "burn-breaker",,
+            "queued-wait-guard",
+            "lane-test-guard",
         ];
         let m: serde_json::Map<String, serde_json::Value> =
             ids.iter().map(|id| (id.to_string(), outs.iter().find(|(k, _)| k == id).map_or("true".to_string(), |(_, c)| c.to_string()).into())).collect();

@@ -259,6 +259,11 @@ pub static BURN_BREAKER: Scripted = Scripted::new("burn-breaker", "burn.summary"
 
 /// `uncommitted-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only; engine-only): warns and then blocks a subagent whose worktree holds too many uncommitted lines (GH #270).
 pub static UNCOMMITTED_GUARD: Scripted = Scripted::new("uncommitted-guard", "uncommitted.summary");
+/// `queued-wait-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
+pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "queued_wait.summary");
+
+/// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
+pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
 
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");

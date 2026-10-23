@@ -41,6 +41,7 @@ files = [
     "inference.toml",
     "devswarm_role.toml",
     "roles.toml",
+    "lane_waste.toml",
     "broad_kill.toml",
     "burn.toml",
     "uncommitted_guard.toml",

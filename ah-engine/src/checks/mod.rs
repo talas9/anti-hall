@@ -224,6 +224,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::EDIT_GUARD,
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::BROAD_KILL_GUARD,
+        &scripted::QUEUED_WAIT_GUARD,
+        &scripted::LANE_TEST_GUARD,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
         &scripted::DEVSWARM_COMMS_GUARD,

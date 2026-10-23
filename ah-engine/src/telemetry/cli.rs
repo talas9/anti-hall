@@ -64,6 +64,9 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             } else {
                 report::summary_json(tel.as_ref(), None, days, now_ms())
             };
+            if sub == "summary" {
+                v["agent_cost"] = crate::agents::cost_report();
+            }
             v["from"] = json!("files");
             v["running"] = json!(false);
             (v, 0)

@@ -402,6 +402,8 @@ mod tests {
                 "engine-role-guard",
                 "broad-kill-guard",
                 "burn-breaker"
+                "queued-wait-guard",
+                "lane-test-guard"
             ]
         );
         let glob: Vec<String> = select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None).into_iter().map(|e| e.id).collect();
