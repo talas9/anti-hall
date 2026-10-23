@@ -38,6 +38,8 @@ pub struct Model {
     pub decisions_seq: u64,
     pub mesh_after: i64,
     pub mesh_reads_after: i64,
+    /// False until the first poll has been folded in: a tab connecting before it would be shown an engine that "does not answer".
+    pub ready: bool,
 }
 
 impl Model {
@@ -57,11 +59,13 @@ impl Model {
             decisions_seq: 0,
             mesh_after: -1,
             mesh_reads_after: 0,
+            ready: false,
         }
     }
 
     /// Fold one poll's findings in; the change (if any) becomes the next sequence number.
     pub fn commit(&mut self, f: Found) {
+        self.ready = true;
         let mut d = Delta::default();
         if let Some(ok) = f.engine_ok.filter(|ok| *ok != self.engine_ok) {
             self.engine_ok = ok;

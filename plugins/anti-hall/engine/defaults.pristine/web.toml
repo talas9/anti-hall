@@ -78,20 +78,20 @@ max = 65535
 doc = "The tier the page starts in: auto (full unless the browser asks for reduced motion), full, or lite (no animation, a lower rate, static styling). The header toggle changes it live and the browser remembers the choice."
 value = "auto"
 
-[web.full_push_hz]
-doc = "Changes pushed per second to a tab in the full tier (never above web.push_hz_max)."
-value = 2.0
-min = 0.1
+[web.full_push_ms]
+doc = "Milliseconds between pushes to a tab in the full tier (500 = 2 per second; never below web.push_min_ms)."
+value = 500
+min = 100
 
-[web.lite_push_hz]
-doc = "Changes pushed per second to a tab in the lite tier."
-value = 0.2
-min = 0.05
+[web.lite_push_ms]
+doc = "Milliseconds between pushes to a tab in the lite tier (5000 = one every 5 seconds)."
+value = 5000
+min = 500
 
-[web.push_hz_max]
-doc = "Hard ceiling of the push rate and of how often the engine is asked."
-value = 2.0
-min = 0.1
+[web.push_min_ms]
+doc = "Hard floor of the time between pushes and between asking the engine (500 = at most 2 per second)."
+value = 500
+min = 100
 
 [web.ctl_timeout_ms]
 doc = "A request to the engine's control socket that takes longer than this is abandoned (the last data stays on screen)."
@@ -110,6 +110,16 @@ min = 2
 
 [web.pulse_min_interval_ms]
 doc = "How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed."
+value = 2000
+min = 250
+
+[web.agents_poll_ms]
+doc = "How often the engine is asked whether the agent list changed (a request that finds it unchanged costs one stat)."
+value = 1000
+min = 250
+
+[web.decisions_poll_ms]
+doc = "How often the engine is asked for new check decisions (the activity feed)."
 value = 2000
 min = 250
 
@@ -179,12 +189,12 @@ value = 160
 min = 20
 
 [web.actions]
-doc = "The agent action menu, in order. name: sent to the server; label: key of the page's text table; confirm: the page asks first; local: no engine call (opens the details); args: the engine arguments, {id} is the agent's id. Every engine action is audited by the engine."
+doc = "The agent action menu, in order. name: sent to the server; label: key of the page's text table; confirm: the page asks first; local: no engine call (opens the details); done: the sentence shown on success, with the verb's own numbers in {braces}; args: the engine arguments, {id} is the agent's id. Every engine action is audited by the engine."
 value = [
-  { name = "details", label = "act_details", confirm = false, local = true, args = [] },
-  { name = "progress", label = "act_progress", confirm = false, local = false, args = ["agents", "send", "{id}", "--progress-request", "--json"] },
-  { name = "ping", label = "act_ping", confirm = false, local = false, args = ["agents", "send", "{id}", "--ping", "--json"] },
-  { name = "stop", label = "act_stop", confirm = true, local = false, args = ["agents", "send", "{id}", "--stop-request", "--json"] },
+  { name = "details", label = "act_details", confirm = false, local = true, done = "", args = [] },
+  { name = "progress", label = "act_progress", confirm = false, local = false, done = "Progress requested. {backlog} waiting for the agent; it sees them at its next prompt.", args = ["agents", "send", "{id}", "--progress-request", "--json"] },
+  { name = "ping", label = "act_ping", confirm = false, local = false, done = "Heartbeat checked. Agent live: {live}, {backlog} waiting.", args = ["agents", "send", "{id}", "--ping", "--json"] },
+  { name = "stop", label = "act_stop", confirm = true, local = false, done = "Stop requested. {backlog} waiting for the agent; it sees them at its next prompt.", args = ["agents", "send", "{id}", "--stop-request", "--json"] },
 ]
 
 [web.detail_skip_keys]
@@ -210,6 +220,10 @@ value = "The engine did not answer in time."
 [web.msg_action_failed]
 doc = "Said when the verb failed without a message."
 value = "The action failed."
+
+[web.coverage]
+doc = "Which dashboard screen shows which engine feature, for `ah-engine describe --coverage` (the header badge counts what no screen covers). Screen to selectors; a selector is `kind:name` with `*` as a wildcard. Kinds: verbs, checks, settings, files, jobs, jev, switches, sources."
+value = { agents = ["verbs:agents", "verbs:mesh", "verbs:proj", "verbs:devswarm", "verbs:handovers", "verbs:gh"], pipeline = ["checks:*", "jobs:*", "verbs:check", "verbs:hook", "verbs:gen-hooks", "verbs:schedule"], health = ["verbs:status", "verbs:doctor", "verbs:diag", "verbs:units", "verbs:proc", "verbs:serve", "verbs:stop", "verbs:reset", "verbs:web", "verbs:statusline", "verbs:capability-scan", "verbs:harvest", "verbs:briefing", "verbs:mcp-reaper", "verbs:codex-limit-status"], telemetry = ["verbs:telemetry", "verbs:metrics", "verbs:defect", "sources:*"], impact = ["verbs:impact", "verbs:dispatch-report", "verbs:finding-dedup", "verbs:coordinator-work-baseline"], manage = ["settings:*", "files:*", "switches:*", "verbs:settings", "verbs:config", "verbs:docs", "verbs:describe", "verbs:query", "verbs:phase", "verbs:auto-handover-config"], jev = ["jev:*", "verbs:jev", "verbs:jev-setup", "verbs:jev_sweep", "verbs:jev-report"], updates = ["verbs:version", "verbs:update", "verbs:engine-update", "verbs:install-codex", "verbs:install-statusline", "verbs:uninstall-statusline", "verbs:migrate", "verbs:refresh", "verbs:maintain", "verbs:backup", "verbs:restore"] }
 
 [web.sse_keepalive_s]
 doc = "Interval of the keep-alive comment on the event stream."

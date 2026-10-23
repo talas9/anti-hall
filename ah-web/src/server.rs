@@ -183,14 +183,17 @@ async fn stream(State(app): State<Shared>, Query(q): Query<StreamQuery>, headers
     if app.polling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
         tokio::spawn(data::poll(app.clone()));
     }
-    let hz = if lite { s.lite_push_hz } else { s.full_push_hz }.min(s.push_hz_max).max(0.01);
-    let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / hz));
+    let ms = if lite { s.lite_push_ms } else { s.full_push_ms }.max(s.push_min_ms);
+    let mut tick = tokio::time::interval(Duration::from_millis(ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last: Option<u64> = None;
     let events = IntervalStream::new(tick).filter_map(move |_| {
         let _held = &guard;
         let out = {
             let m = guard.0.model();
+            if !m.ready {
+                return None;
+            }
             match last {
                 None => Out::Snapshot(m.snapshot()),
                 Some(n) => m.since(n),
@@ -222,11 +225,14 @@ fn res(ok: bool, outcome: &str, message: String) -> Response {
 
 /// `POST /api/action`: run one menu action on one agent as an engine verb (the engine audits it). Actions that ask first are refused
 /// until the request says the person confirmed.
-async fn action(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<ActionReq>) -> Response {
+async fn action(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
     let s = app.settings();
+    let Ok(req) = serde_json::from_slice::<ActionReq>(&body) else {
+        return res(false, "refused", s.msg_action_unknown.clone());
+    };
     let Some(def) = s.actions.iter().find(|a| a.name == req.action) else {
         return res(false, "refused", s.msg_action_unknown.clone());
     };
@@ -254,7 +260,18 @@ async fn action(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<A
     let ok = body.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
     let text = |k: &str| body.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
     if ok {
-        let note = body.get("result").map(|r| r.to_string()).unwrap_or_default();
+        // the sentence from the menu entry, with the verb's own numbers filled in ({backlog}, {live}, ...)
+        let result = body.get("result").and_then(serde_json::Value::as_object);
+        let note = result.map_or_else(String::new, |r| {
+            r.iter().fold(def.done.clone(), |t, (k, v)| {
+                let text = match v {
+                    serde_json::Value::String(x) => x.clone(),
+                    serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => String::new(),
+                    other => other.to_string(),
+                };
+                t.replace(&format!("{{{k}}}"), &text)
+            })
+        });
         res(true, "done", note.chars().take(s.action_note_max_chars).collect())
     } else {
         res(false, &text("outcome").unwrap_or_else(|| "failed".into()), text("error").unwrap_or_else(|| s.msg_action_failed.clone()))
