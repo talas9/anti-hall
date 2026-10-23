@@ -235,7 +235,7 @@ min = 1
 # ---- compact-declaration-guard --------------------------------------------------------
 
 [compact_decl_v1.declaration_forms]
-doc = "Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 \"safe to compact\" and 2 \"safe for a reset\"; the pause nag's mandated \"good point to /compact\" footer and a bare /compact command do not."
+doc = "Which of the recommendation patterns of the compact-advice rule (its advice list, by position) count as a declaration for this guard: 0 \"safe to compact\" and 2 \"safe for a reset\"; the pause nag's mandated \"good point to /compact\" footer and a bare /compact command do not."
 value = [0, 2]
 
 [compact_decl_v1.this_tool]

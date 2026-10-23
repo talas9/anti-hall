@@ -9,7 +9,7 @@ value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a 
 
 [devswarm_role.gate_summary]
 doc = "One-line description of the devswarm-parent-gate check in the generated reference."
-value = "Stop: the DevSwarm Primary gate (port of devswarm-parent-gate.js, decided in engine/logic/devswarm-parent-gate.js): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written."
+value = "Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswarm-parent-gate logic file): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written."
 
 [devswarm_role.gate_guard]
 doc = "The skip-file name of the parent gate."

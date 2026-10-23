@@ -172,11 +172,11 @@ value = 3600
 unit = "s"
 min = 1
 
-[web.manage.msg_audit_not_written]
+[webapi.msg_audit_not_written]
 doc = "The note a settings or rules change carries when its audit row could not be written and no other note exists. Placeholder: err."
 value = "audit not written: {err}"
 
-[web.manage.msg_audit_not_written_after]
+[webapi.msg_audit_not_written_after]
 doc = "The note when the audit row could not be written and the change already carries a note. Placeholders: note (the existing note), err."
 value = "{note}; audit not written: {err}"
 

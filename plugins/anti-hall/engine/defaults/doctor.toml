@@ -101,7 +101,7 @@ doc = "The flag that adds the central-log section (the Node doctor's --logs)."
 value = "--logs"
 
 [doctor.logs_dir_env]
-doc = "The environment variable that overrides the central log directory (the logger's own override, companion/lib/anti-hall-log.js)."
+doc = "The environment variable that overrides the central log directory (the logger's own override)."
 value = "ANTI_HALL_LOG_DIR"
 
 [doctor.logs_dir]
@@ -1482,11 +1482,11 @@ value = "Codex hooks.json ({label}) has anti-hall hooks registered"
 
 [doctor_msg.codex_unwired]
 doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
-value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js"
+value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-engine install-codex`"
 
 [doctor_msg.codex_missing]
 doc = "There is no Codex hooks file. Placeholder: {label}."
-value = "Codex hooks.json ({label}) missing — run plugins/anti-hall/codex/install-codex.js"
+value = "Codex hooks.json ({label}) missing — run `ah-engine install-codex`"
 
 [doctor_msg.head_foreign]
 doc = "The heading of the other-plugins section."

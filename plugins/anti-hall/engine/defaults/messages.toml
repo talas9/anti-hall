@@ -1172,7 +1172,7 @@ value = "already current: the live kit bundle holds this exact engine{plugin} (s
 
 [msg.updater_live_golive]
 doc = "Placeholders: {bundle}, {failed}, {log}, {kit}, {select}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
-value = "the live kit could not apply the new bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the new one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run again; to re-apply the current bundle by hand: sh {kit}/go-live.sh {select}"
+value = "the live kit could not apply the new bundle (the go-live step exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the new one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run again; to re-apply the current bundle by hand, run the kit's go-live step again ({kit}, {select})"
 
 [msg.updater_live_updated]
 doc = "Placeholders: {version}, {plugin_note}, {aside}."
@@ -1260,7 +1260,7 @@ value = "cannot restore {prev} as the live bundle\nrolled back: the bundle that 
 
 [msg.updater_rb_live_golive]
 doc = "Placeholders: {bundle}, {failed}, {log}, {kit}, {select}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
-value = "the live kit could not re-apply the previous bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the previous one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run ah-hook update --rollback again; to re-apply the current bundle by hand: sh {kit}/go-live.sh {select}"
+value = "the live kit could not re-apply the previous bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the previous one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run ah-hook update --rollback again; to re-apply the current bundle by hand, run the kit's go-live step again ({kit}, {select})"
 
 [msg.updater_rb_live_none]
 doc = "Placeholder: {kit}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."

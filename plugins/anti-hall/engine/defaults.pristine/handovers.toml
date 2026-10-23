@@ -492,7 +492,7 @@ value = "no handover index yet; run `{cmd}` first"
 
 [handovers.msg_script_failed]
 doc = "Printed by the CLI when the handover script could not answer. Placeholder: {why}."
-value = "the handover-hygiene script could not run ({why}); the plugin's engine/logic/handover-hygiene.js is missing, broken or switched off (script.enabled)"
+value = "the handover-hygiene script could not run ({why}); the plugin's handover-hygiene logic file (engine/logic/handover-hygiene) is missing, broken or switched off (script.enabled)"
 
 # ---- rendering ---------------------------------------------------------------------------------------------------
 
