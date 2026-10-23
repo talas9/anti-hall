@@ -61,12 +61,13 @@ Every command accepts `--json`. Read-only commands never change state.
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention), `actions [feature]` (what the acting features did and got wrong: action counts, success rate, mistake signals and mistake rate; `--mistake <feature> <action> <target> <kind>` records one the engine cannot see, such as a dismissed escalation). Local only. |
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take an older anti-hall status line out of the host's settings: restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
-| `update` | `[--check] [--post-pull-only]` | no | implemented | Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
+| `update` | `[--check] [--post-pull-only] \| --from-local <dir> [--engine-bin F] [--hook-bin F] [--tree D] [--source release\|local\|manual] [--check] [--yes] [--force] \| --rollback [--deploy-dir D] [--yes]` | no | implemented | Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history is a hard STOP, offline fails open), a copy of the plugin into a new version-pinned cache directory, the harness's own `claude plugin update` when its registry is behind (bounded, never answering a confirmation; installed_plugins.json is only read), the changelog delta, then one JSON status line and a human summary. `--check` only compares versions (with --json it adds an `engine` object: the running build version, its sha, where it came from - release, local build or manual - and the latest GitHub release). `--from-local <dir>` and `--rollback` run the ONE install routine (pre-check, rollback copy, install, settle, validate, automatic rollback on failure, cleanup, install record); a downgrade needs --force. The DevSwarm store sweeps and the settings migration still run by the plugin's own update.js --post-pull-only and are merged into the status. |
 | `version` | `` | yes | implemented | Print the version this build reports. |
 | `web` | `[open\|status] [--no-open] [--json]` | no | implemented | The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token, serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled. |
 | `mcp-reaper` | `run [--dry-run]` | no | implemented | The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every mcp_reaper.job_every_ms), `--dry-run` logs what it would reap and signals nothing. It does nothing while maintenance.mcpReaperJob is off, on auto until the Node reaper's opt-in was carried over (`ah-engine units heal`), and while a Node reaper unit is still installed, so the reaper never runs twice. Prints one JSON line. |
 | `refresh` | `[--force] [--home <dir>]` | no | implemented | Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert), the Claude Code and DevSwarm CLI versions (the drift probes) and the reload repair (repair-on-reload), each as a bounded subprocess; `--force` runs every probe whether requested or not (never the repair unless requested). Prints one result per probe. The scheduler runs it every refresh.every_ms. |
 | `engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` | no | implemented | Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] \| --channel stable\|dev \| --rollback \| --auto \| --dry-run). The engine itself does no network access. |
+| `post-update-check` | `[--dry-run] [--expect-sha <sha256>]` | no | implemented | The step every update ends with: verify exactly one live engine runs the installed binary (sha, path, answers status and a ping inside its budget), stop stale and scratch daemons and duplicate watchers by verified pid (never pkill), let watchers on a replaced binary re-execute themselves, report servers on an old binary, and clean old binary copies, dead pid files, a dead socket and dead temp files. --dry-run reports and changes nothing. Exit 0 verified, 1 not. |
 | `units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` | no | implemented | The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their duty; `install` writes (or refreshes) the one unit that keeps `ah-engine serve` running (launchd on macOS, a systemd user service and timer on Linux) and loads it; `heal` installs and then retires each Node unit whose duty the engine runs (the MCP reaper when its job is on, the DevSwarm supervisor and ingest when devswarm_sup.mode / devswarm_ingest.mode is engine); `uninstall` unloads the engine unit. `--dry-run` reports and changes nothing; `--bin <path>` names the engine binary the unit runs. A removed unit file is moved into the state directory, never deleted. A retired unit that comes back is recorded as a mistake and left alone. |
 | `codex-activate` | `` | no | implemented | Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the anti-hall-activate skill leaves after installing the hooks; it changes no real configuration and deleting it is harmless. |
 | `codex-limit-status` | `` | yes | implemented | Print whether limit conservation is active, as JSON (active, reason, weekly, fiveHour, sonnetWeekly, source, stale, resetsAt): the Codex skill anti-hall-context-conserve runs it. Same decision as the limit-conserve-inject hook: the limitConserve.mode setting (on, off, auto), else the OMC usage cache with the threshold, the reset-aware and snapshot-age rules and the account-switch guard. Read-only apart from the account-switch state file the hook keeps current. Fail-open: an unreadable cache is inactive. |
@@ -96,22 +97,27 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--days` | `devswarm`, `jev-report`, `jev-setup`, `shadow-compare` | Look-back window in days, or the snooze length for `jev-setup snooze`. |
 | `--db` | `mesh` | Path of a DevSwarm database to read instead of the live one (`mesh`; makes the verb read-only). |
 | `--debug` |  | Turns debug mode (diagnostics.debug_mode) on for one `serve` or `hook` process. |
+| `--deploy-dir` | `update` | undocumented |
 | `--dir` | `harvest` | Directory to scan (`harvest`). |
-| `--dry-run` | `devswarm`, `doctor`, `install-codex`, `migrate`, `mcp-reaper`, `engine-update`, `units` | Show what would change and write nothing. |
+| `--dry-run` | `devswarm`, `doctor`, `install-codex`, `migrate`, `mcp-reaper`, `engine-update`, `post-update-check`, `units` | Show what would change and write nothing. |
+| `--engine-bin` | `update` | undocumented |
 | `--event` | `hook`, `shadow-compare` | The hook event name to dispatch (`hook --event`). |
+| `--expect-sha` | `post-update-check` | undocumented |
 | `--fallback` | `hook`, `jev-setup` | The fallback transport of the Jev classifier (`jev-setup enable`). Older versions of `hook` took a Node script here; it is ignored now. |
 | `--fallback-map` | `hook` | File that maps hook entries to their Node fallback commands (`hook --event`). |
 | `--fetch` |  | Run `git fetch --quiet` before the checks (`devswarm ready-check`). |
 | `--file` | `finding-dedup` | Read the input from this file instead of stdin. |
 | `--fix` | `doctor` | Same as `--repair` (`doctor`). |
 | `--for` | `ctl` | How long a runtime switch stays on (`ctl profile on --for 10m`: a number with an optional ms, s, m or h suffix; a bare number is seconds). |
-| `--force` | `devswarm`, `gh`, `handovers`, `refresh` | Go past the usual skip: `gh poll` polls now, `handovers index` rebuilds every day, `devswarm register-primary` overrides the existing registration. |
+| `--force` | `devswarm`, `gh`, `handovers`, `update`, `refresh` | Go past the usual skip: `gh poll` polls now, `handovers index` rebuilds every day, `devswarm register-primary` overrides the existing registration. |
 | `--format` | `docs` | Output format; `md` prints the Markdown reference (`docs`). |
 | `--from` | `engine-update` | Install from this local file, a release .tar.gz or a bare engine binary (`engine-update`). |
 | `--from-line` | `coordinator-work-baseline` | First transcript line to replay (`coordinator-work-baseline`). |
+| `--from-local` | `update` | undocumented |
 | `--glob` | `devswarm` | Path glob a workspace is allowed to touch (`devswarm scope add`). |
 | `--global` | `install-codex` | Install into the home directory instead of the current project (`install-codex`). |
 | `--home` | `audit`, `doctor`, `migrate`, `refresh` | Home directory to use instead of the real one (scratch-HOME runs). |
+| `--hook-bin` | `update` | undocumented |
 | `--host` | `docs`, `gen-hooks`, `hook` | The host the output is for: `claude` or `codex`. |
 | `--id` | `devswarm` | Workspace id (`devswarm`, `mesh`). |
 | `--job` | `schedule` | Name of one scheduled job (`schedule`). |
@@ -152,7 +158,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--repair-test-stores` | `doctor` | Add the report section that previews moving test stores out of the live state; with `--apply` it does so (`doctor`). |
 | `--request` | `devswarm` | Request id that makes a repeated owner action idempotent (`devswarm`). |
 | `--role` | `jev-setup` | Which key to set; only `fallback` (`jev-setup`). |
-| `--rollback` | `engine-update` | Restore the previous engine binary; run twice to toggle (`engine-update`). |
+| `--rollback` | `update`, `engine-update` | Restore the previous engine binary; run twice to toggle (`engine-update`). |
 | `--rollup` | `metrics` | Show the stored rollups of one resolution (minute or hour) (`metrics`). |
 | `--root` | `audit`, `briefing`, `capability-scan`, `install-codex` | Plugin tree to inspect or install from (`capability-scan`, `briefing`, `install-codex`). |
 | `--schema` | `query` | Show the row fields of one source instead of its rows (`query`). |
@@ -162,6 +168,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--set` | `devswarm` | Comma-separated gates to set (`devswarm gate`). |
 | `--sha256` | `engine-update` | Expected sha256 of the `--from` file (64 lowercase hex digits); without it the SHA256SUMS next to the file, then the plugin's ah-engine.lock decide (`engine-update`). |
 | `--since` | `devswarm`, `mesh`, `metrics`, `query` | Only entries from this point on: a number of seconds, or a message sequence for `mesh`. |
+| `--source` | `update` | undocumented |
 | `--stale-days` | `harvest` | A file untouched this many days counts as stale (`harvest`). |
 | `--steps` |  | The plan's numbered steps as text (`mesh plan set`). |
 | `--steps-file` |  | Read the plan's steps from a file instead of `--steps` (`mesh plan set`). |
@@ -172,6 +179,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--to` | `backup`, `devswarm` | Destination: a directory (`backup`) or a workspace id (`devswarm relay`). |
 | `--tool` | `hook` | The tool name of the hook event (`hook --event`). |
 | `--transport` | `jev-setup` | Gateway transport for the Jev classifier: `vercel` or `typesafe` (`jev-setup`). |
+| `--tree` | `update` | undocumented |
 | `--ttl` | `devswarm` | How long the skip lasts, in minutes (`devswarm skip`). |
 | `--user` | `uninstall-statusline` | The user-level settings file (`uninstall-statusline`). |
 | `--vendor` | `jev-setup` | Gateway vendor: `vercel` or `typesafe` (`jev-setup`). |
@@ -180,7 +188,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--where` | `query` | Keep the rows whose fields equal the values: `field=value,field=value` (`query`). |
 | `--window` | `impact`, `jev-report`, `query`, `telemetry` | Time window such as `24h` or `7d`. |
 | `--worktree` | `devswarm` | Worktree path of a workspace (`devswarm`). |
-| `--yes` | `devswarm`, `engine-update` | Confirm the action. Without it the verb only plans or does a dry run (`devswarm`). |
+| `--yes` | `devswarm`, `update`, `engine-update` | Confirm the action. Without it the verb only plans or does a dry run (`devswarm`). |
 
 ## Environment variables
 
@@ -930,10 +938,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `updater.download_base` | `https://github.com/talas9/anti-hall/releases/download` |  |  | Base URL of the release downloads: <base>/<tag>/<file>. |
 | `updater.download_timeout_s` | `180` |  | s | Total time limit of a download. |
 | `updater.download_url` | `{base}/{tag}/{name}` |  |  | URL of one release file. Placeholders: {base}, {tag}, {name}. |
+| `updater.engine_flag_force` | `--force` |  |  | The engine flag that allows a downgrade (passed through from `ah-hook update --force`). |
+| `updater.engine_flag_from_local` | `--from-local` |  |  | The engine flag that names the directory holding the binaries to install. |
+| `updater.engine_flag_source` | `--source` |  |  | The engine flag that names where the build came from (recorded in the install record). |
+| `updater.engine_flag_yes` | `--yes` |  |  | The engine flag that makes the routine act (without it, it only plans). |
 | `updater.engine_verb_serve` | `serve` |  |  | The engine verb that starts the daemon. |
 | `updater.engine_verb_status` | `status` |  |  | The engine verb that probes the daemon. |
 | `updater.engine_verb_stop` | `stop` |  |  | The engine verb that tells a running daemon to exit. |
+| `updater.engine_verb_update` | `update` |  |  | The engine verb that runs the install routine. The updater, after it has fetched and verified a build, hands the binaries to the NEW engine's `update --from-local <staging dir> --source <word> --yes`. |
 | `updater.engine_verb_version` | `version` |  |  | The engine verb that prints its version (the smoke test). |
+| `updater.engine_version_json_args` | `version, --json` |  |  | Arguments with which an engine binary reports its version and features as JSON. |
 | `updater.excerpt_chars` | `400` |  |  | How many characters of a failed command's output a log line quotes. |
 | `updater.file_checked` | `update.checked` |  |  | Time of the last automatic check (epoch seconds), inside the state directory. |
 | `updater.file_installed` | `update.installed` |  |  | Record of the last update (epoch, source, sha256), inside the state directory. |
@@ -946,6 +960,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `updater.git_timeout_s` | `240` |  | s | Hard limit for the git fetch of the live kit's plugin files. |
 | `updater.git_url` | `https://github.com/talas9/anti-hall.git` |  |  | The repository URL the live kit's plugin files are fetched from. |
 | `updater.go_live_timeout_s` | `600` |  | s | Hard limit for the live kit's go-live script. rollback.lock_stale_s must stay longer. |
+| `updater.install_record_file` | `install.json` |  |  | The install record the routine writes in the state directory ({version, sha, source, ...}); the automatic updater reads its `source`. |
+| `updater.install_source_file` | `manual` |  |  | The source recorded for a build given as an offline file (`--from FILE`). |
+| `updater.install_source_release` | `release` |  |  | The source recorded for a build downloaded from a release channel and verified. |
 | `updater.installed_live` | `live` |  |  | Word that marks an update done through the live kit in the update record. |
 | `updater.kill_grace_s` | `2` |  | s | How long a timed-out command gets after TERM before it is killed. |
 | `updater.kit_bundle` | `bundle` |  |  | The live kit's bundle directory. |
@@ -973,12 +990,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `updater.releases_url` | `{api}/repos/{repo}/releases?per_page={per_page}` |  |  | The release list URL. Placeholders: {api}, {repo}, {per_page}. |
 | `updater.repo` | `talas9/anti-hall` |  |  | The GitHub repository the releases come from. |
 | `updater.restart_pause_ms` | `1000` |  | ms | Pause between stopping the old daemon, starting the new one and each status probe. |
+| `updater.routine_feature` | `install-routine` |  |  | The feature word an engine build lists in `version --json` (`features`) when it has the install routine. The updater hands the staged build to an engine only when it lists this word; an older build's `update` is a different command. |
 | `updater.run_timeout_s` | `20` |  | s | Hard limit for one command the updater runs (smoke test, extract); a child that ignores TERM is killed updater.kill_grace_s later. |
 | `updater.selftest_engine_flag` | `--engine` |  |  | The launcher argument that names the engine to self-test with. |
 | `updater.selftest_flag` | `--selftest` |  |  | The launcher argument that runs its self-test. |
 | `updater.setting_auto_words` | `autoUpdate, auto_update` |  |  | Spellings of the engine.autoUpdate key in the settings file. |
 | `updater.setting_section` | `engine` |  |  | Section of the engine.autoUpdate setting in the user settings file. |
 | `updater.src_sha_arg` | `--sha256` |  |  | How the --sha256 argument is named in the verified line. |
+| `updater.stage_dir` | `stage` |  |  | Name, inside the updater's scratch directory, of the staging directory handed to the install routine (the engine and the thin client under their release member names). |
 | `updater.stale_lock_s` | `600` |  | s | The updater's own lock (one update at a time) older than this is taken over. |
 | `updater.status_tries` | `10` |  |  | How many times the new daemon is probed with `status` after a restart. |
 | `updater.sums_asset` | `SHA256SUMS` |  |  | Name of the checksum file published with every release. |
@@ -11594,6 +11613,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.diag_no_home` | `[wake-watch] no home directory; exiting.\n` |  |  | Printed (stderr) when no home directory can be found; exit 1, as Node's uncaught `os.homedir()` failure does. |
 | `wake_watch.diag_no_identity` | `[wake-watch] could not resolve a DevSwarm identity for cwd={cwd}; exiting qui...` |  |  | Printed on stderr when DevSwarm is active but no identity resolves. {cwd}. |
 | `wake_watch.diag_not_devswarm` | `[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n` |  |  | Printed on stderr when the session shows no sign of DevSwarm. |
+| `wake_watch.diag_rebin_failed` | `[wake-watch] cannot restart from the replaced binary {path}: {why}; re-arm th...` |  |  | Printed (stderr) when the watcher could not re-execute the replaced binary; it ends (exit 1) and must be re-armed. {path}, {why}. |
 | `wake_watch.diag_restamp_stale` | `[wake-watch] lock restamp failed transiently for longer than the lock stale t...` |  |  | Printed on stderr when the lock could not be re-stamped for longer than it stays valid. |
 | `wake_watch.diag_restamp_transient` | `[wake-watch] lock restamp failed transiently (not lock loss) - retrying next ...` |  |  | Printed once on stderr when the lock could not be re-stamped for a transient reason. |
 | `wake_watch.dir_archive_ignore` | `archive-ignore` |  |  | The directory of the owner's per-workspace archive-ignore markers, under the DevSwarm state directory. |
@@ -11604,6 +11624,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.env_active_max_age` | `ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS` |  |  | The variable that overrides how old the active-list cache may be and still be believed (a positive integer, milliseconds). |
 | `wake_watch.env_archived_recheck` | `ANTIHALL_DEVSWARM_WAKE_WATCH_ARCHIVED_RECHECK_MS` |  |  | Test knob: overrides the archived re-check interval (milliseconds). |
 | `wake_watch.env_handoff` | `ANTIHALL_WAKE_WATCH_HANDED_OFF` |  |  | Set by a watcher that hands over to a newer build: the version it handed over to, so a chain of handoffs only ever moves forward. |
+| `wake_watch.env_rebin` | `AH_WAKE_WATCH_REBIN` |  |  | Environment variable a watcher sets (to the time, seconds since the epoch) on the successor it starts after its engine binary was replaced; the post-update check reads it to tell a watcher that already re-executed from one still on the old image. |
 | `wake_watch.env_source_branch` | `DEVSWARM_SOURCE_BRANCH` |  |  | The variable whose non-blank value marks a DevSwarm child workspace. |
 | `wake_watch.err_prefix_broadcast` | `broadcast: ` |  |  | Start of a read error of the broadcast channel when it is the only failing one. |
 | `wake_watch.err_prefix_mesh` | `mesh-direct: ` |  |  | Start of a read error of the mesh-direct channel. |
@@ -11637,6 +11658,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.line_idle_skip` | `[wake-watch] idle-skip: no live child workspaces - not arming. Arm this watch...` |  |  | Printed once, then the watcher exits 0, when a Primary has no live child workspace (the idle-skip). One stdout line wakes the session, so it says what to do next. |
 | `wake_watch.line_lock_lost` | `[wake-watch] LOCK LOST: {reason}` |  |  | Printed on stderr when another watcher took the lock over. {reason}. |
 | `wake_watch.line_parent_gone` | `[wake-watch] parent gone — exiting` |  |  | Printed on stderr when the process that started the watcher is gone. |
+| `wake_watch.line_rebin` | `[wake-watch] engine binary replaced, restarting from {path}` |  |  | The watcher re-executed itself because its engine binary was replaced (its output continues on the same stream). {path}. |
 | `wake_watch.line_refused` | `[wake-watch] REFUSED TO ARM: {reason}` |  |  | Printed when the watcher declines to arm (a model-armed watcher always; an auto-started one only for an anomaly). {reason} is one of the closed reasons. |
 | `wake_watch.line_stale` | `[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {...` |  |  | A newer build is installed and its watcher script exists, but the watcher may not hand over: the re-arm instruction, then exit. {role} {id} {own} {newest} {script}. |
 | `wake_watch.line_update_registered` | `[wake-watch] update available: anti-hall {newest} is registered, but no cache...` |  |  | A newer version is registered but not yet copied into the cache: say so once and keep running. {role} {id} {own} {newest}. |
@@ -11661,6 +11683,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.reason_identity` | `identity-unresolved` |  |  | Refusal reason (closed vocabulary): no DevSwarm identity could be resolved. |
 | `wake_watch.reason_lock_held` | `lock-held` |  |  | Refusal reason (closed vocabulary): another watcher holds the lock. |
 | `wake_watch.reason_not_devswarm` | `not-a-devswarm-session` |  |  | Refusal reason (closed vocabulary): the session is not a DevSwarm session. |
+| `wake_watch.rebin_enabled` | `1` |  |  | 1: a watcher whose engine binary on disk was replaced (a deploy or an update) re-executes itself with the same arguments, so a fix takes effect without a manual re-arm. 0: it keeps running the binary it started from. |
 | `wake_watch.registry_plugins_field` | `plugins` |  |  | The registry member that maps `<plugin>@<marketplace>` to its install records. |
 | `wake_watch.replacement_escape` | `�` |  |  | The JSON escape a lone surrogate escape is rewritten to before parsing (the strict parser refuses it, JavaScript reads it). |
 | `wake_watch.repos_root_re` | `[\\/]\.devswarm[\\/]repos[\\/]` |  |  | Regex source: a worktree under the DevSwarm repos root, the only kind the supervisor's active list can call archived. |
@@ -11751,6 +11774,198 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `job.engine_update` | `11 entries` |  |  | Automatic engine update check: runs `ah-engine engine-update --auto --json` as a subprocess. A no-op unless the setting engine.autoUpdate is stable or dev; the script limits itself to one check a day. Off when engine_update.every_ms is 0. |
+
+### post_update.toml / post_update
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `post_update.artifact_min_age_s` | `300` |  | s | An old binary copy is cleaned only when it is older than this. |
+| `post_update.artifact_names` | `ah-engine, ah-hook` |  |  | Binary names whose old copies (`<name>.<anything>`) in the binary directory are cleaned. |
+| `post_update.change_slack_s` | `2` |  | s | A binary file counts as replaced after a process started only when it changed more than this many seconds later. |
+| `post_update.engine_names` | `ah-engine` |  |  | Program names of the engine binary in a process listing. |
+| `post_update.flag_dry_run` | `--dry-run` |  |  | Report what would be done, change nothing. |
+| `post_update.flag_expect_sha` | `--expect-sha` |  |  | The sha256 the installed engine binary must have (default: the recorded .expected file). |
+| `post_update.grace_ms` | `3000` |  | ms | How long a stopped process gets to exit after TERM before KILL. |
+| `post_update.home_token` | `{home}` |  |  | The placeholder for the home directory in scratch_roots. |
+| `post_update.how_failed` | `failed` |  |  | A stop or removal that did not work. |
+| `post_update.how_gone` | `already gone` |  |  | The process was already gone. |
+| `post_update.how_kill` | `stopped (KILL after grace)` |  |  | Stopped by KILL after the grace. |
+| `post_update.how_removed` | `removed` |  |  | A file was removed. |
+| `post_update.how_term` | `stopped (TERM)` |  |  | Stopped by TERM. |
+| `post_update.how_would_remove` | `would be removed` |  |  | A dry run would remove a file. |
+| `post_update.how_would_stop` | `would be stopped` |  |  | A dry run would stop a process. |
+| `post_update.how_would_wait` | `would get a settle window to re-execute` |  |  | A dry run would wait for a watcher to re-execute. |
+| `post_update.keep_suffixes` | `.prev, .good, .good.sha256, .expected, .accepted` |  |  | Copies with these suffixes (after the binary name) are never cleaned: the previous binary, the known-good copy and the integrity records. |
+| `post_update.kill_wait_ms` | `300` |  | ms | Wait after KILL before checking the process is gone. |
+| `post_update.line_cleaned` | `  {path}: {reason} -> {state}` |  |  | An artifact was cleaned. {path}, {reason}, {state}. |
+| `post_update.line_dry` | `post-update-check (dry run: nothing is changed)` |  |  | First line of a dry run. |
+| `post_update.line_failed` | `NOT VERIFIED` |  |  | Not verified. |
+| `post_update.line_left` | `  {kind} pid {pid}: {reason}; to renew it run: {next}` |  |  | A process was left running and reported. {pid}, {kind}, {reason}, {next}. |
+| `post_update.line_problem` | `  PROBLEM: {text}` |  |  | One problem. {text}. |
+| `post_update.line_reexeced` | `  watcher pid {pid}: re-executed on the new binary` |  |  | A watcher re-executed itself on the new binary. {pid}. |
+| `post_update.line_stopped` | `  {kind} pid {pid}: {reason} -> {how}` |  |  | A process was stopped. {pid}, {kind}, {reason}, {how}. |
+| `post_update.line_verified` | `VERIFIED: daemon pid {pid}, binary sha {sha}, up {uptime} s, footprint {kb} K...` |  |  | Verified. {pid}, {sha}, {uptime}, {kb}, {ms}. |
+| `post_update.msg_bad_arg` | `post-update-check: unknown argument {arg}\nusage: post-update-check [--dry-ru...` |  |  | Unknown argument. {arg}. |
+| `post_update.msg_flag_value` | `post-update-check: {flag} needs a value` |  |  | A flag lacks its value. {flag}. |
+| `post_update.pid_files` | `daemon.run` |  |  | Pid files (in the state directory) removed when the process named in them is gone. |
+| `post_update.ping_budget_ms` | `1000` |  | ms | A control round trip (ping) slower than this is a problem. |
+| `post_update.poll_ms` | `100` |  | ms | Polling step while waiting for a process to exit or a watcher to re-execute. |
+| `post_update.problem_daemons_left` | `{n} other engine daemon(s) still run` |  |  | Daemons remain besides the verified one. {n}. |
+| `post_update.problem_no_sweep` | `nothing was stopped or cleaned: the live daemon did not verify first` |  |  | Nothing was stopped or cleaned because the daemon did not verify. |
+| `post_update.problem_not_running` | `no engine daemon answers status` |  |  | No engine answered status. |
+| `post_update.problem_old_daemon` | `daemon pid {pid} runs an old image: {why}` |  |  | The daemon runs an old image. {pid}, {why}. |
+| `post_update.problem_path` | `daemon pid {pid} runs {exe}, not the installed {bin}` |  |  | The daemon runs another file than the installed binary. {pid}, {exe}, {bin}. |
+| `post_update.problem_ping` | `the daemon does not answer a ping` |  |  | No answer to a ping. |
+| `post_update.problem_sha` | `installed binary sha {have} is not the expected {want}` |  |  | The installed binary's sha differs from the expected one. {have}, {want}. |
+| `post_update.problem_slow` | `ping took {ms} ms (budget {budget} ms)` |  |  | A ping was slower than the budget. {ms}, {budget}. |
+| `post_update.problem_stop` | `could not stop pid {pid}` |  |  | A process could not be stopped. {pid}. |
+| `post_update.problem_unreadable` | `cannot read the installed binary {path}` |  |  | The binary cannot be read. {path}. |
+| `post_update.scratch_roots` | `{home}/.anti-hall/work/, /tmp/, /private/tmp/, /var/folders/, /private/var/fo...` |  |  | Directories under which a running engine is a scratch or experiment daemon ({home} is the home directory): stopped as scratch, never as 'second daemon'. |
+| `post_update.serve_words` | `serve` |  |  | An argument that makes an engine / dashboard process a long-running server. |
+| `post_update.sha_chars` | `8` |  |  | Characters of a sha256 shown in texts. |
+| `post_update.tmp_min_age_s` | `600` |  | s | A temp file is cleaned only when older than this. |
+| `post_update.tmp_suffix` | `.tmp` |  |  | Temp files `<name>.<pid>.<n>.tmp` of a dead process end in this. |
+| `post_update.verify_pause_ms` | `500` |  | ms | Pause between those tries. |
+| `post_update.verify_tries` | `20` |  |  | How many times the daemon is asked for its status while it is still coming up. |
+| `post_update.watch_words` | `wake-watch` |  |  | An argument that makes an engine process a long-running watcher (`ah-engine devswarm wake-watch`). |
+| `post_update.watcher_settle_s` | `8` |  | s | How long watchers on a replaced binary get to re-execute themselves before they are reported. |
+| `post_update.web_names` | `ah-web` |  |  | Program names of the dashboard server. |
+| `post_update.why_dead_owner` | `its owner (pid {pid}) is gone` |  |  | Why a pid or temp file is removed. {pid}. |
+| `post_update.why_dead_socket` | `no engine answers on it and none runs` |  |  | Why the socket file is removed. |
+| `post_update.why_deleted` | `its binary was deleted` |  |  | Why a process runs an old image: its binary was deleted. |
+| `post_update.why_duplicate` | `duplicate {verb} watcher of session {session} (the newest stays)` |  |  | Why a watcher is stopped. {verb}, {session}. |
+| `post_update.why_old_binary` | `old binary copy beyond the kept ones` |  |  | Why an old binary copy is removed. |
+| `post_update.why_replaced` | `its binary was replaced after it started` |  |  | Why a process runs an old image: its binary was replaced after it started. |
+| `post_update.why_scratch` | `scratch daemon (runs from a scratch directory)` |  |  | Why a daemon is stopped: it runs from a scratch directory. |
+| `post_update.why_second_daemon` | `second daemon (not the verified one)` |  |  | Why a daemon is stopped: it is not the verified one. |
+| `post_update.why_update_tmp` | `leftover updater scratch directory` |  |  | Why an updater scratch directory is removed. |
+| `post_update.why_watcher_old` | `still running the replaced binary` |  |  | Why a watcher is reported: it is still on the replaced binary. |
+| `post_update.why_web_old` | `dashboard server: {why}` |  |  | Why the dashboard server is reported. {why}. |
+
+### routine.toml / routine
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `routine.added_dir` | `added` |  |  | Sub-directory of a saved copy where files the install had added are moved aside by a rollback (never deleted). |
+| `routine.audit_args` | `audit, entry-paths, --root, {root}, --no-live` |  |  | Arguments of the new binary's entry-path audit of the plugin tree being installed ({root} is the tree). Exit 0 = clean, 1 = leftovers. |
+| `routine.bad_event_kinds` | `9 items` |  |  | Engine-log event kinds that, logged since the new daemon started, fail the validation (a panic, a crash, a failed start, a config error, a defaults fallback). |
+| `routine.call_timeout_s` | `30` |  | s | Longest any one command of the routine (the new binary's version, validate, audit, the guard probe) may run. |
+| `routine.ctl_stop` | `stop` |  |  | The control verb that asks the running daemon to exit. |
+| `routine.default_roots` | `{home}/.anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall` |  |  | More plugin roots to keep in step (used when they exist). |
+| `routine.defaults_dirs` | `engine/defaults, engine/defaults.pristine` |  |  | The plugin sub-directories synced first and taken whole (the engine reads them at start and on change). |
+| `routine.deploys_dir` | `deploys` |  |  | Directory in the state directory that holds the saved copy of every install (its manifest, the replaced files, the previous binaries). |
+| `routine.detail_chars` | `160` |  |  | Characters of an event detail or error text shown in a problem line. |
+| `routine.empty_toml` | `empty.toml` |  |  | Name of the empty file `config validate` is given in the pre-check. |
+| `routine.engine_candidates` | `ah-engine, bin/ah-engine, ah-engine/target/release/ah-engine, target/release/...` |  |  | Where the engine binary is looked for under the --from-local directory (first existing file wins): the directory itself, then a cargo build of the repository checkout. |
+| `routine.env_roots` | `AH_DEPLOY_ROOTS` |  |  | Environment variable naming the plugin roots to install into (colon separated); when set it replaces the lookup below. Tests and scratch homes use it. |
+| `routine.failed_job_codes` | `failed, timeout` |  |  | The outcome codes of that kind that count as a failed job. |
+| `routine.files_dir` | `files` |  |  | Sub-directory of a saved copy that holds the replaced plugin files. |
+| `routine.flag_allow_leftovers` | `--allow-entry-leftovers` |  |  | Owner override: install a plugin tree although the entry-path audit lists js/sh leftovers (the override is printed). |
+| `routine.flag_check` | `--check` |  |  | Pre-check only: the same checks as an install, nothing changed. |
+| `routine.flag_deploy` | `--deploy-dir` |  |  | With --rollback: the saved copy (a directory under routine.deploys_dir) to restore; default the newest. |
+| `routine.flag_engine_bin` | `--engine-bin` |  |  | The engine binary to install, when it is not at one of routine.engine_candidates under the --from-local directory. |
+| `routine.flag_force` | `--force` |  |  | Allow installing a lower version than the one running (a downgrade). An automatic rollback never needs it. |
+| `routine.flag_from_local` | `--from-local` |  |  | Install from a local build directory (its layout: routine.*_candidates). |
+| `routine.flag_hook_bin` | `--hook-bin` |  |  | The thin client (ah-hook) to install, when it is not at one of routine.hook_candidates. |
+| `routine.flag_rollback` | `--rollback` |  |  | Restore the previous install from its saved copy (also what the automatic rollback does). |
+| `routine.flag_source` | `--source` |  |  | Where the build came from, recorded in the install record (one of routine.sources). |
+| `routine.flag_tree` | `--tree` |  |  | The plugin tree (a directory holding routine.tree_marker) to install, when it is not at one of routine.tree_candidates. |
+| `routine.flag_yes` | `--yes` |  |  | Do it. Without it the routine prints what it would do and changes nothing. |
+| `routine.hold_ttl_s` | `180` |  | s | Lifetime of the maintenance hold (hooks start no engine while the binary is swapped); refreshed at each step. 0 = no hold. A crashed install leaves the guards off for at most this long. |
+| `routine.home_token` | `{home}` |  |  | The placeholder for the home directory in the paths below. |
+| `routine.hook_candidates` | `ah-hook, bin/ah-hook, ah-launcher/target/release/ah-hook, target/release/ah-hook` |  |  | Where the thin client is looked for under the --from-local directory. Absent = the installed client stays. |
+| `routine.hook_version_args` | `--version` |  |  | Arguments with which the new thin client reports its version (a smoke test: it must exit 0). |
+| `routine.installed_json` | `{home}/.claude/plugins/installed_plugins.json` |  |  | The harness plugin registry the cache root a hook runs from is read from. |
+| `routine.integrity_accept_args` | `integrity, accept` |  |  | Arguments with which the installed thin client records the installed binaries as the expected ones. |
+| `routine.job_event_kind` | `schedule` |  |  | The event kind a scheduler job outcome is logged under. |
+| `routine.keep_deploys` | `3` |  |  | How many saved copies of past installs are kept; older ones are removed at the end of a successful install. |
+| `routine.line_audit_clean` | `entry-path audit: clean ({root})` |  |  | The entry-path audit is clean. {root}. |
+| `routine.line_audit_override` | `entry-path audit: LEFTOVERS ALLOWED by --allow-entry-leftovers (owner overrid...` |  |  | The audit found leftovers and the override was given. {root}. |
+| `routine.line_auto_rollback` | `VALIDATION FAILED for sha {sha}: rolling back to the saved copy` |  |  | Validation failed: going back. {sha}. |
+| `routine.line_check_failed` | `CHECK FAILED: nothing was changed` |  |  | The pre-check found problems; nothing was changed. |
+| `routine.line_check_ok` | `CHECK OK: {roots} plugin root(s) {same}; nothing was changed` |  |  | The pre-check passed. {roots}, {same}. |
+| `routine.line_downgrade_forced` | `downgrade allowed by --force: {running} -> {target}` |  |  | A downgrade went ahead because of --force. {running}, {target}. |
+| `routine.line_dry` | `dry run: nothing was changed; add --yes to roll back` |  |  | Without --yes on a rollback. |
+| `routine.line_dry_plan` | `dry run: would install into {roots} plugin root(s) {same}; add --yes to do it` |  |  | Without --yes: what would happen. {roots}, {same}. |
+| `routine.line_installed` | `installed: sha {sha}, {started}` |  |  | The files and binaries are in place. {sha}, {started}. |
+| `routine.line_new_binary` | `new engine: {version} (sha {sha}) {path}` |  |  | The new binary passed its smoke test. {path}, {version}, {sha}. |
+| `routine.line_new_hook` | `new client: {version} {path}` |  |  | The new thin client passed its smoke test. {path}, {version}. |
+| `routine.line_no_roots` | `plugin roots: none found; only the binaries are installed` |  |  | No plugin root was found to install into. |
+| `routine.line_problem` | `PROBLEM: {text}` |  |  | One problem. {text}. |
+| `routine.line_restored` | `restored {n} file(s) from {dir}` |  |  | Files restored. {n}, {dir}. |
+| `routine.line_rollback_failed` | `ROLLBACK FAILED: {why}` |  |  | A rollback failed. {why}. |
+| `routine.line_rollback_ok` | `ROLLBACK OK: engine sha {sha} is running and validated` |  |  | A manual rollback validated. {sha}. |
+| `routine.line_rollback_plan` | `rollback of the install saved in {dir}` |  |  | A manual rollback is about to restore this copy. {dir}. |
+| `routine.line_rolled_back_bad` | `ROLLED BACK but the previous engine {version} (sha {sha}) does NOT validate: ...` |  |  | The rollback did not validate. {sha}, {version}. |
+| `routine.line_rolled_back_ok` | `ROLLED BACK: the previous engine {version} (sha {sha}) is running and validated` |  |  | The rollback worked and validates. {sha}, {version}. |
+| `routine.line_root_ok` | `defaults: the new engine loads the new defaults on {root}` |  |  | The new binary loads the new defaults on this root. {root}. |
+| `routine.line_running` | `running now: {version} (sha {sha}, source {source})` |  |  | What runs now. {version}, {sha}, {source}. |
+| `routine.line_staged` | `staged: {files} plugin file(s) across {roots} root(s), binaries saved` |  |  | Staging is done. {files}, {roots}. |
+| `routine.line_summary` | `INSTALLED {version} (sha {sha}, source {source}): {files} plugin file(s) chan...` |  |  | The one summary line of a successful install. {version}, {sha}, {source}, {files}, {kept}, {deploy}. |
+| `routine.line_validated` | `validated: one daemon (pid {pid}) on the new binary, client round trip and gu...` |  |  | Validation passed. {pid}. |
+| `routine.manifest_file` | `manifest.json` |  |  | File name of an install's manifest inside its saved-copy directory. |
+| `routine.msg_backup_missing` | `update: the saved copy {path} is missing` |  |  | The saved copy of a file is gone. {path}. |
+| `routine.msg_bad_arg` | `update: unknown argument {arg}\nusage: update --from-local <dir> [--engine-bi...` |  |  | Unknown argument. {arg}. |
+| `routine.msg_bad_source` | `update: unknown source {source} (allowed: {allowed})` |  |  | --source got an unknown word. {source}, {allowed}. |
+| `routine.msg_bad_tree` | `update: {path} is not a plugin tree (no {marker})` |  |  | The tree has no marker file. {path}, {marker}. |
+| `routine.msg_commit_failed` | `update: cannot put {path} in place: {why}` |  |  | A staged file could not be renamed into place. {path}, {why}. |
+| `routine.msg_downgrade` | `update: refused: this is a downgrade ({why}).\n  running: {running}\n  target...` |  |  | A downgrade is refused. {running}, {target}, {why}, {flag}. |
+| `routine.msg_flag_value` | `update: {flag} needs a value` |  |  | A flag lacks its value. {flag}. |
+| `routine.msg_no_deploy` | `update: no saved copy of an earlier install under {dir}; name one with --depl...` |  |  | Nothing to roll back. {dir}. |
+| `routine.msg_no_engine` | `update: no ah-engine binary under {dir} (looked at the places routine.engine_...` |  |  | No engine binary under the directory. {dir}. |
+| `routine.msg_no_manifest` | `update: {dir} has no readable manifest` |  |  | No manifest in the saved-copy directory. {dir}. |
+| `routine.msg_no_source` | `update: name what to install: --from-local <dir> (a local build) or --engine-...` |  |  | Neither --from-local nor --engine-bin was given. |
+| `routine.msg_not_file` | `update: {path} is not a file` |  |  | A named file is missing. {path}. |
+| `routine.msg_record_failed` | `update: installed, but the install record could not be written: {why}` |  |  | The install record could not be written. {why}. |
+| `routine.msg_restore_failed` | `update: cannot restore {path}: {why}` |  |  | A saved file could not be put back. {path}, {why}. |
+| `routine.msg_scratch` | `update: cannot make the scratch directory {path}` |  |  | The scratch directory cannot be made. {path}. |
+| `routine.msg_stage_failed` | `update: cannot stage {path}: {why}; nothing was changed` |  |  | Staging a file failed. {path}, {why}. |
+| `routine.msg_stop_failed` | `update: the running daemon would not stop; nothing was changed` |  |  | The running daemon could not be stopped. |
+| `routine.no_code` | `no exit` |  |  | Shown for a command that did not exit (it timed out or could not start). |
+| `routine.plugin_key` | `anti-hall@anti-hall-engine-live` |  |  | The registry entry whose installPath is a plugin root to keep in step with the binary, besides the root the engine itself loads. |
+| `routine.probe_block_code` | `2` |  |  | The exit code of a blocked hook call. |
+| `routine.probe_event` | `PreToolUse` |  |  | The hook event the guard probe sends to the installed thin client. |
+| `routine.probe_file` | `probe.json` |  |  | Name of the file (in scratch) the probe input is written to. |
+| `routine.probe_n` | `3` |  |  | How many probe calls in a row must all be blocked. |
+| `routine.probe_payload` | `{"session_id":"install-probe","cwd":"{cwd}","hook_event_name":"PreToolUse","t...` |  |  | The probe's hook input: a force push to main, which a working guard blocks. {cwd} is the scratch directory. |
+| `routine.probe_root_env` | `CLAUDE_PLUGIN_ROOT` |  |  | The variable through which the harness names the plugin root a hook runs from. |
+| `routine.problem_audit` | `entry-path audit: the plugin tree {root} has js/sh/wrong-entry leftovers (tab...` |  |  | The entry-path audit found leftovers. {root}. |
+| `routine.problem_audit_run` | `entry-path audit could not run (exit {code}): {out}` |  |  | The audit could not run. {code}, {out}. |
+| `routine.problem_commit` | `the files could not be put in place` |  |  | Putting the files in place failed. |
+| `routine.problem_daemons` | `{n} engine daemon(s) run; exactly 1 must` |  |  | More or fewer than one daemon runs. {n}. |
+| `routine.problem_defaults_error` | `defaults.error written since the start: {text}` |  |  | The defaults error file was written since the start. {text}. |
+| `routine.problem_event` | `engine log since the start: {kind} {code} {detail}` |  |  | A bad row in the engine log since the start. {kind}, {code}, {detail}. |
+| `routine.problem_new_binary` | `the new engine {path} does not answer `version` (got: {got})` |  |  | The new engine binary does not run. {path}, {got}. |
+| `routine.problem_new_hook` | `the new client {path} does not report its version (got: {got})` |  |  | The new thin client does not run. {path}, {got}. |
+| `routine.problem_no_hook` | `no thin client installed: the guards cannot be probed` |  |  | No thin client to probe the guards with. |
+| `routine.problem_probe` | `guard probe: a force push to main was blocked {blocked}/{n} times (a guard fa...` |  |  | The guard probe was not blocked every time. {blocked}, {n}. |
+| `routine.problem_root` | `the new engine refuses the plugin defaults on {root} (exit {code}): {out}` |  |  | The new binary refuses the new defaults on a root. {root}, {code}, {out}. |
+| `routine.problem_scratch` | `cannot copy {root} to scratch for the defaults check` |  |  | The scratch copy of a root failed. {root}. |
+| `routine.release_check_args` | `update, --check-release` |  |  | Arguments with which the thin client reports the latest GitHub release (one JSON line); it is the only part that touches the network. |
+| `routine.release_check_timeout_s` | `25` |  | s | Longest `update --check --json` waits for the thin client's latest-release lookup. |
+| `routine.root_token` | `{root}` |  |  | The placeholder for the tree in routine.audit_args. |
+| `routine.scratch_prefix` | `ah-install-` |  |  | Prefix of the routine's scratch directory under the temp dir (removed at the end). |
+| `routine.settle_s` | `5` |  | s | Wait between the new daemon answering and the validation, so the first ticks, jobs and hooks have run before the log is read. |
+| `routine.source_local` | `local` |  |  | The source recorded when --source is not given. |
+| `routine.source_manual` | `manual` |  |  | The source reported for an installed binary that no install record vouches for. |
+| `routine.source_release` | `release` |  |  | The install-record source of a verified release. |
+| `routine.sources` | `release, local, manual` |  |  | The values of the install record's `source`: `release` (downloaded and verified by the thin client), `local` (a local build) and `manual` (a binary put there by hand: the record does not match what is installed). |
+| `routine.stage_infix` | `.deploy.` |  |  | Between a file's name and the process id in the name of its staging file (renamed into place at commit). |
+| `routine.start_wait_s` | `30` |  | s | How long the new daemon gets to answer a ping after it was started. |
+| `routine.state_file` | `install.json` |  |  | The install record in the state directory: {version, sha, source, time, built_at, previous}. The Updates page and `update --check --json` read it. |
+| `routine.stop_wait_s` | `10` |  | s | How long a stopped daemon gets to exit before it is stopped by its verified pid. |
+| `routine.tmp_ext` | `tmp` |  |  | Extension of the temporary file of an atomic write of the record, manifest or hold marker. |
+| `routine.tree_candidates` | `plugin, plugins/anti-hall, .` |  |  | Where the plugin tree is looked for under the --from-local directory (a directory that holds routine.tree_marker). Absent = binaries only; the installed plugin stays. |
+| `routine.tree_marker` | `engine/defaults/index.toml` |  |  | The file whose presence makes a directory a plugin tree / plugin root. |
+| `routine.tree_skip_dirs` | `.git, node_modules` |  |  | Directory names the plugin-tree sync never enters. |
+| `routine.tree_skip_substrings` | `.bak, .deploy., .DS_Store` |  |  | A relative path containing one of these is not synced (backups, staging files, editor files). |
+| `routine.why_build_older` | `same plugin version, older build` |  |  | Why an install is a downgrade: same plugin version, older build. |
+| `routine.why_local_running` | `the running build is a local build of the same plugin version; a release of i...` |  |  | Why an install is refused: the running build is a local or hand-installed build of the same plugin version, which a release of that version does not replace. |
+| `routine.why_plugin_lower` | `its plugin version is lower` |  |  | Why an install is a downgrade: the plugin version is lower. |
+| `routine.word_down` | `daemon NOT answering` |  |  | The daemon did not answer after the install. |
+| `routine.word_no_client` | `no thin client installed` |  |  | Reported as the latest-release error when no thin client is installed. |
+| `routine.word_same` | `(same binary: only the plugin files change)` |  |  | Said when the new engine binary is identical to the installed one (only the plugin files change). |
+| `routine.word_up` | `daemon up` |  |  | The daemon answered after the install. |
 
 ### guards_v1.toml / api_guard_v1
 
@@ -12553,7 +12768,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.heartbeat_stale_s` | `600` |  |  | An agent whose last output is older than this many seconds shows its heartbeat in the stale colour. |
 | `web.heartbeat_warn_s` | `60` |  |  | An agent whose last output is older than this many seconds shows its heartbeat in the warning colour. |
 | `web.idle_check_s` | `5` |  |  | How often the server checks whether it has been idle long enough to exit. |
-| `web.idle_exit_s` | `300` |  |  | The server exits after this many seconds with no request and no open stream. |
+| `web.idle_exit_s` | `300` |  |  | The server exits after this many seconds with no request and no open stream; 0 = never (a dashboard kept running as a service). |
 | `web.index_file` | `index.html` |  |  | The page served at /, inside web.static_dir. |
 | `web.kind_order` | `main, workspace, subagent, teammate, codex, heartbeat` |  |  | Order of agent kinds in the tree (first = top). |
 | `web.lite_push_ms` | `5000` |  |  | Milliseconds between pushes to a tab in the lite tier (5000 = one every 5 seconds). |
@@ -12589,6 +12804,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_timeline_max` | `40` |  |  | Rows of the Live screen's timeline strip. |
 | `web.live_top_n` | `5` |  |  | Checks listed in the Live screen's top list. |
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
+| `web.log_file` | `ah-web.log` |  |  | File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes. |
+| `web.log_max_bytes` | `262144` |  |  | Size at which the server's log file is rotated (one old copy is kept). |
 | `web.manage_file` | `web_manage.toml` |  |  | The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs). |
 | `web.max_streams` | `16` |  |  | Most event streams open at once; more are refused with 503. |
 | `web.mesh_db_rel` | `.anti-hall/devswarm/store/devswarm.db` |  |  | The mesh store, relative to the home directory. |
@@ -13011,6 +13228,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.updater_attest_no_gh` | gh is not installed. |
 | `msg.updater_attest_not_logged_in` | gh is not logged in. |
 | `msg.updater_attest_test` | Test mode. |
+| `msg.updater_auto_not_newer` | Logged by an automatic update that skipped a release because the running build is a local or hand-installed build and the release is not strictly newer. {running}, {release}. |
 | `msg.updater_cannot_copy_new` | Placeholders: {bin}, {bindir}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line. |
 | `msg.updater_cannot_create_bin` | Printed when the binary directory cannot be created (three lines). Placeholder: {path}. |
 | `msg.updater_cannot_create_tmp` | Placeholders: {tmp}, {dir}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line. |
@@ -13084,6 +13302,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.updater_restarted` | Placeholder: {binary}. |
 | `msg.updater_rolled_back` | Placeholders: {bin}, {version}. |
 | `msg.updater_rolled_back_live` | Placeholders: {version}, {aside}. |
+| `msg.updater_routine_scheduled` | Printed by an automatic update when the install routine was started detached (the daemon running the job is replaced by it). Placeholder: {log}. |
 | `msg.updater_selftest_line` | Placeholder: {output}. |
 | `msg.updater_selftest_ok` | Placeholder: {launcher}. |
 | `msg.updater_selftest_rejected` | Placeholders: {code}, {bin}, {launcher}, {stable}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line. |
