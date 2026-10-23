@@ -372,7 +372,7 @@ fn tail(v: &[f64], n: usize) -> Vec<f64> {
 // ---- the Telemetry document ---------------------------------------------------------------------------------------------
 
 fn fmt_usd(usd: f64, c: &TelCfg) -> String {
-    format!("{}{:.*}", c.text("unit_usd"), c.usd_decimals, usd)
+    format!("{}{}{:.*}", if usd < 0.0 { "-" } else { "" }, c.text("unit_usd"), c.usd_decimals, usd.abs())
 }
 
 fn tone_of(good: &str, j: Option<&Judged>, c: &TelCfg) -> &'static str {
@@ -651,10 +651,11 @@ fn span(series: &[f64], range: [usize; 2], frac: f64) -> (f64, f64) {
     (total, days)
 }
 
-fn pair(series: &[f64], p: &PeriodDef, frac: f64) -> Pair {
+fn pair(series: &[f64], p: &PeriodDef, frac: f64, c: &TelCfg) -> Pair {
     let (cur, cur_days) = span(series, p.cur, frac);
     let (prev, prev_days) = span(series, p.prev, frac);
-    let delta = (prev > 0.0 && cur_days > 0.0 && prev_days > 0.0).then(|| ((cur / cur_days) / (prev / prev_days) - 1.0) * 100.0);
+    // a percentage needs a baseline worth measuring against, and is never larger than the configured cap
+    let delta = (prev_days > 0.0 && cur_days > 0.0 && prev / prev_days >= c.pct_min_baseline).then(|| (((cur / cur_days) / (prev / prev_days) - 1.0) * 100.0).clamp(-c.pct_cap, c.pct_cap));
     Pair { cur, prev, delta_pct: delta }
 }
 
@@ -665,7 +666,7 @@ fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {
     }
     let frac = raw.day_fraction();
     doc.periods = c.periods.iter().map(|p| Period { id: p.id.clone(), label: p.label.clone() }).collect();
-    let row = |id: &str, label: &str, hint: &str, good: &str, series: &[f64]| ImpactRow { id: id.into(), label: label.into(), hint: c.text(hint), good: good.into(), pairs: c.periods.iter().map(|p| pair(series, p, frac)).collect() };
+    let row = |id: &str, label: &str, hint: &str, good: &str, series: &[f64]| ImpactRow { id: id.into(), label: label.into(), hint: c.text(hint), good: good.into(), pairs: c.periods.iter().map(|p| pair(series, p, frac, c)).collect() };
     for p in &c.prevention {
         let series = if p.hooks.iter().any(|h| h == "*") {
             raw.daily(&|s| num(&s["by_outcome"][p.outcome.as_str()]))
@@ -682,7 +683,7 @@ fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {
     doc.savings = savings(raw, c);
     doc.waterfall = waterfall(raw, c);
     doc.waterfall_kind = doc.savings.iter().find(|s| s.id == "net").map_or_else(|| "estimate".into(), |s| s.kind.clone());
-    doc.gaps = gaps(raw, c);
+    doc.gaps = gaps(raw, c, number);
     doc
 }
 
@@ -748,8 +749,8 @@ fn waterfall(raw: &Raw, c: &TelCfg) -> Vec<Step> {
     ]
 }
 
-fn gaps(raw: &Raw, c: &TelCfg) -> Vec<Gap> {
-    let n = |v: f64| format!("{}", v.round() as i64);
+fn gaps(raw: &Raw, c: &TelCfg, number: &NumFmt) -> Vec<Gap> {
+    let n = |v: f64| number.fmt(v.max(0.0).round() as u64);
     let mut out = Vec::new();
     match &raw.coverage {
         Some(cov) => {
@@ -757,7 +758,7 @@ fn gaps(raw: &Raw, c: &TelCfg) -> Vec<Gap> {
             out.push(Gap {
                 id: "coverage".into(),
                 label: c.text("gap_coverage"),
-                text: c.fill("gap_coverage_text", &[("covered", n(num(&cov["covered"]))), ("features", n(num(&cov["features"]))), ("unmatched", unmatched.to_string()), ("unready", unready.to_string())]),
+                text: c.fill("gap_coverage_text", &[("covered", n(num(&cov["covered"]))), ("features", n(num(&cov["features"]))), ("unmatched", n(unmatched as f64)), ("unready", n(unready as f64))]),
                 tone: if unmatched + unready > 0 { "warn" } else { "ok" }.into(),
             });
         }
@@ -765,7 +766,7 @@ fn gaps(raw: &Raw, c: &TelCfg) -> Vec<Gap> {
     }
     let defers = raw.daily(&|s| num(&s["by_outcome"]["defer"]));
     if let Some(p) = c.periods.first() {
-        let pr = pair(&defers, p, raw.day_fraction());
+        let pr = pair(&defers, p, raw.day_fraction(), c);
         let unable = num(&raw.status["node_handback"]["native_unable"]);
         out.push(Gap {
             id: "defers".into(),

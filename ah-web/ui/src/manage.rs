@@ -512,6 +512,10 @@ fn ConfigTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
         }
         reload.run(());
     });
+    // the first file is open from the start
+    if let Some(first) = files.first().map(|f| text_of(f, "file")) {
+        open(first);
+    }
     view! {
         <div class="mg-split">
             <nav class="mg-cats" aria-label=mt("config_files")>
@@ -676,6 +680,7 @@ fn HistoryRow(row: Value, reload: Callback<()>) -> impl IntoView {
     let (old, new) = (val("old"), val("new"));
     let ts = row.get("ts").and_then(Value::as_u64).unwrap_or(0);
     let id2 = id.clone();
+    let when: String = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts as f64)).to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED).into();
     view! {
         <div class=if ok { "mg-row" } else { "mg-row off" }>
             <div class="mg-main">
@@ -685,7 +690,7 @@ fn HistoryRow(row: Value, reload: Callback<()>) -> impl IntoView {
                     {(!ok).then(|| view! { <span class="mg-badge warn">{mt("history_failed")}</span> })}
                 </div>
                 <p class="mg-doc"><span class="mono">{old}</span> " \u{2192} " <span class="mono">{new}</span></p>
-                <p class="mg-meta">{mt("history_who")} " " {text_of(&row, "who")} " \u{b7} " {crate::since(ts)}{(!ok).then(|| format!(" \u{b7} {}", text_of(&row, "error")))}</p>
+                <p class="mg-meta">{when} " \u{b7} " {crate::since(ts)}{(!ok).then(|| format!(" \u{b7} {}", text_of(&row, "error")))}</p>
             </div>
             <div class="mg-side">
                 {can_undo.then(|| view! { <button type="button" class="mg-btn" title=mt("history_undo_row") on:click=move |_| run_write(fb, pending, "undo", &id2, "", false, false, reload)>{mt("history_undo")}</button> })}

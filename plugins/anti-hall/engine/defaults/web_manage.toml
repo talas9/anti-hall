@@ -70,6 +70,10 @@ value = ["Safety Guards"]
 doc = "Registry categories the Checks tab lists as guards (their switch is a safety switch)."
 value = ["Guards", "Safety Guards"]
 
+[web.manage.strip_notes]
+doc = "Notes written for maintainers inside a setting's or check's description, as [opening text, closing text]: everything from the opening text to the closing text is left out of what the page shows."
+value = [["[read by", "]"], ["[verified:", "]"], ["(port of", ")"]]
+
 [web.manage.msg_bad_request]
 doc = "Said when a request to these screens is malformed or names something the engine does not know."
 value = "That request could not be understood."

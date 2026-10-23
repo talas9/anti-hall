@@ -98,7 +98,7 @@ fn fmt_val(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, v: f64) -> 
     match unit {
         "us" => ui.fmt_us.fmt(whole),
         "bytes" => ui.fmt_bytes.fmt(whole),
-        "usd" => format!("{}{:.*}", tt(texts, "unit_usd"), ui.usd_decimals, v),
+        "usd" => format!("{}{}{:.*}", if v < 0.0 { "-" } else { "" }, tt(texts, "unit_usd"), ui.usd_decimals, v.abs()),
         "pct" => format!("{v:.0}%"),
         "ts" => age_text(ui, texts, v),
         _ => ui.number.fmt(whole),
