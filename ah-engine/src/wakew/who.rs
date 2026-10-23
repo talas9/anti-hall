@@ -250,4 +250,22 @@ mod tests {
         assert!(devswarm_active(&st(&[("DEVSWARM_REPO_ID", "r")])), "auto follows the repository variable");
         assert!(!devswarm_active(&st(&[])), "auto without it is dormant");
     }
+    /// An unreadable `settings.json` inside the DevSwarm gate does not end the gate as "not DevSwarm": the remaining tiers still
+    /// run, as `isDevswarmActiveGate` runs them (devswarm-wake-watch.js:1567-1613).
+    #[test]
+    fn an_unreadable_settings_file_still_lets_the_later_tiers_arm_the_gate() {
+        let home = std::env::temp_dir().join(format!("ah-who-gate-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        std::fs::write(home.join(".anti-hall/settings.json"), "{not json").unwrap();
+        let env: Env = [(defaults::text("wake_watch.env_source_branch"), "b"), (defaults::text("mesh_write.env_builder_id"), "id1")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let st = Settings { home: home.to_string_lossy().into(), env: env.clone() };
+        let p = Proc { home: home.clone(), cwd: home.to_string_lossy().into(), env, st, root: String::new() };
+        assert!(gate(&p).unwrap(), "tier 1 (child workspace with a builder id) arms it");
+        let bare = Proc { env: Env::new(), st: Settings { home: p.st.home.clone(), env: Default::default() }, ..p };
+        assert!(!gate(&bare).unwrap(), "no evidence at any tier: not DevSwarm");
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup
+    }
 }
