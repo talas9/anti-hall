@@ -101,7 +101,6 @@ pub struct Ops {
     log_levels: Vec<String>,
     log_default_level: String,
     log_level_rules: Vec<LevelRule>,
-    log_level_letters: BTreeMap<String, String>,
     pub idle_shell_state: String,
     text: BTreeMap<String, String>,
 }
@@ -353,11 +352,10 @@ pub struct LogQuery {
     since: Option<u64>,
 }
 
-/// The level of `field` under the source's mode.
+/// The level of `field` under the source's mode: `fixed` means the field is the level itself.
 fn level_of(o: &Ops, mode: &str, field: &str) -> String {
-    if mode == "letter" {
-        let first = field.chars().next().map(String::from).unwrap_or_default();
-        return o.log_level_letters.get(&first).cloned().unwrap_or_else(|| o.log_default_level.clone());
+    if mode == "fixed" {
+        return field.to_string();
     }
     let low = field.to_lowercase();
     o.log_level_rules.iter().find(|r| r.words.iter().any(|w| low.contains(w.as_str()))).map_or_else(|| o.log_default_level.clone(), |r| r.level.clone())
@@ -380,12 +378,10 @@ fn parse_line(o: &Ops, src: &SourceDef, raw: &str) -> Option<LogLine> {
                 Some(other) => other.to_string(),
             };
             let text = src.text.split(',').map(|k| member(k.trim())).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
-            (v.get(&src.ts).and_then(Value::as_u64)?, member(&src.comp), member(&src.level), text)
+            (v.get(&src.ts).and_then(Value::as_u64)?, member(&src.comp), if src.level_mode == "fixed" { src.level.clone() } else { member(&src.level) }, text)
         }
     };
     let level = level_of(o, &src.level_mode, &level_field);
-    // a letter-coded level is the first character of the text: it is the level, not part of the message
-    let text = if src.level_mode == "letter" { text.chars().skip(1).collect::<String>().trim_start().to_string() } else { text };
     Some(LogLine { ts_ms: ts, level, comp, text: cut(text) })
 }
 

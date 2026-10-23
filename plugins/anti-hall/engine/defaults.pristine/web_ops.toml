@@ -119,8 +119,8 @@ doc = "Characters of the check's message kept."
 value = 600
 
 [web.ops.logs_sources]
-doc = "The logs the Logs screen can tail (through the engine's own `diag file`, which scrubs and caps them): id, ui text key, the engine file id, format (tsv or json), then where ts, component, level and text are. tsv fields are column numbers; json fields are member names (text may list several, comma separated, joined by a space). level_mode: rules (substring rules on the level field) or letter (its first letter, mapped by web.ops.log_level_letters)."
-value = [{ id = "engine", label_key = "ops_src_engine", file = "state:ah-engine.log", format = "tsv", ts = "0", comp = "1", level = "2", text = "3", level_mode = "rules" }, { id = "debug", label_key = "ops_src_debug", file = "state:debug.ndjson", format = "json", ts = "ts", comp = "module", level = "msg", text = "msg", level_mode = "letter" }, { id = "actions", label_key = "ops_src_actions", file = "state:actions.ndjson", format = "json", ts = "ts", comp = "feature", level = "outcome", text = "action,target,reason", level_mode = "rules" }]
+doc = "The logs the Logs screen can tail (through the engine's own `diag file`, which scrubs and caps them): id, ui text key, the engine file id, format (tsv or json), then where ts, component, level and text are. tsv fields are column numbers; json fields are member names (text may list several, comma separated, joined by a space). level_mode: rules (substring rules on the level field) or fixed (the level field is itself the level every line has: the debug log carries no level of its own)."
+value = [{ id = "engine", label_key = "ops_src_engine", file = "state:ah-engine.log", format = "tsv", ts = "0", comp = "1", level = "2", text = "3", level_mode = "rules" }, { id = "debug", label_key = "ops_src_debug", file = "state:debug.ndjson", format = "json", ts = "ts", comp = "module", level = "debug", text = "msg,data", level_mode = "fixed" }, { id = "actions", label_key = "ops_src_actions", file = "state:actions.ndjson", format = "json", ts = "ts", comp = "feature", level = "outcome", text = "action,target,reason", level_mode = "rules" }]
 
 [web.ops.logs_diag_args]
 doc = "The engine arguments that read one log; {file} is the engine file id from web.ops.logs_sources."
@@ -164,10 +164,6 @@ value = "info"
 [web.ops.log_level_rules]
 doc = "Substring rules for level_mode rules, checked in order against the lower-cased level field: the first rule with a matching word sets the level."
 value = [{ level = "error", words = ["error", "fail", "hard", "panic", "crash"] }, { level = "warn", words = ["soft", "late", "slow", "stall", "warn", "retry", "timeout", "unable", "refused", "denied"] }, { level = "debug", words = ["trace", "debug"] }]
-
-[web.ops.log_level_letters]
-doc = "For level_mode letter: the first letter of the level field, mapped to a level."
-value = { D = "debug", I = "info", W = "warn", E = "error" }
 
 [web.ops.idle_shell_state]
 doc = "The host's session status that means a shell command is running (the registry's own word). With a finished turn it makes an agent show as idle, shell running, not running."
