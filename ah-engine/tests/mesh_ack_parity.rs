@@ -75,9 +75,9 @@ fn args(id: &str, rid: &str, more: &[&str]) -> Vec<String> {
     v
 }
 
-/// The journal lines without the two fields that differ per process.
+/// The journal lines (the cursor journal and the central log) without the two fields that differ per process.
 fn normalized(rel: &str, bytes: &[u8]) -> Vec<u8> {
-    if !rel.contains("cursor-log/") {
+    if !rel.contains("cursor-log/") && !rel.contains("/logs/") {
         return bytes.to_vec();
     }
     String::from_utf8_lossy(bytes)
@@ -363,7 +363,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "rnone1", &[]),
             extra: vec![],
             spec: base(),
-            native: false,
+            native: true,
             expect: vec!["unknown-receipt"],
         },
         Case {
@@ -372,7 +372,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "NOT_A_RECEIPT", &[]),
             extra: vec![],
             spec: base(),
-            native: false,
+            native: true,
             expect: vec!["unknown-receipt"],
         },
         Case {
@@ -381,7 +381,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: vec![s("inbox"), s("ack-primary"), primary.clone()],
             extra: vec![],
             spec: base(),
-            native: false,
+            native: true,
             expect: vec!["missing-receipt"],
         },
         Case {
@@ -390,7 +390,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "rold1", &[]),
             extra: vec![],
             spec: with(one(receipt(&primary, "rold1", &primary, Value::Null, 1_700_000_000_000, json!([own(&primary, 2)]), Value::Null))),
-            native: false,
+            native: true,
             expect: vec!["receipt-expired"],
         },
         Case {
@@ -399,7 +399,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "rrdr1", &[]),
             extra: vec![],
             spec: with(one(receipt(&primary, "rrdr1", &primary, json!("h:12345:1790000000000"), created, json!([own(&primary, 2)]), Value::Null))),
-            native: false,
+            native: true,
             expect: vec!["receipt-owner-mismatch"],
         },
         Case {
@@ -408,7 +408,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "rfor1", &[]),
             extra: vec![],
             spec: with(one(receipt(&primary, "rfor1", "child-1", Value::Null, created, json!([own("child-1", 2)]), Value::Null))),
-            native: false,
+            native: true,
             expect: vec!["receipt-owner-mismatch"],
         },
         Case {
@@ -417,7 +417,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args("child-1", "rown1", &[]),
             extra: vec![],
             spec: with(one(receipt("child-1", "rown1", "child-1", Value::Null, created, json!([own("child-1", 2)]), Value::Null))),
-            native: false,
+            native: true,
             expect: vec!["ack-primary refused"],
         },
         Case {
@@ -451,7 +451,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
                 json!([{"k": "nd", "partition": primary, "target": 1, "cursorPath": null, "inboxPath": null}]),
                 Value::Null,
             ))),
-            native: false,
+            native: true,
             expect: vec!["\"ok\":true"],
         },
         Case {
@@ -469,7 +469,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: args(&primary, "rwin1", &["--tail", "3"]),
             extra: vec![],
             spec: with(one(receipt(&primary, "rwin1", &primary, Value::Null, created, json!([own(&primary, 2)]), Value::Null))),
-            native: false,
+            native: true,
             expect: vec!["window-flags-unsupported-on-acking-verb"],
         },
         Case {
@@ -478,7 +478,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
             argv: vec![s("inbox"), s("ack-primary"), s("a/b"), s("--receipt"), s("rx1")],
             extra: vec![],
             spec: base(),
-            native: false,
+            native: true,
             expect: vec!["invalid or missing workspace id"],
         },
         Case {
@@ -490,7 +490,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
                 json!({"descriptors": [{"id": "child-1", "worktreePath": foreign.to_string_lossy(), "repoKey": "some-other-project-key", "sessionId": "child-1"}]}),
                 one(receipt("child-1", "rfp1", "child-1", Value::Null, created, json!([own("child-1", 2)]), Value::Null)),
             ])),
-            native: false,
+            native: true,
             expect: vec!["project-context-mismatch"],
         },
     ];
@@ -538,7 +538,7 @@ fn ack_primary_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("ack-primary parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", cases.len());
-    assert!(native >= 17 && deferred >= 11);
+    assert!(native >= 28, "{native} native, {deferred} deferred");
 }
 
 #[test]

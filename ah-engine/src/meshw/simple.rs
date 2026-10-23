@@ -525,7 +525,7 @@ fn notice(inv: &Inv, a: &Args) -> R<Answer> {
 // ---- logs ---------------------------------------------------------------------------------------------------------------
 
 /// `parseSinceDuration(raw)`: milliseconds of `30m`, `2h`, `1d`, `500` (ms) ...; `None` for text that is none of them.
-fn parse_since_duration(raw: Option<&str>) -> Option<f64> {
+pub(crate) fn parse_since_duration(raw: Option<&str>) -> Option<f64> {
     let t = js_trim(raw?);
     let num_end = {
         let int = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());

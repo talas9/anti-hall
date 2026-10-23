@@ -917,10 +917,6 @@ value = "receipt"
 doc = "The flag that skips the ownership check of ack-primary."
 value = "ack-as-owner"
 
-[mesh_write.flag_tail]
-doc = "A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node."
-value = "tail"
-
 [mesh_write.dir_read_receipts]
 doc = "Directory of read receipts under the DevSwarm root (readReceiptDir)."
 value = "read-receipts"
@@ -1202,12 +1198,6 @@ value = "createdAt"
 [mesh_write.verify_log]
 doc = "File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped)."
 value = "mesh-verify.jsonl"
-
-[mesh_write.cursor_max_digits]
-doc = "Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node)."
-value = 15
-min = 1
-max = 308
 
 # ---- the DevSwarm app database reader (companion/lib/devswarm-app-db.js): read only, bounded, fail-open ----
 
@@ -1596,10 +1586,6 @@ value = "format"
 [mesh_write.format_text]
 doc = "The value of `--format` that selects the plain-text rendering."
 value = "text"
-
-[mesh_write.read_primary_flags]
-doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (an ownership override, `--legacy-ack-now`, `--unread`, `--with-broadcasts`) is Node's."
-value = ["format", "json", "session", "limit", "ack-after-print"]
 
 [mesh_write.flag_limit]
 doc = "The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1)."
@@ -2076,10 +2062,6 @@ value = "read"
 doc = "The `action` of an `inbox peek-primary` result."
 value = "peek-primary"
 
-[mesh_write.peek_primary_unread_flags]
-doc = "The flags `inbox read-primary` accepts that a peek does not (a text rendering, an immediate ack): a peek carrying one is Node's, since Node ignores them in its own way."
-value = ["format", "ack-after-print"]
-
 [mesh_write.log_ns_nd]
 doc = "The journal `ns` of an NDJSON-namespace reader cursor move."
 value = "reader_cursors:nd"
@@ -2215,3 +2197,191 @@ value = "retired-redirect-unresolvable-caller"
 [mesh_write.msg_redirect_unresolvable]
 doc = "The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted)."
 value = "inbox ack {id} was redirected to survivor {survivor} after a fold, but the caller could not be verified as that survivor — refusing so an unrelated/unresolvable caller cannot advance the survivor's NDJSON cursor (pass --ack-as-owner to override)"
+
+[mesh_write.receipt_error_hint]
+doc = "The `ackHint` of a read-primary result whose read receipt could not be written. Placeholders: {error} (the filesystem error) and {id}."
+value = "read-only: nothing was acked, and the read receipt could not be written ({error}) — re-run read-primary, or use `inbox drain-primary-legacy {id}` to read-and-ack in one call."
+
+[mesh_write.msg_promote_owner_key]
+doc = "The registry write error of a promotion whose descriptor names an `ownerKey` that is not a string (no store can be opened under it)."
+value = "invalid store key in the descriptor (ownerKey is not a string)"
+
+[mesh_write.msg_promote_store]
+doc = "The registry write error of a promotion whose store could not be opened. Placeholder: {reason}."
+value = "store unavailable: {reason}"
+
+[mesh_write.msg_promote_registry_stderr]
+doc = "The stderr line of a promotion whose registry write failed after the descriptor was promoted. Placeholders: {id} and {error}."
+value = "[devswarm] registry write failed for {id}: {error}"
+
+[mesh_write.msg_no_random]
+doc = "The receipt error of a read that could not draw random bytes for the receipt id."
+value = "random bytes unavailable"
+
+[mesh_write.msg_store_failure]
+doc = "The error a verb reports (exit 2) when the store itself fails (an unreadable or corrupt database); Node reports the thrown exception the same way. Placeholder: {reason}."
+value = "store failure: {reason}"
+
+[mesh_write.store_failure_prefixes]
+doc = "The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node."
+value = ["store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
+
+[mesh_write.flag_with_broadcasts]
+doc = "The flag that merges the project's broadcasts into a non-acking read."
+value = "with-broadcasts"
+
+[mesh_write.broadcast_merge_cap]
+doc = "How many of the newest broadcasts `--with-broadcasts` merges into a read."
+value = 50
+
+[mesh_write.with_broadcasts_ignored]
+doc = "The `withBroadcastsIgnored` note of an acking read that was given `--with-broadcasts`."
+value = "acking verb; use `inbox messages <id> --with-broadcasts` (non-acking)"
+
+[mesh_write.reason_no_project]
+doc = "The `reason` of a mesh read from a directory that is in no project."
+value = "no-project"
+
+[mesh_write.reason_bad_seq]
+doc = "The `reason` of a mesh read whose `--seq` is bare or not a non-negative number."
+value = "bad-seq"
+
+[mesh_write.msg_seq_bare]
+doc = "The refusal of a mesh read given `--seq` with no value."
+value = "--seq requires a value (got a bare flag, which would otherwise silently fall back to the default MUTATING read)"
+
+[mesh_write.msg_seq_invalid]
+doc = "The refusal of a mesh read whose `--seq` is not a non-negative number. Placeholder: {got} (JSON-quoted)."
+value = "--seq must be a non-negative integer (got {got})"
+
+[mesh_write.reason_filter_requires_peek]
+doc = "The `reason` of a consuming mesh read given `--last` or `--since`."
+value = "filter-requires-peek"
+
+[mesh_write.msg_filter_requires_peek]
+doc = "The refusal of a consuming mesh read given `--last` or `--since`."
+value = "--last/--since would consume unread broadcasts they do not show; use --peek, then a plain `mesh read` to consume"
+
+[mesh_write.hint_filter_requires_peek]
+doc = "The `hint` of that refusal."
+value = "use --peek, then a plain `mesh read` to consume"
+
+[mesh_write.reason_bad_last]
+doc = "The `reason` of a mesh read whose `--last` is not a positive number."
+value = "bad-last"
+
+[mesh_write.msg_last_invalid]
+doc = "The refusal of a mesh read whose `--last` is not a positive number. Placeholder: {got} (JSON-quoted)."
+value = "--last must be a positive integer (got {got})"
+
+[mesh_write.reason_bad_since]
+doc = "The `reason` of a mesh read whose `--since` is neither a duration nor a date."
+value = "bad-since"
+
+[mesh_write.msg_since_invalid]
+doc = "The refusal of a mesh read whose `--since` is neither a duration nor a date. Placeholder: {got} (JSON-quoted)."
+value = "--since must be an ISO 8601 timestamp or a duration like 30m/2h/1d (got {got})"
+
+[mesh_write.msg_receipt_corrupt]
+doc = "The error of an ack whose receipt holds a move no cursor can take (a {what} that is not usable, in the field {key}); Node throws there and prints the exception."
+value = "read receipt is corrupt: its {key} is not a usable {what}"
+
+[mesh_write.msg_context_different]
+doc = "The tail of the project-context-mismatch error when the current context resolves to another project. Placeholder: {caller} (JSON-quoted)."
+value = ", but the current context resolves to a DIFFERENT project {caller}"
+
+[mesh_write.msg_context_unresolved]
+doc = "The tail of the project-context-mismatch error when the current context resolves to no project."
+value = ", but the current context could not resolve a project (non-git cwd?)"
+
+[mesh_write.msg_project_mismatch]
+doc = "The project-context-mismatch error of a read or ack. Placeholders: {id}, {registered} (JSON-quoted) and {context} (one of the two tails above)."
+value = "workspace {id} is registered under project {registered}{context} — run this from within that project's worktree to read its inbox"
+
+[mesh_write.reason_project_mismatch]
+doc = "The `reason` of a read or ack from another project than the id's own."
+value = "project-context-mismatch"
+
+[mesh_write.reason_missing_receipt]
+doc = "The `reason` of an ack-primary without `--receipt`."
+value = "missing-receipt"
+
+[mesh_write.msg_missing_receipt]
+doc = "The refusal of an ack-primary without `--receipt`."
+value = "--receipt <readReceiptId> (from `inbox read-primary`) is required"
+
+[mesh_write.reason_unknown_receipt]
+doc = "The `reason` of an ack-primary for a receipt that does not exist."
+value = "unknown-receipt"
+
+[mesh_write.msg_unknown_receipt]
+doc = "The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is)."
+value = "no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run the ackCommand it returns"
+
+[mesh_write.reason_receipt_owner]
+doc = "The `reason` of an ack-primary for a receipt issued to another id or another reader."
+value = "receipt-owner-mismatch"
+
+[mesh_write.msg_receipt_belongs]
+doc = "The refusal of an ack-primary for a receipt issued to another id. Placeholder: {owner} (the receipt's id, JSON)."
+value = "receipt belongs to {owner}"
+
+[mesh_write.msg_receipt_other_reader]
+doc = "The refusal of an ack-primary for a receipt issued to another reader. Placeholder: {id}."
+value = "receipt was issued to a different reader — a receipt acks only for the reader that read it; re-run `inbox read-primary {id}` and then its `ackCommand`"
+
+[mesh_write.reason_receipt_expired]
+doc = "The `reason` of an ack-primary for a receipt past its lifetime."
+value = "receipt-expired"
+
+[mesh_write.msg_receipt_expired]
+doc = "The refusal of an ack-primary for an expired receipt. Placeholders: {hours} and {id}."
+value = "receipt is older than {hours}h — re-run `inbox read-primary {id}` and then its `ackCommand` (nothing was acked; the mail is still unread)"
+
+[mesh_write.msg_ack_not_owner]
+doc = "The refusal of an ack-primary by a caller that does not own the id. Placeholder: {id} (JSON-quoted)."
+value = "ack-primary refused: this caller does not own {id} (use --ack-as-owner to override)"
+
+[mesh_write.flag_legacy_ack_now]
+doc = "The flag that makes `inbox read-primary` ack in the same call (the old read-and-ack, kept for one release)."
+value = "legacy-ack-now"
+
+[mesh_write.inbox_positionals]
+doc = "The words of `inbox <sub> <id>` that mean something (the command, the subcommand, the id); any further word is ignored, as Node ignores it."
+value = 3
+
+[mesh_write.io_errors]
+doc = "Node's error code and description of each filesystem failure a receipt write can report: [code, description]."
+value = { not_found = ["ENOENT", "no such file or directory"], permission_denied = ["EACCES", "permission denied"], already_exists = ["EEXIST", "file already exists"], not_a_directory = ["ENOTDIR", "not a directory"], is_a_directory = ["EISDIR", "illegal operation on a directory"], read_only_filesystem = ["EROFS", "read-only file system"], storage_full = ["ENOSPC", "no space left on device"] }
+
+[mesh_write.msg_io_error]
+doc = "Node's message of a failed filesystem call. Placeholders: {code}, {what}, {syscall}, {path}."
+value = "{code}: {what}, {syscall} '{path}'"
+
+[mesh_write.msg_io_error_other]
+doc = "The message of a filesystem failure that has no Node code in `io_errors`. Placeholders: {error}, {syscall}, {path}."
+value = "{error}, {syscall} '{path}'"
+
+[mesh_write.store_error_prefix]
+doc = "The words the engine's store error puts before SQLite's own message (stripped to get that message)."
+value = "store read failed: "
+
+[mesh_write.store_unavailable_code]
+doc = "The `storeUnavailableReason` of a store that could not be opened (the error code `node:sqlite` gives every database failure)."
+value = "ERR_SQLITE_ERROR"
+
+[mesh_write.reason_store_unavailable]
+doc = "The `reason` of a read or ack whose store could not be opened."
+value = "store-unavailable"
+
+[mesh_write.msg_store_unopened]
+doc = "The error of a read or ack whose store could not be opened. Placeholders: {id} (JSON-quoted), {dir} (the project's store directory) and {error} (SQLite's message)."
+value = "store for workspace {id} could not be opened: devswarm store unavailable (ERR_SQLITE_ERROR) opening {dir}: {error}"
+
+[mesh_write.store_cantopen_message]
+doc = "SQLite's message when a database file cannot be opened at all (Node wraps it with the store directory; any other message surfaces as is)."
+value = "unable to open database file"
+
+[mesh_write.msg_store_unreadable]
+doc = "The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}."
+value = "store for workspace {id} could not be opened: {error}"

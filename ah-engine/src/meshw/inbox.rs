@@ -6,18 +6,17 @@
 //! (one transaction per op), the legacy shared cursor file and the `cursors` row, the cursor-write journal, the summary
 //! projection, the receipt's `ackedAt`, and a transient drain marker the parent gate honours while the ack runs.
 //!
-//! The engine answers only the successful path it can reproduce exactly. Every refusal Node prints (unknown, expired,
-//! foreign or mismatched receipt, a foreign project, a caller that does not own the id), every receipt op the engine does
-//! not apply (`sibling`), a re-home, a partition whose legacy cursors still need Node's one-time import, and a
-//! store the engine will not open are [`Defer`]s decided BEFORE the first write; Node then runs the verb. After the first
-//! cursor commit nothing defers: a later failure is reported in the result (`cursorWriteFailures`) exactly as Node
-//! reports it, never by running the verb again.
+//! Every refusal Node prints (a missing, unknown, expired, foreign or mismatched receipt, a foreign project, a caller that does
+//! not own the id, a store that cannot be opened) is answered here with Node's text, exit 2, and logged as Node logs it. A receipt
+//! that holds a move no cursor can take is Node's thrown exception (`{ok:false, error}`). After the first cursor commit nothing
+//! fails the verb: a later failure is reported in the result (`cursorWriteFailures`) exactly as Node reports it.
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
+use crate::meshw::readprimary::store_err;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
 use crate::meshw::cursors::{self, LogRec, Procs};
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::{Answer, Effect, mesh_candidates, rehome_is_noop, resolve_mesh_target};
 use crate::meshw::union;
@@ -99,73 +98,73 @@ pub(crate) fn registered_repo_key(desc: &OVal, id: &str) -> R<Option<String>> {
     Ok(persisted.filter(|p| *p != crate::meshw::send::hash_from_workspace_id(id)))
 }
 
-/// The ops of a receipt: the `own` and `sibling` moves to apply. An `nd` op (the NDJSON inbox) is Node's; so is an op whose fields the engine cannot read exactly like JavaScript does. An unknown kind is
-/// skipped, as Node skips it.
-fn own_ops(rec: &OVal, id: &str) -> R<Vec<AckOp>> {
-    let Some(OVal::Arr(ops)) = rec.get("ops") else { return defer("receipt-ops") };
+/// A receipt that names something no cursor move can use (a partition that is no string, a target that is no number): Node's
+/// `applyReadAckOps` throws there and `run()` prints the exception, `{ok:false, error}`.
+struct CorruptReceipt(String);
+
+fn corrupt(what: &str, key: &str) -> CorruptReceipt {
+    CorruptReceipt(defaults::render("mesh_write.msg_receipt_corrupt", &[("what", &what), ("key", &key)]))
+}
+
+/// The ops of a receipt: the `own`, `sibling` and `nd` moves to apply. An unknown kind is skipped, as Node skips it.
+fn own_ops(rec: &OVal, id: &str) -> Result<Vec<AckOp>, CorruptReceipt> {
+    // (`readReadReceipt` only returns a receipt whose `ops` is an array, and a fresh one is built with one)
+    let Some(OVal::Arr(ops)) = rec.get("ops") else { return Ok(Vec::new()) };
     let mut out = Vec::new();
     for op in ops {
         if !matches!(op, OVal::Obj(_) | OVal::Arr(_)) {
             continue;
         }
+        // `op.partition != null ? op.partition : id`
+        let partition_or_id = |key: &str| -> Result<String, CorruptReceipt> {
+            match op.get(key) {
+                None | Some(OVal::Null) => Ok(id.to_string()),
+                Some(OVal::Str(p)) => Ok(p.clone()),
+                Some(_) => Err(corrupt("partition", key)),
+            }
+        };
+        let finite = |key: &str| -> Result<f64, CorruptReceipt> {
+            match op.get(key) {
+                Some(OVal::Num(t)) if t.is_finite() => Ok(*t),
+                _ => Err(corrupt("target", key)),
+            }
+        };
+        let delivered = match op.get("delivered") {
+            Some(OVal::Num(d)) if d.is_finite() => Some(*d),
+            _ => None,
+        };
         match op.get("k") {
             Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_own") => {
-                let partition = match op.get("partition") {
-                    None | Some(OVal::Null) => id.to_string(),
-                    Some(OVal::Str(p)) => p.clone(),
-                    Some(_) => return defer("receipt-partition"),
-                };
-                let target = match op.get("target") {
-                    Some(OVal::Num(t)) if t.is_finite() => *t,
-                    _ => return defer("receipt-target"),
-                };
-                let delivered = match op.get("delivered") {
-                    Some(OVal::Num(d)) if d.is_finite() => Some(*d),
-                    _ => None,
-                };
-                out.push(AckOp::Own { partition, target, delivered });
+                out.push(AckOp::Own { partition: partition_or_id("partition")?, target: finite("target")?, delivered });
             }
             Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_sibling") => {
                 let partition = match op.get("partition") {
                     Some(OVal::Str(p)) if is_safe_id(p) => p.clone(),
-                    _ => return defer("receipt-partition"),
-                };
-                let ack_target = match op.get("ackTarget") {
-                    Some(OVal::Num(t)) if t.is_finite() => *t,
-                    _ => return defer("receipt-target"),
+                    _ => return Err(corrupt("partition", "partition")),
                 };
                 // `op.seenTarget > 0` is false for anything that is not a positive number
                 let seen_target = match op.get("seenTarget") {
                     Some(OVal::Num(t)) if t.is_finite() => *t,
                     _ => 0.0,
                 };
-                let delivered = match op.get("delivered") {
-                    Some(OVal::Num(d)) if d.is_finite() => Some(*d),
-                    _ => None,
-                };
-                out.push(AckOp::Sibling { partition, ack_target, seen_target, delivered, not_ackable: false });
+                out.push(AckOp::Sibling { partition, ack_target: finite("ackTarget")?, seen_target, delivered, not_ackable: op.get("notAckable").is_some_and(OVal::truthy) });
             }
             Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_nd") => {
-                let partition = match op.get("partition") {
-                    None | Some(OVal::Null) => id.to_string(),
-                    Some(OVal::Str(p)) => p.clone(),
-                    Some(_) => return defer("receipt-partition"),
-                };
-                let target = match op.get("target") {
-                    Some(OVal::Num(t)) if t.is_finite() => *t,
-                    _ => return defer("receipt-target"),
-                };
-                let path = |key: &str| -> R<Option<String>> {
+                let path = |key: &str| -> Result<Option<String>, CorruptReceipt> {
                     match op.get(key) {
                         None | Some(OVal::Null) => Ok(None),
                         Some(OVal::Str(t)) if t.is_empty() => Ok(None),
                         Some(OVal::Str(t)) => Ok(Some(t.clone())),
-                        Some(_) => defer("receipt-nd-path"),
+                        Some(_) => Err(corrupt("path", key)),
                     }
                 };
-                // an NDJSON move without a cursor file has no legacy projection to follow: Node's alternative branch is its own
-                let Some(cursor_path) = path("cursorPath")? else { return defer("receipt-nd-cursor") };
-                out.push(AckOp::Nd(NdOp { partition, target, cursor_path: Some(cursor_path), inbox_path: path("inboxPath")? }));
+                // `commitNdAck` clamps with `Math.max(0, Math.floor(Number(target) || 0))`; a cursor path is optional (the legacy
+                // projection into the descriptor's cursor file is skipped without one)
+                let target = match op.get("target") {
+                    Some(OVal::Num(t)) if t.is_finite() => *t,
+                    _ => return Err(corrupt("target", "target")),
+                };
+                out.push(AckOp::Nd(NdOp { partition: partition_or_id("partition")?, target, cursor_path: path("cursorPath")?, inbox_path: path("inboxPath")? }));
             }
             _ => {}
         }
@@ -213,83 +212,212 @@ pub(crate) struct AckPlan {
     imports: Vec<String>,
     reader: Option<String>,
     repo_key: String,
+    /// Whether this is `ack-primary` on a receipt (drain marker, `ackedAt` stamp, re-judged siblings) or the legacy same-call ack of
+    /// `read-primary --legacy-ack-now` (none of those; the verb in the cursor log is `read-primary`).
+    via_receipt: bool,
+}
+
+/// What an ack settled before its first write: the moves to make, or Node's refusal (the object it prints, exit 2).
+pub(crate) enum AckStep {
+    Go(Box<AckPlan>),
+    Refuse(OVal),
+}
+
+/// `refuse(reason, error)` of `cmdInboxAckPrimary`: `{ok:false, reason, error, action, id}`.
+fn refuse(id: &str, reason: &str, error: &str) -> AckStep {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false)).put("reason", s(reason)).put("error", s(error)).put("action", s(defaults::text("mesh_write.action_ack_primary"))).put("id", s(id));
+    AckStep::Refuse(o.done())
+}
+
+/// The refusal for a store that could not be settled (`Object.assign({}, base, { ok: false, reason, error })`).
+fn refuse_store(id: &str, reason: &str, error: &str) -> AckStep {
+    let mut o = Obj::default();
+    o.put("action", s(defaults::text("mesh_write.action_ack_primary"))).put("id", s(id)).put("ok", OVal::Bool(false)).put("reason", s(reason)).put("error", s(error));
+    AckStep::Refuse(o.done())
+}
+
+/// `{ok:false, error}`: what `run()` prints for an exception a verb throws.
+fn thrown(error: &str) -> AckStep {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false)).put("error", s(error));
+    AckStep::Refuse(o.done())
+}
+
+/// `ownershipRefusalCause(kind, ownEntry)`.
+fn ownership_cause(kind: &str, caller_registered: bool) -> &'static str {
+    if kind == defaults::text("mesh_write.kind_unresolvable") {
+        defaults::text("devswarm_cli.cause_unresolvable_caller")
+    } else if !caller_registered {
+        defaults::text("devswarm_cli.cause_caller_not_registered")
+    } else {
+        defaults::text("devswarm_cli.cause_ownership_mismatch")
+    }
+}
+
+/// `cwdInsideRegisteredWorktree(cwd, worktreePath)`: the real path of `cwd` (its nearest existing ancestor, for a deleted one) equals
+/// or lies under the real path of the registered worktree or that path's git toplevel. Fail-closed.
+fn cwd_inside_registered_worktree(cwd: &str, wt: &str) -> bool {
+    if cwd.is_empty() || wt.is_empty() {
+        return false;
+    }
+    let mut at = PathBuf::from(cwd);
+    let cwd_real = loop {
+        if let Ok(r) = std::fs::canonicalize(&at) {
+            break r;
+        }
+        if !at.pop() {
+            return false;
+        }
+    };
+    let Ok(root) = std::fs::canonicalize(wt) else { return false };
+    let mut roots = vec![root];
+    if let Ok(c) = ident::resolve_context(wt, false)
+        && let Some(top) = c.toplevel
+    {
+        roots.push(PathBuf::from(top));
+    }
+    roots.iter().any(|r| cwd_real.starts_with(r))
+}
+
+/// The project key `resolveWorkspaceStoreForRead` opens the store under for `id`: the caller's project, checked against the one the id
+/// is registered under (a disagreement is Node's `project-context-mismatch` refusal); with no project at all, the legacy per-id bucket.
+fn settle_store_key(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Result<String, AckStep>> {
+    let mut caller_key = ident::resolve_context(&inv.cwd, true)?.repo_key;
+    let registered = match desc {
+        Some(d) => registered_repo_key(d, id)?,
+        None => None,
+    };
+    if let (Some(_), None, Some(OVal::Str(wt))) = (&registered, &caller_key, desc.and_then(|d| d.get(defaults::text("mesh_write.field_worktree_path"))))
+        && cwd_inside_registered_worktree(&inv.cwd, wt)
+    {
+        caller_key.clone_from(&registered);
+    }
+    if let Some(reg) = &registered
+        && Some(reg) != caller_key.as_ref()
+    {
+        let quoted = |x: &str| OVal::Str(x.to_string()).stringify();
+        let context = match &caller_key {
+            Some(c) => defaults::render("mesh_write.msg_context_different", &[("caller", &quoted(c))]),
+            None => defaults::text("mesh_write.msg_context_unresolved").to_string(),
+        };
+        let msg = defaults::render("mesh_write.msg_project_mismatch", &[("id", &quoted(id)), ("registered", &quoted(reg)), ("context", &context)]);
+        return Ok(Err(refuse_store(id, defaults::text("mesh_write.reason_project_mismatch"), &msg)));
+    }
+    Ok(Ok(caller_key.unwrap_or_else(|| crate::meshw::send::hash_from_workspace_id(id))))
 }
 
 /// Run `inbox ack-primary` (argv already parsed; `positionals` start with `inbox`, `ack-primary`).
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
-    if a.is_help() {
-        return defer("help");
-    }
-    let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
-    // inboxWindowRejection: a window flag on an acking verb is Node's refusal
-    if a.has(defaults::text("mesh_write.flag_tail")) || a.has(defaults::text("mesh_write.flag_since")) {
-        return defer("window-flags");
-    }
+    // (`help` never reaches here: `verb_of` classifies a help request first)
     common::seat_check(inv)?;
-    let Some(rid) = a.one(defaults::text("mesh_write.flag_receipt")).filter(|r| receipt_id_ok(r)) else { return defer("receipt-argument") };
-    let plan = plan_ack(inv, id, rid, a.has(defaults::text("mesh_write.flag_ack_as_owner")), None)?;
-    // ---- commit: everything below writes, nothing below defers ----
-    let out = apply_ack(inv, plan);
-    Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
-}
-
-/// Everything `cmdInboxAckPrimary` checks before its first write: every refusal and every move the engine does not apply
-/// is a [`Defer`] here. `fresh` is the receipt a `read-primary --ack-after-print` is about to file (not on disk yet).
-pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh: Option<OVal>) -> R<AckPlan> {
-    let home = &inv.home;
-    // resolveWorkspaceStoreForRead: the caller's project, the id's registered project, the re-home trigger
-    let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return defer("no-project") };
-    let desc = ident::read_descriptor(home, id);
-    if let Some(d) = &desc
-        && let Some(reg) = registered_repo_key(d, id)?
-        && reg != repo_key
-    {
-        return defer("project-context-mismatch");
+    let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else {
+        return Ok(crate::meshw::readprimary::failure(defaults::text("devswarm_cli.msg_bad_id")));
+    };
+    // inboxWindowRejection: a window flag on an acking verb is Node's refusal
+    if let Some(refused) = crate::meshw::readprimary::window_refusal(inv, a, id, defaults::text("mesh_write.verb_ack_primary"))? {
+        return Ok(refused);
     }
-    rehome_is_noop(inv, id)?;
-    let st = common::open_store(inv, &repo_key)?;
-    let rows = ident::rows_of(&st.reader().roster().map_err(|e| Defer(format!("registry:{e}")))?);
-    // canonicalReceiptId: the lowest id of the worktree's identity family, else the literal id
-    let mut dir_id = id.to_string();
-    if let Some(d) = &desc {
-        match d.get(defaults::text("mesh_write.field_worktree_path")) {
-            Some(OVal::Str(wt)) if !wt.is_empty() => {
-                if let Some(mesh) = ident::canonical_mesh_id(wt)? {
-                    let mut ids: Vec<String> = mesh_candidates(&rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
-                    ids.sort();
-                    ids.dedup();
-                    if ids.len() > 1 && ids.iter().any(|x| x == id) {
-                        dir_id = ids[0].clone();
-                    }
-                }
+    let step = match a.one(defaults::text("mesh_write.flag_receipt")).filter(|r| !r.is_empty()) {
+        None => refuse(id, defaults::text("mesh_write.reason_missing_receipt"), defaults::text("mesh_write.msg_missing_receipt")),
+        Some(rid) => match plan_ack(inv, id, rid, a.has(defaults::text("mesh_write.flag_ack_as_owner")), None, true) {
+            Err(ident::Defer(reason)) if crate::meshw::readprimary::is_store_failure(&reason) && !crate::meshw::committed() => {
+                thrown(&defaults::render("mesh_write.msg_store_failure", &[("reason", &reason)]))
             }
-            None | Some(OVal::Null | OVal::Str(_)) => {}
-            Some(OVal::Bool(false)) => {}
-            Some(_) => return defer("descriptor-worktree"),
+            other => other?,
+        },
+    };
+    match step {
+        AckStep::Go(plan) => {
+            // ---- commit: everything below writes, nothing below defers ----
+            let out = apply_ack(inv, *plan);
+            Ok(Answer { code: 0, stdout: format!("{}\n", out.done().stringify()), effect: Effect::None })
+        }
+        AckStep::Refuse(o) => {
+            // `logVerbOutcome('inbox-ack-primary', id, r, ctx)`: one error entry for an unsuccessful result
+            let text = |k: &str| match o.get(k) {
+                Some(OVal::Str(t)) => Some(t.clone()),
+                _ => None,
+            };
+            let msg = text("error").or_else(|| text("reason")).unwrap_or_else(|| defaults::text("mesh_write.msg_verb_not_ok").to_string());
+            let repo_key = ident::resolve_context(&inv.cwd, true).ok().and_then(|c| c.repo_key);
+            crate::meshw::clog::ready(inv)?;
+            crate::meshw::clog::refusal(inv, &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), defaults::text("mesh_write.verb_ack_primary")), repo_key.as_deref(), Some(id), &msg, text("reason").as_deref());
+            crate::meshw::mark_committed();
+            Ok(Answer { code: 2, stdout: format!("{}\n", o.stringify()), effect: Effect::None })
         }
     }
+}
+
+/// Everything `cmdInboxAckPrimary` checks before its first write; each refusal Node prints is an [`AckStep::Refuse`]. `fresh` is
+/// the receipt a `read-primary --ack-after-print` is about to file (not on disk yet).
+pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh: Option<OVal>, via_receipt: bool) -> R<AckStep> {
+    let home = &inv.home;
+    // resolveWorkspaceStoreForRead: the caller's project, the id's registered project, the re-home trigger
+    let desc = ident::read_descriptor(home, id);
+    let repo_key = match settle_store_key(inv, id, desc.as_ref())? {
+        Ok(k) => k,
+        Err(refusal) => return Ok(refusal),
+    };
+    rehome_is_noop(inv, id)?;
+    let st = common::open_store(inv, &repo_key)?;
+    let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
+    // canonicalReceiptId: the lowest id of the worktree's identity family, else the literal id (any failure is Node's catch)
+    let dir_id = (|| -> R<String> {
+        if let Some(d) = &desc
+            && let Some(OVal::Str(wt)) = d.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy())
+            && let Some(mesh) = ident::canonical_mesh_id(wt)?
+        {
+            let mut ids: Vec<String> = mesh_candidates(&rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
+            ids.sort();
+            ids.dedup();
+            if ids.len() > 1 && ids.iter().any(|x| x == id) {
+                return Ok(ids.remove(0));
+            }
+        }
+        Ok(id.to_string())
+    })()
+    .unwrap_or_else(|_| id.to_string());
     let Some((rec, found_dir)) = (match fresh {
         Some(rec) => Some((rec, id.to_string())),
         None => read_receipt(home, id, rid, &dir_id),
     }) else {
-        return defer("unknown-receipt");
+        let msg = defaults::render("mesh_write.msg_unknown_receipt", &[("rid", &OVal::Str(rid.to_string()).stringify()), ("id", &OVal::Str(id.to_string()).stringify()), ("bare", &id)]);
+        return Ok(refuse(id, defaults::text("mesh_write.reason_unknown_receipt"), &msg));
     };
-    if !matches!(rec.get("id"), Some(OVal::Str(r)) if r == id) {
-        return defer("receipt-owner");
+    let rec_id = rec.get("id").map_or_else(|| defaults::text("mesh_write.js_undefined").to_string(), crate::dssup::ingest::import::js_string);
+    if rec_id != id {
+        // not the exact literal id the receipt was issued to: still ackable when both are one identity family (same worktree)
+        let same_family = (|| -> R<bool> {
+            let Some(rd) = ident::read_descriptor(home, &rec_id) else { return Ok(false) };
+            let Some(OVal::Str(wt)) = rd.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy()) else { return Ok(false) };
+            let g = crate::meshw::meshgroup::resolve(&rows, &rec_id, Some(wt))?;
+            Ok(g.active && g.ids.iter().any(|x| x == id))
+        })()
+        .unwrap_or(false);
+        if !same_family {
+            let shown = rec.get("id").map_or_else(|| defaults::text("mesh_write.js_undefined").to_string(), OVal::stringify);
+            return Ok(refuse(id, defaults::text("mesh_write.reason_receipt_owner"), &defaults::render("mesh_write.msg_receipt_belongs", &[("owner", &shown)])));
+        }
     }
     let reader = cursors::reader_key(ident::reader_nonce(home).as_deref());
-    let rec_reader = match rec.get("reader") {
-        None | Some(OVal::Null | OVal::Bool(false)) => None,
-        Some(OVal::Str(r)) if r.is_empty() => None,
-        Some(OVal::Str(r)) => Some(r.as_str()),
-        Some(_) => return defer("receipt-reader"),
+    // `(rec.reader || null) !== (reader || null)`: a truthy reader that is no string never matches
+    let reader_matches = match rec.get("reader") {
+        None | Some(OVal::Null | OVal::Bool(false)) => reader.is_none(),
+        Some(OVal::Str(r)) if r.is_empty() => reader.is_none(),
+        Some(OVal::Str(r)) => reader.as_deref() == Some(r.as_str()),
+        Some(v) if !v.truthy() => reader.is_none(),
+        Some(_) => false,
     };
-    if rec_reader != reader.as_deref() {
-        return defer("receipt-reader");
+    if !reader_matches {
+        return Ok(refuse(id, defaults::text("mesh_write.reason_receipt_owner"), &defaults::render("mesh_write.msg_receipt_other_reader", &[("id", &id)])));
     }
     match rec.get("createdAt") {
         Some(OVal::Num(c)) if c.is_finite() && (inv.now as f64) - c <= defaults::num("mesh_write.receipt_ttl_ms") as f64 => {}
-        _ => return defer("receipt-expired"),
+        _ => {
+            let hours = (defaults::num("mesh_write.receipt_ttl_ms") as f64 / 3_600_000.0).round();
+            return Ok(refuse(id, defaults::text("mesh_write.reason_receipt_expired"), &defaults::render("mesh_write.msg_receipt_expired", &[("hours", &hours), ("id", &id)])));
+        }
     }
     if !ack_as_owner {
         let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
@@ -298,50 +426,54 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
             || own_entry.as_ref().is_some_and(|e| e.id == id)
             || ident::declared_self_id(&inv.env, &inv.cwd, &rows)?.as_deref() == Some(id);
         if !owns {
-            return defer("not-owner");
+            let msg = defaults::render("mesh_write.msg_ack_not_owner", &[("id", &OVal::Str(id.to_string()).stringify())]);
+            return Ok(refuse(id, ownership_cause(&caller.kind, own_entry.is_some()), &msg));
         }
     }
-    let mut ops = own_ops(&rec, id)?;
+    let mut ops = match own_ops(&rec, id) {
+        Ok(o) => o,
+        Err(CorruptReceipt(msg)) => return Ok(thrown(&msg)),
+    };
     let mut imports: Vec<String> = Vec::new();
     for op in &mut ops {
         // a sibling is re-judged now (`revalidate`): the receipt's verdict was the one at read time
         if let AckOp::Sibling { partition, not_ackable, .. } = op {
-            *not_ackable = crate::meshw::meshgroup::ack_gate(inv, &rows, id, partition)?;
+            if via_receipt {
+                *not_ackable = crate::meshw::meshgroup::ack_gate(inv, &rows, id, partition)?;
+            }
             if *not_ackable {
                 continue;
             }
         }
-        let cur = cursors::rows_of(&st, op.partition()).map_err(|e| Defer(format!("cursor-rows:{e}")))?;
+        let cur = cursors::rows_of(&st, op.partition()).map_err(|e| store_err("cursor-rows", e))?;
         if cursors::needs_import(&cur) {
-            // the import itself must be one the engine can do exactly (a dry run says so); else the whole verb is Node's
+            // `ackFor` imports the partition's legacy cursor files the first time it moves it. The dry run only has to be possible;
+            // a case it cannot settle is carried out by the real import below, whose failure is reported in the result
             let h = crate::migrate::readercur::Handle::Ro(
-                crate::mesh::MeshReader::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file"))).map_err(|e| Defer(format!("store-open:{e}")))?,
+                crate::mesh::MeshReader::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file"))).map_err(|e| store_err("store-open", e))?,
             );
             let mut cx = crate::migrate::readercur::Cx::new(&home.to_string_lossy());
-            crate::migrate::readercur::import_legacy(&mut cx, &h, op.partition(), None, true).map_err(|e| Defer(format!("cursor-import:{e}")))?;
-            if cx.deferred {
-                return defer("cursor-import");
-            }
+            crate::migrate::readercur::import_legacy(&mut cx, &h, op.partition(), None, true).map_err(|e| store_err("cursor-import", e))?;
             if !imports.iter().any(|p| p == op.partition()) {
                 imports.push(op.partition().to_string());
             }
         }
     }
-    // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
+    // the summary refresh after the write
     crate::meshw::summary::check(&st, inv, None)?;
-    Ok(AckPlan { st, id: id.to_string(), rid: rid.to_string(), rec, found_dir, ops, imports, reader, repo_key })
+    Ok(AckStep::Go(Box::new(AckPlan { st, id: id.to_string(), rid: rid.to_string(), rec, found_dir, ops, imports, reader, repo_key, via_receipt })))
 }
 
 /// `commitNdAck` for one `nd` op of a receipt: the NDJSON position moves to the target (never past the inbox's line count), the
 /// descriptor's cursor file follows the floor, and a failure is reported in the result.
 #[allow(clippy::too_many_arguments)]
-fn apply_nd(inv: &Inv, st: &crate::meshw::store::MeshStore, id: &str, reader: Option<&str>, nonce: Option<String>, repo_key: &str, op: &NdOp, procs: &mut Procs, failures: &mut Vec<OVal>) {
+fn apply_nd(inv: &Inv, st: &crate::meshw::store::MeshStore, id: &str, reader: Option<&str>, nonce: Option<String>, repo_key: &str, op: &NdOp, verb: &str, procs: &mut Procs, failures: &mut Vec<OVal>) {
     let mut to = op.target.max(0.0).floor();
     if let Some(inbox) = &op.inbox_path {
         let lines = crate::meshw::union::non_empty_lines(inbox).ok().flatten().map_or(0, |l| l.len());
         to = to.min(lines as f64);
     }
-    let r = cursors::ack_for(st, &inv.home, &op.partition, defaults::text("mesh_write.cursor_ns_nd"), reader, to, procs);
+    let r = cursors::ack_for_at(st, &inv.home, &op.partition, defaults::text("mesh_write.cursor_ns_nd"), reader, to, procs, inv.now);
     if r.ok {
         crate::meshw::mark_committed();
     }
@@ -356,7 +488,7 @@ fn apply_nd(inv: &Inv, st: &crate::meshw::store::MeshStore, id: &str, reader: Op
             delivered: None,
             nonce,
             gate: defaults::text("mesh_write.gate_min_floor"),
-            verb: defaults::text("mesh_write.verb_ack_primary"),
+            verb,
             cwd: None,
             ok: r.ok,
             err: if r.ok { None } else { r.error.as_deref() },
@@ -381,8 +513,10 @@ fn apply_nd(inv: &Inv, st: &crate::meshw::store::MeshStore, id: &str, reader: Op
 
 /// The writes of `cmdInboxAckPrimary` and its result: nothing defers from here, a failure is reported in the result.
 pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
-    let AckPlan { st, id, rid, rec, found_dir, ops, imports, reader, repo_key } = plan;
+    let AckPlan { st, id, rid, rec, found_dir, ops, imports, reader, repo_key, via_receipt } = plan;
+    let verb = if via_receipt { defaults::text("mesh_write.verb_ack_primary") } else { defaults::text("mesh_write.verb_read_primary") };
     let (id, rid, home) = (id.as_str(), rid.as_str(), &inv.home);
+    // (the legacy same-call ack marks the drain too: `cmdInboxMessages` wraps any acking read in the marker)
     mark_drain(inv, id);
     let mut procs = Procs::default();
     let mut failures: Vec<OVal> = Vec::new();
@@ -414,7 +548,7 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
                 if r.ok {
                     crate::meshw::mark_committed();
                 }
-                log_move(home, id, partition, &r, *target, *delivered, nonce.clone(), defaults::text("mesh_write.gate_owner"), &repo_key);
+                log_move(home, id, partition, &r, *target, *delivered, nonce.clone(), defaults::text("mesh_write.gate_owner"), &repo_key, verb);
                 if let Some(e) = &r.error {
                     failures.push(failure(partition, defaults::text("mesh_write.channel_store_cursor"), e));
                 }
@@ -436,7 +570,7 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
                 if r.ok {
                     crate::meshw::mark_committed();
                 }
-                log_move(home, id, partition, &r, *ack_target, *delivered, nonce.clone(), defaults::text("mesh_write.gate_sibling"), &repo_key);
+                log_move(home, id, partition, &r, *ack_target, *delivered, nonce.clone(), defaults::text("mesh_write.gate_sibling"), &repo_key, verb);
                 if let Some(e) = &r.error {
                     failures.push(failure(partition, defaults::text("mesh_write.channel_sibling_store"), e));
                     continue;
@@ -449,15 +583,15 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
                     true
                 });
             }
-            AckOp::Nd(o) => apply_nd(inv, &st, id, reader.as_deref(), nonce.clone(), &repo_key, o, &mut procs, &mut failures),
+            AckOp::Nd(o) => apply_nd(inv, &st, id, reader.as_deref(), nonce.clone(), &repo_key, o, verb, &mut procs, &mut failures),
         }
     }
     if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
-        crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_ack_primary"), &why);
+        crate::meshw::log_summary_failure(verb, &why);
     }
     clear_drain(inv, id);
     let already = !matches!(rec.get("ackedAt"), None | Some(OVal::Null));
-    if failures.is_empty() && !already {
+    if via_receipt && failures.is_empty() && !already {
         let mut stamped = rec.clone();
         stamped.set("ackedAt", n(inv.now as f64));
         let file = receipt_dir(home, &found_dir).join(format!("{rid}{}", defaults::text("mesh_write.json_suffix")));
@@ -497,7 +631,7 @@ fn failure(partition: &str, channel: &str, error: &str) -> OVal {
 
 /// The cursor-write journal line of one move.
 #[allow(clippy::too_many_arguments)]
-fn log_move(home: &Path, caller: &str, partition: &str, r: &cursors::Acked, target: f64, delivered: Option<f64>, nonce: Option<String>, gate: &str, repo_key: &str) {
+fn log_move(home: &Path, caller: &str, partition: &str, r: &cursors::Acked, target: f64, delivered: Option<f64>, nonce: Option<String>, gate: &str, repo_key: &str, verb: &str) {
     cursors::log_cursor_write(
         home,
         &LogRec {
@@ -509,7 +643,7 @@ fn log_move(home: &Path, caller: &str, partition: &str, r: &cursors::Acked, targ
             delivered,
             nonce,
             gate,
-            verb: defaults::text("mesh_write.verb_ack_primary"),
+            verb,
             cwd: None,
             ok: r.ok,
             err: r.error.as_deref(),

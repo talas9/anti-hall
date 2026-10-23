@@ -386,8 +386,8 @@ fn cases(fx: &Fx) -> Vec<Case> {
     let mut from_main = base("peek-from-another-checkout", cmd("peek-primary", "child-1", &[]), ack(floors("child-1", 0, 0), d_store.clone()), nothing(), true, vec!["\"count\":2"]);
     from_main.cwd = "main";
     v.push(from_main);
-    // ---- peek-primary: deferred ----
-    v.push(base("peek-text-format", cmd("peek-primary", "child-1", &["--format", "text"]), ack(floors("child-1", 0, 0), d_store.clone()), nothing(), false, vec![]));
+    // ---- peek-primary: `--format text` is read-primary's alone, a peek prints its JSON ----
+    v.push(base("peek-text-format", cmd("peek-primary", "child-1", &["--format", "text"]), ack(floors("child-1", 0, 0), d_store.clone()), nothing(), true, vec!["\"count\":2"]));
     v.push(base("peek-no-descriptor", cmd("peek-primary", "ghost", &[]), ack(floors("child-1", 0, 0), d_store.clone()), nothing(), true, vec!["unregistered-workspace"]));
     // ---- ack: native ----
     let pid = i64::from(std::process::id());

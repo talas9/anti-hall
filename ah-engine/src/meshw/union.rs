@@ -17,8 +17,9 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
+use crate::meshw::readprimary::store_err;
 use crate::mesh::MeshReader;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::devswarm_root;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -79,10 +80,8 @@ pub fn cursor_position(path: &str) -> R<Option<f64>> {
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let raw = js_trim(&text);
     let c = if !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()) {
-        if raw.len() > defaults::num("mesh_write.cursor_max_digits") as usize {
-            // parseInt of a long digit string is only approximated by the specification
-            return defer("cursor-long-digits");
-        }
+        // V8's parseInt of a decimal digit string is correctly rounded, as `f64::from_str` is (checked: equal to Number() for
+        // 400-digit strings, which both read as Infinity, i.e. not a position)
         raw.parse::<f64>().unwrap_or(f64::NAN)
     } else {
         match OVal::parse(raw) {
@@ -93,7 +92,9 @@ pub fn cursor_position(path: &str) -> R<Option<f64>> {
                 Some(OVal::Null) => 0.0,
                 Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
                 None => f64::NAN,
-                Some(_) => return defer("cursor-line-shape"),
+                // Number([..]) is Number(String([..])); Number({..}) is NaN
+                Some(arr @ OVal::Arr(_)) => js_number_of_str(&crate::dssup::ingest::import::js_string(arr)),
+                Some(OVal::Obj(_)) => f64::NAN,
             },
             _ => f64::NAN,
         }
@@ -109,7 +110,7 @@ fn embedded_hash(line: &str) -> R<Option<String>> {
         Some(OVal::Str(s)) => Ok(Some(s.clone())),
         Some(OVal::Num(n)) => Ok(Some(crate::checks::jsport::num::to_js_string(*n))),
         Some(OVal::Bool(b)) => Ok(Some(b.to_string())),
-        Some(_) => defer("ndjson-hash-shape"),
+        Some(other) => Ok(Some(crate::dssup::ingest::import::js_string(other))),
     }
 }
 
@@ -209,14 +210,14 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
                 }
                 true
             })
-            .map_err(|e| Defer(format!("store-read:{e}")))?;
+            .map_err(|e| store_err("store-read", e))?;
         let mut unread_rows: Vec<Value> = Vec::new();
         reader
             .for_each_message(i.id, floor_index(i.store_base) as u64, |m| {
                 unread_rows.push(m);
                 true
             })
-            .map_err(|e| Defer(format!("store-read:{e}")))?;
+            .map_err(|e| store_err("store-read", e))?;
         let unread_row_hashes: HashSet<String> = unread_rows.iter().filter_map(|r| truthy_hash(r).map(str::to_string)).collect();
         let uncovered: Vec<Value> = unread_rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !unread_hashes.contains(h))).collect();
         let by_body = body_covered(&uncovered, &nd_lines, &store_hashes, i.id, unread_start)?;
@@ -257,7 +258,7 @@ pub fn merged_total(i: &UnionIn<'_>) -> R<usize> {
             rows.push(m);
             true
         })
-        .map_err(|e| Defer(format!("store-read:{e}")))?;
+        .map_err(|e| store_err("store-read", e))?;
     let store_hashes: HashSet<String> = rows.iter().filter_map(|m| m["hash"].as_str().map(str::to_string)).collect();
     let uncovered: Vec<Value> = rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !hashes.contains(h))).collect();
     let by_body = body_covered(&uncovered, &all, &store_hashes, i.id, 0)?;
@@ -268,7 +269,7 @@ pub fn merged_total(i: &UnionIn<'_>) -> R<usize> {
 /// row reads its legacy floor instead, as Node's `positions()` does (`legacyStoreFloor`, `legacyNdFloor` of the caller's cursor path or
 /// the descriptor's); nothing is written.
 pub fn floor_bases(reader: &MeshReader, home: &Path, partition: &str, cursor_path: Option<&str>) -> R<(f64, f64)> {
-    let rows = reader.reader_cursors(partition).map_err(|e| Defer(format!("cursor-rows:{e}")))?;
+    let rows = reader.reader_cursors(partition).map_err(|e| store_err("cursor-rows", e))?;
     let floor_of = |ns: &str| -> Option<f64> {
         rows.iter().find(|r| r["ns"] == ns && r["reader"] == defaults::text("mesh_write.floor_reader")).and_then(|r| r["value"].as_f64())
     };
@@ -347,7 +348,7 @@ pub fn unread_at(
 pub fn read_bases(reader: &MeshReader, home: &Path, id: &str, cursor_file: Option<&str>, me: Option<&str>) -> R<(f64, f64)> {
     let (mut store_base, mut nd_base) = floor_bases(reader, home, id, cursor_file)?;
     if let Some(me) = me {
-        let rows = reader.reader_cursors(id).map_err(|e| Defer(format!("cursor-rows:{e}")))?;
+        let rows = reader.reader_cursors(id).map_err(|e| store_err("cursor-rows", e))?;
         let own = |ns: &str| rows.iter().find(|r| r["ns"] == ns && r["reader"] == me).and_then(|r| r["value"].as_f64());
         if let Some(v) = own(defaults::text("mesh_write.cursor_ns_store")) {
             store_base = v;
@@ -416,13 +417,13 @@ pub fn store_dir(home: &Path, repo_key: &str) -> std::path::PathBuf {
 }
 
 /// A string that is a JavaScript-truthy path: `Some(non-empty)`, `None` for absent/null/empty/false/0; a value of another
-/// type (which JavaScript would stringify or reject in its own way) defers.
+/// type is no path any file call of Node's accepts (each throws into its own catch), so it reads as no path.
 pub fn path_field(d: &OVal, key: &str) -> R<Option<String>> {
     match d.get(key) {
         None | Some(OVal::Null | OVal::Bool(false)) => Ok(None),
         Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
         Some(OVal::Num(n)) if *n == 0.0 || n.is_nan() => Ok(None),
-        Some(_) => defer("descriptor-field-type"),
+        Some(_) => Ok(None),
     }
 }
 
