@@ -96,15 +96,11 @@ value = [
 ]
 
 # ---- generated output ------------------------------------------------------------------------------------------------------
-# `kind = "shim"`: install_shims (checks/devswarm_role): the launcher files written under the home directory's devswarm_role.bin_dir,
-# named by the `name` of the devswarm_role row `row`; `watcher` picks the shim source. `kind = "unit"`: setup/units: the unit files of
-# the engine for the manager `os_key` names (a units.os_* setting).
+# `kind = "unit"`: setup/units: the unit files of the engine for the manager `os_key` names (a units.os_* setting).
 
 [entry_audit.generators]
-doc = "Every generator of files the engine itself writes outside the plugin tree: the launcher shims and the service units."
+doc = "Every generator of files the engine itself writes outside the plugin tree: the service units."
 value = [
-  { id = "devswarm-cli-shim", kind = "shim", row = "devswarm_role.launcher_cli", watcher = false },
-  { id = "devswarm-watcher-shim", kind = "shim", row = "devswarm_role.launcher_watcher", watcher = true },
   { id = "engine-unit-launchd", kind = "unit", os_key = "units.os_launchd" },
   { id = "engine-unit-systemd", kind = "unit", os_key = "units.os_systemd" },
 ]

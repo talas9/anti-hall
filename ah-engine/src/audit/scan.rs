@@ -129,17 +129,10 @@ pub struct Generated {
 
 /// What every generator of `audit.generators` would write under `home`.
 pub fn generated(home: &Path) -> Vec<Generated> {
-    let h = home.to_string_lossy().into_owned();
     let mut out = Vec::new();
     for g in defaults::raw("entry_audit.generators").as_array().unwrap_or_default() {
         let (id, kind) = (g.str_field("id").to_string(), g.str_field("kind").to_string());
         match kind.as_str() {
-            "shim" => {
-                let watcher = g.get("watcher").and_then(defaults::V::as_bool).unwrap_or(false);
-                let name = defaults::raw(g.str_field("row")).str_field("name");
-                let path = home.join(defaults::text("devswarm_role.bin_dir")).join(name);
-                out.push(Generated { id, kind, path, text: crate::checks::devswarm_role::text::shim_source(watcher, &h) });
-            }
             "unit" => {
                 let Some(m) = crate::setup::units::manager(defaults::text(g.str_field("os_key"))) else { continue };
                 let exe = crate::paths::dir().join(defaults::text("doctor.bin_dir")).join(defaults::text("doctor.bin_name"));
