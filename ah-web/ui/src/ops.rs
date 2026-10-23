@@ -325,6 +325,7 @@ fn UpdatesScreen() -> impl IntoView {
                         }}</dd>
                         <dt>{tx("ops_check_at")}</dt><dd>{since(c.checked_ms)}</dd>
                     </dl>
+                    {c.local_ahead.then(|| view! { <p class="fb" role="status">{tx("ops_check_local_ahead").replace("{build}", &c.build_version).replace("{release}", &c.latest_release)}</p> })}
                     <p class="soft-note">{c.message.clone()}</p>
                     {c.available.then(|| view! {
                         <div><div class="sect">{tx("ops_check_changelog")}</div><p class="soft-note">{tx("ops_check_changelog_none")}</p><p class="soft-note">{tx("ops_check_apply")}</p></div>

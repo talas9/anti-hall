@@ -1042,6 +1042,10 @@ value = "cannot keep the current binary as {bin}.prev before replacing it\n{unch
 doc = "Placeholders: {bin}, {bindir}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
 value = "cannot move the new engine into place as {bin}\n{unchanged}; the previous binary is kept as {bin}.prev\nfix the permissions of {bindir}, then run again; to put the previous binary back: ah-hook update --rollback"
 
+[msg.updater_auto_not_newer]
+doc = "Logged by an automatic update that skipped a release because the running build is a local or hand-installed build and the release is not strictly newer. {running}, {release}."
+value = "automatic update skipped: running local build {running} is newer than or equal to release {release}; not replaced (a manual `update` needs --force)"
+
 [msg.updater_routine_scheduled]
 doc = "Printed by an automatic update when the install routine was started detached (the daemon running the job is replaced by it). Placeholder: {log}."
 value = "install routine started in the background; its report is in {log}"

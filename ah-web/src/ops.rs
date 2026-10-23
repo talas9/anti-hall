@@ -454,6 +454,7 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     let rel = eng.get("latest_release").cloned().unwrap_or(Value::Null);
     let latest_release = [s(&rel, "version"), s(&rel, "tag")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
     let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && version_nums(&s(&rel, "version")) > version_nums(&build_version);
+    let local_ahead = !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && version_nums(&s(&rel, "version")) <= version_nums(&build_version);
     let c = UpdateCheck {
         ok: out.status.success(),
         installed,
@@ -469,6 +470,7 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
         installed_at: eng.get("installed_at").and_then(Value::as_u64).unwrap_or(0),
         latest_release,
         engine_available,
+        local_ahead,
     };
     *last = Some((Instant::now(), c.clone()));
     Json(c).into_response()

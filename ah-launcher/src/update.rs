@@ -107,6 +107,7 @@ struct Uc {
     stage_dir: String,
     asset_name: String,
     routine_feature: String,
+    record_file: String,
     engine_version_json: Vec<String>,
 }
 
@@ -208,6 +209,7 @@ impl Uc {
             stage_dir: t("stage_dir")?,
             asset_name: t("asset_name")?,
             routine_feature: t("routine_feature")?,
+            record_file: t("install_record_file")?,
             engine_version_json: l("engine_version_json_args")?,
         })
     }
@@ -966,6 +968,10 @@ impl U<'_> {
             if channel == self.c.ch_stable {
                 want_version = tag[self.c.pre_stable.len()..].to_string();
             }
+            // an automatic update never replaces a local or hand-installed build with a release that is not strictly newer
+            if self.o.auto && self.auto_not_newer(&channel, &want_version, &tag) {
+                return 0;
+            }
             let asset = fill(&self.s.text("updater.asset_name"), &[("tag", &tag), ("triple", &triple)]);
             self.say(&self.m("msg.updater_channel_latest", &[("channel", &channel), ("tag", &tag), ("asset", &asset)]));
             let dl = |name: &str| fill(&self.s.text("updater.download_url"), &[("base", &self.c.download_base), ("tag", &tag), ("name", name)]);
@@ -1244,6 +1250,30 @@ impl U<'_> {
         // the routine's own lines are the report; the update lock and scratch stay ours until it is done
         let status = cmd.status().ok()?;
         status.code().or(Some(1))
+    }
+
+    /// Automatic updates only: true (after saying why) when the release is not strictly newer than what runs, and what runs is a
+    /// local/manual build (the install record says so, or its version carries `+branch.sha` build metadata).
+    fn auto_not_newer(&mut self, channel: &str, want: &str, tag: &str) -> bool {
+        let rec = fs::read_to_string(self.dir.join(&self.c.record_file)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).unwrap_or_default();
+        let out = self.tmp.join("running.out");
+        let argv = vec![self.bin.display().to_string(), self.c.engine_version.clone()];
+        let envs = [(self.s.text("env.plugin_root"), self.proot.clone()), (self.s.text("env.dir"), self.tmp.join("state"))];
+        let envs: Vec<(&str, &Path)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_path())).collect();
+        let _ = self.run_in(&argv, &envs, Some(&out), self.limit);
+        let running = fs::read_to_string(&out).unwrap_or_default().lines().next().unwrap_or_default().trim().to_string();
+        let src = rec["source"].as_str().unwrap_or_default();
+        let local = running.contains('+') || src == self.c.source_file || src == "local";
+        if !local {
+            return false;
+        }
+        let core = |v: &str| -> Vec<u64> { v.trim_start_matches('v').split(['+', '-']).next().unwrap_or("").split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+        // a stable release must have a strictly higher plugin version; a dev pre-release carries none, so it cannot be newer
+        if channel == self.c.ch_stable && core(want) > core(&running) {
+            return false;
+        }
+        self.say(&self.m("msg.updater_auto_not_newer", &[("running", &running), ("release", if want.is_empty() { tag } else { want })]));
+        true
     }
 
     /// Does this engine binary advertise the install routine (`version --json` lists `routine_feature`)? An older build does not, and

@@ -571,12 +571,14 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 // ---- downgrade gate ---------------------------------------------------------------------------------------------------------
 
 /// Why installing `target` over `cur` is a downgrade, or None: the plugin version decides, then (same version) the build time.
-fn downgrade(cur: &Running, target_version: &str, target_built: u64) -> Option<String> {
+fn downgrade(cur: &Running, target_version: &str, target_built: u64, target_source: &str) -> Option<String> {
     if cur.version.is_empty() {
         return None;
     }
     match crate::version_cmp(target_version, &cur.version) {
         std::cmp::Ordering::Less => Some(t("routine.why_plugin_lower").to_string()),
+        // a release (or a file) of the SAME plugin version is not newer than a local or hand-installed build of it
+        std::cmp::Ordering::Equal if target_source != t("routine.source_local") && (cur.source != t("routine.source_release") || cur.version.contains('+')) => Some(t("routine.why_local_running").to_string()),
         std::cmp::Ordering::Equal if cur.built > 0 && target_built > 0 && target_built < cur.built => Some(t("routine.why_build_older").to_string()),
         _ => None,
     }
@@ -801,7 +803,7 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
         log.say(t("routine.line_check_failed").to_string());
         return (Done::Failed, json!({"action": "install", "problems": pre.problems}));
     }
-    if let Some(why) = downgrade(&cur, &pre.version, new_built) {
+    if let Some(why) = downgrade(&cur, &pre.version, new_built, &o.source) {
         let msg = defaults::render("routine.msg_downgrade", &[("running", &cur.version), ("target", &pre.version), ("why", &why), ("flag", &flag("force"))]);
         if !o.force {
             log.say(msg);

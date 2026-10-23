@@ -1755,6 +1755,10 @@ value = "manual"
 doc = "Name, inside the updater's scratch directory, of the staging directory handed to the install routine (the engine and the thin client under their release member names)."
 value = "stage"
 
+[updater.install_record_file]
+doc = "The install record the routine writes in the state directory ({version, sha, source, ...}); the automatic updater reads its `source`."
+value = "install.json"
+
 [updater.routine_feature]
 doc = "The feature word an engine build lists in `version --json` (`features`) when it has the install routine. The updater hands the staged build to an engine only when it lists this word; an older build's `update` is a different command."
 value = "install-routine"

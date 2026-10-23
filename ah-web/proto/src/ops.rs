@@ -137,6 +137,9 @@ pub struct UpdateCheck {
     /// The latest release is newer than the RUNNING build (plugin version first).
     #[serde(default)]
     pub engine_available: bool,
+    /// The running build is a local or hand-installed one that is newer than or equal to the latest release: it is not replaced.
+    #[serde(default)]
+    pub local_ahead: bool,
 }
 
 /// One normalised log line.
