@@ -123,6 +123,10 @@ pub const STRS: &[(&str, &str)] = &[
     ("launcher.cli_install_verb", "install"),
     ("launcher.cli_update_verb", "update"),
     ("launcher.cli_doctor_verb", "doctor"),
+    ("launcher.help_install", "usage: ah-hook install [--lock <file>] [--print-target] [--auto] [-v]\n\nInstall the engine (and the thin client) pinned by the plugin's ah-engine.lock; --auto is the session-start form and installs only when engine.bootstrap says so."),
+    ("launcher.help_doctor", "usage: ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]\n\nDiagnose the install (engine, thin client, plugin files); --repair fixes what is safe to fix."),
+    ("launcher.help_selftest", "usage: ah-hook --selftest [--engine <file>]\n\nRun the thin client's built-in self test against an engine binary."),
+    ("launcher.help_integrity", "usage: ah-hook integrity <record|accept|check|fail|status|lock|unlock>\n\nRecord and check the expected sha256 of the installed engine binary."),
     ("launcher.arg_builtin", "--builtin"),
     ("launcher.knob_doctor_rosetta", "AH_DOCTOR_ROSETTA"),
     ("launcher.knob_update_api_base", "AH_UPDATE_API_BASE"),
@@ -276,6 +280,7 @@ pub const TABLES: &[(&str, &[(&str, u64)])] = &[(
 )];
 
 pub const LISTS: &[(&str, &[&str])] = &[
+    ("cli.help_flags", &["--help", "-h"]),
     (
         "launcher.plugin_root_envs",
         &["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"],
