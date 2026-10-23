@@ -344,6 +344,8 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `edit-guard` | Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js). |
 | `engine-role-guard` | PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment). |
 | `broad-kill-guard` | PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed. |
+| `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
+| `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js). |
@@ -374,6 +376,8 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `session-end-mcp-reaper` | SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test runners), with Node's selection rules and audit log; a user pattern or start time it cannot read exactly defers to Node (port of session-end-mcp-reaper.js). |
 | `procwatch-advisory` | SessionStart, UserPromptSubmit and PreToolUse advisory: leftover processes of ended Claude sessions, agents silent past a threshold, processes of this session using too much CPU or memory, and low free disk; warns only (a kill is a per-class opt-in of the scheduled sweep, a block at critical disk an opt-in setting). |
 | `task-tracker` | UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js). |
+| `burn-breaker` | PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status commands and SendMessage (the report). |
+| `uncommitted-guard` | PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only: warns past git.soft_uncommitted_lines and blocks past git.max_uncommitted_lines uncommitted lines in the subagent's worktree (commit first). |
 
 ## Settings
 
@@ -2072,7 +2076,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.cache_max_depth` | `128` |  |  | Nesting past which the answer cache file is left alone: only JavaScript reads it, so the engine neither serves from it nor rewrites it (JSON.parse reads deeper than this port does). |
 | `jev.cache_max_entries` | `500` |  |  | Answers the content-hash cache keeps; the oldest is evicted first (Node: CACHE_MAX_ENTRIES). |
 | `jev.confidence_threshold` | `0.85` |  |  | Default minimum confidence for an answer to count as trusted, a decimal between 0 and 1 (Node: DEFAULT_CONFIDENCE_THRESHOLD). |
-| `jev.default_modes` | `21 entries` |  |  | Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36). |
+| `jev.default_modes` | `22 entries` |  |  | Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36). |
 | `jev.detached_args` | `jev, ask, --json` |  |  | The arguments of the detached process a one-shot caller starts for an ask nobody waits for (reads one request line on stdin, as `jev ask` does). |
 | `jev.drain_poll_ms` | `2` |  | ms | How often `drain` checks whether the asynchronous queue has emptied (tests and shutdown only). |
 | `jev.endpoint_typesafe` | `https://api.typesafe.ai/v1/systemone` |  |  | TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint). |
@@ -2269,7 +2273,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `evidence.answer_key` | `answer` |  |  | The field of a Haiku reply that holds its answer. |
-| `evidence.cfg` | `3 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received a usage-limit pause or a workspace the app shows as paused each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command or the same error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
+| `evidence.cfg` | `4 entries` |  |  | The evidence gate of each supervisor integration, keyed by its Jev integration id (fields described in the header). devswarmWaitKind: stuck or waiting (design card 4.5): asked only with enough transcript and mesh evidence and only when no rule settles it; a done, archived or held child is never asked about, and running CI, an unanswered question to the parent, a report newer than anything received a usage-limit pause or a workspace the app shows as paused each mean waiting. devswarmLoop (card 4.10): a rule decides; recent progress means not looping, and the model only confirms a candidate (the same command or the same error repeated, or a change reverted). devswarmStepMap (card 4.6): asked only for a plan with at least two steps, a summary of enough text and an earlier summary that reported a step; one step in progress with no sequencing word, or a summary that quotes a step's text, decides without a model. |
 | `evidence.confidence_key` | `confidence` |  |  | The field of a Haiku reply that holds its confidence. |
 | `evidence.date_chars` | `10` |  |  | Characters of an ISO timestamp that make its UTC date, which the per-day Haiku cap counts by. |
 | `evidence.dur_placeholder` | `{dur}` |  |  | The placeholder in a question that the caller's `dur` text (how long there was no progress) replaces. |
@@ -2345,7 +2349,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUse` | `9 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `5 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `5 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `24 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `28 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `5 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
@@ -2356,7 +2360,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `5 entries, 5 entries, 5 entries, 5 entries, 5 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `5 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `12 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `16 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `5 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
@@ -3339,6 +3343,46 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.summary` | `Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while ...` |  |  | One-line description of the devswarm-comms-guard check in the generated reference. |
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
+
+### spawn_guards.toml / spawn_ceiling
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_ceiling.base` | `12` |  |  | The ceiling at full usage headroom: a spawn is blocked when this many agents already run. |
+| `spawn_ceiling.control_re` | `[\x00-\x1f\x7f]+` |  |  | JavaScript regex source (global): control characters cut from an agent description before it is shown. |
+| `spawn_ceiling.desc_max` | `60` |  |  | How many characters of an agent description the message keeps. |
+| `spawn_ceiling.floor` | `2` |  |  | The ceiling never drops below this, whatever the usage. |
+| `spawn_ceiling.guard_name` | `spawn-ceiling` |  |  | Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json). |
+| `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
+| `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
+| `spawn_ceiling.msg_instead` | `wait for or stop a finished or idle agent above, then spawn; the ceiling rise...` |  |  | What to do instead of spawning past the ceiling. |
+| `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
+| `spawn_ceiling.msg_what` | `{n} agents are already running (ceiling now {ceiling}): {names}{more}.` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
+| `spawn_ceiling.msg_why` | `More agents than that rarely add outcome; each one costs tokens whether or no...` |  |  | Why the ceiling block applies. |
+| `spawn_ceiling.setting` | `6 entries` |  |  | The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op. |
+| `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
+| `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
+| `spawn_ceiling.unnamed` | `(unnamed)` |  |  | The name of a running agent with no description. |
+
+### spawn_guards.toml / spawn_usage
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `spawn_usage.block_pct` | `92` |  |  | Hard threshold (spawn_block_pct): at or above this usage percent new agent spawns are blocked until the limit resets. |
+| `spawn_usage.bucket_names` | `5-hour, weekly` |  |  | The name each bucket has in the messages, parallel to bucket_pct. |
+| `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
+| `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
+| `spawn_usage.guard_name` | `spawn-usage` |  |  | Guard name in the messages and the skip file. |
+| `spawn_usage.msg_block_instead` | `finish the work already running, do small steps inline, or wait for the reset...` |  |  | What to do instead of the blocked spawn. |
+| `spawn_usage.msg_block_what` | `the {limit} usage limit is at {pct}% (hard threshold {cap}%, {resets}); new a...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
+| `spawn_usage.msg_block_why` | `A spawn past this point can exhaust the limit and stop all work, including ag...` |  |  | Why the hard block applies. |
+| `spawn_usage.msg_resets_at` | `resets at {at}` |  |  | The reset clause when the reset time is known; {at} is an ISO time to the minute (UTC). |
+| `spawn_usage.msg_resets_unknown` | `reset time unknown` |  |  | The reset clause when the reset time is not in the usage cache. |
+| `spawn_usage.msg_soft_instead` | `use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents,...` |  |  | What to do instead, in the soft advice. |
+| `spawn_usage.msg_soft_what` | `the {limit} usage limit is at {pct}% ({resets}).` |  |  | What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what. |
+| `spawn_usage.msg_soft_why` | `Headroom is getting short; tokens spent without a matching outcome (commits, ...` |  |  | Why the soft advice applies. |
+| `spawn_usage.setting` | `6 entries` |  |  | The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op. |
+| `spawn_usage.soft_pct` | `75` |  |  | Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents. |
 
 ### spawn_guards.toml / swarm_guard
 
@@ -4340,6 +4384,64 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.sw_guard` | `5 entries` |  |  | Switch context.roleGuard (default on): off lets every role run every engine verb (the PreToolUse Bash check and the command-line check step aside). |
 | `roles.sw_note` | `5 entries` |  |  | Switch context.roleNote (default on): off stops the SessionStart / SubagentStart role note. |
 
+### lane_waste.toml / lane_test
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `lane_test.cargo_commands` | `cargo` |  |  | Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run). |
+| `lane_test.cargo_narrow_flags` | `--test, -E, --filter-expr` |  |  | Flags that narrow a cargo test run to one named target or expression (the next word names it): --test <integration test file>, -E / --filter-expr <nextest filter expression>, --doc is not narrow. |
+| `lane_test.cargo_no_run_flags` | `--no-run, --list, --help, -h` |  |  | Flags that make cargo test only build the test binaries and run nothing: not a suite run. |
+| `lane_test.cargo_suite_flags` | `--workspace, --all` |  |  | Flags that make a cargo test run suite-scale even with a filter word (every package of the workspace). |
+| `lane_test.cargo_test_subcommands` | `test, t, nextest` |  |  | The cargo subcommands that run tests. Without a narrowing filter they run the whole suite. |
+| `lane_test.cargo_toolchain_re` | `^\+\S+$` |  |  | A word between cargo and its subcommand that is a toolchain selector (cargo +nightly test), not the subcommand. Regular expression (Rust syntax). |
+| `lane_test.cargo_value_flags` | `27 items` |  |  | Flags of cargo test and nextest that take the next word as their value (so that word is not a test filter). |
+| `lane_test.guard_name` | `lane-test-guard` |  |  | The guard id the lane test guard answers to in skip.json and in its messages. |
+| `lane_test.msg_instead` | `run cargo check, commit, verification happens at deploy; a filtered single-mo...` |  |  | What to do instead. |
+| `lane_test.msg_override` | `the user sets guards.allowTestSuites, turns the guard off with guards.laneTes...` |  |  | How the user can lift the block (shown on the last line). |
+| `lane_test.msg_what` | ``{cmd}` is blocked: a subagent does not run suite-scale tests ({label}).` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
+| `lane_test.msg_why` | `Suite runs queue behind the shared build lock and keep every waiting agent re...` |  |  | Why suite runs are blocked for subagents. |
+| `lane_test.nextest_other_words` | `list, archive, show-config, self, help` |  |  | Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run. |
+| `lane_test.nextest_run_words` | `run, r` |  |  | Words after nextest that run tests and are not a filter (nextest run); the filter comes after them. |
+| `lane_test.rules` | `7 items` |  |  | Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message. |
+| `lane_test.summary` | `PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo t...` |  |  | One-line description of the lane-test-guard check in the generated reference. |
+| `lane_test.sw` | `6 entries` |  |  | Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands. |
+| `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
+
+### lane_waste.toml / lane_waste
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `lane_waste.cmd_max` | `120` |  |  | Characters of the offending command shown in a block message (longer is cut). |
+| `lane_waste.loop_closer` | `done` |  |  | The shell word that closes a loop. |
+| `lane_waste.loop_openers` | `while, until, for` |  |  | Shell words that open a loop; a command inside one runs repeatedly. |
+| `lane_waste.max_depth` | `4` |  |  | How deep the guards follow nested sh -c scripts before they stop looking. |
+| `lane_waste.prefix_words` | `10 items` |  |  | Shell keywords and punctuation that can stand before a command in the same simple command (a group, a negation, a loop or branch). |
+| `lane_waste.script_flag_re` | `^-[A-Za-z]*c[A-Za-z]*$` |  |  | The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax). |
+| `lane_waste.shells` | `sh, bash, zsh, dash, ksh` |  |  | Shell interpreters whose -c argument is itself a script, so a command inside it still counts. |
+| `lane_waste.wrapper_positional` | `3 entries` |  |  | Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file). |
+| `lane_waste.wrappers` | `16 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...). |
+
+### lane_waste.toml / queued_wait
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `queued_wait.bg_field` | `run_in_background` |  |  | The Bash tool input field that starts the command in the background. |
+| `queued_wait.duration_unit_s` | `4 entries` |  |  | Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds. |
+| `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
+| `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
+| `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
+| `queued_wait.msg_instead_bg` | `run it in the foreground under the lock (`lockf <lockfile> ...`): if the lock...` |  |  | What to do instead of a background heavy command. |
+| `queued_wait.msg_instead_sleep` | `run the command in the foreground, or end your turn and let the completion no...` |  |  | What to do instead of a long sleep or poll loop. |
+| `queued_wait.msg_override` | `the user turns the guard off with guards.queuedWaitGuard, or skips it for a s...` |  |  | How the user can lift the block (shown on the last line). |
+| `queued_wait.msg_what_bg` | ``{cmd}` is blocked: a subagent does not start build or test commands in the b...` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
+| `queued_wait.msg_what_loop` | ``{cmd}` is blocked: a poll loop sleeping {secs}s per round (limit {max}s).` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
+| `queued_wait.msg_what_sleep` | ``{cmd}` is blocked: it waits {secs}s (limit {max}s).` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
+| `queued_wait.msg_why` | `An agent that waits keeps acting: every poll or re-read re-sends its whole co...` |  |  | Why background heavy commands and poll loops are blocked. |
+| `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
+| `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
+| `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
+| `queued_wait.sw` | `6 entries` |  |  | Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops. |
+
 ### broad_kill.toml / broad_kill
 
 | Key | Default | Env override | Unit | What it is |
@@ -4371,6 +4473,65 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `broad_kill.wrappers` | `14 entries` |  |  | Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (sudo pkill, env X=1 killall, nohup pkill). |
 | `broad_kill.xargs_commands` | `xargs` |  |  | Commands that run another command with arguments read from standard input. |
 | `broad_kill.xargs_value_flags` | `13 items` |  |  | Flags of xargs that take the next word as their value (so it is not the command it runs). |
+
+### burn.toml / burn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `burn.agent_field` | `agent_id` |  |  | Hook payload field that names a subagent; a call without it is the main session and is never blocked. |
+| `burn.allowed_bash_re` | `^\s*git(?:\s+-C\s+\S+)?\s+(?:commit\|add\|push\|status\|log\|diff\|show\|rev-parse\|b...` |  |  | A command a blocked subagent may still run: it must start with git commit, add, push, status, log, diff, show, rev-parse or branch (optionally after `git -C <dir>`). Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to "". |
+| `burn.allowed_tools` | `SendMessage` |  |  | Tools a blocked subagent may still call: SendMessage carries its final report. |
+| `burn.bash_tools` | `Bash` |  |  | Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks. |
+| `burn.forbidden_bash_re` | `[;&\|`<>\n\r]\|\$\(` |  |  | What makes an otherwise allowed command a chain or a hidden command: a separator, pipe, redirect, background, backtick, newline or $( outside quoted text. Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to "". |
+| `burn.guard_name` | `burn-breaker` |  |  | The guard id the burn-breaker check answers to in skip.json and in its messages. |
+| `burn.hard_tokens_no_outcome` | `3000000` |  |  | Hard line: tokens spent since the last outcome, within the waste window, at which the subagent's tool calls are blocked (see burn.allowed_tools and burn.allowed_bash_re). 0 = no hard line. |
+| `burn.marker_dir` | `breaker` |  |  | Directory under the tracker directory that holds one marker file per agent while its hard flag is up. |
+| `burn.marker_ext` | `.json` |  |  | Extension of a marker file. |
+| `burn.marker_ttl_ms` | `7200000` |  |  | A marker older than this is ignored by the check and removed by the tracker (an agent that left the state without clearing its flag). |
+| `burn.msg_hard` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
+| `burn.msg_instead` | `Commit what works (plain `git commit -m` with a quoted message), report (Send...` |  |  | What to do instead. |
+| `burn.msg_override` | `the user turns the breaker off with `agents.burnBreaker` or skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
+| `burn.msg_soft` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Soft advisory, delivered to the agent at its next tool call and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
+| `burn.msg_what` | `This tool call is blocked: you spent about {tokens} tokens with no commit, fi...` |  |  | Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome. |
+| `burn.msg_why` | `Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about ...` |  |  | Why the breaker blocks. |
+| `burn.quoted_re` | `(?:'[^']*')\|(?:"(?:[^"\\$`]\|\\.)*")` |  |  | Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by "" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax). |
+| `burn.soft_tokens_no_outcome` | `1500000` |  |  | Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit). |
+| `burn.summary` | `PreToolUse on every tool, subagents only: while the agent tracker holds the h...` |  |  | One-line description of the burn-breaker check in the generated reference. |
+| `burn.sw` | `5 entries` |  |  | Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker check allow every call. |
+
+### uncommitted_guard.toml / git
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `git.max_uncommitted_lines` | `300` |  |  | Hard line: uncommitted lines (insertions plus deletions against HEAD, plus the lines of untracked files) in a subagent's worktree at which its edits are blocked until it commits. 0 = no hard line. |
+| `git.soft_uncommitted_lines` | `200` |  |  | Soft line: uncommitted lines at which the subagent is warned to commit. 0 = no soft line. |
+
+### uncommitted_guard.toml / uncommitted
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `uncommitted.agent_field` | `agent_id` |  |  | Hook payload field that names a subagent; a call without it is the main session and is never judged. |
+| `uncommitted.argv_diff` | `-C, {dir}, diff, HEAD, --shortstat` |  |  | Git arguments ({dir} is the directory) that print the summary of the tracked changes against HEAD. |
+| `uncommitted.argv_untracked` | `7 items` |  |  | Git arguments ({dir} is the directory) that list the untracked files that are not ignored, one per line. |
+| `uncommitted.cache_ttl_ms` | `15000` |  |  | How long a count under the soft line is trusted per directory. A count at or over a line is always re-read before it blocks, so a commit lifts the block at once. |
+| `uncommitted.deletions_re` | `(\d+) deletions?\(-\)` |  |  | The deletions count in the summary line. Regular expression (JavaScript and Rust syntax); group 1 is the number. |
+| `uncommitted.event` | `PreToolUse` |  |  | The hook event name the soft warning is attached to when the payload names none. |
+| `uncommitted.git_timeout_ms` | `4000` |  |  | Bound of one git call. |
+| `uncommitted.guard_name` | `uncommitted-guard` |  |  | The guard id the uncommitted-guard check answers to in skip.json and in its messages. |
+| `uncommitted.insertions_re` | `(\d+) insertions?\(\+\)` |  |  | The insertions count in the summary line. Regular expression (JavaScript and Rust syntax); group 1 is the number. |
+| `uncommitted.lines_per_unread_file` | `50` |  |  | Lines counted for an untracked file that was not read (too many files, too large, unreadable). |
+| `uncommitted.max_untracked_files` | `40` |  |  | Most untracked files whose lines are counted (the rest count as uncommitted_lines_per_unread_file lines each). |
+| `uncommitted.msg_instead` | `Commit what works now (git add and git commit are allowed), then continue edi...` |  |  | What to do instead. |
+| `uncommitted.msg_override` | `the user turns the guard off with `guards.uncommittedWork`, skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
+| `uncommitted.msg_soft` | `anti-hall uncommitted-guard: your worktree holds {lines} uncommitted lines (s...` |  |  | Soft warning added to the agent's context. Placeholders: {lines} uncommitted lines now, {soft} the soft line, {max} the hard line. |
+| `uncommitted.msg_what` | `This edit is blocked: your worktree holds {lines} uncommitted lines (the limi...` |  |  | Heading of the block. Placeholders: {lines} uncommitted lines now, {max} the hard line. |
+| `uncommitted.msg_why` | `Uncommitted work is lost when an agent stops, is killed or runs out of budget...` |  |  | Why the guard blocks. |
+| `uncommitted.soft_warn_every_ms` | `120000` |  |  | Least time between two soft warnings for one directory. |
+| `uncommitted.state_dir` | `.anti-hall/uncommitted` |  |  | Where the per-directory counts are cached, relative to the user home. |
+| `uncommitted.state_ext` | `.json` |  |  | Extension of a cache file. |
+| `uncommitted.summary` | `PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents...` |  |  | One-line description of the uncommitted-guard check in the generated reference. |
+| `uncommitted.sw` | `5 entries` |  |  | Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted. |
+| `uncommitted.untracked_read_max` | `200000` |  |  | Largest untracked file read to count its lines; a larger one counts as uncommitted_lines_per_unread_file lines. |
 
 ### devswarm_gates.toml / devswarm_gates
 
@@ -4599,7 +4760,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `332 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `340 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -6188,7 +6349,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `73 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `77 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -6197,7 +6358,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.exec_timeout_scale` | `1` | `AH_ENGINE_SCRIPT_EXEC_SCALE` |  | Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.failure_mode_by_check` | `20 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
+| `script.failure_mode_by_check` | `24 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
 | `script.failure_mode_closed` | `closed` |  |  | The failure-mode value that blocks on a guard event (any other value allows). |
 | `script.failure_mode_default` | `open` |  |  | Failure mode of a check not listed in script.failure_mode_by_check. |
 | `script.gc_every_calls` | `1000` |  |  | Calls after which a worker collects its script interpreter's garbage and reports the size to the memory registry (between requests, after the reply went out; also once when the worker goes idle). QuickJS frees most garbage at once but leaves cycles (closures, objects that point at each other) to its own collector, which runs only at 1.5 times the size after its last run: about 2.8 MB of waiting garbage per worker with every check loaded. The registry then unloads cold checks if the interpreter grew past mem.quickjs_soft_bytes. |
@@ -6546,7 +6707,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `332 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `340 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -7697,7 +7858,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.channels` | `7 entries` |  |  | The names of the delivery channels, as they appear in telemetry and the status table. |
 | `agent_tracker.claude_cli` | `15 entries` |  |  | The Claude Code CLI as a data source, used only where it beats parsing a transcript. bin: the program name (the environment variable named by env.claude_bin overrides it); version_args: how its version is read; agents_args: the JSON listing of background and interactive sessions (verified: no human-formatted output is ever parsed); verified: the Claude Code version each source was last verified on (a different version re-probes the source before it is trusted, and a failed probe falls back to the transcripts); busy / waiting / blocked / failed: the status words the listing uses; fields: the listing's field names. |
 | `agent_tracker.codex` | `5 entries` |  |  | Field names of a Codex rollout file (Codex's format): its first line is a session_meta record whose payload carries the session id and the working directory. |
-| `agent_tracker.cooldowns` | `8 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
+| `agent_tracker.cooldowns` | `11 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
+| `agent_tracker.cost_limit` | `50` |  |  | The most agents the cost report (`telemetry summary`, key `agent_cost`) lists, most tokens first. |
+| `agent_tracker.cost_outcome_units` | `commits + pushes + finished steps + passing test runs + files edited` |  |  | What the cost report counts as an outcome when it divides an agent's tokens (input plus output): the work units the tracker keeps per agent. |
 | `agent_tracker.counts` | `7 entries` |  |  | Names of the summary counts in the status JSON. Live = not done. sessions: main and workspace sessions (matches the claude processes in `ps`), subagents, teammates, codex; headless: one-shot runs left out; done_hidden: finished agents older than limits.done_keep_ms left out of the list. |
 | `agent_tracker.devswarm_fields` | `17 entries` |  |  | Field names of the DevSwarm descriptor, plan and wake-watch lock files the tracker reads (the DevSwarm format). |
 | `agent_tracker.fmt` | `10 entries` |  |  | Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. |
@@ -7707,15 +7870,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.meta` | `5 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; team: the team; finished: true once the host recorded the agent as finished. |
 | `agent_tracker.owner_setting` | `6 entries` |  |  | Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file. |
 | `agent_tracker.paths` | `30 entries` |  |  | Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name). |
-| `agent_tracker.patterns` | `5 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited). |
+| `agent_tracker.patterns` | `7 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited). |
 | `agent_tracker.primary_prefix` | `primary-` |  |  | The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch. |
 | `agent_tracker.registry` | `9 entries` |  |  | The host's registry of live sessions (agent_tracker.paths.sessions: one JSON file per running process, removed when it exits) as a liveness source: a session whose process is alive is running or waiting, never done, however old its transcript. Fields: pid, session (the session id), cwd, started (ms), status, name. busy / waiting / blocked: the status words (the same words as claude_cli's, plus the registry's own: shell = a shell command is running). A status in none of the lists decides nothing and the transcript does. |
 | `agent_tracker.remind_setting` | `6 entries` |  |  | Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent. |
 | `agent_tracker.roles` | `2 entries` |  |  | The names of the derived role of a session in the status JSON: primary (it coordinates at least one other agent) and solo (it does not). |
 | `agent_tracker.roster` | `7 entries` |  |  | The host's team roster as a liveness source for teammates: <dir>/<team>/<file> lists the members of an agent team (field `members`, each with a `name`); the host removes a teammate when it is stopped or finishes, but writes nothing into the teammate's own transcript, which reads running for as long as it is tracked. A teammate whose meta file names a team and whose name is missing from that team's readable roster, or is listed with a `joined` time later than the agent's start plus rejoin_slack_ms (the name belongs to a newer spawn), is finished. grace_ms: how long a teammate must have been followed before its absence counts (the roster is written at spawn, but a tick may read it between the two writes). A roster that is missing or unreadable decides nothing. |
-| `agent_tracker.routes` | `8 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
+| `agent_tracker.routes` | `11 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
 | `agent_tracker.setting` | `6 entries` |  |  | Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing. |
-| `agent_tracker.signals` | `8 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
+| `agent_tracker.signals` | `11 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
 | `agent_tracker.sources` | `4 entries` |  |  | The names of where an agent's numbers come from (process: a live process in the host's session registry; codex: a Codex rollout file), as they appear in telemetry and the status JSON. |
 | `agent_tracker.spam` | `4 entries` |  |  | Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder). |
 | `agent_tracker.states` | `4 entries` |  |  | The names of an agent's states: running, waiting (finished its turn, or the host says it waits for input), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window). |
@@ -7754,6 +7917,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `schedule.agent_tick_ms` | `60000` | `AH_ENGINE_AGENT_TICK_MS` | ms | Interval of the agent_tick job; 0 turns the tracker's ticks off. |
+
+### agent_waste.toml / agent_waste
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `agent_waste.judge_sections` | `4 entries` |  |  | Headings-free section names of the evidence pack sent to the judge (must match the sections of evidence.cfg.agentWaste). |
+| `agent_waste.limits` | `12 entries` |  |  | Bounds of one evaluation. window_ms: the rolling window tokens, outcomes and calls are compared over. min_span_ms: the least history in the window before an agent is scored. min_tokens: tokens spent in the window below which nothing is wasted. cache_read_pct: how much a cache-read token counts toward the spend, in percent. eps_pct: the epsilon of the formula, in hundredths of an outcome unit (progress units are those of agent_tracker.weights: commit, step, test, file). judge_cooldown_ms: least time between two judge calls about one agent (a verdict is also trusted for twice this). max_judge_per_tick: judge calls one tracker tick may make, all agents. goal_cap: characters of the goal sent to the judge. call_cap: most recent tool calls summarised for the judge. line_cap: characters of one summarised call. fail_cap: failed commands in the window at which the failing-streak factor is full. min_calls: tool calls in the window below which the ratios are not trusted (they count as zero). |
+| `agent_waste.multipliers` | `5 entries` |  |  | How much each ratio (0 to 1) raises the score, in percent: factor = 1 + weight/100 * ratio. reread: Reads and Greps of something already read in the window. repeat: identical tool inputs. poll: sleep, status and listing loops. wait: time blocked on a lock or a background task. fail: failed commands in the window over fail_cap. |
+| `agent_waste.patterns` | `4 entries` |  |  | How calls are classified (the recent-call label is `<Tool> <what>`, matched case-insensitively from its start). reads: tool names that read. poll: label prefixes that poll (sleep, status checks, listing loops). wait: label substrings that wait on a lock or a background task. wait_tools: tool names that wait for a background task. |
+| `agent_waste.policy` | `3 entries` |  |  | What a confirmed waste does, by agent kind. hard_kinds: kinds that are escalated to a hard action (the burn breaker may pause or block them); every other kind (the main session and the Primary, Codex sessions, heartbeats) is only warned and the owner is told. waste_verdicts: judge verdicts that count as waste; ok_verdicts: verdicts that clear it. |
+| `agent_waste.reason_fmt` | `{tokens_k}k tokens for {outcome} outcome units; re-read {reread}%, repeated {...` |  |  | The one-line reason built from the signals. Placeholders: {tokens_k}, {outcome}, {reread}, {repeat}, {poll}, {wait}, {fail} (percentages for the ratios). |
+| `agent_waste.relief` | `2 entries` |  |  | Roles expected to read a lot spend tokens without outcome by design: an agent whose name contains one of these words (case-insensitive) has its score divided by divisor_pct/100. |
+| `agent_waste.setting` | `6 entries` |  |  | Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste. |
+| `agent_waste.thresholds` | `2 entries` |  |  | Score thresholds, in thousands of tokens per outcome unit after the multipliers: soft (ask the judge, warn if it confirms) and hard (act on the formula alone when the judge is unavailable, and escalate a confirmed verdict). Calibrated so the 2026-10-23 incident pattern (1.5-7.7M tokens in 30 minutes, no commit, many re-reads, queued on a lock) scores far over hard while a productive lane (about 1M tokens, 3 commits, few re-reads) scores far under soft. |
+| `agent_waste.words` | `8 entries` |  |  | Words the sensor writes: the source of a decision (judge or formula), the actions (warn, hard) and the telemetry class. |
 
 ### devswarm_act.toml / devswarm_act
 
@@ -11363,6 +11541,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.agent_wake_reason_off` | Why the wake-watch did not arm: a switch is off (agents.tracker or agents.wakeWatch). |
 | `msg.agent_wake_refused` | Printed by a wake-watch started by hand (not --auto) that declines to arm. Placeholder: {reason}. |
 | `msg.agent_watched_exit` | Wake advisory: a background shell task an agent started has ended. Placeholders: {agent}, {kind}, {count}, {task}. |
+| `msg.agent_waste` | Advisory: an agent spends tokens without matching outcomes. Placeholders: {agent}, {kind}, {score}, {source} (judge or formula), {verdict}, {window}, {reason}. |
 
 ## Metrics
 

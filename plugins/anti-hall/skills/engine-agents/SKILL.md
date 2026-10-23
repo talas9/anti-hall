@@ -69,11 +69,13 @@ Subagent, task-list, delegation and routing guards.
 - `guards.tasklistNoTaskTools` = "reduced": The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)
 - `guards.tasklistGuard` = true: Where the on/off switch is read from (guards.tasklistGuard, default on)
 - `guards.tasklistWorkThreshold` = 3: How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)
+- `agents.burnBreaker` = true: Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker check allow every call
 - `guards.siblingSweep` = true: Where the on/off switch is read from (guards.siblingSweep, default on)
 - `context.taskTracker` = true: Where the check's on/off switch is read from (context.taskTracker, default on)
 - `agents.ownerNotify` = false: Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a...
 - `agents.reminders` = true: Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued...
 - `agents.tracker` = true: Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing
 - `agents.wakeWatch` = true: Where the off switch of the session wake-watch is read from (agents.wakeWatch, default on): off, `agents wake-watch` arms nothing (the...
+- `agents.wasteSense` = true: Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

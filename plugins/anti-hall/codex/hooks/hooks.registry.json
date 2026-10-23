@@ -130,16 +130,6 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${PLUGIN_ROOT}/hooks/queued-wait-guard\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${PLUGIN_ROOT}/hooks/lane-test-guard\"",
-            "timeout": 10
           }
         ]
       },
@@ -158,6 +148,21 @@
           {
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/hooks/uncommitted-guard\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/queued-wait-guard\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/lane-test-guard\"",
             "timeout": 10
           }
         ]
