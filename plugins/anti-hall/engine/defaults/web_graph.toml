@@ -132,8 +132,8 @@ doc = "Marker shape of 'effect' nodes: circle, square or diamond."
 value = "circle"
 
 [web.graph.theme.kinds.jev.color]
-doc = "Colour of 'jev' nodes."
-value = "oklch(0.69 0.19 12)"
+doc = "Colour of 'jev' nodes: the AI violet, never red or green (those are decisions)."
+value = "oklch(0.74 0.17 305)"
 
 [web.graph.theme.kinds.jev.shape]
 doc = "Marker shape of 'jev' nodes: circle, square or diamond."
@@ -162,6 +162,18 @@ value = "oklch(0.84 0.14 165)"
 [web.graph.theme.status.off]
 doc = "Status dot colour for 'off'."
 value = "oklch(0.45 0.04 260)"
+
+[web.graph.theme.status.shadow]
+doc = "Status dot colour for 'shadow' (Jev logs but does not act)."
+value = "oklch(0.74 0.17 305 / 0.6)"
+
+[web.graph.theme.status.on]
+doc = "Status dot colour for 'on' (Jev acts but is not answering right now)."
+value = "oklch(0.74 0.17 305)"
+
+[web.graph.theme.status.judging]
+doc = "Status dot colour for 'judging' (Jev is answering now)."
+value = "oklch(0.8 0.17 305)"
 
 [web.graph.budget.fps_interact]
 doc = "Frame rate while the user pans, zooms or drags (Full tier)."
@@ -616,3 +628,58 @@ min = 100
 max = 5000
 unit = "ms"
 
+[web.graph.fx.colors.hook_PreToolUse]
+doc = "Packet colour of hook event PreToolUse on the Live screen."
+value = "oklch(0.84 0.13 205)"
+
+[web.graph.fx.colors.hook_PostToolUse]
+doc = "Packet colour of hook event PostToolUse on the Live screen."
+value = "oklch(0.86 0.15 115)"
+
+[web.graph.fx.colors.hook_PostToolUseFailure]
+doc = "Packet colour of hook event PostToolUseFailure on the Live screen."
+value = "oklch(0.72 0.17 40)"
+
+[web.graph.fx.colors.hook_UserPromptSubmit]
+doc = "Packet colour of hook event UserPromptSubmit on the Live screen."
+value = "oklch(0.80 0.15 345)"
+
+[web.graph.fx.colors.hook_Stop]
+doc = "Packet colour of hook event Stop on the Live screen."
+value = "oklch(0.93 0.02 260)"
+
+[web.graph.fx.colors.hook_SubagentStart]
+doc = "Packet colour of hook event SubagentStart on the Live screen."
+value = "oklch(0.80 0.11 175)"
+
+[web.graph.fx.colors.hook_SubagentStop]
+doc = "Packet colour of hook event SubagentStop on the Live screen."
+value = "oklch(0.68 0.12 255)"
+
+[web.graph.fx.colors.hook_SessionStart]
+doc = "Packet colour of hook event SessionStart on the Live screen."
+value = "oklch(0.89 0.14 95)"
+
+[web.graph.fx.colors.hook_SessionEnd]
+doc = "Packet colour of hook event SessionEnd on the Live screen."
+value = "oklch(0.64 0.13 270)"
+
+[web.graph.fx.colors.hook_Notification]
+doc = "Packet colour of hook event Notification on the Live screen."
+value = "oklch(0.75 0.16 320)"
+
+[web.graph.fx.colors.hook_PreCompact]
+doc = "Packet colour of hook event PreCompact on the Live screen."
+value = "oklch(0.72 0.09 150)"
+
+[web.graph.fx.colors.hook_TaskCreated]
+doc = "Packet colour of hook event TaskCreated on the Live screen."
+value = "oklch(0.78 0.12 225)"
+
+[web.graph.fx.colors.hook_TaskCompleted]
+doc = "Packet colour of hook event TaskCompleted on the Live screen."
+value = "oklch(0.82 0.12 135)"
+
+[web.graph.fx.colors.hook_other]
+doc = "Packet colour of hook event other on the Live screen."
+value = "oklch(0.80 0.03 250)"

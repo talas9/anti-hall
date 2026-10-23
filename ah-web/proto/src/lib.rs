@@ -1,7 +1,10 @@
 //! The wire types between the Command Center server and its page. The server sends `Snapshot` as the data of the
 //! `snapshot` server-sent event; the page reads `Boot` once from the index file. No texts live here.
+pub mod tel;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+pub mod ops;
 
 /// The event stream the page subscribes to (a URL of this package's own protocol, not a setting).
 pub const STREAM_PATH: &str = "/api/stream";
@@ -41,6 +44,10 @@ pub struct Agent {
     pub tokens_out: u64,
     /// Tool calls so far.
     pub tool_calls: u64,
+    /// The turn ended and only a shell command the agent started is still running (the registry says `shell`): shown as
+    /// "idle, shell running", not "running".
+    #[serde(default)]
+    pub idle_shell: bool,
 }
 
 /// The engine's vital signs (`CTL pulse`), reduced to what the header shows.
@@ -50,6 +57,9 @@ pub struct Pulse {
     pub cpu_permille: Option<u64>,
     /// Engine resident memory, KB.
     pub rss_kb: u64,
+    /// Engine physical footprint, KB: the figure its memory budget is measured on; `None` from an engine that does not report it.
+    #[serde(default)]
+    pub footprint_kb: Option<u64>,
     /// Requests the engine has handled.
     pub requests: u64,
     /// Requests that failed.
@@ -135,6 +145,9 @@ pub struct JevEvt {
     /// The check that asked, when the engine recorded it.
     #[serde(default)]
     pub check: String,
+    /// Who answered: `jev` (it judged), `cache`, or `baseline-only` (Jev is off and the rule decided alone); empty when not logged.
+    #[serde(default)]
+    pub backend: String,
 }
 
 /// The hook wiring for the Live screen: which checks answer which events (from `describe`).
@@ -150,6 +163,150 @@ pub struct LiveMap {
 
 /// The route that answers the [`LiveMap`].
 pub const LIVE_MAP_PATH: &str = "/api/live/map";
+/// The GET route that answers the [`Health`] document.
+pub const HEALTH_PATH: &str = "/api/health";
+/// The POST route that runs one topology node action ([`TopoReq`] in, [`ActionRes`] out).
+pub const TOPO_ACTION_PATH: &str = "/api/topo/action";
+
+/// One holder of the engine's memory ledger (`status` `memory.ledger.heap.holders`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Holder {
+    pub name: String,
+    pub bytes: u64,
+    /// Its own soft and hard limits, bytes; 0 when it has none.
+    pub soft: u64,
+    pub hard: u64,
+    /// `ok`, `soft` or `hard`, in the engine's words.
+    pub level: String,
+}
+
+/// One client (a hook session) of the engine's I/O registry (`CTL io`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClientRow {
+    pub id: String,
+    pub calls: u64,
+    pub timeouts: u64,
+    pub fail_open: u64,
+    pub cold_starts: u64,
+    pub last_ms: u64,
+    pub p50_us: u64,
+    pub p95_us: u64,
+}
+
+/// One store (a file or a database) of the engine's I/O registry.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StoreRow {
+    pub id: String,
+    pub reads: u64,
+    pub writes: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub errors: u64,
+    pub last_ms: u64,
+    pub p50_us: u64,
+    pub p95_us: u64,
+}
+
+/// The Health and Topology screens' data: one reduced reading of the engine (`pulse`, `status` and `io`). A field the engine does not
+/// report is `None` or empty, never a made-up value.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Health {
+    /// When the server read it, ms since the epoch.
+    pub at_ms: u64,
+    /// False when the engine did not answer (the rest is then empty).
+    pub engine_ok: bool,
+    pub pid: u64,
+    pub uptime_s: u64,
+    pub version: String,
+    /// CPU since the previous pulse, parts per thousand of one core; with its soft and hard bars (from `web.health_cpu_*`).
+    pub cpu_permille: Option<u64>,
+    pub cpu_soft_permille: u64,
+    pub cpu_hard_permille: u64,
+    /// The budget metric, KB, with the engine's soft and hard memory limits; RSS is for the tooltip.
+    pub footprint_kb: u64,
+    pub rss_kb: u64,
+    pub mem_soft_kb: u64,
+    pub mem_hard_kb: u64,
+    pub requests: u64,
+    pub errors: u64,
+    pub slow_replies: u64,
+    pub busy_replies: u64,
+    pub panics: u64,
+    pub restarts: u64,
+    pub queue_depth: u64,
+    pub workers: u64,
+    /// The engine's own degraded flag and the reason it gives (empty when none).
+    pub degraded: bool,
+    pub degraded_reason: String,
+    /// Load average per core; `None` when the platform did not say.
+    pub load_per_core: Option<f64>,
+    /// Free disk, KB; `None` when the engine does not report it.
+    pub disk_free_kb: Option<u64>,
+    /// The biggest memory holders, largest first.
+    pub holders: Vec<Holder>,
+    /// False when the engine's I/O registry is switched off (clients and stores are then empty).
+    pub io_enabled: bool,
+    pub clients: Vec<ClientRow>,
+    pub stores: Vec<StoreRow>,
+}
+
+/// One subsystem of the topology: its label and the stores it uses (`web.topo_subsystems`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopoSub {
+    pub id: String,
+    pub label: String,
+    pub stores: Vec<String>,
+}
+
+/// One entry of a topology node's menu (`web.topo_actions`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopoActionDef {
+    /// Node kind it applies to: `client`, `engine`, `subsystem` or `store`.
+    pub kind: String,
+    pub name: String,
+    /// Key of the page's text table.
+    pub label: String,
+    pub confirm: bool,
+    /// True for the entry that only shows what the page already has (no engine call).
+    pub local: bool,
+    /// True when it needs the store to have a viewer (`web.topo_viewers`).
+    pub needs_viewer: bool,
+}
+
+/// The Topology screen's settings, from `web.toml`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopoCfg {
+    pub subsystems: Vec<TopoSub>,
+    /// Store ids that can be opened in the viewer.
+    pub viewers: Vec<String>,
+    pub actions: Vec<TopoActionDef>,
+    /// Store ids that are databases (drawn as such; the rest are files).
+    pub databases: Vec<String>,
+    /// Failure share (per cent of calls) at which a client or store turns amber, then red.
+    pub warn_fail_pct: f64,
+    pub bad_fail_pct: f64,
+    /// Seconds without a call after which a client or store reads as idle.
+    pub idle_s: u64,
+    /// Most clients drawn.
+    pub clients_max: usize,
+    /// Milliseconds between two readings, in Full and in Lite.
+    pub poll_full_ms: u64,
+    pub poll_lite_ms: u64,
+    /// Most memory holders listed.
+    pub holders_max: usize,
+    /// Memory (% of the soft limit) and CPU (% of the soft bar) at which the headline turns to a warning.
+    pub warn_pct: u64,
+}
+
+/// One action on one topology node.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TopoReq {
+    /// The node's kind and its id inside it (a store id, `engine`, a subsystem id, a client id).
+    pub kind: String,
+    pub id: String,
+    pub action: String,
+    pub confirmed: bool,
+}
 
 /// What the server knows now.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -202,6 +359,12 @@ pub struct Boot {
     /// This server's version.
     #[serde(default)]
     pub web_version: String,
+    /// How the page writes long numbers.
+    #[serde(default)]
+    pub number: NumFmt,
+    /// The Health and Topology screens' settings.
+    #[serde(default)]
+    pub topo: TopoCfg,
 }
 
 /// The Live screen's settings (`web.live_*`).
@@ -240,6 +403,14 @@ pub struct LiveCfg {
     pub scan_gap_ms: u64,
     /// Jev mode -> effect colour key.
     pub jev_fx: std::collections::BTreeMap<String, String>,
+    /// Hook event -> effect colour key of the packet that carries it.
+    pub hook_fx: std::collections::BTreeMap<String, String>,
+    /// Effect colour key of a hook event `hook_fx` does not name.
+    pub hook_fx_default: String,
+    /// The hook events the legend lists, in order.
+    pub hook_legend: Vec<String>,
+    /// How long after a judgement by Jev its node keeps glowing, ms.
+    pub jev_glow_ms: u64,
 }
 
 /// Where the header pills turn amber and red (from `web.toml`).
@@ -341,4 +512,33 @@ pub struct ActionDef {
     pub confirm: bool,
     /// True for the one that opens details (no engine call).
     pub local: bool,
+}
+
+/// One step of the number format: from `from` up, a number is divided by `div` and gets `suffix` (`web.number_units`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NumUnit {
+    pub suffix: String,
+    pub from: u64,
+    pub div: u64,
+}
+
+/// The one number format of the whole page (`web.number_units`, `web.number_decimals`): long numbers read as 12k, 1.1M.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NumFmt {
+    /// Ascending by `from`; the last step whose `from` the number reaches applies.
+    pub units: Vec<NumUnit>,
+    /// Digits after the point; a trailing zero part is dropped.
+    pub decimals: usize,
+}
+
+impl NumFmt {
+    /// `n` as text: whole below the first step, else scaled with its suffix.
+    pub fn fmt(&self, n: u64) -> String {
+        let Some(u) = self.units.iter().rev().find(|u| n >= u.from && u.div > 0) else {
+            return n.to_string();
+        };
+        let text = format!("{:.*}", self.decimals, n as f64 / u.div as f64);
+        let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text };
+        format!("{text}{}", u.suffix)
+    }
 }

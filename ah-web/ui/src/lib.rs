@@ -3,7 +3,13 @@
 //! with its action menu, the selected-agent panel with details and the activity feed; the graph is a styled placeholder.
 //! Data arrives as one snapshot and then only changes (server-sent events); the tier (full or lite) picks the push rate and
 //! whether anything moves.
+mod health;
 mod live;
+mod manage;
+mod ops;
+mod tel;
+#[cfg(feature = "full")]
+mod apex;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -63,7 +69,8 @@ fn hb_class(boot: &Boot, a: &Agent) -> &'static str {
 }
 
 fn role_class(a: &Agent) -> &'static str {
-    let live = a.state == "running";
+    // a finished turn with only a shell still running is idle, not working
+    let live = a.state == "running" && !a.idle_shell;
     match (a.kind.as_str(), live) {
         (_, false) => "k-idle",
         ("main", _) => "k-primary",
@@ -284,13 +291,7 @@ fn level(v: u64, warn: u64, bad: u64) -> &'static str {
 }
 
 fn compact(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1e6)
-    } else if n >= 10_000 {
-        format!("{}k", n / 1000)
-    } else {
-        n.to_string()
-    }
+    expect_context::<Arc<Boot>>().number.fmt(n)
 }
 
 /// POST `req` to the server and read its answer.
@@ -365,11 +366,26 @@ fn App(boot: Boot) -> impl IntoView {
         detail: RwSignal::new(None),
     };
     provide_context(ctx);
+    provide_context(health::HealthState::new());
     let snap = ctx.snap;
     let conn = ctx.conn;
     let selected = ctx.selected;
     let graph = RwSignal::new(false);
     let live_on = RwSignal::new(false);
+    let health_on = RwSignal::new(false);
+    let topo_on = RwSignal::new(false);
+    let manage_on = RwSignal::new(manage::hash().is_some());
+    // 0 = no ops screen, 1 accounts, 2 updates, 3 logs, 4 telemetry, 5 impact
+    let ops_screen = RwSignal::new(0u8);
+    // the agents view is shown unless another screen is chosen
+    let other_on = Memo::new(move |_| live_on.get() || health_on.get() || topo_on.get() || manage_on.get() || ops_screen.get() != 0);
+    let go = move |live: bool, health: bool, topo: bool, manage: bool, ops: u8| {
+        live_on.set(live);
+        health_on.set(health);
+        topo_on.set(topo);
+        manage_on.set(manage);
+        ops_screen.set(ops);
+    };
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);
@@ -389,7 +405,7 @@ fn App(boot: Boot) -> impl IntoView {
     let rows = Memo::new(move |_| snap.with(|s| flatten(&b2, &s.agents)));
     let counts = Memo::new(move |_| {
         snap.with(|s| {
-            let live = s.agents.iter().filter(|a| a.state == "running").count();
+            let live = s.agents.iter().filter(|a| a.state == "running" && !a.idle_shell).count();
             let idle = s.agents.len() - live;
             let projects = s.agents.iter().map(|a| a.project.as_str()).collect::<BTreeSet<_>>().len();
             let codex = s.agents.iter().filter(|a| a.kind == "codex").count();
@@ -401,18 +417,29 @@ fn App(boot: Boot) -> impl IntoView {
         id.and_then(|i| by_id.with(|m| m.get(&i).cloned()))
     });
     let lim = boot.limits.clone();
-    let pill = move |pick: fn(&Pulse) -> u64, warn: u64, bad: u64, label: &'static str, fmt: fn(u64) -> String| {
+    let pill = move |pick: fn(&Pulse) -> u64, warn: u64, bad: u64, label: &'static str, fmt: fn(u64) -> String, tip: fn(&Pulse) -> String| {
         view! {
-            <span class=move || snap.with(|s| s.pulse.as_ref().map_or("pill", |p| level(pick(p), warn, bad)))>
+            <span title=move || snap.with(|s| s.pulse.as_ref().map(tip).unwrap_or_default()) class=move || snap.with(|s| s.pulse.as_ref().map_or("pill", |p| level(pick(p), warn, bad)))>
                 {tx(label)} " " {move || snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| fmt(pick(p))))}
             </span>
         }
     };
     let PulseLimits { cpu_warn_permille, cpu_bad_permille, mem_warn_mb, mem_bad_mb, err_warn, err_bad } = lim;
-    let cpu_pill = pill(|p| p.cpu_permille.unwrap_or(0), cpu_warn_permille, cpu_bad_permille, "pill_cpu", |v| format!("{:.1}%", v as f64 / 10.0));
-    let mem_pill = pill(|p| p.rss_kb / 1024, mem_warn_mb, mem_bad_mb, "pill_mem", |v| format!("{v} MB"));
-    let req_pill = pill(|p| p.requests, u64::MAX, u64::MAX, "pill_req", compact);
-    let err_pill = pill(|p| p.errors, err_warn, err_bad, "pill_err", compact);
+    let cpu_pill = pill(|p| p.cpu_permille.unwrap_or(0), cpu_warn_permille, cpu_bad_permille, "pill_cpu", |v| format!("{:.1}%", v as f64 / 10.0), |_| String::new());
+    // the memory pill shows the footprint (the figure the engine's budget is measured on); RSS only where the engine reports no footprint
+    let mem_pill = pill(
+        |p| p.footprint_kb.unwrap_or(p.rss_kb) / 1024,
+        mem_warn_mb,
+        mem_bad_mb,
+        "pill_mem",
+        |v| format!("{v} MB"),
+        |p| match p.footprint_kb {
+            Some(fp) => tx("pill_mem_tip").replace("{fp}", &format!("{} MB", fp / 1024)).replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
+            None => tx("pill_mem_rss_only").replace("{rss}", &format!("{} MB", p.rss_kb / 1024)),
+        },
+    );
+    let req_pill = pill(|p| p.requests, u64::MAX, u64::MAX, "pill_req", compact, |_| String::new());
+    let err_pill = pill(|p| p.errors, err_warn, err_bad, "pill_err", compact, |_| String::new());
     let b3 = boot.clone();
 
     view! {
@@ -452,14 +479,18 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <button type="button" class=move || if live_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| live_on.set(false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
-                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| live_on.set(true)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
-                    <span class="nav-item soft"><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></span>
-                    <span class="nav-item soft"><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></span>
-                    <span class="nav-item soft"><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></span>
-                    <span class="nav-item soft"><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></span>
+                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| go(false, false, false, false, 0)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(true, false, false, false, 0)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 4 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 4)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 5 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 5)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
+                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, true, false, false, 0)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
+                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, true, false, 0)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 3 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 3)><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></button>
+                    <button type="button" class=move || if manage_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, true, 0)><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 1 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 1)><span class="glyph">"\u{25D4}"</span><span>{tx("nav_accounts")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 2 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 2)><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></button>
                 </nav>
-                <main class="main" hidden=move || live_on.get()>
+                <main class="main" hidden=move || other_on.get()>
                     <div class="main-head">
                         <h1>{tx("title_agents")}</h1>
                         <span class="counts">
@@ -497,10 +528,27 @@ fn App(boot: Boot) -> impl IntoView {
                         <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
                     </section>
                 </main>
-                <main class="main live-main" hidden=move || !live_on.get()>
+                <main class="main live-main" hidden=move || !live_on.get() || ops_screen.get() != 0>
                     <live::LiveScreen mode=mode active=live_on.into() />
                 </main>
-                <aside class="detail" aria-label=tx("selected_label") hidden=move || live_on.get()>
+                <main class="main live-main" hidden=move || !health_on.get()>
+                    <health::HealthScreen active=health_on.into() />
+                </main>
+                <main class="main live-main" hidden=move || !topo_on.get()>
+                    <health::TopologyScreen mode=mode active=topo_on.into() />
+                </main>
+                <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
+                <main class="main manage-main" hidden=move || !manage_on.get()>
+                    <manage::ManageScreen active=manage_on.into() />
+                </main>
+                <main class="main tel-main" hidden=move || ops_screen.get() != 4>
+                    <tel::TelScreen active=Signal::derive(move || ops_screen.get() == 4) />
+                </main>
+                <main class="main tel-main" hidden=move || ops_screen.get() != 5>
+                    <tel::ImpactScreen active=Signal::derive(move || ops_screen.get() == 5) />
+                </main>
+                <ops::OpsScreens screen=ops_screen />
+                <aside class="detail" aria-label=tx("selected_label") hidden=move || other_on.get()>
                     {move || match current.get() {
                         None => view! { <p class="empty">{tx("pick_prompt")}</p> }.into_any(),
                         Some(a) => {
@@ -518,8 +566,8 @@ fn App(boot: Boot) -> impl IntoView {
                                 <Feedback_ id=a.id.clone() />
                                 <div class="stats">
                                     <div class="stat"><div class="stat-k">{tx("heartbeat")}</div><div class=format!("stat-v {hbc}")>{hb}</div></div>
-                                    <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{a.tokens_out}</div></div>
-                                    <div class="stat"><div class="stat-k">{tx("model")}</div><div class="stat-v small">{a.state.clone()}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{compact(a.tokens_out)}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("model")}</div><div class="stat-v small">{if a.idle_shell { tx("ops_idle_shell") } else { a.state.clone() }}</div></div>
                                 </div>
                                 <div><div class="sect">{tx("doing_now")}</div><p class="brief">{a.step.clone()}</p></div>
                                 <Details id=a.id.clone() />
@@ -664,7 +712,7 @@ fn Row(
             <button type="button" class=move || if is_sel() { "row sel" } else { "row" } on:click=pick>
                 <span class="indent" style=format!("flex-basis:{}px", depth * 24)></span>
                 <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>
-                <span class="c-name">{move || a.get().map(|a| a.label).unwrap_or_default()}</span>
+                <span class="c-name">{move || a.get().map(|a| a.label).unwrap_or_default()}{move || a.get().filter(|a| a.idle_shell).map(|_| view! { <em class="badge-idle" title=tx("ops_idle_shell_tip")>{tx("ops_idle_shell")}</em> })}</span>
                 <span class="c-kind">{move || a.get().map(|a| kind_label(&a)).unwrap_or_default()}</span>
                 <span class=move || {
                     let b = expect_context::<Arc<Boot>>();

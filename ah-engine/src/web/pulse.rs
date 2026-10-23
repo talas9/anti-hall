@@ -11,6 +11,8 @@ pub struct Inputs<'a> {
     pub uptime_s: u64,
     /// Resident set, KB.
     pub rss_kb: u64,
+    /// Physical footprint, KB: the figure the memory budget is measured on (`None` where the platform will not say).
+    pub footprint_kb: Option<u64>,
     /// Process CPU time, seconds.
     pub cpu_s: f64,
     /// Requests handled.
@@ -56,7 +58,7 @@ pub fn build(i: &Inputs<'_>) -> Value {
     // SAFETY: getloadavg fills at most the number of doubles asked for, and the array holds that many.
     let got = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-    json!({"version": i.version, "build_sha": build_sha(), "pid": std::process::id(), "uptime_s": i.uptime_s, "rss_kb": i.rss_kb, "cpu_s": i.cpu_s, "cpu_permille": cpu_permille,
+    json!({"version": i.version, "build_sha": build_sha(), "pid": std::process::id(), "uptime_s": i.uptime_s, "rss_kb": i.rss_kb, "footprint_kb": i.footprint_kb, "cpu_s": i.cpu_s, "cpu_permille": cpu_permille,
         "requests": i.requests, "busy_replies": i.busy_replies, "slow_replies": i.slow_replies, "errors": i.errors, "panics": i.panics,
         "queue_depth": i.queue_depth, "workers": i.workers, "budget_mask": i.budget_mask, "restarts": i.restarts, "config_version": i.config_version,
         "load_per_core": (got >= 1).then(|| load[0] / cores), "at_ms": now})

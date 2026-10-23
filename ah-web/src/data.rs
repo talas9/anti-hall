@@ -27,8 +27,13 @@ fn label(v: &Value, id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// A step that is only a task number (older engines recorded the id of a TaskUpdate that carried no subject) says nothing: left empty.
+fn human_step(step: &str) -> String {
+    if step.chars().all(|c| c.is_ascii_digit()) { String::new() } else { step.to_string() }
+}
+
 /// The agents of the engine's status document (finished agents are left out).
-pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
+pub fn reduce(doc: &Value, step_max: usize, idle_shell_state: &str) -> Vec<Agent> {
     doc
         .get("agents")
         .and_then(Value::as_array)
@@ -45,9 +50,11 @@ pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
                         parent: text(a, "parent"),
                         project: text(a, "project"),
                         last_output_s: a.get("last_output_s").and_then(Value::as_u64),
-                        step: text(a, "step").chars().take(step_max).collect(),
+                        step: human_step(&text(a, "step")).chars().take(step_max).collect(),
                         tokens_out: a.get("tokens_out").and_then(Value::as_u64).unwrap_or(0),
                         tool_calls: a.get("tool_calls").and_then(Value::as_u64).unwrap_or(0),
+                        // the registry says a shell is running and the transcript says the turn ended (engine field `turn_ended`)
+                        idle_shell: !idle_shell_state.is_empty() && text(a, "host_state") == idle_shell_state && a.get("turn_ended").and_then(Value::as_bool) == Some(true),
                         id,
                     }
                 })
@@ -61,7 +68,7 @@ fn num(v: &Value, k: &str) -> u64 {
 }
 
 fn pulse(v: &Value) -> Pulse {
-    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s"), version: text(v, "version"), build_sha: text(v, "build_sha"), plugin_version: text(v, "plugin_version") }
+    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), footprint_kb: v.get("footprint_kb").and_then(Value::as_u64), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s"), version: text(v, "version"), build_sha: text(v, "build_sha"), plugin_version: text(v, "plugin_version") }
 }
 
 fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
@@ -103,6 +110,19 @@ fn mesh_db(s: &Settings) -> Option<String> {
     p.is_file().then(|| p.display().to_string())
 }
 
+/// The footprint for an engine whose pulse does not carry one: read from `status` at most every `web.footprint_fallback_ms` (the
+/// document is large), kept between reads.
+async fn footprint_fallback(app: &App, s: &Settings) -> Option<u64> {
+    if let Some((at, v)) = *app.footprint.lock().unwrap_or_else(|p| p.into_inner())
+        && at.elapsed() < Duration::from_millis(s.footprint_fallback_ms)
+    {
+        return v;
+    }
+    let v = ctl::call(&app.socket, "status", Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes).await.ok().and_then(|d| d.get("footprint_kb").and_then(Value::as_u64));
+    *app.footprint.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), v));
+    v
+}
+
 /// Which sources are due this round (each has its own interval, so a quiet one costs the engine nothing).
 #[derive(Clone, Copy, Default)]
 struct Due {
@@ -138,7 +158,11 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
             f.engine_ok = Some(false);
             return f;
         };
-        f.pulse = Some(pulse(&p));
+        let mut pl = pulse(&p);
+        if pl.footprint_kb.is_none() {
+            pl.footprint_kb = footprint_fallback(app, s).await;
+        }
+        f.pulse = Some(pl);
         f.engine_ok = Some(true);
     }
     if due.agents {
@@ -148,7 +172,7 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
                 if doc.get("unchanged").is_none() && doc.get("error").is_none() {
                     f.generated_ms = doc.get("generated_ms").and_then(Value::as_u64);
                     f.rev = doc.get("rev").and_then(Value::as_str).map(str::to_string);
-                    f.agents = Some(reduce(&doc, s.step_max_chars));
+                    f.agents = Some(reduce(&doc, s.step_max_chars, &crate::ops::idle_shell_state(&app)));
                 }
             }
             Err(_) => {

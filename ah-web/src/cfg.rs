@@ -15,6 +15,25 @@ pub struct ActionCfg {
     pub args: Vec<String>,
 }
 
+/// One entry of a topology node's menu: what the page shows and the engine arguments it runs (`{pid}`, `{viewer}`, `{id}` are filled by the server).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TopoActionCfg {
+    pub kind: String,
+    pub name: String,
+    pub label: String,
+    pub confirm: bool,
+    pub local: bool,
+    pub needs_viewer: bool,
+    pub args: Vec<String>,
+}
+
+/// A store that can be opened in the viewer: its id in the I/O registry and the id `diag file` takes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TopoViewer {
+    pub store: String,
+    pub file: String,
+}
+
 /// All settings the server reads.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -66,6 +85,9 @@ pub struct Settings {
     pub mime: BTreeMap<String, String>,
     pub boot_marker: String,
     pub step_max_chars: usize,
+    pub number_units: Vec<ah_web_proto::NumUnit>,
+    pub number_decimals: usize,
+    pub number_raw_keys: Vec<String>,
     pub kind_order: Vec<String>,
     pub msg_unauthorized: String,
     pub msg_busy: String,
@@ -98,14 +120,39 @@ pub struct Settings {
     pub live_map_ttl_s: u64,
     pub live_map_timeout_ms: u64,
     pub live_map_parts: Vec<String>,
+    pub manage_file: String,
     pub live_graph_rel: String,
+    pub ops_cfg_rel: String,
     pub plugin_manifest_rel: String,
     pub live_jev_log_rel: String,
     pub live_rules_max: usize,
     pub live_scan_gap_ms: u64,
     pub live_jev_fx: BTreeMap<String, String>,
+    pub live_hook_fx: BTreeMap<String, String>,
+    pub live_hook_fx_default: String,
+    pub live_hook_legend: Vec<String>,
+    pub live_jev_glow_ms: u64,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
+    pub health_cache_ms: u64,
+    pub footprint_fallback_ms: u64,
+    pub health_cpu_soft_permille: u64,
+    pub health_cpu_hard_permille: u64,
+    pub health_holders_max: usize,
+    pub health_warn_pct: u64,
+    pub topo_subsystems: Vec<ah_web_proto::TopoSub>,
+    pub topo_viewers: Vec<TopoViewer>,
+    pub topo_databases: Vec<String>,
+    pub topo_actions: Vec<TopoActionCfg>,
+    pub topo_warn_fail_pct: f64,
+    pub topo_bad_fail_pct: f64,
+    pub topo_idle_s: u64,
+    pub topo_clients_max: usize,
+    pub topo_poll_full_ms: u64,
+    pub topo_poll_lite_ms: u64,
+    pub topo_action_max_chars: usize,
+    pub msg_topo_unknown: String,
+    pub msg_topo_no_viewer: String,
 }
 
 impl Settings {
@@ -119,6 +166,11 @@ impl Settings {
             err_warn: self.pulse_err_warn,
             err_bad: self.pulse_err_bad,
         }
+    }
+
+    /// The number format of the page.
+    pub fn number(&self) -> ah_web_proto::NumFmt {
+        ah_web_proto::NumFmt { units: self.number_units.clone(), decimals: self.number_decimals }
     }
 
     /// The Live screen's part of the start-up data.
@@ -141,6 +193,32 @@ impl Settings {
             rules_max: self.live_rules_max,
             scan_gap_ms: self.live_scan_gap_ms,
             jev_fx: self.live_jev_fx.clone(),
+            hook_fx: self.live_hook_fx.clone(),
+            hook_fx_default: self.live_hook_fx_default.clone(),
+            hook_legend: self.live_hook_legend.clone(),
+            jev_glow_ms: self.live_jev_glow_ms,
+        }
+    }
+
+    /// The Health and Topology screens' part of the start-up data (the engine arguments and viewer files stay on the server).
+    pub fn topo(&self) -> ah_web_proto::TopoCfg {
+        ah_web_proto::TopoCfg {
+            subsystems: self.topo_subsystems.clone(),
+            viewers: self.topo_viewers.iter().map(|v| v.store.clone()).collect(),
+            actions: self
+                .topo_actions
+                .iter()
+                .map(|a| ah_web_proto::TopoActionDef { kind: a.kind.clone(), name: a.name.clone(), label: a.label.clone(), confirm: a.confirm, local: a.local, needs_viewer: a.needs_viewer })
+                .collect(),
+            databases: self.topo_databases.clone(),
+            warn_fail_pct: self.topo_warn_fail_pct,
+            bad_fail_pct: self.topo_bad_fail_pct,
+            idle_s: self.topo_idle_s,
+            clients_max: self.topo_clients_max,
+            poll_full_ms: self.topo_poll_full_ms,
+            poll_lite_ms: self.topo_poll_lite_ms,
+            holders_max: self.health_holders_max,
+            warn_pct: self.health_warn_pct,
         }
     }
 

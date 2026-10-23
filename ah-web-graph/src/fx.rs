@@ -51,9 +51,9 @@ pub struct FxEvent {
     pub kind: FxKind,
     /// Node ids: the stops of a travelling decision, or the one node of a ripple / ring / shake.
     pub path: Vec<String>,
-    /// Key into `fx.colors`: the burst, and the travel after the first stop.
+    /// Key into `fx.colors`: the burst at the last stop (and that node's highlight).
     pub color: String,
-    /// Key into `fx.colors`: the first leg of a travelling decision.
+    /// Key into `fx.colors`: the travelling packet on every leg, and the bursts and highlights at the stops before the last.
     pub travel_color: String,
 }
 
@@ -178,7 +178,7 @@ pub fn frame(a: &Active, t_ms: f64, cfg: &FxCfg, out: &mut Vec<Particle>) -> boo
             if e < n as f32 * seg {
                 let i = (e / seg) as usize;
                 let u = (e - i as f32 * seg) / seg;
-                let c = if i + 1 < n { a.tcol } else { a.col };
+                let c = a.tcol;
                 for k in 0..=cfg.travel_trail {
                     let uk = (u - k as f32 * cfg.travel_trail_gap).max(0.0);
                     let fade = 1.0 - k as f32 / (cfg.travel_trail + 1) as f32;
@@ -189,7 +189,7 @@ pub fn frame(a: &Active, t_ms: f64, cfg: &FxCfg, out: &mut Vec<Particle>) -> boo
                 let b = e - (j + 1) as f32 * seg;
                 if (0.0..burst).contains(&b) {
                     let last = j + 1 == n;
-                    ring(out, a.stops[j + 1], cfg.burst_count, cfg.burst_radius * if last { 1.0 } else { 0.5 }, b / burst, a.col, cfg.burst_size, j as f32 * 0.7);
+                    ring(out, a.stops[j + 1], cfg.burst_count, cfg.burst_radius * if last { 1.0 } else { 0.5 }, b / burst, if last { a.col } else { a.tcol }, cfg.burst_size, j as f32 * 0.7);
                 }
             }
             true

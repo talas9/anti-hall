@@ -611,7 +611,7 @@ pub fn Graph(
                 for (i, id) in ev.path.iter().enumerate() {
                     // a travelling particle reaches the next stop after one leg; Lite has no travel, so the stops flash at once
                     let delay = if full && moving && ev.kind == crate::fx::FxKind::Decision { (i as f32 * cfgc.fx.travel_ms) as i32 } else { 0 };
-                    let color = if i == 0 && ev.kind == crate::fx::FxKind::Decision { ev.travel_color.clone() } else { ev.color.clone() };
+                    let color = if i + 1 < ev.path.len() && ev.kind == crate::fx::FxKind::Decision { ev.travel_color.clone() } else { ev.color.clone() };
                     let (root, id, ms, kind) = (root.clone(), id.clone(), cfgc.fx.flash_ms, ev.kind);
                     if delay == 0 {
                         crate::fx::flash(&root, &id, kind, &color, ms);

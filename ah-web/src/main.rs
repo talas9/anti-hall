@@ -7,9 +7,13 @@ mod app;
 mod cfg;
 mod ctl;
 mod data;
+mod health;
 mod live;
+mod manage;
 mod model;
+mod ops;
 mod server;
+mod tel;
 
 use app::App;
 use std::io::{Read, Write};
