@@ -448,7 +448,8 @@ impl Db {
     /// Run `f` on the hot.db read connection.
     pub fn read<R>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<R>) -> Result<R, DbError> {
         let r = f(&lk(&self.read));
-        crate::topology::store_read(defaults::text("topology.label_hot_db"), 0, r.is_ok());
+        // an empty answer (no row for the key) is a normal read, not a storage error
+        crate::topology::store_read(defaults::text("topology.label_hot_db"), 0, r.is_ok() || matches!(r, Err(rusqlite::Error::QueryReturnedNoRows)));
         Ok(r?)
     }
 

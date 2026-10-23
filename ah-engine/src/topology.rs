@@ -117,7 +117,6 @@ pub fn served(client: Option<&str>, how: Served, proc_us: u64) {
     let sample = CALLS.fetch_add(1, Relaxed).is_multiple_of(every);
     let timer = sample.then(Instant::now);
     let name = key(client.filter(|c| !c.is_empty()).unwrap_or(defaults::text("topology.label_unknown_client")));
-    let bounds = if sample { bounds() } else { Vec::new() };
     let mut r = reg();
     r.worker_calls += 1;
     r.worker_busy_us += proc_us;
@@ -137,10 +136,11 @@ pub fn served(client: Option<&str>, how: Served, proc_us: u64) {
             Served::FailOpen => c.fail_opens += 1,
         }
         if sample {
-            if c.hist.len() != bounds.len() + 1 {
-                c.hist = vec![0; bounds.len() + 1];
+            let edges = defaults::raw("topology.latency_bounds_us").as_array().unwrap_or_default();
+            if c.hist.len() != edges.len() + 1 {
+                c.hist = vec![0; edges.len() + 1];
             }
-            let at = bounds.iter().position(|b| proc_us <= *b).unwrap_or(bounds.len());
+            let at = edges.iter().filter_map(|v| v.as_integer()).position(|b| proc_us as i64 <= b).unwrap_or(edges.len());
             c.hist[at] += 1;
             c.sampled += 1;
         }
