@@ -478,8 +478,8 @@ min = 1
 max = 100
 
 [spawn_usage.block_pct]
-doc = "Hard threshold (spawn_block_pct): at or above this usage percent new agent spawns are blocked until the limit resets."
-value = 92
+doc = "Hard threshold (spawn_block_pct): at or above this usage percent (the fullest of the 5-hour and weekly buckets) new agent spawns are blocked until the limit resets."
+value = 90
 min = 1
 max = 100
 
@@ -526,3 +526,29 @@ value = "Headroom is getting short; tokens spent without a matching outcome (com
 [spawn_usage.msg_soft_instead]
 doc = "What to do instead, in the soft advice."
 value = "use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents, and give each a tight brief with a clear finish."
+
+# ---- nested spawns (a subagent or teammate starting agents of its own) ----------------------------------------
+
+[nested_spawn.setting]
+doc = "Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session."
+value = { section = "guards", key = "allowNestedSpawns", type = "boolean", env = "ANTIHALL_ALLOW_NESTED_SPAWNS", option = "", default = false }
+
+[nested_spawn.guard_name]
+doc = "Guard name in the block message and the skip file."
+value = "nested-spawn-guard"
+
+[nested_spawn.summary]
+doc = "One-line description of the nested-spawn check in the generated reference."
+value = "Runs inside swarm-guard on Agent and Task: blocks a spawn whose caller is a subagent or teammate unless guards.allowNestedSpawns is on."
+
+[nested_spawn.msg_what]
+doc = "What the block says."
+value = "this agent is a worker and may not start agents of its own (nested spawn)."
+
+[nested_spawn.msg_why]
+doc = "Why nested spawns are blocked."
+value = "A worker that fans out hides its cost from the coordinator: one nested spawn burned about 2.5M tokens in 30 minutes (2026-10-23), and the spawn ceiling and usage gates only count the coordinator's own agents."
+
+[nested_spawn.msg_instead]
+doc = "What to do instead of a nested spawn."
+value = "do the task yourself with your own tools and report back; if it truly needs more agents, say so in your report and let the coordinator spawn them. The user can allow it with guards.allowNestedSpawns or skip it for a session in skip.json as nested-spawn-guard."

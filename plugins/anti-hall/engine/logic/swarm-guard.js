@@ -249,6 +249,13 @@ function decide(p) {
   var home = hookProc.home(p);
   if (home === null) { ah.unable('swarm-guard:no_home', 'abandoned'); return 'allow'; } // no home at all: no log to count in (Node's own fail-open)
   if (!ah.path.isAbsolute(ah.env.get(ah.cfg('env.home')) || '')) ah.unable('swarm-guard:home_resolved'); // HOME unset or relative: the passwd/stand-in home is used
+  // nested spawn: a worker (subagent or teammate) starting agents of its own; independent of the swarm-guard switch
+  if (!ah.settings.bool('nested_spawn.setting') && !ah.settings.skipped(ah.cfg('nested_spawn.guard_name')) && coordinator.subagentByPayload(p)) {
+    ah.advisory('flagged', 'nested_spawn_block');
+    return swgBlock(text.message('block', ah.cfg('nested_spawn.guard_name'), {
+      what: ah.cfg('nested_spawn.msg_what'), why: ah.cfg('nested_spawn.msg_why'), instead: ah.cfg('nested_spawn.msg_instead'),
+    }));
+  }
   if (!ah.settings.bool('swarm_guard.setting')) return 'allow';
   if (ah.settings.skipped(ah.cfg('swarm_guard.guard_name'))) return 'allow';
   var now = Date.now(), label = swgDescribe(p);

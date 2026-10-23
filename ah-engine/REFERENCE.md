@@ -368,7 +368,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `engine-role-guard` | PreToolUse on Bash: refuses an ah-engine command the caller's role may not run, per the roles.matrix (subagent from the payload, workspace child from the environment). |
 | `broad-kill-guard` | PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed. |
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
-| `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. |
+| `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -3664,6 +3664,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.supervisor_setting` | `7 entries` |  |  | The setting devswarm.supervisorMode (auto, on or off): whether DevSwarm counts as active for this session. |
 | `devswarm_comms.tool` | `SendMessage` |  |  | The only tool this guard decides on. |
 
+### spawn_guards.toml / nested_spawn
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `nested_spawn.guard_name` | `nested-spawn-guard` |  |  | Guard name in the block message and the skip file. |
+| `nested_spawn.msg_instead` | `do the task yourself with your own tools and report back; if it truly needs m...` |  |  | What to do instead of a nested spawn. |
+| `nested_spawn.msg_what` | `this agent is a worker and may not start agents of its own (nested spawn).` |  |  | What the block says. |
+| `nested_spawn.msg_why` | `A worker that fans out hides its cost from the coordinator: one nested spawn ...` |  |  | Why nested spawns are blocked. |
+| `nested_spawn.setting` | `6 entries` |  |  | Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session. |
+| `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task: blocks a spawn whose caller is a s...` |  |  | One-line description of the nested-spawn check in the generated reference. |
+
 ### spawn_guards.toml / spawn_ceiling
 
 | Key | Default | Env override | Unit | What it is |
@@ -3688,7 +3699,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `spawn_usage.block_pct` | `92` |  |  | Hard threshold (spawn_block_pct): at or above this usage percent new agent spawns are blocked until the limit resets. |
+| `spawn_usage.block_pct` | `90` |  |  | Hard threshold (spawn_block_pct): at or above this usage percent (the fullest of the 5-hour and weekly buckets) new agent spawns are blocked until the limit resets. |
 | `spawn_usage.bucket_names` | `5-hour, weekly` |  |  | The name each bucket has in the messages, parallel to bucket_pct. |
 | `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
 | `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
@@ -4714,14 +4725,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_test.guard_name` | `lane-test-guard` |  |  | The guard id the lane test guard answers to in skip.json and in its messages. |
 | `lane_test.msg_instead` | `run cargo check, commit, verification happens at deploy; a filtered single-mo...` |  |  | What to do instead. |
 | `lane_test.msg_override` | `the user sets guards.allowTestSuites, turns the guard off with guards.laneTes...` |  |  | How the user can lift the block (shown on the last line). |
+| `lane_test.msg_policy_instead` | `build only (cargo build or cargo check), commit by explicit path, and report ...` |  |  | What to do instead under testPolicy none. |
+| `lane_test.msg_policy_override` | `the user sets guards.testPolicy to targeted or suites, or skips it for a sess...` |  |  | How the user can lift the testPolicy block (shown on the last line). |
+| `lane_test.msg_policy_what` | ``{cmd}` is blocked: tests are off by owner policy (guards.testPolicy = none);...` |  |  | Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
+| `lane_test.msg_policy_why` | `The owner turned tests off for agents: test runs queue behind the shared buil...` |  |  | Why every test run is blocked under testPolicy none. |
 | `lane_test.msg_what` | ``{cmd}` is blocked: a subagent does not run suite-scale tests ({label}).` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
 | `lane_test.msg_why` | `Suite runs queue behind the shared build lock and keep every waiting agent re...` |  |  | Why suite runs are blocked for subagents. |
 | `lane_test.nextest_other_words` | `list, archive, show-config, self, help` |  |  | Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run. |
 | `lane_test.nextest_run_words` | `run, r` |  |  | Words after nextest that run tests and are not a filter (nextest run); the filter comes after them. |
+| `lane_test.policy_none` | `none` |  |  | The testPolicy value under which every test-runner command is blocked. |
+| `lane_test.policy_runners` | `16 items` |  |  | Every test-runner command, one row per runner, judged only under guards.testPolicy none: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed, so env prefixes, cd, pipes and compound commands are handled by the shared parser); `label` names the runner in the block message. |
+| `lane_test.policy_suites` | `suites` |  |  | The testPolicy value under which every test run is allowed (the suite check stands aside). |
 | `lane_test.rules` | `7 items` |  |  | Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message. |
 | `lane_test.summary` | `PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo t...` |  |  | One-line description of the lane-test-guard check in the generated reference. |
 | `lane_test.sw` | `6 entries` |  |  | Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands. |
 | `lane_test.sw_allow_suites` | `6 entries` |  |  | Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside). |
+| `lane_test.sw_policy` | `7 entries` |  |  | Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run. |
+| `lane_test.sw_policy_main` | `6 entries` |  |  | Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents. |
 
 ### lane_waste.toml / lane_waste
 
@@ -5089,7 +5109,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `343 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `346 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7488,7 +7508,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `343 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `346 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
