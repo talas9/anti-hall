@@ -2,7 +2,7 @@ name: ah-engine
 
 # Self-contained CI for the Rust engine in ah-engine/ (D69). Two tiers:
 # - the gate (push, pull request): fmt, test.sh on ubuntu (the `ci` nextest profile: everything but the memory soak, the
-#   wall-clock benches and the heavy Node parity sweeps; every policy gate stays in), a macOS build + smoke subset, docs;
+#   wall-clock benches; every policy gate stays in), a macOS build + smoke subset, docs;
 # - the full run (the nightly schedule, a manual dispatch, a version tag): the whole suite (`nightly` profile) on both OSes;
 #   a scheduled failure opens or updates one issue.
 on:
@@ -45,10 +45,6 @@ jobs:
       AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The Node parity lanes run the Node hooks; with CI=true they fail rather than skip when Node is missing.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
@@ -71,7 +67,7 @@ jobs:
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
         run: |
           cargo nextest run --cargo-profile ci-test --profile ci --no-run
-          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/) | test(/^dssup_retention::the_archive_cap_evicts_what_node_evicts$/)'
+          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
           sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
       - name: test.sh (full)
         if: env.AH_FULL == 'true'

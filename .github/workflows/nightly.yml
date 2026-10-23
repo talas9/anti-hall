@@ -1,8 +1,6 @@
 name: nightly
 
 # Suites that are gated out of the per-PR run:
-#   ANTIHALL_PARITY_TESTS=1  Node-side duplicates of the engine node_parity tests
-#   ANTIHALL_BENCH=1         wall/CPU timing assertions (flaky on a shared PR runner)
 #   hardening                engine hardening bar (#58): load, crash loop, breaker, 50k-call memory soak (never a PR check)
 # On failure ONE issue titled "Nightly test failure" is opened or commented on.
 on:
@@ -18,37 +16,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  parity:
-    name: gated parity suites
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - name: parity tests
-        run: |
-          node --test \
-            tests/hooks/command-guard-bash-edit-parity.test.js \
-            tests/hygiene/devswarm-wake-stable-launcher-parity.test.js
-        env:
-          ANTIHALL_PARITY_TESTS: '1'
-
-  bench:
-    name: gated timing suites
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - name: timing tests
-        run: node --test tests/hooks/command-guard-scratch-work.test.js
-        env:
-          ANTIHALL_BENCH: '1'
-
   hardening:
     name: engine hardening bar
     runs-on: ubuntu-latest
@@ -76,7 +43,7 @@ jobs:
 
   report:
     name: nightly failure issue
-    needs: [parity, bench, hardening]
+    needs: [hardening]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -90,12 +57,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PARITY: ${{ needs.parity.result }}
-          BENCH: ${{ needs.bench.result }}
           HARDENING: ${{ needs.hardening.result }}
         run: |
           title="Nightly test failure"
-          body="Run: ${RUN_URL}"$'\n'"parity: ${PARITY}"$'\n'"bench: ${BENCH}"$'\n'"hardening: ${HARDENING}"
+          body="Run: ${RUN_URL}"$'\n'"hardening: ${HARDENING}"
           n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
                 --jq "[.[] | select(.title == \"$title\")][0].number // empty")
           if [ -n "$n" ]; then

@@ -18,23 +18,15 @@ Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and
 
 Building the Rust engine, running every suite and the porting workflow are in the [Development guide](docs/DEVELOPMENT.md).
 
-Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on pull requests and on `main`, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
+The Node test suite is retired; the tests are the engine's (`ah-engine/`, run with `cargo nextest`, see the Development guide). There is no install step for the plugin itself.
 
-```bash
-node --test                                         # the whole suite
-node --test tests/hygiene/docs-links.test.js        # one file
-node --test tests/hooks/git-guard.test.js tests/hygiene/docs-coverage.test.js   # a few files
-node plugins/anti-hall-node/hooks/doctor.js --check      # health check of a working copy
-```
-
-A green local run is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI, so run the full `node --test` locally before every push.
+A green local run is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI, so run the engine's lane tests locally before every push.
 
 ## Test isolation
 
 Tests must never touch the real home directory or the real `~/.anti-hall`. Anything that spawns a hook or script runs with `HOME` and `USERPROFILE` pointed at a temp dir.
 
-- Pattern: `tests/hooks/git-guard.test.js` gives every invocation a fresh fake home via `makeHome()` from `tests/helpers/fixtures.js`; `tests/helpers/spawn-hook.js` builds a controlled child environment.
-- Two hygiene tests enforce it: `tests/hygiene/no-real-home-spawn.test.js` fails on a spawn that inherits the real `HOME`, and `tests/hygiene/no-real-home-entrypoints.test.js` proves that `runUpdate`, `runRepairs` and `runMigrations` refuse to run against the real home under `node --test`.
+- The engine's tests give every run a scratch home and state directory (`ah-engine/tests/`); `temp_leaks` and `process_env_reads` enforce it.
 
 ## Adding or changing a guard
 
@@ -42,8 +34,8 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall-node/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
 3. Add the user-facing setting to `plugins/anti-hall-node/hooks/lib/settings-schema.js`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
-5. `tests/hygiene/docs-coverage.test.js` derives these lists from the code and fails, naming what is undocumented and where it belongs. `tests/hygiene/docs-links.test.js` and `tests/hygiene/readme-doc-links.test.js` check links.
-6. Add a regression test in `tests/hooks/`. For a guard that blocks, include the dangerous forms that must stay blocked, not only the allowed one.
+5. The engine's `docs_coverage` test derives these lists from the code and fails, naming what is undocumented and where it belongs.
+6. Add a regression test in `ah-engine/tests/`. For a guard that blocks, include the dangerous forms that must stay blocked, not only the allowed one.
 
 ### Fail-open
 
@@ -87,8 +79,8 @@ Every piece of work has an issue. Feature requests and bugs go through the [issu
 
 ### Builds and CI
 
-- **Local gate first.** Run `node --test` (and, for engine changes, the engine's own test suite) before you push. Pushes to `dev` and to short-lived branches run no CI.
-- **CI gates pull requests to `main` and releases.** A pull request runs the test workflow (a reduced matrix); `rc-v*` tags run the full matrix; `ah-engine-v*` tags run the engine publish workflow. Check the Actions result before calling a release done: a green local run is not a green CI run.
+- **Local gate first.** Run the engine's test suite (Development guide) before you push. Pushes to `dev` and to short-lived branches run no CI.
+- **CI gates pull requests to `main` and releases.** A pull request runs the engine workflow (`ah-engine.yml`, job `rust`); `ah-engine-v*` tags run the engine publish workflow. Check the Actions result before calling a release done: a green local run is not a green CI run.
 
 ### Releases
 
@@ -106,7 +98,7 @@ The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex m
 
 ## Before you open a pull request
 
-1. Run the files you touched, then `node --test` once.
+1. Run the engine tests you touched, then the lane pack once (Development guide).
 2. Run `node plugins/anti-hall-node/hooks/doctor.js --check`.
 3. Fill in the pull request template honestly; "N/A, because ..." is a fine answer.
 
