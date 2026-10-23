@@ -15,6 +15,6 @@ for host in claude codex; do
     name=$(basename "$(dirname "$rel")")
     case "$host" in codex) name=${name#anti-hall-} ;; esac
     mkdir -p "$root/$(dirname "$rel")"
-    "$bin" docs --format skill --host "$host" --name "$rel" > "$root/$rel"
+    "$bin" docs --format skill --host "$host" --name "$rel" --out "$root/$rel"
   done
 done

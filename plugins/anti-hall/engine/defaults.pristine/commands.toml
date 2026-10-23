@@ -32,8 +32,8 @@ doc = "Telemetry (D78): `summary` (invocations, outcomes, latency and injected b
 value = { args = "[summary|events|rollup|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]", read_only = false, read_only_args = ["", "summary", "events", "rollup", "actions"], status = "implemented" }
 
 [cmd.docs]
-doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
-value = { args = "[--format md]", read_only = true, status = "implemented" }
+doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code. `--out <file>` writes it atomically and only when something was generated (a failed run never leaves an empty file); with no text it exits 70 and prints why."
+value = { args = "[--format md|skill|skill-list] [--host <host>] [--name <path>] [--out <file>]", read_only = true, status = "implemented" }
 
 [cmd.gen-hooks]
 doc = "Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host."

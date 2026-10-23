@@ -412,20 +412,19 @@ fn cmd_telemetry(p: &Parsed) -> i32 {
 
 fn cmd_docs(p: &Parsed) -> i32 {
     let fmt = flag(p, "format");
-    if p.json {
-        println!("{}", docs::json());
+    let out = flag(p, "out");
+    let text = if p.json {
+        format!("{}\n", docs::json())
     } else if fmt.is_empty() || fmt == "md" {
-        print!("{}", docs::markdown());
+        docs::markdown()
     } else if fmt == "skill" || fmt == "skill-list" {
         // the generated engine skill family (owner feature 22): `skill-list` prints `<path>` per file, `skill --name <n>` one file
         let host = Some(flag(p, "host")).filter(|h| !h.is_empty()).unwrap_or_else(|| defaults::text("dispatch.default_host").to_string());
         let family = crate::skillgen::family(&host);
         if fmt == "skill-list" {
-            for s in &family {
-                println!("{}", s.path);
-            }
+            family.iter().map(|s| format!("{}\n", s.path)).collect()
         } else if let Some(s) = crate::skillgen::find(&host, &flag(p, "name")) {
-            print!("{}", s.text);
+            s.text.clone()
         } else {
             eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &format!("--name {}", flag(p, "name")))]));
             return 64;
@@ -433,8 +432,24 @@ fn cmd_docs(p: &Parsed) -> i32 {
     } else {
         eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &format!("--format {fmt}"))]));
         return 64;
+    };
+    // a generator never hands back an empty document: `docs > REFERENCE.md` would already have truncated the file, so
+    // `--out <file>` writes only a document that exists, in one atomic step, and leaves the file alone otherwise
+    if text.trim().is_empty() {
+        eprintln!("{}", defaults::render("msg.docs_empty", &[("what", &fmt), ("out", &out)]));
+        return 70;
     }
-    0
+    if out.is_empty() {
+        print!("{text}");
+        return 0;
+    }
+    match crate::atomic::write(std::path::Path::new(&out), &text) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}", defaults::render("msg.docs_write_failed", &[("out", &out), ("err", &e)]));
+            70
+        }
+    }
 }
 
 fn cmd_check(p: &Parsed) -> i32 {

@@ -24,7 +24,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `devswarm` | `<status\|line\|supervisor\|ingest\|ledger [--since <window>]\|recover --id <ws> --request <id>\|advisory --session <id>\|archive --id <ws> --request <id>\|plan-prune --older-than <days>\|prune --confirm-ids <ids> --plan <nonce>\|help [<verb>]\|skip <guard> [--ttl <min>]\|archive-ignore <id>\|archive-unignore <id>\|gate-intent --reason <text>\|notice --list\|plan set\|show <id>\|scope add <id> --glob <g> --note <t>\|gate <id> --set <csv> --clear <csv>\|workspaces list\|logs [--limit <n>]\|wake-directive <id>\|ready-check <sha> [--base <ref>]\|app-state [--json]\|app-sync [--dry-run]\|done [--summary <text>]\|primary [status\|takeover] [--session <id>]\|relay <seq> --to <id> [--note-file <path>]\|archive-request <childId> [--reason <text>]\|nudge <id>\|supervision-report [--days <n>] [--json]\|sync-ui --titles-json <file> [--yes]\|retention status\|run [--dry-run] [--store <key>]\|unarchive <id>\|migrate-owner-keys\|ensure <id> [--worktree <p> --session <s>]\|register <id> --worktree <p> --session <s> [--nudge <word>]\|correct <id> [--dry-run]\|reap-orphans [--apply --max <n>]\|wake-watch [--auto]\|register-primary [--worktree <p> --session <s> --force]\|diagnose [--json]\|healthcheck [--json]\|merge [<hivecontrol merge-into-source args>]\|spawn <branch> [-s <src> -a <agent> -p <brief> -t <title>]\|respawn <id> [--dry-run]\|reconcile-registry\|reap-stale [--yes]\|reconcile-active --active <ids> [--yes]\|auto-archive>` | no | implemented | The DevSwarm realtime state and owner actions (lane dswire). `status` and `line` print the live workspace state and its statusline segment; `advisory --session <id>` prints the changes that session has not seen; `archive --id <ws> --request <id>`, `plan-prune --older-than <days>` and `prune --confirm-ids <a,b> --plan <nonce>` run the hivecontrol actions at the owner's request, with Node's preconditions, ledger and confirmations. `ingest` prints who drains the native queue (devswarm_ingest.mode), the projects and each project's lock and heartbeat (read-only). Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are `ah-engine mesh` verbs. The ah-engine mesh verbs `help`, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`, `plan set\|show`, `scope add`, `gate`, `workspaces list`, `logs`, `wake-directive` (a child workspace), `ready-check`, `app-state`, `app-sync`, `done`, `primary`, `relay`, `archive-request`, `nudge`, `supervision-report`, `sync-ui`, `retention`, `unarchive`, `migrate-owner-keys`, `ensure`, `register`, `correct`, `reap-orphans`, `register-primary`, `diagnose`, `healthcheck`, `merge`, `spawn`, `respawn`, `reconcile-registry`, `reap-stale`, `reconcile-active` and `auto-archive` are native too (the guarded fronts: `spawn` answers its refusals, `respawn` its usage and not-primary refusals, `reap-stale` and `reconcile-active` their dry runs and an empty confirmed run, `auto-archive` the plan without the app database; Node answers the rest): `devswarm <verb> <the ah-engine mesh arguments>` prints what `ah-engine mesh <verb> ...` prints (Node answers what the engine defers). `supervisor` prints who owns the supervisor duties (devswarm_sup.mode), whether the Node supervisor is still running and each duty's gate; `recover --id <ws> --request <id>` kills and resumes ONE session on demand (never from a sweep): the engine refuses an automated caller, an unsafe id, a repeated request, a workspace without a worktree and session and one already recovered the most times allowed, then Node's devswarm-recover.js `run` does the kill with its exactly-one-target, identity and working-directory confirmations. Roles (devswarm_wire.role_matrix): reads are open; the acting verbs are for the main session only. `create` and `merge` are `ah-engine mesh` verbs. Inert (exit 64) where DevSwarm is absent. `wake-watch [--auto]` is the idle-wake Monitor the plugin runs for the whole session: it prints one line per event (armed, new mail, a persistent read error, a newer build) and runs until the session ends, on the realtime watch layer (OS events, polling where there are none) and the Node watcher's own tick; it reads plain files only and consumes nothing; roles: main session and workspace child. It answers exit 75 (nothing printed or written) for what only Node can decide, and the launcher then runs the Node watcher. |
 | `diag` | `<cpu\|mem\|threads\|hooks\|mesh\|jev\|fs\|locks\|trace>` | yes | implemented | Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing. |
 | `dispatch-report` | `[--json]` | yes | implemented | Read-only effectiveness metrics: the parallel-dispatch demand shown, followed and ignored with its compliance rate, the idle-neglect blocks, the Jev dispatch-tier verdicts and follow rate, and the coordinator-work window's nudges, blocks and work share per plugin version. |
-| `docs` | `[--format md]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. |
+| `docs` | `[--format md\|skill\|skill-list] [--host <host>] [--name <path>] [--out <file>]` | yes | implemented | Print the generated reference: every command, setting, metric, impact kind, check and error code. `--out <file>` writes it atomically and only when something was generated (a failed run never leaves an empty file); with no text it exits 70 and prints why. |
 | `doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>] [--repair-ingest-orphans] [--repair-test-stores] [--repair-resurrected] [--apply]` | no | implemented | The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the hook scripts the registry names, the live behaviour of the guards (each built-in check run in-process on a crafted payload; a payload the engine defers to its Node hook is reported as a deferral, never a pass), the statusline configuration and the saved Workflow templates. Read-only by default; `--repair` (or `--fix`) runs the repair pass of `migrate` after the diagnostics, `--dry-run` previews it, and `--migrations-only` with either prints only the migration report as JSON. |
 | `fallback` | `<node\|off\|status>` | no | implemented | The manual fallback switch of the Node backup (stage 2): `node` makes the launcher run the original Node hooks directly instead of the engine (it writes the marker file files.fallback_switch), `off` makes the engine answer again, `status` shows the switch. It never flips by itself; while it is on the Node hooks' verdicts are written to the shadow ledger with source node. |
 | `finding-dedup` | `[--file <findings.json>]` | yes | implemented | Advisory duplicate-finding detector for the deadly-loop reviewers: reads a JSON array of findings (stdin or `--file`), asks Jev whether candidate pairs describe the same root cause, and prints `{groups}` on stdout and one `possible duplicates` line per confirmed pair on stderr. It never collapses anything; with Jev off or unkeyed it prints no groups. |
@@ -35,7 +35,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `harvest` | `[--dir <path>] [--stale-days <n>]` | yes | implemented | Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax, and flag the ones with no payback trigger or in files untouched for the stale window. |
 | `hook` | `[--fallback <hook.js>] \| --event <Event> [--tool <Tool>] [--host claude\|codex] [--fallback-map <file>]` | no | implemented | The hook client: read one hook payload from stdin, ask the daemon, print the answer; falls back to the Node hook given by --fallback. With --event it is the per-event dispatcher: it runs every hook entry hooks.json registers for that event and tool, built-in checks in the engine and the rest as their Node hooks (--fallback-map overrides their commands), and combines the results the way the host would. |
 | `impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` | yes | implemented | Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including the NET of model-routing savings minus what injection and Jev cost (D77). |
-| `install-codex` | `[--global] [--dry-run] [--root <plugin dir>]` | no | implemented | Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing. |
+| `install-codex` | `[--global] [--dry-run] [--root <plugin dir>]` | no | implemented | Install the anti-hall hooks for Codex (D81, lane L9b): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing. |
 | `install-statusline` | `` | no | implemented | Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed statusLine and exits 0. Use uninstall-statusline to clean up older installs. |
 | `jev` | `<ask\|status\|scrub\|evidence>` | no | implemented | The optional Jev lane (D34-D38): `ask` reads JSON requests, one per stdin line, and prints each decision (a real call when Jev is enabled and keyed), `status` prints the resolved settings and each integration's mode without any key, `scrub` redacts secrets from JSON strings read one per stdin line. |
 | `jev-report` | `[--json] [--days N] [--window 24h\|7d] [--by project\|session] [--project <name>] [--weekly] \| label <hash> [tp\|fp] \| prune-audit --days N` | no | implemented | The Jev report of the /anti-hall:jev skill: per-integration calls, agreement, changed decisions, precision, cost and the KEEP / REVIEW / REMOVE verdict from the decision log, with `--json`, `--days`, `--window 24h\|7d`, `--by project\|session`, `--project`, `--weekly`, `--since`, `--until`, `--exclude-window`, `--exclude-project`; `label <hash> [tp\|fp]` reads or records a human precision label and `prune-audit --days N` trims the audit snippets (the only two forms that write). |
@@ -57,7 +57,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `shadow-compare` | `[--days N] [--check ID] [--event NAME] [--daily]` | yes | implemented | Report how the engine and the original Node hooks agree (the Node backup, stage 1): pairs the shadow ledger's engine rows and node rows and prints, per check, the compared pairs, agreement, engine-weaker, engine-stricter and the errors of each side, plus what the shadow skipped (CPU, load, payload size, busy slots). `--days N` sets the window (default nodeback.report_days), `--check ID` and `--event NAME` narrow it, `--daily` adds a line per UTC day, `--json` prints everything. Works without the daemon; a daily job (shadow_report) also writes the JSON report to nodeback.report_file. |
 | `shadow-run` | `<job file>` | no | implemented | Internal: the detached half of the Node shadow. Runs the Node hooks of one followed hook event on their own, in a scratch home, and writes the engine rows and the node rows to the shadow ledger; started by the engine, not by people. |
 | `status` | `[--memory] [--threads] [--migration]` | yes | implemented | Show the daemon's state: version, uptime, memory, counters, breaker and crash-loop state, rules, and a headline summary of what it did. |
-| `statusline` | `(session JSON on stdin)` | no | implemented | The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open. |
+| `statusline` | `(session JSON on stdin)` | no | implemented | The two-line status line the host runs after each turn (L9a): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open. |
 | `stop` | `` | no | implemented | Ask the daemon to drain and exit. |
 | `telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` | no | implemented | Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and spill events), `rollup` (move complete days into archive.db and apply the retention), `actions [feature]` (what the acting features did and got wrong: action counts, success rate, mistake signals and mistake rate; `--mistake <feature> <action> <target> <kind>` records one the engine cannot see, such as a dismissed escalation). Local only. |
 | `uninstall-statusline` | `[--user\|--project] [--purge-base]` | no | implemented | Take an older anti-hall status line out of the host's settings: restores the saved original statusLine, else the settings backup, else removes the key; `--project` for ./.claude/settings.local.json, `--purge-base` to also remove the shared base configuration. |
@@ -112,7 +112,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--glob` | `devswarm` | Path glob a workspace is allowed to touch (`devswarm scope add`). |
 | `--global` | `install-codex` | Install into the home directory instead of the current project (`install-codex`). |
 | `--home` | `audit`, `doctor`, `migrate`, `refresh` | Home directory to use instead of the real one (scratch-HOME runs). |
-| `--host` | `gen-hooks`, `hook` | The host the output is for: `claude` or `codex`. |
+| `--host` | `docs`, `gen-hooks`, `hook` | The host the output is for: `claude` or `codex`. |
 | `--id` | `devswarm` | Workspace id (`devswarm`, `mesh`). |
 | `--job` | `schedule` | Name of one scheduled job (`schedule`). |
 | `--json` | `agents`, `audit`, `auto-handover-config`, `coordinator-work-baseline`, `defect`, `devswarm`, `dispatch-report`, `jev-report`, `proc`, `settings`, `web` | Print machine-readable JSON instead of text. Accepted by every command. |
@@ -127,6 +127,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--migration` | `status` | Print the migration report: every hook check, supervisor duty, post-update stage, command and Node switch as native, partial or node (`status`; add `--json` for the machine form). |
 | `--migrations-only` | `doctor` | With `--repair` or `--fix`, run only the migration pass and print its report as JSON (`doctor`). |
 | `--mistake` | `telemetry` | Record a mistake signal the engine cannot see itself: `--mistake <feature> <action> <target> <kind> [detail]` (`telemetry actions`). |
+| `--name` | `docs` | undocumented |
 | `--no-live` | `audit` | undocumented |
 | `--no-open` | `web` | undocumented |
 | `--no-restart` | `engine-update` | Install without restarting the daemon; the next hook call starts the new one (`engine-update`). |
@@ -135,6 +136,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--nudge` | `devswarm` | The nudge word a registered workspace answers to (`devswarm register`). |
 | `--offset` | `query` | Rows to skip before the page starts (`query`). |
 | `--older-than` | `devswarm` | Only items older than this many days (`devswarm plan-prune`). |
+| `--out` | `docs` | undocumented |
 | `--part` | `describe` | Comma-separated parts of the self-description to return (`describe`). |
 | `--plan` | `devswarm` | The nonce printed by `plan-prune`, proving the prune was planned first (`devswarm prune`). |
 | `--plugin-root` | `doctor`, `migrate` | Plugin directory whose files are read, before anything is loaded. |
@@ -385,7 +387,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer. |
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook. |
 | `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace or a Primary with no seat to settle; a Primary in a git checkout (seat adoption writes the mesh store), a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
-| `devswarm-parent-gate` | Stop: the DevSwarm Primary gate (port of devswarm-parent-gate.js, decided in engine/logic/devswarm-parent-gate.js): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written. |
+| `devswarm-parent-gate` | Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswarm-parent-gate logic file): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written. |
 | `devswarm-child-gate` | DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget; an archived workspace and the shapes it cannot read exactly defer to the Node gate. |
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call. |
 | `devswarm-child-drain` | DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged. |
@@ -3039,7 +3041,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ca_recent_one` | `a compact happened {n} turn ago` |  |  | The reason when a compact happened one turn ago ({n}). |
 | `ctxbudget.ca_state_dir` | `compact-advice` |  |  | The directory under the state root that holds the once-per-declaration records of the compact-advice guard. |
 | `ctxbudget.ca_tokens_vias` | `tokens, stop-tokens` |  |  | The firedVia words of a token-ceiling fire, whose SAFE declaration is allowed even at a low percent. |
-| `ctxbudget.ca_unsure_log_kind` | `compact_advice_unsure` |  |  | Engine log kind of a compact-advice-guard Stop decided without Node's exact reading. Deferred (the justified failure paths of a blocking guard, never weaker than Node): home_relative (a HOME that is set but relative or empty: libuv takes it as it is and Node resolves every state path against its own process directory), relative_transcript (a relative transcript path with no absolute payload cwd), transcript_line (a transcript line the interpreter cannot parse as V8 does), compact_timestamp (the latch comparison needs a compact boundary time that neither jx.isoMs nor jx.dateParse reads). Allowed, as the Node hook ends with an error that never blocks: home_none (neither HOME nor the passwd entry gives a home), home_test_guard (the real home under a spawn_ctx.test_markers variable, refused as companion/lib/test-home-guard.js does). |
+| `ctxbudget.ca_unsure_log_kind` | `compact_advice_unsure` |  |  | Engine log kind of a compact-advice-guard Stop decided without Node's exact reading. Deferred (the justified failure paths of a blocking guard, never weaker than Node): home_relative (a HOME that is set but relative or empty: libuv takes it as it is and Node resolves every state path against its own process directory), relative_transcript (a relative transcript path with no absolute payload cwd), transcript_line (a transcript line the interpreter cannot parse as V8 does), compact_timestamp (the latch comparison needs a compact boundary time that neither jx.isoMs nor jx.dateParse reads). Allowed, as the Node hook ends with an error that never blocks: home_none (neither HOME nor the passwd entry gives a home), home_test_guard (the real home under a spawn_ctx.test_markers variable), refused as the test-home guard does). |
 | `ctxbudget.ca_what` | `your reply recommends compacting ("{phrase}") but {why}.` |  |  | The block's first line; {phrase} is the recommendation, {why} the reasons. |
 | `ctxbudget.ca_why` | `"No background agents running" is necessary, not sufficient; only the auto-ha...` |  |  | The block's Why line. |
 | `ctxbudget.ca_why_join` | `, and ` |  |  | What joins the reasons. |
@@ -3146,7 +3148,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.swarm_marker` | `anti-hall · shared-tree` |  |  | Text that marks a swarm-guard advisory as the shared-tree one (any other advisory passes untouched). |
 | `inject_gate.task_hook` | `task-tracker` |  |  | Dispatch entry id of the task tracker. |
 | `inject_gate.task_long_prefix` | `💡 anti-hall · task-tracker: capture EVERY user request` |  |  | How the long task-tracker directive starts (it is always passed on and restarts the short reminder's turn count). |
-| `inject_gate.task_short` | `💡 anti-hall · task-tracker: capture every request as a priority-sorted task; ...` |  |  | The exact short task-tracker reminder hooks/task-tracker.js prints on a turn that is not the long form (a test keeps it equal to the Node text). |
+| `inject_gate.task_short` | `💡 anti-hall · task-tracker: capture every request as a priority-sorted task; ...` |  |  | The exact short task-tracker reminder the task-tracker hook prints on a turn that is not the long form (a test keeps it equal to the Node text). |
 | `inject_gate.ups_event` | `UserPromptSubmit` |  |  | The event whose dispatch counts as one turn of the session. |
 
 ### session.toml / session
@@ -3786,7 +3788,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `repair_reload.cooldown_file` | `repair-on-reload.last.json` |  |  | The record of the last repair start, relative to the anti-hall directory. |
 | `repair_reload.cooldown_ms` | `3600000` |  | ms | How long after a repair start no other one starts at the same plugin version. |
 | `repair_reload.guard_name` | `repair-on-reload` |  |  | Hook name in the skip file. |
-| `repair_reload.migration_keys` | `11 items` |  |  | The keys of the data migrations a reload repairs (the non-opt-in migrations of companion/lib/migrations.js); a test compares this list with the Node one, so a migration added there fails the build until it is added here. |
+| `repair_reload.migration_keys` | `11 items` |  |  | The keys of the data migrations a reload repairs (the non-opt-in migrations); a test compares this list with the Node one, so a migration added there fails the build until it is added here. |
 | `repair_reload.setting` | `6 entries` |  |  | The switch maintenance.repairOnReload (on by default). |
 | `repair_reload.summary` | `Stays silent when no repair can start (switch off, subagent turn, skipped, no...` |  |  | One-line description of the repair-on-reload check in the generated reference. |
 | `repair_reload.version_re` | `^\d+\.\d+\.\d+$` |  |  | A plain three-part version (JavaScript regex). |
@@ -4436,7 +4438,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.engine_cli` | `{home}/.anti-hall/ah-engine/bin/ah-engine mesh` |  |  | The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory. |
 | `devswarm_role.engine_watcher` | `{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto` |  |  | The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}. |
 | `devswarm_role.gate_guard` | `devswarm-parent-gate` |  |  | The skip-file name of the parent gate. |
-| `devswarm_role.gate_summary` | `Stop: the DevSwarm Primary gate (port of devswarm-parent-gate.js, decided in ...` |  |  | One-line description of the devswarm-parent-gate check in the generated reference. |
+| `devswarm_role.gate_summary` | `Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswar...` |  |  | One-line description of the devswarm-parent-gate check in the generated reference. |
 | `devswarm_role.hooks_dir` | `hooks` |  |  | The plugin's hooks directory, relative to the plugin root; the Node hooks resolve their own location from it (real path). |
 | `devswarm_role.id_extra_chars` | `._-` |  |  | Characters besides ASCII letters and digits that a workspace id may contain. |
 | `devswarm_role.id_placeholder` | `<DEVSWARM_BUILDER_ID>` |  |  | What the injected commands name when the workspace id is absent or unsafe. |
@@ -5192,7 +5194,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.lock_file` | `ah-engine.lock` |  |  | The plugin's pin of the engine release, relative to the plugin root. |
 | `doctor.log_warn_factor` | `2` |  |  | A log or inbox larger than its cap times this is reported as not being trimmed. |
 | `doctor.logs_dir` | `.anti-hall, logs` |  |  | The central log directory under the home directory, as path parts. |
-| `doctor.logs_dir_env` | `ANTI_HALL_LOG_DIR` |  |  | The environment variable that overrides the central log directory (the logger's own override, companion/lib/anti-hall-log.js). |
+| `doctor.logs_dir_env` | `ANTI_HALL_LOG_DIR` |  |  | The environment variable that overrides the central log directory (the logger's own override). |
 | `doctor.logs_file` | `devswarm.jsonl` |  |  | The central log file in the log directory (JSON lines). |
 | `doctor.logs_flag` | `--logs` |  |  | The flag that adds the central-log section (the Node doctor's --logs). |
 | `doctor.logs_levels` | `debug, info, warn, error` |  |  | The central log's level names, lowest first; an entry whose level is not one of them is dropped. |
@@ -5417,9 +5419,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.codex_hooks_on` | `Codex config.toml ({label}) has the hooks feature enabled` |  |  | The Codex config enables hooks. Placeholder: {label}. |
 | `doctor_msg.codex_label_global` | `global` |  |  | The label of the home directory's Codex directory. |
 | `doctor_msg.codex_label_project` | `project` |  |  | The label of the project's Codex directory. |
-| `doctor_msg.codex_missing` | `Codex hooks.json ({label}) missing — run plugins/anti-hall/codex/install-code...` |  |  | There is no Codex hooks file. Placeholder: {label}. |
+| `doctor_msg.codex_missing` | `Codex hooks.json ({label}) missing — run `ah-engine install-codex`` |  |  | There is no Codex hooks file. Placeholder: {label}. |
 | `doctor_msg.codex_none` | `Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped` |  |  | No Codex configuration was found. |
-| `doctor_msg.codex_unwired` | `Codex hooks.json ({label}) present but no anti-hall hooks found — run plugins...` |  |  | The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}. |
+| `doctor_msg.codex_unwired` | `Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-eng...` |  |  | The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}. |
 | `doctor_msg.codex_wired` | `Codex hooks.json ({label}) has anti-hall hooks registered` |  |  | The Codex hooks file registers anti-hall's hooks. Placeholder: {label}. |
 | `doctor_msg.config_fell_back` | `{file}: {detail}; using the {layer} copy instead - Fix: correct the edit, or ...` |  |  | CF-02. Placeholders: {file}, {detail}, {layer}, {code}. |
 | `doctor_msg.config_missing_keys` | `{file} lacks {n} setting(s) the engine reads ({keys}); the shipped value is u...` |  |  | CF-03. Placeholders: {file}, {n}, {keys}. |
@@ -5678,7 +5680,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `entry_audit.allow` | `10 items` |  |  | What the audit lets through, each with its reason. |
+| `entry_audit.allow` | `24 items` |  |  | What the audit lets through, each with its reason. |
 | `entry_audit.cmd_files` | `12 items` |  |  | Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults (engine/defaults.pristine is a byte-identical copy, compared by the deploy kit, so it is not scanned twice), skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file. |
 | `entry_audit.file_exts` | `.sh, .js, .mjs, .cjs, .py` |  |  | Extensions (with the dot, lower case) that make a file a script for the files section and for the launcher directories. |
 | `entry_audit.generators` | `3 entries, 3 entries` |  |  | Every generator of files the engine itself writes outside the plugin tree: the service units. |
@@ -6189,7 +6191,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
 | `mesh_write.exit_refused` | `2` |  |  | Exit code of a verb's own refusal (Node's `{ ok: false }` result). |
 | `mesh_write.exit_unable` | `69` |  |  | Exit code of a mesh verb the engine could not do or that is switched off: nothing was written, and the failure is a visible error (sysexits EX_UNAVAILABLE, 69), not the former silent deferral code 75. Never used after a write: see exit_committed_failure. |
-| `mesh_write.exit_unsupported` | `2` |  |  | Exit code of a retired or unsupported verb form (a refusal, like devswarm.js's unknown-command answer): nothing was done. |
+| `mesh_write.exit_unsupported` | `2` |  |  | Exit code of a retired or unsupported verb form (a refusal, like the old CLI's unknown-command answer): nothing was done. |
 | `mesh_write.field_cursor_path` | `cursorPath` |  |  | Descriptor field naming the durable inbox's cursor file. |
 | `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
 | `mesh_write.field_id` | `id` |  |  | The descriptor field holding the workspace id. |
@@ -6514,7 +6516,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_tail_under_truncation` | `--tail {tail} cannot be honoured: this read was truncated by the {limit}-row ...` |  |  | The error of that refusal. Placeholders: {tail}, {limit}, {count}. |
 | `mesh_write.msg_tail_under_truncation_hint` | `use `--since <index\|ISO date>` to bound the read to recent mail before the ca...` |  |  | The hint of that refusal. Placeholder: {limit}. |
 | `mesh_write.msg_unable` | `ah-engine mesh: ERROR: this verb or case cannot be done by the engine ({site}...` |  |  | stderr line when the engine cannot answer a mesh verb (an unported verb, a case it cannot do, no plugin context). Nothing was written; the exit code is mesh_write.exit_unable. Placeholders: {site}, where it gave up; {detail}, which call and why. |
-| `mesh_write.msg_unknown_inbox_sub` | `unknown inbox subcommand: {sub} (read\|ack\|count\|pull\|messages\|read-primary\|ac...` |  |  | The error of an `inbox` subcommand devswarm.js does not know. Placeholder: {sub} (JSON-quoted). |
+| `mesh_write.msg_unknown_inbox_sub` | `unknown inbox subcommand: {sub} (read\|ack\|count\|pull\|messages\|read-primary\|ac...` |  |  | The error of an `inbox` subcommand the engine does not know. Placeholder: {sub} (JSON-quoted). |
 | `mesh_write.msg_unknown_receipt` | `no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run...` |  |  | The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is). |
 | `mesh_write.msg_unregistered` | `workspace {id} is not registered and has no messages (no descriptor, no regis...` |  |  | The refusal text for an unregistered id. Placeholder: {id} (JSON-quoted). |
 | `mesh_write.msg_unsupported_verb` | ``{argv}` is not a form of this CLI; `help --short` lists the verbs and `help ...` |  |  | Printed for a verb form this CLI does not have. Nothing was done. Placeholder: {argv} (the leading words). |
@@ -6941,6 +6943,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sibling_sweep.window_bytes` | `1048576` |  | bytes | The most of the transcript's end that is read to find the turn (one streaming pass, never the whole file). |
 | `sibling_sweep.window_chars` | `48` |  | chars | How many characters before a cue are searched for a hedge or negation that voids the cue. |
 
+### limits.toml / act
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `act.proc_actions` | `status, stop, restart` |  |  | The actions `proc <action> <pid>` accepts besides `list`. |
+| `act.stop_poll_floor_ms` | `1` |  | ms | The shortest sleep between two looks at a process a stop is waiting on, so the last poll before the deadline never spins. |
+
 ### limits.toml / agent_scan
 
 | Key | Default | Env override | Unit | What it is |
@@ -6963,11 +6972,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.nudge_default` | `4` |  |  | Default of the coordinator work nudge threshold when the setting is absent or unusable. |
 | `coordinator_work.window_default` | `10` |  |  | Default of the coordinator work window setting, in minutes, when the setting is absent or unusable. |
 
+### limits.toml / devswarm_parent
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_parent.drift_cache_cwd_factor` | `64` |  |  | How many times devswarm_parent.drift_cache_keys_max the per-file cwd cache may hold before it is emptied. |
+
 ### limits.toml / dispatch
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `dispatch.stop_id_max_chars` | `64` |  |  | Longest session or agent id the stop-loop guard keeps in a state file name; the rest is cut. |
+
+### limits.toml / entry_audit
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `entry_audit.shebang_read_bytes` | `256` |  | bytes | How many bytes of a file the entry audit reads to see whether it starts with an interpreter line (entry_audit.shebang). |
 
 ### limits.toml / git
 
@@ -7009,6 +7030,29 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `jev.what_read_requests` | `read the requests from stdin` |  |  | What the Jev `ask` command was doing when reading its stdin failed. |
 | `jev.what_read_texts` | `read the texts from stdin` |  |  | What the Jev `scrub` command was doing when reading its stdin failed. |
 
+### limits.toml / mem
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mem.bytes_per_mb` | `1048576` |  | bytes | Bytes in one megabyte as the leak sentinel counts them (1,048,576 = 2^20): converts a byte slope or footprint to MB. |
+| `mem.leak_msg_evidence_failed` | `{text} [evidence not written: {err}]` |  |  | The leak notice when its evidence file could not be written. Placeholders: text (the notice, mem.leak_msg_notice), err (why the write failed). |
+| `mem.seconds_per_hour` | `3600` |  | s | Seconds in one hour: converts the leak sentinel's per-second slope to MB per hour. |
+
+### limits.toml / mesh_events
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_events.sql_body` | `SELECT body FROM messages WHERE id = ?1` |  |  | The query behind `CTL mesh-msg`. Parameter: ?1 the message id. |
+| `mesh_events.sql_messages` | `SELECT id, workspace_id, ts, sender, recipient, mtype, urgency, needs_reply, ...` |  |  | The query behind `CTL mesh-events` messages (heartbeats left out). Placeholder: order (ASC, or DESC for `latest=`). Parameters: ?1 the id after which to read, ?2 the row limit. |
+| `mesh_events.sql_reads` | `SELECT partition, ns, reader, value, updated_at FROM reader_cursors WHERE upd...` |  |  | The query behind `CTL mesh-events` read cursors. Parameter: ?1 the updated_at after which to read. |
+
+### limits.toml / mesh_write
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_write.known_block_skip` | `meshGroupUnresolved, meshGroupError, totalsPartial` |  |  | Keys of the read-side block that `inbox` leaves out of its own reply because it adds its own totals around them. |
+| `mesh_write.refusal_fields` | `reason, error` |  |  | Fields of an ensure refusal that carry the reason, tried in order; the first one present is the reason a pull was held. |
+
 ### limits.toml / task_lifecycle_log
 
 | Key | Default | Env override | Unit | What it is |
@@ -7020,6 +7064,25 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `taskstate.no_tasks_marker` | `No tasks found` |  |  | The text in a task tool result that says the list is empty. |
+
+### limits.toml / web
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `web.build_sha_bytes` | `4` |  |  | How many leading bytes of the engine binary's SHA-256 the pulse shows as the build id (each byte is two hex digits; the deploy kit verifies the same figure). |
+| `web.exit_unavailable` | `69` |  |  | Exit code of the web CLI when the server binary is missing or did not come up (sysexits EX_UNAVAILABLE, 69, the code every unavailable verb of the engine uses). |
+| `web.io_buckets` | `16` |  |  | Number of latency buckets of the dashboard's served-call histogram; bucket b holds calls of 2^b up to 2^(b+1) microseconds and the last bucket takes everything slower. |
+| `web.msg_query_no_source` | `no source '{what}'` |  |  | Said when a dashboard query names a data source the engine does not have. Placeholder: what (the name asked for). |
+| `web.probe_connect_ms` | `500` |  | ms | How long the web CLI waits for the server's port to accept a connection before it treats the recorded server as gone. |
+| `web.query_day_ms` | `86400000` |  | ms | Milliseconds in one day: converts the dashboard query window given in days to the millisecond clock the stores use. |
+| `web.valueless_flags` | `--confirmed, --json, --all` |  |  | Flags of the dashboard's engine verbs that take no value, so the word after them is a positional argument, not their value. |
+
+### limits.toml / webapi
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `webapi.msg_audit_not_written` | `audit not written: {err}` |  |  | The note a settings or rules change carries when its audit row could not be written and no other note exists. Placeholder: err. |
+| `webapi.msg_audit_not_written_after` | `{note}; audit not written: {err}` |  |  | The note when the audit row could not be written and the change already carries a note. Placeholders: note (the existing note), err. |
 
 ### script.toml / script
 
@@ -8405,7 +8468,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `handovers.msg_not_indexed` | `no handover index yet; run `{cmd}` first` |  |  | Printed by `search` when the project has handovers but no sidecars yet. Placeholder: {cmd}. |
 | `handovers.msg_problem_line` | `[{severity}] {code} {where} {detail}` |  |  | One problem line of the advisory and of `check`. Placeholders: {severity}, {code}, {where}, {detail}. |
 | `handovers.msg_recorded` | `{n} problem(s) recorded in the index` |  |  | Detail of the advisory line that stands for problems recorded in the index by the last run. Placeholder: {n}. |
-| `handovers.msg_script_failed` | `the handover-hygiene script could not run ({why}); the plugin's engine/logic/...` |  |  | Printed by the CLI when the handover script could not answer. Placeholder: {why}. |
+| `handovers.msg_script_failed` | `the handover-hygiene script could not run ({why}); the plugin's handover-hygi...` |  |  | Printed by the CLI when the handover script could not answer. Placeholder: {why}. |
 | `handovers.msg_search_hit` | `{score}  {id}  {title}\n    {path}\n    {snippet}` |  |  | One search hit. Placeholders: {score}, {id}, {title}, {path}, {snippet}. |
 | `handovers.msg_search_howto` | ``ah-engine handovers search <words> [date:2026-09] [session:ID] [decision:WOR...` |  |  | The search hint in the root brief. |
 | `handovers.msg_search_none` | `no handover matches: {query}` |  |  | Printed when a search finds nothing. Placeholder: {query}. |
@@ -8605,7 +8668,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.devswarm_fields` | `18 entries` |  |  | Field names of the DevSwarm descriptor, plan, wake-watch lock and workspace name-cache files the tracker reads (the DevSwarm format); title is the field of the name cache that holds a workspace's display title. |
 | `agent_tracker.escalate` | `4 entries` |  |  | The owner's channel and the stop action for stuck agents (src/agents/escalate.rs, used by the nudge loop of agent_nudge.toml). act_after_ms: a nudge that was escalated to the owner and is still open this long after it was first sent runs the action of the child's kind (agent_tracker.act_setting), once. exempt_kinds: kinds never nudged about or acted on (a Primary may run for hours; a DevSwarm Primary's session is exempt by its descriptor prefix agent_tracker.primary_prefix). codex_hung_ms: a one-shot Codex run quiet this long with no terminal record, whose process still holds its rollout open, is hung (a nudge to the session that launched it). term_cmds: the command substrings a process must show to be signalled for a Codex row (one-shot runs only: a shared Codex server holds many sessions' rollouts and never matches). |
 | `agent_tracker.escalate_words` | `3 entries` |  |  | The action words the stop action writes to telemetry (field action). |
-| `agent_tracker.fmt` | `12 entries` |  |  | Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. count_steps / count_units: the divisors and suffixes of a token count in a message (995687 reads 995k, 1500000 reads 1.5M). |
+| `agent_tracker.fmt` | `13 entries` |  |  | Layout of the status table: columns (the header words, in order), the separator between columns, and the word for an absent value. ago_units: the suffixes used for seconds, minutes, hours and days in an age. count_steps / count_units: the divisors and suffixes of a token count in a message (995687 reads 995k, 1500000 reads 1.5M). count_decimal_below_tenths: a count below this many tenths of its unit shows one decimal (1.5M), at or above it whole units (12M). |
 | `agent_tracker.headless` | `3 entries` |  |  | Headless one-shot runs (a plugin's `claude -p` judge calls, SDK runs) are not agents: they are never tracked, listed or counted. A transcript is headless when its first lines carry key = one of values (the host's entrypoint field: sdk-cli), or when its project directory name contains one of dir_contains (directories only such runs write to). |
 | `agent_tracker.kinds` | `6 entries` |  |  | The names of the kinds of agent the tracker follows: main (a Claude Code session), subagent (a subagent or background task of a session), teammate (an in-process teammate of an agent team: a subagent transcript whose meta names it one), codex (a Codex CLI session, from its rollout file), workspace (a DevSwarm workspace's session), heartbeat (an agent known only by its heartbeat file). |
 | `agent_tracker.limits` | `57 entries` |  |  | Bounds and thresholds of one tick (milliseconds unless the name says otherwise). active_window_ms: a transcript untouched this long is not tracked. max_agents: most agents followed (newest first). first_read_bytes: how much of the end of a transcript is read the first time it is seen (its totals then count from there). read_max_bytes: most read from one transcript per tick. hung_ms: a running agent with no activity this long is hung; hung_pending_ms: the same while a tool call is still unanswered (a long build or wait is legitimate). loop_window: how many recent tool calls are compared; loop_repeats: identical calls in that window that make a loop; loop_edit_repeats: the same for edits of one file; loop_span_ms: the repeats must fall within this much time of the newest one (the same poll every few minutes is not a loop); error_window, error_repeats: the same for an identical error text. waste_window_ms: the window tokens and progress are compared over; waste_min_span_ms: the least history needed before it is judged; waste_min_tokens: tokens spent in the window below which nothing is wasted; waste_max_progress: progress units in that window at or below which the spend is waste; cache_read_pct: how much a cache-read token counts toward the spend, in percent. drift_min_events: edits and commands seen under the current step before drift is judged; drift_max_overlap_pct: the share of the step's words the recent work may share before it is drift; drift_min_step_words, drift_min_word_len: how small a step or a word is too small to judge; work_words_max: how many recent work words are kept. heartbeat_stale_ms: a running agent heartbeat older than this is stale (the Node watchdog default). monitor_min_bg: background tasks running before a missing wake path is reported; bg_bash_ms: how long a background shell command counts as running. confirm_ticks: ticks a signal must stay up before its first reminder. outcome_timeout_ms: a reminded signal still up after this is recorded as not recovered. fp_min_progress: progress that makes a cleared, un-reminded flag a false positive. samples_max: samples kept per agent. files_max: distinct edited files remembered per agent. series_every_ms: how often an agent's series sample is written to the telemetry store and the series file. series_retention_ms, series_max_bytes: age and size cut of the series file. day_retention: days of daily totals kept. state_max_bytes: a state file bigger than this is discarded (it is only a cache). delivered_max: delivered rows read per tick. text_cap: characters kept of a command, a step or an evidence line. claude_cli_timeout_ms: bound of one `claude` subprocess. probe_ttl_ms: how long a cached capability probe is trusted when the version did not change. cli_list_ttl_ms: how long the host's session listing (`claude agents --json`, one heavy process) is trusted before it is asked again; between listings each agent keeps the host state and gone flag of the last one, and a listing is also taken at once when a main or workspace agent appears that the last listing did not see. stale_lock_ms: a wake-watch lock older than this does not count as armed (the DevSwarm wake-watch rule). queue_keep_ms: a fully delivered queue file is removed after this. idle_open_ms: a subagent or workspace that finished its turn with a task still open and has been silent this long is idle with open work (the wake signal idle_open_task). exit_keep_ms: how long an ended background shell task stays reported by the signal watched_exit. max_codex: most Codex sessions followed (newest first, on top of max_agents). codex_days: how many of the newest day directories of the Codex tree are looked at. codex_running_ms: a Codex rollout written to this recently is running, an older one waits (Codex has no process registry to join). codex_first_line_max: most bytes read of a rollout's first line (its session metadata). rollout_stamp_len: characters of the timestamp and dash between the prefix and the session id in a rollout file name. done_keep_ms: how long a finished agent (state done) stays in the status list after its last output; live agents always show. headless_head_bytes: how much of the start of a transcript is read to find its entrypoint. pid_start_slack_ms: a registered process that started later than its session plus this is a reused pid, not that session. codex_done_after_ms: a one-shot Codex run (`codex exec`) with no output for this long is done even without a terminal record. codex_stale_after_ms: any Codex rollout with no output for this long is done (an interactive session idle that long is over). codex_tail_bytes: how much of the end of a rollout is read to find whether its last turn ended. dead_idle_ms: a subagent, teammate or session with no live process, silent this long, whose parent session is not live either, is dead (one whose transcript or project directory is gone is dead at once). |
@@ -10178,7 +10241,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
 | `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
-| `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (companion/lib/devswarm-idle.js: a ping turn is made only of such calls). |
+| `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
 | `devswarm_cli.rr_mb_select_prefix` | `select:` |  |  | What a tool search query that only loads cron and monitor tools begins with. |
@@ -11572,7 +11635,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `refresh.claude_cli_bins` | `claude` |  |  | The programs the Claude Code probe asks, in order. |
-| `refresh.devswarm_bins` | `devswarm, hivecontrol` |  |  | The programs the DevSwarm probe asks, in order (hooks/devswarm-version-refresh.js: the CLI, then the hivecontrol shim). |
+| `refresh.devswarm_bins` | `devswarm, hivecontrol` |  |  | The programs the DevSwarm probe asks, in order (the CLI, then the hivecontrol shim). |
 | `refresh.every_ms` | `60000` | `AH_ENGINE_REFRESH_MS` | ms | How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off. |
 | `refresh.full_version_re` | `(?-u:\b)v?([0-9]+\.[0-9]+\.[0-9]+)(?-u:\b)` |  |  | A full X.Y.Z version token (leading v optional; ASCII digits and word boundaries, as the JavaScript pattern of the Node scripts); exactly one distinct token in a stream is the version, more is ambiguous. |
 | `refresh.git_program` | `git` |  |  | The git program the version probe runs (resolved through PATH). |
@@ -11605,7 +11668,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `refresh.reason_requested` | `requested` |  |  | Reason word: a check asked for it. |
 | `refresh.reason_write_failed` | `write-failed` |  |  | Reason word: the cache or record could not be written. |
 | `refresh.repair_args` | `doctor, --repair, --migrations-only, --quiet` |  |  | The engine arguments of the reload repair (the engine's port of `doctor.js --repair --migrations-only --quiet`); `--home` and, when the request names it, `--plugin-root` are appended. |
-| `refresh.repair_lock_file` | `repair-on-reload.lock` |  |  | The repair lock of hooks/repair-on-reload.js (Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together. |
+| `refresh.repair_lock_file` | `repair-on-reload.lock` |  |  | The repair lock of the reload repair (the Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together. |
 | `refresh.repair_lock_stale_ms` | `660000` |  | ms | A repair lock older than this is taken over (longer than refresh.repair_timeout_ms, so a live engine repair is never taken over). |
 | `refresh.repair_timeout_ms` | `600000` |  | ms | Longest the reload repair may run; its process group is killed at the limit. |
 | `refresh.request_dir` | `.anti-hall/refresh` |  |  | Where the checks write their requests, relative to the home directory: one `<probe>.json` per probe, `{"requestedAt": <ms>, ...}`. |
@@ -11614,7 +11677,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `refresh.tag_args` | `ls-remote, --tags` |  |  | The git arguments that list a remote's tags; the remote is appended. |
 | `refresh.tag_fallback_remote` | `origin` |  |  | The remote asked next, inside the local marketplace clone (session.marketplace_dir), when the first gave no output. |
 | `refresh.tag_re` | `refs/tags/(v?[0-9]+\.[0-9]+\.[0-9]+)$` |  |  | A release tag line of `git ls-remote --tags` (a trailing CR is stripped first); group 1 is the tag. Peeled refs never match. |
-| `refresh.tag_remote` | `https://github.com/talas9/anti-hall` |  |  | The remote the version probe asks first (live network), as hooks/version-alert-refresh.js. |
+| `refresh.tag_remote` | `https://github.com/talas9/anti-hall` |  |  | The remote the version probe asks first (live network). |
 | `refresh.version_arg` | `--version` |  |  | The argument that makes a CLI print its version. |
 
 ### engine_update.toml / engine_update
@@ -11661,7 +11724,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `compact_decl_v1.declaration_forms` | `0, 2` |  |  | Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 "safe to compact" and 2 "safe for a reset"; the pause nag's mandated "good point to /compact" footer and a bare /compact command do not. |
+| `compact_decl_v1.declaration_forms` | `0, 2` |  |  | Which of the recommendation patterns of the compact-advice rule (its advice list, by position) count as a declaration for this guard: 0 "safe to compact" and 2 "safe for a reset"; the pause nag's mandated "good point to /compact" footer and a bare /compact command do not. |
 | `compact_decl_v1.msg_allowed` | `read-only tools.` |  |  | Block message: what stays allowed. |
 | `compact_decl_v1.msg_instead` | `stop, or retract: write a line "RETRACT SAFE TO COMPACT: <why>", then refresh...` |  |  | Block message: what to do instead. |
 | `compact_decl_v1.msg_what` | `you declared SAFE TO COMPACT this turn ("{phrase}") and then started new work...` |  |  | Block headline; {phrase} is the declaration found, {tool} the tool that started new work. |
@@ -12658,10 +12721,12 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.dispatch_stdin_spool` | Reason (event log and stderr, with dispatch.defer_exit) when the hook's stdin payload cannot be read, or an over-cap payload cannot be spooled for the Node hooks. Placeholder: {err}. |
 | `msg.dispatch_stdin_utf8` | Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8. |
 | `msg.docs_checks_note` | Paragraph under the checks heading of the generated reference. |
+| `msg.docs_empty` | Printed to stderr when `docs` generated no text (the defaults it reads could not be used), so nothing is written. Placeholders: what (the format asked for), out (the --out file, left as it was; empty when printing). |
 | `msg.docs_env_intro` | Introduction of the Environment variables section of the generated reference. |
 | `msg.docs_flags_intro` | Introduction of the Flags section of the generated reference. |
 | `msg.docs_intro` | Opening paragraph of the generated reference. |
 | `msg.docs_rule_fields` | Paragraph listing the fields of a rule in the generated reference. |
+| `msg.docs_write_failed` | Printed to stderr when `docs --out` could not write its file. Placeholders: out, err. |
 | `msg.engine_unreachable_notice` | Printed once per session on stderr by the thin client when the engine is unreachable (not installed, crashed, did not answer in time, marked down): the call passes through unchecked because no fallback hooks exist. Placeholders: {event}, {why}. |
 | `msg.engine_unreachable_why_daemon` | The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop). |
 | `msg.err_db_busy` | The storage writer queue is full. |

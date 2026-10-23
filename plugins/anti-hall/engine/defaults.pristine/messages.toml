@@ -1477,3 +1477,11 @@ value = "mesh read needs a workspace id: `ah-engine mesh read <id>` (or --id <id
 [msg.err_mesh_ambiguous_store]
 doc = "The workspace id is in more than one project store. Placeholders: {id}, {stores} (comma separated repo keys)."
 value = "workspace {id} is in several project stores ({stores}): run this from that project's checkout, or pass --db <devswarm.db>"
+
+[msg.docs_empty]
+doc = "Printed to stderr when `docs` generated no text (the defaults it reads could not be used), so nothing is written. Placeholders: what (the format asked for), out (the --out file, left as it was; empty when printing)."
+value = "ah-engine docs: nothing was generated for format '{what}' (is the plugin's engine/defaults readable? set AH_ENGINE_PLUGIN_ROOT); the --out file '{out}' was left as it was"
+
+[msg.docs_write_failed]
+doc = "Printed to stderr when `docs --out` could not write its file. Placeholders: out, err."
+value = "ah-engine docs: could not write '{out}': {err}"
