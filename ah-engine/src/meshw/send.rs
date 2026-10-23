@@ -153,7 +153,7 @@ pub(crate) fn resolve_read_arg(inv: &Inv, reader: &crate::mesh::MeshReader, rows
 }
 
 /// What `--to` named.
-enum Resolved {
+pub(crate) enum Resolved {
     /// The recipient's registry row.
     Row(Row),
     /// The addressed row is stale and a live row of the same session took its place: the row to deliver to, the id addressed and why.
@@ -176,7 +176,7 @@ impl Resolved {
 
 /// `resolveSendTarget(store, arg, home, { rerouteStaleTwin: true })` where it needs no liveness and no redirect: `None` is the
 /// unregistered recipient (no row by mesh id or by id, and no retired-redirect to follow).
-fn resolve_send_target(inv: &Inv, reader: Option<&crate::mesh::MeshReader>, rows: &[Row], arg: &str) -> R<Resolved> {
+pub(crate) fn resolve_send_target(inv: &Inv, reader: Option<&crate::mesh::MeshReader>, rows: &[Row], arg: &str) -> R<Resolved> {
     let by_mesh = resolve_mesh_target(inv, reader, rows, Some(arg))?;
     if arg.is_empty() {
         return Ok(Resolved::from_row(by_mesh));

@@ -90,7 +90,17 @@ pub(crate) fn write_line(dir: &std::path::Path, line: &str) {
 /// `buildEntry` + `writeEntry`. `repo_key` is the explicit `ctx.repoKey` (`Some(None)` = explicit null); `None` = not given,
 /// so the environment's `DEVSWARM_REPO_KEY` or null.
 #[allow(clippy::too_many_arguments)]
-fn write_entry(inv: &Inv, op: &str, level: &str, repo_key: Option<Option<&str>>, mesh_id: Option<&str>, msg: &str, err: Option<&str>, ctx: Vec<(&str, OVal)>) {
+fn write_entry(
+    inv: &Inv,
+    component: &str,
+    op: &str,
+    level: &str,
+    repo_key: Option<Option<&str>>,
+    mesh_id: Option<&str>,
+    msg: &str,
+    err: Option<&str>,
+    ctx: Vec<(&str, OVal)>,
+) {
     let Some(dir) = dir_of(inv) else { return };
     let f = defaults::list("devswarm_cli.log_entry_fields");
     let repo = match repo_key {
@@ -99,7 +109,7 @@ fn write_entry(inv: &Inv, op: &str, level: &str, repo_key: Option<Option<&str>>,
     };
     let mut e = Obj::default();
     e.put(f[0], s(&time::iso(time::now_ms())))
-        .put(f[1], s(defaults::text("devswarm_cli.log_component")))
+        .put(f[1], s(component))
         .put(f[2], s(op))
         .put(f[3], s(level))
         .put(f[4], repo.as_deref().map_or(OVal::Null, s))
@@ -166,18 +176,23 @@ pub fn refusal(inv: &Inv, op: &str, repo_key: Option<&str>, id: Option<&str>, ms
         ctx.push((defaults::text("devswarm_cli.log_ctx_reason"), s(r)));
     }
     ctx.push((defaults::text("devswarm_cli.log_ctx_msg"), s(msg)));
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_error"), Some(repo_key), id, msg, Some(msg), ctx);
+    write_entry(inv, defaults::text("devswarm_cli.log_component"), op, defaults::text("devswarm_cli.log_level_error"), Some(repo_key), id, msg, Some(msg), ctx);
 }
 
 /// `alog.logEvent('devswarm-cli', op, 'info', msg, ctx)`: an informational entry without an error payload; the repo key is
 /// the environment's, as Node's `buildEntry` takes it when the caller names none.
 pub fn event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_info"), None, None, msg, None, ctx);
+    event_as(inv, defaults::text("devswarm_cli.log_component"), op, msg, ctx);
+}
+
+/// [`event`] for another module's component (`alog.logEvent('devswarm-maintainer-notice', ...)`).
+pub fn event_as(inv: &Inv, component: &str, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
+    write_entry(inv, component, op, defaults::text("devswarm_cli.log_level_info"), None, None, msg, None, ctx);
 }
 
 /// `alog.logEvent('devswarm-cli', op, 'warn', msg, ctx)`: a warning entry without an error payload.
 pub fn warn_event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
-    write_entry(inv, op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
+    write_entry(inv, defaults::text("devswarm_cli.log_component"), op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
 }
 
 #[cfg(test)]

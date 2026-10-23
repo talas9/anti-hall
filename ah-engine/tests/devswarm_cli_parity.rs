@@ -41,6 +41,10 @@ struct Case {
     env: Vec<(&'static str, String)>,
     /// Whether the engine answers (otherwise it must defer).
     native: bool,
+    /// Node cannot answer this case (its own renderer throws): the engine's answer is checked on its own.
+    engine_only: bool,
+    /// Node raises an exception here: its central-log line carries a stack trace the engine cannot (and need not) reproduce.
+    thrown: bool,
     /// The telemetry label of the verb.
     label: &'static str,
     /// Files under the home that must exist after the verb (proof the case wrote what it should).
@@ -59,6 +63,8 @@ fn case(name: &str, argv: &[&str], label: &'static str) -> Case {
         setup: nothing,
         env: vec![],
         native: true,
+        engine_only: false,
+        thrown: false,
         label,
         writes: vec![],
         cwd: "cwd",
@@ -364,7 +370,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         ("read-primary-text-help", vec!["inbox", "read-primary", "x", "--format", "text", "--help"]),
         ("read-primary-text-equals-help", vec!["inbox", "read-primary", "x", "--format=text", "--help"]),
     ] {
-        v.push(Case { native: false, ..case(n, &a, "Help") });
+        v.push(case(n, &a, "Help"));
     }
     v.push(case("read-primary-json-format-help", &["inbox", "read-primary", "x", "--format", "json", "--help"], "Help"));
     // `help` only counts as the first word: here it is `send`'s stray argument, and the send is Node's
@@ -372,9 +378,9 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     for verb in verbs {
         v.push(case(&format!("help-{verb}"), &["help", verb], "Help"));
         v.push(case(&format!("help-{verb}-json"), &["help", verb, "--json"], "Help"));
-        // main() renders a help result with these verbs' own renderers: Node's
-        let own = ["healthcheck", "diagnose", "supervision-report"].contains(&verb.as_str());
-        v.push(Case { native: !own, ..case(&format!("{verb}-dash-dash-help"), &[verb, "--help"], "Help") });
+        // main() renders a help result with these verbs' own renderers (the table `help_own_render`); `supervision-report`'s throws on
+        // a help result in Node (a TypeError, exit 1), so the engine prints the usage instead and the case is not compared with Node
+        v.push(Case { engine_only: verb == "supervision-report", ..case(&format!("{verb}-dash-dash-help"), &[verb, "--help"], "Help") });
     }
     for (n, a) in [
         ("unknown-verb", vec!["bogus"]),
@@ -403,7 +409,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     s("skip-ttl-spaces", &["skip", "edit-guard", "--ttl", " 12 "], nothing, true);
     s("skip-ttl-years-ahead", &["skip", "edit-guard", "--ttl", "100000000"], nothing, true);
     s("skip-ttl-expanded-year", &["skip", "edit-guard", "--ttl", "10000000000"], nothing, true);
-    s("skip-ttl-past-the-date-range", &["skip", "edit-guard", "--ttl", "1e12"], nothing, false);
+    s("skip-ttl-past-the-date-range", &["skip", "edit-guard", "--ttl", "1e12"], nothing, true);
     s("skip-ttl-overflows", &["skip", "edit-guard", "--ttl", "1e308"], nothing, true);
     s("skip-ttl-infinity", &["skip", "edit-guard", "--ttl", "Infinity"], nothing, true);
     s("skip-ttl-zero", &["skip", "edit-guard", "--ttl", "0"], nothing, true);
@@ -424,10 +430,10 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     s("skip-existing-array-starts-over", &["skip", "g"], skip_array, true);
     s("skip-existing-scalar-starts-over", &["skip", "g"], skip_scalar, true);
     s("skip-existing-blank-starts-over", &["skip", "g"], skip_blank, true);
-    s("skip-existing-garbage", &["skip", "g"], skip_garbage, false);
-    s("skip-existing-lone-surrogate", &["skip", "g"], skip_surrogate, false);
-    s("skip-target-is-a-directory", &["skip", "g"], skip_unwritable_target, false);
-    s("skip-proto-key", &["skip", "__proto__"], nothing, false);
+    s("skip-existing-garbage", &["skip", "g"], skip_garbage, true);
+    s("skip-existing-lone-surrogate", &["skip", "g"], skip_surrogate, true);
+    s("skip-target-is-a-directory", &["skip", "g"], skip_unwritable_target, true);
+    s("skip-proto-key", &["skip", "__proto__"], nothing, true);
     // ---- archive-ignore / archive-unignore ----
     // the id is resolved first (Node's `resolveTargetId`): a registered one is itself; one nothing names needs the project's
     // store, and with no checkout (this cwd) Node opens a store under an empty key, which the engine leaves to Node
@@ -449,14 +455,14 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     i("ignore-id-with-slash", &["archive-ignore", "a/b"], "ArchiveIgnore", nothing, true, vec![]);
     i("ignore-id-unicode", &["archive-ignore", "wü"], "ArchiveIgnore", nothing, true, vec![]);
     i("ignore-id-safe-punctuation", &["archive-ignore", "A_b-1.2"], "ArchiveIgnore", nothing, true, vec![".anti-hall/devswarm/archive-ignore/A_b-1.2.json"]);
-    i("ignore-target-is-a-directory", &["archive-ignore", "ws-1"], "ArchiveIgnore", mark_is_a_directory, false, vec![]);
+    i("ignore-target-is-a-directory", &["archive-ignore", "ws-1"], "ArchiveIgnore", mark_is_a_directory, true, vec![]);
     i("unignore-removes", &["archive-unignore", "ws-1"], "ArchiveUnignore", mark_exists, true, vec![]);
     i("unignore-nothing-to-remove", &["archive-unignore", "ws-1"], "ArchiveUnignore", nothing, true, vec![]);
     i("unignore-a-directory", &["archive-unignore", "ws-1"], "ArchiveUnignore", mark_is_a_directory, true, vec![]);
     i("unignore-no-id", &["archive-unignore"], "ArchiveUnignore", nothing, true, vec![]);
     i("unignore-unsafe-id", &["archive-unignore", "x/y"], "ArchiveUnignore", nothing, true, vec![]);
-    i("ignore-unregistered-id-without-a-checkout", &["archive-ignore", "ws-9"], "ArchiveIgnore", nothing, false, vec![]);
-    i("unignore-unregistered-id-without-a-checkout", &["archive-unignore", "ws-9"], "ArchiveUnignore", nothing, false, vec![]);
+    i("ignore-unregistered-id-without-a-checkout", &["archive-ignore", "ws-9"], "ArchiveIgnore", nothing, true, vec![]);
+    i("unignore-unregistered-id-without-a-checkout", &["archive-unignore", "ws-9"], "ArchiveUnignore", nothing, true, vec![]);
     // ---- gate-intent ----
     let gate = ".anti-hall/devswarm/parent-gate/sess-1.json";
     let mut g = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool, writes: Vec<&'static str>| {
@@ -499,9 +505,9 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     g("gate-intent-state-without-sig", &["gate-intent", "--reason", "r"], gate_state_no_sig, s1(), true, vec![]);
     g("gate-intent-state-with-empty-sig", &["gate-intent", "--reason", "r"], gate_state_empty_sig, s1(), true, vec![]);
     g("gate-intent-state-is-an-array", &["gate-intent", "--reason", "r"], gate_state_array, s1(), true, vec![]);
-    g("gate-intent-state-is-garbage", &["gate-intent", "--reason", "r"], gate_state_garbage, s1(), false, vec![]);
-    g("gate-intent-sig-is-proto", &["gate-intent", "--reason", "r"], gate_state_proto_sig, s1(), false, vec![]);
-    g("gate-intent-state-has-a-proto-key", &["gate-intent", "--reason", "r"], gate_state_proto_key, s1(), false, vec![]);
+    g("gate-intent-state-is-garbage", &["gate-intent", "--reason", "r"], gate_state_garbage, s1(), true, vec![]);
+    g("gate-intent-sig-is-proto", &["gate-intent", "--reason", "r"], gate_state_proto_sig, s1(), true, vec![]);
+    g("gate-intent-state-has-a-proto-key", &["gate-intent", "--reason", "r"], gate_state_proto_key, s1(), true, vec![]);
     g(
         "gate-intent-session-with-odd-characters",
         &["gate-intent", "--reason", "r"],
@@ -531,7 +537,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     wd("wake-codex", &["wake-directive", "ws-1"], nothing, child("codex"), true);
     wd("wake-agent-unset", &["wake-directive", "ws-1"], nothing, child(""), true);
     wd("wake-agent-uppercase-and-padded", &["wake-directive", "ws-1"], nothing, child(" Claude\t"), true);
-    wd("wake-agent-non-ascii", &["wake-directive", "ws-1"], nothing, child("clàude"), false);
+    wd("wake-agent-non-ascii", &["wake-directive", "ws-1"], nothing, child("clàude"), true);
     wd("wake-cron-setting", &["wake-directive", "ws-1"], wake_cron_setting, child("claude"), true);
     wd("wake-cron-with-too-few-fields", &["wake-directive", "ws-1"], wake_cron_bad, child("claude"), true);
     wd("wake-cron-with-letters", &["wake-directive", "ws-1"], wake_cron_letters, child("claude"), true);
@@ -550,11 +556,11 @@ fn cases(verbs: &[String]) -> Vec<Case> {
         },
         true,
     );
-    wd("wake-primary-is-node", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_AI_AGENT", "claude".into())], false);
-    wd("wake-blank-source-branch-is-a-primary", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_SOURCE_BRANCH", "  ".into())], false);
+    wd("wake-primary-is-node", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_AI_AGENT", "claude".into())], true);
+    wd("wake-blank-source-branch-is-a-primary", &["wake-directive", "ws-1"], nothing, vec![("DEVSWARM_SOURCE_BRANCH", "  ".into())], true);
     wd("wake-no-id", &["wake-directive"], nothing, child("claude"), true);
     wd("wake-unsafe-id", &["wake-directive", "a/b"], nothing, child("claude"), true);
-    wd("wake-unregistered-id-without-a-checkout", &["wake-directive", "ws-9"], nothing, child("claude"), false);
+    wd("wake-unregistered-id-without-a-checkout", &["wake-directive", "ws-9"], nothing, child("claude"), true);
     // ---- logs ----
     let none = || -> Vec<(&'static str, String)> { vec![] };
     let mut lg = |n: &str, a: &[&str], setup: fn(&Path), env: Vec<(&'static str, String)>, native: bool| {
@@ -570,7 +576,7 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     lg("logs-component", &["logs", "--component", "a-comp"], central_log, none(), true);
     lg("logs-min-level-warn", &["logs", "--min-level", "warn"], central_log, none(), true);
     lg("logs-min-level-debug", &["logs", "--min-level=debug"], central_log, none(), true);
-    lg("logs-min-level-unknown", &["logs", "--min-level", "loud"], central_log, none(), false);
+    lg("logs-min-level-unknown", &["logs", "--min-level", "loud"], central_log, none(), true);
     lg("logs-since-hour", &["logs", "--since", "1h"], central_log, none(), true);
     lg("logs-since-minutes", &["logs", "--since", "10m"], central_log, none(), true);
     lg("logs-since-fraction-days", &["logs", "--since", "0.01d"], central_log, none(), true);
@@ -587,14 +593,14 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     lg("logs-rotated-file-is-read-when-the-window-reaches-back", &["logs", "--since", "3h"], central_log_and_rotated, none(), true);
     lg("logs-rotated-file-is-read-when-the-limit-needs-it", &["logs", "--limit", "5"], central_log_and_rotated, none(), true);
     lg("logs-rotated-file-is-left-alone-when-the-current-one-suffices", &["logs", "--limit", "1"], central_log_and_rotated, none(), true);
-    lg("logs-a-line-that-is-not-an-object", &["logs"], central_log_odd_entry, none(), false);
-    lg("logs-a-ts-that-is-not-iso-with-since", &["logs", "--since", "1h"], central_log_odd_ts, none(), false);
+    lg("logs-a-line-that-is-not-an-object", &["logs"], central_log_odd_entry, none(), true);
+    lg("logs-a-ts-that-is-not-iso-with-since", &["logs", "--since", "1h"], central_log_odd_ts, none(), true);
     lg("logs-a-ts-that-is-not-iso-without-since", &["logs"], central_log_odd_ts, none(), true);
-    lg("logs-an-object-component", &["logs"], central_log_object_component, none(), false);
+    lg("logs-an-object-component", &["logs"], central_log_object_component, none(), true);
     lg("logs-an-object-component-filtered-out", &["logs", "--component", "other"], central_log_object_component, none(), true);
-    lg("logs-a-lone-surrogate-escape", &["logs"], central_log_surrogate, none(), false);
+    lg("logs-a-lone-surrogate-escape", &["logs"], central_log_surrogate, none(), true);
     lg("logs-log-dir-override", &["logs"], custom_log_dir, vec![("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere".into())], true);
-    lg("logs-test-context-refuses-the-real-home", &["logs"], central_log, vec![("NODE_TEST_CONTEXT", "child".into())], false);
+    lg("logs-test-context-refuses-the-real-home", &["logs"], central_log, vec![("NODE_TEST_CONTEXT", "child".into())], true);
     // ---- notice ----
     let mut nn = |n: &str, a: &[&str], setup: fn(&Path), native: bool| {
         let mut c = case(n, a, "Notice");
@@ -606,13 +612,13 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     nn("notice-list-mixed-rows", &["notice", "--list"], notices_mixed, true);
     nn("notice-list-shows-the-newest-five", &["notice", "--list"], notices_many, true);
     nn("notice-list-equal-timestamps-keep-file-order", &["notice", "--list"], notices_equal_ts, true);
-    nn("notice-list-corrupt-line", &["notice", "--list"], notices_corrupt_line, false);
-    nn("notice-list-object-ts", &["notice", "--list"], notices_ts_object, false);
-    nn("notice-list-infinite-ts", &["notice", "--list"], notices_ts_infinity, false);
+    nn("notice-list-corrupt-line", &["notice", "--list"], notices_corrupt_line, true);
+    nn("notice-list-object-ts", &["notice", "--list"], notices_ts_object, true);
+    nn("notice-list-infinite-ts", &["notice", "--list"], notices_ts_infinity, true);
     nn("notice-usage", &["notice"], nothing, true);
     nn("notice-usage-with-other-flag", &["notice", "--ttl", "7d"], nothing, true);
-    nn("notice-post-is-node", &["notice", "--post", "hello"], nothing, false);
-    nn("notice-post-and-list-is-node", &["notice", "--list", "--post", "x"], nothing, false);
+    nn("notice-post-is-node", &["notice", "--post", "hello"], nothing, true);
+    nn("notice-post-and-list-is-node", &["notice", "--list", "--post", "x"], nothing, true);
     // ---- plan / scope ----
     let two = "1. first step\n2. second step";
     let mut pl = |n: &str, a: &[&str], label: &'static str, setup: fn(&Path), native: bool, cwd: &'static str, env: Vec<(&'static str, String)>| {
@@ -837,6 +843,9 @@ fn cases(verbs: &[String]) -> Vec<Case> {
     pl("scope-no-id", &["scope", "add"], "Scope", nothing, true, "cwd", none());
     pl("scope-unsafe-id", &["scope", "add", "a/b", "--glob", "a", "--note", "n"], "Scope", nothing, true, "cwd", none());
     pl("scope-supervision-log-due-for-rotation", &["scope", "add", "ws-1", "--glob", "a", "--note", "n"], "Scope", huge_log, false, "cwd", none());
+    for c in &mut v {
+        c.thrown = ["skip-ttl-past-the-date-range", "skip-target-is-a-directory", "ignore-target-is-a-directory"].contains(&c.name.as_str());
+    }
     v
 }
 
@@ -946,15 +955,30 @@ fn the_store_free_cli_verbs_match_node_and_defer_what_they_cannot_reproduce() {
         if c.native {
             native += 1;
             assert_eq!(log["verb"], c.label, "{}: telemetry names the verb", c.name);
+            if c.engine_only {
+                assert_eq!(e.code, 0, "{}: {}", c.name, e.stdout);
+                assert!(e.stdout.contains(&c.argv[0]), "{}: the usage names the verb: {}", c.name, e.stdout);
+                continue;
+            }
             // the verbs name the home in their output (`skip` prints the file it wrote): each side's own, made equal
             let (es, ns) = (e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>"), n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>"));
+            // an exception names the staging file, which carries the writer's pid
+            let pid_tmp = |t: String| if c.thrown { regex::Regex::new(r"\.\d+\.tmp").unwrap().replace_all(&t, ".#.tmp").into_owned() } else { t };
+            let (es, ns) = (pid_tmp(es), pid_tmp(ns));
             assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {:?}\n node:   {:?}", c.name, es, ns);
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
             // a logged refusal (send's, since l8d) carries the run's own time and pid: those two fields are masked
             let unstamp = |v: Option<&String>| {
                 v.map(|t| {
                     let t = regex::Regex::new(r#""ts":"[^"]*""#).unwrap().replace_all(t, r##""ts":"#""##).into_owned();
-                    regex::Regex::new(r#""pid":\d+"#).unwrap().replace_all(&t, r##""pid":#"##).into_owned()
+                    let t = regex::Regex::new(r#""pid":\d+"#).unwrap().replace_all(&t, r##""pid":#"##).into_owned();
+                    // an exception Node logs carries its stack trace (`err: { message, stack, code }`); the engine logs the message
+                    if c.thrown {
+                        let t = regex::Regex::new(r#"(?m)"err":\{.*\}\}$"#).unwrap().replace_all(&t, r##""err":#}"##).into_owned();
+                        regex::Regex::new(r"\.\d+\.tmp").unwrap().replace_all(&t, ".#.tmp").into_owned()
+                    } else {
+                        t
+                    }
                 })
             };
             for k in te.keys().chain(tn.keys()) {

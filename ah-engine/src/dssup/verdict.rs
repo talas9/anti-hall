@@ -129,7 +129,7 @@ fn write_intent(home: &Path, child: &str, it: &OVal) {
 }
 
 /// `readEscalationIntent(home, child)`: the parked, undelivered notice of `child`.
-fn read_undelivered(home: &Path, child: &str) -> Option<OVal> {
+pub(crate) fn read_undelivered(home: &Path, child: &str) -> Option<OVal> {
     let it = std::fs::read(intent_path(home, child)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))?;
     let undelivered = !it.get(ik(4)).is_some_and(OVal::truthy) && it.get(ik(3)).is_some_and(OVal::truthy) && it.get(ik(1)).is_some_and(OVal::truthy);
     undelivered.then_some(it)
