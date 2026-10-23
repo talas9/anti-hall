@@ -572,6 +572,10 @@ impl Inner {
             let (sub, status) = self.mind(now_ms);
             node("mind".into(), self.t("live_mind"), sub, "jev", 3.0, 4, status);
         }
+        // the column headings are part of the picture, so they pan and zoom over their own columns
+        for (col, key) in ["live_col_agents", "live_col_checks", "live_col_rules", "live_col_jev", "live_col_decisions"].iter().enumerate() {
+            nodes.push(NodeDef { id: format!("hd:{col}"), label: self.t(key), sub: String::new(), kind: "colhead".into(), status: "ok".into(), x: Some(col as f32 * c.col_gap), y: Some(-c.row_gap), ports_in: vec![], ports_out: vec![] });
+        }
         let mut edges = Vec::new();
         let mut seen = HashSet::new();
         let mut edge = |id: String, from: String, to: String, rate: f32| {
@@ -826,8 +830,9 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
                 let colour = cfg.fx.colors.get(key).cloned().unwrap_or_default();
                 let (name, number, win) = (ev.clone(), number.clone(), lc.rate_window_s.max(1) as f32);
                 let n2 = name.clone();
+                let n2b = name.clone();
                 view! {
-                    <span class="live-legend-i" role="listitem" style=format!("--hk:{colour}")>
+                    <span class="live-legend-i" role="listitem" style=format!("--hk:{colour}") hidden=move || counters.with(|c| c.hooks.iter().find(|(k, _)| *k == n2b).map_or(0, |(_, v)| *v)) == 0>
                         <i></i><span>{name}</span>
                         <b>{move || { let n = counters.with(|c| c.hooks.iter().find(|(k, _)| *k == n2).map_or(0, |(_, v)| *v)); format!("{}{}", rate_text(&number, n as f32 / win), tx("live_per_s")) }}</b>
                     </span>
@@ -855,9 +860,6 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
             <div class="live-legend" role="list" aria-label=tx("live_legend_title")>
                 <span class="live-legend-t">{tx("live_legend_title")}</span>
                 {legend}
-            </div>
-            <div class="live-cols" aria-hidden="true">
-                <span>{tx("live_col_agents")}</span><span>{tx("live_col_checks")}</span><span>{tx("live_col_rules")}</span><span>{tx("live_col_jev")}</span><span>{tx("live_col_decisions")}</span>
             </div>
             <div class="live-graph">{graph}</div>
             <section class="live-timeline" aria-label=tx("live_timeline")>

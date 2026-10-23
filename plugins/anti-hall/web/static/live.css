@@ -58,3 +58,8 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-legend-i i { width: 9px; height: 9px; border-radius: 50%; background: var(--hk); box-shadow: 0 0 7px var(--hk); }
 .live-legend-i b { color: var(--text-hi); font-weight: 600; font-variant-numeric: tabular-nums; }
 @media (max-width: 720px) { .live-legend { font-size: 10px; } }
+
+/* column headings drawn inside the graph, over their columns */
+.live .ahg-node[data-kind="colhead"] { pointer-events: none; background: transparent; border: 0; box-shadow: none; justify-content: center; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.live .ahg-node[data-kind="colhead"] .ahg-dot, .live .ahg-node[data-kind="colhead"]::after { display: none; }
+.live-graph { height: calc(100vh - 340px); }
