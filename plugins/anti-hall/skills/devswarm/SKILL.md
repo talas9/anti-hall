@@ -499,7 +499,7 @@ Monitor exits on purpose when no child is live, so a Primary can end up with nei
 a live child and either path is missing, anti-hall says so: a `NO MAILBOX WAKE PATH` (or the
 shorter `NO MAILBOX WATCHER` / `NO MAILBOX TICK`) line on each prompt (repeated by the keepalive
 while the gap lasts), a `warnings` entry on `spawn`, and one Stop block (capped by
-`devswarm.parentGateCap`) when both are missing. Do what it says: `Monitor` on the watcher, and
+`devswarm.parentGateCap`) when both are missing. Do what it says: `Monitor` on the watcher (with `timeout_ms` 1800000, else it expires after the 5-minute default), and
 `CronList` then `CronCreate` the tick if absent. The watcher's idle-skip line only reports the
 last tick age; it never claims a cron covers you. Thresholds reuse `devswarm.cronMissingWarnMin`.
 

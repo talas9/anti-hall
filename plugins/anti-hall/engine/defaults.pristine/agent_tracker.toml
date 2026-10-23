@@ -210,11 +210,11 @@ value = "agent tracker: agent {agent} has not updated its heartbeat for {age} (i
 
 [msg.agent_monitor_unarmed]
 doc = "Reminder to arm a wake path (generic sessions), one short line. Placeholders: {count}, {armed}."
-value = "agent tracker: {count} background task(s) running and no wake path armed ({armed}); you are not woken when they end. Arm `Monitor` (ah-engine agents wake-watch) or `CronCreate` a check."
+value = "agent tracker: {count} background task(s) running and no wake path armed ({armed}); you are not woken when they end. Arm `Monitor` (ah-engine agents wake-watch) with timeout_ms 1800000 (without it the Monitor expires after the 5-minute default) or `CronCreate` a check."
 
 [msg.agent_monitor_unarmed_devswarm]
 doc = "Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}."
-value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` (persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
+value = "agent tracker: no Monitor wake-watch covers this workspace (its lock is missing, stale or its process is gone). Re-arm it now: call `Monitor` with command `{command}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if your Monitor tool supports it). The cron tick stays your fallback wake path."
 
 [msg.agent_idle_open_task]
 doc = "Wake advisory: an agent finished its turn with a task open and went quiet. Placeholders: {agent}, {kind}, {idle}, {task}."

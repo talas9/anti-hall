@@ -22,6 +22,8 @@ the update.
 
 ### Fixed
 
+- **Guard misfires reported by a peer project.** (1) `coordinator-work-guard` no longer counts or blocks a DevSwarm child workspace (a worker on its own branch, as edit-guard already treats it), and its block text now says "NOT a human gate", the minutes until it clears and what to do now. (2) DevSwarm bookkeeping shortcuts cover `help`/`verbs`/`read`/`pull`/`ack`, the `ah-hook mesh` launcher, `grep`-style output filters (quoted patterns included) and `sleep`/`for`/`while` polling loops, so read-only roster polling no longer fills the window. (3) `devswarm-parent-gate` advises archive only for gate-proven DONE children (idle is not done), says "idle with unfinished work: wake or message it" otherwise, and a child last held by `coordinator-work-guard` is a notice, not a counted block. (4) `burn-breaker` lets a blocked subagent write its report (Write/Edit or a Bash redirect into a scratchpad/reports path) and lifts the block. (5) Every Monitor re-arm text names `timeout_ms` 1800000.
+
 - **A DevSwarm workspace Primary was never told of its own signals (e.g. `monitor_unarmed`).** The reminders went only to the mesh outbox, which nothing reads; they now also reach the workspace's session queue.
 - **`gh issue create|comment --body-file` and `cargo clean` are no longer blocked in the main thread** (rows of `command.light_exceptions`).
 

@@ -44,6 +44,30 @@ value = "agent_id"
 doc = "Tools a blocked subagent may still call: SendMessage carries its final report."
 value = ["SendMessage"]
 
+[burn.report_tools]
+doc = "Tools whose write into a report path (burn.report_path_res) passes while the breaker blocks, and lifts it: writing the report is the outcome the block asks for."
+value = ["Write", "Edit"]
+
+[burn.report_path_field]
+doc = "The tool-input field that holds the path a report tool writes."
+value = "file_path"
+
+[burn.report_path_res]
+doc = "Where a blocked subagent may still write its report: a scratchpad directory, a reports directory, the anti-hall handover, history and progress notes. Regular expressions (Rust syntax) tested on the path; a path holding `..` never passes."
+value = [
+  '''(?:^|/)scratchpad/[^\s]+\.(?:md|txt|json|log)$''',
+  '''(?:^|/)reports?/[^\s]+\.(?:md|txt|json)$''',
+  '''(?:^|/)\.anti-hall/(?:handovers|history|progress)/[^\s]+\.md$''',
+]
+
+[burn.report_bash_re]
+doc = "The one Bash line a blocked subagent may use to write a report: `cat|echo|printf|tee` with a redirect (`>` or `>>`) into one path, optionally followed by a heredoc opener. Group 1 is the path (checked against burn.report_path_res), group 2 the heredoc opener when present. JavaScript syntax; no pipe, `;`, `&`, backtick, `$` or parenthesis before the redirect."
+value = '''^\s*(?:cat|echo|printf|tee)\b[^|&;`$()<>]*>>?\s*["\x27]?([^\s"\x27|&;`$()<>]+)["\x27]?\s*(<<-?\s*[\x27"][A-Za-z_][A-Za-z0-9_]*[\x27"])?\s*$'''
+
+[burn.report_heredoc_re]
+doc = "A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it."
+value = '''<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$'''
+
 [burn.bash_tools]
 doc = "Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks."
 value = ["Bash"]

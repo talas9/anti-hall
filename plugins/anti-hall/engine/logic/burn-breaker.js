@@ -29,6 +29,29 @@ function bbCommits(cmd) {
   return false;
 }
 
+// True when `path` is a report location (burn.report_path_res: a scratchpad, a reports directory, the handover/history/progress notes) with no `..`.
+function bbReportPath(path) {
+  if (typeof path !== 'string' || path === '' || path.indexOf('..') >= 0) return false;
+  var res = ah.cfg('burn.report_path_res');
+  for (var i = 0; i < res.length; i++) if (ah.re.test(res[i], 'r', path)) return true;
+  return false;
+}
+
+// True when the command only writes a report file: one `cat|echo|printf|tee ... > <report path>` line, optionally followed by the body of a
+// QUOTED heredoc (inert data), and nothing else (burn.report_bash_re captures the target path).
+function bbReportWrite(cmd) {
+  var nl = cmd.indexOf('\n'), first = nl < 0 ? cmd : cmd.slice(0, nl);
+  var m = new RegExp(ah.cfg('burn.report_bash_re')).exec(first);
+  if (m === null || !bbReportPath(m[1])) return false;
+  if (nl < 0) return m[2] === undefined;
+  var h = m[2] === undefined ? null : new RegExp(ah.cfg('burn.report_heredoc_re')).exec(first);
+  if (h === null) return false;
+  // the body ends at the first line that is the delimiter; nothing but blank lines may follow it
+  var lines = cmd.slice(nl + 1).split('\n'), end = -1;
+  for (var i = 0; i < lines.length && end < 0; i++) if (lines[i].replace(/^\t+/, '') === h[2]) end = i;
+  return end >= 0 && lines.slice(end + 1).every(function (l) { return l.trim() === ''; });
+}
+
 function decide(p) {
   if (p === null || typeof p !== 'object') return 'allow';
   var id = p[ah.cfg('burn.agent_field')];
@@ -48,6 +71,17 @@ function decide(p) {
   if (m === null || typeof m !== 'object' || typeof m.ts !== 'number' || ah.clock.now() - m.ts > ah.cfgNum('burn.marker_ttl_ms')) return 'allow';
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
   if (ah.cfg('burn.allowed_tools').indexOf(tool) >= 0) return 'allow';
+  // writing the report IS the outcome the block asks for: a Write/Edit of a report path, or a Bash redirect into one, passes and lifts the
+  // block at once (the tracker counts the new file on its next tick and raises the flag again only if the condition still holds)
+  var ti = p.tool_input && typeof p.tool_input === 'object' ? p.tool_input : {};
+  if (ah.cfg('burn.report_tools').indexOf(tool) >= 0 && bbReportPath(ti[ah.cfg('burn.report_path_field')])) {
+    ah.state.remove(rel);
+    return 'allow';
+  }
+  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string' && bbReportWrite(ti.command)) {
+    ah.state.remove(rel);
+    return 'allow';
+  }
   if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0) {
     var cmd = p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
     if (cmd !== '' && bbAllowedBash(cmd)) {

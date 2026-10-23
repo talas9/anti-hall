@@ -333,7 +333,7 @@ value = "NO MAILBOX TICK: you have live workspaces but no recent mailbox tick (s
 
 [devswarm_parent.wake_monitor]
 doc = "The watcher part of the wake-path line. Placeholder: {watcher}."
-value = "Monitor: {watcher}"
+value = "Monitor (timeout_ms 1800000): {watcher}"
 
 [devswarm_parent.wake_cron_part]
 doc = "The cron part of the wake-path line. Placeholders: {cron}, {cli}, {id}."
