@@ -453,7 +453,7 @@ value = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 [verify_first.primary_nudge]
 doc = "The sentence appended to the rotating line in a DevSwarm Primary session that may dispatch workspaces (byte-identical to the Node hook's DEVSWARM_PRIMARY_NUDGE)."
-value = "DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER (a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: `~/.anti-hall/bin/devswarm.js spawn <branch> -p \"<brief>\"` - not a subagent. Subagents/Explore/Workflow are for lookups, single commands, scoped investigations and review passes."
+value = "DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER (a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"` - not a subagent. Subagents/Explore/Workflow are for lookups, single commands, scoped investigations and review passes."
 
 [verify_first.primary_joiner]
 doc = "Text between the rotating line and the Primary sentence."

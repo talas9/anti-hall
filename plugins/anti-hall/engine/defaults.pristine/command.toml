@@ -388,7 +388,7 @@ value = "delegate to {to} (it returns a short summary)"
 
 [command.msg_heavy_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy): `~/.anti-hall/bin/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
+value = "workspace-scale matter (feature/fix/deploy): `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
 
 [command.msg_heavy_allowed]
 doc = "What stays allowed inline (first part)."
@@ -432,7 +432,7 @@ value = "spawn {sub} to make this edit and have it report a tight summary."
 
 [command.msg_edit_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-hall/bin/devswarm.js spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
+value = "workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
 
 [command.msg_edit_notes]
 doc = "What stays allowed (Claude)."

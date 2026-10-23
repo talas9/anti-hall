@@ -81,7 +81,7 @@ ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a 
 
 ### DevSwarm Primary only: rule W
 
-  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/deploy (workspace-scale: owns a branch, spans many files/commits, runs to done) = a CHILD WORKSPACE, NOT a subagent. Spawn it: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. Bounded work inside your OWN branch -> subagent (rules A-N). Handing workspace-scale work to a subagent leaves it off the parent task list and unsupervised.
+  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/deploy (workspace-scale: owns a branch, spans many files/commits, runs to done) = a CHILD WORKSPACE, NOT a subagent. Spawn it: `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p "<brief>"`. Bounded work inside your OWN branch -> subagent (rules A-N). Handing workspace-scale work to a subagent leaves it off the parent task list and unsupervised.
 
 ## Subagent / worker rules
 

@@ -189,4 +189,4 @@ value = "developer"
 
 [edit_guard.nudge_note]
 doc = "The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live."
-value = "💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `~/.anti-hall/bin/devswarm.js spawn <branch> -p \"<brief>\"`. Keep inline edits to small, scoped changes."
+value = "💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"`. Keep inline edits to small, scoped changes."
