@@ -194,6 +194,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let is_edit = tools("edit").contains(&name);
     push_ring(&mut a.recent, (format!("{name}:{:x}", crate::health::fnv(&input.to_string())), format!("{name} {label}"), is_edit, ts), lim("loop_window"));
     let mut class = String::new();
+    let mut push = false;
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -210,6 +211,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         for w in words(arg) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
+        push = pat("push").is_some_and(|r| r.is_match(arg));
         if pat("commit").is_some_and(|r| r.is_match(arg)) {
             class = "commit".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
@@ -237,7 +239,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     wake(a, name, &input, ts);
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -292,6 +294,9 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
     let failed = b.get(tr("is_error")).and_then(Value::as_bool) == Some(true);
+    if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
+        a.guard_fires += 1;
+    }
     if p.bg
         && !failed
         && let Some(id) = pat("bg_started").and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
@@ -307,6 +312,9 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         let head: String = text.chars().filter(|c| !c.is_ascii_digit()).take(lim("text_cap") as usize).collect();
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
         return;
+    }
+    if p.push {
+        a.pushes += 1;
     }
     if p.class == "commit" {
         a.commits += 1;

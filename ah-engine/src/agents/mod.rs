@@ -23,6 +23,7 @@ mod sinks;
 mod sources;
 mod status;
 mod wake;
+pub use status::cost_report;
 #[cfg(test)]
 mod tests;
 
@@ -156,6 +157,9 @@ pub struct Pending {
     /// A background shell command: its result names the task whose end the session is told of.
     #[serde(default)]
     pub bg: bool,
+    /// A push command: a successful result counts a push (alongside `class`, which a `commit && push` line keeps as `commit`).
+    #[serde(default)]
+    pub push: bool,
 }
 
 /// A raised signal on one agent.
@@ -235,6 +239,12 @@ pub struct Agent {
     pub edits: u64,
     /// Commits.
     pub commits: u64,
+    /// Successful pushes.
+    #[serde(default)]
+    pub pushes: u64,
+    /// Tool results that carried an anti-hall guard block (the cost report's "guard fires").
+    #[serde(default)]
+    pub guard_fires: u64,
     /// Test runs that passed.
     pub tests_pass: u64,
     /// Plan steps completed.

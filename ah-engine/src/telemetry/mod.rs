@@ -249,6 +249,7 @@ impl Telemetry {
             _ => {
                 let mut v = report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now);
                 v["dropped"]["inbox_refused"] = json!(self.inbox_bad.load(std::sync::atomic::Ordering::Relaxed));
+                v["agent_cost"] = crate::agents::cost_report();
                 v
             }
         }

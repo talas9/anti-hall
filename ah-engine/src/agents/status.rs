@@ -173,3 +173,49 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     println!("{}", if p.json { doc.to_string() } else { render(&doc) });
     0
 }
+
+/// The per-agent cost report (GH #270): what each tracked agent spent against what it produced. Outcomes are the countable work
+/// units the tracker keeps (`agent_tracker.cost_outcome_units`): commits, pushes, finished steps, passing test runs and files
+/// edited. Only agents that spent tokens are listed, most tokens first, at most `agent_tracker.cost_limit`.
+pub(crate) fn cost_json(st: &State) -> Value {
+    let per = |tokens: u64, outcomes: u64| tokens.checked_div(outcomes);
+    let mut rows: Vec<(u64, Value)> = st
+        .agents
+        .values()
+        .filter_map(|a| {
+            let tokens = a.tin + a.tout;
+            let outcomes = a.commits + a.pushes + a.steps_done + a.tests_pass + a.files.len() as u64;
+            (tokens > 0).then(|| {
+                (
+                    tokens,
+                    json!({
+                        "agent": a.id, "name": a.name, "kind": a.kind, "tokens": tokens, "commits": a.commits, "pushes": a.pushes,
+                        "guard_fires": a.guard_fires, "steps_done": a.steps_done, "tests_passed": a.tests_pass, "files_edited": a.files.len(),
+                        "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
+                    }),
+                )
+            })
+        })
+        .collect();
+    rows.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    let sum = |k: &str| rows.iter().map(|(_, r)| r[k].as_u64().unwrap_or(0)).sum::<u64>();
+    let (tokens, outcomes) = (sum("tokens"), sum("outcomes"));
+    let totals = json!({
+        "agents": rows.len(), "tokens": tokens, "commits": sum("commits"), "pushes": sum("pushes"), "guard_fires": sum("guard_fires"),
+        "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
+    });
+    let limit = defaults::num("agent_tracker.cost_limit") as usize;
+    json!({
+        "outcome_units": defaults::text("agent_tracker.cost_outcome_units"),
+        "totals": totals,
+        "agents": rows.into_iter().take(limit).map(|(_, r)| r).collect::<Vec<_>>(),
+    })
+}
+
+/// The cost report of the running process's tracker state (an empty report when the home directory is unknown).
+pub fn cost_report() -> Value {
+    match Env::current() {
+        Some(env) => cost_json(&load_state(&env)),
+        None => cost_json(&State::default()),
+    }
+}

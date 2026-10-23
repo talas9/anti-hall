@@ -115,6 +115,44 @@ fn a_normal_agent_is_counted_once_and_raises_nothing() {
     assert_eq!(a.samples.len(), 2, "a series sample per tick");
 }
 
+/// The cost report (GH #270): tokens, commits, pushes and guard fires per agent, and tokens per outcome.
+#[test]
+fn the_cost_report_counts_commits_pushes_and_guard_fires_per_agent() {
+    let h = home("cost");
+    let n = now0();
+    let block = "\u{26d4} anti-hall \u{b7} lane-test-guard: `cargo test` is blocked: a subagent does not run suite-scale tests (cargo test).";
+    write(
+        &sess(&h, "s1"),
+        &[
+            prompt(n - 9 * MIN, "/w"),
+            tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": "cargo test"})),
+            result(n - 7 * MIN, "u1", block, true),
+            tool(n - 6 * MIN, "m2", 200, "u2", "Bash", json!({"command": "git commit -m x && git push origin b"})),
+            result(n - 5 * MIN, "u2", "ok", false),
+            tool(n - 4 * MIN, "m3", 300, "u3", "Bash", json!({"command": "git push origin c"})),
+            result(n - 3 * MIN, "u3", "ok", false),
+            tool(n - 2 * MIN, "m4", 400, "u4", "Bash", json!({"command": "git push origin d"})),
+            result(n - MIN, "u4", "rejected", true),
+        ],
+    );
+    write(&sess(&h, "s2"), &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "k1", 5000, "v1", "Read", json!({"file_path": "/w/a.rs"})), result(n - 7 * MIN, "v1", "ok", false)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.commits, a.pushes, a.guard_fires, a.errors), (1, 2, 1, 2), "a failed push is no push; the block text is one guard fire");
+    let r = status::cost_json(&st);
+    assert_eq!(r["outcome_units"], defaults::text("agent_tracker.cost_outcome_units"));
+    let rows = r["agents"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["agent"], "s2", "the agent that spent most tokens comes first");
+    assert_eq!((rows[0]["outcomes"].as_u64(), rows[0]["tokens_per_outcome"].is_null()), (Some(0), true), "no outcome: no ratio");
+    let s1 = &rows[1];
+    assert_eq!((s1["commits"].as_u64(), s1["pushes"].as_u64(), s1["guard_fires"].as_u64(), s1["outcomes"].as_u64()), (Some(1), Some(2), Some(1), Some(3)));
+    assert_eq!(s1["tokens_per_outcome"].as_u64(), Some(s1["tokens"].as_u64().unwrap() / 3));
+    assert_eq!(r["totals"]["agents"], 2);
+    assert_eq!(r["totals"]["pushes"], 2);
+}
+
 mod state {
     pub fn of(a: &super::Agent) -> &'static str {
         super::signals::state_of(a)
