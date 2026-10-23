@@ -28,7 +28,7 @@ pub enum Send<'a> {
 pub fn send(session: &str, what: Send<'_>) -> Result<Value, String> {
     let env = env()?;
     // a DevSwarm workspace id (what the mesh and the parent's notices name) stands for the workspace's session
-    let resolved = super::facts::descriptors(&env.home).into_iter().find(|d| d.id == session).map(|d| d.session);
+    let resolved = crate::dswire::facts::descriptors(&env.home).into_iter().find(|d| d.id == session).map(|d| d.session);
     let session = resolved.as_deref().unwrap_or(session);
     let (signal, text) = match what {
         Send::Progress => (defaults::text("act.progress_signal"), defaults::text("agent_tracker.progress_request_text")),

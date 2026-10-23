@@ -6,7 +6,7 @@
 //!
 //! [`wake`] is called after a mesh `send` to a workspace and by `agents send`. It acts only when the tracker already knows the workspace
 //! and reads it as idle; it never kills or archives anything, and a workspace is woken at most once per `cooldown_ms`.
-use super::{Env, facts, load_state, signals, state_name};
+use super::{Env, load_state, signals, state_name};
 use crate::defaults::{self, V};
 use crate::meshw::hivecontrol;
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if !tr.switch("agent_tracker.wake_setting") {
         return None;
     }
-    let desc = facts::descriptors(&tr.home).into_iter().find(|d| d.id == who || d.session == who)?;
+    let desc = crate::dswire::facts::descriptors(&tr.home).into_iter().find(|d| d.id == who || d.session == who)?;
     let st = load_state(&tr);
     let a = st.agents.get(&desc.session)?;
     let idle_ms = tr.now_ms.saturating_sub(a.last_output_ms);

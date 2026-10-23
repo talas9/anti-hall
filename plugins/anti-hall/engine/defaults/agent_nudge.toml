@@ -38,8 +38,8 @@ doc = "Token counts in nudge texts: thousands and millions, and their suffixes."
 value = { k = 1000, m = 1000000, k_word = "k", m_word = "M" }
 
 [agent_nudge.evidence_fmt]
-doc = "The evidence fragments of a nudge, joined by join. idle ({min}), stuck ({step}: the call in flight or the signal's step), waste ({tokens} spent with no outcome), judge ({label}, {ref}: the agentHealth verdict and the evidence line it cited)."
-value = { idle = "no output for {min} min", stuck = "stuck on: {step}", waste = "{tokens} tokens with 0 outcomes", judge = "judge: {label} ({ref})", join = "; " }
+doc = "The evidence fragments of a nudge, joined by join. idle ({min}), stuck ({step}: the call in flight or the signal's step), waste ({tokens} spent with no outcome), ci_wait (its latest calls check or watch CI: a legitimate wait), judge ({label}, {ref}: the agentHealth verdict and the evidence line it cited)."
+value = { idle = "no output for {min} min", stuck = "stuck on: {step}", waste = "{tokens} tokens with 0 outcomes", judge = "judge: {label} ({ref})", ci_wait = "its latest calls wait on CI (gh run/pr checks), so quiet is expected", join = "; " }
 
 [agent_nudge.outcomes_line]
 doc = "The outcomes section line sent to the agentHealth judge. Placeholders: {commits}, {steps}, {checks}, {files}."

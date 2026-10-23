@@ -202,14 +202,14 @@ fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
         return;
     }
     let path = env.dir().join(defaults::raw("agent_tracker.live_plan").str_field("dir")).join(format!("{id}{}", pth("json_ext")));
-    let facts = json!({"tasks_done": a.steps_done, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped, "last_ship_ms": a.last_ship_ms, "plan_done": plan_done});
+    let facts = serde_json::json!({"tasks_done": a.steps_done, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped, "last_ship_ms": a.last_ship_ms, "plan_done": plan_done});
     if json_of(&path).is_some_and(|v| v["facts"] == facts) {
         return;
     }
     if let Some(d) = path.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports a missing directory
     }
-    crate::discard::harmless(crate::atomic::write(path, json!({"ts": env.now_ms, "facts": facts}).to_string())); // keep: the next tick writes it again
+    crate::discard::harmless(crate::atomic::write(path, serde_json::json!({"ts": env.now_ms, "facts": facts}).to_string())); // keep: the next tick writes it again
 }
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
