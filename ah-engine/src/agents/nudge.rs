@@ -329,6 +329,9 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if spent > 0 && a.progress == f.base_progress {
         parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent))]));
     }
+    if super::signals::waiting_on_ci(a) {
+        parts.push(ef.str_field("ci_wait").to_string());
+    }
     if !why.is_empty() {
         parts.push(why.to_string());
     }
@@ -338,9 +341,12 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
 fn health_req(a: &Agent, now: u64) -> Value {
     let calls: Vec<String> = a.recent.iter().rev().take(lim("health_calls") as usize).rev().map(|r| super::cap(&r.1, lim("step_cap"))).collect();
     let goal: Vec<String> = [a.name.as_str(), a.step.as_str()].iter().filter(|s| !s.is_empty()).map(|s| super::cap(s, lim("step_cap"))).collect();
-    let signals: Vec<String> = a.flags.iter().map(|(k, f)| format!("{k}: {}", super::cap(&f.text, lim("step_cap")))).collect();
+    let mut signals: Vec<String> = a.flags.iter().map(|(k, f)| format!("{k}: {}", super::cap(&f.text, lim("step_cap")))).collect();
+    if super::signals::waiting_on_ci(a) {
+        signals.push(defaults::raw("agent_nudge.evidence_fmt").str_field("ci_wait").to_string());
+    }
     json!({
-        "id": defaults::text("agent_nudge.health_integration"), "child": a.id, "dur": age(now.saturating_sub(a.first_seen)),
+        "id": defaults::text("agent_nudge.health_integration"), "child": a.id, "dur": age(now.saturating_sub(super::started_ms(a))),
         "facts": {"tool_calls": calls.len()},
         "sections": {"goal": goal, "tool_calls": calls, "outcomes": [defaults::render("agent_nudge.outcomes_line", &[("commits", &a.commits), ("steps", &a.steps_done), ("checks", &a.tests_pass), ("files", &a.files.len())])], "signals": signals},
         "blocking": false,
@@ -412,8 +418,8 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             walked,
             trigger: trig.into(),
             signal: sig.clone(),
-            ev_dur_ms: now.saturating_sub(a.first_seen),
-            ev_tokens: a.tin + a.tout,
+            ev_dur_ms: now.saturating_sub(super::started_ms(&a)),
+            ev_tokens: super::signals::total_spent(&a),
             ev_idle_min: idle_min,
             ev_step: step,
             ev_outcomes: a.progress,
@@ -424,7 +430,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             sent_at: now,
             last_sent: now,
             reminders: 1,
-            tokens_at_sent: a.tin + a.tout,
+            tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
             ..Nudge::default()
         };
@@ -447,7 +453,7 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     let now = env.now_ms;
     n.outcome = outcome.into();
     n.outcome_at = now;
-    n.tokens_after = st.agents.get(child).map_or(0, |a| (a.tin + a.tout).saturating_sub(n.tokens_at_sent));
+    n.tokens_after = st.agents.get(child).map_or(0, |a| super::signals::total_spent(a).saturating_sub(n.tokens_at_sent));
     emit(env, word("ev_resolved"), &n);
     st.nudge_log.push(n);
     let max = lim("log_max") as usize;

@@ -27,6 +27,9 @@ pub enum Send<'a> {
 /// Queue `what` for `session`, and a wake row when a watcher is armed.
 pub fn send(session: &str, what: Send<'_>) -> Result<Value, String> {
     let env = env()?;
+    // a DevSwarm workspace id (what the mesh and the parent's notices name) stands for the workspace's session
+    let resolved = super::facts::descriptors(&env.home).into_iter().find(|d| d.id == session).map(|d| d.session);
+    let session = resolved.as_deref().unwrap_or(session);
     let (signal, text) = match what {
         Send::Progress => (defaults::text("act.progress_signal"), defaults::text("agent_tracker.progress_request_text")),
         Send::Stop => (defaults::text("act.stop_signal"), defaults::text("agent_tracker.stop_request_text")),
@@ -38,7 +41,13 @@ pub fn send(session: &str, what: Send<'_>) -> Result<Value, String> {
     if woken {
         WakeFeed.deliver(&env, session, &r)?;
     }
-    Ok(json!({"session": session, "queued": true, "wake_row": woken, "backlog": SessionQueue.backlog(&env, session)}))
+    let mut out = json!({"session": session, "queued": true, "wake_row": woken, "backlog": SessionQueue.backlog(&env, session)});
+    // a wake row only reaches a session that takes a turn by itself: an idle DevSwarm workspace is woken through DevSwarm
+    let caller = crate::reqenv::RequestEnv::capture().to_map();
+    if let Some(n) = super::native_wake::wake(&env.home, session, text, &caller, None) {
+        out["native_wake"] = n;
+    }
+    Ok(out)
 }
 
 /// What is known of `session` without waking it: whether the host still lists its process, its wake stamp, its reminder backlog,
@@ -100,7 +109,7 @@ pub fn document(since: Option<&str>, agent: Option<&str>) -> Value {
         }
     } else if let Some(rows) = doc["agents"].as_array_mut() {
         for r in rows.iter_mut() {
-            let first = st.agents.get(r["agent"].as_str().unwrap_or("")).map_or(0, |a| a.first_seen);
+            let first = st.agents.get(r["agent"].as_str().unwrap_or("")).map_or(0, super::started_ms);
             r["started_ms"] = json!(first);
         }
     }

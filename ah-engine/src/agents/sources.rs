@@ -190,7 +190,26 @@ fn devswarm(env: &Env, st: &mut State) {
         // a Primary's DevSwarm watcher arms only while it has a live child (its idle-skip), so "unarmed" says nothing about it
         let armed = (!id.starts_with(defaults::text("agent_tracker.primary_prefix"))).then(|| watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done });
+        live_plan(env, &id, a, done);
     }
+}
+
+/// The live facts of a workspace's work (task-list completions, commits, pushes, merges and deploys, and when it last shipped), kept in
+/// one small file per workspace for the roster: its plan is the workspace's own report (`heartbeat --step`) and stays as stale as the
+/// last report, so the roster shows these facts next to it. Written only when they change.
+fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
+    if !env.act || (a.steps_done == 0 && a.commits == 0 && a.shipped == 0 && a.pushes == 0) {
+        return;
+    }
+    let path = env.dir().join(defaults::raw("agent_tracker.live_plan").str_field("dir")).join(format!("{id}{}", pth("json_ext")));
+    let facts = json!({"tasks_done": a.steps_done, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped, "last_ship_ms": a.last_ship_ms, "plan_done": plan_done});
+    if json_of(&path).is_some_and(|v| v["facts"] == facts) {
+        return;
+    }
+    if let Some(d) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports a missing directory
+    }
+    crate::discard::harmless(crate::atomic::write(path, json!({"ts": env.now_ms, "facts": facts}).to_string())); // keep: the next tick writes it again
 }
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
@@ -349,7 +368,9 @@ fn mark_dead(env: &Env, st: &mut State) {
         let silent = limit > 0 && env.now_ms.saturating_sub(a.last_output_ms) > limit;
         let was = a.dead;
         // a session also needs the host to call it gone, so a host without a registry never reads an idle session as dead
-        a.dead = !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
+        // a child that finished (the host's meta says so) or ended its turn with no call open completed: it is done, never dead
+        let completed = !session && (a.finished || (!a.running && a.pending.is_empty()));
+        a.dead = !completed && !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
         if a.dead && !was {
             super::signals::rec(env, "state", super::state_name("dead"), crate::telemetry::event::Outcome::Allow, super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")));
         }

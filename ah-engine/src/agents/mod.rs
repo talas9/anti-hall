@@ -21,6 +21,7 @@ mod escalate;
 mod facts;
 mod live;
 mod lockwatch;
+pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
 mod signals;
@@ -62,6 +63,16 @@ pub(crate) fn notify_coordinator(signal: &str, text: &str) {
 
 pub(crate) fn lim(k: &str) -> u64 {
     defaults::raw("agent_tracker.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+/// When the agent started: the creation time of its transcript (the tracker's `first_seen` is only the first tick that saw it, which
+/// is later for an agent that ran before the engine looked), else `first_seen`.
+pub(crate) fn started_ms(a: &Agent) -> u64 {
+    let born = std::fs::metadata(&a.path).ok().and_then(|m| m.created().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    match (born, a.first_seen) {
+        (0, f) => f,
+        (b, 0) => b,
+        (b, f) => b.min(f),
+    }
 }
 pub(crate) fn weight(k: &str) -> u64 {
     defaults::raw("agent_tracker.weights").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
@@ -270,6 +281,12 @@ pub struct Agent {
     /// Successful pushes.
     #[serde(default)]
     pub pushes: u64,
+    /// Successful merges and deploys (`gh pr merge`, a deploy command): the work that reaches users, counted as outcomes.
+    #[serde(default)]
+    pub shipped: u64,
+    /// When the last commit, push, merge or deploy of the agent succeeded.
+    #[serde(default)]
+    pub last_ship_ms: u64,
     /// Tool results that carried an anti-hall guard block (the cost report's "guard fires").
     #[serde(default)]
     pub guard_fires: u64,

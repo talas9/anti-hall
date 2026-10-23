@@ -133,6 +133,18 @@ fn spent(base: &Sample, cur: &Sample) -> u64 {
     (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct")
 }
 
+/// Everything the agent has spent, counted the way the burn and waste figures count (cache reads at their configured share), so the
+/// total a nudge shows never reads smaller than the part of it spent with no outcome.
+pub(crate) fn total_spent(a: &Agent) -> u64 {
+    a.tin + a.tout + a.tcw + a.tcr * lim("cache_read_pct") / fmtn("pct")
+}
+
+/// Whether the agent's latest calls wait on CI (a `ci_wait` command among the last `ci_wait_calls`).
+pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
+    let Some(re) = defaults::raw("agent_tracker.patterns").get("ci_wait").and_then(V::as_str).and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok()) else { return false };
+    a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
+}
+
 /// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
 /// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
 pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {

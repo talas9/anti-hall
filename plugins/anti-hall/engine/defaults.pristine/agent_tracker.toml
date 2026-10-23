@@ -93,8 +93,8 @@ doc = "What the cost report counts as an outcome when it divides an agent's toke
 value = "commits + pushes + finished steps + passing test runs + files edited"
 
 [agent_tracker.weights]
-doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time)."
-value = { commit = 10, step = 5, test = 2, file = 1 }
+doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time), push (a successful git push), merge (a successful pull-request merge), deploy (a successful deploy command)."
+value = { commit = 10, step = 5, test = 2, file = 1, push = 3, merge = 10, deploy = 10 }
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
@@ -169,8 +169,8 @@ doc = "How long each kind of wake path keeps the session reachable, in milliseco
 value = { monitor = 1800000, persistent = 86400000, cron = 604800000, wakeup_slack = 300000 }
 
 [agent_tracker.patterns]
-doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited)."
-value = { commit = "\\bgit\\s+(-C\\s+\\S+\\s+)?commit\\b", push = "\\bgit\\s+(-C\\s+\\S+\\s+)?push\\b", guard_fire = "⛔ anti-hall · [a-z0-9-]+:", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", bg_started = "running in background with ID:\\s*([A-Za-z0-9_-]+)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])" }
+doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), merge (a pull-request merge, counted as an outcome), deploy (a deploy command, counted as an outcome), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited)."
+value = { commit = "\\bgit\\s+(-C\\s+\\S+\\s+)?commit\\b", push = "\\bgit\\s+(-C\\s+\\S+\\s+)?push\\b", guard_fire = "⛔ anti-hall · [a-z0-9-]+:", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", bg_started = "running in background with ID:\\s*([A-Za-z0-9_-]+)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])", merge = "(?:^|[;&|(]\\s*)gh\\s+pr\\s+merge\\b|(?:^|[;&|(]\\s*)(?:hivecontrol|devswarm)\\s+workspace\\s+merge-into-source\\b", deploy = "(?:^|[;&|(]\\s*)(?:(?:bash|sh|python3?|node)\\s+)?(?:\\S*/)?(?:[\\w.-]*deploy[\\w.-]*|firebase\\s+deploy|npm\\s+run\\s+deploy\\S*|gcloud\\s+\\S+(?:\\s+\\S+)?\\s+deploy|vercel\\s+deploy)" }
 
 [agent_tracker.words]
 doc = "Words left out when a step is compared with the work done (drift), as one list; the split characters that cut a path or command into words."
@@ -223,6 +223,18 @@ value = "agent tracker: {kind} {agent} has been idle for {idle} with its task st
 [msg.agent_watched_exit]
 doc = "Wake advisory: a background shell task an agent started has ended. Placeholders: {agent}, {kind}, {count}, {task}."
 value = "agent tracker: {count} background task(s) of {kind} {agent} ended (last: {task}). Read its output and act on the result."
+
+[agent_tracker.live_plan]
+doc = "The live facts of a DevSwarm workspace's work that the roster shows beside its plan (the plan is the workspace's own `heartbeat --step` report and goes stale). dir: the folder under the tracker's directory holding one file per workspace (task-list completions, commits, pushes, merges and deploys, when it last shipped); stale_ms: how far after the plan's last report a commit, push, merge or deploy must be before the roster says the plan is behind."
+value = { dir = "live-plan", stale_ms = 300000 }
+
+[agent_tracker.native_wake]
+doc = "The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp."
+value = { idle_ms = 120000, cooldown_ms = 300000, timeout_ms = 15000, text_cap = 200, dir = "native-wake" }
+
+[msg.native_wake_prompt]
+doc = "The prompt `workspace reactivate-child` queues for an idle workspace; it only sends the workspace to its mesh inbox. Placeholders: {id} (the workspace), {text} (a short preview, may be empty)."
+value = "anti-hall wake: a mesh message is waiting for workspace {id}. Run `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull {id}` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read {id}` and act on it. {text}"
 
 [msg.agent_wake_line]
 doc = "The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}."
