@@ -55,7 +55,15 @@ value = { verb = "verb", ref = "ref", tool = "tool", prose = "prose", none = "no
 
 [agent_nudge.match]
 doc = "How the parent's turns after a delivered nudge are matched to it (no verb needed). stop_tools / msg_tools / spawn_tools: tool names whose call on the child counts as stop / msg / acted; shell_tools: tools whose command is checked for the stop and send verbs below; fields: the tool input fields kept as the call's values (command only for shell tools); ref_words: words that make a reply about the nudge when it is the only one open for that parent."
-value = { stop_tools = ["TaskStop", "KillShell"], msg_tools = ["SendMessage"], spawn_tools = ["Agent", "Task"], shell_tools = ["Bash"], fields = ["task_id", "shell_id", "to", "id", "name", "description", "command"], ref_words = ["nudge", "looks unhealthy"] }
+value = { stop_tools = ["TaskStop", "KillShell"], msg_tools = ["SendMessage"], spawn_tools = ["Agent", "Task"], shell_tools = ["Bash"], fields = ["task_id", "shell_id", "to", "id", "name", "description", "command", "target", "task_name"], ref_words = ["nudge", "looks unhealthy"] }
+
+[agent_nudge.codex_turn]
+doc = "Field and value names of the Codex rollout lines read for the turns of a watched Codex parent (the host's own format): a line of type item holds a payload; a payload of type message with the assistant role has content items of type text_item carrying text; a payload of type call has a name and a JSON string args."
+value = { type_key = "type", item = "response_item", payload = "payload", ptype = "type", message = "message", role = "role", assistant = "assistant", content = "content", text_item = "output_text", text = "text", call = "function_call", name = "name", args = "arguments", ts = "timestamp" }
+
+[agent_nudge.codex_tools]
+doc = "Codex tool names that count for the turn matching, each mapped to the tool word of agent_nudge.match it behaves as (shell commands are checked for the stop and send verbs; send_message to an agent is a message; close_agent a stop; spawn_agent a spawn). A Codex tool not listed is not kept."
+value = { shell = "Bash", exec_command = "Bash", shell_command = "Bash", local_shell = "Bash", send_message = "SendMessage", send_input = "SendMessage", close_agent = "TaskStop", spawn_agent = "Agent" }
 
 [agent_nudge.match_stop_cmd]
 doc = "The command text that makes a shell command a stop of the agent it names."

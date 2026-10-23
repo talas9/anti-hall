@@ -146,7 +146,7 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
 /// Keep one assistant block of a watched agent (a parent with an open nudge) for the nudge's turn matching: a reply's text, or a tool
 /// call as `<tool>\t<value>\t...` with the configured input fields (`agent_nudge.match`). A Bash command is kept only when it holds
 /// one of the verbs that stop or message an agent.
-fn turn(a: &mut Agent, b: &Value, ts: u64) {
+pub(crate) fn turn(a: &mut Agent, b: &Value, ts: u64) {
     let m = defaults::raw("agent_nudge.match");
     let kind = |k: &str| defaults::text(k);
     let max = lim_n("turns_max");
@@ -220,7 +220,7 @@ pub(crate) fn replay_turns(a: &mut Agent, since: u64) {
 }
 
 /// A cap of the nudge loop (`agent_nudge.limits`).
-fn lim_n(k: &str) -> u64 {
+pub(crate) fn lim_n(k: &str) -> u64 {
     defaults::raw("agent_nudge.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }
 

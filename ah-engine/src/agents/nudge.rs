@@ -653,6 +653,9 @@ fn watch_parents(st: &mut State) {
         a.watch = parents.contains(&a.id);
         if !a.watch {
             a.turns.clear();
+            if a.kind == kind_name("codex") {
+                a.offset = 0; // a Codex rollout is read for turns from `offset` only while watched
+            }
         }
     }
 }
