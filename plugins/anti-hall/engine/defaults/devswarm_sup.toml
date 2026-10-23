@@ -2026,3 +2026,35 @@ value = "mode-off-or-jev-disabled"
 [devswarm_sup.jv_default_trigger]
 doc = "The trigger key of an off-scope signal that has neither a key nor a step."
 value = "off-scope"
+
+[metric.dssup_appdb_date_unread]
+doc = "Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full)."
+value = { kind = "counter", unit = "dates", labels = [] }
+
+[devswarm_sup.as_js_null]
+doc = "JavaScript's String(null), the text of a descriptor's null id."
+value = "null"
+
+[devswarm_sup.as_js_object]
+doc = "JavaScript's String({}), the text of an object where an id or path is expected."
+value = "[object Object]"
+
+[devswarm_sup.as_collate_order]
+doc = "The order in which ICU's root collation (Intl.Collator, the default of localeCompare) ranks the ASCII characters that are not letters: space, punctuation and symbols, then digits, then letters (case-folded here; at the same letter lower case sorts before upper)."
+value = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+
+[devswarm_sup.as_err_reduce_undefined]
+doc = "The error of the gap total when the kept gaps carry no repos (TypeError text of JavaScript)."
+value = "Cannot read properties of undefined (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_null]
+doc = "The error of the gap total when the kept gaps' repos is null."
+value = "Cannot read properties of null (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_fn]
+doc = "The error of the gap total when the kept gaps' repos is no array."
+value = "gaps.repos.reduce is not a function"
+
+[devswarm_sup.as_err_read_gap_null]
+doc = "The error of the gap total when a kept repos row is null."
+value = "Cannot read properties of null (reading 'gap')"

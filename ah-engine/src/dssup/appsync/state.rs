@@ -2,7 +2,7 @@
 //! cross-check against the stores, and the `app-state.json` document itself (`refreshNamesFromApp`, `messageGaps` and the state
 //! built by `syncAppState` in `scripts/devswarm-lib/repair.js`). Everything is built as ordered JSON so the file's bytes are
 //! Node's. A shape JavaScript would order or evaluate differently (an integer-like object key, `__proto__`, an id the locale
-//! collation might order differently from bytes) is a [`Defer`](crate::meshw::ident::Defer): the app sync is then Node's.
+//! collation of the repository ids) is read the way JavaScript reads it ([`collate`]).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable names file reads as "no cached name" (Node: `readName` is fail-open)
 // - a store that cannot be opened is reported as `store-unreadable`, as Node does
@@ -10,7 +10,7 @@ use super::plan::{Desc, safe_id};
 use super::snap::{self, Snap, Ws};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::devswarm_root;
 use std::path::{Path, PathBuf};
 
@@ -114,10 +114,6 @@ pub fn refresh_names(home: &Path, snap: &Snap, rows: &[Desc], now: i64) -> R<(u6
     Ok((checked, refreshed))
 }
 
-fn index_like(k: &str) -> bool {
-    !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) && (k == "0" || !k.starts_with('0')) && k.parse::<u64>().is_ok_and(|v| v < u32::MAX as u64)
-}
-
 /// The age bucket of `messageGaps` as an index into the branch counters (3 = under an hour ... 6 = older).
 fn bucket(age: f64) -> usize {
     let limits = [defaults::num("devswarm_sup.as_age_1h"), defaults::num("devswarm_sup.as_age_1d"), defaults::num("devswarm_sup.as_age_7d")];
@@ -218,8 +214,10 @@ pub fn message_gaps(home: &Path, file: &str, snap: &Snap, now: i64) -> R<Option<
             gap += 1.0;
             let c = m.created_at.unwrap_or(0.0);
             let branch = m.to_branch.clone().unwrap_or_default();
-            if index_like(&branch) || branch == defaults::text("devswarm_sup.as_proto_key") {
-                return defer("gap-branch-key");
+            // `byBranch["__proto__"]` is the object prototype, not an own entry: Node counts the gap and keeps no branch row for it
+            // (integer-like branch names list first when the document is written, which `OVal` does)
+            if branch == defaults::text("devswarm_sup.as_proto_key") {
+                continue;
             }
             let i = match by_branch.iter().position(|(k, _)| *k == branch) {
                 Some(i) => i,
@@ -262,40 +260,72 @@ pub fn message_gaps(home: &Path, file: &str, snap: &Snap, now: i64) -> R<Option<
     Ok(Some(obj(vec![("at", n(t)), ("repos", OVal::Arr(repos))])))
 }
 
-/// The `gaps` value kept from the previous `app-state.json` when it is still fresh, else `None` (scan again). `Err` for a shape
-/// the engine will not carry over.
-pub fn previous_gaps(prev: &Option<OVal>, now: i64, cooldown: Option<f64>) -> R<Option<OVal>> {
-    let Some(g) = prev.as_ref().and_then(|p| p.get("gaps")).filter(|g| g.truthy()) else { return Ok(None) };
+/// The `gaps` value kept from the previous `app-state.json` when it is still fresh, else `None` (scan again).
+pub fn previous_gaps(prev: &Option<OVal>, now: i64, cooldown: Option<f64>) -> Option<OVal> {
+    let g = prev.as_ref().and_then(|p| p.get("gaps")).filter(|g| g.truthy())?;
     let at = match g.get("at") {
         Some(OVal::Num(a)) if a.is_finite() => *a,
-        _ => return Ok(None),
+        _ => return None,
     };
     let cooldown = cooldown.unwrap_or_else(|| defaults::num("devswarm_sup.as_gap_cooldown_ms") as f64);
     if now as f64 - at >= cooldown || (now as f64) < at {
-        return Ok(None);
+        return None;
     }
-    // the total below reads `gaps.repos[i].gap`; a shape that would make JavaScript throw is Node's
-    match g.get("repos") {
-        Some(OVal::Arr(rs)) if rs.iter().all(|r| matches!(r.get("gap"), Some(OVal::Num(_)))) => Ok(Some(g.clone())),
-        _ => defer("gaps-shape"),
-    }
+    Some(g.clone())
 }
 
-/// `gaps.repos.reduce((n, r) => n + r.gap, 0)`.
-pub fn gap_total(g: &OVal) -> f64 {
-    match g.get("repos") {
-        Some(OVal::Arr(rs)) => rs.iter().map(|r| if let Some(OVal::Num(x)) = r.get("gap") { *x } else { 0.0 }).sum(),
-        _ => 0.0,
+/// `gaps.repos.reduce((n, r) => n + r.gap, 0)` with JavaScript's `+`: numbers add, and a gap that is text (or an array, or an object)
+/// turns the running total into text. A `repos` that is no array, or a null row, is the `TypeError` that ends the sync before
+/// anything is written (`Err` carries its message).
+pub fn gap_total(g: &OVal) -> Result<OVal, ident::Defer> {
+    let rows = match g.get("repos") {
+        Some(OVal::Arr(rs)) => rs,
+        None => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_undefined").to_string())),
+        Some(OVal::Null) => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_null").to_string())),
+        Some(_) => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_fn").to_string())),
+    };
+    let mut acc = OVal::Num(0.0);
+    for r in rows {
+        if matches!(r, OVal::Null) {
+            return Err(ident::Defer(defaults::text("devswarm_sup.as_err_read_gap_null").to_string()));
+        }
+        let add = match r.get("gap") {
+            None => OVal::Num(f64::NAN),
+            Some(OVal::Null) => OVal::Num(0.0),
+            Some(OVal::Bool(b)) => OVal::Num(f64::from(u8::from(*b))),
+            Some(v @ (OVal::Arr(_) | OVal::Obj(_))) => OVal::Str(super::plan::js_str(v)),
+            Some(v) => v.clone(),
+        };
+        acc = match (&acc, &add) {
+            (OVal::Num(x), OVal::Num(y)) => OVal::Num(x + y),
+            (x, y) => OVal::Str(format!("{}{}", super::plan::js_str(x), super::plan::js_str(y))),
+        };
     }
+    Ok(acc)
 }
 
-fn repo_cmp(a: &Ws, b: &Ws) -> R<std::cmp::Ordering> {
-    let (x, y) = (a.repository_id.as_deref().unwrap_or(""), b.repository_id.as_deref().unwrap_or(""));
-    let plain = |t: &str| t.bytes().all(|c| c.is_ascii_digit() || c.is_ascii_lowercase() || c == b'-');
-    if !plain(x) || !plain(y) {
-        return defer("locale-compare");
-    }
-    Ok(x.as_bytes().cmp(y.as_bytes()))
+/// `a.localeCompare(b)` for ids: ICU's root collation as `Intl.Collator()` applies it to ASCII (whitespace, punctuation and symbols in
+/// the order of `devswarm_sup.as_collate_order`, then digits, then letters with lower case before upper at the same letter). Control
+/// characters are ignorable. A character outside ASCII is placed by code point (ICU orders those by script tables the engine does
+/// not carry): ids the app writes are ASCII.
+fn collate(x: &str, y: &str) -> std::cmp::Ordering {
+    let order = defaults::text("devswarm_sup.as_collate_order");
+    let primary = |s: &str| -> Vec<u32> {
+        s.chars()
+            .filter(|c| !c.is_ascii_control())
+            .map(|c| order.find(c.to_ascii_lowercase()).map_or(1000 + c as u32, |i| i as u32))
+            .collect()
+    };
+    primary(x).cmp(&primary(y)).then_with(|| {
+        let (cx, cy) = (x.chars().filter(|c| !c.is_ascii_control()), y.chars().filter(|c| !c.is_ascii_control()));
+        cx.zip(cy)
+            .find(|(a, b)| a != b)
+            .map_or(std::cmp::Ordering::Equal, |(a, b)| b.is_ascii_lowercase().cmp(&a.is_ascii_lowercase()))
+    })
+}
+
+fn repo_cmp(a: &Ws, b: &Ws) -> std::cmp::Ordering {
+    collate(a.repository_id.as_deref().unwrap_or(""), b.repository_id.as_deref().unwrap_or(""))
 }
 
 /// What the state document needs besides the snapshot.
@@ -326,11 +356,6 @@ pub struct Built {
     pub unknown: usize,
 }
 
-/// `JSON.stringify` order of an object keyed by session ids: an integer-like key would be ordered first by JavaScript.
-fn guard_keys(keys: &[String]) -> R<()> {
-    if keys.iter().any(|k| index_like(k) || k == defaults::text("devswarm_sup.as_proto_key")) { defer("object-key-order") } else { Ok(()) }
-}
-
 /// Build the state document.
 pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
     let now = inp.now as f64;
@@ -346,7 +371,6 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
     }
     let focused = snap.focused(now);
     let mut sessions: Vec<(String, OVal)> = Vec::new();
-    let mut session_keys: Vec<String> = Vec::new();
     let mut active: Vec<(&Ws, OVal)> = Vec::new();
     let mut unknown: Vec<OVal> = Vec::new();
     let mut open_marked: Vec<OVal> = Vec::new();
@@ -372,11 +396,11 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
                 ("builderType", opt_s(w.builder_type.as_deref())),
                 ("corroborated", OVal::Bool(corroborated)),
             ]);
-            match sessions.iter_mut().find(|(k, _)| *k == sid) {
-                Some(slot) => slot.1 = v,
-                None => {
-                    session_keys.push(sid.clone());
-                    sessions.push((sid, v));
+            // `sessions["__proto__"] = ...` sets the prototype of the map: no own entry, nothing written for it
+            if sid != defaults::text("devswarm_sup.as_proto_key") {
+                match sessions.iter_mut().find(|(k, _)| *k == sid) {
+                    Some(slot) => slot.1 = v,
+                    None => sessions.push((sid, v)),
                 }
             }
         }
@@ -418,25 +442,16 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
             ]));
         }
     }
-    guard_keys(&session_keys)?;
     // `active.sort(repositoryId, then rank)`: stable, a missing rank last
-    let mut err: Option<ident::Defer> = None;
     active.sort_by(|(a, _), (b, _)| match repo_cmp(a, b) {
-        Ok(std::cmp::Ordering::Equal) => match (a.rank, b.rank) {
+        std::cmp::Ordering::Equal => match (a.rank, b.rank) {
             (None, None) => std::cmp::Ordering::Equal,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (Some(_), None) => std::cmp::Ordering::Less,
             (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
         },
-        Ok(o) => o,
-        Err(e) => {
-            err = Some(e);
-            std::cmp::Ordering::Equal
-        }
+        o => o,
     });
-    if let Some(e) = err {
-        return Err(e);
-    }
     let sched = {
         let d = inp.home.join(defaults::text("devswarm_sup.as_scheduled_dir"));
         std::fs::read_dir(d).map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| !n.starts_with('.')).collect::<Vec<_>>()).ok()
@@ -474,4 +489,73 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
         ("gaps", inp.gaps.clone()),
     ]);
     Ok(Built { state, unknown: unknown_n })
+}
+
+#[cfg(test)]
+mod native_tests {
+    //! The cases the app sync used to hand to Node now answer natively, as JavaScript would.
+    use super::*;
+    use std::cmp::Ordering;
+
+    /// Pairs and their `Math.sign(a.localeCompare(b))` as `Intl.Collator()` (ICU root collation) answers them, taken from Node.
+    #[test]
+    fn repository_ids_collate_like_locale_compare() {
+        crate::defaults::init().unwrap();
+        let cases: &[(&str, &str, i32)] = &[
+            ("a", "A", -1),
+            ("A", "b", -1),
+            ("ab", "a-b", 1),
+            ("a b", "ab", -1),
+            ("a1", "ab", -1),
+            ("_x", "-x", -1),
+            ("abc-1", "abc_1", 1),
+            ("Abc", "abd", -1),
+            ("abc", "ABC", -1),
+            ("x.y", "x-y", 1),
+            ("1", "a", -1),
+            ("~", "$", -1),
+            ("$", "0", -1),
+            ("a", "a ", -1),
+            ("", "a", -1),
+            ("a\u{1}b", "ab", 0),
+            ("Zz", "zZ", 1),
+            ("repo-9", "repo-10", 1),
+        ];
+        for (a, b, want) in cases {
+            let got = match collate(a, b) {
+                Ordering::Less => -1,
+                Ordering::Equal => 0,
+                Ordering::Greater => 1,
+            };
+            assert_eq!(got, *want, "{a:?} vs {b:?}");
+        }
+    }
+
+    fn gaps(repos: &str) -> OVal {
+        OVal::parse(&format!("{{\"at\":1,\"repos\":{repos}}}")).unwrap()
+    }
+
+    #[test]
+    fn the_gap_total_adds_like_javascript_and_throws_where_it_would() {
+        crate::defaults::init().unwrap();
+        assert_eq!(gap_total(&gaps("[{\"gap\":2},{\"gap\":3}]")).unwrap(), OVal::Num(5.0));
+        assert_eq!(gap_total(&gaps("[]")).unwrap(), OVal::Num(0.0));
+        // a text gap turns the total into text, a missing one into NaN
+        assert_eq!(gap_total(&gaps("[{\"gap\":2},{\"gap\":\"x\"},{\"gap\":4}]")).unwrap(), OVal::Str("2x4".into()));
+        assert!(matches!(gap_total(&gaps("[{}]")).unwrap(), OVal::Num(n) if n.is_nan()));
+        assert_eq!(gap_total(&gaps("[{\"gap\":null},{\"gap\":true}]")).unwrap(), OVal::Num(1.0));
+        // the TypeErrors
+        assert!(gap_total(&gaps("{}")).unwrap_err().0.contains("is not a function"));
+        assert!(gap_total(&gaps("[null]")).unwrap_err().0.contains("reading 'gap'"));
+        assert!(gap_total(&OVal::parse("{\"at\":1}").unwrap()).unwrap_err().0.contains("undefined"));
+    }
+
+    #[test]
+    fn kept_gaps_are_whatever_is_fresh_and_finite() {
+        crate::defaults::init().unwrap();
+        let prev = OVal::parse("{\"gaps\":{\"at\":1000,\"repos\":\"nonsense\"}}");
+        assert!(previous_gaps(&prev, 1500, Some(10_000.0)).is_some());
+        assert!(previous_gaps(&prev, 20_000, Some(10_000.0)).is_none());
+        assert!(previous_gaps(&OVal::parse("{\"gaps\":{\"at\":\"1000\"}}"), 1500, Some(10_000.0)).is_none());
+    }
 }

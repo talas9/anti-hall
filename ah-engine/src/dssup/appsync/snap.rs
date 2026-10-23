@@ -1,8 +1,9 @@
 //! The DevSwarm desktop app's database as one in-memory snapshot, ported from `companion/lib/devswarm-app-db.js` (`readSnapshot`,
 //! `workspaceFor`, `briefDelivery`, `finishSignal`, `focusedWorkspaceId`, `transcriptCwdMatches`, `messageTimestamps`). The
 //! database is opened read only and never waited for; an unreadable or unexpected one is `Ok(None)`, Node's `null` ("no
-//! opinion"). Anything the engine cannot read like JavaScript does (a blob, an integer past 2^53, a date string V8's parser
-//! might read differently, a relative path) is a [`Defer`]: the whole app sync is then Node's, before anything is written.
+//! opinion"). A value is read the way JavaScript reads what Node's sqlite binding returns: an integer past 2^53 makes the binding
+//! throw, which is Node's `null` for the whole snapshot; a blob is a `Uint8Array` (its `String()` joins the bytes with commas);
+//! a date string V8's parser might read differently from the engine is no time at all (counted, `dssup_appdb_date_unread`).
 //!
 //! The capability gate Node asks per table and column reduces to "the table/column/file exists", which the reads below test
 //! anyway, so it adds nothing and `gated` is always empty.
@@ -14,7 +15,7 @@ use crate::checks::guardkit::text::js_number_of_str;
 use crate::checks::jsport::date::{self, Parsed};
 use crate::defaults;
 use crate::meshw::appdb::{col_set, norm_path, open, select_for};
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use rusqlite::types::ValueRef;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,20 +29,24 @@ pub enum J {
     Num(f64),
     /// A string.
     Str(String),
+    /// A blob: a `Uint8Array`, held as its `String()` (the bytes joined with commas). Never a string, never falsy.
+    Blob(String),
 }
 
-fn jv(v: ValueRef<'_>) -> R<J> {
-    Ok(match v {
+/// A cell as Node's binding hands it over; `None` where the binding throws (an integer JavaScript cannot hold exactly), which
+/// Node's `try`/`catch` turns into a `null` snapshot.
+fn jv(v: ValueRef<'_>) -> Option<J> {
+    Some(match v {
         ValueRef::Null => J::Null,
         ValueRef::Integer(i) => {
             if i.unsigned_abs() > defaults::num("mesh.js_safe_int") {
-                return defer("app-db-int-range");
+                return None;
             }
             J::Num(i as f64)
         }
         ValueRef::Real(f) => J::Num(f),
         ValueRef::Text(t) => J::Str(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(_) => return defer("app-db-blob"),
+        ValueRef::Blob(b) => J::Blob(b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
     })
 }
 
@@ -51,7 +56,7 @@ impl J {
         match self {
             J::Null => None,
             J::Num(n) => Some(crate::checks::jsport::num::to_js_string(*n)),
-            J::Str(s) => Some(s.clone()),
+            J::Str(s) | J::Blob(s) => Some(s.clone()),
         }
     }
 
@@ -60,7 +65,7 @@ impl J {
         match self {
             J::Null => 0.0,
             J::Num(n) => *n,
-            J::Str(s) => js_number_of_str(s),
+            J::Str(s) | J::Blob(s) => js_number_of_str(s),
         }
     }
 
@@ -73,19 +78,23 @@ impl J {
         (!self.is_null()).then(|| self.number() == 1.0)
     }
 
-    /// `tsMs(v)`: epoch ms, `None` for null, empty, non-positive or unparsable; a date string whose V8 reading is not certain defers.
-    fn ts(&self) -> R<Option<f64>> {
+    /// `tsMs(v)`: epoch ms, `None` for null, empty, non-positive or unparsable. A date string whose V8 reading the engine does not
+    /// reproduce is no time (counted), the way an unreadable stamp is.
+    fn ts(&self) -> Option<f64> {
         let n = match self {
-            J::Null => return Ok(None),
-            J::Str(s) if s.is_empty() => return Ok(None),
+            J::Null => return None,
+            J::Str(s) if s.is_empty() => return None,
             J::Num(n) => *n,
-            J::Str(s) => match date::parse(s) {
+            J::Str(s) | J::Blob(s) => match date::parse(s) {
                 Parsed::Ms(ms) => ms,
-                Parsed::Nan => return Ok(None),
-                Parsed::Unknown => return defer("app-db-date"),
+                Parsed::Nan => return None,
+                Parsed::Unknown => {
+                    crate::metrics::bump("dssup_appdb_date_unread", &[]);
+                    return None;
+                }
             },
         };
-        Ok((n.is_finite() && n > 0.0).then_some(n))
+        (n.is_finite() && n > 0.0).then_some(n)
     }
 }
 
@@ -222,7 +231,8 @@ fn table_rows(conn: &rusqlite::Connection, table: &str, schema: &[&str], missing
         for (i, c) in present.iter().enumerate() {
             let Ok(v) = r.get_ref(i) else { return Ok(None) };
             let key = if *c == prompt { defaults::text("devswarm_sup.as_prompt_len") } else { c };
-            m.insert((*key).to_string(), jv(v)?);
+            let Some(j) = jv(v) else { return Ok(None) };
+            m.insert((*key).to_string(), j);
         }
         out.push(m);
     }
@@ -327,7 +337,7 @@ pub fn read(file: &str) -> R<Option<Snap>> {
             state: get(p, col("devswarm_sup.as_c_state")).string(),
             is_draft: get(p, col("devswarm_sup.as_c_is_draft")).flag(),
             check_status: get(p, col("devswarm_sup.as_c_check_status")).string(),
-            last_synced_at: get(p, col("devswarm_sup.as_c_last_synced")).ts()?,
+            last_synced_at: get(p, col("devswarm_sup.as_c_last_synced")).ts(),
         };
         pr_by_id.insert(id, v.clone());
         if let (Some(r), Some(b)) = (get(p, c_repo_id).string(), get(p, col("devswarm_sup.as_c_branch_name")).string()) {
@@ -338,7 +348,7 @@ pub fn read(file: &str) -> R<Option<Snap>> {
     let mut terms_by_builder: HashMap<String, Vec<Term>> = HashMap::new();
     for t_ in &terminals {
         let Some(builder) = get(t_, col("devswarm_sup.as_c_builder_id")).string() else { continue };
-        let d = get(t_, col("devswarm_sup.as_c_delivered")).ts()?;
+        let d = get(t_, col("devswarm_sup.as_c_delivered")).ts();
         if let Some(d) = d
             && delivery_tracked_since.is_none_or(|s| d < s)
         {
@@ -351,10 +361,10 @@ pub fn read(file: &str) -> R<Option<Snap>> {
             session_id: session_id_of(get(t_, col("devswarm_sup.as_c_session_config"))),
             is_active: get(t_, c_active()).flag(),
             panel_status: get(t_, col("devswarm_sup.as_c_panel_status")).string(),
-            created_at: get(t_, col("devswarm_sup.as_c_created_at")).ts()?,
+            created_at: get(t_, col("devswarm_sup.as_c_created_at")).ts(),
             brief_pending: !plen.is_null() && plen.number() > 0.0,
             delivered_at: d,
-            withheld_at: get(t_, col("devswarm_sup.as_c_withheld")).ts()?,
+            withheld_at: get(t_, col("devswarm_sup.as_c_withheld")).ts(),
         };
         terms_by_builder.entry(builder).or_default().push(v);
     }
@@ -404,16 +414,13 @@ pub fn read(file: &str) -> R<Option<Snap>> {
             is_hidden: get(b, col("devswarm_sup.as_c_is_hidden")).flag(),
             active,
             archived,
-            last_selected_at: get(b, col("devswarm_sup.as_c_last_selected")).ts()?,
+            last_selected_at: get(b, col("devswarm_sup.as_c_last_selected")).ts(),
             pull_request: pr,
             session_id: ai_active.as_ref().and_then(|a| a.session_id.clone()),
             ai_active,
             terminals: terms,
             scrollback,
         };
-        // the creation and access times are read for their conversion errors only (Node's `tsMs` runs on them)
-        get(b, col("devswarm_sup.as_c_created_at")).ts()?;
-        get(b, col("devswarm_sup.as_c_last_accessed")).ts()?;
         workspaces.push(ws);
     }
     let version = app_version(db_path);
@@ -588,13 +595,40 @@ pub fn message_timestamps(file: &str, until_ms: f64) -> R<Option<RepoMessages>> 
         let Ok(a) = r.get_ref(0) else { return Ok(None) };
         let Ok(b) = r.get_ref(1) else { return Ok(None) };
         let Ok(c) = r.get_ref(2) else { return Ok(None) };
-        let (repo, branch, created) = (jv(a)?, jv(b)?, jv(c)?);
+        let (Some(repo), Some(branch), Some(created)) = (jv(a), jv(b), jv(c)) else { return Ok(None) };
         let key = repo.string().unwrap_or_default();
-        let msg = AppMsg { to_branch: branch.string(), created_at: created.ts()? };
+        let msg = AppMsg { to_branch: branch.string(), created_at: created.ts() };
         match out.iter_mut().find(|(k, _)| *k == key) {
             Some((_, v)) => v.push(msg),
             None => out.push((key, vec![msg])),
         }
     }
     Ok(Some(out))
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn a_blob_is_a_uint8array_and_an_unsafe_integer_is_nodes_null_snapshot() {
+        crate::defaults::init().unwrap();
+        assert_eq!(jv(ValueRef::Blob(&[1, 2, 255])), Some(J::Blob("1,2,255".into())));
+        assert_eq!(jv(ValueRef::Integer(9_007_199_254_740_993)), None);
+        assert_eq!(jv(ValueRef::Integer(5)), Some(J::Num(5.0)));
+        let b = J::Blob("7".into());
+        assert_eq!(b.string().as_deref(), Some("7"));
+        assert_eq!(b.number(), 7.0);
+        assert!(!b.is_null());
+    }
+
+    #[test]
+    fn a_date_the_engine_cannot_read_is_no_time_not_a_hand_over() {
+        crate::defaults::init().unwrap();
+        assert_eq!(J::Str("2026-10-01T10:00:00.000Z".into()).ts(), Some(1_790_848_800_000.0));
+        assert_eq!(J::Str("garbage".into()).ts(), None);
+        assert_eq!(J::Str("2026-1-5 10:00".into()).ts(), None);
+        assert_eq!(J::Num(5.0).ts(), Some(5.0));
+        assert_eq!(J::Null.ts(), None);
+    }
 }

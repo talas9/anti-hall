@@ -11,7 +11,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::jsport::fsx;
 use crate::defaults;
 use crate::meshw::appdb::norm_path;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use std::path::{Path, PathBuf};
 
@@ -33,14 +33,21 @@ impl Desc {
         }
     }
 
-    /// The `worktreePath`, `Defer` for a truthy value that is not a string.
+    /// The `worktreePath` as the sync reads it: `String(d.worktreePath)` for a truthy value, none for a falsy one.
     pub fn worktree(&self) -> R<Option<String>> {
-        match self.body.get(defaults::text("devswarm_sup.as_c_worktree_path")) {
-            None | Some(OVal::Null) => Ok(None),
-            Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-            Some(v) if !v.truthy() => Ok(None),
-            Some(_) => defer("descriptor-worktree-type"),
-        }
+        Ok(self.body.get(defaults::text("devswarm_sup.as_c_worktree_path")).filter(|v| v.truthy()).map(js_str))
+    }
+}
+
+/// `String(v)` of a parsed JSON value: arrays join their elements with commas (null as empty), objects are `[object Object]`.
+pub fn js_str(v: &OVal) -> String {
+    match v {
+        OVal::Null => defaults::text("devswarm_sup.as_js_null").to_string(),
+        OVal::Bool(b) => b.to_string(),
+        OVal::Num(n) => crate::checks::jsport::num::to_js_string(*n),
+        OVal::Str(s) => s.clone(),
+        OVal::Arr(a) => a.iter().map(|x| if matches!(x, OVal::Null) { String::new() } else { js_str(x) }).collect::<Vec<_>>().join(","),
+        OVal::Obj(_) => defaults::text("devswarm_sup.as_js_object").to_string(),
     }
 }
 
@@ -57,12 +64,8 @@ pub fn read_json_dir(dir: &Path) -> R<Vec<Desc>> {
         let Some(stem) = name.strip_suffix(ext) else { continue };
         let Ok(bytes) = std::fs::read(dir.join(&name)) else { continue };
         let Some(body @ OVal::Obj(_)) = OVal::parse(&String::from_utf8_lossy(&bytes)) else { continue };
-        let id = match body.get(defaults::text("devswarm_sup.as_c_id")) {
-            None => stem.to_string(),
-            Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(n)) => crate::checks::jsport::num::to_js_string(*n),
-            Some(_) => return defer("descriptor-id-type"),
-        };
+        // `Object.assign({ id: stem }, d)`: the descriptor's own `id` wins, whatever it is, and readers take `String(d.id)`
+        let id = body.get(defaults::text("devswarm_sup.as_c_id")).map_or_else(|| stem.to_string(), js_str);
         out.push(Desc { id, body });
     }
     Ok(out)
@@ -386,4 +389,33 @@ pub fn retire_marker(ctx: &crate::dssup::tick::Ctx, id: &str, builder_id: &str) 
     })();
     lock.release();
     r
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn a_descriptor_with_an_odd_id_or_worktree_is_read_as_javascript_stringifies_it() {
+        crate::defaults::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("ah-as-plan-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.json"), r#"{"id":{"x":1},"worktreePath":7}"#).unwrap();
+        std::fs::write(dir.join("b.json"), r#"{"id":null,"worktreePath":["p","q"]}"#).unwrap();
+        std::fs::write(dir.join("c.json"), r#"{"id":12,"worktreePath":""}"#).unwrap();
+        std::fs::write(dir.join("d.json"), r#"{"worktreePath":"/w"}"#).unwrap();
+        let mut got: Vec<(String, Option<String>)> = read_json_dir(&dir).unwrap().iter().map(|d| (d.id.clone(), d.worktree().unwrap())).collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("12".to_string(), None),
+                ("[object Object]".to_string(), Some("7".to_string())),
+                ("d".to_string(), Some("/w".to_string())),
+                ("null".to_string(), Some("p,q".to_string())),
+            ]
+        );
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }

@@ -363,12 +363,6 @@ fn a_blob_body_is_read_like_node_reads_it_and_the_sweep_answers_natively() {
     assert_eq!(out["outcome"], "ran", "{out}");
 }
 
-fn bodies_raw(home: &Path) -> Vec<(i64, String)> {
-    let c = rusqlite::Connection::open_with_flags(plan::db_path(home, HASH), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-    let mut st = c.prepare("SELECT id, typeof(body) || ':' || COALESCE(hex(body), '') FROM messages ORDER BY id").unwrap();
-    st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).unwrap().flatten().collect()
-}
-
 #[test]
 fn the_journal_fold_and_the_archive_cap_stay_nodes_and_match_it() {
     if !have_node_sqlite() {
