@@ -56,3 +56,55 @@ value = { goal = "goal", calls = "tool_calls", outcomes = "outcomes", signals = 
 [msg.agent_waste]
 doc = "Advisory: an agent spends tokens without matching outcomes. Placeholders: {agent}, {kind}, {score}, {source} (judge or formula), {verdict}, {window}, {reason}."
 value = "agent tracker: {kind} {agent} is spending tokens without matching outcomes (waste score {score}, {source}: {verdict}) over the last {window}: {reason}. Commit or finish a step, stop re-reading and polling, or hand the work over."
+
+# ---- time-based stall signals (GH #270 gap, task #185) ----------------------------------------------------------------------
+# The token score cannot see a slow, cheap, stuck agent (a foreground command hung at 0% CPU, 176k tokens in 68 minutes). These
+# two signals look at time instead and feed the same verdict path (Jev with context, else the formula level).
+
+[agent_stall.limits]
+doc = """Time-based no-outcome signals of the waste sensor. stalled_call_ms: one tool call (not exempt, not a background command) in flight longer than this, at near-zero CPU, is `stalled_call` (soft level; at stalled_call_ms * hard_factor_pct / 100 it is hard). check_after_ms: a call must be this old before the process table is read for it (so ordinary short calls never cost a `ps`). min_cpu_span_ms: least wall time between two CPU readings before a rate is trusted. idle_pm: CPU at or under this many thousandths of a core counts as idle. no_outcome_ms: a subagent, teammate or workspace with no outcome unit (commit, finished step, passing check, new file) for this long is `no_outcome_time`, whatever it spent (soft; hard at the same factor); no_outcome_other_ms: the same for the kinds not in agent_waste.policy.hard_kinds (main session, Primary), which are only warned. A read-heavy role (agent_waste.relief names) gets no_outcome_ms times relief.divisor_pct / 100. Both signals are 0 = off."""
+value = { stalled_call_ms = 600000, hard_factor_pct = 200, check_after_ms = 120000, min_cpu_span_ms = 60000, idle_pm = 20, no_outcome_ms = 1200000, no_outcome_other_ms = 5400000 }
+
+[agent_stall.policy]
+doc = "Tool names (lower case) whose calls legitimately run long and are never a stalled_call: spawning and waiting on other agents, monitors, questions to the owner."
+value = { exempt_tools = ["task", "agent", "taskoutput", "monitor", "sendmessage", "askuserquestion", "exitplanmode"] }
+
+[agent_stall.procs]
+doc = "The commands that read the process table, as argv. ps: pid, parent pid, instantaneous CPU percent, accumulated CPU time, command, no header. lsof: the open files of one path with their lock flag (fields p pid, c command, f fd, l lock), the path is appended after the `--`."
+value = { ps = ["ps", "-A", "-o", "pid=,ppid=,pcpu=,time=,command="], lsof = ["lsof", "-nP", "-F", "pcfl", "--"] }
+
+[agent_stall.texts]
+doc = "Reason fragments the stall signals add to the waste reason. Placeholders: {label} (the running call), {min} (minutes), {cpu} (one of the cpu words)."
+value = { stalled_fmt = "{label} has run {min} min with {cpu}", quiet_fmt = "no outcome for {min} min", cpu_idle = "near-zero CPU", cpu_unknown = "no CPU reading", stalled_word = "stalled_call", quiet_word = "no_outcome_time", signals_line = "stall signals: {reason}" }
+
+[lock_watch.setting]
+doc = "Where the lock-holder watchdog's on/off switch is read from (agents.lockWatch, default on): off, no lock file is watched."
+value = { section = "agents", key = "lockWatch", env = "ANTIHALL_AGENT_LOCK_WATCH", aliases = [], option = "", default = true }
+
+[lock_watch.term_setting]
+doc = "Where the watchdog's auto-action switch is read from (agents.lockWatchTerm, default OFF): on, a holder idle for limits.term_after_ms with waiters is sent SIGTERM, by its verified pid (re-checked to still hold the lock right before), never by name."
+value = { section = "agents", key = "lockWatchTerm", env = "ANTIHALL_AGENT_LOCK_TERM", aliases = [], option = "", default = false }
+
+[lock_watch.locks]
+doc = "The shared lock files to watch. A leading `~/` is the home directory; the file name may hold one `*`."
+value = ["~/.anti-hall/work/cargo-heavy*.lock"]
+
+[lock_watch.waiters]
+doc = "Names (command basename) of the lock wrapper programs. A process running one of them with the lock path on its command line, that is not the holder or below it, is a waiter."
+value = ["lockf", "flock"]
+
+[lock_watch.limits]
+doc = "interval_ms: least time between two watchdog passes. min_span_ms: least wall time between two CPU readings of the holder before a rate is trusted. idle_pm: the holder's process tree at or under this many thousandths of a core is idle. idle_after_ms: idle this long, with at least one process waiting on the same lock, raises the alert. renotify_ms: least time between two alerts for one holder. term_after_ms: idle this long, with waiters, before the auto-action (only when the term switch is on)."
+value = { interval_ms = 60000, min_span_ms = 30000, idle_pm = 20, idle_after_ms = 300000, renotify_ms = 900000, term_after_ms = 900000 }
+
+[lock_watch.words]
+doc = "Words the watchdog writes: the telemetry class and events, the wake signal name, and the lock characters of the lsof lock field that mean a held lock."
+value = { class = "lockwatch", stall = "stall", term = "term", signal = "lock_stall", held = "rRwWuU" }
+
+[msg.lock_stall]
+doc = "Wake notice to the coordinator: the process holding a shared lock is idle while others wait. Placeholders: {lock}, {pid}, {cmd}, {idle_min}, {waiters}, {term} (empty, or the auto-action sentence)."
+value = "lock watch: {lock} is held by pid {pid} ({cmd}) which has used almost no CPU for {idle_min} min while {waiters} process(es) wait on it. Check whether its command is hung (a stuck foreground cargo test) and stop it by pid.{term}"
+
+[msg.lock_stall_term]
+doc = "Appended to the wake notice when the auto-action sent SIGTERM. Placeholder: {pid}."
+value = " Sent SIGTERM to pid {pid}."

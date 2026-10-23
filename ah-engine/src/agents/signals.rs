@@ -603,6 +603,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         series(env, &mut a);
         st.agents.insert(id, a);
     }
+    super::lockwatch::tick(env, st);
     let keep = lim("day_retention");
     let today = now / fmtn("day_ms");
     st.days.retain(|d, _| d.parse::<u64>().is_ok_and(|d| today.saturating_sub(d) <= keep));

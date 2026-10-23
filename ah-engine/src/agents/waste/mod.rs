@@ -41,6 +41,30 @@ pub struct Mark {
     pub judge_calls: u64,
     /// `warn`, `hard`, or empty.
     pub action: String,
+    /// Progress units at the last evaluation (to see when an outcome lands).
+    #[serde(default)]
+    pub seen_progress: u64,
+    /// When the agent last gained an outcome unit (or started its turn); 0 = not running.
+    #[serde(default)]
+    pub outcome_at: u64,
+    /// The in-flight call whose CPU is being watched.
+    #[serde(default)]
+    pub cpu_call: String,
+    /// Accumulated CPU of its process tree at the last reading, ms.
+    #[serde(default)]
+    pub cpu_ms: u64,
+    /// Instantaneous CPU of that reading, thousandths of a core.
+    #[serde(default)]
+    pub cpu_pm: u64,
+    /// When that reading was taken.
+    #[serde(default)]
+    pub cpu_at: u64,
+    /// The stall signals' reason (empty when neither fires); their level (0 ok, 1 soft, 2 hard) follows.
+    #[serde(default)]
+    pub stall: String,
+    /// The level of the stall signals.
+    #[serde(default)]
+    pub stall_level: u8,
 }
 
 fn lim(k: &str) -> u64 {
@@ -54,6 +78,74 @@ fn pol(k: &str) -> Vec<&'static str> {
 }
 fn word(k: &str) -> &'static str {
     defaults::raw("agent_waste.words").str_field(k)
+}
+fn stall_lim(k: &str) -> u64 {
+    defaults::raw("agent_stall.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+fn stall_text(k: &str) -> &'static str {
+    defaults::raw("agent_stall.texts").str_field(k)
+}
+
+/// The time-based signals of one running agent (task #185): `stalled_call` (one tool call in flight for long at near-zero CPU) and
+/// `no_outcome_time` (no outcome unit for long, whatever the tokens). Fills `stall` and `stall_level`; the level joins the score's.
+fn stall_check(env: &Env, a: &mut Agent) {
+    let now = env.now_ms;
+    if a.waste.outcome_at == 0 || a.progress > a.waste.seen_progress {
+        a.waste.outcome_at = now;
+    }
+    a.waste.seen_progress = a.progress;
+    let hard_x = stall_lim("hard_factor_pct").max(100);
+    let pct = fmtn("pct");
+    let min_ms = fmtn("ms_per_s") * 60;
+    let mut parts: Vec<String> = Vec::new();
+    let mut level = 0u8;
+    let mut rank = |ms: u64, limit: u64, parts: &mut Vec<String>, text: String| {
+        if limit == 0 || ms < limit {
+            return;
+        }
+        level = level.max(if ms >= limit * hard_x / pct { 2 } else { 1 });
+        parts.push(text);
+    };
+    // stalled_call: the oldest foreground call that is not exempt
+    let exempt = defaults::raw("agent_stall.policy").get("exempt_tools").map(V::strings).unwrap_or_default();
+    let call = a.pending.iter().filter(|(_, p)| !p.bg && !exempt.contains(&p.name.to_lowercase().as_str())).min_by_key(|(_, p)| p.ts).map(|(k, p)| (k.clone(), p.clone()));
+    let limit = stall_lim("stalled_call_ms");
+    let mut seen_call = String::new();
+    if let Some((id, p)) = call.filter(|_| limit > 0) {
+        let age = now.saturating_sub(p.ts);
+        let mut busy = false;
+        let mut cpu_word = stall_text("cpu_unknown");
+        if age >= stall_lim("check_after_ms") && a.pid != 0 {
+            let table = super::procs::snapshot();
+            let kids: Vec<_> = super::procs::tree(&table, a.pid).into_iter().filter(|q| q.pid != a.pid).collect();
+            if !kids.is_empty() {
+                let cur = super::procs::cpu_of(&kids);
+                if a.waste.cpu_call != id {
+                    (a.waste.cpu_call, a.waste.cpu_ms, a.waste.cpu_pm, a.waste.cpu_at) = (id.clone(), cur.0, cur.1, now);
+                } else if let Some(idle) = super::procs::idle_since((a.waste.cpu_ms, a.waste.cpu_at), cur, now, stall_lim("min_cpu_span_ms"), stall_lim("idle_pm")) {
+                    busy = !idle;
+                    cpu_word = stall_text("cpu_idle");
+                    if busy {
+                        (a.waste.cpu_ms, a.waste.cpu_pm, a.waste.cpu_at) = (cur.0, cur.1, now);
+                    }
+                }
+                seen_call = id.clone();
+            }
+        }
+        if !busy {
+            rank(age, limit, &mut parts, defaults::fill(stall_text("stalled_fmt"), &[("label", &super::cap(&p.label, lim("line_cap"))), ("min", &(age / min_ms)), ("cpu", &cpu_word)]));
+        }
+    }
+    if seen_call.is_empty() {
+        a.waste.cpu_call.clear();
+    }
+    // no_outcome_time: a read-heavy role is allowed longer; the main session and Primary have their own (longer) limit
+    let base = if pol("hard_kinds").contains(&a.kind.as_str()) { stall_lim("no_outcome_ms") } else { stall_lim("no_outcome_other_ms") };
+    let limit = if formula::read_heavy(&a.name) { base * defaults::raw("agent_waste.relief").get("divisor_pct").and_then(V::as_integer).unwrap_or(pct as i64).max(0) as u64 / pct } else { base };
+    let quiet = now.saturating_sub(a.waste.outcome_at);
+    rank(quiet, limit, &mut parts, defaults::fill(stall_text("quiet_fmt"), &[("min", &(quiet / min_ms))]));
+    a.waste.stall = parts.join("; ");
+    a.waste.stall_level = level;
 }
 
 /// The window of one agent as the formula's input, or `None` while there is too little history to judge.
@@ -123,7 +215,10 @@ fn evidence_of(a: &Agent, i: &Input, score: f64, now: u64) -> serde_json::Value 
         ),
     ];
 
-    let signals = vec![format!("kind {}; score {:.0}; {}", a.kind, score, reason_of(i))];
+    let mut signals = vec![format!("kind {}; score {:.0}; {}", a.kind, score, reason_of(i))];
+    if !a.waste.stall.is_empty() {
+        signals.push(defaults::fill(stall_text("signals_line"), &[("reason", &a.waste.stall)]));
+    }
     let w = defaults::raw("agent_waste.judge_sections");
     json!({
         "id": "agentWaste",
@@ -160,18 +255,31 @@ pub(crate) fn update(env: &Env, a: &mut Agent, budget: &mut u64) {
     let idle = |a: &mut Agent| {
         a.waste.action.clear();
         a.waste.level = 0;
+        a.waste.stall.clear();
+        a.waste.stall_level = 0;
     };
     if !env.switch("agent_waste.setting") || state_of(a) != state_name("running") {
+        a.waste.outcome_at = 0; // the next turn starts the no-outcome clock afresh
         return idle(a);
     }
-    let Some(i) = input_of(a, env.now_ms) else { return idle(a) };
+    stall_check(env, a);
+    let stall = match a.waste.stall_level {
+        0 => Level::Ok,
+        1 => Level::Soft,
+        _ => Level::Hard,
+    };
+    let found = input_of(a, env.now_ms);
+    if found.is_none() && stall == Level::Ok {
+        return idle(a);
+    }
+    let i = found.unwrap_or_default();
     let p = Params::load();
     let s = formula::score(&i, &p, formula::read_heavy(&a.name));
-    let lvl = formula::level(s, &p);
+    let lvl = formula::level(s, &p).max(stall);
     let before = a.waste.action.clone();
     a.waste.score = s;
     a.waste.level = lvl as u8;
-    a.waste.reason = reason_of(&i);
+    a.waste.reason = if a.waste.stall.is_empty() { reason_of(&i) } else { format!("{}; {}", reason_of(&i), a.waste.stall) };
     if lvl == Level::Ok {
         a.waste.verdict.clear();
         return idle(a);

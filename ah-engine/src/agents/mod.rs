@@ -18,6 +18,8 @@
 
 mod facts;
 mod live;
+mod lockwatch;
+mod procs;
 mod signals;
 mod sinks;
 mod sources;
@@ -347,6 +349,9 @@ pub struct Totals {
     pub unrecovered: u64,
     /// Tokens (input plus output) flagged agents spent.
     pub burned: u64,
+    /// Lock-holder stalls the watchdog alerted on.
+    #[serde(default)]
+    pub lock_stalls: u64,
 }
 
 /// The tracker's persisted state; only a cache, a damaged file is discarded.
@@ -373,6 +378,12 @@ pub struct State {
     /// Headless one-shot transcripts seen in the active window (not agents: never tracked or listed).
     #[serde(default)]
     pub headless: std::collections::BTreeSet<String>,
+    /// The lock-holder watchdog's memory per lock file.
+    #[serde(default)]
+    pub locks: BTreeMap<String, lockwatch::LockWatch>,
+    /// When the watchdog last ran.
+    #[serde(default)]
+    pub lock_checked: u64,
 }
 
 impl State {
