@@ -2,7 +2,7 @@
 button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-main { gap: 10px; }
 .live { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
-.live-stats { display: grid; grid-template-columns: repeat(3, minmax(110px, 150px)) minmax(0, 1fr); gap: 8px; }
+.live-stats { display: grid; grid-template-columns: repeat(5, minmax(90px, 130px)) minmax(0, 1fr); gap: 8px; }
 .live-block { color: var(--red); }
 .live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
 .live-top li { display: flex; gap: 6px; }
@@ -33,3 +33,12 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .chip-blocked { color: var(--red); border-color: color-mix(in oklch, var(--red) 50%, transparent); }
 .chip-pending { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }
 .jev-row { display: flex; flex-direction: column; gap: 2px; font: 12px var(--font-mono); padding: 4px 0; border-bottom: 1px solid var(--line); }
+
+/* sci-fi deck (Full): deep field, luminous core. Every motion below is triggered by data (a judgement, a fired effect); at rest the scene is still. */
+.live .ahg-view { background-color: oklch(0.12 0.03 265); background-image: radial-gradient(900px 500px at 70% 40%, oklch(0.2 0.07 270 / .5), transparent 70%), linear-gradient(var(--ahg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ahg-grid) 1px, transparent 1px); }
+.live .ahg-node[data-kind="jev"] { overflow: visible; border-color: color-mix(in oklch, var(--k) 60%, transparent); }
+.live .ahg-node[data-kind="jev"]::before { content: ""; position: absolute; inset: -7px; border-radius: 18px; border: 2px solid transparent; border-top-color: var(--k); border-bottom-color: color-mix(in oklch, var(--k) 40%, transparent); opacity: .5; }
+.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="running"]::before { animation: ahCoreSpin 3s linear infinite; opacity: 1; box-shadow: 0 0 22px var(--k); }
+.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="waiting"]::before { animation: ahCoreSpin 7s linear infinite; opacity: .8; }
+@keyframes ahCoreSpin { to { transform: rotate(360deg); } }
+.live .stat-v, .live .tl-age, .live .tl-check { font-variant-numeric: tabular-nums; }

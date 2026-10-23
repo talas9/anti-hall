@@ -218,7 +218,11 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                 fragment: Some(wgpu::FragmentState {
                     module: &sm,
                     entry_point: Some("fs"),
-                    targets: &[Some(wgpu::ColorTargetState { format: conf.format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: conf.format, blend: Some(wgpu::BlendState {
+                            // additive: overlapping wires and particles add up to a glow, no post-processing pass
+                            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+                            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+                        }), write_mask: wgpu::ColorWrites::ALL })],
                     compilation_options: Default::default(),
                 }),
                 primitive: Default::default(),

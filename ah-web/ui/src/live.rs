@@ -422,7 +422,7 @@ impl Inner {
                 None => (self.t("live_mind_idle"), "idle"),
                 Some(j) => (
                     self.t("live_mind_sub").replace("{id}", &j.id).replace("{conf}", &j.conf.map_or_else(|| self.t("live_unavailable"), |c| format!("{c:.2}"))).replace("{mode}", &self.t(&format!("live_mode_{}", j.mode))),
-                    match j.mode.as_str() { "on" => "running", "shadow" => "waiting", _ => "idle" },
+                    if now_ms.saturating_sub(j.ts_ms) > c.rate_window_s * 1000 { "idle" } else { match j.mode.as_str() { "on" => "running", "shadow" => "waiting", _ => "idle" } },
                 ),
             };
             node("mind".into(), self.t("live_mind"), sub, "jev", 4.0, 4, status);
@@ -690,6 +690,8 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
             </div>
             <div class="live-stats">
                 <div class="stat"><div class="stat-k">{tx("live_rate")}</div><div class="stat-v">{move || format!("{:.1}", counters.with(|c| c.rate_x10) as f32 / 10.0)}</div></div>
+                <div class="stat"><div class="stat-k">{tx("pill_cpu")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().and_then(|p| p.cpu_permille).map_or_else(|| "\u{2014}".to_string(), |v| format!("{:.1}%", v as f64 / 10.0)))}</div></div>
+                <div class="stat"><div class="stat-k">{tx("pill_mem")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| format!("{} MB", p.rss_kb / 1024)))}</div></div>
                 <div class="stat"><div class="stat-k">"Jev"</div><div class="stat-v">{move || counters.with(|c| c.jev_calls)}</div></div>
                 <div class="stat"><div class="stat-k">{tx("live_blocks")}</div><div class="stat-v live-block">{move || counters.with(|c| c.blocks)}</div></div>
                 <div class="stat live-top"><div class="stat-k">{tx("live_top")}</div>
