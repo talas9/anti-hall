@@ -18,6 +18,7 @@
 //! A guard test (`tests/it/mem_guard.rs`) fails the build when a long-lived collection appears outside this module without an
 //! entry in `tests/mem_allowlist.txt` that states its bound.
 mod cache;
+pub mod leak;
 mod measure;
 mod registry;
 

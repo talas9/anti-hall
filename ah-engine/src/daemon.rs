@@ -412,6 +412,7 @@ impl Shared {
         if let Some(o) = m.as_object_mut() {
             o.insert("ledger".into(), ledger);
             o.insert("regex".into(), crate::script::regex_diag());
+            o.insert("leak".into(), crate::mem::leak::status());
         }
         m
     }
@@ -468,7 +469,7 @@ impl Shared {
 
     /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
     pub fn pulse_json(&self) -> serde_json::Value {
-        crate::web::pulse::build(&crate::web::pulse::Inputs {
+        let mut pulse = crate::web::pulse::build(&crate::web::pulse::Inputs {
             version: &self.own,
             uptime_s: self.started.elapsed().as_secs(),
             rss_kb: limits::rss_kb(),
@@ -483,7 +484,10 @@ impl Shared {
             budget_mask: lk(&self.budget).mask(),
             restarts: self.starts.saturating_sub(1),
             config_version: self.config.snapshot().version,
-        })
+        });
+        let leak = crate::mem::leak::status();
+        pulse["leak"] = serde_json::json!({"state": leak["state"], "slope_mb_per_h": leak["slope_mb_per_h"], "top": leak["top"]});
+        pulse
     }
 
     fn status(&self) -> String {
@@ -1706,6 +1710,7 @@ fn watchdog(sh: Arc<Shared>) {
                 continue;
             }
         }
+        leak_sentinel(&sh);
         if last_rss.elapsed() >= cfg.rss_check {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
@@ -1744,6 +1749,24 @@ fn watchdog(sh: Arc<Shared>) {
             }
         }
     }
+}
+
+/// The leak sentinel's step (mem::leak): sample when due; on a suspected leak write the evidence file, log the notice and record
+/// the impact. Detection only: nothing is restarted or killed.
+fn leak_sentinel(sh: &Arc<Shared>) {
+    let now_s = health::now_ms() / 1000;
+    if !crate::mem::leak::due(sh.started.elapsed().as_secs(), now_s) {
+        return;
+    }
+    let Some(n) = crate::mem::leak::observe(crate::mem::leak::collect(now_s)) else { return };
+    let line = match crate::mem::leak::write_evidence(sh.memory_with_ledger(), health::now_ms()) {
+        Ok(p) => format!("{} [{}]", n.text, p.display()),
+        Err(e) => format!("{} [evidence not written: {e}]", n.text),
+    };
+    health::log_event("memory", "leak", &line);
+    let kind = defaults::text("mem.leak_impact_kind");
+    sh.telemetry.impact(kind, &n.top, crate::mem::leak::Level::Suspected.name(), "");
+    sh.telemetry.with_metrics(|m| m.inc("memory_leak_notices", &[("top", &n.top)]));
 }
 
 /// Log the start or the end of a budget breach (one line per change, never one per sample).
