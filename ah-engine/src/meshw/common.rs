@@ -9,7 +9,7 @@
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{self, Defer, Env, R};
+use crate::meshw::ident::{self, Env, R};
 use crate::meshw::idlock::devswarm_root;
 use crate::meshw::store::MeshStore;
 use std::path::{Path, PathBuf};
@@ -285,9 +285,9 @@ pub fn open_store(inv: &Inv, repo_key: &str) -> R<MeshStore> {
     if !resolve_backend(inv, &dir) {
         return legacy_journal(repo_key);
     }
-    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("store-dir:{e}")))?;
+    std::fs::create_dir_all(&dir).or_else(|e| ident::unavailable("mesh_write.what_store_dir", &e))?;
     let db = inv.store_override.clone().unwrap_or_else(|| dir.join(defaults::text("mesh_write.store_file")));
-    MeshStore::open(&db).map_err(|e| Defer(format!("store-open:{e}")))
+    MeshStore::open(&db).or_else(|e| ident::unavailable("mesh_write.what_store", &e))
 }
 
 /// The first creation of a project's store (`resolveStoreBackend` on a fresh directory): the directory and the sqlite marker, so that
@@ -297,7 +297,7 @@ pub fn init_new_store(inv: &Inv, repo_key: &str) -> R<()> {
     if !resolve_backend(inv, &dir) {
         return legacy_journal(repo_key);
     }
-    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("store-dir:{e}")))?;
+    std::fs::create_dir_all(&dir).or_else(|e| ident::unavailable("mesh_write.what_store_dir", &e))?;
     if !dir.join(defaults::text("mesh.backend_marker")).exists() {
         pin_backend(&dir, defaults::text("mesh.backend_sqlite"));
     }
@@ -406,7 +406,7 @@ pub fn jev_record_answered(inv: &Inv, from: &str, to: &str) {
         None => defaults::text("mesh_write.js_undefined").to_string(),
     };
     let digest = ring::digest::digest(&ring::digest::SHA256, format!("{key}\u{1}{ts_text}").as_bytes());
-    let h: String = crate::meshw::store::hex(digest.as_ref()).chars().take(32).collect();
+    let h: String = crate::meshw::store::hex(digest.as_ref()).chars().take(defaults::num("mesh_write.jev_outcome_hash_len") as usize).collect();
     if let Some(lane) = crate::jev::shared::lane(&inv.home, &env) {
         lane.record_outcome(
             defaults::text("mesh_write.jev_outcome_id"),
