@@ -13,6 +13,7 @@ mod manage;
 mod model;
 mod ops;
 mod server;
+mod tel;
 
 use app::App;
 use std::io::{Read, Write};

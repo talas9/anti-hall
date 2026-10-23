@@ -1,5 +1,6 @@
 //! The wire types between the Command Center server and its page. The server sends `Snapshot` as the data of the
 //! `snapshot` server-sent event; the page reads `Boot` once from the index file. No texts live here.
+pub mod tel;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

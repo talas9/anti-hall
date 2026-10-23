@@ -7,6 +7,9 @@ mod health;
 mod live;
 mod manage;
 mod ops;
+mod tel;
+#[cfg(feature = "full")]
+mod apex;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -372,7 +375,7 @@ fn App(boot: Boot) -> impl IntoView {
     let health_on = RwSignal::new(false);
     let topo_on = RwSignal::new(false);
     let manage_on = RwSignal::new(manage::hash().is_some());
-    // 0 = no ops screen, 1 accounts, 2 updates, 3 logs
+    // 0 = no ops screen, 1 accounts, 2 updates, 3 logs, 4 telemetry, 5 impact
     let ops_screen = RwSignal::new(0u8);
     // the agents view is shown unless another screen is chosen
     let other_on = Memo::new(move |_| live_on.get() || health_on.get() || topo_on.get() || manage_on.get() || ops_screen.get() != 0);
@@ -478,6 +481,8 @@ fn App(boot: Boot) -> impl IntoView {
                 <nav class="nav" aria-label=tx("nav_label")>
                     <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| go(false, false, false, false, 0)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
                     <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(true, false, false, false, 0)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 4 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 4)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 5 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 5)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
                     <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, true, false, false, 0)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
                     <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, true, false, 0)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
                     <button type="button" class=move || if ops_screen.get() == 3 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 3)><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></button>
@@ -535,6 +540,12 @@ fn App(boot: Boot) -> impl IntoView {
                 <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
                 <main class="main manage-main" hidden=move || !manage_on.get()>
                     <manage::ManageScreen active=manage_on.into() />
+                </main>
+                <main class="main tel-main" hidden=move || ops_screen.get() != 4>
+                    <tel::TelScreen active=Signal::derive(move || ops_screen.get() == 4) />
+                </main>
+                <main class="main tel-main" hidden=move || ops_screen.get() != 5>
+                    <tel::ImpactScreen active=Signal::derive(move || ops_screen.get() == 5) />
                 </main>
                 <ops::OpsScreens screen=ops_screen />
                 <aside class="detail" aria-label=tx("selected_label") hidden=move || other_on.get()>
