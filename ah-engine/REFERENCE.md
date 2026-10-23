@@ -7796,6 +7796,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_act.msg_audit_off` | `the action audit is switched off (devswarm_act.audit_enabled)` |  |  | Answer of the ledger verb when the audit is switched off. |
 | `devswarm_act.msg_audit_witness` | `the Node witness disagreed with the engine on {mismatch} of {n} comparison(s)...` |  |  | Doctor warning: the engine and the Node witness disagreed. Placeholders: mismatch, n. |
 | `devswarm_act.msg_caller` | `deletion refused: caller {caller} is automated (only an owner-approved intera...` |  |  | Delete refused: an automated caller. Placeholder: {caller}. |
+| `devswarm_act.msg_idle_uncertain` | `held: idle uncertain` |  |  | The g-idle blocker of an auto-archive candidate whose idleness cannot be proven (Node's idle rule can only be stricter than the engine's, never looser, so the workspace is held). |
 | `devswarm_act.msg_inert` | `DevSwarm not installed` |  |  | Reason recorded when DevSwarm is not installed or its app database is absent: the layer does nothing. |
 | `devswarm_act.msg_inflight` | `another trigger is already acting on {id}` |  |  | Why an action was refused: another trigger is already acting on this workspace. Placeholder: {id}. |
 | `devswarm_act.msg_ledger` | `the action ledger is not writable ({why}); nothing was run so no action can r...` |  |  | Why nothing ran: the ledger could not record the attempt. Placeholder: {why}. |
@@ -7932,6 +7933,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.git_dir_file` | `2 entries` |  |  | The file a linked worktree has in place of a .git directory, and the prefix of its one line. |
 | `devswarm_wire.git_timeout_ms` | `4000` |  | ms | Time limit of each git call that reads a workspace's facts (HEAD, status, merge proof). A call over the limit is killed and the fact counts as not proven. |
 | `devswarm_wire.id_flag` | `--id` |  |  | The flag that names the workspace. |
+| `devswarm_wire.idle_background_marker` | `"run_in_background":true` |  |  | Text in a transcript's tail that shows the child launched background work; the idle check then holds the workspace, because Node waits for that work to report. |
+| `devswarm_wire.idle_stop_end_turn` | `end_turn` |  |  | The stop reason of an assistant entry that finished its turn. |
+| `devswarm_wire.idle_stop_pointer` | `/message/stop_reason` |  |  | Where an assistant entry records why it stopped. |
+| `devswarm_wire.idle_tail_bytes` | `2097152` |  | bytes | How much of the end of a candidate's transcript the idle check reads (Node: TAIL_BYTES of devswarm-idle.js). |
+| `devswarm_wire.idle_type_assistant` | `assistant` |  |  | The transcript entry type of the model's turn. |
+| `devswarm_wire.idle_type_user` | `user` |  |  | The transcript entry type of a prompt or a tool result. |
 | `devswarm_wire.ids_flag` | `--confirm-ids` |  |  | The flag of prune that lists the approved ids (comma separated). |
 | `devswarm_wire.jev_dirty_cap` | `256` |  |  | Most workspaces held in the Jev dirty queue; past it the oldest entries are dropped (the slow scheduled sweep still covers them). |
 | `devswarm_wire.jev_dirty_file` | `rt-jev-dirty.json` |  |  | The file (under the engine state directory) the in-memory queue of workspaces whose Jev sweep is queued is saved to (every devswarm_wire.jev_dirty_flush_ms when it changed, and at shutdown), so a restart does not lose the queue. |
@@ -7942,6 +7949,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_wire.msg_advisory` | `DevSwarm: {changes}{more} (state generation {generation})` |  |  | The advisory text. {changes} is the list of changes, {more} the note about changes left out, {generation} the state generation. |
 | `devswarm_wire.msg_edge` | `{ws} {kind} {from} -> {to}` |  |  | One change in an advisory. {ws} the workspace label or id, {kind} what changed, {from} and {to} the old and new value. |
 | `devswarm_wire.msg_edge_new` | `{ws} {kind} {to}` |  |  | One change whose old value is empty (a workspace appeared, a PR was linked). |
+| `devswarm_wire.msg_idle_uncertain` | `auto-archive candidate {id} held: idle uncertain` |  |  | The log line when an auto-archive candidate is held because its idleness cannot be proven. {id}. |
 | `devswarm_wire.msg_inert` | `DevSwarm is not installed or the realtime layer is off` |  |  | Printed by the verbs that need the live state when DevSwarm is absent. |
 | `devswarm_wire.msg_line` | `ws {active} active, {stuck} stuck, {unread} unread` |  |  | The statusline segment. {active} workspaces in progress, {stuck} stuck, {unread} unread mail, {gen} state generation. |
 | `devswarm_wire.msg_line_stale` | `ws state unknown` |  |  | The statusline segment when the app database could not be read (the state is unknown, not empty). |

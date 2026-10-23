@@ -386,23 +386,47 @@ fn has_confirm(a: &Args) -> bool {
 struct Archived {
     ok: bool,
     error: Option<String>,
+    /// The reason the archive was skipped by the caller's check inside the lock (nothing was archived).
+    skipped: Option<String>,
 }
 
-fn archive_via_verb(inv: &Inv, id: &str) -> Archived {
+fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> Archived {
     let argv = vec![text("devswarm_cli.action_archive").to_string(), id.to_string()];
     let args = crate::meshw::args::parse(&argv);
-    match crate::meshw::archiveverb::archive(inv, &args) {
+    match crate::meshw::archiveverb::archive_with(inv, &args, revalidate) {
         Ok(ans) => {
             let r = OVal::parse(ans.stdout.trim());
+            let skipped = r
+                .as_ref()
+                .filter(|v| v.get("skipped").is_some_and(OVal::truthy))
+                .map(|v| v.get("reason").map_or_else(String::new, crate::meshw::appverbs::js_string));
             let ok = r.as_ref().and_then(|v| v.get("ok")).is_some_and(OVal::truthy);
             let error = match r.as_ref().and_then(|v| v.get("error")) {
                 Some(v) if v.truthy() => Some(crate::meshw::appverbs::js_string(v)),
                 _ => None,
             };
-            Archived { ok, error }
+            Archived { ok, error, skipped }
         }
         // the archive verb could not finish: said in the entry, the other candidates still get their turn
-        Err(d) => Archived { ok: false, error: Some(d.0) },
+        Err(d) => Archived { ok: false, error: Some(d.0), skipped: None },
+    }
+}
+
+/// `revalidate(desc)` of `reap-stale`: why a candidate must NOT be archived now, else `None` (the verdict is still stale or escalated,
+/// no fresh heartbeat, no recent commit, and the descriptor still belongs to this project).
+fn reap_recheck(inv: &Inv, id: &str, wt: &str, repo_key: &str, desc: &OVal, fresh_ms: f64, idle_ms: f64, states: &[&str]) -> Option<&'static str> {
+    let now = clock(inv) as f64;
+    if !verdict_status(inv, id).is_some_and(|t| states.contains(&t.as_str())) {
+        Some(text("devswarm_cli.reap_skip_became_live"))
+    } else if crate::dssup::liveness::is_fresh(crate::dssup::liveness::heartbeat_ts(&inv.home, id), now, fresh_ms) {
+        Some(text("devswarm_cli.reap_skip_heartbeat"))
+    } else if recent_activity(wt, now, idle_ms) {
+        Some(text("devswarm_cli.reap_skip_activity"))
+    } else if crate::meshw::roster::physical_owner_key(desc).ok().is_some_and(|k| k.as_deref() != Some(repo_key)) {
+        // P1-6: a re-keyed or cross-project descriptor is never archived out from under its real project
+        Some(text("devswarm_cli.reap_skip_ownership"))
+    } else {
+        None
     }
 }
 
@@ -453,28 +477,14 @@ pub fn reap_stale(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let mut archived = Vec::new();
     for c in &kept {
-        // P1-5: the safety condition is re-checked immediately before the archive, so a workspace that heartbeats or commits after the
-        // candidates were collected is skipped, not archived
-        let now_r = clock(inv) as f64;
-        let again = if !verdict_status(inv, &c.id).is_some_and(|t| states.contains(&t.as_str())) {
-            Some(text("devswarm_cli.reap_skip_became_live"))
-        } else if crate::dssup::liveness::is_fresh(crate::dssup::liveness::heartbeat_ts(&inv.home, &c.id), now_r, fresh_ms) {
-            Some(text("devswarm_cli.reap_skip_heartbeat"))
-        } else if recent_activity(c.path(), now_r, idle_ms) {
-            Some(text("devswarm_cli.reap_skip_activity"))
-        } else if ident::read_descriptor(&inv.home, &c.id)
-            .is_some_and(|desc| crate::meshw::roster::physical_owner_key(&desc).ok().is_some_and(|k| k.as_deref() != Some(repo_key.as_str())))
-        {
-            // P1-6: a re-keyed or cross-project descriptor is never archived out from under its real project
-            Some(text("devswarm_cli.reap_skip_ownership"))
-        } else {
-            None
-        };
-        if let Some(reason) = again {
+        // P1-5: the safety condition is re-checked INSIDE the workspace's lock, immediately before the archive writes, so a workspace
+        // that heartbeats or commits after the candidates were collected is skipped, not archived
+        let recheck = |desc: &OVal| -> Option<String> { reap_recheck(inv, &c.id, c.path(), &repo_key, desc, fresh_ms, idle_ms, &states).map(str::to_string) };
+        let r = archive_via_verb(inv, &c.id, Some(&recheck));
+        if let Some(reason) = &r.skipped {
             skipped.push(skip(&c.id, reason));
             continue;
         }
-        let r = archive_via_verb(inv, &c.id);
         let mut e = Obj::default();
         e.put("id", s(&c.id)).put("ok", OVal::Bool(r.ok)).put("error", s_or_null(r.error.as_deref()));
         archived.push((r.ok, e.done()));
@@ -599,7 +609,7 @@ pub fn reconcile_active(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let mut archived = Vec::new();
     for id in &cand_ids {
-        let r = archive_via_verb(inv, id);
+        let r = archive_via_verb(inv, id, None);
         let mut e = Obj::default();
         e.put("id", s(id)).put("ok", OVal::Bool(r.ok)).put("error", s_or_null(r.error.as_deref()));
         archived.push((r.ok, e.done()));
@@ -1424,7 +1434,7 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     });
     note(&found.key, r);
     // (e) archive the old workspace; the owner closes its app tab
-    let archived = archive_via_verb(inv, id);
+    let archived = archive_via_verb(inv, id, None);
     let nag = tpl("devswarm_cli.rs_msg_nag", &[("id", id), ("branch", &branch), ("next", &next)]);
     let fields = vec![
         ("id".to_string(), s(id)),
@@ -1786,5 +1796,100 @@ mod tests {
         .unwrap();
         assert_eq!(refused.code, 2);
         assert!(refused.stdout.contains(r#""reason":"not-primary""#), "{}", refused.stdout);
+    }
+
+    /// The race `revalidate` closes: a workspace that revives after the candidates were collected is skipped INSIDE the lock, and
+    /// nothing is archived.
+    #[test]
+    fn a_workspace_that_revives_between_the_check_and_the_archive_is_not_archived() {
+        let (home, cwd) = (scratch("race-home"), repo("race-repo"));
+        // an old last commit: the workspace is quiet when collected
+        let old = Command::new("git")
+            .arg("-C")
+            .arg(&cwd)
+            .args(["commit", "-q", "--amend", "--allow-empty", "-m", "one", "--date=2020-01-01T00:00:00"])
+            .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00")
+            .status()
+            .unwrap();
+        assert!(old.success());
+        let key = ident::repo_key_for_worktree(cwd.to_str().unwrap()).unwrap().unwrap();
+        let dir = devswarm_root(&home);
+        std::fs::create_dir_all(dir.join("workspaces")).unwrap();
+        std::fs::write(
+            dir.join("workspaces/child-1.json"),
+            format!(r#"{{"id":"child-1","worktreePath":"{}","sessionId":"s","ownerKey":"{key}"}}"#, cwd.display()),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join(text("devswarm_cli.dir_liveness"))).unwrap();
+        std::fs::write(dir.join(text("devswarm_cli.dir_liveness")).join("child-1.json"), r#"{"status":"stale"}"#).unwrap();
+        let i = inv(&home, &cwd, None);
+        common::init_new_store(&i, &key).unwrap();
+        common::open_store(&i, &key).unwrap();
+        let states = defaults::list("devswarm_cli.reap_stale_states");
+        let (fresh_ms, idle_ms) = (defaults::num("devswarm_sup.lv_heartbeat_fresh_ms") as f64, defaults::num("devswarm_cli.reap_idle_ms") as f64);
+        let desc_then = ident::read_descriptor(&home, "child-1").unwrap();
+        assert_eq!(reap_recheck(&i, "child-1", cwd.to_str().unwrap(), &key, &desc_then, fresh_ms, idle_ms, &states), None, "still a candidate when collected");
+        // between collection and the archive the workspace beats: the check inside the lock sees it
+        let revive = |desc: &OVal| -> Option<String> {
+            let beats = dir.join(defaults::text("mesh_write.dir_heartbeats"));
+            std::fs::create_dir_all(&beats).unwrap();
+            std::fs::write(beats.join("child-1.json"), format!(r#"{{"ts":{},"sessionId":"s"}}"#, common::now_ms())).unwrap();
+            reap_recheck(&i, "child-1", cwd.to_str().unwrap(), &key, desc, fresh_ms, idle_ms, &states).map(str::to_string)
+        };
+        let r = archive_via_verb(&i, "child-1", Some(&revive));
+        assert_eq!(r.skipped.as_deref(), Some("fresh-heartbeat"), "{:?}", r.error);
+        assert!(dir.join("workspaces/child-1.json").exists(), "the active descriptor stays");
+        assert!(!dir.join("archived/child-1.json").exists(), "and no archived marker was written");
+    }
+
+    /// Node's idle rule is the stricter one: a workspace whose last turn the transcript cannot show finished, or that launched background
+    /// work, is held ("idle uncertain") and never planned for archive; one whose last turn ended is judged by its clock.
+    #[test]
+    fn an_idle_that_cannot_be_proven_holds_the_workspace() {
+        let (home, wt) = (scratch("idle-home"), repo("idle-wt"));
+        // a project whose store exists: the newest inbound message is then known (none)
+        let setup = inv(&home, &wt, None);
+        let key = ident::repo_key_for_worktree(wt.to_str().unwrap()).unwrap().unwrap();
+        common::init_new_store(&setup, &key).unwrap();
+        common::open_store(&setup, &key).unwrap();
+        let db = home.join("devswarm.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE builders (id TEXT, isActive INTEGER, isHidden INTEGER, worktreePath TEXT, builderType TEXT, branchName TEXT, repositoryId TEXT, label TEXT, pullRequestId TEXT);").unwrap();
+        c.execute("INSERT INTO builders VALUES ('child-1', 1, 0, ?1, 'child', 'feat', 'repo-1', 'Child', NULL)", [wt.to_string_lossy().as_ref()]).unwrap();
+        let dir = devswarm_root(&home);
+        std::fs::create_dir_all(dir.join("workspaces")).unwrap();
+        std::fs::write(dir.join("workspaces/child-1.json"), format!(r#"{{"id":"child-1","worktreePath":"{}","sessionId":"sess"}}"#, wt.display())).unwrap();
+        let transcript = crate::dswire::facts::transcript_path(&home, wt.to_str().unwrap(), "sess");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let g_idle = |lines: &str| -> String {
+            std::fs::write(&transcript, lines).unwrap();
+            let mut i = inv(&home, &wt, None);
+            i.env.insert("ANTIHALL_DEVSWARM_APP_DB".into(), db.to_string_lossy().into_owned());
+            let v = json(&auto_archive(&i, &args(&["auto-archive"])).unwrap());
+            let Some(OVal::Arr(c)) = v.get("candidates") else { panic!("no candidates: {}", v.stringify()) };
+            let b = match c[0].get("blockers") {
+                Some(OVal::Arr(b)) => b.clone(),
+                _ => Vec::new(),
+            };
+            b.iter()
+                .find(|x| crate::meshw::appverbs::concat(x.get("gate")) == "g-idle")
+                .map(|x| crate::meshw::appverbs::concat(x.get("detail")))
+                .unwrap_or_default()
+        };
+        let held = defaults::text("devswarm_act.msg_idle_uncertain");
+        let ended = r#"{"type":"user","message":{"role":"user","content":"go"}}
+{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[]}}
+{"type":"system","subtype":"turn_duration"}
+"#;
+        assert_ne!(g_idle(ended), held, "a finished turn is judged by its clock");
+        let open = format!("{ended}{}", r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]}}"#);
+        assert_eq!(g_idle(&open), held, "a tool result after the last end_turn: the turn is open");
+        let tool = r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"tool_use","content":[]}}"#;
+        assert_eq!(g_idle(tool), held, "an assistant entry that did not end its turn");
+        let bg = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":"end_turn","content":[{{"type":"tool_use","input":{{"run_in_background":true}}}}]}}}}"#
+        );
+        assert_eq!(g_idle(&bg), held, "background work launched and not shown finished");
+        assert_eq!(g_idle("not json at all"), held, "a tail with no turn entry proves nothing");
     }
 }
