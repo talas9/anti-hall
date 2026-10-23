@@ -224,3 +224,7 @@ value = { args = "[--part <a,b,...>] [--coverage]", read_only = true, status = "
 [cmd.query]
 doc = "Read-only, paginated query over the existing stores: `query <source> [--limit N] [--offset N] [--where field=value,...] [--since 7d] [--schema]`; `query sources` lists the sources (per-check stats, outcomes, kinds, events, counters, agents, health, config history) with their filters, and `--schema` shows one source's row fields."
 value = { args = "[<source>] [--limit <n>] [--offset <n>] [--where <field=value,...>] [--since <7d>] [--window <7d>] [--schema]", read_only = true, status = "implemented" }
+
+[cmd.audit]
+doc = "The entry-path audit: `audit entry-paths` inventories every js/sh/wrong-entry leftover in four sections (files of the plugin tree, command strings of hooks.json / defaults / skills / docs, files the engine itself generates into launcher directories, and a read-only look at the running machine: processes, LaunchAgents, crontab, installed hooks.json) against the allowlist in entry_audit.toml. Exit 0 = clean, 1 = findings. `--no-live` skips the machine section (the deploy gate), `--root` names the repository or plugin root, `--home` the home directory."
+value = { args = "entry-paths [--json] [--root <dir>] [--home <dir>] [--no-live]", read_only = true, status = "implemented" }
