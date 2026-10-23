@@ -308,7 +308,20 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
             rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));
         }
     }
-    Json(Detail { rows }).into_response()
+    let tasks = doc
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(|a| a.get("tasks"))
+        .and_then(serde_json::Value::as_array)
+        .map(|l| {
+            let t = |v: &serde_json::Value, k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+            l.iter()
+                .map(|v| ah_web_proto::TaskRow { subject: t(v, "subject"), status: t(v, "status"), priority: t(v, "priority"), changed_ms: v.get("updated_ms").and_then(serde_json::Value::as_u64).unwrap_or(0) })
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(Detail { rows, tasks }).into_response()
 }
 
 /// `GET /api/live/map`: which checks answer which hook events, for the Live screen.

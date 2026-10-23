@@ -274,6 +274,20 @@ pub struct ActionRes {
 pub struct Detail {
     /// Label and value pairs.
     pub rows: Vec<(String, String)>,
+    /// The agent's task list when the engine reports one; empty otherwise (the page then says there is none, it never invents one).
+    #[serde(default)]
+    pub tasks: Vec<TaskRow>,
+}
+
+/// One task of an agent's task list.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TaskRow {
+    pub subject: String,
+    /// `pending`, `in_progress`, `completed` or `blocked` (the engine's words).
+    pub status: String,
+    pub priority: String,
+    /// When it last changed, ms since the epoch; 0 when not reported.
+    pub changed_ms: u64,
 }
 
 /// One entry of the action menu.

@@ -26,3 +26,9 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-panel { display: flex; flex-direction: column; gap: 6px; }
 .live-panel .live-rows { max-height: none; }
 @media (max-width: 720px) { .live-stats { grid-template-columns: 1fr 1fr; } .live-top { grid-column: 1 / -1; } .live-cols { display: none; } }
+.task { display: flex; align-items: center; gap: 8px; font: 12px var(--font-mono); min-width: 0; }
+.chip { flex: 0 0 auto; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 10px; color: var(--muted); }
+.chip-in_progress { color: var(--cyan); border-color: color-mix(in oklch, var(--cyan) 50%, transparent); }
+.chip-completed { color: var(--green); border-color: color-mix(in oklch, var(--green) 50%, transparent); }
+.chip-blocked { color: var(--red); border-color: color-mix(in oklch, var(--red) 50%, transparent); }
+.chip-pending { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }

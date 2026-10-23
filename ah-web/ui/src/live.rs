@@ -3,7 +3,7 @@
 //! this module keeps a small model of them, turns it into graph data at most every `web.live_tick_ms`, and drops the live effects
 //! into the graph's `FxBus` the moment they arrive. Full draws particles and bursts, Lite flashes the nodes; both show the counters,
 //! the timeline strip and the side panel. Nothing is drawn or timed while the screen is not shown.
-use super::{now_ms, open_detail, post_action, since, tier_of, tx, Ctx};
+use super::{get_detail, now_ms, open_detail, post_action, since, tier_of, tx, Ctx};
 use ah_web_graph::{ActionCall, ActionDef, FxBus, FxEvent, FxKind, Graph, GraphConfig, GraphData, LayoutMode, NodeDef, Tier};
 use ah_web_proto::{ActionEvt, ActionReq, Agent, Boot, Decision, Delta, LiveCfg, LiveMap, Snapshot, LIVE_MAP_PATH};
 use leptos::prelude::*;
@@ -661,6 +661,7 @@ fn Panel(id: String, sink: Sink) -> impl IntoView {
                 let title = id2.split_once(':').map(|(_, n)| n.to_string()).unwrap_or_else(|| id2.clone());
                 view! {
                     <div class="sect">{title}</div>
+                    {id2.strip_prefix("a:").map(|a| view! { <Tasks agent=a.to_string() /> })}
                     <p class="soft-note">{tx("live_panel_title")}</p>
                     {(decisions.is_empty() && acts.is_empty()).then(|| view! { <p class="soft-note">{tx("live_panel_empty")}</p> })}
                     <ul class="live-rows">
@@ -675,5 +676,28 @@ fn Panel(id: String, sink: Sink) -> impl IntoView {
                 }
             }}
         </div>
+    }
+}
+
+/// The task list of one agent (`agents agent=<id>`), fetched when its panel opens. Without a list the page says so.
+#[component]
+fn Tasks(agent: String) -> impl IntoView {
+    let state = RwSignal::new(None::<ah_web_proto::Detail>);
+    leptos::task::spawn_local(async move { state.set(Some(get_detail(&agent).await.unwrap_or_default())) });
+    view! {
+        <div class="sect">{tx("task_title")}</div>
+        {move || match state.get() {
+            None => view! { <p class="soft-note">{tx("task_loading")}</p> }.into_any(),
+            Some(d) if d.tasks.is_empty() => view! { <p class="soft-note">{tx("task_none")}</p> }.into_any(),
+            Some(d) => view! {
+                <ul class="live-rows tasks">
+                    {d.tasks.into_iter().map(|t| view! {
+                        <li class="task"><span class=format!("chip chip-{}", t.status)>{tx(&format!("task_{}", t.status))}</span>
+                            <span class="tl-check">{t.subject}</span><span class="tl-rule">{t.priority}</span>
+                            <span class="tl-age">{(t.changed_ms > 0).then(|| since(t.changed_ms))}</span></li>
+                    }).collect_view()}
+                </ul>
+            }.into_any(),
+        }}
     }
 }
