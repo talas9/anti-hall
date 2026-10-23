@@ -2203,7 +2203,7 @@ value = "store failure: {reason}"
 
 [mesh_write.store_failure_prefixes]
 doc = "The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node."
-value = ["store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
+value = ["store-unreadable:", "store-create", "store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
 
 [mesh_write.flag_with_broadcasts]
 doc = "The flag that merges the project's broadcasts into a non-acking read."

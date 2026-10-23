@@ -3,7 +3,6 @@
 [hot_path]
 
 [counts]
-[counts]
 dssup/appsync/plan.rs 2
 dssup/appsync/snap.rs 3
 dssup/appsync/state.rs 4
@@ -19,42 +18,9 @@ dssup/recon/sweep.rs 5
 dssup/recon/view.rs 11
 dssup/retention/apply.rs 13
 dssup/retention/cli.rs 9
-dssup/retention/gz.rs 6
+dssup/retention/gz.rs 8
+dssup/retention/mod.rs 1
 dssup/retention/plan.rs 8
-meshw/actverbs.rs 29
-meshw/appdb.rs 7
-meshw/appverbs.rs 18
-meshw/archiveverb.rs 21
-meshw/clog.rs 1
-meshw/common.rs 11
-meshw/diagverbs.rs 3
-meshw/dsbverbs.rs 14
-meshw/gitverbs.rs 4
-meshw/heartbeat.rs 24
-meshw/ident.rs 10
-meshw/inbox.rs 27
-meshw/inboxcmd.rs 18
-meshw/lifeverbs.rs 48
-meshw/mod.rs 1
-meshw/orphan.rs 7
-meshw/plan.rs 15
-meshw/planverbs.rs 8
-meshw/pull.rs 27
-meshw/read.rs 11
-meshw/readprimary.rs 39
-meshw/reportverbs.rs 21
-meshw/roster.rs 7
-meshw/rosterrows.rs 16
-meshw/rostertail.rs 11
-meshw/send.rs 16
-meshw/simple.rs 26
-meshw/summary.rs 5
-meshw/tick.rs 33
-meshw/union.rs 9
-meshw/wsverbs.rs 7
-migrate/promote.rs 2
-script/host_childturn.rs 16
-script/host_parentinbox.rs 4
-script/host_seat.rs 1
-wakew/arch.rs 1
-wakew/who.rs 1
+meshw/ident.rs 1
+meshw/readprimary.rs 1
+meshw/tick.rs 5
