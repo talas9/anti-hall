@@ -52,22 +52,41 @@ function ltRule(words) {
   return null;
 }
 
+// null, or the label of the test runner (a lane_test.policy_runners row) the command `words` is.
+function ltRunner(words) {
+  var joined = words.join(' '), rows = ah.cfg('lane_test.policy_runners');
+  for (var r = 0; r < rows.length; r++) if (ah.re.test(rows[r].re, 'r', joined)) return rows[r].label;
+  return null;
+}
+
+// exit 2 with the reason on stdout as a decision and on stderr: Claude reads the decision, Codex honors exit 2 only with the reason on stderr
+function ltBlock(words, label, whatKey, whyKey, insteadKey, overrideKey) {
+  var reason = text.message('block', ah.cfg('lane_test.guard_name'), {
+    what: text.render(ah.cfg(whatKey), { cmd: laneWaste.shown(words), label: label }),
+    why: ah.cfg(whyKey),
+    instead: ah.cfg(insteadKey),
+    override: ah.cfg(overrideKey),
+  });
+  return { exact: { code: 2, out: text.blockJson(reason), err: reason + '\n' } };
+}
+
 function decide(p, opts) {
-  if (!ah.settings.bool('lane_test.sw') || ah.settings.bool('lane_test.sw_allow_suites') || ah.settings.skipped(ah.cfg('lane_test.guard_name'))) return 'allow';
+  if (ah.settings.skipped(ah.cfg('lane_test.guard_name'))) return 'allow';
   var cmd = p && p.tool_input && typeof p.tool_input.command === 'string' ? p.tool_input.command : '';
-  if (cmd === '' || !coordinator.subagentByPayload(p)) return 'allow';
-  var cmds = laneWaste.commands(cmd, 0);
-  for (var c = 0; c < cmds.length; c++) {
+  if (cmd === '') return 'allow';
+  var policy = ah.settings.enum('lane_test.sw_policy'), sub = coordinator.subagentByPayload(p), cmds = laneWaste.commands(cmd, 0), c;
+  // guards.testPolicy none: every test runner is blocked for a subagent (and for the main session when the second switch is on)
+  if (policy === ah.cfg('lane_test.policy_none') && (sub || ah.settings.bool('lane_test.sw_policy_main'))) {
+    for (c = 0; c < cmds.length; c++) {
+      var runner = ltRunner(cmds[c].words);
+      if (runner !== null) return ltBlock(cmds[c].words, runner, 'lane_test.msg_policy_what', 'lane_test.msg_policy_why', 'lane_test.msg_policy_instead', 'lane_test.msg_policy_override');
+    }
+  }
+  if (!ah.settings.bool('lane_test.sw') || ah.settings.bool('lane_test.sw_allow_suites') || policy === ah.cfg('lane_test.policy_suites') || !sub) return 'allow';
+  for (c = 0; c < cmds.length; c++) {
     var label = ltCargo(cmds[c].words) || ltRule(cmds[c].words);
     if (label === null) continue;
-    var reason = text.message('block', ah.cfg('lane_test.guard_name'), {
-      what: text.render(ah.cfg('lane_test.msg_what'), { cmd: laneWaste.shown(cmds[c].words), label: label }),
-      why: ah.cfg('lane_test.msg_why'),
-      instead: ah.cfg('lane_test.msg_instead'),
-      override: ah.cfg('lane_test.msg_override'),
-    });
-    // exit 2 with the reason on stdout as a decision and on stderr: Claude reads the decision, Codex honors exit 2 only with the reason on stderr
-    return { exact: { code: 2, out: text.blockJson(reason), err: reason + '\n' } };
+    return ltBlock(cmds[c].words, label, 'lane_test.msg_what', 'lane_test.msg_why', 'lane_test.msg_instead', 'lane_test.msg_override');
   }
   return 'allow';
 }

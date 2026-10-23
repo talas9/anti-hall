@@ -56,13 +56,66 @@ value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "AN
 doc = "Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
 value = { section = "guards", key = "allowTestSuites", type = "boolean", env = "ANTIHALL_ALLOW_TEST_SUITES", option = "", default = false }
 
+[lane_test.sw_policy]
+doc = "Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
+value = { section = "guards", key = "testPolicy", env = "ANTIHALL_TEST_POLICY", aliases = [], option = "", default = "targeted", values = ["none", "targeted", "suites"] }
+
+[lane_test.sw_policy_main]
+doc = "Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents."
+value = { section = "guards", key = "testPolicyMainThread", type = "boolean", env = "ANTIHALL_TEST_POLICY_MAIN", option = "", default = false }
+
+[lane_test.policy_none]
+doc = "The testPolicy value under which every test-runner command is blocked."
+value = "none"
+
+[lane_test.policy_suites]
+doc = "The testPolicy value under which every test run is allowed (the suite check stands aside)."
+value = "suites"
+
+[lane_test.policy_runners]
+doc = "Every test-runner command, one row per runner, judged only under guards.testPolicy none: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed, so env prefixes, cd, pipes and compound commands are handled by the shared parser); `label` names the runner in the block message."
+value = [
+  { label = "cargo test", re = '^(?:\S*/)?cargo\s(?:\+\S+\s)?(?:test|t)(?:\s|$)' },
+  { label = "cargo nextest", re = '^(?:\S*/)?(?:cargo\s(?:\+\S+\s)?nextest|cargo-nextest|nextest)(?:\s|$)' },
+  { label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)' },
+  { label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)' },
+  { label = "vitest", re = '^(?:(?:npx|bunx|pnpm\sexec|pnpm\sdlx|yarn)\s)?vitest(?:\s|$)' },
+  { label = "jest", re = '^(?:(?:npx|bunx|pnpm\sexec|pnpm\sdlx|yarn)\s)?jest(?:\s|$)' },
+  { label = "go test", re = '^go\stest(?:\s|$)' },
+  { label = "ctest", re = '^ctest(?:\s|$)' },
+  { label = "mvn test", re = '^(?:\S*/)?(?:mvn|mvnw)\s(?:\S+\s)*?test(?:\s|$)' },
+  { label = "gradle test", re = '^(?:\S*/)?(?:gradle|gradlew)\s(?:\S+\s)*?test(?:\s|$)' },
+  { label = "flutter test", re = '^flutter\stest(?:\s|$)' },
+  { label = "dart test", re = '^dart\stest(?:\s|$)' },
+  { label = "swift test", re = '^swift\stest(?:\s|$)' },
+  { label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
+  { label = "xcodebuild test", re = '^xcodebuild\s(?:\S+\s)*?test(?:\s|$)' },
+]
+
+[lane_test.msg_policy_what]
+doc = "Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
+value = "`{cmd}` is blocked: tests are off by owner policy (guards.testPolicy = none); this agent runs no test command ({label})."
+
+[lane_test.msg_policy_why]
+doc = "Why every test run is blocked under testPolicy none."
+value = "The owner turned tests off for agents: test runs queue behind the shared build lock and re-send each waiting agent's whole context, which burned weekly limit on 2026-10-23, and verification happens at deploy."
+
+[lane_test.msg_policy_instead]
+doc = "What to do instead under testPolicy none."
+value = "build only (cargo build or cargo check), commit by explicit path, and report what you changed and that no tests were run; do not retry the test command."
+
+[lane_test.msg_policy_override]
+doc = "How the user can lift the testPolicy block (shown on the last line)."
+value = "the user sets guards.testPolicy to targeted or suites, or skips it for a session in skip.json as lane-test-guard."
+
 [lane_test.guard_name]
 doc = "The guard id the lane test guard answers to in skip.json and in its messages."
 value = "lane-test-guard"
 
 [lane_test.summary]
 doc = "One-line description of the lane-test-guard check in the generated reference."
-value = "PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed."
+value = "PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on)."
 
 [lane_test.cargo_commands]
 doc = "Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run)."

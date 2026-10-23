@@ -51,11 +51,14 @@ What the automatic guards check and how to read a block.
 - `guards.modelRoutingDeployFloor` = "sonnet": Where the deploy/migration/secret model floor (sonnet, opus, off) is read from (guards.modelRoutingDeployFloor): the environment...
 - `guards.modelRouting` = "strict": Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the environment variable, settings.json, then...
 - `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no env, no plugin option)
+- `guards.allowNestedSpawns` = false: Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task...
 - `guards.spawnCeiling` = true: The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op
 - `guards.usageAwareDispatch` = true: The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op
 - `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)
 - `guards.laneTestGuard` = true: Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands
 - `guards.allowTestSuites` = false: Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)
+- `guards.testPolicy` = "targeted": Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted...
+- `guards.testPolicyMainThread` = false: Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents
 - `guards.queuedWaitGuard` = true: Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops
 - `guards.broadKill` = true: Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills
 - `guards.uncommittedWork` = true: Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted
