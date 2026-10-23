@@ -76,6 +76,7 @@ function snCandidates(p, home, now, threshold, session) {
         var staleMax = ah.cfgNum('silent_nudge.stale_max_ms');
         if (staleMax > 0 && now - reference >= staleMax) continue; // a record this old outlived its agent
         var isShell = rec.taskType === ah.cfg('silent_nudge.shell_task_type');
+        if (isShell && rec.shellKind === ah.cfg('silent_nudge.monitor_shell_kind')) continue; // a Monitor task is an event stream: no events is its normal state
         if (isShell && jx.re('silent_nudge.daemon_re', 'i').test(rec.description || '')) continue; // a daemon is quiet by design
         out.push({ key: ah.cfg('silent_nudge.key_transcript') + id, id: id, resumedAt: resumed, snapshot: snapshot, label: rec.description ? rec.description : id, age: now - reference, shell: rec.taskType === ah.cfg('silent_nudge.shell_task_type') });
       }

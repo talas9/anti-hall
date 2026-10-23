@@ -67,6 +67,8 @@ pub struct Rec {
     pub pending_message: bool,
     /// The `taskType` of the `task_status` attachment that adopted it (`local_agent`, `local_bash`); empty when launched or unknown.
     pub task_type: String,
+    /// The `shell.kind` of the `task_status` attachment that adopted it (`monitor` for a Monitor-tool task, `bash` for a Bash one); empty when launched or unknown.
+    pub shell_kind: String,
     /// The input of the Agent/Task call that launched it (Node `rec.spawnInput`); `None` when that call is outside the window.
     pub spawn_input: Option<Value>,
 }
@@ -771,6 +773,7 @@ impl Walk {
                             last_seen_ms: f64::NAN,
                             pending_message: false,
                             task_type: sprop(att, "taskType").unwrap_or("").to_string(),
+                            shell_kind: prop(att, "shell").and_then(|sh| sprop(sh, "kind")).unwrap_or("").to_string(),
                             spawn_input: None,
                         },
                     );
@@ -935,6 +938,7 @@ impl Walk {
                                 last_seen_ms: f64::NAN,
                                 pending_message: false,
                                 task_type: String::new(),
+                                shell_kind: String::new(),
                                 spawn_input: None,
                             },
                         );
@@ -1539,6 +1543,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                     last_seen_ms: f64::NAN,
                     pending_message: false,
                     task_type: String::new(),
+                    shell_kind: String::new(),
                     spawn_input: None,
                 },
             );
@@ -1645,6 +1650,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                 last_seen_ms: last_seen,
                 pending_message: true,
                 task_type: String::new(),
+                shell_kind: String::new(),
                 spawn_input: None,
             },
         );

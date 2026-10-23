@@ -205,13 +205,21 @@ fn the_task_guard_treats_an_owner_that_is_a_running_named_agent_as_attended() {
 /// A Stop whose transcript carries one adopted background task (a compaction's `task_status` attachment) whose output file was last
 /// written `age_min` minutes ago. Returns (engine, node) answers, each in its own home.
 fn silent_stop(tag: &str, task_type: &str, description: &str, age_min: i64) -> ((i32, String), (i32, String)) {
+    silent_stop_kind(tag, task_type, description, age_min, None)
+}
+
+/// `silent_stop` with the `shell.kind` the harness records on a background shell's `task_status` attachment (`monitor` or `bash`).
+fn silent_stop_kind(tag: &str, task_type: &str, description: &str, age_min: i64, kind: Option<&str>) -> ((i32, String), (i32, String)) {
     let dir = scratch(tag);
     let out = dir.join("task.output");
     std::fs::write(&out, "x").unwrap();
     let when = std::time::SystemTime::now() - std::time::Duration::from_secs(age_min as u64 * 60);
     std::fs::OpenOptions::new().write(true).open(&out).unwrap().set_modified(when).unwrap();
-    let att = json!({"type": "attachment", "timestamp": stamp(age_min + 5), "attachment": {"type": "task_status", "taskId": "bg1", "taskType": task_type,
+    let mut att = json!({"type": "attachment", "timestamp": stamp(age_min + 5), "attachment": {"type": "task_status", "taskId": "bg1", "taskType": task_type,
         "description": description, "status": "running", "outputFilePath": out.to_string_lossy()}});
+    if let Some(k) = kind {
+        att["attachment"]["shell"] = json!({"command": "some-watcher", "kind": k});
+    }
     let tp = dir.join("t.jsonl");
     std::fs::write(&tp, att.to_string() + "\n").unwrap();
     let p = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": dir.to_string_lossy(), "transcript_path": tp.to_string_lossy(), "stop_hook_active": false});
@@ -240,6 +248,16 @@ fn the_silent_agent_nudge_exempts_a_quiet_daemon_by_the_configured_rule() {
     assert!(!nudged(&node.1), "node nudged a daemon: {}", node.1);
     let (eng, node) = silent_stop("sn-shell", "local_bash", "Run the full test suite", 29);
     assert!(nudged(&eng.1) && nudged(&node.1), "an ordinary silent shell is still nudged: {} / {}", eng.1, node.1);
+}
+
+/// #183: a shell the Monitor tool started is an event stream, quiet when nothing happens; the same silence of a plain background Bash is not.
+/// Only the engine answer is judged: the Node twin does not know the Monitor kind.
+#[test]
+fn the_silent_agent_nudge_leaves_a_silent_monitor_task_alone() {
+    let (eng, _) = silent_stop_kind("sn-monitor", "local_bash", "Event stream of the build queue", 30, Some("monitor"));
+    assert!(!nudged(&eng.1), "engine nudged a Monitor task silent for 30 min: {}", eng.1);
+    let (eng, _) = silent_stop_kind("sn-bash", "local_bash", "Run the full build", 30, Some("bash"));
+    assert!(nudged(&eng.1), "a plain background Bash silent for 30 min is still nudged: {}", eng.1);
 }
 
 /// R1 GUARDS (#179). A spawn payload with a running writer in the transcript, so the shared-tree note has something to compare.
