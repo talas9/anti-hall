@@ -231,7 +231,8 @@ fn check_from(
             assert_eq!(log["verb"], c.label, "{}: telemetry names the verb", c.name);
             let (es, ns) = (
                 mask_rid(&e.stdout.replace(homes[1].to_string_lossy().as_ref(), "<HOME>")),
-                mask_rid(&n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>")),
+                // the engine's ackCommand runs the launcher directly (no `node ` in front: the shim has no Node); Node's names the interpreter
+                mask_rid(&n.stdout.replace(homes[0].to_string_lossy().as_ref(), "<HOME>")).replace("\"ackCommand\":\"node ", "\"ackCommand\":\""),
             );
             assert_eq!((e.code, &es), (n.code, &ns), "{}: stdout/exit differ\n engine: {es:?}\n node:   {ns:?}", c.name);
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));

@@ -444,7 +444,7 @@ value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or
 
 [command.msg_edit_skip_cmd]
 doc = "The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path)."
-value = "{cli} skip edit-guard"
+value = "node {cli} skip edit-guard"
 
 [command.msg_edit_override]
 doc = "The override line ({skip} is the command above)."

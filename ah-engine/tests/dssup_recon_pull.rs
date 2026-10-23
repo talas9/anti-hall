@@ -779,8 +779,9 @@ fn a_sigkill_at_every_durable_boundary_loses_and_duplicates_nothing_and_nodes_ne
         for l in read_inbox(&h).lines() {
             assert!(serde_json::from_str::<Value>(l).is_ok(), "{point}: torn inbox row");
         }
-        // Node's next pull settles it
-        node_pull(&h, &fx.child, NOW);
+        // the next pull settles it: the engine's own (Node never pulls after the engine any more, and it hashes under the partition id
+        // where the engine hashes under the checkout's label, so a batch the engine half-applied is replayed by the engine)
+        let _ = engine_drain(&h, &fx, &Hooks::none());
         let inbox = read_inbox(&h);
         let hashes: Vec<String> = inbox.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["_h"].as_str().unwrap().to_string()).collect();
         let mut uniq = hashes.clone();
@@ -1202,10 +1203,7 @@ fn a_stranded_descriptor_hands_the_whole_project_to_node_before_anything_is_writ
         sweep::ProjectEnd::Result(v) => {
             let rows = v["results"].as_array().unwrap();
             let held: Vec<&Value> = rows.iter().filter(|r| r["id"] == "stranded-1").collect();
-            assert!(
-                held.len() == 1 && held[0]["held"] == true && held[0]["imported"] == 0,
-                "the stranded row is held and imports nothing: {v}"
-            );
+            assert!(held.len() == 1 && held[0]["held"] == true && held[0]["imported"] == 0, "the stranded row is held and imports nothing: {v}");
             assert!(rows.iter().all(|r| r["lost"] == 0), "no message is lost: {v}");
         }
         other => panic!("expected a result with a held row, got {other:?}"),

@@ -684,7 +684,8 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
     // guards) blocks with script.msg_fail_closed naming the check and the unanswered reason, the same stricter-than-Node block.
     let unanswered = format!("({})", defaults::text("script.msg_unanswered"));
     let check_blocked = got.code == Some(2) && got.err.contains(&unanswered);
-    let ok = ok || (unreadable && defaults::list("dispatch.guard_events").contains(&row.event.as_str()) && (got.err.starts_with(&infra_notice) || check_blocked));
+    let ok =
+        ok || (unreadable && defaults::list("dispatch.guard_events").contains(&row.event.as_str()) && (got.err.starts_with(&infra_notice) || check_blocked));
     if ok {
         Ok(())
     } else {

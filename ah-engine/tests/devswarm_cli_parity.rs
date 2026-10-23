@@ -1158,7 +1158,8 @@ fn store_cases() -> Vec<StoreCase> {
         sc("workspaces-explicit-workspace", &["workspaces", "list", "--workspace", "child-1"], "child", true, "Workspaces"),
         sc("workspaces-empty-workspace", &["workspaces", "list", "--workspace="], "child", true, "Workspaces"),
         sc("workspaces-bogus-sub", &["workspaces", "bogus"], "child", true, "Workspaces"),
-        sc("workspaces-outside-any-project", &["workspaces", "list"], "nongit", false, "Workspaces"),
+        // native since the engine answers `workspaces` outside a project itself (no Node to hand it to)
+        sc("workspaces-outside-any-project", &["workspaces", "list"], "nongit", true, "Workspaces"),
         StoreCase { setup: stranded_descriptor, ..sc("workspaces-a-stranded-descriptor-is-nodes", &["workspaces", "list"], "child", false, "Workspaces") },
         StoreCase {
             setup: odd_descriptor_id,
