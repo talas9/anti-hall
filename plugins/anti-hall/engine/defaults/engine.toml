@@ -1853,6 +1853,26 @@ value = ["ah-hook.sh", "ah-run.sh"]
 doc = "The ah-hook command-line verb of the built-in doctor (`ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]`); it hands over to the engine's doctor when the engine runs."
 value = "doctor"
 
+[cli.help_flags]
+doc = "The arguments that make an `ah-engine` or `ah-hook` command print its usage and stop before anything runs (checked once, before dispatch; an argument after a bare `--` is never one)."
+value = ["--help", "-h"]
+
+[launcher.help_install]
+doc = "Usage printed by `ah-hook install --help`; nothing is installed."
+value = "usage: ah-hook install [--lock <file>] [--print-target] [--auto] [-v]\n\nInstall the engine (and the thin client) pinned by the plugin's ah-engine.lock; --auto is the session-start form and installs only when engine.bootstrap says so."
+
+[launcher.help_doctor]
+doc = "Usage printed by `ah-hook doctor --help`; nothing is checked or repaired."
+value = "usage: ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]\n\nDiagnose the install (engine, thin client, plugin files); --repair fixes what is safe to fix."
+
+[launcher.help_selftest]
+doc = "Usage printed by `ah-hook --selftest --help`; no check runs."
+value = "usage: ah-hook --selftest [--engine <file>]\n\nRun the thin client's built-in self test against an engine binary."
+
+[launcher.help_integrity]
+doc = "Usage printed by `ah-hook integrity --help`; no record or check runs."
+value = "usage: ah-hook integrity <record|accept|check|fail|status|lock|unlock>\n\nRecord and check the expected sha256 of the installed engine binary."
+
 [launcher.knob_doctor_rosetta]
 doc = "Test-only: environment variable naming the file whose presence means Rosetta is installed (honoured only when the test flag is set)."
 value = "AH_DOCTOR_ROSETTA"

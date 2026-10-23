@@ -641,6 +641,10 @@ value = "no daemon"
 doc = "Usage text for an unknown or missing subcommand. The command list is generated from the command registry."
 value = "usage: ah-engine {commands}"
 
+[msg.cli_help]
+doc = "Printed for `ah-engine <command> --help` (or -h): usage only, nothing runs. Placeholders: {command}, {args} (the command's argument form from the command registry), {doc} (what the command does)."
+value = "usage: ah-engine {command} {args}\n\n{doc}"
+
 # ---- warnings -----------------------------------------------------------------------------------------
 
 [msg.regex_literal_invalid]

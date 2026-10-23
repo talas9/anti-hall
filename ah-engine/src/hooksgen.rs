@@ -4,10 +4,11 @@
 //! * `hooks.json` ([`hooks_json`]): the thin file the host reads, ONE entry per event and no matcher, each running the
 //!   reliability wrapper with the event name. Which entries and rules then apply is decided by the engine from the table
 //!   and the config, not by the host.
-//! * `hooks.registry.json` ([`registry_json`]): the old per-hook form of `hooks.json` (one handler per table entry that has
-//!   a Node command, with its matcher, command and timeout). Nothing in the host reads it; the plugin's Node readers
-//!   (doctor, the briefing, the hook-latency script, tests) and the manual Codex installer use it to know which hook
-//!   scripts exist.
+//! * `hooks.registry.json` ([`registry_json`]): the old per-hook form of `hooks.json` (one handler per table entry, with
+//!   its matcher and timeout; the command is the thin client's, the same as in `hooks.json`, because the thin client is
+//!   what runs every entry; the Node text of an entry lives in the fallback map only). Nothing in the host reads it; the
+//!   plugin's Node readers (doctor, the briefing, the hook-latency script) and the manual Codex installer use it to know
+//!   which entries exist.
 //! * `ah-fallback.list` ([`fallback_list`]): what the thin client runs when the engine cannot answer, one row per table
 //!   entry that has a Node command. The commands themselves are the hand-kept `ah-fallback.map.json` of the Node backup
 //!   plugin (event, then entry id, to command): the table holds no Node text.
@@ -91,9 +92,10 @@ fn groups(entries: &[Entry]) -> Vec<(&str, Vec<&Entry>)> {
 /// The per-hook registry of `host` in the old `hooks.json` shape (events with at least one table entry only).
 pub fn registry_json(host: &str) -> String {
     let mut out = String::from("{\n  \"hooks\": {\n");
-    let evs: Vec<&str> = table::events(host).into_iter().filter(|ev| table::entries(host, ev).iter().any(|e| !e.command.is_empty())).collect();
+    let evs: Vec<&str> = table::events(host).into_iter().filter(|ev| !table::entries(host, ev).is_empty()).collect();
     for (i, ev) in evs.iter().enumerate() {
-        let entries: Vec<Entry> = table::entries(host, ev).into_iter().filter(|e| !e.command.is_empty()).collect();
+        let entries: Vec<Entry> = table::entries(host, ev);
+        let command = thin_command(host, ev);
         crate::discard::harmless(writeln!(out, "    {}: [", q(ev))); // keep: formatting into a String cannot fail
         let gs = groups(&entries);
         for (gi, (matcher, g)) in gs.iter().enumerate() {
@@ -103,7 +105,7 @@ pub fn registry_json(host: &str) -> String {
             }
             out.push_str("        \"hooks\": [\n");
             for (hi, e) in g.iter().enumerate() {
-                handler(&mut out, &e.command, e.timeout_s);
+                handler(&mut out, &command, e.timeout_s);
                 out.push_str(if hi + 1 < g.len() { ",\n" } else { "\n" });
             }
             out.push_str("        ]\n      }");
@@ -203,7 +205,7 @@ mod tests {
                         got.push((m.clone(), h["command"].as_str().unwrap().to_string(), h["timeout"].as_u64().unwrap()));
                     }
                 }
-                let want: Vec<_> = table::entries(host, ev).into_iter().filter(|e| !e.command.is_empty()).map(|e| (e.matcher, e.command, e.timeout_s)).collect();
+                let want: Vec<_> = table::entries(host, ev).into_iter().map(|e| (e.matcher, thin_command(host, ev), e.timeout_s)).collect();
                 assert_eq!(got, want, "{host} {ev}");
             }
         }

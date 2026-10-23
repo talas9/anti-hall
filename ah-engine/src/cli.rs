@@ -188,6 +188,12 @@ pub fn human(v: &Value) -> String {
     out.trim_end().to_string()
 }
 
+/// Whether `args` ask for the usage: one of `cli.help_flags` before a bare `--` (what follows `--` belongs to the command).
+fn asks_for_help(args: &[String]) -> bool {
+    let flags = defaults::list("cli.help_flags");
+    args.iter().take_while(|a| *a != "--").any(|a| flags.contains(&a.as_str()))
+}
+
 /// Run the command line (arguments after the program name); returns the process exit code.
 pub fn run(args: &[String]) -> i32 {
     let p = parse(args);
@@ -241,6 +247,11 @@ pub fn run(args: &[String]) -> i32 {
     let Some(info) = infos.iter().find(|c| c.name == p.command) else {
         let names: Vec<String> = infos.iter().map(|c| c.name.clone()).collect();
         let usage = defaults::render("msg.cli_usage", &[("commands", &names.join("|"))]);
+        // `ah-engine --help` is a request for the usage, not an unknown command
+        if asks_for_help(std::slice::from_ref(&p.command)) {
+            emit(&p, usage.clone(), json!({"usage": usage}));
+            return 0;
+        }
         if p.json && !p.command.is_empty() {
             println!("{}", json!({"error": defaults::render("msg.cli_unknown", &[("command", &p.command)]), "usage": usage}));
         } else {
@@ -252,6 +263,12 @@ pub fn run(args: &[String]) -> i32 {
         }
         return 64;
     };
+    // #160: `<command> --help` (or -h) prints the usage and nothing else, for every command, before anything is dispatched
+    if !hook && asks_for_help(&p.rest) {
+        let text = defaults::render("msg.cli_help", &[("command", &info.name), ("args", &info.args), ("doc", &info.doc)]);
+        emit(&p, text.clone(), json!({"command": info.name, "args": info.args, "doc": info.doc, "usage": text}));
+        return 0;
+    }
     if info.status != "implemented" {
         let decision = info.status.trim_start_matches("planned (").trim_end_matches(')').to_string();
         let msg = defaults::render("msg.cli_planned", &[("command", &p.command), ("decision", &decision)]);

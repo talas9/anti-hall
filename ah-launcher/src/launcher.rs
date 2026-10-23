@@ -851,6 +851,27 @@ pub fn run() -> i32 {
         }
     }
 
+    // #160: `--help` / `-h` on one of the launcher's own verbs prints its usage and stops before anything runs (an engine verb gets
+    // the engine's own answer; an event name is never a help request)
+    if let Some(first) = args.first()
+        && args.iter().skip(1).take_while(|a| *a != "--").any(|a| s.list("cli.help_flags").contains(a))
+    {
+        let key = if *first == s.text("launcher.cli_install_verb") {
+            Some("launcher.help_install")
+        } else if *first == s.text("launcher.cli_integrity_verb") {
+            Some("launcher.help_integrity")
+        } else if *first == s.text("launcher.cli_doctor_verb") || first == "--doctor" {
+            Some("launcher.help_doctor")
+        } else if first == "--selftest" {
+            Some("launcher.help_selftest")
+        } else {
+            None
+        };
+        if let Some(k) = key {
+            let _ = writeln!(std::io::stdout(), "{}", s.text(k));
+            return 0;
+        }
+    }
     match args.first().map(String::as_str) {
         Some("--selftest") => {
             let s = s.with_nodeback(&cfg_dir);
