@@ -1,5 +1,5 @@
 //! `ah-engine statusline`: the two-line status line the host runs after each turn. Port of `statusline/statusline.js` and the
-//! renderers it owns (`statusline-rich.js`, `-simple.js`, `-monorepo.js`, `phase-bar.js`).
+//! renderers it owns.
 //!
 //! Line 1 is the configured base command's output, else the rich renderer (the simple or monorepo one when it prints
 //! nothing); line 2 is the phase bar, the swarm activity or the context gauge. The whole run is bounded by the same budget as

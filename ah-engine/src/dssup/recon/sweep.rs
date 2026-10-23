@@ -1,5 +1,5 @@
 //! Slice S4: `cmdReconcile` (one project's reconcile), `distinctRepoKeys` and the reconcile sweep's duty
-//! (`reconcileSweepIfDue` of `companion/devswarm-supervisor.js`), over the slices below it.
+//!, over the slices below it.
 //!
 //! * **[`cmd_reconcile`]** drains every workspace registered in one project's store once, in Node's order: re-home stranded
 //!   descriptors (handed to Node when there is any), heal the registry ([`super::heal`]), list the rows, put the ids a prior

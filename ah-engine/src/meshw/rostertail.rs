@@ -1,4 +1,4 @@
-//! The part of `devswarm.js roster` that reads a child's session transcript: `childBusyState` (companion/lib/devswarm-idle.js)
+//! The part of `devswarm.js roster` that reads a child's session transcript: `childBusyState`
 //! as `rosterHints` calls it, reduced to the one question the row asks, "is the child waiting on a human".
 //!
 //! Node reads the last `tail_bytes` of the transcript (dropping the first, cut line when the file is longer), walks the entries

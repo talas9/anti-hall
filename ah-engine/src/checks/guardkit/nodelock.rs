@@ -389,7 +389,7 @@ fn stealable(h: &Holder, p: &Params, policy: Steal) -> bool {
         return h.age_ms > p.stale_ms as f64 && !(h.known && !h.dead);
     }
     if policy == Steal::RespectLive {
-        // the ingest rule (`companion/devswarm-ingest.js` STEAL RULE): a holder whose pid is known to be dead is taken over
+        // the ingest rule: a holder whose pid is known to be dead is taken over
         // at once, an unknown one once it is stale, and a LIVE one never (stealing from a live consumer would split a
         // destructive queue between two readers)
         let live = h.known && !h.dead;
@@ -525,7 +525,7 @@ pub enum Refresh {
 }
 
 impl Held {
-    /// `refresh(handle)` (`companion/lib/lock.js`): re-stamp `ts` of our own record with a temp file and a rename, under
+    /// `refresh(handle)`: re-stamp `ts` of our own record with a temp file and a rename, under
     /// the reclaim marker so a stealer cannot publish its own lock between our token check and our rename.
     pub fn refresh(&self) -> Refresh {
         let Some(side) = take_sidecar(&self.path, &self.p) else { return Refresh::Error };

@@ -1,6 +1,6 @@
 //! `ah-engine finding-dedup [--file findings.json]`: ADVISORY duplicate-finding detector for the deadly-loop trio. Groups findings
 //! that Jev judges to describe the same underlying issue (integration `findingDedup`, trust advisory); it never collapses anything.
-//! Port of `scripts/finding-dedup.js`. The rules script (`rules/operator-cli.js`) picks the candidate pairs and groups the confirmed
+//! Port of `scripts/finding-dedup.js`. The rules script picks the candidate pairs and groups the confirmed
 //! ones; this command asks Jev about each pair (four at a time) through the engine's own Jev lane and prints the answer.
 //! Fail-open: Jev off, a failed pair or malformed input drops edges, never the run.
 use super::{env_snapshot, err, home, opcli_call, opcli_cfg, out, read_lossy};

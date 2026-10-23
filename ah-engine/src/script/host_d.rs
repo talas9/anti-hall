@@ -65,7 +65,7 @@ fn task_json(t: &Task) -> Value {
 
 /// `transcriptTasks(path, variant, window, wide)`: JSON text.
 ///
-/// `variant` is `guard` (`task-guard.js` `parseTasksFromFile`), `state` (`lib/task-state.js` `reconstructTasks`) or `scan` (the
+/// `variant` is `guard`, `state` or `scan` (the
 /// task part of `tasklist-guard.js` `scanTranscript`). `window` is the tail read in bytes; a cut tail is completed from before the
 /// window the way `lib/task-subject-backfill.js` does (a bounded, exact scan; where Node's clock would decide, the answer is
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.

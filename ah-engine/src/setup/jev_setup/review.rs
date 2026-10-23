@@ -492,7 +492,7 @@ fn compute_due(home: &Path, s: &JevSettings, after: f64, min: f64) -> Result<Com
     Ok(Computed { due, after, min })
 }
 
-/// The reviews due for the SessionStart hook (`computeReviewDue` of `hooks/lib/jev-review.js`): `(id, whole days in shadow, decisions)`
+/// The reviews due for the SessionStart hook: `(id, whole days in shadow, decisions)`
 /// per due integration, in schema order. `after` and `min` are the already-resolved `jev.reviewAfterDays` / `jev.reviewMinDecisions`.
 pub(crate) fn hook_review_due(home: &Path, env: &crate::jev::settings::Env, after: f64, min: f64) -> Result<Vec<(String, f64, f64)>, String> {
     let s = JevSettings::resolve(home, Sources::load(home, env.clone()));

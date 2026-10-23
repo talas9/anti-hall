@@ -340,7 +340,7 @@ fn clamp(e: &Entry, n: i64) -> i64 {
     n
 }
 
-/// Node `lookup(obj, key)` (settings.js): the flat key, else the dotted path walked through nested objects.
+/// Node `lookup(obj, key)`: the flat key, else the dotted path walked through nested objects.
 fn lookup<'a>(obj: &'a Json, key: &str) -> Option<&'a Json> {
     let o = obj.as_object()?;
     if let Some(v) = o.get(key) {
@@ -361,7 +361,7 @@ fn token(raw: &str, list_key: &str) -> bool {
     defaults::list(list_key).iter().any(|t| *t == w)
 }
 
-/// Node `coerceValue(entry, raw)` (settings.js) for one engine setting: `None` means "fall through to the next layer".
+/// Node `coerceValue(entry, raw)` for one engine setting: `None` means "fall through to the next layer".
 fn coerce(e: &Entry, raw: &Json) -> Option<Json> {
     match &e.value {
         V::List(_) | V::Table(_) => {

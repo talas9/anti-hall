@@ -196,7 +196,7 @@ fn ndjson_backlog(inbox: Option<&str>, cursor: Option<&str>) -> (bool, f64) {
     (c.is_finite() && c >= 0.0, total)
 }
 
-/// Paths and file reads of the legacy cursor files (`companion/lib/reader-cursors.js`).
+/// Paths and file reads of the legacy cursor files.
 struct Cursors {
     dir: PathBuf,
     names: Option<Vec<String>>,
@@ -293,7 +293,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, cwd: &str, id: &str,
             Some(r) => {
                 let distinct = match &cp {
                     None => 0.0,
-                    // `path.resolve(cursorPath)` (reader-cursors.js:229): a relative path is the process's, so the caller's, directory
+                    // `path.resolve(cursorPath)`: a relative path is the process's, so the caller's, directory
                     Some(p) => {
                         let abs = ident::resolve(cwd, p);
                         let primary = cur.file(id);
@@ -308,7 +308,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, cwd: &str, id: &str,
     v
 }
 
-/// A `reader_cursors` value as the store returns it (devswarm-store.js:2217): a finite non-negative number floored, else 0.
+/// A `reader_cursors` value as the store returns it: a finite non-negative number floored, else 0.
 fn stored_position(v: &Value) -> f64 {
     v.as_f64().filter(|x| x.is_finite() && *x >= 0.0).map_or(0.0, f64::floor)
 }

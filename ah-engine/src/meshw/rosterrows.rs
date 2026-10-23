@@ -373,7 +373,7 @@ fn session_alive(e: &Eng, session: Option<&str>) -> R<bool> {
     }
 }
 
-/// `isSiblingPartitionLive(row, home, { now })` (companion/lib/liveness.js): a fresh heartbeat is live; a row without a real session id
+/// `isSiblingPartitionLive(row, home, { now })`: a fresh heartbeat is live; a row without a real session id
 /// (none, or the `unclaimed:` placeholder) is not; otherwise live unless its activity is positively stale and its session is gone.
 /// A case only Node decides (`Defer`) is the caller's to hand over (Node reads an undetermined row as live).
 pub(crate) fn sibling_partition_live(inv: &Inv, now: f64, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {

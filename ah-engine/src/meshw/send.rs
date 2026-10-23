@@ -56,7 +56,7 @@ pub fn mesh_candidates(rows: &[Row], mesh_id: Option<&str>) -> R<Vec<Row>> {
 }
 
 /// `resolveMeshTarget(store, meshId, home, { isLive: isRoutingLiveRowStrict })`: no candidate is `None`; one is that row (whether or
-/// not it is live); several go through `pickFreshestLive` (`liveness-select.js`). `reader` supplies the drain evidence (cursor rows);
+/// not it is live); several go through `pickFreshestLive`. `reader` supplies the drain evidence (cursor rows);
 /// without it those signals are neutral, as in Node without a store handle.
 pub fn resolve_mesh_target(inv: &Inv, reader: Option<&crate::mesh::MeshReader>, rows: &[Row], mesh_id: Option<&str>) -> R<Option<Row>> {
     let c = mesh_candidates(rows, mesh_id)?;
@@ -300,7 +300,7 @@ fn descriptor_prefix_ids(home: &std::path::Path, prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// `descriptorMeshId(home, id)` (Node `send.js`): the mesh label the worktree of the descriptor `id` (live, else archived) derives
+/// `descriptorMeshId(home, id)`: the mesh label the worktree of the descriptor `id` (live, else archived) derives
 /// to; `None` for an unsafe id, no descriptor, or none with a worktree. A truthy non-string `worktreePath` is coerced as `String(x)` (Node's canonicalMeshId/rawPathMeshId both do).
 fn descriptor_mesh_id(home: &std::path::Path, id: &str) -> R<Option<String>> {
     if !crate::meshw::idlock::is_safe_id(id) {

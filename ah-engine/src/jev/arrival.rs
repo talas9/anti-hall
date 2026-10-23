@@ -16,7 +16,7 @@
 //! is never lost and, because a label already in the cache is never asked for again, never labelled twice.
 //!
 //! Every cap, interval, file name and word is in `engine/defaults/jev_arrival.toml`. Pruning of stale claims, locks and an
-//! old queue (`state-prune.js` `pruneJevTriage`) is not ported: a stale claim or lock is taken over by age, and the engine
+//! old queue is not ported: a stale claim or lock is taken over by age, and the engine
 //! deletes no queued message.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)

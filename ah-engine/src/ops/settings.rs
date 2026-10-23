@@ -1,6 +1,6 @@
 //! `ah-engine settings`: show, read, change and reset any anti-hall setting. Port of `scripts/settings.js`.
 //!
-//! The values are read and written through the same chain the Node store defines (`hooks/lib/settings.js`), which the
+//! The values are read and written through the same chain the Node store defines, which the
 //! migration module already implements for the forward migrations ([`crate::migrate::settings`]): environment, then
 //! `~/.anti-hall/settings.json`, then the plugin option, then the legacy file, then the schema default. The registry that
 //! says which settings exist, their labels and descriptions is the plugin's generated `engine/defaults/settings_cli.toml`

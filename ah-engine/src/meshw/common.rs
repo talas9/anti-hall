@@ -468,7 +468,7 @@ pub(crate) fn rotate_if_over(p: &Path, max: u64, keep: u64) {
     crate::discard::harmless(std::fs::rename(p, gen_path(1))); // keep: on failure the row lands in the oversized file
 }
 
-/// A freshly sent direct message is queued for Jev arrival labelling (`jev-triage.js` `enqueueArrival`); the scheduled job
+/// A freshly sent direct message is queued for Jev arrival labelling; the scheduled job
 /// `jev_arrival` drains the queue, so the send never waits for Jev. Disabled or already-labelled texts write nothing.
 pub fn jev_enqueue_arrival(inv: &Inv, text: &str) {
     crate::jev::arrival::enqueue(&inv.home, text, &crate::jev::arrival::Limits::shipped());

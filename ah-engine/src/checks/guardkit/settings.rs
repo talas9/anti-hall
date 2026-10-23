@@ -128,7 +128,7 @@ pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Va
 }
 
 /// The value one boolean switch resolves to before its default: `None` when no source sets it.
-/// The type a setting's value is read as (`coerceValue` of `hooks/lib/settings.js`).
+/// The type a setting's value is read as.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ty {
     Bool,

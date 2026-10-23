@@ -1,4 +1,4 @@
-//! The parts of `cmdInboxTick` (`scripts/devswarm-lib/inbox-cmd.js`) around the count: the id-mismatch warning, the Primary
+//! The parts of `cmdInboxTick` around the count: the id-mismatch warning, the Primary
 //! anchor refresh, the `watcherArmed` decision with its re-arm cue, the delivery-log health, and the interval roster.
 //!
 //! Every one of these is fail-open in Node (`try { ... } catch (_) {}`): a check that cannot be answered leaves the tick's own

@@ -6,7 +6,7 @@
 //! | `engine-update` | (new, issue #140) | hands its arguments to the thin client's updater (`ah-hook update`); the engine has no network code |
 //! | `install-codex` | `codex/install-codex.js` | registers the anti-hall hooks in a Codex `hooks.json` and enables the hooks feature in `config.toml` |
 //!
-//! `doctor`, `migrate` (the port of `migrate-state.js`) and `capability-scan` were ported earlier (`doctor/`, `migrate/`,
+//! `doctor`, `migrate` and `capability-scan` were ported earlier (`doctor/`, `migrate/`,
 //! `setup/`). The texts, paths, limits and patterns of both commands are in the plugin's `engine/defaults/update_cli.toml`.
 pub mod engine_update;
 pub mod install_codex;

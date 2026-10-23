@@ -84,7 +84,7 @@ pub struct RouteMeta {
 }
 
 impl Exact {
-    /// The block `io.blockDecision(reason)` produces (`hooks/lib/guard-io.js`): the JSON decision and a newline on
+    /// The block `io.blockDecision(reason)` produces: the JSON decision and a newline on
     /// stdout, the reason and a newline on stderr, exit 2. The JSON is written by hand so the key order is the Node
     /// object's (`decision`, then `reason`), whatever the JSON library's map order is.
     pub fn json_block(reason: &str) -> Exact {

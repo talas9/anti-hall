@@ -43,7 +43,7 @@ pub(crate) fn is_primary_label(id: &str) -> bool {
         .is_some_and(|rest| rest.len() == hex && rest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
-/// `isChildWorkspaceCorroborated(env, home, cwd)` (hooks/lib/devswarm-role.js:57): the env var says child AND the disk agrees (a registered
+/// `isChildWorkspaceCorroborated(env, home, cwd)`: the env var says child AND the disk agrees (a registered
 /// descriptor for the builder id, or a cwd under the app's repos tree).
 fn child_corroborated(inv: &Inv) -> bool {
     if !inv.env.get(defaults::text("mesh_write.env_source_branch")).is_some_and(|v| !js_trim(v).is_empty()) {
@@ -75,7 +75,7 @@ pub(crate) fn id_mismatch_possible(inv: &Inv, id: &str) -> bool {
     child && env_id != id
 }
 
-/// `warnIdMismatch(id, ctx)` (core.js:201): when a corroborated child addresses an id other than its own `DEVSWARM_BUILDER_ID`, say so on
+/// `warnIdMismatch(id, ctx)`: when a corroborated child addresses an id other than its own `DEVSWARM_BUILDER_ID`, say so on
 /// stderr (never refuse) and report it.
 pub(crate) fn warn_id_mismatch(inv: &Inv, id: &str) -> bool {
     if !id_mismatch_possible(inv, id) || !child_corroborated(inv) {
@@ -111,7 +111,7 @@ pub(crate) fn anchor_refresh_possible(inv: &Inv) -> R<bool> {
     }
 }
 
-/// `refreshAnchorSession(ctx)` (register.js:652), fail-open: after a `/clear` the running session is a new one but the Primary anchor kept the
+/// `refreshAnchorSession(ctx)`, fail-open: after a `/clear` the running session is a new one but the Primary anchor kept the
 /// old id, so the anchor is re-registered under the caller's session, under the anchor's id lock, only while the caller's session is
 /// running. Any refusal or failure leaves the heartbeat untouched (Node swallows it).
 fn refresh_anchor_session(inv: &Inv) {
@@ -190,7 +190,7 @@ pub(crate) fn open_reader(inv: &Inv, desc: &OVal) -> R<Option<MeshReader>> {
     let sqlite = defaults::text("mesh.backend_sqlite");
     let forced = inv.env.get(defaults::text("mesh_write.env_store_backend")).map(|v| v.trim().to_lowercase()).unwrap_or_default();
     if forced != sqlite {
-        // `resolveStoreBackend` (devswarm-store.js:337): a forced backend, else the marker, else what the disk already holds
+        // `resolveStoreBackend`: a forced backend, else the marker, else what the disk already holds
         let journal = if !forced.is_empty() && forced == defaults::text("mesh_write.backend_journal") {
             true
         } else {
@@ -224,7 +224,7 @@ pub(crate) fn open_reader(inv: &Inv, desc: &OVal) -> R<Option<MeshReader>> {
     }
 }
 
-/// `unionPendingFor(descriptor, home, { now })` (liveness.js:860), fail-open as Node's: no store handle reads the NDJSON-only backlog; a
+/// `unionPendingFor(descriptor, home, { now })`, fail-open as Node's: no store handle reads the NDJSON-only backlog; a
 /// store read that fails is UNKNOWN and reported as pending (toward the alarm), never as an empty mailbox.
 fn pending_for(inv: &Inv, desc: &OVal) -> Pending {
     let site = defaults::text("mesh_write.hb_site_pending");
@@ -349,7 +349,7 @@ fn cross_linked(a: &ident::Row, b: &ident::Row) -> bool {
     a.session_id.as_deref().is_some_and(|x| !x.is_empty() && x == b.id) || b.session_id.as_deref().is_some_and(|x| !x.is_empty() && x == a.id)
 }
 
-/// `deriveCallerSessionIdFromProcessTree(ctx)` (identity.js:878): the session id of the nearest harness ancestor whose session record
+/// `deriveCallerSessionIdFromProcessTree(ctx)`: the session id of the nearest harness ancestor whose session record
 /// is for this caller's worktree and whose process is not provably gone.
 fn session_from_process_tree(inv: &Inv) -> Option<String> {
     let caller_wt = ident::canonical_worktree_real_path(&inv.cwd).ok().flatten().unwrap_or_else(|| inv.cwd.clone());
@@ -395,7 +395,7 @@ fn session_from_process_tree(inv: &Inv) -> Option<String> {
     None
 }
 
-/// `realSessionIdFrom(flags, ctx, id)` (identity.js:1165): a real session id (the flag, the ambient session, else derived while the row
+/// `realSessionIdFrom(flags, ctx, id)`: a real session id (the flag, the ambient session, else derived while the row
 /// still needs one), or none. Not the id itself and not a synthetic `unclaimed:` marker.
 fn real_session_id(inv: &Inv, session_flag: Option<&str>, id: &str, rows: &[ident::Row]) -> Option<String> {
     let env_sid = inv.env.get(defaults::text("mesh_write.env_session_id")).map(String::as_str).filter(|v| !v.is_empty());
@@ -416,7 +416,7 @@ fn real_session_id(inv: &Inv, session_flag: Option<&str>, id: &str, rows: &[iden
     session_from_process_tree(inv).filter(|d| d != id)
 }
 
-/// `deriveAttemptRecordSessionId(ctx, id)` (identity.js:1230): never the `--session` flag (a string any caller chooses); the process tree's session,
+/// `deriveAttemptRecordSessionId(ctx, id)`: never the `--session` flag (a string any caller chooses); the process tree's session,
 /// which the environment's session must agree with when both exist.
 fn attempt_session_id(inv: &Inv, id: &str) -> Option<String> {
     let env_candidate = inv
@@ -432,7 +432,7 @@ fn attempt_session_id(inv: &Inv, id: &str) -> Option<String> {
     }
 }
 
-/// `ownerAppDbEnv(ctx)` (identity.js:479): the environment for the first-claim leg's app-database read, with the two override keys removed, so
+/// `ownerAppDbEnv(ctx)`: the environment for the first-claim leg's app-database read, with the two override keys removed, so
 /// a caller cannot point "ground truth" at a database it wrote itself.
 fn owner_app_env(env: &ident::Env) -> ident::Env {
     let mut e = env.clone();
@@ -457,7 +457,7 @@ fn first_claim(inv: &Inv, id: &str, caller_kind: &str, cwd: &str) -> R<bool> {
     Ok(active.len() == 1 && active[0].id == id)
 }
 
-/// `broadcastFamilyOwns` (identity.js:591): `id` belongs to the same workspace identity as the caller, never on raw-id equality alone and
+/// `broadcastFamilyOwns`: `id` belongs to the same workspace identity as the caller, never on raw-id equality alone and
 /// never on anything a caller can forge. Fail-closed: a failure of any read is "not owned".
 #[allow(clippy::too_many_arguments)]
 fn family_owns(inv: &Inv, rows: &[ident::Row], own_entry: Option<&ident::Row>, id: &str, cwd: &str, caller_kind: &str, session_flag: Option<&str>, had_prior: bool) -> bool {
@@ -661,7 +661,7 @@ fn append_caller_log(inv: &Inv, id: &str, now: f64) {
     crate::discard::harmless(std::fs::write(&p, format!("{}\n", lines.join("\n")))); // keep: instrumentation only (Node's catch)
 }
 
-/// `childLabelRefusal(id, flags, ctx)` (identity.js:375): `primary-<hash>` of a CHILD worktree is not an identity anyone owns, so a heartbeat or
+/// `childLabelRefusal(id, flags, ctx)`: `primary-<hash>` of a CHILD worktree is not an identity anyone owns, so a heartbeat or
 /// registration under it is refused with the child's own id when it has one. Fail-open: any failure reads as no refusal.
 pub(crate) fn child_label_refusal(inv: &Inv, a: &Args, id: &str) -> Option<Vec<(String, OVal)>> {
     let site = defaults::text("mesh_write.hb_site_label");
