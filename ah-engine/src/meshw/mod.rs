@@ -346,10 +346,29 @@ pub fn inv_from_process(stdin: Option<String>) -> Option<Inv> {
 
 /// The engine cannot answer this call and there is no Node to hand it to: count it, say so on stderr with the site, and exit with
 /// the visible error code `mesh_write.exit_unable` (nothing was done; never the 75 of a deferral).
-fn unable(site: &str, detail: &str) -> i32 {
+fn unable(json: bool, site: &str, detail: &str) -> i32 {
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, site, detail);
-    eprintln!("{}", defaults::render("mesh_write.msg_unable", &[("site", &site), ("detail", &detail)]));
-    defaults::num("mesh_write.exit_unable") as i32
+    let msg = defaults::render("mesh_write.msg_unable", &[("site", &site), ("detail", &detail)]);
+    eprintln!("{msg}");
+    let code = defaults::num("mesh_write.exit_unable") as i32;
+    emit(loud_line(json, site, &msg, code).as_bytes());
+    code
+}
+
+/// The stdout twin of a stderr failure line: one JSON object `{ok,error,reason,exit}` (field names and shape from
+/// `mesh_write.loud_json`) when the verb runs with `--json`, else one plain line (`mesh_write.loud_text`). A caller that reads
+/// stdout never sees a silent no-op.
+pub fn loud_line(json: bool, error: &str, reason: &str, exit: i32) -> String {
+    let enc = |v: &str| serde_json::Value::String(v.to_string()).to_string();
+    let key = if json { "mesh_write.loud_json" } else { "mesh_write.loud_text" };
+    let (error_v, reason_v) = if json { (enc(error), enc(reason)) } else { (error.to_string(), reason.to_string()) };
+    format!("{}\n", defaults::render(key, &[("error", &error_v), ("reason", &reason_v), ("exit", &exit)]))
+}
+
+/// Whether the raw argv asks for JSON output (`--json`).
+fn json_requested(raw: &[std::ffi::OsString]) -> bool {
+    let flag = format!("--{}", defaults::text("mesh_write.flag_json"));
+    raw.iter().any(|a| a.to_str() == Some(flag.as_str()))
 }
 
 /// Which call gave up, for the abandoned line: the verb label, the first two positionals (the verb words, never a message body)
@@ -360,10 +379,13 @@ pub fn call_detail(a: &args::Args, reason: &str) -> String {
 }
 
 /// The switch is off: nothing is done, and it is counted and said, never a silent success.
-fn disabled(site: &str) -> i32 {
+fn disabled(json: bool, site: &str) -> i32 {
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, site, "");
-    eprintln!("{}", defaults::render("mesh_write.msg_disabled", &[("site", &site)]));
-    defaults::num("mesh_write.exit_unable") as i32
+    let msg = defaults::render("mesh_write.msg_disabled", &[("site", &site)]);
+    eprintln!("{msg}");
+    let code = defaults::num("mesh_write.exit_unable") as i32;
+    emit(loud_line(json, site, &msg, code).as_bytes());
+    code
 }
 
 fn emit(stdout: &[u8]) {
@@ -381,15 +403,16 @@ fn read_stdin() -> String {
 
 /// `ah-engine mesh <devswarm.js argv...>`: see the module header.
 pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
+    let json = json_requested(raw);
     let Some(argv) = raw.iter().map(|a| a.to_str().map(str::to_string)).collect::<Option<Vec<String>>>() else {
-        return unable("meshw:non_utf8_argument", "");
+        return unable(json, "meshw:non_utf8_argument", "");
     };
     let a = args::parse(&argv);
     if mode() == Mode::Off {
-        return disabled("meshw:native_off");
+        return disabled(json, "meshw:native_off");
     }
     if verb_of(&a).is_none() {
-        return unable("meshw:unhandled_verb", &call_detail(&a, ""));
+        return unable(json, "meshw:unhandled_verb", &call_detail(&a, ""));
     }
     // a help request (or any verb of `simple`) never reads fd 0
     let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !cli_witnessed(verb_of(&a));
@@ -399,7 +422,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     let w = |k: &str| defaults::text(k).to_string();
     let Some(inv) = inv_from_process(stdin) else {
         shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}));
-        return unable("meshw:no_context", &call_detail(&a, "no-context"));
+        return unable(json, "meshw:no_context", &call_detail(&a, "no-context"));
     };
     let r = std::panic::catch_unwind(|| run_native(&inv, &a));
     let (step, result, reason) = next_step(r, committed());
@@ -407,13 +430,22 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     match step {
         Next::Print(ans) => {
             emit(ans.stdout.as_bytes());
+            if ans.code != 0 && ans.stdout.is_empty() {
+                // a refusal that printed nothing: say it on stdout too (the verb's own non-empty answer is left as is)
+                let msg = defaults::render("mesh_write.msg_empty_failure", &[("exit", &ans.code)]);
+                eprintln!("{msg}");
+                emit(loud_line(json, defaults::text("mesh_write.site_empty_failure"), &msg, ans.code).as_bytes());
+            }
             ans.code
         }
         Next::CommittedFailure => {
-            eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
-            defaults::num("mesh_write.exit_committed_failure") as i32
+            let msg = defaults::text("mesh_write.msg_committed_failure");
+            eprintln!("{msg}");
+            let code = defaults::num("mesh_write.exit_committed_failure") as i32;
+            emit(loud_line(json, defaults::text("mesh_write.site_committed_failure"), msg, code).as_bytes());
+            code
         }
-        Next::Unable => unable("meshw:deferred", &call_detail(&a, &reason)),
+        Next::Unable => unable(json, "meshw:deferred", &call_detail(&a, &reason)),
     }
 }
 
@@ -505,6 +537,28 @@ mod tests {
             assert!(matches!(n, Next::CommittedFailure), "running the verb again after a write would write twice");
             assert_eq!(result, defaults::text("mesh_write.result_committed"));
         }
+    }
+
+    #[test]
+    fn a_failure_is_loud_on_stdout_as_json_in_json_mode_and_as_one_line_otherwise() {
+        let j = loud_line(true, "meshw:deferred", "nothing \"was\" done", 69);
+        let v: serde_json::Value = serde_json::from_str(j.trim_end()).expect("one JSON object");
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["error"], "meshw:deferred");
+        assert_eq!(v["reason"], "nothing \"was\" done");
+        assert_eq!(v["exit"], 69);
+        assert_eq!(j.matches('\n').count(), 1);
+        let t = loud_line(false, "meshw:deferred", "nothing was done", 69);
+        assert_eq!(t.matches('\n').count(), 1);
+        assert!(t.contains("meshw:deferred") && t.contains("nothing was done") && t.contains("69"), "{t}");
+        assert!(serde_json::from_str::<serde_json::Value>(t.trim_end()).is_err(), "plain mode is not JSON: {t}");
+    }
+
+    #[test]
+    fn json_mode_is_read_from_the_raw_argv() {
+        let a = |w: &[&str]| w.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        assert!(json_requested(&a(&["roster", "--json"])));
+        assert!(!json_requested(&a(&["roster"])));
     }
 
     #[test]
