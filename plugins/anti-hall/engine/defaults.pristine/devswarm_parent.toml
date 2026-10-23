@@ -257,7 +257,7 @@ value = "; "
 
 [devswarm_parent.unread_body_drain]
 doc = "The nudge text when some listed workspace holds unread. Placeholder: {cli}."
-value = "CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet drained. Poke it (`{cli} send --to <id> --message-file <path>`; a send alone never wakes a child that is idle at its prompt, `~/.anti-hall/ah-engine/bin/ah-hook agents send <id> --text \"read your mesh inbox\"` does, through DevSwarm) or escalate/reassign it — do not assume it has seen the backlog just because time has passed. "
+value = "CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet drained. Poke it (`{cli} send --to <id> --message-file <path>`; a send alone never wakes a child that is idle at its prompt, `~/.anti-hall/ah-engine/bin/ah-engine agents send <id> --text \"read your mesh inbox\"` does, through DevSwarm) or escalate/reassign it — do not assume it has seen the backlog just because time has passed. "
 
 [devswarm_parent.unread_body_read]
 doc = "The nudge text when none of the listed workspaces holds unread."
@@ -269,7 +269,7 @@ value = "A workspace flagged stale/escalated has a wedged child — check on it.
 
 [devswarm_parent.urgent_head]
 doc = "The nudge segment for an urgent unread message. Placeholders: {count}, {shown}, {extra}, {cli}."
-value = "⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIGH-priority direct message waiting, unread — {shown}{extra}. CHILD NOT DRAINING: STOP and poke it NOW (`{cli} send --to <id> --message-file <path>`, then `~/.anti-hall/ah-engine/bin/ah-hook agents send <id> --text \"read your mesh inbox\"` to wake it if it is idle) or escalate — do not wait to see if it drains on its own — before continuing."
+value = "⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIGH-priority direct message waiting, unread — {shown}{extra}. CHILD NOT DRAINING: STOP and poke it NOW (`{cli} send --to <id> --message-file <path>`, then `~/.anti-hall/ah-engine/bin/ah-engine agents send <id> --text \"read your mesh inbox\"` to wake it if it is idle) or escalate — do not wait to see if it drains on its own — before continuing."
 
 [devswarm_parent.urgent_part]
 doc = "A workspace of the urgent segment. Placeholders: {id}, {parts}."

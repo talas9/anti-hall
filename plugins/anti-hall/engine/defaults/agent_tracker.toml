@@ -234,7 +234,7 @@ value = { idle_ms = 120000, cooldown_ms = 300000, timeout_ms = 15000, text_cap =
 
 [msg.native_wake_prompt]
 doc = "The prompt `workspace reactivate-child` queues for an idle workspace; it only sends the workspace to its mesh inbox. Placeholders: {id} (the workspace), {text} (a short preview, may be empty)."
-value = "anti-hall wake: a mesh message is waiting for workspace {id}. Run `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull {id}` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read {id}` and act on it. {text}"
+value = "anti-hall wake: a mesh message is waiting for workspace {id}. Run `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull {id}` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read {id}` and act on it. {text}"
 
 [msg.agent_wake_line]
 doc = "The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}."
