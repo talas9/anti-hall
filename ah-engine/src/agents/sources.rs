@@ -328,7 +328,7 @@ fn off_roster(env: &Env, st: &mut State) {
 }
 
 /// Whether a session agent (main or workspace) has a live process: the registry gave it a pid that is alive.
-fn proc_live(a: &Agent) -> bool {
+pub(super) fn proc_live(a: &Agent) -> bool {
     a.pid != 0 && !a.gone && crate::health::pid_alive(a.pid)
 }
 

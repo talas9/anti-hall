@@ -5,7 +5,7 @@
 //! ticks, subject to a per-signal cooldown, a daily cap, a per-tick cap and the size of the agent's undelivered queue. When a flag
 //! clears, its outcome is recorded: recovered after a reminder (with how long it took), or a false positive (it cleared on its own
 //! while the agent made progress). A reminded flag still up after the outcome window is recorded as not recovered. Nothing here
-//! ever stops an agent.
+//! stops an agent: escalation to the owner and the stop actions are in `escalate`.
 use super::facts::words;
 use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, WakeFeed, age};
 use super::{Agent, Env, Flag, Sample, State, cap, chan, defaults_signals, fmtn, kind_name, lim, pth, state_name};
@@ -580,7 +580,7 @@ fn take_deliveries(env: &Env, st: &mut State) {
                 class: "delivery",
                 name: sig,
                 outcome: Outcome::Advise,
-                fields: Fields::new().tok("agent", agent).tok("channel", chan("session")).num("lat_s", lat.unwrap_or(0)),
+                fields: Fields::new().tok("agent", agent).tok("channel", v["channel"].as_str().unwrap_or(chan("session"))).num("lat_s", lat.unwrap_or(0)),
             }));
         }
     }
@@ -609,6 +609,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         series(env, &mut a);
         st.agents.insert(id, a);
     }
+    super::escalate::tick(env, st);
     super::lockwatch::tick(env, st);
     let keep = lim("day_retention");
     let today = now / fmtn("day_ms");

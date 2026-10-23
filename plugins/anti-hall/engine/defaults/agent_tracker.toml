@@ -1,7 +1,8 @@
 # ah-engine shipped defaults for the agent tracker (`src/agents`, `ah-engine agents`, the scheduled job `agent_tick`, the scripted check
 # `agent-reminders`). Format: see the header of engine.toml. The tracker follows every agent it can find (the main sessions, their
 # subagents and background tasks, DevSwarm workspaces), keeps a per-agent progress series, raises signals (hung, looping, token
-# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. It never stops or kills an agent.
+# waste, drift, stale heartbeat, no Monitor armed), and delivers reminders and advisories. A stuck agent its coordinator does not
+# handle is escalated to the owner and, past a limit, stopped by verified pid or stop request (agent_tracker.escalate; Primaries exempt).
 # Every threshold, window, weight, pattern, path, word and text is tuned here, never in Rust.
 
 [job.agent_tick]
@@ -322,3 +323,41 @@ value = "Progress requested from the dashboard: reply with a short status (what 
 [agent_tracker.stop_request_text]
 doc = "The reminder an agent gets when the dashboard asks it to stop on its own."
 value = "Stop requested from the dashboard: finish or park what you are doing, report where you stopped, and do not start new work until told."
+
+# ---- escalation and action for stuck agents (task #207, src/agents/escalate.rs) ----------------------------------------------
+
+[agent_tracker.act_setting]
+doc = "Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, an agent whose escalated signal stays up past agent_tracker.escalate.act_after_ms is stopped by the means its kind allows (a one-shot Codex run: SIGTERM by the pid that holds its rollout open, re-checked; a DevSwarm workspace: the stop request of `agents send`; a subagent or teammate: a stop request to its live coordinator). Primaries are never acted on. Off, it is only escalated."
+value = { section = "agents", key = "actOnStuck", env = "ANTIHALL_AGENT_ACT_ON_STUCK", aliases = [], option = "", default = true }
+
+[agent_tracker.escalate]
+doc = "Escalation of stuck agents. signals: the tracker signals escalated. after_ms: a signal up this long (delivered or not) goes to the owner's channel, once per spell; it goes at once when the agent's coordinator has no live process (nobody would read its queue). act_after_ms: up this long, the action runs (agent_tracker.act_setting), once per spell. exempt_kinds: kinds never escalated or acted on (a Primary may run for hours; a DevSwarm Primary's workspace session is exempt by its descriptor prefix agent_tracker.primary_prefix). codex_hung_ms: a one-shot Codex run quiet this long with no terminal record is hung (the action and an owner notice, once). term_cmds: the command substrings a process must show to be signalled for a Codex row (one-shot runs only: a shared Codex server holds many sessions' rollouts and never matches)."
+value = { signals = ["hung"], after_ms = 1800000, act_after_ms = 3600000, exempt_kinds = ["main"], codex_hung_ms = 1800000, term_cmds = ["codex exec"] }
+
+[agent_tracker.escalate_words]
+doc = "Words the escalation writes: the telemetry class and events, the reasons, the action words, and the signal name of a hung Codex run."
+value = { class = "escalate", escalated = "escalated", acted = "acted", why_parent_down = "its coordinator has no live process", why_undelivered = "the reminder was never delivered", why_unhandled = "the reminder was delivered but nothing changed", why_codex_quiet = "the one-shot run went quiet with no end record", act_term = "term", act_stop_request = "stop_request", act_none = "none", codex_signal = "codex_hung" }
+
+[msg.agent_escalate]
+doc = "Notice on the owner's wake channel for an agent its coordinator did not handle. Placeholders: {kind}, {agent} (its name), {signal}, {age} (how long the signal is up), {parent} (its coordinator), {why} (one of agent_tracker.escalate_words why_*), {action} (empty, or one of the msg.agent_act_* sentences)."
+value = "agent tracker escalation: {kind} {agent} has been {signal} for {age} and {why} (coordinator {parent}). Check it and stop it if it is stuck.{action}"
+
+[msg.agent_act_codex]
+doc = "Appended to the escalation when a hung one-shot Codex run was sent SIGTERM. Placeholder: {pid}."
+value = " Sent SIGTERM to Codex pid {pid} (it held the session's rollout open)."
+
+[msg.agent_act_workspace]
+doc = "Appended to the escalation when a hung DevSwarm workspace was asked to stop."
+value = " Asked the workspace to stop (agents send --stop-request)."
+
+[msg.agent_act_child]
+doc = "Appended to the escalation when the live coordinator of a hung subagent or teammate was asked to stop it. Placeholder: {parent}."
+value = " Asked its coordinator {parent} to stop it."
+
+[msg.agent_act_child_request]
+doc = "The stop request queued for the coordinator of a hung subagent or teammate. Placeholders: {agent} (its id), {name}."
+value = "agent tracker: your subagent {name} ({agent}) has been hung past the action limit. Stop it now (TaskStop {agent}) and take over or re-dispatch its work."
+
+[msg.agent_act_none]
+doc = "Appended to the escalation when the action found nothing it may stop (no single pid matched, or no live coordinator)."
+value = " Nothing was stopped: no process matched by pid; stop it by hand."

@@ -17,6 +17,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 mod ctl;
+mod escalate;
 mod facts;
 mod live;
 mod lockwatch;
@@ -205,6 +206,12 @@ pub struct Flag {
     pub base_tokens: u64,
     /// The outcome was already recorded as not recovered.
     pub timed_out: bool,
+    /// When it was escalated to the owner's channel (0 = not yet; once per spell).
+    #[serde(default)]
+    pub escalated_at: u64,
+    /// When the escalation layer acted on it (0 = not yet; once per spell).
+    #[serde(default)]
+    pub acted_at: u64,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -285,6 +292,9 @@ pub struct Agent {
     /// `limits.dead_idle_ms` with no live parent): state `dead`, out of the live list. Decided afresh each tick; nothing is deleted.
     #[serde(default)]
     pub dead: bool,
+    /// When the escalation layer acted on it outside a flag (a hung one-shot Codex run): once per agent.
+    #[serde(default)]
+    pub acted_at: u64,
     /// The team a teammate belongs to (its meta file).
     #[serde(default)]
     pub team: String,
