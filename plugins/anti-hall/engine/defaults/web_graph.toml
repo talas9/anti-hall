@@ -1,0 +1,418 @@
+# ah-engine shipped defaults for the shared node-graph component of the Command Center (ah-web-graph: agent graph, system
+# topology, rules/hooks editor). Format: see the header of engine.toml. `ah-web` serves these keys to the page as JSON: every
+# dot after `web.graph.` is one level of nesting (web.graph.theme.kinds.agent.color -> theme.kinds.agent.color), and the WASM
+# component compiles in none of them. Colours are OKLCH tokens; the canvas/GPU layers convert them at start-up.
+
+[web.graph.theme.bg]
+doc = "Graph canvas background."
+value = "oklch(0.17 0.03 260)"
+
+[web.graph.theme.grid]
+doc = "Background grid line colour."
+value = "oklch(0.83 0.13 210 / 0.05)"
+
+[web.graph.theme.wire]
+doc = "Wire colour (idle edge)."
+value = "oklch(0.83 0.13 210 / 0.40)"
+
+[web.graph.theme.wire_hot]
+doc = "Wire and particle colour on the highlighted (executing) path."
+value = "oklch(0.92 0.13 200 / 0.95)"
+
+[web.graph.theme.particle]
+doc = "Flow particle colour on a normal edge."
+value = "oklch(0.88 0.12 205 / 0.85)"
+
+[web.graph.theme.fallback_kind]
+doc = "Kind style used for a node whose kind is not in web.graph.theme.kinds."
+value = "idle"
+
+[web.graph.theme.kinds.primary.color]
+doc = "Colour of 'primary' nodes."
+value = "oklch(0.83 0.13 210)"
+
+[web.graph.theme.kinds.primary.shape]
+doc = "Marker shape of 'primary' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.workspace.color]
+doc = "Colour of 'workspace' nodes."
+value = "oklch(0.65 0.18 285)"
+
+[web.graph.theme.kinds.workspace.shape]
+doc = "Marker shape of 'workspace' nodes: circle, square or diamond."
+value = "square"
+
+[web.graph.theme.kinds.subagent.color]
+doc = "Colour of 'subagent' nodes."
+value = "oklch(0.84 0.14 165)"
+
+[web.graph.theme.kinds.subagent.shape]
+doc = "Marker shape of 'subagent' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.codex.color]
+doc = "Colour of 'codex' nodes."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.theme.kinds.codex.shape]
+doc = "Marker shape of 'codex' nodes: circle, square or diamond."
+value = "diamond"
+
+[web.graph.theme.kinds.idle.color]
+doc = "Colour of 'idle' nodes."
+value = "oklch(0.58 0.06 260)"
+
+[web.graph.theme.kinds.idle.shape]
+doc = "Marker shape of 'idle' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.client.color]
+doc = "Colour of 'client' nodes."
+value = "oklch(0.83 0.13 210)"
+
+[web.graph.theme.kinds.client.shape]
+doc = "Marker shape of 'client' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.engine.color]
+doc = "Colour of 'engine' nodes."
+value = "oklch(0.65 0.18 285)"
+
+[web.graph.theme.kinds.engine.shape]
+doc = "Marker shape of 'engine' nodes: circle, square or diamond."
+value = "square"
+
+[web.graph.theme.kinds.store.color]
+doc = "Colour of 'store' nodes."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.theme.kinds.store.shape]
+doc = "Marker shape of 'store' nodes: circle, square or diamond."
+value = "diamond"
+
+[web.graph.theme.kinds.service.color]
+doc = "Colour of 'service' nodes."
+value = "oklch(0.84 0.14 165)"
+
+[web.graph.theme.kinds.service.shape]
+doc = "Marker shape of 'service' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.event.color]
+doc = "Colour of 'event' nodes."
+value = "oklch(0.83 0.13 210)"
+
+[web.graph.theme.kinds.event.shape]
+doc = "Marker shape of 'event' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.rule.color]
+doc = "Colour of 'rule' nodes."
+value = "oklch(0.65 0.18 285)"
+
+[web.graph.theme.kinds.rule.shape]
+doc = "Marker shape of 'rule' nodes: circle, square or diamond."
+value = "square"
+
+[web.graph.theme.kinds.check.color]
+doc = "Colour of 'check' nodes."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.theme.kinds.check.shape]
+doc = "Marker shape of 'check' nodes: circle, square or diamond."
+value = "diamond"
+
+[web.graph.theme.kinds.effect.color]
+doc = "Colour of 'effect' nodes."
+value = "oklch(0.84 0.14 165)"
+
+[web.graph.theme.kinds.effect.shape]
+doc = "Marker shape of 'effect' nodes: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.jev.color]
+doc = "Colour of 'jev' nodes."
+value = "oklch(0.69 0.19 12)"
+
+[web.graph.theme.kinds.jev.shape]
+doc = "Marker shape of 'jev' nodes: circle, square or diamond."
+value = "diamond"
+
+[web.graph.theme.status.running]
+doc = "Status dot colour for 'running'."
+value = "oklch(0.84 0.14 165)"
+
+[web.graph.theme.status.idle]
+doc = "Status dot colour for 'idle'."
+value = "oklch(0.58 0.06 260)"
+
+[web.graph.theme.status.waiting]
+doc = "Status dot colour for 'waiting'."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.theme.status.failed]
+doc = "Status dot colour for 'failed'."
+value = "oklch(0.69 0.19 12)"
+
+[web.graph.theme.status.ok]
+doc = "Status dot colour for 'ok'."
+value = "oklch(0.84 0.14 165)"
+
+[web.graph.theme.status.off]
+doc = "Status dot colour for 'off'."
+value = "oklch(0.45 0.04 260)"
+
+[web.graph.budget.fps_interact]
+doc = "Frame rate while the user pans, zooms or drags (Full tier)."
+value = 60
+min = 15
+max = 120
+
+[web.graph.budget.fps_ambient]
+doc = "Frame rate for ambient motion (flow particles, executing path) with no input; 0 = no ambient motion."
+value = 10
+min = 0
+max = 30
+
+[web.graph.budget.interact_hold_ms]
+doc = "How long after the last input the interactive frame rate is held."
+value = 400
+min = 50
+max = 5000
+
+[web.graph.budget.particles_max]
+doc = "Hard cap on flow particles drawn per frame."
+value = 400
+min = 0
+max = 5000
+
+[web.graph.budget.particles_per_rate]
+doc = "Particles per edge per unit of edge rate (messages/s)."
+value = 0.6
+min = 0.0
+max = 10.0
+
+[web.graph.budget.particle_speed]
+doc = "Particle speed in wire-lengths per second."
+value = 0.22
+min = 0.01
+max = 2.0
+
+[web.graph.budget.particle_size]
+doc = "Particle radius in px at zoom 1."
+value = 2.4
+min = 0.5
+max = 12.0
+
+[web.graph.budget.wire_width]
+doc = "Wire width in px at zoom 1."
+value = 1.6
+min = 0.5
+max = 8.0
+
+[web.graph.budget.wire_samples]
+doc = "Line segments per wire curve."
+value = 24
+min = 4
+max = 128
+
+[web.graph.budget.highlight_throttle_ms]
+doc = "At most one highlighted-path update per this many ms."
+value = 250
+min = 50
+max = 5000
+
+[web.graph.budget.feedback_clear_ms]
+doc = "How long a done/failed action badge stays on a node."
+value = 4000
+min = 500
+max = 60000
+
+[web.graph.geometry.node_w]
+doc = "Node card width in px."
+value = 190
+min = 80
+max = 400
+
+[web.graph.geometry.node_h]
+doc = "Minimum node card height in px."
+value = 52
+min = 30
+max = 200
+
+[web.graph.geometry.port_r]
+doc = "Port dot radius in px."
+value = 4.5
+min = 2.0
+max = 12.0
+
+[web.graph.geometry.port_pitch]
+doc = "Vertical space per port in px (cards with many ports grow)."
+value = 22
+min = 12
+max = 60
+
+[web.graph.geometry.zoom_min]
+doc = "Smallest zoom factor."
+value = 0.2
+min = 0.05
+max = 1.0
+
+[web.graph.geometry.zoom_max]
+doc = "Largest zoom factor."
+value = 2.5
+min = 1.0
+max = 8.0
+
+[web.graph.geometry.zoom_step]
+doc = "Zoom factor per wheel notch / zoom button."
+value = 1.12
+min = 1.01
+max = 2.0
+
+[web.graph.geometry.fit_pad]
+doc = "Padding in px kept around the graph by 'fit to view'."
+value = 40
+min = 0
+max = 200
+
+[web.graph.geometry.minimap_w]
+doc = "Minimap width in px."
+value = 180
+min = 80
+max = 400
+
+[web.graph.geometry.minimap_h]
+doc = "Minimap height in px."
+value = 120
+min = 60
+max = 300
+
+[web.graph.layout.layer_gap]
+doc = "Extra horizontal gap between layers in the layered (DAG) layout, px."
+value = 90.0
+min = 0.0
+max = 600.0
+
+[web.graph.layout.node_gap]
+doc = "Minimum gap between nodes of one layer in the layered layout, px."
+value = 26.0
+min = 0.0
+max = 300.0
+
+[web.graph.layout.force_scale]
+doc = "Spring length of the force-directed layout (Fruchterman-Reingold scale)."
+value = 45.0
+min = 1.0
+max = 200.0
+
+[web.graph.layout.force_cooloff]
+doc = "Velocity damping per step of the force layout (0..1)."
+value = 0.975
+min = 0.5
+max = 1.0
+
+[web.graph.layout.force_iterations]
+doc = "Steps the force layout runs before showing the graph."
+value = 320
+min = 10
+max = 5000
+
+[web.graph.layout.force_dt]
+doc = "Time step of the force layout."
+value = 0.04
+min = 0.001
+max = 1.0
+
+[web.graph.layout.force_density]
+doc = "Force layout: canvas area per node as a multiple of one card's area (bigger = more spread out)."
+value = 7.0
+min = 1.5
+max = 50.0
+
+[web.graph.layout.force_collide_passes]
+doc = "Passes of the overlap-removal step after the force simulation."
+value = 60
+min = 0
+max = 500
+
+[web.graph.layout.force_collide_pad]
+doc = "Minimum gap kept between cards by the overlap-removal step, px."
+value = 28.0
+min = 0.0
+max = 200.0
+
+[web.graph.layout.component_gap]
+doc = "Vertical gap between disconnected sub-graphs in the layered layout, px."
+value = 60.0
+min = 0.0
+max = 600.0
+
+[web.graph.texts.menu_label]
+doc = "UI text 'menu_label' ({action} and {node} are replaced)."
+value = "Node actions"
+
+[web.graph.texts.menu_button]
+doc = "UI text 'menu_button' ({action} and {node} are replaced)."
+value = "Actions"
+
+[web.graph.texts.running]
+doc = "UI text 'running' ({action} and {node} are replaced)."
+value = "running…"
+
+[web.graph.texts.done]
+doc = "UI text 'done' ({action} and {node} are replaced)."
+value = "done"
+
+[web.graph.texts.failed]
+doc = "UI text 'failed' ({action} and {node} are replaced)."
+value = "failed"
+
+[web.graph.texts.confirm_title]
+doc = "UI text 'confirm_title' ({action} and {node} are replaced)."
+value = "{action}?"
+
+[web.graph.texts.confirm_body]
+doc = "UI text 'confirm_body' ({action} and {node} are replaced)."
+value = "This changes {node}. It is recorded in the audit log and cannot be undone."
+
+[web.graph.texts.confirm_yes]
+doc = "UI text 'confirm_yes' ({action} and {node} are replaced)."
+value = "Confirm"
+
+[web.graph.texts.confirm_no]
+doc = "UI text 'confirm_no' ({action} and {node} are replaced)."
+value = "Cancel"
+
+[web.graph.texts.no_actions]
+doc = "UI text 'no_actions' ({action} and {node} are replaced)."
+value = "No actions available for this node"
+
+[web.graph.texts.fit]
+doc = "UI text 'fit' ({action} and {node} are replaced)."
+value = "Fit to view"
+
+[web.graph.texts.zoom_in]
+doc = "UI text 'zoom_in' ({action} and {node} are replaced)."
+value = "Zoom in"
+
+[web.graph.texts.zoom_out]
+doc = "UI text 'zoom_out' ({action} and {node} are replaced)."
+value = "Zoom out"
+
+[web.graph.texts.minimap]
+doc = "UI text 'minimap' ({action} and {node} are replaced)."
+value = "Minimap"
+
+[web.graph.texts.graph_label]
+doc = "UI text 'graph_label' ({action} and {node} are replaced)."
+value = "Graph"
+
+[web.graph.texts.edge_rate_unit]
+doc = "UI text 'edge_rate_unit' ({action} and {node} are replaced)."
+value = "/s"
+
+[web.graph.texts.tier_lite_note]
+doc = "UI text 'tier_lite_note' ({action} and {node} are replaced)."
+value = "Lite view: static, no animation"
