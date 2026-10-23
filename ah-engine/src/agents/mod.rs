@@ -315,6 +315,12 @@ pub struct Agent {
     /// The pid of the live process the session registry joined to this agent (0 = none).
     #[serde(default)]
     pub pid: u32,
+    /// A nudge about one of its children is open: its turns are kept (`turns`).
+    #[serde(default)]
+    pub watch: bool,
+    /// While `watch`: its newest turns after the nudge, (time, kind, text) - a tool call as `<tool>\t<value>...`, or a reply's text.
+    #[serde(default)]
+    pub turns: Vec<(u64, String, String)>,
     /// Unanswered tool calls by id.
     pub pending: BTreeMap<String, Pending>,
     /// Message ids already counted (the transcript repeats a message's usage on every line).
