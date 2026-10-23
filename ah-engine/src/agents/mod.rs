@@ -275,6 +275,9 @@ pub struct Agent {
     pub guard_fires: u64,
     /// Test runs that passed.
     pub tests_pass: u64,
+    /// Builds and compile checks that finished.
+    #[serde(default)]
+    pub builds_ok: u64,
     /// Plan steps completed.
     pub steps_done: u64,
     /// Progress units (commits, steps, passing tests, new files, weighted).

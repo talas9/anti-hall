@@ -93,8 +93,8 @@ doc = "What the cost report counts as an outcome when it divides an agent's toke
 value = "commits + pushes + finished steps + passing test runs + files edited"
 
 [agent_tracker.weights]
-doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time)."
-value = { commit = 10, step = 5, test = 2, file = 1 }
+doc = "Progress units each kind of work is worth: commit (a successful git commit), step (a plan or task step completed), test (a test run that passed), file (a file edited for the first time), push (a successful git push), build (a compile or check that finished). A commit, a push or a finished build also restarts the waste window (agent_waste.toml)."
+value = { commit = 10, step = 5, test = 2, file = 1, push = 3, build = 3 }
 
 [agent_tracker.cooldowns]
 doc = "Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent)."
@@ -169,8 +169,8 @@ doc = "How long each kind of wake path keeps the session reachable, in milliseco
 value = { monitor = 1800000, persistent = 86400000, cron = 604800000, wakeup_slack = 300000 }
 
 [agent_tracker.patterns]
-doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited)."
-value = { commit = "\\bgit\\s+(-C\\s+\\S+\\s+)?commit\\b", push = "\\bgit\\s+(-C\\s+\\S+\\s+)?push\\b", guard_fire = "⛔ anti-hall · [a-z0-9-]+:", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", bg_started = "running in background with ID:\\s*([A-Za-z0-9_-]+)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])" }
+doc = "Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), bg_started (the result of a background shell command: captures the task id whose end notice is awaited). build (a compile or check: cargo build, check, clippy, or an npm/go/make/flutter build), build_pass (output that shows it finished), build_fail (output that shows it failed)."
+value = { commit = "\\bgit\\s+(-[Cc]\\s+\\S+\\s+)*commit\\b", push = "\\bgit\\s+(-[Cc]\\s+\\S+\\s+)*push\\b", build = "\\b(cargo\\s+(build|check|clippy)|go\\s+build|flutter\\s+build|make\\s+build|npm\\s+run\\s+build)\\b", build_pass = "\\b(Finished|Compiling|Built target|build succeeded|Built)\\b", build_fail = "(error(\\[E\\d+\\])?:|could not compile|FAILED|build failed)", guard_fire = "⛔ anti-hall · [a-z0-9-]+:", test = "\\b(cargo\\s+(test|nextest)|npm\\s+(run\\s+)?test|node\\s+--test|pytest|go\\s+test|flutter\\s+test|jest|vitest|make\\s+test)\\b", test_pass = "(\\btest result: ok\\b|\\b[0-9]+ passed\\b|\\bpass(ed)?\\b\\s*[0-9]+|\\ball tests passed\\b|^ok\\b)", bg_started = "running in background with ID:\\s*([A-Za-z0-9_-]+)", test_fail = "(\\bFAILED\\b|\\b[1-9][0-9]* failed\\b|\\btest result: FAILED\\b|\\bfail\\s+[1-9])" }
 
 [agent_tracker.words]
 doc = "Words left out when a step is compared with the work done (drift), as one list; the split characters that cut a path or command into words."

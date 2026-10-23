@@ -23,6 +23,8 @@ pub struct Input {
     pub wait: f64,
     /// Failed commands in the window.
     pub failed: u64,
+    /// Share of calls that only look (read, search, git log, status checks): investigation, not churn.
+    pub readonly: f64,
 }
 
 /// The weights and thresholds, read from the plugin's TOML.
@@ -44,6 +46,8 @@ pub struct Params {
     pub fail_cap: f64,
     /// Divisor for read-heavy roles.
     pub relief: f64,
+    /// Fraction of the score taken off when every call only looks (scaled by the read-only share).
+    pub readonly: f64,
     /// Tokens below which nothing is wasted.
     pub min_tokens: u64,
     /// Soft threshold.
@@ -74,6 +78,7 @@ impl Params {
             fail: mult("fail"),
             fail_cap: lim("fail_cap").max(1) as f64,
             relief: div,
+            readonly: lim("readonly_pct").clamp(0, 100) as f64 / 100.0,
             min_tokens: lim("min_tokens").max(0) as u64,
             soft: t("soft"),
             hard: t("hard"),
@@ -104,7 +109,7 @@ pub fn score(i: &Input, p: &Params, read_heavy: bool) -> f64 {
         * (1.0 + p.poll * i.poll.clamp(0.0, 1.0))
         * (1.0 + p.wait * i.wait.clamp(0.0, 1.0))
         * (1.0 + p.fail * fail);
-    let s = base * m;
+    let s = base * m * (1.0 - p.readonly * i.readonly.clamp(0.0, 1.0));
     if read_heavy { s / p.relief } else { s }
 }
 

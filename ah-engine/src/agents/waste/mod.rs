@@ -170,10 +170,11 @@ pub fn input_of(a: &Agent, now: u64) -> Option<Input> {
     let calls: Vec<&(String, String, bool, u64)> = a.recent.iter().filter(|r| r.3 >= from).collect();
     let n = calls.len() as u64;
     let trusted = n >= lim("min_calls");
+    let looks = pat("readonly");
     let (reads, polls, repeats, non_edit) = (pat("reads"), pat("poll"), pat("wait"), calls.iter().filter(|c| !c.2).count());
     let starts = |label: &str, set: &[&str]| set.iter().any(|p| label.to_lowercase().starts_with(p));
     let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let (mut read_n, mut read_dup, mut dup, mut poll_n, mut wait_n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut read_n, mut read_dup, mut dup, mut poll_n, mut wait_n, mut look_n) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     for (sig, label, edit, _) in &calls {
         let again = !seen.insert(sig.as_str());
         if starts(label, &reads) {
@@ -184,6 +185,7 @@ pub fn input_of(a: &Agent, now: u64) -> Option<Input> {
             dup += u64::from(again);
         }
         poll_n += u64::from(starts(label, &polls));
+        look_n += u64::from(starts(label, &looks));
         let low = label.to_lowercase();
         wait_n += u64::from(repeats.iter().any(|w| low.contains(w)) || pat("wait_tools").iter().any(|t| low.starts_with(t)));
     }
@@ -200,6 +202,7 @@ pub fn input_of(a: &Agent, now: u64) -> Option<Input> {
         poll: ratio(poll_n, n),
         wait,
         failed: a.errs.iter().filter(|e| e.2 >= from).count() as u64,
+        readonly: ratio(look_n, n),
     })
 }
 

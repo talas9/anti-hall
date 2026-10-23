@@ -153,6 +153,49 @@ fn the_cost_report_counts_commits_pushes_and_guard_fires_per_agent() {
     assert_eq!(r["totals"]["pushes"], 2);
 }
 
+/// 2026-10-23 burn-breaker false blocks: a commit or push in another clone (git -C / cd), and a finished cargo build or check, are outcomes
+/// that restart the waste window; a failed build and a failed push are not.
+#[test]
+fn a_commit_a_push_or_a_finished_build_in_any_repo_restarts_the_waste_window() {
+    let h = home("restart");
+    let n = now0();
+    write(
+        &sess(&h, "s1"),
+        &[
+            prompt(n - 9 * MIN, "/w"),
+            tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": "cargo check -j4"})),
+            result(n - 7 * MIN, "u1", "error[E0425]: cannot find value\nerror: could not compile `x`", false),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n - 6 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.builds_ok, a.waste.reset_at, a.progress), (0, 0, 0), "a build that did not compile is no outcome");
+    append(
+        &sess(&h, "s1"),
+        &[
+            tool(n - 5 * MIN, "m2", 200, "u2", "Bash", json!({"command": "lockf /x/cargo-heavy.lock nice -n 10 cargo build --release -j4 2>&1 | tail -3"})),
+            result(n - 4 * MIN, "u2", "Finished `release` profile in 1m", false),
+        ],
+    );
+    ticks(&h, &mut st, &[n - 3 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.builds_ok, a.progress), (1, crate::agents::weight("build")));
+    assert!(a.waste.reset_at > 0, "a finished build restarts the window");
+    let after_build = a.waste.reset_at;
+    append(
+        &sess(&h, "s1"),
+        &[
+            tool(n - 2 * MIN, "m3", 300, "u3", "Bash", json!({"command": "git -C /home/x/.anti-hall/work/wt-eng commit -m done && git -C /home/x/.anti-hall/work/wt-eng push origin b"})),
+            result(n - MIN, "u3", "ok", false),
+        ],
+    );
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.commits, a.pushes), (1, 1), "git -C <other clone> counts");
+    assert!(a.waste.reset_at > after_build, "a commit and push in another clone restart the window");
+}
+
 mod state {
     pub fn of(a: &super::Agent) -> &'static str {
         super::signals::state_of(a)
