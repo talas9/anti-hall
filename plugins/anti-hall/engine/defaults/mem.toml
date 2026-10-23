@@ -468,3 +468,144 @@ value = "{holder} stayed over its hard memory limit ({usage} over {limit} bytes)
 [mem.msg_exit_reason]
 doc = "Exit reason recorded when the daemon restarts because memory stayed over a hard limit. Placeholders: holder, usage, limit, secs."
 value = "memory: {holder} over its hard limit ({usage} over {limit} bytes) for {secs} s after recovery"
+
+# ---- leak sentinel (issue #200) --------------------------------------------------------------------------------------------------
+# Finds a leak by its TREND before any limit is reached: the process footprint, the counted heap and every holder's bytes are
+# sampled into a bounded ring and fitted with a robust slope (median of pairwise slopes), so one step after a heavy event does
+# not trigger it but a steady climb does. It only reports (event log, evidence file, impact event); it never restarts or kills.
+
+[mem.leak_enabled]
+doc = "Run the leak sentinel (trend detection on footprint, heap and every holder). Detection and evidence only: it never restarts or kills anything."
+value = true
+
+[mem.leak_warmup_s]
+doc = "Seconds after daemon start before the first sample. Warm-up (compiling the shipped patterns, loading the checks) reaches about 85 MB in 5 minutes and is not a leak."
+value = 600
+min = 0
+unit = "s"
+
+[mem.leak_sample_s]
+doc = "Seconds between samples of the footprint, the counted heap and every holder's bytes."
+value = 60
+min = 5
+unit = "s"
+
+[mem.leak_ring_max]
+doc = "Samples the in-memory ring keeps (oldest dropped first). At 60 s per sample 1440 is 24 hours."
+value = 1440
+min = 16
+
+[mem.leak_window_s]
+doc = "Span of the trend window the footprint and heap slopes are fitted over. A steady climb has to last this long to be flagged; shorter climbs only reach `watch`."
+value = 7200
+min = 60
+unit = "s"
+
+[mem.leak_window_full_pct]
+doc = "Percent of mem.leak_window_s the samples must span before the trend can be `suspected` (a shorter span can only be `watch`)."
+value = 90
+min = 1
+max = 100
+
+[mem.leak_min_samples]
+doc = "Fewest samples in a window for any slope to be trusted."
+value = 10
+min = 3
+
+[mem.leak_slope_mb_per_h]
+doc = "Footprint or heap growth in MB per hour (median pairwise slope over the window) at which a leak is suspected. Normal warm-up plus the 105-118 MB plateau after big transcripts sits well under it; a steady +10 MB/h for 2 hours is over it."
+value = 6
+min = 1
+unit = "MB/h"
+
+[mem.leak_watch_pct]
+doc = "Percent of mem.leak_slope_mb_per_h at which the state becomes `watch` (growing, not yet a leak)."
+value = 50
+min = 1
+max = 100
+
+[mem.leak_flatten_pct]
+doc = "The trend counts as not flattening while the slope of the newer half of the window is at least this percent of mem.leak_slope_mb_per_h. A climb that levelled off in the newer half is a plateau, not a leak."
+value = 50
+min = 0
+max = 100
+
+[mem.leak_holder_over_samples]
+doc = "A holder at or over its own soft limit for this many samples in a row is flagged (a cache at its soft limit evicts back below it; one that cannot shrink stays over)."
+value = 10
+min = 2
+
+[mem.leak_holder_windows]
+doc = "A holder whose bytes grow in each of this many consecutive windows of mem.leak_holder_window_s (never plateauing) is flagged. 4 windows of 30 minutes is 2 hours, the same time scale as the whole-process trend; a cache that fills and evicts back below its soft limit does not grow in every window."
+value = 4
+min = 2
+
+[mem.leak_holder_window_s]
+doc = "Length of one window of the holder plateau test (mem.leak_holder_windows of them are examined, newest last)."
+value = 1800
+min = 60
+unit = "s"
+
+[mem.leak_holder_slope_kb_per_h]
+doc = "Growth in KB per hour a holder must show in every one of the mem.leak_holder_windows windows to count as growing."
+value = 2048
+min = 1
+unit = "KB/h"
+
+[mem.leak_renotify_s]
+doc = "Least time between two notices (and evidence files) while the leak stays suspected. A different top grower is not a new notice inside this time."
+value = 21600
+min = 60
+unit = "s"
+
+[mem.leak_dir]
+doc = "Directory under the state directory that holds the evidence files `leak-<ts>.json`."
+value = "mem"
+
+[mem.leak_state_ok]
+doc = "Leak state when no trend is growing."
+value = "ok"
+
+[mem.leak_state_watch]
+doc = "Leak state when something grows but has not yet lasted the whole window or reached the slope limit."
+value = "watch"
+
+[mem.leak_state_suspected]
+doc = "Leak state when a robust trend or a holder's growth says memory is leaking."
+value = "suspected"
+
+[mem.leak_name_other]
+doc = "Name given to heap bytes no holder claims when that unattributed part is what grows."
+value = "other (unattributed heap)"
+
+[mem.leak_name_outside]
+doc = "Name given to footprint bytes outside the counted heap (allocator retention, C libraries, thread stacks) when that part is what grows."
+value = "outside the counted heap"
+
+[mem.leak_impact_kind]
+doc = "Impact kind recorded with every leak notice."
+value = "memory_leak"
+
+[mem.leak_msg_notice]
+doc = "Event-log line and owner notice when a leak is suspected. Placeholders: top, mb_per_h, hours, footprint, soft, share, basis."
+value = "possible memory leak: {top} {mb_per_h} MB/h for {hours} h ({share} of the {basis} growth), footprint {footprint} MB of {soft} MB soft"
+
+[mem.leak_msg_holder_notice]
+doc = "Event-log line and owner notice when a holder, not the whole process, is flagged. Placeholders: top, reason, footprint, soft."
+value = "possible memory leak: holder {top} {reason}, footprint {footprint} MB of {soft} MB soft"
+
+[mem.leak_reason_over_soft]
+doc = "Reason text for a holder that stayed at or over its soft limit."
+value = "stayed at or over its soft limit"
+
+[mem.leak_reason_no_plateau]
+doc = "Reason text for a holder that grew in every examined window."
+value = "never plateaued across the examined windows"
+
+[mem.leak_basis_footprint]
+doc = "Word for the footprint in the leak notice's `basis` placeholder."
+value = "footprint"
+
+[mem.leak_basis_heap]
+doc = "Word for the counted heap in the leak notice's `basis` placeholder."
+value = "heap"
