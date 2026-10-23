@@ -5459,7 +5459,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `setup.brief_unknown_version` | `(unknown)` |  |  | The version shown when plugin.json cannot be read. |
 | `setup.brief_unreadable` | `(unreadable)` |  |  | The purpose shown for a hook file that cannot be read. |
 | `setup.brief_version_key` | `version` |  |  | The member of the plugin manifest that holds the version. |
-| `setup.cap_companion_dir` | `companion` |  |  | The directory of a plugin tree that holds the companion installers. |
+| `setup.cap_companion_dir` | `../anti-hall-node/companion` |  |  | The directory that holds the companion installers, relative to the plugin root. |
 | `setup.cap_const_fmt` | `const {name} = ` |  |  | How an installer declares a constant on its own line. Placeholder: name. |
 | `setup.cap_const_label` | `LABEL` |  |  | The name of the installer constant that holds its launchd label. |
 | `setup.cap_const_unit` | `UNIT` |  |  | The name of the installer constant that holds its systemd unit name. |
@@ -11591,6 +11591,34 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mem.key_cache_low_water_pct` | `80` |  |  | Percent of mem.key_cache_soft_bytes cwd-to-project keys are evicted down to when the soft limit is reached. |
 | `mem.key_cache_max_entries` | `4096` |  |  | Cwd-to-project cache entries kept at most; past it the least recently used cwd is dropped first. |
 | `mem.key_cache_soft_bytes` | `262144` |  | bytes | Estimated bytes of cached cwd-to-project keys held before least recently used paths are evicted down to the low-water mark. |
+| `mem.leak_basis_footprint` | `footprint` |  |  | Word for the footprint in the leak notice's `basis` placeholder. |
+| `mem.leak_basis_heap` | `heap` |  |  | Word for the counted heap in the leak notice's `basis` placeholder. |
+| `mem.leak_dir` | `mem` |  |  | Directory under the state directory that holds the evidence files `leak-<ts>.json`. |
+| `mem.leak_enabled` | `true` |  |  | Run the leak sentinel (trend detection on footprint, heap and every holder). Detection and evidence only: it never restarts or kills anything. |
+| `mem.leak_flatten_pct` | `50` |  |  | The trend counts as not flattening while the slope of the newer half of the window is at least this percent of mem.leak_slope_mb_per_h. A climb that levelled off in the newer half is a plateau, not a leak. |
+| `mem.leak_holder_over_samples` | `10` |  |  | A holder at or over its own soft limit for this many samples in a row is flagged (a cache at its soft limit evicts back below it; one that cannot shrink stays over). |
+| `mem.leak_holder_slope_kb_per_h` | `2048` |  | KB/h | Growth in KB per hour a holder must show in every one of the mem.leak_holder_windows windows to count as growing. |
+| `mem.leak_holder_window_s` | `1800` |  | s | Length of one window of the holder plateau test (mem.leak_holder_windows of them are examined, newest last). |
+| `mem.leak_holder_windows` | `4` |  |  | A holder whose bytes grow in each of this many consecutive windows of mem.leak_holder_window_s (never plateauing) is flagged. 4 windows of 30 minutes is 2 hours, the same time scale as the whole-process trend; a cache that fills and evicts back below its soft limit does not grow in every window. |
+| `mem.leak_impact_kind` | `memory_leak` |  |  | Impact kind recorded with every leak notice. |
+| `mem.leak_min_samples` | `10` |  |  | Fewest samples in a window for any slope to be trusted. |
+| `mem.leak_msg_holder_notice` | `possible memory leak: holder {top} {reason}, footprint {footprint} MB of {sof...` |  |  | Event-log line and owner notice when a holder, not the whole process, is flagged. Placeholders: top, reason, footprint, soft. |
+| `mem.leak_msg_notice` | `possible memory leak: {top} {mb_per_h} MB/h for {hours} h ({share} of the {ba...` |  |  | Event-log line and owner notice when a leak is suspected. Placeholders: top, mb_per_h, hours, footprint, soft, share, basis. |
+| `mem.leak_name_other` | `other (unattributed heap)` |  |  | Name given to heap bytes no holder claims when that unattributed part is what grows. |
+| `mem.leak_name_outside` | `outside the counted heap` |  |  | Name given to footprint bytes outside the counted heap (allocator retention, C libraries, thread stacks) when that part is what grows. |
+| `mem.leak_reason_no_plateau` | `never plateaued across the examined windows` |  |  | Reason text for a holder that grew in every examined window. |
+| `mem.leak_reason_over_soft` | `stayed at or over its soft limit` |  |  | Reason text for a holder that stayed at or over its soft limit. |
+| `mem.leak_renotify_s` | `21600` |  | s | Least time between two notices (and evidence files) while the leak stays suspected. A different top grower is not a new notice inside this time. |
+| `mem.leak_ring_max` | `1440` |  |  | Samples the in-memory ring keeps (oldest dropped first). At 60 s per sample 1440 is 24 hours. |
+| `mem.leak_sample_s` | `60` |  | s | Seconds between samples of the footprint, the counted heap and every holder's bytes. |
+| `mem.leak_slope_mb_per_h` | `6` |  | MB/h | Footprint or heap growth in MB per hour (median pairwise slope over the window) at which a leak is suspected. Normal warm-up plus the 105-118 MB plateau after big transcripts sits well under it; a steady +10 MB/h for 2 hours is over it. |
+| `mem.leak_state_ok` | `ok` |  |  | Leak state when no trend is growing. |
+| `mem.leak_state_suspected` | `suspected` |  |  | Leak state when a robust trend or a holder's growth says memory is leaking. |
+| `mem.leak_state_watch` | `watch` |  |  | Leak state when something grows but has not yet lasted the whole window or reached the slope limit. |
+| `mem.leak_warmup_s` | `600` |  | s | Seconds after daemon start before the first sample. Warm-up (compiling the shipped patterns, loading the checks) reaches about 85 MB in 5 minutes and is not a leak. |
+| `mem.leak_watch_pct` | `50` |  |  | Percent of mem.leak_slope_mb_per_h at which the state becomes `watch` (growing, not yet a leak). |
+| `mem.leak_window_full_pct` | `90` |  |  | Percent of mem.leak_window_s the samples must span before the trend can be `suspected` (a shorter span can only be `watch`). |
+| `mem.leak_window_s` | `7200` |  | s | Span of the trend window the footprint and heap slopes are fitted over. A steady climb has to last this long to be flagged; shorter climbs only reach `watch`. |
 | `mem.ledger_skew_bytes` | `262144` |  | bytes | Slack in the memory ledger's invariant (the named holders must fit inside the counted Rust heap): the holders and the heap are read a few microseconds apart while other threads allocate, so a holder total up to this much over the heap is not reported as an overcount. |
 | `mem.msg_exit_reason` | `memory: {holder} over its hard limit ({usage} over {limit} bytes) for {secs} ...` |  |  | Exit reason recorded when the daemon restarts because memory stayed over a hard limit. Placeholders: holder, usage, limit, secs. |
 | `mem.msg_hard` | `{holder} crossed its hard memory limit ({usage} over {limit} bytes): inserts ...` |  |  | Event-log line when a holder crosses its hard limit (the insert is refused and the holder recycled). Placeholders: holder, usage, limit. |
@@ -11941,7 +11969,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.feed_events` | `7 entries` |  |  | Plain names for the host's event names in the feed; an event not listed shows as it is. |
 | `web.feed_max` | `100` |  |  | Activity feed lines kept (server and page). |
 | `web.feed_text` | `8 entries` |  |  | Feed sentences by kind. Placeholders: {check}, {event}, {rule}, {sender}, {recipient}, {type}. |
+| `web.footprint_fallback_ms` | `15000` |  |  | For an engine whose pulse has no footprint, the header reads it from the engine status at most this often (ms). |
 | `web.full_push_ms` | `500` |  |  | Milliseconds between pushes to a tab in the full tier (500 = 2 per second; never below web.push_min_ms). |
+| `web.health_cache_ms` | `1000` |  |  | A Health reading is shared between tabs for this long (ms), so several open tabs ask the engine once. |
+| `web.health_cpu_hard_permille` | `40` |  |  | Engine CPU hard bar, parts per thousand of one core (4 percent). |
+| `web.health_cpu_soft_permille` | `20` |  |  | Engine CPU soft bar, parts per thousand of one core (the engine's normal-load budget: 2 percent). |
+| `web.health_holders_max` | `8` |  |  | Most memory holders listed on the Health screen. |
+| `web.health_warn_pct` | `95` |  |  | Memory (percent of the soft limit) at which the Health headline stops saying healthy and warns. |
 | `web.heartbeat_stale_s` | `600` |  |  | An agent whose last output is older than this many seconds shows its heartbeat in the stale colour. |
 | `web.heartbeat_warn_s` | `60` |  |  | An agent whose last output is older than this many seconds shows its heartbeat in the warning colour. |
 | `web.idle_check_s` | `5` |  |  | How often the server checks whether it has been idle long enough to exit. |
@@ -11960,9 +11994,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_decision_fx` | `5 entries` |  |  | Effect colour key by decision name (see web.graph.fx.colors): allow green, advisory amber, block red; error plays as a block, defer as an inject. |
 | `web.live_events_max` | `8` |  |  | Most hook-event nodes the Live screen draws. |
 | `web.live_graph_rel` | `engine/defaults/web_graph.toml` |  |  | The graph component's config file, relative to the plugin root; the server turns it into the JSON the page reads. |
+| `web.live_hook_fx` | `13 entries` |  |  | Effect colour key (see web.graph.fx.colors) of the packet that carries each hook event on the Live screen, so the colour tells the hook type. A decision keeps its own colour for the burst at the end. |
+| `web.live_hook_fx_default` | `hook_other` |  |  | Effect colour key of the packet of a hook event web.live_hook_fx does not name. |
+| `web.live_hook_legend` | `13 items` |  |  | The hook events the Live legend lists, in order, each with its colour and live rate. |
 | `web.live_inject_decision` | `allow` |  |  | A decision with this name that put text into the model's context plays in the inject colour instead. |
 | `web.live_inject_fx` | `inject` |  |  | Effect colour key of a decision that injected text into the context. |
 | `web.live_jev_fx` | `3 entries` |  |  | Effect colour key by Jev mode: on (may change the outcome), shadow (logged only), off. |
+| `web.live_jev_glow_ms` | `4000` |  | ms | How long after a judgement by Jev its node keeps glowing on the Live screen (it glows only while judging; an off or shadow Jev never glows). |
 | `web.live_jev_log_rel` | `.anti-hall/logs/jev-assist.ndjson` |  |  | The Jev decision log, relative to the user's home; the server follows it for the Live screen's AI-mind node. |
 | `web.live_map_parts` | `bindings` |  |  | The `describe` parts the Live screen reads (`describe --part`). |
 | `web.live_map_timeout_ms` | `15000` |  | ms | Longest the server waits for `describe` to answer. |
@@ -11977,6 +12015,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.live_timeline_max` | `40` |  |  | Rows of the Live screen's timeline strip. |
 | `web.live_top_n` | `5` |  |  | Checks listed in the Live screen's top list. |
 | `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
+| `web.manage_file` | `web_manage.toml` |  |  | The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs). |
 | `web.max_streams` | `16` |  |  | Most event streams open at once; more are refused with 503. |
 | `web.mesh_db_rel` | `.anti-hall/devswarm/store/devswarm.db` |  |  | The mesh store, relative to the home directory. |
 | `web.mesh_limit` | `200` |  |  | Most mesh messages read in one round. |
@@ -11995,11 +12034,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.msg_start_failed` | `The Command Center did not start ({bin}); see the engine log.` |  |  | Printed when the server did not publish its state file in time. Placeholder: {bin}. |
 | `web.msg_status_running` | `Command Center: running (pid {pid}) {url}` |  |  | Printed by `ah-engine web status` when the server runs. Placeholders: {pid}, {url}. |
 | `web.msg_status_stopped` | `Command Center: not running` |  |  | Printed by `ah-engine web status` when no server is running. |
+| `web.msg_topo_no_viewer` | `This store has no viewer.` |  |  | Answer to opening a store that has no viewer. |
+| `web.msg_topo_unknown` | `That action is not available.` |  |  | Answer to a Topology action the settings do not define. |
 | `web.msg_unauthorized` | `Open the Command Center with `ah-hook web`.` |  |  | Body of the refusal sent to a request without the session token. |
 | `web.msg_url` | `Command Center: {url}` |  |  | Printed with the page address. Placeholder: {url}. |
 | `web.msg_usage` | `usage: ah-engine web [open\|status] [--no-open] [--json]` |  |  | Usage line of `ah-engine web`. |
+| `web.number_decimals` | `1` |  |  | Digits after the point in a scaled number (1.1M); a trailing zero part is dropped (12k, not 12.0k). |
+| `web.number_raw_keys` | `pid` |  |  | Tracker fields in the details panel that are identifiers, not quantities, and so are never scaled. |
+| `web.number_units` | `3 entries, 3 entries, 3 entries` |  |  | How the page writes long numbers (tokens, requests, counts, in the tables, tiles and details): from `from` up a number is divided by `div` and gets `suffix`. Ascending; the last step reached applies; below the first step the number is written whole. |
 | `web.open_browser` | `true` |  |  | Open the page in the default browser after `ah-engine web` (the --no-open flag overrides it). |
 | `web.open_cmd` | `open` |  |  | Command that opens a URL; the URL is appended as the last argument. |
+| `web.ops_cfg_rel` | `engine/defaults/web_ops.toml` |  |  | The Accounts, Updates and Logs screens config file, relative to the plugin root; the server reads its [web.ops.*] values and merges its texts into the page labels. |
 | `web.pkg_dir` | `web/pkg` |  |  | Directory of the compiled page (WASM and its loader), relative to the plugin root. |
 | `web.plugin_manifest_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to the plugin root; the header's version badge reads the plugin version from it. |
 | `web.port` | `47821` |  |  | The port the dashboard listens on. When something else holds it, a random free port from web.port_min..web.port_max is used and printed. |
@@ -12011,8 +12056,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.pulse_cpu_warn_permille` | `50` |  |  | Engine CPU (parts per thousand of one core) at which the CPU pill turns amber. |
 | `web.pulse_err_bad` | `25` |  |  | Failed engine requests at which the ERR pill turns red. |
 | `web.pulse_err_warn` | `1` |  |  | Failed engine requests at which the ERR pill turns amber. |
-| `web.pulse_mem_bad_mb` | `200` |  |  | Engine memory (MB) at which the MEM pill turns red. |
-| `web.pulse_mem_warn_mb` | `125` |  |  | Engine memory (MB) at which the MEM pill turns amber. |
+| `web.pulse_mem_bad_mb` | `200` |  |  | Engine memory footprint (MB) at which the MEM pill turns red (the engine's hard memory limit). |
+| `web.pulse_mem_warn_mb` | `125` |  |  | Engine memory footprint (MB) at which the MEM pill turns amber (the engine's soft memory limit). |
 | `web.pulse_min_interval_ms` | `2000` |  |  | How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed. |
 | `web.push_min_ms` | `500` |  |  | Hard floor of the time between pushes and between asking the engine (500 = at most 2 per second). |
 | `web.sse_keepalive_s` | `15` |  |  | Interval of the keep-alive comment on the event stream. |
@@ -12022,7 +12067,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.static_dir` | `web/static` |  |  | Directory of the page's own files (index, CSS), relative to the plugin root. |
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
-| `web.ui` | `158 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.topo_action_max_chars` | `4000` |  |  | Longest output text of a Topology action that is returned. |
+| `web.topo_actions` | `7 items` |  |  | The Topology node menus, in order. kind: client, engine, subsystem or store. local: shows the figures the page already has. needs_viewer: only for stores in web.topo_viewers. args: the engine arguments; {pid} is the engine's pid, {viewer} the store's viewer id, {id} the node's id. |
+| `web.topo_bad_fail_pct` | `10` |  |  | Share of failed calls (percent) at which a client or store turns red. |
+| `web.topo_clients_max` | `12` |  |  | Most clients drawn on the Topology screen (the busiest are kept). |
+| `web.topo_databases` | `hot.db, archive.db` |  |  | Store ids drawn as databases (the others are files). |
+| `web.topo_idle_s` | `300` |  |  | Seconds without a call after which a client or store reads as idle. |
+| `web.topo_poll_full_ms` | `2000` |  |  | Milliseconds between two Health readings in Full. |
+| `web.topo_poll_lite_ms` | `5000` |  |  | Milliseconds between two Health readings in Lite. |
+| `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
+| `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
+| `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
+| `web.ui` | `241 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 
