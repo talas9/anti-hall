@@ -2490,7 +2490,7 @@ value = "ingest-"
 [mesh_write.self_heal_cooldown_ms]
 doc = "How long after one self-heal attempt another may be made."
 value = 60000
-min = 1
+min = 1000
 
 [mesh_write.ingest_owner_file]
 doc = "The file under the DevSwarm state directory that says which process owns the ingest of the projects."
@@ -2673,10 +2673,6 @@ value = "daemonHealCooldown"
 [mesh_write.heal_retry_after]
 doc = "The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`)."
 value = "retryAfterMs"
-
-[mesh_write.ingest_owner_name]
-doc = "The `owner` word of that marker while the engine drains ingest."
-value = "engine"
 
 [mesh_write.msg_registry_unreadable]
 doc = "The refusal text of a verb whose workspace registry could not be read; `{why}` is the reason."
