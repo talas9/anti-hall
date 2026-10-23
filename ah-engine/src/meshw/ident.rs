@@ -22,13 +22,21 @@ use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-/// The engine cannot reproduce Node's answer here without running what Node runs; the verb goes to Node.
+/// The reason a resolution stopped: a refusal that is the verb's own answer ([`refuse`]), a store failure the verb prints as its
+/// error ([`Defer::reason`]) or a case the caller holds and retries. Nothing is ever handed to Node; the name is historical.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Defer(pub String);
 
+impl Defer {
+    /// The carrier of a stopped resolution with its reason text (every reason is logged or printed by the caller).
+    pub fn reason(why: impl Into<String>) -> Self {
+        Self(why.into())
+    }
+}
+
 /// Shorthand for a deferral with a reason code (the code names a `mesh_write.defer_*` setting's purpose).
 pub fn defer<T>(code: &str) -> Result<T, Defer> {
-    Err(Defer(code.to_string()))
+    Err(Defer::reason(code))
 }
 
 /// JavaScript `String(v)` of a JSON value: `null` is "null", arrays join their elements with a comma (null as empty), an object is
@@ -48,7 +56,7 @@ pub fn js_to_string(v: &OVal) -> String {
 /// deferral channel: the reason is `mesh_write.refusal_prefix` and the refusal's JSON body (without the `action`, which the front
 /// door adds from the verb's name). The front door prints it with `mesh_write.exit_refused`; it is never a deferral to Node.
 pub fn refuse<T>(body: &str) -> Result<T, Defer> {
-    Err(Defer(format!("{}{body}", defaults::text("mesh_write.refusal_prefix"))))
+    Err(Defer::reason(format!("{}{body}", defaults::text("mesh_write.refusal_prefix"))))
 }
 
 /// The verb's own refusal for a store, registry or table that cannot be opened, read or written (Node throws there too): exit 2,

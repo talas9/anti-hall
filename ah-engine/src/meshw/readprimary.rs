@@ -998,7 +998,7 @@ pub(crate) fn failure(error: &str) -> Answer {
 
 /// A failure of the store itself (an unreadable or corrupt database), as the reason the verbs print as an error: see [`is_store_failure`].
 pub(crate) fn store_err(kind: &str, e: impl std::fmt::Display) -> ident::Defer {
-    ident::Defer(format!("{kind}:{e}"))
+    ident::Defer::reason(format!("{kind}:{e}"))
 }
 
 /// Whether a deferral's reason is a failure of the store itself (an unreadable or corrupt database): Node throws there too, and
@@ -1703,7 +1703,7 @@ mod tests {
             let code = src.split("#[cfg(test)]").next().unwrap_or(src);
             let ctor = ["Def", "er("].concat();
             for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                assert!(!line.contains(&ctor) || line.contains("ident::Defer(format!(\"{kind}:{e}\"))") || line.contains("Err(ident::Defer(reason))") || line.contains("Err(Defer(reason))") || line.contains("pub struct"), "{file}: `{line}` builds a deferral by hand");
+                assert!(!line.contains(&ctor) || line.contains("Err(ident::Defer(reason))") || line.contains("Err(Defer(reason))") || line.contains("pub struct"), "{file}: `{line}` builds a deferral by hand");
                 let mut rest = line;
                 while let Some(at) = rest.find("store_err(\"") {
                     let after = &rest[at + "store_err(\"".len()..];

@@ -3,24 +3,3 @@
 [hot_path]
 
 [counts]
-dssup/appsync/plan.rs 2
-dssup/appsync/snap.rs 3
-dssup/appsync/state.rs 4
-dssup/liveness.rs 5
-dssup/recon/archive.rs 1
-dssup/recon/archived.rs 1
-dssup/recon/dup.rs 1
-dssup/recon/fold.rs 8
-dssup/recon/heal.rs 2
-dssup/recon/orphans.rs 5
-dssup/recon/side.rs 7
-dssup/recon/sweep.rs 5
-dssup/recon/view.rs 11
-dssup/retention/apply.rs 13
-dssup/retention/cli.rs 9
-dssup/retention/gz.rs 8
-dssup/retention/mod.rs 1
-dssup/retention/plan.rs 8
-meshw/ident.rs 1
-meshw/readprimary.rs 1
-meshw/tick.rs 5

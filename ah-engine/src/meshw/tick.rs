@@ -123,7 +123,7 @@ pub(crate) fn open_reader(inv: &Inv, repo_key: &str) -> R<Option<MeshReader>> {
     match probe_reader(inv, repo_key) {
         Probe::Missing => Ok(None),
         Probe::Open(r) => Ok(Some(r)),
-        Probe::Unreadable(code) => Err(Defer(format!("store-unreadable:{code}"))),
+        Probe::Unreadable(code) => Err(crate::meshw::readprimary::store_err("store-unreadable", code)),
     }
 }
 
@@ -146,8 +146,8 @@ pub(crate) fn probe_reader_creating(inv: &Inv, repo_key: &str) -> Probe {
 pub(crate) fn open_reader_creating(inv: &Inv, repo_key: &str) -> R<MeshReader> {
     match probe_reader_creating(inv, repo_key) {
         Probe::Open(r) => Ok(r),
-        Probe::Missing => Err(Defer("store-create".into())),
-        Probe::Unreadable(code) => Err(Defer(format!("store-unreadable:{code}"))),
+        Probe::Missing => Err(Defer::reason("store-create")),
+        Probe::Unreadable(code) => Err(crate::meshw::readprimary::store_err("store-unreadable", code)),
     }
 }
 
@@ -450,14 +450,14 @@ fn widen(inv: &Inv, o: &Opened, id: &str, desc: &OVal, store_base: f64, own_show
         // a sibling the caller may not ack keeps the watermark the caller left, so its rows are not counted twice
         let cursor =
             if crate::meshw::meshgroup::ack_gate(inv, &o.rows, id, pid)? { base.max(crate::meshw::meshgroup::seen_cursor(inv, id, pid)) } else { base };
-        let total = o.reader.message_count(pid).map_err(|e| Defer(format!("store-read:{e}")))?;
+        let total = o.reader.message_count(pid).map_err(|e| crate::meshw::readprimary::store_err("store-read", e))?;
         let mut rows: Vec<Value> = Vec::new();
         o.reader
             .for_each_message(pid, if cursor.is_finite() && cursor > 0.0 { cursor.floor() as u64 } else { 0 }, |m| {
                 rows.push(m);
                 true
             })
-            .map_err(|e| Defer(format!("store-read:{e}")))?;
+            .map_err(|e| crate::meshw::readprimary::store_err("store-read", e))?;
         w.total += total as f64;
         parts.push((pid.clone(), cursor, rows));
     }
