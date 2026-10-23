@@ -284,6 +284,11 @@ if [ -f "$bin" ]; then
 fi
 binsha=$(sha256_of "$tmp/ah-engine")
 mv -f "$tmp/ah-engine" "$bin" 2>/dev/null || fail "cannot install $bin"
+# The Command Center server (GH #266), when this archive carries one: next to the engine, best effort (the dashboard is optional).
+if tar -xzOf "$tmp/asset" "ah-engine-v$version-$triple/ah-web" >"$tmp/ah-web" 2>/dev/null && [ -s "$tmp/ah-web" ]; then
+  chmod 755 "$tmp/ah-web" 2>/dev/null
+  mv -f "$tmp/ah-web" "$(dirname "$bin")/ah-web" 2>/dev/null || say "warn: cannot install ah-web next to $bin"
+fi
 printf '%s %s\n' "$want" "$binsha" >"$marker"
 # remember this binary as the expected one (under this install's hold, so no check runs between the swap and the record), so a
 # later damaged copy can be told apart (and rolled back); never fails the install
