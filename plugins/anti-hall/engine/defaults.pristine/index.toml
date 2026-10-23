@@ -91,5 +91,6 @@ files = [
     "devswarm_parent.toml",
     "nodeback.toml",
     "web.toml",
+    "io.toml",
 ]
 extra_dir = "hooks.d"

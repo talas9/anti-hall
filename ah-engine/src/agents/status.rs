@@ -155,6 +155,9 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     if sub == defaults::text("agent_tracker.wake_verb") {
         return super::wake::run(p);
     }
+    if sub == "send" {
+        return super::ctl::run_send(p);
+    }
     if sub != "status" && sub != "tick" {
         eprintln!("{}", defaults::render("msg.agent_usage", &[]));
         return 64;

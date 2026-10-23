@@ -427,13 +427,17 @@ impl Db {
     /// Apply `op` and wait for its commit: `Ok` means it is on disk (D23). A timeout leaves the write queued.
     pub fn write(&self, op: Op) -> Result<String, DbError> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.enqueue(Job { op, reply: Some(tx) })?;
-        rx.recv_timeout(defaults::millis("storage.ack_timeout_ms")).unwrap_or(Err(DbError::Timeout))
+        let queued = self.enqueue(Job { op, reply: Some(tx) });
+        let done = queued.and_then(|()| rx.recv_timeout(defaults::millis("storage.ack_timeout_ms")).unwrap_or(Err(DbError::Timeout)));
+        crate::web::io::store_op(defaults::text("io.id_hot_db"), 0, done.is_ok(), true);
+        done
     }
 
     /// Queue `op` without waiting (telemetry from the hook path, which must never wait on storage, D9).
     pub fn submit(&self, op: Op) -> Result<(), DbError> {
-        self.enqueue(Job { op, reply: None })
+        let r = self.enqueue(Job { op, reply: None });
+        crate::web::io::store_op(defaults::text("io.id_hot_db"), 0, r.is_ok(), true);
+        r
     }
 
     /// Wait until every write queued before this call has committed.
@@ -443,7 +447,10 @@ impl Db {
 
     /// Run `f` on the hot.db read connection.
     pub fn read<R>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<R>) -> Result<R, DbError> {
-        Ok(f(&lk(&self.read))?)
+        let r = f(&lk(&self.read));
+        // an empty answer (no row for the key) is a normal read, not a storage error
+        crate::web::io::store_op(defaults::text("io.id_hot_db"), 0, r.is_ok() || matches!(r, Err(rusqlite::Error::QueryReturnedNoRows)), false);
+        Ok(r?)
     }
 
     /// Run `f` on archive.db, opening (and migrating) it on first use.

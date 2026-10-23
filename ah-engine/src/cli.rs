@@ -104,6 +104,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
         ("describe", crate::web::cmd_describe),
         ("query", crate::web::cmd_query),
+        ("proc", crate::web::actions::run_proc),
     ]
 }
 
@@ -483,7 +484,7 @@ fn cmd_diag(p: &Parsed) -> i32 {
         emit(p, msg.clone(), json!({"error": msg}));
         return 64;
     }
-    let report = crate::obs::diagverbs::local(topic).or_else(|| client::ctl_json(&format!("diag {topic}")));
+    let report = crate::obs::diagverbs::local(topic, p.rest.get(1).map_or("", String::as_str)).or_else(|| client::ctl_json(&format!("diag {topic}")));
     match report {
         Some(v) => emit(p, human(&v), v),
         None if topic == "trace" => {

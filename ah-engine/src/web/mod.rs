@@ -14,17 +14,17 @@
 // - an absent field is the empty value
 // - a line of the audit log that is not JSON is skipped: a torn tail line must not hide the rows before it
 // A failure that must be seen goes through `crate::discard` instead.
-mod actions;
+pub mod actions;
 mod agentsctl;
-mod decisions;
+pub mod decisions;
 mod describe;
 mod history;
 mod impactcmp;
 mod insights;
-mod io;
+pub mod io;
 mod manage;
-mod mesh_events;
-mod pulse;
+pub mod mesh_events;
+pub mod pulse;
 mod query;
 
 pub use describe::{coverage, describe};
@@ -155,4 +155,18 @@ pub fn cmd_config_write(p: &Parsed) -> Option<i32> {
             1
         }
     })
+}
+
+/// Answer a dashboard `CTL` verb that needs no daemon state, `None` when `verb` is not one of them (`pulse` needs the daemon's
+/// counters and is built in `daemon.rs`).
+pub fn dispatch(verb: &str, args: &str) -> Option<String> {
+    let want = |k: &str| args.split_whitespace().find_map(|a| a.strip_prefix(k).map(str::to_string));
+    match verb {
+        "mesh-events" => Some(mesh_events::events(args).to_string()),
+        "mesh-msg" => Some(mesh_events::message(args).to_string()),
+        "decisions" => Some(decisions::snapshot(args).to_string()),
+        "io" => Some(io::snapshot(args).to_string()),
+        "agents" => Some(crate::agents::web_document(want("since=").as_deref(), want("agent=").as_deref()).to_string()),
+        _ => None,
+    }
 }

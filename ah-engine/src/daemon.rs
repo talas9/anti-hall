@@ -343,7 +343,7 @@ impl Shared {
                 serde_json::json!({"counters": keep("counters"), "histograms": keep("histograms")})
             }),
             "trace" => serde_json::json!({"running": true, "entries": crate::obs::trace::snapshot()}),
-            other => crate::obs::diagverbs::local(other).unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
+            other => crate::obs::diagverbs::local(other, "").unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
         }
     }
 
@@ -464,6 +464,26 @@ impl Shared {
                 ("max_wait_us", load["max_wait_us"].as_u64().unwrap_or(0)),
             ],
         )
+    }
+
+    /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
+    pub fn pulse_json(&self) -> serde_json::Value {
+        crate::web::pulse::build(&crate::web::pulse::Inputs {
+            version: &self.own,
+            uptime_s: self.started.elapsed().as_secs(),
+            rss_kb: limits::rss_kb(),
+            cpu_s: limits::process_cpu_secs(),
+            requests: self.stats.requests.load(SeqCst),
+            busy_replies: self.stats.busy.load(SeqCst),
+            slow_replies: SLOW_REPLIES.load(SeqCst),
+            errors: self.stats.errors.load(SeqCst),
+            panics: self.stats.panics.load(SeqCst),
+            queue_depth: self.depth.load(SeqCst) as u64,
+            workers: self.busy_since.len() as u64,
+            budget_mask: lk(&self.budget).mask(),
+            restarts: self.starts.saturating_sub(1),
+            config_version: self.config.snapshot().version,
+        })
     }
 
     fn status(&self) -> String {
@@ -676,11 +696,15 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     }
     let ctl = head.strip_prefix("CTL ").map(str::trim);
     let (verb, args) = ctl.map(|c| c.split_once(' ').unwrap_or((c, ""))).unwrap_or(("", ""));
+    if let Some(reply) = ctl.and_then(|_| crate::web::dispatch(verb, args)) {
+        return (Reply::Ok(reply), After::Continue);
+    }
     match ctl.map(|_| verb) {
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
         Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
+        Some("pulse") => (Reply::Ok(sh.pulse_json().to_string()), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("profile") => (Reply::Ok(crate::obs::profile::ctl(args)), After::Continue),
@@ -769,6 +793,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
         crate::memdiag::note_check(check);
         observe_check_cost_in(self.t, self.event, check, micros);
         crate::obs::trace::push("check", check, telemetry::decision_name(verdict), micros);
+        crate::web::decisions::push(self.event, check, rule_id, verdict, micros);
         if matches!(verdict, crate::checks::Verdict::Defer) {
             crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
         }
@@ -985,6 +1010,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::memdiag::note_check(check);
         observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
         checks_us.set(checks_us.get().saturating_add(micros));
+        crate::web::decisions::push(&meta.event, check, &e.id, &v, micros);
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
     let (start_cpu, budget) = cpu_budget(cfg);
@@ -1451,6 +1477,13 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             },
         );
     }
+    let how = match &reply {
+        Reply::Busy => crate::web::io::Served::FailOpen,
+        Reply::Err(why) if !why.is_empty() => crate::web::io::Served::FailOpen,
+        _ if late => crate::web::io::Served::Timeout,
+        _ => crate::web::io::Served::Ok,
+    };
+    crate::web::io::client(session.as_deref(), how, started.elapsed().as_micros() as u64);
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,
