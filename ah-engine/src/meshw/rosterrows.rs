@@ -692,15 +692,19 @@ fn archived_rows(e: &Eng, shown: &HashSet<String>) -> R<Vec<Obj>> {
         if crate::meshw::roster::physical_owner_key(&d)?.as_deref() != Some(e.repo_key) {
             continue;
         }
+        // Node pushed null for both although the descriptor it had just checked holds the path: the path and its mesh id are
+        // the row's, so an archived workspace can be matched by where it lived
+        let wt = js_text(d.get(key("mesh_write.field_worktree_path")))?;
+        let mesh_id = ident::primary_workspace_id(&wt).ok();
         let mut o = Obj::default();
         o.put("id", s(id))
             .put("working_on", OVal::Null)
             .put("directUnread", OVal::Null)
             .put("broadcastUnread", OVal::Null)
             .put("urgencyMax", OVal::Null)
-            .put("worktreePath", OVal::Null)
+            .put("worktreePath", s(&wt))
             .put("source", s(key("devswarm_cli.rr_source_archived")))
-            .put("meshId", OVal::Null)
+            .put("meshId", mesh_id.as_deref().map_or(OVal::Null, s))
             .put("hints", strings(&[key("devswarm_cli.rr_hint_archived").to_string()]));
         out.push(o);
     }
