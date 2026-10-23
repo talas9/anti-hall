@@ -443,7 +443,10 @@ fn LogsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl IntoV
     view! {
         <div class="main-head">
             <h1>{tx("ops_logs_title")}</h1>
-            <span class="counts">{move || format!("{} {} {} {}", shown.with(Vec::len), tx("ops_log_shown"), total(), tx("ops_log_lines"))}</span>
+            <span class="counts">{move || {
+                let n = shown.with(Vec::len);
+                if n == total() { format!("{n} {}", tx("ops_log_lines")) } else { format!("{n} {} \u{b7} {} {}", tx("ops_log_shown"), total(), tx("ops_log_lines")) }
+            }}</span>
             <span class="conn">{move || if st.paused.get() { tx("ops_log_paused") } else { String::new() }}</span>
         </div>
         <p class="soft-note">{tx("ops_logs_hint")}</p>

@@ -117,6 +117,7 @@ struct Hub {
     sink: Cell<Option<Sink>>,
     timer: Cell<Option<i32>>,
     cb: RefCell<Option<Closure<dyn FnMut()>>>,
+    grave: RefCell<Option<Closure<dyn FnMut()>>>,
     timeline_seen: Cell<u64>,
 }
 
@@ -158,7 +159,7 @@ pub fn init(boot: &Boot) {
         timeline_rev: 0,
         last_scan: 0,
     };
-    let h = Rc::new(Hub { inner: RefCell::new(inner), sink: Cell::new(None), timer: Cell::new(None), cb: RefCell::new(None), timeline_seen: Cell::new(0) });
+    let h = Rc::new(Hub { inner: RefCell::new(inner), sink: Cell::new(None), timer: Cell::new(None), cb: RefCell::new(None), grave: RefCell::new(None), timeline_seen: Cell::new(0) });
     HUB.with(|slot| *slot.borrow_mut() = Some(h));
 }
 
@@ -631,7 +632,9 @@ impl Hub {
         if let (Some(id), Some(w)) = (self.timer.take(), web_sys::window()) {
             w.clear_interval_with_handle(id);
         }
-        self.cb.borrow_mut().take();
+        // the tick may be what stops itself: its closure is dropped one stop later, never while it is running
+        let finished = self.cb.borrow_mut().take();
+        *self.grave.borrow_mut() = finished;
     }
 
     /// One update of the graph data, counters and timeline; `true` while something is still moving.
