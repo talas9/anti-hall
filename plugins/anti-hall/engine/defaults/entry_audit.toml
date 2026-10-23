@@ -19,7 +19,7 @@ value = "plugins/anti-hall"
 
 [entry_audit.repo_cmd_roots]
 doc = "Paths under a repository root, besides the plugin directory, whose files are scanned for command strings (docs, README, llms.txt)."
-value = ["docs", "README.md", "llms.txt"]
+value = ["docs", "README.md", "llms.txt", "scripts/engine-deploy.sh"]
 
 [entry_audit.skip_dirs]
 doc = "Directory names the tree walks never enter (version control, dependency and build directories)."
@@ -46,6 +46,7 @@ value = [
   '(^|/)SECURITY\.md$',
   '(^|/)statusline/.+\.md$',
   '^llms\.txt$',
+  '^scripts/engine-deploy\.sh$',
   '^docs/.+\.(md|txt)$',
 ]
 
@@ -84,9 +85,12 @@ doc = "What the audit lets through, each with its reason."
 value = [
   { section = "files", path = '(^|/)engine/logic/.+\.js$', reason = "QuickJS logic files: the engine runs them in-process; they are not entry points (owner design rule)" },
   { section = "files", path = '(^|/)hooks/install\.sh$', reason = "the one allowed shell file: the installer" },
+  { section = "files", path = '(^|/)skills/[^/]+/references/[^/]+\.workflow\.js$', reason = "scripts for Claude Code's Workflow tool: the host runs them, they are not entry points" },
   { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
   { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
   { section = "commands", path = '(^|/)engine/defaults/entry_audit\.toml$', reason = "the audit's own rule file names the patterns it forbids" },
+  { section = "commands", path = '^docs/(plans|archive|specs|superpowers)/', reason = "historical record" },
+  { section = "commands", path = '^docs/(KB-[^/]+|CODEX-KB-MIGRATION-MAP|CONTEXT-PRESERVATION-KB|gsd-distilled|BENCHMARK-METHOD)\.md$', reason = "historical record (knowledge-base notes and research, written against the Node-era code)" },
   { section = "live", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file" },
   { section = "live", rule = "live-process", text = '/private/tmp/claude-\d+/', reason = "the tool shell of a Claude Code session: its scratch path names the project directory, it is not an anti-hall script" },
 ]
@@ -135,12 +139,20 @@ value = '(?i)(?:anti-hall|devswarm).*\.plist$'
 doc = "The host's installed-plugins file under the home directory."
 value = ".claude/plugins/installed_plugins.json"
 
+[entry_audit.live_enabled_file]
+doc = "The host settings file (under the home directory) whose enabledPlugins map says which installs are live: a disabled install is not scanned."
+value = ".claude/settings.json"
+
+[entry_audit.live_enabled_pointer]
+doc = "The JSON pointer of the enabled-plugins map in that file."
+value = "/enabledPlugins"
+
 [entry_audit.live_plugin_key_re]
 doc = "The keys of the installed-plugins file that are anti-hall's; each one's installPath is a live plugin root."
 value = '^anti-hall@'
 
 [entry_audit.live_roots_extra]
-doc = "Other live plugin roots, relative to the home directory."
+doc = "Other live plugin roots, relative to the home directory (scanned only when an anti-hall install is enabled)."
 value = [".anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall"]
 
 [entry_audit.live_root_files]

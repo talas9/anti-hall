@@ -54,12 +54,20 @@ fn plugin_roots(home: &Path) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let key_re = rx("live_plugin_key_re", defaults::text("entry_audit.live_plugin_key_re"));
     let json: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_installed_json"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    // only installs the host has ENABLED run hooks: a disabled cache is not live
+    let host: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_enabled_file"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let enabled = |k: &str| host.pointer(defaults::text("entry_audit.live_enabled_pointer")).and_then(|m| m.get(k)).and_then(Value::as_bool).unwrap_or(false);
+    let mut any_enabled = false;
     let mut stack = vec![&json];
     while let Some(v) = stack.pop() {
         match v {
             Value::Object(m) => {
                 for (k, x) in m {
                     if key_re.as_ref().is_some_and(|r| r.is_match(k)) {
+                        if !enabled(k) {
+                            continue;
+                        }
+                        any_enabled = true;
                         let items = x.as_array().cloned().unwrap_or_else(|| vec![x.clone()]);
                         roots.extend(items.iter().filter_map(|i| i.get("installPath").and_then(Value::as_str)).map(PathBuf::from));
                     } else {
@@ -71,7 +79,9 @@ fn plugin_roots(home: &Path) -> Vec<PathBuf> {
             _ => {}
         }
     }
-    roots.extend(defaults::list("entry_audit.live_roots_extra").into_iter().map(|r| home.join(r)));
+    if any_enabled {
+        roots.extend(defaults::list("entry_audit.live_roots_extra").into_iter().map(|r| home.join(r)));
+    }
     roots.sort();
     roots.dedup();
     roots
