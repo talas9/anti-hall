@@ -281,6 +281,10 @@ pub struct Agent {
     pub host: String,
     /// The host reports it exited.
     pub gone: bool,
+    /// No live process and nothing left to come back to (its project directory or transcript is gone, or it has been silent past
+    /// `limits.dead_idle_ms` with no live parent): state `dead`, out of the live list. Decided afresh each tick; nothing is deleted.
+    #[serde(default)]
+    pub dead: bool,
     /// The team a teammate belongs to (its meta file).
     #[serde(default)]
     pub team: String,

@@ -31,7 +31,7 @@ fn row(a: &super::Agent, now: u64, all: &std::collections::BTreeMap<&str, &super
         "errors": a.errors, "step": a.step, "waste": {"score": a.waste.score.round(), "verdict": a.waste.verdict, "confidence": a.waste.confidence, "source": a.waste.source, "action": a.waste.action, "judge_calls": a.waste.judge_calls, "cell": super::waste::cell(a)}, "last_output_s": last, "partial": a.partial,
         "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at})).collect::<Vec<_>>(),
         "workspace": a.ws.as_ref().map(|w| json!({"id": w.id, "watcher_armed": w.armed, "step": w.step})),
-        "turn_ended": !a.running, "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
+        "turn_ended": !a.running && a.pending.is_empty(), "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
         "role": session.then(|| if mine.is_empty() { roles.str_field("solo") } else { roles.str_field("primary") }),
     })
 }
@@ -43,11 +43,12 @@ fn totals_json(t: &Totals) -> Value {
 /// The status document.
 pub(crate) fn document(env: &Env, st: &State, l: &super::sources::Listing) -> Value {
     // live agents always show; a finished one only while it is recent
-    let done = defaults::raw("agent_tracker.states").str_field("done");
+    let states = defaults::raw("agent_tracker.states");
+    let over = |a: &super::Agent| [states.str_field("done"), states.str_field("dead")].contains(&state_of(a));
     let keep = super::lim("done_keep_ms");
     let (mut agents, hidden): (Vec<&super::Agent>, Vec<&super::Agent>) =
-        st.agents.values().partition(|a| state_of(a) != done || env.now_ms.saturating_sub(a.last_output_ms) <= keep);
-    let live: Vec<&super::Agent> = agents.iter().copied().filter(|a| state_of(a) != done).collect();
+        st.agents.values().partition(|a| !over(a) || env.now_ms.saturating_sub(a.last_output_ms) <= keep);
+    let live: Vec<&super::Agent> = agents.iter().copied().filter(|a| !over(a)).collect();
     let n = |f: &dyn Fn(&super::Agent) -> bool| live.iter().filter(|a| f(a)).count();
     let kc = defaults::raw("agent_tracker.counts");
     let counts = json!({

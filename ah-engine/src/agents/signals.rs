@@ -25,6 +25,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
     if a.kind == kind_name("heartbeat") {
         return if a.flags.contains_key("heartbeat_stale") { state_name("stale") } else { state_name("running") };
     }
+    if a.dead {
+        return state_name("dead");
+    }
     if a.gone || a.finished {
         return state_name("done");
     }
@@ -32,7 +35,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
         if host("waiting") || host("blocked") {
             return state_name("waiting");
         }
-        if host("busy") {
+        // the host says busy while any shell of the session runs (a wake-watch Monitor runs for the whole session), so a session whose
+        // transcript ended its turn with no tool call open is idle, whatever the host's word
+        if host("busy") && (a.running || !a.pending.is_empty()) {
             return state_name("running");
         }
     }
