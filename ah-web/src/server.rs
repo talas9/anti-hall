@@ -128,7 +128,7 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         graph: crate::cfg::graph_json(&app.root.join(&s.live_graph_rel)).unwrap_or_default(),
         live: s.live(),
         plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.get("version").and_then(serde_json::Value::as_str).map(str::to_string)).unwrap_or_default(),
-        web_version: env!("CARGO_PKG_VERSION").to_string(),
+        web_version: env!("AH_BUILD_VERSION").to_string(),
         number: s.number(),
         topo: s.topo(),
     };

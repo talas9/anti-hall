@@ -847,19 +847,19 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
     let plugin2 = plugin.clone();
     // amber only on a real mismatch: the plugin the engine says it loaded against the plugin this server serves
     let skew = Memo::new(move |_| engine_plugin().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
-    let (n1, n3) = (none.clone(), none.clone());
+    let (n1, n3, n4, n5) = (none.clone(), none.clone(), none.clone(), none.clone());
     let p1 = plugin.clone();
-    let badge_plugin = plugin.clone();
     view! {
         <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
-            {move || format!("{}{}", if badge_plugin.is_empty() { String::new() } else { format!("v{badge_plugin} \u{b7} ") }, sha().map(|s| format!("{} {s}", tx("ver_engine"))).unwrap_or_else(|| n1.clone()))}
+            {move || pulse(|p| p.version.clone()).map(|v| format!("{} {v}", tx("ver_engine"))).or_else(|| sha().map(|s| format!("{} {s}", tx("ver_engine")))).unwrap_or_else(|| n1.clone())}
         </button>
         <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
             <dl class="kv">
                 <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
+                <dt>{tx("ver_engine_plugin")}</dt><dd>{move || engine_plugin().map(|v| format!("v{v}")).unwrap_or_else(|| n5.clone())}</dd>
                 <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| sha().map_or_else(|| v.clone(), |h| format!("{v} \u{b7} {h}"))).unwrap_or_else(|| n3.clone())}</dd>
                 <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
-                <dt>{tx("ver_hook")}</dt><dd>{none.clone()}</dd>
+                <dt>{tx("ver_hook")}</dt><dd>{move || pulse(|p| p.hook_version.clone()).unwrap_or_else(|| n4.clone())}</dd>
                 <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
                 <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
             </dl>

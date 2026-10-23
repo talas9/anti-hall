@@ -98,6 +98,10 @@ pub struct Shared {
     pub config: crate::cfgstore::ConfigStore,
     /// This build's version string, compared with each client's for handoff.
     pub own: String,
+    /// The build version the hook client (ah-hook) last reported with a request.
+    hook_version: RwLock<String>,
+    /// The plugin version read from the manifest of the loaded root, with the config version it was read at.
+    plugin_version: Mutex<(u64, String)>,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
     rules_path: Mutex<std::path::PathBuf>,
@@ -192,6 +196,8 @@ impl Shared {
             projects: Mutex::new(Buckets::new(cfg.project_rps, cfg.project_burst)),
             config: crate::cfgstore::ConfigStore::fixed(cfg),
             own: own.to_string(),
+            hook_version: RwLock::new(String::new()),
+            plugin_version: Mutex::new((0, String::new())),
             rules: RwLock::new(Arc::new(rules)),
             seen: Mutex::new(mtime(&rules_path)),
             rules_path: Mutex::new(rules_path),
@@ -467,10 +473,32 @@ impl Shared {
         )
     }
 
+    /// Remember the build version the hook client reported in the request environment.
+    fn note_hook_version(&self, env: &crate::reqenv::RequestEnv) {
+        let Some(v) = env.get(defaults::text("env.hook_version")).filter(|v| !v.is_empty()) else { return };
+        if self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str() != v {
+            *self.hook_version.write().unwrap_or_else(|e| e.into_inner()) = v.to_string();
+        }
+    }
+
+    /// The version in the manifest of the plugin root the daemon loaded its files from, re-read only when the config changed.
+    fn plugin_version(&self) -> String {
+        let at = self.config.snapshot().version;
+        let mut c = lk(&self.plugin_version);
+        if c.0 != at || c.1.is_empty() {
+            let text = defaults::root().and_then(|r| std::fs::read_to_string(r.join(defaults::text("migrate.plugin_manifest"))).ok());
+            let v = text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|j| j.get("version").and_then(serde_json::Value::as_str).map(str::to_string));
+            *c = (at, v.unwrap_or_default());
+        }
+        c.1.clone()
+    }
+
     /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
     pub fn pulse_json(&self) -> serde_json::Value {
         let mut pulse = crate::web::pulse::build(&crate::web::pulse::Inputs {
             version: &self.own,
+            plugin_version: &self.plugin_version(),
+            hook_version: &self.hook_version.read().unwrap_or_else(|e| e.into_inner()),
             uptime_s: self.started.elapsed().as_secs(),
             rss_kb: limits::rss_kb(),
             footprint_kb: limits::footprint_kb(),
@@ -509,6 +537,8 @@ impl Shared {
             "running": true,
             "pid": std::process::id(),
             "version": self.own,
+            "plugin_version": self.plugin_version(),
+            "hook_version": self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str(),
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
             "footprint_kb": limits::footprint_kb(),
@@ -690,6 +720,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         if let Some(root) = crate::bootstrap::ROOT_ENVS.iter().find_map(|n| env.get(n)) {
             sh.config.offer_root(root);
         }
+        sh.note_hook_version(&env);
         let reply = hook(payload, &env, sh, cfg);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
