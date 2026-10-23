@@ -292,6 +292,13 @@ jobs:
           sparse-checkout: ${{ inputs.tools == 'none' && '.github/copilot-cli' || '' }}
           sparse-checkout-cone-mode: false
 
+      - name: Node for the Copilot CLI install (npm cache keyed on its lockfile)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: .github/copilot-cli/package-lock.json
+
       - name: Install Copilot CLI
         run: |
           npm ci --ignore-scripts --prefix .github/copilot-cli

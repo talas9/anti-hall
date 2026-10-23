@@ -6,7 +6,7 @@ name: stale
 # activity removes the label. priority:P0 / priority:P1 items are exempt.
 on:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: '53 6 * * *'
   workflow_dispatch:
 
 permissions: {}
