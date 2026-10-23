@@ -41,7 +41,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|test\|mode\|review-due\|reviewed\|snooze> [--days <n>] [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier: `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, `mode <integration> on\|shadow\|off`, `test` (one real gateway call per configured transport, each on its own) and the shadow-review verbs `review-due [--json]`, `reviewed <integration>` and `snooze <integration> --days N`. |
 | `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
-| `mesh` | `<roster\|unread\|read\|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>] \| <mesh verb argv>` | no | implemented | DevSwarm mesh store (D45). With `--db`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db` (stage 2): the words after `mesh` are a mesh verb argv, run per the `mesh.engine_writes` switch: off (default) hands it to Node; shadow lets Node act and replays it on a scratch copy of the store, logging the comparison (mesh_write.shadow_log); on answers `send`, `mesh read`, `mesh history` and `roster --ack` in the engine (same output, exit code, store rows and locks as Node) and hands everything it cannot reproduce exactly, and every other verb, to Node. The ah-hook mesh verb `archive <id>` (the local archive and the DevSwarm app leg, `hivecontrol workspace archive` with Node's retry) is answered here too, and only here: the owner action of the same name under the realtime command takes `--id` and `--request`. |
+| `mesh` | `<unread\|dump\|read <id>> [--db <devswarm.db>] [--since <n>] [--last <n>] \| roster --db <devswarm.db> \| <mesh verb argv>` | no | implemented | DevSwarm mesh store (D45). With `--db <file>`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db`, `unread`, `read <id>` and `dump` read the store of the project the working directory is in (`read <id>` finds the one other project store that holds an id this project does not); every other word after `mesh` starts a mesh verb argv that the engine runs itself (`help --short` lists the verbs, `help <verb>` shows one verb's forms), per the `mesh.engine_writes` switch: on (default) the engine answers, and says so on stderr and exits with mesh_write.exit_unable when it cannot; off does nothing, counted and said. A verb form that moved is refused with the command to use instead (mesh_write.retired_verbs, exit mesh_write.exit_unsupported); `inbox <sub>` without an id reads the calling workspace session's own. The ah-hook mesh verb `archive <id>` (the local archive and the DevSwarm app leg, `hivecontrol workspace archive` with Node's retry) is answered here too, and only here: the owner action of the same name under the realtime command takes `--id` and `--request`. |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
 | `migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present. |
 | `phase` | `<set\|advance\|step\|agents\|update\|clear> [args]` | no | implemented | Write or update the phase state the status line's phase bar shows: `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open. |
@@ -112,7 +112,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--global` | `install-codex` | Install into the home directory instead of the current project (`install-codex`). |
 | `--home` | `doctor`, `migrate`, `refresh` | Home directory to use instead of the real one (scratch-HOME runs). |
 | `--host` | `gen-hooks`, `hook` | The host the output is for: `claude` or `codex`. |
-| `--id` | `devswarm`, `mesh` | Workspace id (`devswarm`, `mesh`). |
+| `--id` | `devswarm` | Workspace id (`devswarm`, `mesh`). |
 | `--job` | `schedule` | Name of one scheduled job (`schedule`). |
 | `--json` | `agents`, `auto-handover-config`, `coordinator-work-baseline`, `defect`, `devswarm`, `dispatch-report`, `jev-report`, `proc`, `settings`, `web` | Print machine-readable JSON instead of text. Accepted by every command. |
 | `--key` | `config` | Limit the history to one setting key (`config history`). |
@@ -5951,6 +5951,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh.missing_table_error` | `no such table` |  |  | Lower-cased text of the SQLite error for a table the store does not have yet (an older Node schema); a reader that meets it answers with no rows, as Node does. |
 | `mesh.preview_chars` | `120` |  |  | Characters of a pending question's body the reader returns as its preview; the same 120 Node's PREVIEW_MAX keeps. |
 | `mesh.read_byte_cap` | `4194304` |  |  | Most message-body bytes one `mesh read` call prints before it stops and reports where to resume (D45 section 7: bodies are never cached and a batch is capped). |
+| `mesh.store_reader_verbs` | `unread, read, dump` |  |  | The words of the read-only store reader (`ah-engine mesh unread\|read\|dump [--db <file>]`). Without `--db` the reader opens the store of the project the working directory is in (and, for `read <id>`, the one store that holds the id when this project does not). `roster` is not here: it is the mesh verb of that name. |
 
 ### mesh_write.toml / env
 
@@ -6100,6 +6101,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.exit_committed_failure` | `70` |  |  | Exit code when the engine failed AFTER its write was committed (a panic): Node is NOT run then, since running the verb again would write twice (sysexits EX_SOFTWARE, 70). Deliberately NOT 75: exit 75 (EX_TEMPFAIL) means 'deferred, nothing written' everywhere in the engine (dispatch.defer_exit), and a caller that sees 75 may run Node. |
 | `mesh_write.exit_refused` | `2` |  |  | Exit code of a verb's own refusal (Node's `{ ok: false }` result). |
 | `mesh_write.exit_unable` | `69` |  |  | Exit code of a mesh verb the engine could not do or that is switched off: nothing was written, and the failure is a visible error (sysexits EX_UNAVAILABLE, 69), not the former silent deferral code 75. Never used after a write: see exit_committed_failure. |
+| `mesh_write.exit_unsupported` | `2` |  |  | Exit code of a retired or unsupported verb form (a refusal, like devswarm.js's unknown-command answer): nothing was done. |
 | `mesh_write.field_cursor_path` | `cursorPath` |  |  | Descriptor field naming the durable inbox's cursor file. |
 | `mesh_write.field_enabled` | `enabled` |  |  | Jev's on/off field. |
 | `mesh_write.field_id` | `id` |  |  | The descriptor field holding the workspace id. |
@@ -6148,9 +6150,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.flag_status` | `status` |  |  | The heartbeat flag that names a step's status. |
 | `mesh_write.flag_step` | `step` |  |  | The heartbeat flag that records plan progress; with it the call goes to Node. |
 | `mesh_write.flag_summary` | `summary` |  |  | The heartbeat flag that also broadcasts a mesh heartbeat row; with it the call goes to Node. |
+| `mesh_write.flag_tail` | `tail` |  |  | `inbox messages --tail N`: keep only the newest N rows. |
 | `mesh_write.flag_to` | `to` |  |  | send's recipient flag. |
 | `mesh_write.flag_to_primary` | `to-primary` |  |  | send's Primary flag. |
 | `mesh_write.flag_type` | `type` |  |  | send's type flag (`--type broadcast`). |
+| `mesh_write.flag_unread` | `unread` |  |  | `inbox messages --unread`: scope the history view to the rows after the read position. |
 | `mesh_write.flag_urgency` | `urgency` |  |  | send's urgency flag. |
 | `mesh_write.flag_wip` | `wip` |  |  | The repeatable heartbeat flag for work in progress. |
 | `mesh_write.flag_with_broadcasts` | `with-broadcasts` |  |  | The flag that merges the project's broadcasts into a non-acking read. |
@@ -6225,6 +6229,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.id_mismatch_warning` | `⚠️ anti-hall · devswarm: addressing id "{id}" but this workspace's real DEVSW...` |  |  | The stderr warning of warnIdMismatch: a child workspace addressing an id other than its own builder id; `{id}` is the addressed id, `{env_id}` its builder id. |
 | `mesh_write.inbox_positionals` | `3` |  |  | The words of `inbox <sub> <id>` that mean something (the command, the subcommand, the id); any further word is ignored, as Node ignores it. |
 | `mesh_write.inbox_read_limit` | `2000` |  |  | DEFAULT_INBOX_READ_LIMIT: the most unread rows one read-primary returns; a larger backlog is truncated by Node's per-source cap, which the engine leaves to Node. |
+| `mesh_write.inbox_self_id_subs` | `10 items` |  |  | The `inbox` subcommands that take a workspace id and read the calling session's own when none is given. |
 | `mesh_write.ingest_beat_prefix` | `ingest-` |  |  | File-name prefix of a project's ingest-daemon heartbeat. |
 | `mesh_write.ingest_beat_stale_ms` | `180000` |  |  | An ingest heartbeat older than this is not fresh (ingest-health.js HEARTBEAT_STALE_MS, 3 minutes). |
 | `mesh_write.ingest_lock_prefix` | `ingest-project-` |  |  | File-name prefix of a project's ingest-daemon lock. |
@@ -6328,6 +6333,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_ack_primary_not_owner` | `ack-primary refused: this caller does not own {id} (use --ack-as-owner to ove...` |  |  | The refusal text of an `inbox ack-primary` by a caller that does not own the id; `{id}` is JSON-quoted. |
 | `mesh_write.msg_ack_refused` | `inbox ack refused ({cause}): caller {caller} does not own workspace {id} (pas...` |  |  | The refusal of an `inbox ack` by a caller that does not own the workspace. Placeholders: {cause}, {caller} and {id} (JSON-quoted), {rawid} (as typed). |
 | `mesh_write.msg_ack_to_not_number` | `--to must be a number` |  |  | What `inbox ack --to` reports when its value is not a number. |
+| `mesh_write.msg_bad_since` | `--since must be a non-negative integer (a per-partition message index, the sa...` |  |  | The error of an `inbox messages --since` that is neither an index nor a date. Placeholder: {got} (JSON-quoted). |
+| `mesh_write.msg_bad_tail` | `--tail must be a positive integer (got {got})` |  |  | The error of an `inbox messages --tail` that is not a positive integer. Placeholder: {got} (JSON-quoted). |
 | `mesh_write.msg_child_label` | `{id} is the worktree label of a CHILD workspace ({worktree}), not an identity...` |  |  | The refusal text for the worktree label of a child; `{id}` is JSON-quoted, `{worktree}` the child's checkout, `{hint}` what to use instead. |
 | `mesh_write.msg_child_label_retired` | `{id} is a retired worktree label (folded into {to}), not an identity. Nothing...` |  |  | The refusal text for a retired worktree label; `{id}` and `{to}` are JSON-quoted. |
 | `mesh_write.msg_child_label_unregistered` | `the child has not registered its workspace id yet` |  |  | The hint when the child has not registered a workspace id yet. |
@@ -6352,12 +6359,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_ensure_not_ours` | `existing descriptor does not belong to the current project` |  |  | The refusal of an ensure over a descriptor that belongs to another project. |
 | `mesh_write.msg_filter_requires_peek` | `--last/--since would consume unread broadcasts they do not show; use --peek, ...` |  |  | The refusal of a consuming mesh read given `--last` or `--since`. |
 | `mesh_write.msg_id_lock_busy` | `workspace {id} is locked by another operation in progress; retry shortly` |  |  | The refusal of a mutation whose workspace lock stays busy; `{id}` is JSON-quoted. |
+| `mesh_write.msg_inbox_needs_id` | `inbox {sub} needs a workspace id: `inbox {sub} <id>`. Run from a DevSwarm wor...` |  |  | The error of an `inbox` subcommand given no workspace id by a caller that has none of its own. Placeholder: {sub}. |
 | `mesh_write.msg_io_error` | `{code}: {what}, {syscall} '{path}'` |  |  | Node's message of a failed filesystem call. Placeholders: {code}, {what}, {syscall}, {path}. |
 | `mesh_write.msg_io_error_other` | `{error}, {syscall} '{path}'` |  |  | The message of a filesystem failure that has no Node code in `io_errors`. Placeholders: {error}, {syscall}, {path}. |
 | `mesh_write.msg_last_invalid` | `--last must be a positive integer (got {got})` |  |  | The refusal of a mesh read whose `--last` is not a positive number. Placeholder: {got} (JSON-quoted). |
 | `mesh_write.msg_legacy_journal_store` | `the mesh store of project {repo_key} uses the legacy journal backend (written...` |  |  | The refusal text of that case: {repo_key} is the project's store. |
 | `mesh_write.msg_mesh_read_hint` | `consumed broadcasts stay re-readable without moving any cursor: `mesh history...` |  |  | `hint` of a consuming mesh read. |
 | `mesh_write.msg_mesh_unresolved` | `mesh group of {id} could not be read: {why}` |  |  | The meshGroupError of a mesh group that could not be resolved or read; `{id}` is JSON-quoted, `{why}` the reason. |
+| `mesh_write.msg_messages_ack_as_owner_warning` | `[devswarm] inbox messages {idq} --ack-as-owner did NOT ack — `messages` is re...` |  |  | stderr line of `inbox messages <id> --ack-as-owner` without --ack (a read does not ack). Placeholders: {idq} (JSON-quoted id), {id}. |
+| `mesh_write.msg_messages_ack_warning` | `[devswarm] inbox messages --ack no longer acks: it returns a read receipt — r...` |  |  | stderr line of `inbox messages <id> --ack` (it returns a read receipt, it does not ack). Placeholder: {id}. |
 | `mesh_write.msg_missing_receipt` | `--receipt <readReceiptId> (from `inbox read-primary`) is required` |  |  | The refusal of an ack-primary without `--receipt`. |
 | `mesh_write.msg_no_cursor_path` | `no cursorPath for workspace {id}` |  |  | The refusal text of an `inbox ack` for a descriptor without a cursor file; `{id}` is JSON-quoted. |
 | `mesh_write.msg_no_inbox_path` | `no inboxPath for workspace {id} (registered, but never given an --inbox path ...` |  |  | The refusal text for a registered id that never got an inbox path. Placeholder: {id} (JSON-quoted). |
@@ -6384,12 +6394,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_receipt_expired` | `receipt is older than {hours}h — re-run `inbox read-primary {id}` and then it...` |  |  | The refusal of an ack-primary for an expired receipt. Placeholders: {hours} and {id}. |
 | `mesh_write.msg_receipt_other_reader` | `receipt was issued to a different reader — a receipt acks only for the reader...` |  |  | The refusal of an ack-primary for a receipt issued to another reader. Placeholder: {id}. |
 | `mesh_write.msg_receipt_owner` | `receipt belongs to {owner}` |  |  | The refusal text of an ack for a receipt issued to another identity; `{owner}` is JSON-quoted. |
+| `mesh_write.msg_reconcile_no_plugin_root` | `reconcile cannot find the anti-hall plugin root (set AH_ENGINE_PLUGIN_ROOT or...` |  |  | The error of that refusal. |
 | `mesh_write.msg_redirect_live` | `refusing to ack retired id {id} — it redirects to {survivor}, whose owner is ...` |  |  | The refusal of an `inbox ack` on a retired id whose survivor is live. Placeholders: {id} and {survivor} (JSON-quoted). |
 | `mesh_write.msg_redirect_live_log` | `refused: retired id {id} redirects to LIVE owner {survivor}` |  |  | The journal error of an `inbox ack` refused for a live survivor. Placeholders: {id} (the retired id) and {survivor}. |
 | `mesh_write.msg_redirect_unresolvable` | `inbox ack {id} was redirected to survivor {survivor} after a fold, but the ca...` |  |  | The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted). |
 | `mesh_write.msg_registry_collision` | `[devswarm-store] upsertRegistry: id {id} already maps to worktree_path {exist...` |  |  | stderr line of a registry upsert refused by the id-collision guard. Placeholders: {id}, {existing}, {incoming} (JSON-quoted). |
 | `mesh_write.msg_registry_unreadable` | `the workspace registry could not be read: {why}` |  |  | The refusal text of a verb whose workspace registry could not be read; `{why}` is the reason. |
 | `mesh_write.msg_reserved_id` | `refusing to register workspace id {id} — it contains the reserved token {toke...` |  |  | The refusal text for such an id; `{id}` and `{token}` are JSON-quoted. |
+| `mesh_write.msg_retired_verb` | ``{verb}` is not a mesh verb any more. Use {use}.` |  |  | Printed (stderr and stdout) for a retired verb. Nothing was done. Placeholders: {verb}, {use} (what to run instead). |
 | `mesh_write.msg_seen_watermark_failed` | `could not write caller-scoped seen watermark` |  |  | The error of a seen watermark that could not be written. |
 | `mesh_write.msg_send_label_no_reader` | `stored in {to}, but no session reads that partition yet: it is a worktree lab...` |  |  | `warning` of a send whose recipient is a worktree label row that no session reads yet (a spawn pre-registers the label; the child registers under its own id). Placeholder: {to}. |
 | `mesh_write.msg_sender_fallback` | `mesh sender fallback: where={where}, partition={id}, messages={n}` |  |  | The log line when a message got its sender from a fallback instead of its own branch. {where} {id} (the partition) {n} (messages). |
@@ -6406,9 +6418,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_store_unopened_code` | `store for workspace {id} could not be opened: {code}` |  |  | The text of a mesh partition's store that could not be opened. Placeholders: {id} (JSON-quoted) and {code} (the error code). |
 | `mesh_write.msg_store_unreadable` | `store for workspace {id} could not be opened: {error}` |  |  | The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}. |
 | `mesh_write.msg_store_unreadable_code` | `store for workspace {id} could not be fully read ({code})` |  |  | The text of a mesh partition's store that could not be read. Placeholders: {id} (JSON-quoted) and {code} (the reason). |
+| `mesh_write.msg_tail_under_truncation` | `--tail {tail} cannot be honoured: this read was truncated by the {limit}-row ...` |  |  | The error of that refusal. Placeholders: {tail}, {limit}, {count}. |
+| `mesh_write.msg_tail_under_truncation_hint` | `use `--since <index\|ISO date>` to bound the read to recent mail before the ca...` |  |  | The hint of that refusal. Placeholder: {limit}. |
 | `mesh_write.msg_unable` | `ah-engine mesh: ERROR: this verb or case cannot be done by the engine ({site}...` |  |  | stderr line when the engine cannot answer a mesh verb (an unported verb, a case it cannot do, no plugin context). Nothing was written; the exit code is mesh_write.exit_unable. Placeholders: {site}, where it gave up; {detail}, which call and why. |
+| `mesh_write.msg_unknown_inbox_sub` | `unknown inbox subcommand: {sub} (read\|ack\|count\|pull\|messages\|read-primary\|ac...` |  |  | The error of an `inbox` subcommand devswarm.js does not know. Placeholder: {sub} (JSON-quoted). |
 | `mesh_write.msg_unknown_receipt` | `no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run...` |  |  | The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is). |
 | `mesh_write.msg_unregistered` | `workspace {id} is not registered and has no messages (no descriptor, no regis...` |  |  | The refusal text for an unregistered id. Placeholder: {id} (JSON-quoted). |
+| `mesh_write.msg_unsupported_verb` | ``{argv}` is not a form of this CLI; `help --short` lists the verbs and `help ...` |  |  | Printed for a verb form this CLI does not have. Nothing was done. Placeholder: {argv} (the leading words). |
 | `mesh_write.msg_verb_not_ok` | `verb returned ok:false` |  |  | The central-log message of a verb that returned `ok: false` without an error or a reason. |
 | `mesh_write.msg_wal_replay_failed` | `WAL replay failed (batch kept pending, no new native read): {why}` |  |  | The text of a pull whose replay of an open batch failed; `{why}` is the reason. |
 | `mesh_write.msg_wal_spill_blocked` | `delivery WAL not writable ({why}) — spilled batch(es) kept in {dir}; no destr...` |  |  | The text of a pull whose spilled batches cannot go back into a writable log; `{why}` is the reason and `{dir}` the spill directory. |
@@ -6487,6 +6503,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.reason_bad_last` | `bad-last` |  |  | The `reason` of a mesh read whose `--last` is not a positive number. |
 | `mesh_write.reason_bad_seq` | `bad-seq` |  |  | The `reason` of a mesh read whose `--seq` is bare or not a non-negative number. |
 | `mesh_write.reason_bad_since` | `bad-since` |  |  | The `reason` of a mesh read whose `--since` is neither a duration nor a date. |
+| `mesh_write.reason_bad_tail` | `bad-tail` |  |  | The `reason` of an `inbox messages --tail` that is not a positive integer. |
 | `mesh_write.reason_child_label` | `child-label-id` |  |  | The reason of a pull refused for the worktree label of a child workspace. |
 | `mesh_write.reason_ctx_mismatch` | `project-context-mismatch` |  |  | The refusal reason of an id registered under another project than the caller's. |
 | `mesh_write.reason_filter_requires_peek` | `filter-requires-peek` |  |  | The `reason` of a consuming mesh read given `--last` or `--since`. |
@@ -6494,21 +6511,26 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.reason_logical_dup` | `logical-dup` |  |  | The log reason of a sibling row suppressed as a logical duplicate. |
 | `mesh_write.reason_missing_receipt` | `missing-receipt` |  |  | The `reason` of an ack-primary without `--receipt`. |
 | `mesh_write.reason_no_inbox_path` | `no-inbox-path` |  |  | The reason of an inbox read of an id that is registered (or has messages) but never got an inbox path. |
+| `mesh_write.reason_no_plugin_root` | `no-plugin-root` |  |  | The `reason` of a reconcile run where the plugin root cannot be found. |
 | `mesh_write.reason_no_project` | `no-project` |  |  | The `reason` of a mesh read from a directory that is in no project. |
 | `mesh_write.reason_not_verified` | `send-not-verified` |  |  | `reason` of a send whose readback did not find the row. |
 | `mesh_write.reason_project_mismatch` | `project-context-mismatch` |  |  | The `reason` of a read or ack from another project than the id's own. |
 | `mesh_write.reason_receipt_expired` | `receipt-expired` |  |  | The `reason` of an ack-primary for a receipt past its lifetime. |
 | `mesh_write.reason_receipt_owner` | `receipt-owner-mismatch` |  |  | The `reason` of an ack-primary for a receipt issued to another id or another reader. |
 | `mesh_write.reason_receipt_owner_mismatch` | `receipt-owner-mismatch` |  |  | The reason of an ack for a receipt another identity or another reader was issued. |
+| `mesh_write.reason_reconcile_held` | `reconcile-held` |  |  | The `reason` of a reconcile whose project could not be answered now (an identity read was refused): nothing was drained. |
 | `mesh_write.reason_redirect_live` | `redirect-to-live-owner` |  |  | The reason of an `inbox ack --ack-as-owner` on a retired id whose survivor is live. |
 | `mesh_write.reason_redirect_unresolvable` | `retired-redirect-unresolvable-caller` |  |  | The reason of an `inbox ack` on a retired id by a caller not verifiable as the survivor. |
 | `mesh_write.reason_reserved_id_token` | `reserved-id-token` |  |  | The reason of an ensure refused for an id that carries a reserved token. |
+| `mesh_write.reason_retired_verb` | `retired-verb` |  |  | The `reason` of a retired verb's refusal. |
 | `mesh_write.reason_seat_conflict` | `primary-seat-conflict` |  |  | The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat. |
 | `mesh_write.reason_store_open_failed` | `store-open-failed` |  |  | The refusal reason of a store whose open failed outright. |
 | `mesh_write.reason_store_read_error` | `store-read-error` |  |  | The reason of a store whose rows could not be read. |
 | `mesh_write.reason_store_unavailable` | `store-unavailable` |  |  | The `reason` of a read or ack whose store could not be opened. |
+| `mesh_write.reason_tail_under_truncation` | `tail-under-truncation` |  |  | The `reason` of an `inbox messages --tail` refused because the per-source cap withheld rows. |
 | `mesh_write.reason_unknown_receipt` | `unknown-receipt` |  |  | The `reason` of an ack-primary for a receipt that does not exist. |
 | `mesh_write.reason_unregistered` | `unregistered-workspace` |  |  | The reason of an inbox read of an id with no descriptor, no registry row and no messages. |
+| `mesh_write.reason_unsupported_verb` | `unsupported-verb` |  |  | The `reason` of that refusal. |
 | `mesh_write.receipt_error_hint` | `read-only: nothing was acked, and the read receipt could not be written ({err...` |  |  | The `ackHint` of a read-primary result whose read receipt could not be written. Placeholders: {error} (the filesystem error) and {id}. |
 | `mesh_write.receipt_id_prefix` | `r` |  |  | A read receipt id is this letter followed by lowercase letters and digits (readReadReceipt's /^r[a-z0-9]+$/). |
 | `mesh_write.receipt_keep_ms` | `604800000` |  |  | READ_RECEIPT_KEEP_MS: a read receipt file older than this is pruned by the next receipt written for the id; the engine leaves a pruning write to Node. |
@@ -6538,6 +6560,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.result_committed` | `committed-failure` |  |  | Log result of a call that failed after its write was committed. |
 | `mesh_write.result_refused` | `refused` |  |  | Log result of a call the verb refused itself. |
 | `mesh_write.retire_pin_age_ms` | `60000` |  |  | A foreign reader row must be this old before an ack looks for proof that its process ended (RETIRE_PIN_AGE_MS). |
+| `mesh_write.retired_verbs` | `1 entries` |  |  | Verbs of the old Node CLI that moved, by verb word, with what to run instead. A verb word in this table is refused with `retired-verb` and the text naming its replacement; a word that is in neither this table nor the CLI is refused with `unsupported-verb`. |
 | `mesh_write.roster_children_args` | `workspace, list, children` |  |  | The hivecontrol arguments roster uses to list the native children (LIST_CHILDREN). |
 | `mesh_write.roster_children_key` | `children` |  |  | The wrapper key of a `hivecontrol workspace list` answer that is an object rather than a bare array. |
 | `mesh_write.roster_flag_all` | `all` |  |  | The roster flag that includes archived rows in the text rendering. |
@@ -6566,6 +6589,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.shadow_log` | `mesh-shadow.jsonl` |  |  | The shadow log, one JSON line per replayed call, under the engine state directory. |
 | `mesh_write.shadow_panic` | `panic` |  |  | Shadow result: the engine path panicked (caught; Node's result was unaffected). |
 | `mesh_write.short_nonce_len` | `6` |  |  | Hex characters of the short form of a reader key in the cursor journal (shortInstanceNonce: sha1, first 6). |
+| `mesh_write.since_kind_index` | `index` |  |  | The `kind` of a --since window given as a per-partition message index. |
+| `mesh_write.since_kind_ts` | `ts` |  |  | The `kind` of a --since window given as a time. |
 | `mesh_write.site_committed_failure` | `meshw:committed_failure` |  |  | Error code (site) for a mesh write that was committed and then failed before printing. |
 | `mesh_write.site_empty_failure` | `meshw:refused` |  |  | Error code (site) for a non-zero mesh exit that printed nothing. |
 | `mesh_write.site_pull_descriptor` | `pull-descriptor` |  |  | The `site` label of a skipped read of a workspace descriptor by a pull. |
@@ -6615,6 +6640,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verb_ack` | `ack` |  |  | The ack subverb of `inbox`. |
 | `mesh_write.verb_ack_primary` | `ack-primary` |  |  | The inbox sub-verb that applies a read receipt's cursor moves. |
 | `mesh_write.verb_count` | `count` |  |  | The count subverb of `inbox`, and the `action` of its result. |
+| `mesh_write.verb_drain_primary_legacy` | `drain-primary-legacy` |  |  | The drain-primary-legacy subverb of `inbox`: `read-primary --legacy-ack-now` under its own name (read and ack in one call). |
 | `mesh_write.verb_heartbeat` | `heartbeat` |  |  | The heartbeat verb. |
 | `mesh_write.verb_help` | `help` |  |  | The help verb. |
 | `mesh_write.verb_history` | `history` |  |  | Its history subcommand. |
@@ -6623,10 +6649,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.verb_log_ack_all` | `inbox-ack-all` |  |  | The journal `verb` of an `inbox ack` NDJSON move. |
 | `mesh_write.verb_log_ack_to` | `inbox-ack-to` |  |  | The journal `verb` of an `inbox ack --to` NDJSON move. |
 | `mesh_write.verb_mesh` | `mesh` |  |  | The mesh verb. |
+| `mesh_write.verb_messages` | `messages` |  |  | The messages subverb of `inbox` (the non-acking history read; with --ack it is `read-primary`). |
 | `mesh_write.verb_peek_primary` | `peek-primary` |  |  | The peek-primary subverb of `inbox`. |
 | `mesh_write.verb_pull` | `pull` |  |  | The pull subverb of `inbox`. |
 | `mesh_write.verb_read` | `read` |  |  | Its read subcommand. |
 | `mesh_write.verb_read_primary` | `read-primary` |  |  | The read-primary subverb of `inbox`. |
+| `mesh_write.verb_reconcile` | `reconcile` |  |  | The reconcile verb: drain every worktree registered in this project's store once. |
 | `mesh_write.verb_roster` | `roster` |  |  | The roster verb (`roster --ack` is `mesh read`). |
 | `mesh_write.verb_send` | `send` |  |  | The send verb. |
 | `mesh_write.verb_tick` | `tick` |  |  | The tick subverb of `inbox`. |
@@ -10493,7 +10521,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.verb_usage_head` | `usage: ah-hook mesh {verb} [args]` |  |  | First line of one verb's help: `{verb}`. |
 | `devswarm_cli.verb_wake_directive` | `wake-directive` |  |  | The verb that reprints the SessionStart mailbox-wake directive (native for a child workspace). |
 | `devswarm_cli.verb_workspaces` | `workspaces` |  |  | The workspaces verb (`workspaces list`). |
-| `devswarm_cli.verbs` | `47 items` |  |  | The mesh verbs the dispatcher handles, in the order of its switch (the order `help` lists them and the unknown-command message names them). A verb the engine does not port is still listed: it is Node's. |
+| `devswarm_cli.verbs` | `47 items` |  |  | The mesh verbs the dispatcher handles, in the order of its switch (the order `help` lists them and the unknown-command message names them). A retired verb (mesh_write.retired_verbs) is still listed, so that its word is answered with where it moved. |
 | `devswarm_cli.window_flags` | `tail, since` |  |  | The window flags of the inbox verbs, in the order Node checks them (INBOX_WINDOW_FLAGS). |
 | `devswarm_cli.window_logged_subs` | `pull, messages, read-primary, peek-primary, ack-primary, drain-primary-legacy` |  |  | The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing. |
 | `devswarm_cli.window_op_prefix` | `inbox-` |  |  | What the central-log operation of a refused window flag starts with (the operation is `inbox-<sub>`). |
@@ -12516,11 +12544,14 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.err_db_timeout` | A write did not commit in time; it may still commit, and its write id makes a retry harmless. |
 | `msg.err_db_unavailable` | Storage is not open. |
 | `msg.err_mailbox_full` | The project mailbox is full. |
+| `msg.err_mesh_ambiguous_store` | The workspace id is in more than one project store. Placeholders: {id}, {stores} (comma separated repo keys). |
 | `msg.err_mesh_backend` | A mesh reader refused a store directory whose BACKEND marker is not sqlite. Placeholders: {path}, {backend}. |
 | `msg.err_mesh_missing` | A mesh reader was pointed at a store file that does not exist (a reader never creates one). Placeholder: {path}. |
+| `msg.err_mesh_no_project` | The store reader was run without --db from a directory that is in no DevSwarm project (or whose project has no store yet). Placeholder: {cwd}. |
 | `msg.err_mesh_range` | A store value is an integer JavaScript cannot represent exactly, which Node's reader rejects too. Placeholder: {value}. |
+| `msg.err_mesh_read_id` | `mesh read` of the store reader was given no workspace id. The broadcast read is the mesh verb `mesh mesh read`. |
 | `msg.err_mesh_sql` | A mesh read failed in SQLite or hit a value it cannot read the way Node does. Placeholder: {err}. |
-| `msg.err_mesh_usage` | The mesh command was called without a verb or without --db. |
+| `msg.err_mesh_usage` | The mesh command was called without a verb (or the store reader without a store). |
 | `msg.err_not_dir` | A state or socket directory is not a plain directory. Placeholder: {path}. |
 | `msg.err_path_io` | An OS error on a path. Placeholders: {path}, {err}. |
 | `msg.err_rules_action` | A rule has an unknown action. Placeholders: {index}, {action}. |
