@@ -193,7 +193,7 @@ pub(crate) fn cost_json(st: &State) -> Value {
                 (
                     tokens,
                     json!({
-                        "agent": a.id, "name": a.name, "kind": a.kind, "tokens": tokens, "commits": a.commits, "pushes": a.pushes,
+                        "agent": a.id, "name": a.name, "kind": a.kind, "parent": a.parent, "project": a.cwd, "tokens": tokens, "commits": a.commits, "pushes": a.pushes,
                         "guard_fires": a.guard_fires, "steps_done": a.steps_done, "tests_passed": a.tests_pass, "files_edited": a.files.len(),
                         "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
                     }),

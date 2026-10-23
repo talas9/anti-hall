@@ -240,9 +240,12 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
                                 <thead><tr><th>{tx("ops_cost_agent")}</th><th>{tx("ops_cost_kind")}</th><th class="num">{tx("ops_cost_tokens")}</th><th class="num">{tx("ops_cost_outcomes")}</th><th class="num">{tx("ops_cost_per")}</th></tr></thead>
                                 <tbody>
                                     {cost.into_iter().map(|r| {
-                                        let name = if r.name.is_empty() { r.agent.chars().take(8).collect() } else { r.name.clone() };
+                                        if r.header {
+                                            return view! { <tr class="cost-group"><td colspan="2">{r.name.clone()}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }.into_any();
+                                        }
+                                        let name = r.name.clone();
                                         let kind = { let k = format!("kind_{}", r.kind); let t = tx(&k); if t == k { r.kind.clone() } else { t } };
-                                        view! { <tr><td title=r.agent.clone()>{name}</td><td>{kind}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }
+                                        view! { <tr><td title=r.agent.clone()><span class="tree">{r.prefix.clone()}</span>{name}</td><td>{kind}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }.into_any()
                                     }).collect_view()}
                                 </tbody>
                             </table>

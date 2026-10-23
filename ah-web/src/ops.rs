@@ -60,6 +60,14 @@ struct LevelRule {
     words: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct TreeGlyphs {
+    branch: String,
+    last: String,
+    pipe: String,
+    gap: String,
+}
+
 /// Every `web.ops.*` value. No field has a default: a missing or mistyped key is a load error naming it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ops {
@@ -83,6 +91,8 @@ pub struct Ops {
     cost_ctl: String,
     cost_key: String,
     cost_rows: usize,
+    cost_tree: TreeGlyphs,
+    cost_name_fallback: String,
     poll_accounts_ms: u64,
     tick_ms: u64,
     update_args: Vec<String>,
@@ -267,33 +277,89 @@ async fn codex(o: &Ops, home: &Path) -> CodexAccount {
     }
 }
 
-/// The per-agent cost report from the engine; `None` when the engine does not answer.
+/// The per-agent cost report from the engine, as a table: one header row per project (with its totals), under it the agents nested
+/// parent -> child. `None` when the engine does not answer.
 async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
     let st = app.settings();
     let doc = ctl::call(&app.socket, &o.cost_ctl, Duration::from_millis(st.ctl_timeout_ms), st.ctl_max_bytes).await.ok()?;
     let report = doc.get(&o.cost_key)?;
     let totals = report.get("totals").cloned().unwrap_or(Value::Null);
-    let rows = report
-        .get("agents")
-        .and_then(Value::as_array)
-        .map(|l| {
-            l.iter()
-                .take(o.cost_rows)
-                .map(|a| {
-                    let mut row = CostRow { agent: s(a, "agent"), name: s(a, "name"), kind: s(a, "kind"), tokens: u(a, "tokens"), outcomes: u(a, "outcomes"), tokens_per_outcome: u(a, "tokens_per_outcome") };
-                    // a session id is named by the agent list (and a project's Primary is a Primary, whatever the report calls its kind)
-                    if let Some(live) = app.model().lookup(&row.agent, st.placeholder_id_chars) {
-                        if row.name.is_empty() {
-                            row.name = live.label.clone();
-                        }
-                        row.kind = if live.role == st.project_primary_role { "main".to_string() } else { live.kind.clone() };
-                    }
-                    row
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Some((u(&totals, "tokens"), u(&totals, "outcomes"), rows))
+    let list = report.get("agents").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let mut rows: Vec<CostRow> = Vec::new();
+    let mut agents: Vec<ah_web_proto::Agent> = Vec::new();
+    for a in list.iter().take(o.cost_rows) {
+        let mut row = CostRow { agent: s(a, "agent"), name: s(a, "name"), kind: s(a, "kind"), tokens: u(a, "tokens"), outcomes: u(a, "outcomes"), tokens_per_outcome: u(a, "tokens_per_outcome"), ..CostRow::default() };
+        let (parent, project) = (s(a, "parent"), s(a, "project"));
+        let mut node = ah_web_proto::Agent { id: row.agent.clone(), kind: row.kind.clone(), parent: if parent == row.agent { String::new() } else { parent }, project, state: "running".into(), ..Default::default() };
+        // a session id is named by the agent list (and a project's Primary is a Primary, whatever the report calls its kind)
+        if let Some(live) = app.model().lookup(&row.agent, st.placeholder_id_chars) {
+            node.role = live.role.clone();
+            if node.project.is_empty() {
+                node.project = live.project.clone();
+            }
+            row.kind = if live.role == st.project_primary_role { "main".to_string() } else { live.kind.clone() };
+            node.kind = row.kind.clone();
+        }
+        rows.push(row);
+        agents.push(node);
+    }
+    // the same project and parent links the Agents screen draws; a stand-in for a parent the report does not list is dropped, so its
+    // children are orphans of their project
+    crate::hier::link(&st, &mut agents);
+    agents.retain(|a| !a.placeholder);
+    let by_id: HashMap<&str, usize> = agents.iter().enumerate().map(|(i, a)| (a.id.as_str(), i)).collect();
+    for (row, a) in rows.iter_mut().zip(&agents) {
+        if row.name.is_empty() {
+            let id: String = row.agent.chars().take(st.placeholder_id_chars).collect();
+            let dir = a.project.rsplit('/').find(|p| !p.is_empty()).unwrap_or_default();
+            row.name = if dir.is_empty() { id } else { o.cost_name_fallback.replace("{dir}", dir).replace("{id}", &id) };
+        }
+    }
+    // projects, biggest spender first; inside each, the tree
+    let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, a) in agents.iter().enumerate() {
+        groups.entry(a.project_root.as_str()).or_default().push(i);
+    }
+    let mut groups: Vec<(u64, Vec<usize>)> = groups.into_values().map(|g| (g.iter().map(|&i| rows[i].tokens).sum::<u64>(), g)).collect();
+    groups.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    let mut out = Vec::new();
+    for (tokens, members) in groups {
+        let outcomes: u64 = members.iter().map(|&i| rows[i].outcomes).sum();
+        out.push(CostRow { name: agents[members[0]].project_name.clone(), tokens, outcomes, tokens_per_outcome: tokens.checked_div(outcomes).unwrap_or(0), header: true, ..CostRow::default() });
+        let in_group: std::collections::HashSet<usize> = members.iter().copied().collect();
+        let parent_of = |i: usize| by_id.get(agents[i].parent.as_str()).copied().filter(|p| *p != i && in_group.contains(p));
+        let mut kids: HashMap<usize, Vec<usize>> = HashMap::new();
+        let (mut roots, mut orphans) = (Vec::new(), Vec::new());
+        for &i in &members {
+            match parent_of(i) {
+                Some(p) => kids.entry(p).or_default().push(i),
+                None if agents[i].parent.is_empty() => roots.push(i),
+                None => orphans.push(i),
+            }
+        }
+        let by_tokens = |v: &mut Vec<usize>| v.sort_by_key(|&i| std::cmp::Reverse(rows[i].tokens));
+        by_tokens(&mut roots);
+        by_tokens(&mut orphans);
+        kids.values_mut().for_each(by_tokens);
+        let mut seen = std::collections::HashSet::new();
+        // depth-first; `lead` is what every descendant's line starts with
+        let mut stack: Vec<(usize, String, String)> = roots.iter().chain(&orphans).rev().map(|&i| (i, String::new(), String::new())).collect();
+        while let Some((i, prefix, lead)) = stack.pop() {
+            if !seen.insert(i) {
+                continue;
+            }
+            let mut row = rows[i].clone();
+            row.prefix = prefix;
+            out.push(row);
+            let children = kids.get(&i).map_or(&[][..], Vec::as_slice);
+            for (n, &c) in children.iter().enumerate().rev() {
+                let last = n + 1 == children.len();
+                let (glyph, carry) = if last { (&o.cost_tree.last, &o.cost_tree.gap) } else { (&o.cost_tree.branch, &o.cost_tree.pipe) };
+                stack.push((c, format!("{lead}{glyph}"), format!("{lead}{carry}")));
+            }
+        }
+    }
+    Some((u(&totals, "tokens"), u(&totals, "outcomes"), out))
 }
 
 /// `GET /api/ops/accounts`.

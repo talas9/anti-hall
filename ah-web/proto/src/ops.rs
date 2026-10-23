@@ -65,6 +65,12 @@ pub struct CostRow {
     pub tokens: u64,
     pub outcomes: u64,
     pub tokens_per_outcome: u64,
+    /// The text drawn in front of the name to show the nesting (tree pipes); empty for a top-level row.
+    #[serde(default)]
+    pub prefix: String,
+    /// A project's header row: `name` is the project, the numbers its total.
+    #[serde(default)]
+    pub header: bool,
 }
 
 /// Everything the Accounts screen shows.
