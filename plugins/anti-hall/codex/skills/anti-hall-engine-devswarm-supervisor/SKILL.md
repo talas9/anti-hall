@@ -49,6 +49,8 @@ The DevSwarm supervisor sweep: auto-archive, pokes, app sync, retention, reconci
 - `devswarm.dormantMs` = 1800000: How long a workspace whose session transcript resolves may stay silent before the stray signals treat it as dormant
 - `devswarm.supervisorBlockerLabelReaskSec` = 21600: Seconds a blocker label decision is not asked or logged again while its input (workspace, kind, time) is unchanged
 - `devswarm.spawnStrictFlagValues` = true: Whether spawn refuses a create option with no value or an option-shaped value
+- `devswarm.spawnFetchTtlSec` = 300: Setting devswarm.spawnFetchTtlSec: skip the origin fetch when the remote-tracking ref was updated within this many seconds (0 always...
+- `devswarm.spawnFromOrigin` = true: Setting devswarm.spawnFromOrigin: before a create from the default branch, fetch origin and fast-forward the local default branch...
 - `devswarm.monitorTimeoutSec` = 30: The -t of every monitor call: it long-polls at most this long, then exits (an empty exit is a quiet poll, not an error)
 - `devswarm.activeFloorPct` = 50: Least percent of a project's previous active-workspace snapshot a new one must hold, or the previous one is kept (0 turns the floor off)
 - `devswarm.pausedProbeMax` = 8: Most `workspace info` probes of the start-up sampling per sweep

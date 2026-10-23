@@ -45,6 +45,7 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("mesh", vec!["roster".into(), "--db".into(), scratch.join("none.db").display().to_string()]),
         ("telemetry", s(&[])),
         ("telemetry", s(&["summary"])),
+        ("fallback", s(&["status"])),
         ("schedule", s(&["list"])),
         ("schedule", s(&["history"])),
         ("config", s(&[])),
