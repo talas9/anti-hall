@@ -99,6 +99,7 @@ pub struct Settings {
     pub live_map_timeout_ms: u64,
     pub live_map_parts: Vec<String>,
     pub live_graph_rel: String,
+    pub plugin_manifest_rel: String,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
 }

@@ -231,3 +231,9 @@ a { color: var(--cyan); }
 [data-mode="lite"] .canvas { background-image: none; }
 [data-mode="lite"] .btn.primary { background: var(--cyan); }
 [data-mode="lite"] .menu { box-shadow: none; }
+
+.logo { width: 30px; height: 30px; border-radius: 8px; }
+[data-mode="full"] .logo.live { animation: ahPulse 2.8s infinite; }
+.ver { border: 1px solid var(--line-2); border-radius: 999px; padding: 4px 10px; background: transparent; font: 12px var(--font-mono); color: var(--text-mid); cursor: pointer; }
+.ver-skew { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 55%, transparent); }
+.ver-pop { padding: 12px 14px; min-width: 240px; }

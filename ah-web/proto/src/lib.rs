@@ -56,6 +56,9 @@ pub struct Pulse {
     pub errors: u64,
     /// Seconds since the engine daemon started.
     pub uptime_s: u64,
+    /// The engine's version text (`CTL pulse` `version`).
+    #[serde(default)]
+    pub version: String,
 }
 
 /// One line of the activity feed, already in plain language.
@@ -162,6 +165,12 @@ pub struct Boot {
     /// The Live screen's settings.
     #[serde(default)]
     pub live: LiveCfg,
+    /// The plugin's version (from its `plugin.json`); empty when unreadable.
+    #[serde(default)]
+    pub plugin_version: String,
+    /// This server's version.
+    #[serde(default)]
+    pub web_version: String,
 }
 
 /// The Live screen's settings (`web.live_*`).

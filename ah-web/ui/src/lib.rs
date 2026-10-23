@@ -419,7 +419,7 @@ fn App(boot: Boot) -> impl IntoView {
         <div class="shell">
             <header class="top">
                 <div class="brand">
-                    <div class="mark"><div class="mark-dot"></div></div>
+                    <img class=move || if snap.with(|s| s.engine_ok) { "logo live" } else { "logo" } src="/static/logo.svg" alt=tx("logo_alt") width="30" height="30" />
                     <span class="brand-name">{tx("brand")}</span>
                     <span class="brand-product">{tx("product")}</span>
                 </div>
@@ -433,6 +433,7 @@ fn App(boot: Boot) -> impl IntoView {
                     {req_pill}
                     {err_pill}
                 </div>
+                <VersionBadge snap=snap />
                 <div class="grow"></div>
                 <div class="seg" role="group" aria-label=tx("mode_label")>
                     {["auto", "full", "lite"].into_iter().map(|m| view! {
@@ -673,6 +674,35 @@ fn Row(
             </button>
             <ActionMenu id=id.clone() uid=uid />
             <Feedback_ id=id />
+        </div>
+    }
+}
+
+/// The header's version badge: the plugin and engine versions at a glance (amber when they differ), a popover with all of them.
+#[component]
+fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
+    let boot = expect_context::<Arc<Boot>>();
+    let (plugin, web) = (boot.plugin_version.clone(), boot.web_version.clone());
+    let none = tx("ver_unavailable");
+    let engine = move || snap.with(|s| s.pulse.as_ref().map(|p| p.version.clone()).filter(|v| !v.is_empty()));
+    let plugin2 = plugin.clone();
+    let skew = Memo::new(move |_| engine().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
+    let (n1, n2, n3) = (none.clone(), none.clone(), none.clone());
+    let p1 = plugin.clone();
+    view! {
+        <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
+            {move || format!("v{}", engine().unwrap_or_else(|| n1.clone()))}
+        </button>
+        <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
+            <dl class="kv">
+                <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { n2.clone() } else { p1.clone() }}</dd>
+                <dt>{tx("ver_engine")}</dt><dd>{move || engine().unwrap_or_else(|| n3.clone())}</dd>
+                <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
+                <dt>{tx("ver_hook")}</dt><dd>{none.clone()}</dd>
+                <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
+                <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
+            </dl>
+            <Show when=move || skew.get()><p class="fb fb-bad">{tx("ver_skew")}</p></Show>
         </div>
     }
 }

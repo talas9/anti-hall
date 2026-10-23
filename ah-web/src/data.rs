@@ -61,7 +61,7 @@ fn num(v: &Value, k: &str) -> u64 {
 }
 
 fn pulse(v: &Value) -> Pulse {
-    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s") }
+    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s"), version: text(v, "version") }
 }
 
 fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
