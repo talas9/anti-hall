@@ -70,8 +70,8 @@ jobs:
       - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
         run: |
-          cargo nextest run --release --profile ci --no-run
-          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/) | test(/^dssup_retention::the_archive_cap_evicts_what_node_evicts$/)'
+          cargo nextest run --cargo-profile ci-test --profile ci --no-run
+          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/) | test(/^dssup_retention::the_archive_cap_evicts_what_node_evicts$/)'
           sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
       - name: test.sh (full)
         if: env.AH_FULL == 'true'

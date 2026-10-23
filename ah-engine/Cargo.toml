@@ -101,6 +101,20 @@ split-debuginfo = "packed"
 [profile.profiling.package.rquickjs-sys]
 opt-level = 3
 
+# The test-binary build of the macOS PR gate: release speed (opt-level 3, so the script time limits sized for release hold) without the
+# shipped binary's fat LTO, single codegen unit and debug info. The gate builds ~60 test binaries and, with the release profile, spent
+# 56m47s compiling them (CI run 39898873035, macOS) against a 60 min job limit. Never shipped; `scripts/build.sh` keeps using release.
+[profile.ci-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false
+strip = false
+split-debuginfo = "off"
+
+[profile.ci-test.package.rquickjs-sys]
+opt-level = 3
+
 # Debug builds (what `cargo test` without --release uses): line tables are enough for backtraces and breakpoints, and the
 # build and link are faster than with full debuginfo.
 [profile.dev]
