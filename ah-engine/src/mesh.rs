@@ -602,6 +602,48 @@ fn fail(p: &Parsed, e: &MeshError) -> i32 {
     1
 }
 
+fn fail_text(p: &Parsed, msg: &str) -> i32 {
+    if p.json {
+        println!("{}", json!({"error": msg}));
+    } else {
+        eprintln!("{msg}");
+    }
+    1
+}
+
+/// The store file the reader opens when it is given no `--db`: the store of the project the working directory is in. `read <id>` of an
+/// id that project's store does not hold goes to the one other store that does (a Primary reads a child of another project by id);
+/// two stores holding it is ambiguous and refused. `Err` carries the exit code, the message already printed.
+fn project_store(p: &Parsed, verb: &str, id: Option<&str>) -> Result<String, i32> {
+    let file = defaults::text("mesh_write.store_file");
+    let Some(inv) = crate::meshw::inv_from_process(None) else { return Err(fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &"")]))) };
+    let key = crate::meshw::ident::resolve_context(&inv.cwd, true).ok().and_then(|c| c.repo_key);
+    let local = key.as_deref().map(|k| crate::meshw::union::store_dir(&inv.home, k).join(file));
+    let holds = |path: &Path| MeshReader::open(path).ok().is_some_and(|r| id.is_some_and(|i| r.message_count(i).unwrap_or(0) > 0 || r.workspace_ids().iter().any(|w| w == i)));
+    if verb == "read"
+        && let Some(id) = id
+        && !local.as_deref().is_some_and(holds)
+    {
+        let root = crate::meshw::union::store_dir(&inv.home, "");
+        let mut found: Vec<(String, PathBuf)> = Vec::new();
+        for (name, _) in crate::checks::jsport::fsx::read_dir_names(&root.to_string_lossy()).unwrap_or_default() {
+            let candidate = root.join(&name).join(file);
+            if holds(&candidate) {
+                found.push((name, candidate));
+            }
+        }
+        return match found.len() {
+            0 => local.map(|l| l.to_string_lossy().into_owned()).ok_or_else(|| fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &inv.cwd)]))),
+            1 => Ok(found.remove(0).1.to_string_lossy().into_owned()),
+            _ => Err(fail_text(
+                p,
+                &defaults::render("msg.err_mesh_ambiguous_store", &[("id", &id), ("stores", &found.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "))]),
+            )),
+        };
+    }
+    local.map(|l| l.to_string_lossy().into_owned()).ok_or_else(|| fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &inv.cwd)])))
+}
+
 /// `ah-engine mesh <verb>`: see `cmd.mesh` in the command registry.
 pub fn run_cmd(p: &Parsed) -> i32 {
     // Without `--db` the words after `mesh` are a `devswarm.js` argv (D45 stage 2, `crate::meshw`).
@@ -609,11 +651,23 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let mut argv = std::env::args_os();
     argv.nth(1);
     let raw: Vec<std::ffi::OsString> = argv.collect();
-    if !raw.iter().any(|a| a.to_str() == Some(defaults::text("mesh.db_flag"))) && !p.rest.is_empty() {
+    let verb = p.rest.first().map(String::as_str).unwrap_or("");
+    let has_db = raw.iter().any(|a| a.to_str() == Some(defaults::text("mesh.db_flag")));
+    // the reader's own words (`unread`, `read`, `dump`) with no --db read the store of the project the directory is in
+    let own_store = !has_db && defaults::list("mesh.store_reader_verbs").contains(&verb);
+    if !has_db && !own_store && !p.rest.is_empty() {
         return crate::meshw::run_front(&raw);
     }
-    let verb = p.rest.first().map(String::as_str).unwrap_or("");
-    let Some(db) = flag(p, "db") else { return usage(p) };
+    let id_word = |p: &Parsed| flag(p, "id").or_else(|| p.rest.get(1).filter(|w| !w.starts_with('-')).cloned());
+    let db = if own_store {
+        match project_store(p, verb, id_word(p).as_deref()) {
+            Ok(path) => path,
+            Err(code) => return code,
+        }
+    } else {
+        let Some(db) = flag(p, "db") else { return usage(p) };
+        db
+    };
     let reader = match MeshReader::open(Path::new(&db)) {
         Ok(r) => r,
         Err(e) => return fail(p, &e),
@@ -635,7 +689,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
             Ok(())
         }
         "read" => {
-            let id = flag(p, "id").unwrap_or_default();
+            let id = id_word(p).unwrap_or_default();
             let emit = |m: &Value, out: &mut dyn Write| {
                 crate::telemetry::emit::add_items(1);
                 // keep: a closed stdout leaves nobody to tell

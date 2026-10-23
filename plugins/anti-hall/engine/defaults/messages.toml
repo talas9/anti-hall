@@ -716,8 +716,8 @@ doc = "A mesh read failed in SQLite or hit a value it cannot read the way Node d
 value = "store read failed: {err}"
 
 [msg.err_mesh_usage]
-doc = "The mesh command was called without a verb or without --db."
-value = "usage: ah-engine mesh <roster|unread|read|dump> --db <devswarm.db> [--id <ws>] [--since <n>] [--last <n>]"
+doc = "The mesh command was called without a verb (or the store reader without a store)."
+value = "usage: ah-engine mesh unread|dump|read <id> [--db <devswarm.db>] [--since <n>] [--last <n>] (the project's own store without --db), or ah-engine mesh <mesh verb argv>: `help --short` lists the verbs"
 
 [msg.err_mesh_range]
 doc = "A store value is an integer JavaScript cannot represent exactly, which Node's reader rejects too. Placeholder: {value}."
@@ -1461,3 +1461,15 @@ value = "anti-hall: hook script not found: {path}"
 [msg.launcher_nodeback_merge_differs]
 doc = "Written when the JSON answers of several fallback hooks carry different fields besides the merged additionalContext and systemMessage; the first hook's fields are kept."
 value = "anti-hall: fallback merge kept the first hook's other fields; a later hook set different ones"
+
+[msg.err_mesh_no_project]
+doc = "The store reader was run without --db from a directory that is in no DevSwarm project (or whose project has no store yet). Placeholder: {cwd}."
+value = "no DevSwarm store for {cwd}: run this inside the project's checkout, or pass --db <devswarm.db>"
+
+[msg.err_mesh_read_id]
+doc = "`mesh read` of the store reader was given no workspace id. The broadcast read is the mesh verb `mesh mesh read`."
+value = "mesh read needs a workspace id: `ah-engine mesh read <id>` (or --id <id>). The broadcast read is `ah-engine mesh mesh read [--peek]`."
+
+[msg.err_mesh_ambiguous_store]
+doc = "The workspace id is in more than one project store. Placeholders: {id}, {stores} (comma separated repo keys)."
+value = "workspace {id} is in several project stores ({stores}): run this from that project's checkout, or pass --db <devswarm.db>"

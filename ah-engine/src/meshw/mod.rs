@@ -51,6 +51,7 @@ pub mod planverbs;
 pub mod pull;
 pub mod read;
 pub mod readprimary;
+pub mod reconcileverb;
 pub mod reportverbs;
 pub mod roster;
 pub mod rosterrows;
@@ -191,6 +192,14 @@ pub enum Verb {
     InboxAck,
     /// `inbox pull <id>` (see [`inboxcmd`]).
     InboxPull,
+    /// `inbox messages <id>` (see [`readprimary::run_messages`]).
+    InboxMessages,
+    /// `inbox drain-primary-legacy <id>`: `read-primary --legacy-ack-now` under its own name (see [`readprimary`]).
+    InboxDrain,
+    /// `inbox <anything else> ...`: devswarm.js refuses it (`unknown inbox subcommand`, exit 2).
+    InboxUnknown,
+    /// `reconcile`: drain every worktree registered in the project's store (see [`reconcileverb`]).
+    Reconcile,
     /// A verb that needs no store: `help` and the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`,
     /// `gate-intent`, `notice --list` (see [`simple`]).
     Simple(simple::Simple),
@@ -294,6 +303,18 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_read_primary")) {
         return Some(Verb::InboxReadPrimary);
     }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_messages")) {
+        return Some(Verb::InboxMessages);
+    }
+    if p0 == defaults::text("mesh_write.verb_inbox") && p1 == Some(defaults::text("mesh_write.verb_drain_primary_legacy")) {
+        return Some(Verb::InboxDrain);
+    }
+    if p0 == defaults::text("mesh_write.verb_inbox") {
+        return Some(Verb::InboxUnknown);
+    }
+    if p0 == defaults::text("mesh_write.verb_reconcile") {
+        return Some(Verb::Reconcile);
+    }
     None
 }
 
@@ -313,6 +334,10 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::InboxPeekPrimary) => readprimary::run_peek(inv, a),
         Some(Verb::InboxAck) => inboxcmd::run_ack(inv, a),
         Some(Verb::InboxPull) => inboxcmd::run_pull(inv, a),
+        Some(Verb::InboxMessages) => readprimary::run_messages(inv, a),
+        Some(Verb::InboxDrain) => readprimary::run(inv, a),
+        Some(Verb::InboxUnknown) => Ok(inbox_unknown(a)),
+        Some(Verb::Reconcile) => reconcileverb::run(inv, a),
         Some(Verb::Simple(v)) => simple::run(inv, a, v),
         Some(Verb::Migrate) => Ok(run_migrate(inv)),
         Some(Verb::Plan) => planverbs::run_plan(inv, a),
@@ -332,6 +357,21 @@ fn mesh_unknown(a: &args::Args) -> Answer {
     let msg = defaults::render("mesh_write.msg_unknown_mesh_sub", &[("sub", &crate::checks::guardkit::ojson::OVal::Str(sub.to_string()).stringify())]);
     let mut o = common::Obj::default();
     o.put("ok", crate::checks::guardkit::ojson::OVal::Bool(false)).put("error", common::s(&msg));
+    Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: send::Effect::None }
+}
+
+/// `cmdInbox`'s last line (`devswarm-lib/inbox-cmd.js`): an `inbox` subcommand that is none of the known ones is refused with exit 2, after
+/// the id check every `inbox` verb starts with (`invalid or missing workspace id`).
+fn inbox_unknown(a: &args::Args) -> Answer {
+    let id_ok = a.positionals.get(2).is_some_and(|i| idlock::is_safe_id(i));
+    let mut o = common::Obj::default();
+    o.put("ok", crate::checks::guardkit::ojson::OVal::Bool(false));
+    if !id_ok {
+        o.put("error", common::s(defaults::text("devswarm_cli.msg_bad_id")));
+    } else {
+        let sub = a.positionals.get(1).map_or(String::new(), |s| crate::checks::guardkit::ojson::OVal::Str(s.clone()).stringify());
+        o.put("error", common::s(&defaults::render("mesh_write.msg_unknown_inbox_sub", &[("sub", &sub)])));
+    }
     Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: send::Effect::None }
 }
 
@@ -371,6 +411,69 @@ fn unable(json: bool, site: &str, detail: &str) -> i32 {
     let code = defaults::num("mesh_write.exit_unable") as i32;
     emit(loud_line(json, site, &msg, code).as_bytes());
     code
+}
+
+/// A form this CLI does not have. A verb of the old Node CLI that moved says where to (`mesh_write.retired_verbs`); any other word is
+/// named with the way to list the verbs. Nothing was done; the exit code is `mesh_write.exit_unsupported` (a refusal, as Node's own
+/// unknown-command answer is), never the 69 of an engine that could not do what the CLI offers.
+fn unsupported(json: bool, a: &args::Args) -> i32 {
+    let word = a.positionals.first().map_or("", String::as_str);
+    let retired = defaults::raw("mesh_write.retired_verbs").get(word).and_then(|v| v.as_str());
+    let (reason, msg) = match retired {
+        Some(replacement) => (
+            defaults::text("mesh_write.reason_retired_verb"),
+            defaults::render("mesh_write.msg_retired_verb", &[("verb", &word), ("use", &replacement)]),
+        ),
+        None => (defaults::text("mesh_write.reason_unsupported_verb"), defaults::render("mesh_write.msg_unsupported_verb", &[("argv", &a.positionals.join(" "))])),
+    };
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "meshw:unsupported_verb", &call_detail(a, reason));
+    eprintln!("{msg}");
+    let code = defaults::num("mesh_write.exit_unsupported") as i32;
+    if json {
+        let mut o = common::Obj::default();
+        o.put("ok", crate::checks::guardkit::ojson::OVal::Bool(false))
+            .put("reason", common::s(reason))
+            .put("error", common::s(&msg))
+            .put("verb", common::s(word))
+            .put("exit", crate::checks::guardkit::ojson::OVal::Num(f64::from(code)));
+        emit(format!("{}\n", o.done().stringify()).as_bytes());
+    } else {
+        emit(format!("{msg}\n").as_bytes());
+    }
+    code
+}
+
+/// An `inbox <sub>` that takes a workspace id, run from a workspace session without one, reads the session's own: the id DevSwarm
+/// handed it (`DEVSWARM_BUILDER_ID`), else the id its checkout derives. (devswarm.js refused such a call with `invalid or missing
+/// workspace id`; the wake directives teach `inbox tick <id>` with the id spelled out, and a missing one is almost always a session
+/// that has its own.) A session with neither is told what is missing.
+fn with_self_id(inv: &Inv, a: args::Args) -> Result<args::Args, send::Answer> {
+    let sub = a.positionals.get(1).map(String::as_str);
+    let takes_id = a.positionals.first().map(String::as_str) == Some(defaults::text("mesh_write.verb_inbox"))
+        && a.positionals.len() == 2
+        && sub.is_some_and(|s| defaults::list("mesh_write.inbox_self_id_subs").contains(&s))
+        && !a.is_help();
+    if !takes_id {
+        return Ok(a);
+    }
+    let own = ident::env_nonempty(&inv.env, defaults::text("mesh_write.env_builder_id"))
+        .filter(|i| idlock::is_safe_id(i))
+        .map(str::to_string)
+        .or_else(|| ident::caller_identity_detailed(&inv.env, &inv.cwd).ok().filter(|c| c.kind != defaults::text("mesh_write.kind_unresolvable")).map(|c| c.identity))
+        .filter(|i| idlock::is_safe_id(i));
+    match own {
+        Some(id) => {
+            let mut b = a;
+            b.positionals.push(id);
+            Ok(b)
+        }
+        None => {
+            let mut o = common::Obj::default();
+            o.put("ok", crate::checks::guardkit::ojson::OVal::Bool(false))
+                .put("error", common::s(&defaults::render("mesh_write.msg_inbox_needs_id", &[("sub", &sub.unwrap_or_default())])));
+            Err(send::Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: send::Effect::None })
+        }
+    }
 }
 
 /// The stdout twin of a stderr failure line: one JSON object `{ok,error,reason,exit}` (field names and shape from
@@ -430,7 +533,7 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
         return disabled(json, "meshw:native_off");
     }
     if verb_of(&a).is_none() {
-        return unable(json, "meshw:unhandled_verb", &call_detail(&a, ""));
+        return unsupported(json, &a);
     }
     // a help request (or any verb of `simple`) never reads fd 0
     let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !cli_witnessed(verb_of(&a));
@@ -441,6 +544,13 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     let Some(inv) = inv_from_process(stdin) else {
         shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}));
         return unable(json, "meshw:no_context", &call_detail(&a, "no-context"));
+    };
+    let a = match with_self_id(&inv, a) {
+        Ok(a) => a,
+        Err(answer) => {
+            emit(answer.stdout.as_bytes());
+            return answer.code;
+        }
     };
     let r = std::panic::catch_unwind(|| run_native(&inv, &a));
     let (step, result, reason) = next_step(r, committed());

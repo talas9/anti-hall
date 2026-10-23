@@ -59,7 +59,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 | archive (anti-hall) | `ah-hook mesh archive`: tombstone in anti-hall's registry; never touches the app. |
 | archive / close / delete (app) | App archive = hidden + inactive, recoverable, worktree kept; close = inactive only (not archived); delete = row removed, permanent. |
 | auto-archive | Supervisor archives a child in the app only when done, merged, clean, drained, not the Primary, unfocused 10 min and idle (its own mailbox-wake/heartbeat/status pings do not count; real work does); always by explicit workspace id; DevSwarm >= 2.5.3. |
-| prune | Deleting archived workspaces: only an owner-approved exact id list with a plan nonce (`prune-archived`). Never automated. |
+| prune | Deleting archived workspaces: only an owner-approved exact id list with a plan nonce (`ah-engine devswarm plan-prune` / `prune`). Never automated. |
 | retention | Old message bodies archived to gzip then pruned (rows, positions, hashes stay). |
 | app DB | The DevSwarm app's own SQLite DB, read read-only as ground truth (titles, rank, archived, PRs, session map). |
 | capability gate | Every DevSwarm verb/table/column/app file is checked by version + detection; a missing surface sleeps and doctor names it. |

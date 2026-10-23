@@ -575,7 +575,7 @@ pub fn canonical_mesh_id(p: &str) -> R<Option<String>> {
 /// The process environment the verb runs with.
 pub type Env = HashMap<String, String>;
 
-fn env_nonempty<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
+pub(crate) fn env_nonempty<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
     env.get(name).map(String::as_str).filter(|s| !s.is_empty())
 }
 
