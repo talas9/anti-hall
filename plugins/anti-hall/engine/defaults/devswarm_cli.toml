@@ -624,14 +624,6 @@ doc = "Most output bytes of one git call (Node's spawnSync maxBuffer); more is a
 value = 1048576
 min = 1024
 
-[devswarm_cli.ready_any]
-doc = "The regular-expression piece that stands for JavaScript's `.` (any character but a line terminator)."
-value = "[^\\n\\r\\u{2028}\\u{2029}]"
-
-[devswarm_cli.ready_escape]
-doc = "The characters a glob's literal text escapes in the regular expression (roster-diag.js globToRegExp)."
-value = ".+^${}()|[]\\"
-
 [devswarm_cli.ready_gitlink_mode]
 doc = "The git file mode of a submodule pointer (a gitlink)."
 value = "160000"
@@ -4171,6 +4163,23 @@ value = "inbox-"
 doc = "The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing."
 value = ["pull", "messages", "read-primary", "peek-primary", "ack-primary", "drain-primary-legacy"]
 
+# ---- plan set / scope add: Node's errors reproduced natively ------------------------------------------------------------
+
+[devswarm_cli.msg_plan_steps_file]
+doc = "The error of `plan set` whose --steps-file cannot be read. Placeholder: {why} (the operating system's message as JavaScript words it)."
+value = "cannot read --steps-file: {why}"
+
+[devswarm_cli.plan_fs_errors]
+doc = "The message JavaScript gives for a failed read of a file, by operating system error number; {path} is the path in single quotes."
+value = { "1" = "EPERM: operation not permitted, open {path}", "2" = "ENOENT: no such file or directory, open {path}", "5" = "EIO: i/o error, read", "6" = "ENXIO: no such device or address, open {path}", "12" = "ENOMEM: not enough memory, read", "13" = "EACCES: permission denied, open {path}", "16" = "EBUSY: resource busy or locked, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read", "23" = "ENFILE: file table overflow, open {path}", "24" = "EMFILE: too many open files, open {path}", "36" = "ENAMETOOLONG: name too long, open {path}", "40" = "ELOOP: too many symbolic links encountered, open {path}", "62" = "ELOOP: too many symbolic links encountered, open {path}", "63" = "ENAMETOOLONG: name too long, open {path}" }
+
+[devswarm_cli.plan_fs_error_other]
+doc = "The message JavaScript gives for a failed read whose error number is not in plan_fs_errors. Placeholder: {path} (in single quotes)."
+value = "UNKNOWN: unknown error, open {path}"
+
+[devswarm_cli.msg_plan_threw]
+doc = "The log line of a plan verb that threw in Node's code (a null step or extra in the plan file) and refused instead. Placeholder: {error}."
+value = "plan verb refused, Node throws on this plan: {error}"
 [devswarm_cli.send_fs_error_other]
 doc = "How a failed read of the message file is worded when the operating system error is not in `send_fs_errors`: `{message}` is the operating system's own text and `{path}` the path in single quotes."
 value = "{message}, open {path}"
@@ -4199,6 +4208,21 @@ value = "no-primary-worktree"
 doc = "The refusal text of that case."
 value = "send --to-primary: cwd is not inside a resolvable git worktree"
 
+[devswarm_cli.ready_line_terminators]
+doc = "The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character."
+value = "\n\r\u2028\u2029"
+
+[devswarm_cli.ready_fetch]
+doc = "The git subcommand `ready-check --fetch` runs first."
+value = "fetch"
+
+[devswarm_cli.ready_quiet]
+doc = "The git flag that keeps the fetch of `ready-check --fetch` quiet."
+value = "--quiet"
+
+[devswarm_cli.msg_ready_fetch_failed]
+doc = "The log line of a `ready-check --fetch` whose git fetch did not finish cleanly; the checks read whatever refs exist, as Node does."
+value = "ready-check --fetch: git fetch did not finish cleanly, the checks read the refs that exist"
 [devswarm_cli.msg_roster_no_project]
 doc = "The refusal text of `roster` run outside any project."
 value = "roster must run from inside a git worktree of a DevSwarm project (the mesh store is per-project) — cd into the repo first"

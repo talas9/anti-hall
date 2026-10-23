@@ -805,10 +805,6 @@ value = "merged_verified"
 doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
 value = "devswarm-merged@"
 
-[mesh_write.settings_devswarm_section]
-doc = "The settings.json section of the DevSwarm settings."
-value = "devswarm"
-
 [mesh_write.csv_separator]
 doc = "Separator of a comma-separated setting."
 value = ","
@@ -1453,21 +1449,9 @@ value = "correction-followed"
 doc = "Supervision event type: first step progress in a respawned workspace."
 value = "respawn-progress"
 
-[mesh_write.step_stall_env]
-doc = "The environment variable of the devswarm.stepStallMin setting."
-value = "ANTIHALL_DEVSWARM_STEP_STALL_MIN"
-
 [mesh_write.step_stall_key]
 doc = "The settings.json key (in the devswarm section) of the step stall window."
 value = "stepStallMin"
-
-[mesh_write.step_stall_option]
-doc = "The plugin option name of the step stall window."
-value = "devswarm_step_stall_min"
-
-[mesh_write.step_stall_default_min]
-doc = "Minutes of the step stall window when no setting is given (devswarm.stepStallMin)."
-value = 30
 
 [mesh_write.plan_status_doing]
 doc = "The step status word for a step in progress."
@@ -2716,6 +2700,88 @@ value = "run this from within that project's worktree to ack it (`inbox read {id
 doc = "The refusal text of an `inbox ack` for a descriptor without a cursor file; `{id}` is JSON-quoted."
 value = "no cursorPath for workspace {id}"
 
+# ---- JavaScript values and errors a plan verb reproduces (no hand-off to Node) ------------------------------------------
+
+[mesh_write.js_err_null_read]
+doc = "The TypeError text JavaScript raises when code reads a property of null (a plan step that is null). Placeholder: {prop}."
+value = "Cannot read properties of null (reading '{prop}')"
+
+[mesh_write.js_err_create_prop]
+doc = "The TypeError text strict-mode JavaScript raises when code assigns a property to a primitive (a plan step that is a string, number or boolean). Placeholders: {prop}, {kind} (the typeof word) and {value}."
+value = "Cannot create property '{prop}' on {kind} '{value}'"
+
+[mesh_write.js_kind_string]
+doc = "The typeof word of a string, in the TypeError text of an assignment to a primitive."
+value = "string"
+
+[mesh_write.js_kind_number]
+doc = "The typeof word of a number, in the TypeError text of an assignment to a primitive."
+value = "number"
+
+[mesh_write.js_kind_boolean]
+doc = "The typeof word of a boolean, in the TypeError text of an assignment to a primitive."
+value = "boolean"
+
+[mesh_write.js_prop_status]
+doc = "The step property whose read or assignment fails in the TypeError text (the step's status)."
+value = "status"
+
+[mesh_write.js_prop_text]
+doc = "The step property whose read fails in the TypeError text when a plan is replaced (the step's text)."
+value = "text"
+
+[mesh_write.js_prop_glob]
+doc = "The extra property whose read fails in the TypeError text when an extra is added (the extra's glob)."
+value = "glob"
+
+[mesh_write.js_array_sep]
+doc = "The separator JavaScript's String(array) joins elements with."
+value = ","
+
+[mesh_write.plan_reason_corrupt]
+doc = "The reason word of a heartbeat's plan field when the plan file holds a shape Node's code throws on (a null step)."
+value = "plan-corrupt"
+
+[mesh_write.msg_plan_refused]
+doc = "The log line of a plan the engine refused because Node's code throws on it. Placeholders: {key} (the plan key) and {error} (the TypeError text)."
+value = "plan {key} refused, Node throws on it: {error}"
+
+[mesh_write.msg_settings_unreadable]
+doc = "The log line of a settings file the engine's parser cannot read while JavaScript can; the setting is read from the tiers below the file. Placeholder: {setting}."
+value = "settings file not readable by the engine's parser, {setting} read from the tiers below it"
+
+[mesh_write.json_unicode_escape]
+doc = "The two characters that open a JSON unicode escape."
+value = "\\u"
+
+[mesh_write.lone_mark]
+doc = "The noncharacter that marks a lone surrogate inside an engine string (a Rust string cannot hold one): the mark is followed by one private-use character that names the code unit. JavaScript keeps lone surrogates (a string cut inside an emoji); the plan file carries them as a unicode escape."
+value = "\uFDD0"
+
+[mesh_write.lone_base]
+doc = "The first private-use character (plane 15) that names a lone surrogate after the mark; the code unit minus surrogate_first is added to it."
+value = 983040
+
+[mesh_write.lone_range]
+doc = "How many code units are surrogates (high and low halves together)."
+value = 2048
+
+[mesh_write.surrogate_first]
+doc = "The first UTF-16 surrogate code unit (the first high half)."
+value = 55296
+
+[mesh_write.astral_base]
+doc = "The first code point outside the Basic Multilingual Plane, subtracted before the surrogate halves are cut."
+value = 65536
+
+[mesh_write.surrogate_shift]
+doc = "How many bits the high half of a surrogate pair holds below its prefix (the code point minus astral_base is shifted right by this)."
+value = 10
+
+[mesh_write.lone_escape]
+doc = "The JSON text of a lone surrogate. Placeholder: {unit} (four lowercase hex digits)."
+value = "\\u{unit}"
+
 [mesh_write.jev_triage_log_file]
 doc = "Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message."
 value = "jev-triage.ndjson"
@@ -2819,6 +2885,14 @@ value = "wal-spilled"
 [mesh_write.ingest_owner_name]
 doc = "The `owner` word of that marker while the engine drains ingest."
 value = "engine"
+
+[mesh_write.forward_prefix_end]
+doc = "The text that closes the provenance marker a forwarded archived row's body starts with, after the archived id."
+value = "] "
+
+[mesh_write.settings_devswarm_section]
+doc = "The settings.json section of the DevSwarm settings."
+value = "devswarm"
 
 [mesh_write.jev_outcome_hash_len]
 doc = "How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage)."

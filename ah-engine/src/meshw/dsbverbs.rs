@@ -1417,7 +1417,8 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
                         glob,
                         &note_v.map_or_else(String::new, |v| if matches!(v, OVal::Null) { String::new() } else { js_string(v) }),
                         now as f64,
-                    )?;
+                    )
+                    .or_else(|t| t.refusal())?;
                 }
             }
             p.set("respawn", respawn_field.done());
