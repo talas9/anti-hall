@@ -230,7 +230,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
                 a.open = false;
             }
             s if s == tr("in_progress") => {
-                let t = [tr("active_form"), tr("subject"), "taskId"].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
+                let t = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
                 set_step(a, t);
             }
             _ => {}

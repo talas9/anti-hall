@@ -320,6 +320,24 @@ doc = "Longest 'doing now' text sent per agent, in characters."
 value = 240
 min = 20
 
+[web.number_units]
+doc = "How the page writes long numbers (tokens, requests, counts, in the tables, tiles and details): from `from` up a number is divided by `div` and gets `suffix`. Ascending; the last step reached applies; below the first step the number is written whole."
+value = [
+  { suffix = "k", from = 1000, div = 1000 },
+  { suffix = "M", from = 1000000, div = 1000000 },
+  { suffix = "G", from = 1000000000, div = 1000000000 },
+]
+
+[web.number_decimals]
+doc = "Digits after the point in a scaled number (1.1M); a trailing zero part is dropped (12k, not 12.0k)."
+value = 1
+min = 0
+max = 3
+
+[web.number_raw_keys]
+doc = "Tracker fields in the details panel that are identifiers, not quantities, and so are never scaled."
+value = ["pid"]
+
 [web.kind_order]
 doc = "Order of agent kinds in the tree (first = top)."
 value = ["main", "workspace", "subagent", "teammate", "codex", "heartbeat"]

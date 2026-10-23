@@ -115,6 +115,7 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         live: s.live(),
         plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.get("version").and_then(serde_json::Value::as_str).map(str::to_string)).unwrap_or_default(),
         web_version: env!("CARGO_PKG_VERSION").to_string(),
+        number: s.number(),
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
@@ -303,6 +304,7 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
             }
             let text = match v {
                 serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::Number(n) if n.is_u64() && !s.number_raw_keys.contains(k) => s.number().fmt(n.as_u64().unwrap_or_default()),
                 other => other.to_string(),
             };
             rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));

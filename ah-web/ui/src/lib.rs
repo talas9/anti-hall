@@ -284,13 +284,7 @@ fn level(v: u64, warn: u64, bad: u64) -> &'static str {
 }
 
 fn compact(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1e6)
-    } else if n >= 10_000 {
-        format!("{}k", n / 1000)
-    } else {
-        n.to_string()
-    }
+    expect_context::<Arc<Boot>>().number.fmt(n)
 }
 
 /// POST `req` to the server and read its answer.
@@ -518,7 +512,7 @@ fn App(boot: Boot) -> impl IntoView {
                                 <Feedback_ id=a.id.clone() />
                                 <div class="stats">
                                     <div class="stat"><div class="stat-k">{tx("heartbeat")}</div><div class=format!("stat-v {hbc}")>{hb}</div></div>
-                                    <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{a.tokens_out}</div></div>
+                                    <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{compact(a.tokens_out)}</div></div>
                                     <div class="stat"><div class="stat-k">{tx("model")}</div><div class="stat-v small">{a.state.clone()}</div></div>
                                 </div>
                                 <div><div class="sect">{tx("doing_now")}</div><p class="brief">{a.step.clone()}</p></div>

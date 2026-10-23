@@ -66,6 +66,9 @@ pub struct Settings {
     pub mime: BTreeMap<String, String>,
     pub boot_marker: String,
     pub step_max_chars: usize,
+    pub number_units: Vec<ah_web_proto::NumUnit>,
+    pub number_decimals: usize,
+    pub number_raw_keys: Vec<String>,
     pub kind_order: Vec<String>,
     pub msg_unauthorized: String,
     pub msg_busy: String,
@@ -119,6 +122,11 @@ impl Settings {
             err_warn: self.pulse_err_warn,
             err_bad: self.pulse_err_bad,
         }
+    }
+
+    /// The number format of the page.
+    pub fn number(&self) -> ah_web_proto::NumFmt {
+        ah_web_proto::NumFmt { units: self.number_units.clone(), decimals: self.number_decimals }
     }
 
     /// The Live screen's part of the start-up data.

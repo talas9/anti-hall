@@ -27,6 +27,11 @@ fn label(v: &Value, id: &str) -> String {
     id.chars().take(8).collect()
 }
 
+/// A step that is only a task number (older engines recorded the id of a TaskUpdate that carried no subject) says nothing: left empty.
+fn human_step(step: &str) -> String {
+    if step.chars().all(|c| c.is_ascii_digit()) { String::new() } else { step.to_string() }
+}
+
 /// The agents of the engine's status document (finished agents are left out).
 pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
     doc
@@ -45,7 +50,7 @@ pub fn reduce(doc: &Value, step_max: usize) -> Vec<Agent> {
                         parent: text(a, "parent"),
                         project: text(a, "project"),
                         last_output_s: a.get("last_output_s").and_then(Value::as_u64),
-                        step: text(a, "step").chars().take(step_max).collect(),
+                        step: human_step(&text(a, "step")).chars().take(step_max).collect(),
                         tokens_out: a.get("tokens_out").and_then(Value::as_u64).unwrap_or(0),
                         tool_calls: a.get("tool_calls").and_then(Value::as_u64).unwrap_or(0),
                         id,

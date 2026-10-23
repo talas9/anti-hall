@@ -202,6 +202,9 @@ pub struct Boot {
     /// This server's version.
     #[serde(default)]
     pub web_version: String,
+    /// How the page writes long numbers.
+    #[serde(default)]
+    pub number: NumFmt,
 }
 
 /// The Live screen's settings (`web.live_*`).
@@ -341,4 +344,33 @@ pub struct ActionDef {
     pub confirm: bool,
     /// True for the one that opens details (no engine call).
     pub local: bool,
+}
+
+/// One step of the number format: from `from` up, a number is divided by `div` and gets `suffix` (`web.number_units`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NumUnit {
+    pub suffix: String,
+    pub from: u64,
+    pub div: u64,
+}
+
+/// The one number format of the whole page (`web.number_units`, `web.number_decimals`): long numbers read as 12k, 1.1M.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NumFmt {
+    /// Ascending by `from`; the last step whose `from` the number reaches applies.
+    pub units: Vec<NumUnit>,
+    /// Digits after the point; a trailing zero part is dropped.
+    pub decimals: usize,
+}
+
+impl NumFmt {
+    /// `n` as text: whole below the first step, else scaled with its suffix.
+    pub fn fmt(&self, n: u64) -> String {
+        let Some(u) = self.units.iter().rev().find(|u| n >= u.from && u.div > 0) else {
+            return n.to_string();
+        };
+        let text = format!("{:.*}", self.decimals, n as f64 / u.div as f64);
+        let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text };
+        format!("{text}{}", u.suffix)
+    }
 }
