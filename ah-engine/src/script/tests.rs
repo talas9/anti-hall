@@ -2051,6 +2051,8 @@ fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it(
     let blocked = |v: Option<Option<Verdict>>| matches!(v, Some(Some(Verdict::Exact(x))) if x.code == 2);
     assert!(!blocked(edit(Some("s1"))), "a clean worktree");
     std::fs::write(format!("{repo}/big.txt"), "line\n".repeat(400)).unwrap();
+    assert!(!blocked(edit(Some("s1"))), "a count under the soft line is trusted for the cache TTL");
+    std::fs::remove_dir_all(format!("{h}/.anti-hall/uncommitted")).unwrap();
     assert!(blocked(edit(Some("s1"))), "400 untracked lines");
     assert!(!blocked(edit(None)), "the main session is never judged");
     git(&["add", "-A"]);
