@@ -2926,3 +2926,23 @@ value = "{path} is not a regular file (a FIFO, socket or device); it was not rea
 [mesh_write.held_wal_foreign]
 doc = "The reason the reconcile sweep leaves a workspace's pull undone: another reader holds open batches in the delivery log."
 value = "wal-foreign"
+
+[mesh_write.loud_json]
+doc = "Stdout object printed next to every mesh failure line on stderr when the verb ran with --json (so a caller reading stdout never sees a silent no-op). Placeholders: {error} (a JSON string, the site), {reason} (a JSON string, the stderr text), {exit} (the exit code)."
+value = '{"ok":false,"error":{error},"reason":{reason},"exit":{exit}}'
+
+[mesh_write.loud_text]
+doc = "Stdout line printed next to every mesh failure line on stderr when the verb did not run with --json. Placeholders: {error}, {reason}, {exit}."
+value = "ERROR {error} (exit {exit}): {reason}"
+
+[mesh_write.msg_empty_failure]
+doc = "Reason when a mesh verb exits non-zero having printed nothing. Placeholder: {exit}."
+value = "ah-engine mesh: the verb refused (exit {exit}) and printed no answer; nothing was done."
+
+[mesh_write.site_empty_failure]
+doc = "Error code (site) for a non-zero mesh exit that printed nothing."
+value = "meshw:refused"
+
+[mesh_write.site_committed_failure]
+doc = "Error code (site) for a mesh write that was committed and then failed before printing."
+value = "meshw:committed_failure"
