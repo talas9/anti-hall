@@ -166,21 +166,7 @@ fn parent_gone(start_ppid: i32) -> bool {
 
 // ---- the run ----------------------------------------------------------------------------------------------------------------
 
-fn defer_exit() -> i32 {
-    defaults::num("ops.defer_exit") as i32
-}
-
-/// A deferral that says why (stderr, and stdout too when the model armed it by hand): nothing else is printed or written.
-fn defer_why(why: &str, auto: bool) -> Start {
-    let line = defaults::render("wake_watch.diag_deferred", &[("why", &defaults::text(why))]);
-    diag(&line);
-    if !auto {
-        emit(line.trim_end());
-    }
-    Start::Exit(defer_exit())
-}
-
-/// What a startup step may do: carry on, or end the run with an exit code (a deferral is exit 75, nothing written).
+/// What a startup step may do: carry on, or end the run with an exit code.
 enum Start {
     Go(Box<Armed>),
     Exit(i32),
@@ -197,23 +183,21 @@ fn reason(key: &str) -> &'static str {
     text(key)
 }
 
-/// `main()` up to the lock: the checks in Node's order; every deferral happens here, before anything is printed or written.
+/// `main()` up to the lock: the checks in Node's order. Every Node step that can throw falls through (see each step).
 fn start(p: &Proc, auto: bool) -> Start {
     let refuse_quietly = |why: &str| {
         if !auto {
             emit(&edge::refusal_line(why));
         }
     };
-    if crate::checks::guardkit::settings::unreadable_settings_file(&p.st.home) {
-        return defer_why("wake_watch.why_settings", auto);
-    }
+    // Node (devswarm-wake-watch.js main(), `wakeWatchOn`): an unreadable settings file is a caught throw, so the watcher arms.
     if p.switched_off("wake_watch.set_enabled") {
         refuse_quietly(reason("wake_watch.reason_disabled"));
         return Start::Exit(0);
     }
     match who::gate(p) {
-        Err(_) => return defer_why("wake_watch.why_gate", auto),
-        Ok(false) => {
+        // Node's isDevswarmActiveGate catches every tier's throw and falls through to `false`.
+        Ok(false) | Err(_) => {
             diag(text("wake_watch.diag_not_devswarm"));
             refuse_quietly(reason("wake_watch.reason_not_devswarm"));
             return Start::Exit(0);
@@ -221,9 +205,9 @@ fn start(p: &Proc, auto: bool) -> Start {
         Ok(true) => {}
     }
     let id = match who::resolve_identity(p) {
-        Err(_) => return defer_why("wake_watch.why_identity", auto),
         Ok(Some(i)) => i,
-        Ok(None) => {
+        // Node's resolveIdentity catches every tier's throw and ends at `null`
+        Ok(None) | Err(_) => {
             diag(&defaults::render("wake_watch.diag_no_identity", &[("cwd", &p.cwd)]));
             emit(&edge::refusal_line(reason("wake_watch.reason_identity")));
             return Start::Exit(1);
@@ -232,7 +216,8 @@ fn start(p: &Proc, auto: bool) -> Start {
     // an idle Primary: Node prints its one line and records the metric; nothing is written before this decision
     if id.primary {
         match arch::idle_skip(p) {
-            Err(_) => return defer_why("wake_watch.why_idle_check", auto),
+            // Node (main(), the idle-skip try/catch): "any surprise here arms exactly as before #39"
+            Err(_) => {}
             // Node's own outcome: one line (it wakes the session), exit 0, nothing armed and nothing written
             Ok(arch::IdleSkip::Applies) => {
                 emit(text("wake_watch.line_idle_skip"));
@@ -241,8 +226,8 @@ fn start(p: &Proc, auto: bool) -> Start {
             Ok(arch::IdleSkip::NotApplicable) => {}
         }
     }
-    let hashes = if id.primary { who::primary_hashes(&p.cwd) } else { who::child_hashes(&p.cwd, &id.id) };
-    let Ok(hashes) = hashes else { return defer_why("wake_watch.why_repo", auto) };
+    // Node's resolve{Primary,Child}Hashes catch every throw and answer null (no summary buckets to read)
+    let hashes = if id.primary { who::primary_hashes(&p.cwd) } else { who::child_hashes(&p.cwd, &id.id) }.unwrap_or(None);
     let root = devswarm_root(&p.home);
     let inbox = id
         .descriptor
@@ -560,10 +545,17 @@ pub fn run(rest: &[String]) -> i32 {
     // the settings chain reads the whole environment (the Monitor's, not an allowlisted copy)
     let home = env.get(defaults::env_name("home")).or_else(|| env.get(defaults::env_name("home_alt"))).cloned().unwrap_or_default();
     let st = Settings { home, env: env.clone() };
-    if st.home.is_empty() {
-        return defer_exit();
+    // Node's `resolveHome` is `os.homedir()` and `process.cwd()` throws when the directory is gone: both are an uncaught exception (exit 1)
+    let fatal = |key: &str| {
+        diag(text(key));
+        1
+    };
+    let home = if st.home.is_empty() { std::env::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default() } else { st.home.clone() };
+    if home.is_empty() {
+        return fatal("wake_watch.diag_no_home");
     }
-    let Ok(cwd) = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()) else { return defer_exit() };
+    let st = Settings { home, ..st };
+    let Ok(cwd) = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()) else { return fatal("wake_watch.diag_no_cwd") };
     let root = crate::ops::plugin_root(&env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
     let p = Proc { home: PathBuf::from(&st.home), cwd, env, st, root };
     let auto = rest.iter().any(|a| a == text("wake_watch.flag_auto"));

@@ -401,26 +401,11 @@ value = "[wake-watch] lock restamp failed transiently for longer than the lock s
 doc = "Printed once, then the watcher exits 0, when a Primary has no live child workspace (the idle-skip). One stdout line wakes the session, so it says what to do next."
 value = "[wake-watch] idle-skip: no live child workspaces - not arming. Arm this watcher again after you spawn a workspace; the mailbox tick stays your fallback wake path."
 
-[wake_watch.diag_deferred]
-doc = "Printed (stderr; stdout too when armed by hand) when the engine cannot decide and ends with the defer exit code instead of arming. {why}."
-value = "[wake-watch] not armed: {why}\n"
+[wake_watch.diag_no_home]
+doc = "Printed (stderr) when no home directory can be found; exit 1, as Node's uncaught `os.homedir()` failure does."
+value = "[wake-watch] no home directory; exiting.\n"
 
-[wake_watch.why_settings]
-doc = "Why: the settings file cannot be parsed the way the host reads it."
-value = "a settings file could not be read"
+[wake_watch.diag_no_cwd]
+doc = "Printed (stderr) when the working directory is gone; exit 1, as Node's uncaught `process.cwd()` failure does."
+value = "[wake-watch] the working directory is not readable; exiting.\n"
 
-[wake_watch.why_gate]
-doc = "Why: the DevSwarm check could not be answered."
-value = "could not tell whether this is a DevSwarm session"
-
-[wake_watch.why_identity]
-doc = "Why: the workspace identity could not be resolved (the checkout may be nested in another one)."
-value = "could not resolve the DevSwarm workspace identity"
-
-[wake_watch.why_idle_check]
-doc = "Why: the live-children check could not be answered."
-value = "could not check for live child workspaces"
-
-[wake_watch.why_repo]
-doc = "Why: the repo identity needed to find the mailbox summary could not be resolved."
-value = "could not resolve the repo identity of this checkout"
