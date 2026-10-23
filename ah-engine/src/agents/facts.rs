@@ -185,6 +185,40 @@ fn turn(a: &mut Agent, b: &Value, ts: u64) {
     push_ring(&mut a.turns, (ts, kind("agent_nudge.match_tool_kind").to_string(), text), max);
 }
 
+/// Keep the turns of `a` after `since` from the part of its transcript already consumed (the `replay_bytes` before `a.offset`), so a
+/// parent that starts being watched late loses nothing it said after the delivery. Lines past `a.offset` are left to `ingest`.
+pub(crate) fn replay_turns(a: &mut Agent, since: u64) {
+    let (end, max) = (a.offset, lim_n("replay_bytes"));
+    if a.path.is_empty() || end == 0 {
+        return;
+    }
+    let start = end.saturating_sub(max);
+    let Ok(mut f) = std::fs::File::open(&a.path) else { return };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if f.take(end - start).read_to_end(&mut buf).is_err() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = text.lines();
+    if start > 0 {
+        lines.next(); // it may start mid-line
+    }
+    for l in lines {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        let Some(ts) = agent_scan::date_parse(str_of(&v, tr("ts"))).ok().filter(|t| t.is_finite()).map(|t| t as u64).filter(|t| *t > since) else { continue };
+        if str_of(&v, tr("type_key")) != tr("assistant") {
+            continue;
+        }
+        let blocks: &[Value] = v.get(tr("message")).and_then(|m| m.get(tr("content"))).and_then(Value::as_array).map_or(&[], Vec::as_slice);
+        for b in blocks {
+            turn(a, b, ts);
+        }
+    }
+}
+
 /// A cap of the nudge loop (`agent_nudge.limits`).
 fn lim_n(k: &str) -> u64 {
     defaults::raw("agent_nudge.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64

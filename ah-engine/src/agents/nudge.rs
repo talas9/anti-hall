@@ -702,6 +702,21 @@ fn parse_ref_reply(after: &str) -> (String, String, u64) {
     (ans("prose").to_string(), rest.to_string(), 0)
 }
 
+/// Where the text after the nudge's ref starts, when the ref stands as a whole token: at the start of the text or after a character
+/// that is not a letter or digit, and followed by `:`, whitespace or the end.
+fn ref_end(text: &str, tag: &str) -> Option<usize> {
+    let (b, n) = (text.as_bytes(), tag.len());
+    if n == 0 || b.len() < n {
+        return None;
+    }
+    (0..=b.len() - n).find_map(|i| {
+        let hit = b[i..i + n].eq_ignore_ascii_case(tag.as_bytes()) && text.is_char_boundary(i) && text.is_char_boundary(i + n);
+        let before = text[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = text[i + n..].chars().next().is_none_or(|c| c == ':' || c.is_whitespace());
+        (hit && before && after).then_some(i + n)
+    })
+}
+
 fn match_words(k: &str) -> Vec<String> {
     defaults::raw("agent_nudge.match").get(k).map(V::strings).unwrap_or_default().into_iter().map(|w| w.to_lowercase()).collect()
 }
@@ -765,6 +780,12 @@ fn take_turns(env: &Env, st: &mut State) {
         if n.delivered_at == 0 || !n.answer_class.is_empty() || n.snooze_until > env.now_ms {
             continue;
         }
+        // a parent not watched yet (a nudge that went further up, or one open before the watch existed): read its turns since the
+        // delivery straight from the part of its transcript the tracker already consumed
+        if let Some(p) = st.agents.get_mut(&n.parent).filter(|p| !p.watch) {
+            p.watch = true;
+            super::facts::replay_turns(p, n.delivered_at);
+        }
         let Some(parent) = st.agents.get(&n.parent) else { continue };
         let from = n.delivered_at.max(n.turns_from);
         let new: Vec<(u64, String, String)> = parent.turns.iter().filter(|t| t.0 > from).cloned().collect();
@@ -774,9 +795,8 @@ fn take_turns(env: &Env, st: &mut State) {
         }
         let tag = n.ref_id.to_lowercase();
         let tagged = new.iter().rev().filter(|t| t.1 == defaults::text("agent_nudge.match_text_kind")).find_map(|t| {
-            let at = if tag.is_empty() { None } else { t.2.to_lowercase().find(&tag) }?;
-            let after = t.2.get(at + tag.len()..).unwrap_or("");
-            Some(parse_ref_reply(after))
+            let after = ref_end(&t.2, &tag)?;
+            Some(parse_ref_reply(&t.2[after..]))
         });
         if let Some((class, text, min)) = tagged {
             if class != ans("prose") || budget > 0 {
