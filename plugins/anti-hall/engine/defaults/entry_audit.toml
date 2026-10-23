@@ -87,6 +87,7 @@ value = [
   { section = "files", path = '(^|/)hooks/install\.sh$', reason = "the one allowed shell file: the installer" },
   { section = "files", path = '(^|/)skills/[^/]+/references/[^/]+\.workflow\.js$', reason = "scripts for Claude Code's Workflow tool: the host runs them, they are not entry points" },
   { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
+  { section = "files", path = '(^|/)web/pkg/', reason = "the dashboard's compiled WASM bundle (web.pkg_dir in web.toml): browser assets served by ah-web, loaded by the page and never invoked as a command" },
   { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
   { section = "commands", path = '(^|/)engine/defaults/entry_audit\.toml$', reason = "the audit's own rule file names the patterns it forbids" },
   { section = "commands", path = '^docs/(plans|archive|specs|superpowers)/', reason = "historical record" },
