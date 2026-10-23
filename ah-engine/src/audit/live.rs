@@ -45,7 +45,8 @@ fn units(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
 }
 
 fn crontab(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
-    let text: String = run_list("entry_audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
+    let Some(mine) = rx("live_cron_re", defaults::text("entry_audit.live_cron_re")) else { return };
+    let text: String = run_list("entry_audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#') && mine.is_match(l)).collect::<Vec<_>>().join("\n");
     out.extend(cfg.scan_text(section, defaults::text("entry_audit_msg.live_cron_path"), &text));
 }
 

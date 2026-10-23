@@ -127,6 +127,10 @@ value = '(?i)^(?:\S*/)?(?:node|sh|bash|zsh|python3?)\s+(?:-\S+\s+)*\S*(?:anti-ha
 doc = "The command that prints the user's crontab."
 value = ["crontab", "-l"]
 
+[entry_audit.live_cron_re]
+doc = "Only a crontab line that references anti-hall (the ~/.anti-hall tree, a plugin root, or anti-hall in a path) is checked; other projects' jobs are not ours."
+value = '(?i)anti-hall'
+
 [entry_audit.live_plist_dir]
 doc = "The LaunchAgents directory under the home directory."
 value = "Library/LaunchAgents"
