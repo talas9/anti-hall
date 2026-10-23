@@ -88,8 +88,8 @@ pub mod threads;
 pub mod tier;
 pub mod transcript;
 pub mod wakew;
-pub mod webcli;
 pub mod watch;
+pub mod webcli;
 pub mod wire;
 
 /// Version this build reports and compares for handoff. The `version` env override (plugin

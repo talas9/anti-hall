@@ -92,6 +92,7 @@ fn open_in_browser(url: &str) {
     crate::discard::harmless(Command::new(prog).args(args).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()); // keep: no opener installed is not an error
 }
 
+/// The `web` command: `open` (default) and `status`.
 pub fn run_cmd(p: &Parsed) -> i32 {
     let sub = p.rest.iter().find(|a| !a.starts_with("--")).map_or("open", String::as_str);
     if !defaults::raw("web.enabled").as_bool().unwrap_or(false) {
