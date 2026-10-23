@@ -266,9 +266,11 @@ impl Inner {
         push_cap(&mut self.timeline, d.clone(), self.cfg.timeline_max);
         self.timeline_rev += 1;
         self.dirty = true;
+        // the agent that ran the hook starts the path, when the engine recorded it and the agent is drawn
+        let agent = Some(format!("a:{}", d.session)).filter(|a| !d.session.is_empty() && self.agents.ids.iter().flatten().any(|x| x == a));
         if live && self.mounted && !self.reduced {
             if let Some(bus) = &self.bus {
-                bus.push(FxEvent { kind: FxKind::Decision, path: [Some(ev), Some(ck), via, Some(dn)].into_iter().flatten().collect(), color: fx, travel_color: self.cfg.travel_fx.clone() });
+                bus.push(FxEvent { kind: FxKind::Decision, path: [agent, Some(ev), Some(ck), via, Some(dn)].into_iter().flatten().collect(), color: fx, travel_color: self.cfg.travel_fx.clone() });
             }
         }
     }

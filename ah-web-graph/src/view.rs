@@ -365,8 +365,11 @@ pub fn Graph(
     // ---- layout (re-run only when the node/edge structure changes; existing positions are kept)
     let skey = Memo::new(move |_| data.with(structure_key));
     let first = shared(true);
+    // the camera the last automatic fit set: while the person has not moved it, a change of the node set fits again
+    let auto_cam: Shared<Option<Cam>> = shared(None);
     let fit = {
         let cfg = cfg.clone();
+        let auto_cam = auto_cam.clone();
         Callback::new(move |_: ()| {
             let d = data.get_untracked();
             let p = effective_pos(&pos.get_untracked(), &d);
@@ -386,7 +389,9 @@ pub fn Graph(
             let (vw, vh) = vp.get_untracked();
             let pad = cfg.geometry.fit_pad;
             let k = ((vw - 2.0 * pad) / (x1 - x0)).min((vh - 2.0 * pad) / (y1 - y0)).clamp(cfg.geometry.zoom_min, 1.0);
-            cam.set(Cam { k, x: (vw - (x1 - x0) * k) / 2.0 - x0 * k, y: (vh - (y1 - y0) * k) / 2.0 - y0 * k });
+            let c = Cam { k, x: (vw - (x1 - x0) * k) / 2.0 - x0 * k, y: (vh - (y1 - y0) * k) / 2.0 - y0 * k };
+            *auto_cam.borrow_mut() = Some(c);
+            cam.set(c);
         })
     };
     {
@@ -408,6 +413,16 @@ pub fn Graph(
             drop(keep);
             pos.set(cur);
             if std::mem::replace(&mut *first.borrow_mut(), false) {
+                fit.run(());
+            }
+        });
+    }
+
+    {
+        let auto_cam = auto_cam.clone();
+        Effect::new(move |prev: Option<()>| {
+            skey.track();
+            if prev.is_some() && *auto_cam.borrow() == Some(cam.get_untracked()) {
                 fit.run(());
             }
         });

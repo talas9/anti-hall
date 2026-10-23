@@ -793,7 +793,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
         crate::memdiag::note_check(check);
         observe_check_cost_in(self.t, self.event, check, micros);
         crate::obs::trace::push("check", check, telemetry::decision_name(verdict), micros);
-        crate::web::decisions::push(self.event, check, rule_id, verdict, micros);
+        crate::web::decisions::push(self.event, check, rule_id, "", verdict, micros);
         if matches!(verdict, crate::checks::Verdict::Defer) {
             crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
         }
@@ -1010,7 +1010,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::memdiag::note_check(check);
         observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
         checks_us.set(checks_us.get().saturating_add(micros));
-        crate::web::decisions::push(&meta.event, check, &e.id, &v, micros);
+        crate::web::decisions::push(&meta.event, check, &e.id, session, &v, micros);
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
     let (start_cpu, budget) = cpu_budget(cfg);

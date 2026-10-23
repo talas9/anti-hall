@@ -15,6 +15,7 @@ struct Row {
     ts_ms: u64,
     event: String,
     check: String,
+    session: String,
     decision: &'static str,
     rule: String,
     us: u64,
@@ -35,7 +36,7 @@ fn injected(v: &Verdict) -> u64 {
 }
 
 /// Record one check decision (the daemon's observer calls it for every check that ran).
-pub fn push(event: &str, check: &str, rule: &str, verdict: &Verdict, us: u64) {
+pub fn push(event: &str, check: &str, rule: &str, session: &str, verdict: &Verdict, us: u64) {
     if !defaults::has("decisions.ring") || !CALLS.fetch_add(1, Relaxed).is_multiple_of(defaults::num("decisions.sample_n").max(1)) {
         return;
     }
@@ -45,6 +46,7 @@ pub fn push(event: &str, check: &str, rule: &str, verdict: &Verdict, us: u64) {
         ts_ms: crate::health::now_ms(),
         event: event.to_string(),
         check: check.to_string(),
+        session: session.to_string(),
         decision: crate::telemetry::decision_name(verdict),
         rule: rule.to_string(),
         us,
@@ -67,7 +69,7 @@ pub fn snapshot(args: &str) -> Value {
         .iter()
         .filter(|x| x.seq > since && check.as_deref().is_none_or(|c| x.check == c))
         .take(defaults::num("decisions.page") as usize)
-        .map(|x| json!({"seq": x.seq, "ts_ms": x.ts_ms, "event": x.event, "check": x.check, "decision": x.decision, "rule": x.rule, "us": x.us, "injected_bytes": x.injected}))
+        .map(|x| json!({"seq": x.seq, "ts_ms": x.ts_ms, "event": x.event, "check": x.check, "session": x.session, "decision": x.decision, "rule": x.rule, "us": x.us, "injected_bytes": x.injected}))
         .collect();
     json!({"rows": rows, "last_seq": SEQ.load(Relaxed), "ring": defaults::num("decisions.ring")})
 }

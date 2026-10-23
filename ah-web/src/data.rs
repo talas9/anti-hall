@@ -85,7 +85,7 @@ fn decision_of(s: &Settings, row: &Value) -> Decision {
     let decision = text(row, "decision");
     let injected_bytes = num(row, "injected_bytes");
     let fx = if decision == s.live_inject_decision && injected_bytes > 0 { s.live_inject_fx.clone() } else { s.live_decision_fx.get(&decision).cloned().unwrap_or_default() };
-    Decision { seq: num(row, "seq"), ts_ms: num(row, "ts_ms"), event: text(row, "event"), check: text(row, "check"), decision, rule: text(row, "rule"), us: num(row, "us"), injected_bytes, fx }
+    Decision { seq: num(row, "seq"), ts_ms: num(row, "ts_ms"), event: text(row, "event"), check: text(row, "check"), session: text(row, "session"), decision, rule: text(row, "rule"), us: num(row, "us"), injected_bytes, fx }
 }
 
 /// A mesh message row as a plain sentence. The store keeps times in seconds or milliseconds; both are taken.

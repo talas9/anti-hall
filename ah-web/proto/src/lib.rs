@@ -89,6 +89,9 @@ pub struct Decision {
     /// The hook event that ran the check.
     pub event: String,
     pub check: String,
+    /// The session that ran the hook (an agent's tracker id for a main session); empty when the engine did not record it.
+    #[serde(default)]
+    pub session: String,
     /// `allow`, `block`, `advisory`, `error` or `defer`.
     pub decision: String,
     /// The id of the rule that named the check.

@@ -237,3 +237,5 @@ a { color: var(--cyan); }
 .ver { border: 1px solid var(--line-2); border-radius: 999px; padding: 4px 10px; background: transparent; font: 12px var(--font-mono); color: var(--text-mid); cursor: pointer; }
 .ver-skew { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 55%, transparent); }
 .ver-pop { padding: 12px 14px; min-width: 240px; }
+
+.top .search { flex: 0 1 220px; min-width: 140px; }
