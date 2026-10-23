@@ -32,6 +32,8 @@ pub fn router(app: Shared) -> Router {
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
         .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
+        .route(ah_web_proto::HEALTH_PATH, get(health))
+        .route(ah_web_proto::TOPO_ACTION_PATH, post(topo_action))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -116,6 +118,7 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.get("version").and_then(serde_json::Value::as_str).map(str::to_string)).unwrap_or_default(),
         web_version: env!("CARGO_PKG_VERSION").to_string(),
         number: s.number(),
+        topo: s.topo(),
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
@@ -333,4 +336,57 @@ async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
     }
     let s = app.settings();
     Json(crate::live::map(&app, &s).await).into_response()
+}
+
+/// `GET /api/health`: one reduced reading of the engine for the Health and Topology screens.
+async fn health(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    Json(crate::health::read(&app).await).into_response()
+}
+
+/// `POST /api/topo/action`: run one topology node action as an engine command. The engine arguments come from the settings; the page
+/// names only the node and the action, and a viewer file is looked up here, never taken from the request.
+async fn topo_action(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    let Ok(req) = serde_json::from_slice::<ah_web_proto::TopoReq>(&body) else {
+        return res(false, "refused", s.msg_topo_unknown.clone());
+    };
+    let Some(def) = s.topo_actions.iter().find(|a| a.kind == req.kind && a.name == req.action) else {
+        return res(false, "refused", s.msg_topo_unknown.clone());
+    };
+    if !id_ok(&req.id) {
+        return res(false, "refused", s.msg_action_bad_id.clone());
+    }
+    if def.confirm && !req.confirmed {
+        return res(false, "refused", s.msg_action_confirm.clone());
+    }
+    if def.local {
+        return res(true, "done", String::new());
+    }
+    let viewer = s.topo_viewers.iter().find(|v| req.kind == "store" && v.store == req.id).map(|v| v.file.clone());
+    if def.needs_viewer && viewer.is_none() {
+        return res(false, "refused", s.msg_topo_no_viewer.clone());
+    }
+    let pid = crate::health::read(&app).await.pid.to_string();
+    let args: Vec<String> = def.args.iter().map(|a| a.replace("{id}", &req.id).replace("{pid}", &pid).replace("{viewer}", viewer.as_deref().unwrap_or_default())).collect();
+    let run = tokio::process::Command::new(&app.engine)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await else {
+        return res(false, "failed", s.msg_action_timeout.clone());
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let refused = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool)) == Some(false);
+    let ok = out.status.success() && !refused;
+    res(ok, if ok { "done" } else { "failed" }, text.trim().chars().take(s.topo_action_max_chars).collect())
 }

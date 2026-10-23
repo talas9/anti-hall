@@ -15,6 +15,25 @@ pub struct ActionCfg {
     pub args: Vec<String>,
 }
 
+/// One entry of a topology node's menu: what the page shows and the engine arguments it runs (`{pid}`, `{viewer}`, `{id}` are filled by the server).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TopoActionCfg {
+    pub kind: String,
+    pub name: String,
+    pub label: String,
+    pub confirm: bool,
+    pub local: bool,
+    pub needs_viewer: bool,
+    pub args: Vec<String>,
+}
+
+/// A store that can be opened in the viewer: its id in the I/O registry and the id `diag file` takes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TopoViewer {
+    pub store: String,
+    pub file: String,
+}
+
 /// All settings the server reads.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -109,6 +128,24 @@ pub struct Settings {
     pub live_jev_fx: BTreeMap<String, String>,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
+    pub health_cache_ms: u64,
+    pub health_cpu_soft_permille: u64,
+    pub health_cpu_hard_permille: u64,
+    pub health_holders_max: usize,
+    pub health_warn_pct: u64,
+    pub topo_subsystems: Vec<ah_web_proto::TopoSub>,
+    pub topo_viewers: Vec<TopoViewer>,
+    pub topo_databases: Vec<String>,
+    pub topo_actions: Vec<TopoActionCfg>,
+    pub topo_warn_fail_pct: f64,
+    pub topo_bad_fail_pct: f64,
+    pub topo_idle_s: u64,
+    pub topo_clients_max: usize,
+    pub topo_poll_full_ms: u64,
+    pub topo_poll_lite_ms: u64,
+    pub topo_action_max_chars: usize,
+    pub msg_topo_unknown: String,
+    pub msg_topo_no_viewer: String,
 }
 
 impl Settings {
@@ -149,6 +186,28 @@ impl Settings {
             rules_max: self.live_rules_max,
             scan_gap_ms: self.live_scan_gap_ms,
             jev_fx: self.live_jev_fx.clone(),
+        }
+    }
+
+    /// The Health and Topology screens' part of the start-up data (the engine arguments and viewer files stay on the server).
+    pub fn topo(&self) -> ah_web_proto::TopoCfg {
+        ah_web_proto::TopoCfg {
+            subsystems: self.topo_subsystems.clone(),
+            viewers: self.topo_viewers.iter().map(|v| v.store.clone()).collect(),
+            actions: self
+                .topo_actions
+                .iter()
+                .map(|a| ah_web_proto::TopoActionDef { kind: a.kind.clone(), name: a.name.clone(), label: a.label.clone(), confirm: a.confirm, local: a.local, needs_viewer: a.needs_viewer })
+                .collect(),
+            databases: self.topo_databases.clone(),
+            warn_fail_pct: self.topo_warn_fail_pct,
+            bad_fail_pct: self.topo_bad_fail_pct,
+            idle_s: self.topo_idle_s,
+            clients_max: self.topo_clients_max,
+            poll_full_ms: self.topo_poll_full_ms,
+            poll_lite_ms: self.topo_poll_lite_ms,
+            holders_max: self.health_holders_max,
+            warn_pct: self.health_warn_pct,
         }
     }
 

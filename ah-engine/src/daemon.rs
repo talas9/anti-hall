@@ -472,6 +472,7 @@ impl Shared {
             version: &self.own,
             uptime_s: self.started.elapsed().as_secs(),
             rss_kb: limits::rss_kb(),
+            footprint_kb: limits::footprint_kb(),
             cpu_s: limits::process_cpu_secs(),
             requests: self.stats.requests.load(SeqCst),
             busy_replies: self.stats.busy.load(SeqCst),

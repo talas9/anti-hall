@@ -26,6 +26,8 @@ pub struct App {
     pub model: Mutex<Model>,
     /// The hook wiring read from `describe`, with the time it was read.
     pub live_map: Mutex<Option<(Instant, ah_web_proto::LiveMap)>>,
+    /// The last Health reading and when it was taken (a second tab within `web.health_cache_ms` shares it).
+    pub health: Mutex<Option<(Instant, ah_web_proto::Health)>>,
 }
 
 impl App {
@@ -46,6 +48,7 @@ impl App {
             polling: AtomicBool::new(false),
             model: Mutex::new(model),
             live_map: Mutex::new(None),
+            health: Mutex::new(None),
         }
     }
 
