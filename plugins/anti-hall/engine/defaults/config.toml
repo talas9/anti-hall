@@ -41,8 +41,12 @@ doc = "Words a settings.json boolean may be written as to mean false (matches FA
 value = ["0", "off", "false", "no"]
 
 [config.restart_only]
-doc = "Settings (or key prefixes ending in a dot) that only take effect when the daemon starts; an edit is held as pending until then."
-value = ["daemon.workers", "daemon.mem_mb", "daemon.nice", "paths.", "storage.", "store.", "files."]
+doc = "Settings (or key prefixes ending in a dot) that only take effect when the daemon starts, because the daemon reads them once when a thread starts (the file watcher reads realtime.*, the DevSwarm wire thread its wait and reconcile gap); an edit is held as pending (config --json lists it under pending_restart) until the next start."
+value = ["daemon.workers", "daemon.mem_mb", "daemon.nice", "paths.", "storage.", "store.", "files.", "realtime.", "devswarm_wire.wait_ms", "devswarm_wire.reconcile_min_gap_ms"]
+
+[config.locked]
+doc = "Settings (exact keys, or prefixes ending in a dot or in *) the owner's files may not change: the names of the environment variables (the contract between the wrapper, the client and the daemon), the settings that say where the config files are, these two lists, the dispatch table (the generated hooks.json is built from it; hooks are configured in [events.*] and [entries.*], whose guard rules keep a guard from being turned off) and the command registry (its read-only flags feed the role gate). config.toml naming one is invalid; settings.json naming one is ignored."
+value = ["env.", "config.user_file", "config.settings_file", "config.restart_only", "config.locked", "dispatch.hooks_*", "cmd."]
 
 [msg.cfg_err_io]
 doc = "A config file could not be read."
@@ -59,6 +63,10 @@ value = "Config file {path} must hold a JSON object at its top level"
 [msg.cfg_err_unknown]
 doc = "A config file names a setting the engine does not have."
 value = "Config file {path}: {key} is not a known setting"
+
+[msg.cfg_err_locked]
+doc = "A config file sets a setting listed in config.locked."
+value = "Config file {path}: {key} cannot be changed in a config file"
 
 [msg.cfg_err_type]
 doc = "A config value has the wrong type."

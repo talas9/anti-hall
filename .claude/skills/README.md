@@ -8,6 +8,7 @@ copies them (like devDependencies). Claude Code loads them in sessions opened in
 - `gh-work`: issue -> branch -> PR -> merge lifecycle, board fields and bot labels.
 - `release`: drive `RELEASING.md` plus the GitHub-side release steps.
 - `engine-lane`: run an ah-engine lane (isolation, build queue, gates, goldens, cleanup).
+- `engine-debug`: find the cause of an engine problem (CPU, memory, frozen daemon, slow hooks) with evidence, safely.
 - `repo-hygiene`: branch/worktree sweep, stale index lock, agnostic scrub, hygiene tests.
 
 ## Autonomous mode

@@ -115,6 +115,10 @@ value = "trials.md"
 doc = "Separator of the detail file names in the resume steps."
 value = " / "
 
+[codex_handover.detect_echo_min_chars]
+doc = "A line of the agent's own prompt at least this long (trimmed, in UTF-16 units) is removed from its result before the quota search, as is its JSON-escaped form: a result that quotes the brief back (a brief that mentions a quota limit) is not a quota message."
+value = 8
+
 [codex_handover.detect_scan_cap]
 doc = "How much of a Codex result is searched for a quota message, in UTF-16 units."
 value = 20000
@@ -846,6 +850,14 @@ value = ["status", "--porcelain"]
 [codex_handover.argv_super]
 doc = "The git arguments that print the superproject checkout of a repository; {root} is the repository."
 value = ["-C", "{root}", "rev-parse", "--show-superproject-working-tree"]
+
+[codex_handover.precompact_unsure_log_kind]
+doc = "Engine log kind of a precompact-snapshot case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_cwd (a relative working directory), local_date (a request time zone other than UTC), repo_root (a checkout the resolver cannot classify exactly), seq_digits (a PRECOMPACT sequence number longer than codex_handover.seq_max_digits)."
+value = "precompact_unsure"
+
+[codex_handover.nudge_unsure_log_kind]
+doc = "Engine log kind of a codex-nudge case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or the real home under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript, relative_cwd, relative_path (a relative path with no absolute payload cwd), repo_root (a checkout the resolver cannot classify exactly), transcript_line, job_logs, quota, state_parse (a transcript line, Codex job log, quota record or nudge state only V8 reads exactly), state_big (the nudge state over script.read_max_bytes), stale_link (a stale linked nudge state file Node's sweep would unlink; the host never removes a link)."
+value = "codex_nudge_unsure"
 
 [codex_handover.tz_var]
 doc = "The environment variable that sets the time zone; a request whose value differs from this process's has its local-time conversions left to the Node hook."

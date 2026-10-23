@@ -73,9 +73,10 @@ var turnGate = {
   // The id of the newest human prompt in the capped transcript tail; null when none can be found.
   currentTurnId: function (transcriptPath) {
     if (!transcriptPath || typeof transcriptPath !== 'string') return null;
-    var tail = ah.fs.readTail(transcriptPath, ah.cfgNum('turn_gate.tail_bytes'));
-    if (tail === null) return null;
-    var lines = tail.split('\n'), injected = gk.re('turn_gate.injected_re');
+    // only the lines that name a user entry are read below, so only those are fetched
+    var lines = ah.fs.tailLines(transcriptPath, ah.cfgNum('turn_gate.tail_bytes'), false, ['"user"']);
+    if (lines === null) return null;
+    var injected = gk.re('turn_gate.injected_re');
     for (var i = lines.length - 1; i >= 0; i--) {
       var line = lines[i];
       if (!line || line.indexOf('"user"') === -1) continue;

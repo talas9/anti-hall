@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
+    ("src/hcguard.rs", "the test-build guard: the scratch-stub roots and HOME of the process it guards (read only while the guard is active, a test build)"),
+    (
+        "src/daemonenv.rs",
+        "the daemon's start-up sanitising (`sanitize`): it lists the process environment once, before any thread exists, only to REMOVE every variable that is not on `daemon.spawn_env_allow`, so no request is ever answered from the starting session's values",
+    ),
+    ("src/memdiag.rs", "the daemon's own environment, once at start: whether the allocator already got its tuning from the variables a starter set"),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",
@@ -47,12 +53,20 @@ const ALLOW: &[(&str, &str)] = &[
         "the operator command-line tools (`settings`, `defect`, `statusline`): one-shot processes whose own environment IS the caller's, snapshotted once at the command line (the daemon is not involved, D76)",
     ),
     (
-        "src/ops/shadow.rs",
-        "the Node shadow of those tools: the detached child inherits the command's environment on purpose, so the Node script sees what the real run saw; its only switch is its own recursion guard",
-    ),
-    (
         "src/meshw/simple.rs",
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
+    ),
+    (
+        "src/script/golden_d6/tests.rs",
+        "test builds only (`#[cfg(test)]`): `AH_GOLDEN_ALL`, the developer switch that prints every golden mismatch instead of the first few; no request is ever answered from it",
+    ),
+    (
+        "src/script/golden.rs",
+        "the golden corpus replay, compiled into test builds only (`#[cfg(test)] mod golden`): `AH_REGEN_DEFERS`, the developer switch that rewrites a corpus's deferred cases from the script's own answers; no request is ever answered from it",
+    ),
+    (
+        "src/script/host_spawn.rs",
+        "the start-up probe warm-up runs in the daemon's own environment (the environment of the client that started it), so its cache key matches that client's later probes",
     ),
     (
         "src/script/host_proc.rs",
@@ -75,8 +89,16 @@ const ALLOW: &[(&str, &str)] = &[
         "`ah-engine devswarm wake-watch`, the idle-wake Monitor's own command-line process (run by `dswire/cli.rs`): the settings chain reads the Monitor's environment, as the Node watcher reads `process.env`; the daemon is not involved (D76)",
     ),
     (
+        "src/wakew/stale.rs",
+        "`stale_line`, run by the `ah-engine devswarm wake-watch` Monitor process (see `wakew/mod.rs`): the home variable of that process locates the version-independent watcher shim named in the stale-version line; the daemon is not involved",
+    ),
+    (
         "src/script/tests.rs",
         "the scripted-check unit tests (`#[cfg(test)] mod tests` in script/mod.rs, a file of its own so the scan's `#[cfg(test)]` cut does not apply): the test process's wall-clock headroom `AH_TEST_TIME_SCALE`, which CI sets",
+    ),
+    (
+        "src/ghrt/ready.rs",
+        "`workspace_owns`, the GitHub poller (daemon background duty, no request): locates the DevSwarm app database from the engine process's own environment, like the DevSwarm layer's startup in `dswire/mod.rs`; `github_rt.ready_app_db` overrides it",
     ),
     (
         "src/dswire/cli.rs",

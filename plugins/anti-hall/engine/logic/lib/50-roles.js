@@ -42,32 +42,49 @@ var roles = {
     return null;
   },
   // The quoted spans of a Bash command as { s, e, kind } (kind "'" or '"', s the opening quote, e one past the closing one or
-  // the end of the text). A heredoc body is skipped unquoted: it may be a script, so the strict reading applies there.
+  // the end of the text). A heredoc body is a span of kind "h" (`quoted`: its delimiter is quoted, so nothing in it is expanded):
+  // it is text for `cat`/`tee`, and runs only where a shell or script word reads it (quotedRuns).
   quotedSpans: function (cmd) {
-    var spans = [], n = cmd.length, j = 0;
+    var spans = [];
+    roles.scanQuoted(cmd, 0, false, spans);
+    return spans;
+  },
+  // Scans cmd from `from`, pushing spans; with `inSubst` it stops after the `)` that closes a `$(` (depth 0) and returns the index
+  // after it. A double-quoted span recurses into its `$( ... )` so a heredoc or quote inside the substitution is read as shell code,
+  // not as the end of the outer span (the `git commit -m "$(cat <<'EOF' ... EOF)"` shape).
+  scanQuoted: function (cmd, from, inSubst, spans) {
+    var n = cmd.length, j = from, depth = 0;
     while (j < n) {
       var c = cmd[j];
       if (c === '\\') { j += 2; continue; }
+      if (inSubst && c === '(') { depth++; j++; continue; }
+      if (inSubst && c === ')') { if (depth === 0) return j + 1; depth--; j++; continue; }
       if (c === '<' && cmd[j + 1] === '<') {
         var h = shellScan.parseHeredocRaw(cmd, j);
-        if (h) { j = Math.max(h.end, j + 2); continue; }
+        if (h) { spans.push({ s: j, e: h.end, kind: 'h', quoted: h.quoted }); j = Math.max(h.end, j + 2); continue; }
         j += 2; continue;
       }
       if (c === "'" || c === '"') {
-        var k = j + 1;
-        while (k < n && cmd[k] !== c) k += c === '"' && cmd[k] === '\\' ? 2 : 1;
-        spans.push({ s: j, e: Math.min(k + 1, n), kind: c });
+        var k = j + 1, mine = { s: j, e: n, kind: c }, inner = [];
+        spans.push(mine);
+        while (k < n && cmd[k] !== c) {
+          if (c === '"' && cmd[k] === '\\') { k += 2; continue; }
+          if (c === '"' && cmd[k] === '$' && cmd[k + 1] === '(') { k = roles.scanQuoted(cmd, k + 2, true, inner); continue; }
+          k++;
+        }
+        mine.e = Math.min(k + 1, n);
+        for (var q = 0; q < inner.length; q++) spans.push(inner[q]);
         j = k + 1; continue;
       }
       j++;
     }
-    return spans;
+    return n;
   },
   // Whether the engine name at `at` inside quoted span `q` runs: a `$(` or backtick before it in a double-quoted span (a command
   // substitution), or a span that is the script of a shell or of one of roles.script_words in the same simple command
   // (`sh -c '...'`, `eval "..."`). Anything else in quotes is text, such as a commit message that names a verb.
   quotedRuns: function (cmd, q, at) {
-    if (q.kind === '"' && /\$\(|`/.test(cmd.slice(q.s + 1, at))) return true;
+    if ((q.kind === '"' || (q.kind === 'h' && !q.quoted)) && /\$\(|`/.test(cmd.slice(q.s + 1, at))) return true;
     var head = cmd.slice(0, q.s), cut = Math.max(head.lastIndexOf(';'), head.lastIndexOf('&'), head.lastIndexOf('|'), head.lastIndexOf('\n'), head.lastIndexOf('('));
     var words = head.slice(cut + 1).split(/\s+/), shells = shellScan.shellVerbs(), extra = ah.cfg('roles.script_words');
     return words.some(function (w) { var b = shellScan.basename(w.replace(/^["']+|["']+$/g, '')); return shells.has(b) || extra.indexOf(b) >= 0; });
@@ -79,7 +96,8 @@ var roles = {
     for (var i = 0; i < hits.length; i++) {
       var at = cmd.lastIndexOf(bin, hits[i][1]);
       if (spans === null) spans = roles.quotedSpans(cmd);
-      var q = spans.find(function (x) { return at > x.s && at < x.e; });
+      var q = null;
+      for (var si = 0; si < spans.length; si++) { var x = spans[si]; if (at > x.s && at < x.e && (q === null || x.s >= q.s)) q = x; }
       if (q && !roles.quotedRuns(cmd, q, at)) continue;
       var rest = cmd.slice(hits[i][1]);
       var cut = rest.search(/[;&|\n)`]/);

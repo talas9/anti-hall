@@ -50,14 +50,14 @@ and their size; `--prune-cache --confirmed` removes them (keeps the newest 3, th
 install, live-process and running versions, anything unparseable; setting
 `updates.allowCachePrune`). Every run also scans each anti-hall launchd/systemd unit file and REPORTS
 (never unloads or moves) one whose `WorkingDirectory` is under a temp root or gone, or whose
-script is gone, with the bootout + quarantine commands. Two classes: **AUTO-SAFE** (state migrations; statusline only when none
-is configured; idempotent supervisor relaunch; **Codex hook refresh when a
+script is gone, with the bootout + quarantine commands. Two classes: **AUTO-SAFE** (state migrations;
+idempotent supervisor relaunch; **Codex hook refresh when a
 `.codex/config.toml` exists but the hooks are unwired** — it never creates a new `.codex`)
 and **GATED** daemon fixes (ingest install / wrong-path rebind / stale-script / supervisor
 first-install / `reconcile`, v0.58.1 — drains every stranded per-worktree native
 hivecontrol queue into the shared store, previously a MANUAL-only verb) applied only when
 `isDevswarmActive(env)` AND `resolveWorktree(cwd)` is a git worktree — otherwise doctor
-reports the exact manual command (`node scripts/devswarm.js reconcile` for the reconcile
+reports the exact manual command (`~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile` for the reconcile
 case). The **DevSwarm gate is effectively always closed for gpt-5.x Codex/OMX sessions**
 (the `DEVSWARM_*` env vars are set only for the `claude` child sessions hivecontrol
 spawns), so on Codex the daemon fixes report the manual command rather than acting —

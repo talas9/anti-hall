@@ -131,7 +131,7 @@ fn a_prompt_fire_and_the_post_handover_gate_are_answered_by_the_scripts() {
 }
 
 #[test]
-fn a_quiet_stop_and_a_stop_fire_are_answered_by_the_engine_and_a_deferral_reaches_node() {
+fn a_quiet_stop_a_stop_fire_and_a_relative_transcript_are_answered_by_the_engine() {
     let e = Env::new("stop");
     let loud = ["auto-handover-pause-nag", "compact-advice-guard"];
     let map = e.map("Stop", &loud, "echo NODEBLOCK-{id} >&2; exit 2");
@@ -141,8 +141,89 @@ fn a_quiet_stop_and_a_stop_fire_are_answered_by_the_engine_and_a_deferral_reache
     let high = e.transcript(180_000);
     let (_, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
     assert!(!err.contains("NODEBLOCK-") && format!("{out}{err}").contains("auto-handover: context is at ~90%"), "{out:?} {err:?}");
-    // a relative transcript path is resolved by Node against its own directory: deferred
+    // a relative transcript path is opened from the hook's directory (the payload cwd, /tmp, holds no such file): answered natively
     let (code, _, err) = e.run("Stop", &map, &stop("tr.jsonl"), &[WINDOW]);
-    assert_eq!(code, 2, "{err:?}");
-    assert!(err.contains("NODEBLOCK-auto-handover-pause-nag"), "{err:?}");
+    assert_eq!(code, 0, "{err:?}");
+    assert!(!err.contains("NODEBLOCK-"), "{err:?}");
+}
+
+/// #68 C2: what the engine cannot reproduce exactly (a file over the read cap, a line only V8 parses) says nothing this call
+/// (counted `native_unable`; there is no Node to answer). A usage cache over the read cap means no conservation notice (dropped on
+/// purpose); the pause nag and the Stop fire are decided natively from the big files.
+const BIG: usize = 4_300_000; // over script.read_max_bytes
+fn deep(d: usize) -> String {
+    format!("{}{}", "[".repeat(d), "]".repeat(d))
+}
+fn now_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+}
+
+#[test]
+fn a_usage_cache_or_claude_json_over_the_read_cap_says_nothing() {
+    let e = Env::new("lc-big");
+    let map = e.map("UserPromptSubmit", &["limit-conserve-inject"], "echo NODE-{id}");
+    let tr = e.transcript(50_000);
+    let cache = e.dir.join("home/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    let fresh = serde_json::json!({"timestamp": now_ms() as u64, "data": {"fiveHourPercent": 99, "weeklyPercent": 1, "sonnetWeeklyPercent": 1}});
+    let mut big = fresh.clone();
+    big["pad"] = "x".repeat(BIG).into();
+    std::fs::write(&cache, big.to_string()).unwrap();
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
+    assert!(!out.contains("NODE-") && !out.contains("limit conservation is active"), "a cache over the read cap: no conservation: {out:?}");
+    // a small cache over the threshold, answered natively; then ~/.claude.json over the cap: the account is assumed unchanged
+    std::fs::write(&cache, fresh.to_string()).unwrap();
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
+    assert!(!out.contains("NODE-") && out.contains("limit conservation is active (5h)"), "{out:?}");
+    // a fresh state (the same line is not repeated within a session): ~/.claude.json over the cap changes nothing, the notice stays
+    let e = Env::new("lc-bigjson");
+    let map = e.map("UserPromptSubmit", &["limit-conserve-inject"], "echo NODE-{id}");
+    let tr = e.transcript(50_000);
+    let cache = e.dir.join("home/.claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, fresh.to_string()).unwrap();
+    std::fs::write(e.dir.join("home/.claude.json"), serde_json::json!({"userID": "u2", "pad": "x".repeat(BIG)}).to_string()).unwrap();
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
+    assert!(!out.contains("NODE-") && out.contains("limit conservation is active (5h)"), "{out:?}");
+}
+
+#[test]
+fn a_big_spawn_log_or_a_deep_task_line_still_fires_the_pause_nag_natively() {
+    let e = Env::new("pn-big");
+    let map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let latch = e.dir.join("home/.anti-hall/auto-handover/e2e.json");
+    std::fs::create_dir_all(latch.parent().unwrap()).unwrap();
+    let armed = r#"{"fired":true,"firedPct":86,"lastNagPct":89,"lastNagAt":0}"#;
+    let high = e.transcript(180_000); // 90 percent, nag due (quiet time elapsed)
+    let log = e.dir.join("home/.anti-hall/agent-spawns.log");
+    std::fs::write(&log, "0 old\n".repeat(BIG / 6)).unwrap();
+    std::fs::write(&latch, armed).unwrap();
+    let (code, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
+    assert!(code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("good stopping point"), "{out:?} {err:?}");
+    // a small log: the same answer (the nag fires again from the re-armed latch)
+    std::fs::write(&log, "0 old\n").unwrap();
+    std::fs::write(&latch, armed).unwrap();
+    let (_, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
+    assert!(!err.contains("NODEBLOCK-") && format!("{out}{err}").contains("good stopping point"), "{out:?} {err:?}");
+    // a task line only V8 parses: deferred
+    std::fs::write(&latch, armed).unwrap();
+    let usage = std::fs::read_to_string(&high).unwrap();
+    std::fs::write(&high, format!("{{\"type\":\"assistant\",\"name\":\"TodoWrite\",\"x\":{}}}\n{usage}", deep(100_000))).unwrap();
+    let (code, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
+    assert!(code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("good stopping point"), "{out:?} {err:?}");
+}
+
+#[test]
+fn a_handover_over_the_read_cap_still_fires_the_stop_fire_natively() {
+    let e = Env::new("pn-hbig");
+    let map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let date = String::from_utf8(Command::new("date").arg("+%Y-%m-%d").output().unwrap().stdout).unwrap().trim().to_string();
+    let proj = e.dir.join("proj");
+    let hdir = proj.join(format!(".anti-hall/handovers/{date}/e2e"));
+    std::fs::create_dir_all(&hdir).unwrap();
+    std::fs::write(hdir.join("HANDOVER.md"), format!("# H\n## Open items\nnone\n## Pad\n{}\n", "x".repeat(BIG))).unwrap();
+    let high = e.transcript(180_000);
+    let p = serde_json::json!({"session_id":"e2e","hook_event_name":"Stop","stop_hook_active":false,"cwd":proj,"transcript_path":high}).to_string();
+    let (code, out, err) = e.run("Stop", &map, &p, &[WINDOW]);
+    assert!(code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("write a handover now"), "{out:?} {err:?}");
 }

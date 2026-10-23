@@ -1,0 +1,324 @@
+# ah-engine shipped defaults for memory diagnostics (issue #21). Format: see the header of engine.toml.
+#
+# Two files in the state directory answer "where does the daemon's memory go": a per-request NDJSON log (resident set and allocator
+# figures before and after each request) and one snapshot written when the resident-set cap trips. `ah-engine status --memory`
+# prints the latest snapshot and a summary of the log. Nothing here changes what a hook decides.
+
+[diagnostics.mem_log]
+doc = "Append one NDJSON line per served request to the memory log: time, request kind, event, the checks that ran, resident set and allocator figures before and after, and the size of the transcript file. Costs a few microseconds and one small append per request; turn it off once the memory question is closed."
+value = true
+
+[diagnostics.allocator]
+doc = "Allocator for the daemon the client spawns: jemalloc (default) or system. The client passes it on as AH_ENGINE_ALLOCATOR unless that is already set. Changing it requires a daemon restart."
+value = "jemalloc"
+
+[diagnostics.allocator_env]
+doc = "Environment variable the client sets on the daemon it spawns to select the allocator (the daemon reads it before its first allocation). An existing value in the client's own environment wins."
+value = "AH_ENGINE_ALLOCATOR"
+
+[diagnostics.allocator_choices]
+doc = "Allocator names the client accepts from diagnostics.allocator; any other value is logged and the daemon starts with jemalloc."
+value = ["jemalloc", "system"]
+
+[diagnostics.mem_log_max_bytes]
+doc = "Size at which the memory log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so the log never holds more than twice this."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[diagnostics.mem_snapshot]
+doc = "When the resident-set cap trips, write one snapshot before the daemon exits: allocator figures, thread count, the interpreters and caches of every worker, and the platform's own memory map of the process."
+value = true
+
+[diagnostics.mem_snapshot_max_bytes]
+doc = "Largest the snapshot file may be; the platform memory-map text is cut to fit."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[diagnostics.mem_snapshot_wait_ms]
+doc = "Longest the snapshot waits for every worker to report its interpreter and caches (a busy worker reports after its request); workers that have not reported by then are listed as missing."
+value = 3000
+min = 0
+unit = "ms"
+
+[diagnostics.mem_snapshot_probe]
+doc = "Command whose output goes into the snapshot as the platform's memory map of the daemon (macOS: vmmap summary); the program, then its arguments with `{pid}` substituted. Where /proc/<pid>/smaps_rollup exists it is used instead. An empty list or a missing program leaves the field empty."
+value = ["vmmap", "--summary", "{pid}"]
+
+[diagnostics.mem_snapshot_probe_ms]
+doc = "Longest the memory-map command may run."
+value = 4000
+min = 1
+unit = "ms"
+
+[diagnostics.summary_top]
+doc = "Rows shown per ranking (events, checks) in the memory summary of `ah-engine status --memory`."
+value = 10
+min = 1
+
+[diagnostics.summary_read_bytes]
+doc = "Most of the memory log (newest part) `status --memory` reads to build its summary."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[diagnostics.malloc_stack_logging]
+doc = "Diagnostic label for an operator-run macOS `MallocStackLogging` repro (`lite` or empty). The engine only accepts and reports it; the OS facility must be enabled in the process environment before start."
+value = ""
+
+[diagnostics.threads_flag]
+doc = "The `ah-engine status` flag that reports the live daemon's per-thread CPU and work counters over a short window (`status --threads [--json]`)."
+value = "--threads"
+
+[diagnostics.threads_ctl]
+doc = "The control request that asks the daemon for one snapshot of every thread's CPU time and the work counters (the client asks twice, the window apart, and reports the difference)."
+value = "threads"
+
+[diagnostics.threads_window_ms]
+doc = "The window of `status --threads`: per-thread CPU % and counters per second are measured over this long."
+value = 1000
+min = 100
+max = 60000
+unit = "ms"
+env = "AH_ENGINE_THREADS_WINDOW_MS"
+
+[diagnostics.threads_proc_dir]
+doc = "Linux: the directory listing this process's threads (each has a `stat` file with its CPU ticks and name)."
+value = "/proc/self/task"
+
+[diagnostics.threads_proc_stat]
+doc = "Linux: the per-thread file holding the CPU ticks (fields 14 and 15) and the name."
+value = "stat"
+
+[diagnostics.threads_name_max]
+doc = "macOS: the size of the buffer a thread name is read into (the OS limit, MAXTHREADNAMESIZE)."
+value = 64
+min = 16
+max = 1024
+
+[files.mem_log]
+doc = "Per-request memory log file name (state directory)."
+value = "mem.ndjson"
+
+[files.mem_snapshot]
+doc = "Cap-trip memory snapshot file name (state directory)."
+value = "mem-snapshot.json"
+
+# ---- debug mode (one build, two runtime modes) ---------------------------------------------------------------------------------------
+
+[diagnostics.debug_mode]
+doc = "Debug mode: the same binary also writes verbose per-module logs to the debug log (files.debug_log), checks runtime invariants (a violation is logged and counted, never fatal), samples per-thread CPU every diagnostics.debug_thread_sample_ms and writes a memory line every diagnostics.debug_mem_snapshot_ms. Off in normal use; the cost of the switch while off is one atomic load per call site. The environment variable env.debug or the --debug flag (diagnostics.debug_flag) of `serve` and `hook` turns it on for that process regardless of this setting; this setting is read again on every change of the config files, so a running daemon follows it without a restart."
+value = false
+
+[diagnostics.debug_flag]
+doc = "The command-line flag that turns debug mode on for one `serve` or `hook` process."
+value = "--debug"
+
+[diagnostics.debug_modules]
+doc = "Modules whose debug log lines are written (a module name such as `daemon/queue`, or a prefix ending in a slash such as `daemon/`). An empty list means every module."
+value = []
+
+[diagnostics.debug_log_max_bytes]
+doc = "Size at which the debug log is rotated (the old file is kept once, as <name>.1, replacing the previous one), so it never holds more than twice this."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[diagnostics.debug_thread_sample_ms]
+doc = "In debug mode, how often the watchdog samples every thread's CPU time and logs the busiest threads and the work counters per second over that interval."
+value = 5000
+min = 500
+unit = "ms"
+
+[diagnostics.debug_thread_top]
+doc = "Threads (grouped by name) listed per per-thread CPU sample in the debug log."
+value = 8
+min = 1
+max = 64
+
+[diagnostics.debug_mem_snapshot_ms]
+doc = "In debug mode, how often the watchdog writes a memory line (resident set, footprint, allocator and component sizes) to the debug log; in normal mode memory is only snapshotted when the resident-set cap trips."
+value = 30000
+min = 1000
+unit = "ms"
+
+# ---- resource budgets (reported in `status`, the health event and the health log) ---------------------------------------------------------
+
+[diagnostics.budget_cpu_pct]
+doc = "CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
+value = 2
+min = 0
+unit = "%"
+
+[diagnostics.budget_cpu_windows]
+doc = "Consecutive daemon.cpu_check_ms windows over the CPU budget that make a breach (one busy window is a burst, not a breach)."
+value = 2
+min = 1
+max = 100
+
+[diagnostics.budget_mem_mb]
+doc = "Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
+value = 100
+min = 0
+unit = "MB"
+
+[files.debug_log]
+doc = "Debug log file name (state directory): one NDJSON line per debug event, written only in debug mode."
+value = "debug.ndjson"
+
+[diagnostics.mem_log_checks_cap]
+doc = "Most checks whose per-call memory (`check_mem`: check, peak, allocated bytes) one request line of the memory log lists; further checks of the same request are left off the line."
+value = 64
+min = 1
+
+[diagnostics.check_mem]
+doc = "Measure the bytes each check allocates (total, peak growth, kept) from per-thread counters in the counting allocator. Off also stops the counting in the allocator. Cost is a few nanoseconds per allocation."
+value = true
+
+[diagnostics.check_mem_sample_every]
+doc = "Measure every Nth check call (1 = every call). Raise it only if the measured cost of the per-thread counters becomes a problem."
+value = 1
+min = 1
+
+[diagnostics.tally_soft_keys]
+doc = "Soft limit on the labelled work counters `status --threads` carries (and on exited-thread names): past it every further new key adds one to `tally_soft_hits`."
+value = 64
+min = 8
+
+[diagnostics.tally_hard_keys]
+doc = "Hard limit on the labelled work counters (and on exited-thread names): a new key past it is dropped and counted in `tally_dropped`; the existing keys keep counting."
+value = 256
+min = 16
+
+# ---- observability contract (v0.301 W1): switchable profiling, shipped diag verbs, trace ring, uniform accounting, per-site counters ----
+
+[diagnostics.profile]
+doc = "Baseline profiling mode: off (default; the cost is one atomic load per call), sample (record one call in diagnostics.profile_sample_every) or full (record every call). Per-check CPU and allocation spans go to the bounded file diagnostics.profile_file. `ah-engine ctl profile on --for <dur>` raises the mode for a limited time and falls back to this value when the time is up."
+value = "off"
+
+[diagnostics.profile_sample_every]
+doc = "In `sample` mode one check call in this many is recorded."
+value = 10
+min = 1
+
+[diagnostics.profile_on_mode]
+doc = "Mode `ctl profile on` switches to when none is named: sample or full."
+value = "full"
+
+[diagnostics.profile_file]
+doc = "Name (in the state directory) of the profile span file: one JSON line per recorded check call."
+value = "profile.jsonl"
+
+[diagnostics.profile_max_bytes]
+doc = "Size limit of the profile span file. When it is reached recording stops and the mode falls back to off (counted and logged); the file is never rotated or grown past this."
+value = 4194304
+min = 4096
+unit = "bytes"
+
+[diagnostics.profile_max_secs]
+doc = "Longest a runtime `ctl profile on` stays on; a longer `--for` is cut to this, and an `on` without `--for` runs this long."
+value = 600
+min = 1
+unit = "s"
+
+[diagnostics.duration_units]
+doc = "Suffixes the `--for` duration of `ctl profile on` accepts, each with its length in milliseconds (a bare number is seconds)."
+value = { ms = 1, s = 1000, m = 60000, h = 3600000 }
+
+[diagnostics.diag_topics]
+doc = "The topics of `ah-engine diag <topic>`: read-only reports over state the engine already keeps (not feature-gated). `trace` dumps the always-on trace ring."
+value = ["cpu", "mem", "threads", "hooks", "mesh", "jev", "fs", "locks", "trace"]
+
+[diagnostics.diag_top]
+doc = "Rows shown per ranking in `diag hooks` and `diag fs`."
+value = 15
+min = 1
+
+[diagnostics.trace_entries]
+doc = "Size of the always-on trace ring (the most recent check, duty, stage and hand-back records kept in memory). Dumped by `diag trace` and written to diagnostics.trace_dump_file when a hard limit trips. Read at daemon start."
+value = 512
+min = 16
+max = 65536
+
+[diagnostics.trace_dump_file]
+doc = "Name (in the state directory) of the file the trace ring is written to when a hard limit trips; each dump replaces the previous one."
+value = "trace-dump.jsonl"
+
+[diagnostics.advisory_counter_kind]
+doc = "The journal kind under which the advisory counters (flagged, asked, confirmed, injected, suppressed, jev_error per advisory kind) are kept in the shared counter journal."
+value = "advisory"
+
+[diagnostics.counters_file]
+doc = "Name (in the state directory) of the shared counter journal: processes that are not the daemon (hook calls, one-shot commands, post-update stages) append their hand-back and accounting counts here, and `status` folds them in. Never created by a read-only command."
+value = "obs-counters.log"
+
+[diagnostics.abandoned_log_interval_ms]
+doc = "Per site, the least time between two event-log lines for an abandoned decision (every one is still counted; the line names the site, the reason and the key inputs, and says how many were counted since the last line). 0 logs every one."
+value = 60000
+min = 0
+
+[diagnostics.abandoned_log_keys_max]
+doc = "How many (site, reason) pairs the abandoned-decision log limiter remembers before it forgets them all (bounds its memory; a forgotten pair logs once more)."
+value = 256
+min = 1
+
+[diagnostics.abandoned_no_reason]
+doc = "The reason shown in the event-log line of an abandoned decision whose site gave none (the site name still says where)."
+value = "the site gave no reason"
+
+[diagnostics.msg_abandoned]
+doc = "The event-log line for an abandoned decision. {site} is the counted site, {why} the reason with its key inputs, {n} how many were counted at the site since the last line."
+value = "abandoned at {site} (x{n}): {why}"
+
+[diagnostics.counters_max_bytes]
+doc = "Size at which the counter journal is folded into one line per counter (atomically, under the journal lock), so it never grows without bound."
+value = 262144
+min = 4096
+unit = "bytes"
+
+[diagnostics.counters_soft_keys]
+doc = "Soft limit on distinct counters (kind, key and outcome) the journal fold keeps; past it each new counter adds one to `counters_soft_hits`."
+value = 512
+min = 8
+
+[diagnostics.counters_hard_keys]
+doc = "Hard limit on distinct counters in the journal fold: a new counter past it is folded into `other` and counted in `counters_dropped`."
+value = 2048
+min = 16
+
+[diagnostics.counters_other_key]
+doc = "The key under which counters past diagnostics.counters_hard_keys are folded."
+value = "other"
+
+[diagnostics.outcome_map]
+doc = "How a duty or stage record's own outcome word maps onto the five accounting outcomes (ok, error, disabled, held, refused). A record that also names a gate is looked up as `<word>+gate`. A word not listed here counts as `error` so a new outcome cannot hide."
+value = { ran = "ok", ok = "ok", "skipped+gate" = "ok", skipped = "disabled", disabled = "disabled", failed = "error", error = "error", held = "held", deferred = "held", refused = "refused" }
+
+
+[diagnostics.counter_name_max]
+doc = "Longest site, duty or stage name kept in the counter journal (characters); longer names are cut. Whitespace and control characters in a name become `_`."
+value = 96
+min = 8
+
+[diagnostics.fd_dir]
+doc = "Directory that lists this process's open file descriptors (`diag fs` counts its entries)."
+value = "/dev/fd"
+
+[diagnostics.trace_dump_min_ms]
+doc = "Shortest time between two automatic trace-ring dumps (a hard limit that trips again inside this time does not rewrite the file)."
+value = 60000
+min = 0
+unit = "ms"
+
+[diagnostics.trace_reason_mem]
+doc = "Reason recorded in a trace-ring dump taken when the memory registry's hard limit trips."
+value = "memory-hard-limit"
+
+[diagnostics.trace_reason_rss]
+doc = "Reason recorded in a trace-ring dump taken when the resident-set cap trips."
+value = "rss-cap"
+
+[diagnostics.trace_reason_cpu]
+doc = "Reason recorded in a trace-ring dump taken when a request trips its CPU budget."
+value = "cpu-budget"

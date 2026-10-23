@@ -29,7 +29,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Use the existing pure-Node update helper:
+Use the engine's update helper:
 
 ```bash
 sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update --check
@@ -94,7 +94,7 @@ install-or-refresh step further below (which also covers a FIRST install).
 
 ## Reconcile (auto, DevSwarm-session-only, fail-open — v0.58.1)
 
-Every update run ALSO drains `node scripts/devswarm.js reconcile` in-process via
+Every update run ALSO drains `~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile` in-process via
 `reconcilePostUpdate` — no separate step needed. `reconcile` (v0.58.0) drains every
 worktree registered in this project's shared store once, recovering messages stranded in
 a per-worktree native hivecontrol queue whose child never ran `inbox pull` itself (e.g. a
@@ -109,7 +109,7 @@ already draining is skipped, never raced), and loss-free (a short-received batch
 loud rather than silently dropping messages). Reported as
 `reconcile: {attempted, count, imported, results, detail}` on the JSON status line.
 Gate-closed or an internal error are both reported and NEVER fatal to the update. The
-manual verb (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
+manual verb (`~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile`) stays available for an on-demand sweep
 outside an update.
 
 **Promote unclaimed sessions (auto, fail-open — `promoteUnclaimedPostUpdate`, v0.90.0):**
@@ -150,15 +150,15 @@ After a successful update, also run the capability scan to find what's missing o
 sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" capability-scan
 ```
 
-Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js`, statusline, pending state migrations) as `{name, available, active, how}`. Present a concise available-vs-active summary:
-- `state-migrations` at `active: false` — run `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow. It never folds or moves `.planning/`: the GSD fold is the explicit, copy-only `migrate-state.js --planning` (skips git-tracked `.planning/`, linked/child worktrees and submodules). If `doctor` reports moved `.planning/` files (pre-0.108.5 damage), restore with the printed `git -C <worktree> checkout -- .planning` or the opt-in `migrate-state.js --restore-planning --dir <worktree>`.
+Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:
+- `state-migrations` at `active: false` — run `~/.anti-hall/ah-engine/bin/ah-engine migrate` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow. It never folds or moves `.planning/`: the GSD fold is the explicit, copy-only `migrate-state.js --planning` (skips git-tracked `.planning/`, linked/child worktrees and submodules). If `doctor` reports moved `.planning/` files (pre-0.108.5 damage), restore with the printed `git -C <worktree> checkout -- .planning` or the opt-in `migrate-state.js --restore-planning --dir <worktree>`.
 - **DevSwarm liveness supervisor** — **autonomously install-or-refresh it
   whenever this update is running inside a DevSwarm session, no offer, no
   ask.** Check `devswarm-detect`'s `isDevswarmActive(process.env)` — true only
   when `DEVSWARM_REPO_ID` is set, i.e. the current session really is a DevSwarm
   workspace (do NOT trigger on machine-level descriptor presence alone; the
   session might be running outside DevSwarm). If inside a DevSwarm session, run
-  its `how` command (`node companion/install-devswarm-supervisor.js`)
+  its `how` command (`~/.anti-hall/ah-engine/bin/ah-engine units heal`)
   regardless of the capability scan's `active` value. The installer is
   idempotent (`launchctl unload && load` on macOS / systemd reload on Linux),
   so this both first-installs when absent and refreshes an already-installed
@@ -176,7 +176,7 @@ Read-only — it never installs anything. It reports each opt-in capability (com
   DevSwarm-session-only, no-offer, no-ask posture as the supervisor above**, in
   the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
   session, also run its `how` command
-  (`node companion/install-devswarm-ingest.js`) regardless of the scan's
+  (`~/.anti-hall/ah-engine/bin/ah-engine units heal`) regardless of the scan's
   `active` value. It is idempotent (`launchctl unload && load` on macOS /
   `systemctl --user daemon-reload` + `restart` on Linux), so it first-installs
   when absent and refreshes an already-installed daemon to this build's code.

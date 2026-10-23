@@ -140,6 +140,13 @@ jobs:
           name: dist-${{ matrix.triple }}
           path: dist/*.tar.gz
           if-no-files-found: error
+      # The separate debug symbols of the packaged binary (package.sh writes them to dist/symbols/): a workflow artifact, kept
+      # out of the release assets that ah-engine.lock pins. They symbolise `sample` and backtraces of the stripped binary.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: symbols-${{ matrix.triple }}
+          path: dist/symbols/*
+          if-no-files-found: warn
 
   source:
     needs: plan

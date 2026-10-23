@@ -1,0 +1,48 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "split-store merge: already completed for 0.1.0 - skipped (one-time per-version migration)",
+    "errors": 0,
+    "messagesMerged": 0,
+    "registryMerged": 0,
+    "skippedAlreadyDone": true,
+    "splitStores": 0,
+    "stores": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/update-sweep-state.json": "644 {\"mergeSplitBackendStores\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "m1",
+          "workspace_id": "w1"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w1",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    },
+    "proj-d4e5f6": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w9",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    }
+  }
+}

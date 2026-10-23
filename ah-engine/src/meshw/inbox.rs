@@ -52,7 +52,7 @@ fn read_receipt(home: &Path, id: &str, rid: &str, dir_id: &str) -> Option<(OVal,
     dirs.push(id);
     for d in dirs {
         let file = receipt_dir(home, d).join(format!("{rid}{}", defaults::text("mesh_write.json_suffix")));
-        let Ok(bytes) = std::fs::read(&file) else { continue };
+        let Some(bytes) = ident::read_or_skip(&file, defaults::text("mesh_write.site_receipt")) else { continue };
         if let Some(rec @ OVal::Obj(_)) = OVal::parse(&String::from_utf8_lossy(&bytes))
             && matches!(rec.get("ops"), Some(OVal::Arr(_)))
         {
@@ -269,7 +269,7 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
             home,
             &LogRec {
                 id: &op.partition,
-                caller_id: id,
+                caller_id: Some(id),
                 ns: defaults::text("mesh_write.log_ns_store"),
                 from: r.from,
                 to: if r.ok { r.own.map(|x| x as f64) } else { Some(op.target) },
@@ -328,4 +328,22 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
         out.put("cursorWriteFailures", OVal::Arr(failures)).put("cursorPersisted", OVal::Bool(false));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::ident::fifo_kit::*;
+
+    #[test]
+    fn a_fifo_receipt_is_no_receipt_and_does_not_block() {
+        let home = scratch("receipt");
+        let dir = receipt_dir(&home, "w1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let rid = format!("{}abc", defaults::text("mesh_write.receipt_id_prefix"));
+        fifo(&dir.join(format!("{rid}{}", defaults::text("mesh_write.json_suffix"))));
+        let h = home.clone();
+        assert!(within("read_receipt", move || read_receipt(&h, "w1", &rid, "w1").is_none()));
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
 }

@@ -7,10 +7,12 @@ license = "MIT"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip", "unbounded_depth"] }
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
 unicode-normalization = "0.1.25"
+# SIMD substring search for the transcript scans (already in the tree through regex: no new crate in the dependency budget).
+memchr = "2.8.3"
 libc = "0.2.190"
 # Embedded storage (D19, D73): SQLite compiled in (`bundled`), so there is nothing for the user to install; `backup` is the
 # online backup API used by `ah-engine backup` (D27).
@@ -20,6 +22,10 @@ rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"
 # one global deadline). `ring` is already in the tree through rustls; it is named here only for its SHA-256.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 ring = { version = "0.17", default-features = false }
+# The atomically swapped snapshot of the shipped defaults that every settings read loads (src/defaults.rs, #195). Chosen by A/B
+# against the std `RwLock<Option<Arc<_>>>` it replaces: equal uncontended (~30 ns a read), 84 ns against 733 ns a read with 8
+# threads reading at once (every settings read of every daemon thread loads it). Pinned exactly; adds itself and rustversion.
+arc-swap = "=1.9.1"
 # Heap profiler for the opt-in `diag` feature only (a dependency no default or release build compiles).
 dhat = { version = "0.3.3", optional = true }
 # Scripted check logic (D88): an embedded QuickJS-NG interpreter runs the plugin's editable check scripts. Default features
@@ -39,6 +45,8 @@ notify = { version = "=8.2.0", default-features = false }
 # the crate supports (see src/main.rs).
 [target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu")))'.dependencies]
 tikv-jemallocator = "0.7"
+# Its C API, for the allocator statistics of the memory diagnostics (src/memdiag.rs); already in the tree through the crate above.
+tikv-jemalloc-sys = { version = "0.7", features = ["stats"] }
 
 [features]
 # Developer diagnostics only (never in a release build): `ah-engine diag heap` reports heap peak/current bytes per check,
@@ -61,12 +69,56 @@ aho-corasick = "1.1.5"
 name = "parsers"
 harness = false
 
+[[bench]]
+name = "defaults_num"
+harness = false
+
 [profile.release]
-opt-level = "z"
+# opt-level 3, not "z": A/B on the same tree, scratch daemons, Stop/UserPromptSubmit replay (180 events of the frozen sample) and 5 min idle,
+# 2026-10-16: Stop wall p95 143 -> 73 ms and UserPromptSubmit p95 192 -> 105 ms, daemon CPU over the replay 5.74 -> 3.35 s, idle CPU equal
+# (0.33% both), RSS equal (about 61 MB). The price is binary size (10.1 -> 19.5 MB), not CPU or memory.
+opt-level = 3
 lto = true
 strip = true
 codegen-units = 1
+# Debug symbols ship SEPARATELY (macOS: ah-engine.dSYM beside the binary; Linux: a packed .dwp), so `sample`, Instruments and
+# crash backtraces can be symbolised while the shipped binary stays stripped. Line tables and function names only: enough to
+# name every frame. Measured 2026-10-15 (macOS arm64): the stripped binary grows 16.6 KB (0.17%, debug info changes a few
+# codegen decisions under LTO); the dSYM is 53 MB ("limited" gives 90 MB for the same frames).
+debug = "line-tables-only"
+split-debuginfo = "packed"
 # panic stays "unwind": the client wraps everything in catch_unwind so a bug fails open (exit 0), never SIGABRT.
+
+# A release-equivalent build whose binary carries its own symbols and line tables, for `samply record` / `sample` / Instruments on a
+# build you made yourself (`cargo build --profile profiling`, binary in target/profiling/). The shipped release stays stripped with
+# its symbols separate (above); this profile exists so a profile of a local build needs no dSYM juggling.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+split-debuginfo = "packed"
+
+[profile.profiling.package.rquickjs-sys]
+opt-level = 3
+
+# The test-binary build of the macOS PR gate: release speed (opt-level 3, so the script time limits sized for release hold) without the
+# shipped binary's fat LTO, single codegen unit and debug info. The gate builds ~60 test binaries and, with the release profile, spent
+# 56m47s compiling them (CI run 39898873035, macOS) against a 60 min job limit. Never shipped; `scripts/build.sh` keeps using release.
+[profile.ci-test]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = false
+strip = false
+split-debuginfo = "off"
+
+[profile.ci-test.package.rquickjs-sys]
+opt-level = 3
+
+# Debug builds (what `cargo test` without --release uses): line tables are enough for backtraces and breakpoints, and the
+# build and link are faster than with full debuginfo.
+[profile.dev]
+debug = "line-tables-only"
 
 # The QuickJS-NG interpreter (C, built by rquickjs-sys) is the hot loop of every scripted check: build it for speed, not size
 # (D88 spike, measured: the interpreter runs about 2.4x faster at opt-level 3 than at "z").
@@ -76,6 +128,7 @@ opt-level = 3
 # Lint gate (clippy `-D warnings`, wired into test.sh). Rule ids are those of the Rust standards audit (rust-standards.md).
 #   E2   no unwrap/expect in non-test paths: a violated invariant is a Result or a stated `expect` with a one-line allow.
 #   E3   never silently discard a fallible result: use `crate::discard` (harmless / logged) instead of `let _ =`.
+#   E4   no panic!/unreachable! in non-test paths: return an error, defer, or make the failure observable instead.
 #   U1   every `unsafe` block carries a `// SAFETY:` comment, and an unsafe fn body still needs explicit unsafe blocks.
 #   LI1  dbg!/todo!/unimplemented! never ship.
 # Tests are exempt from E2 through clippy.toml (`allow-*-in-tests`). A targeted `#[allow(clippy::x)]` needs a one-line reason.
@@ -87,6 +140,8 @@ missing_docs = "deny"           # every public item is documented (was a crate a
 unwrap_used = "deny"                 # E2
 expect_used = "deny"                 # E2
 let_underscore_must_use = "deny"     # E3
+panic = "deny"                       # E4
+unreachable = "deny"                 # E4
 undocumented_unsafe_blocks = "deny"  # U1
 dbg_macro = "deny"                   # LI1
 todo = "deny"                        # LI1

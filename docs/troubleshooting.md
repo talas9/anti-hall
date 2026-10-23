@@ -16,7 +16,7 @@ only when they are present.
 |---|---|
 | `/anti-hall:doctor` | Check everything and report. |
 | `/anti-hall:doctor --repair` | Also apply safe fixes, such as adding `.anti-hall/` to `.git/info/exclude`. |
-| `node plugins/anti-hall/hooks/doctor.js --check` | The same check from a clone, without the assistant. |
+| `~/.anti-hall/ah-engine/bin/ah-engine doctor --check` | The same check from a clone, without the assistant. |
 
 ## Common problems
 
@@ -28,8 +28,8 @@ only when they are present.
     so a new session starts.
 
 ??? question "The statusline does not show"
-    It is not installed automatically: run `/anti-hall:install-statusline`. Then restart
-    Claude Code once, because the `statusLine` setting is only read at startup.
+    The anti-hall statusline installer is retired. Use Claude/Codex built-in status
+    surfaces, or run `uninstall-statusline` to clean up an older anti-hall entry.
 
 ??? question "An update did not take effect"
     Run `/reload-plugins` after `/anti-hall:update`. Restart Claude Code only if a hook or
@@ -90,7 +90,7 @@ by default. A skip for `"all"` never covers `git-guard`; that one has to be name
 command line:
 
 ```bash
-node plugins/anti-hall/scripts/settings.js set guards.speculationGuard false
+~/.anti-hall/ah-engine/bin/ah-engine settings set guards.speculationGuard false
 ```
 
 The four `safety.*` guards need confirmation to turn off

@@ -1,13 +1,13 @@
 ---
 name: doctor
-description: Check and repair anti-hall (hooks, guards, statusline). Use for "is anti-hall working", "anti-hall doctor", "repair anti-hall".
+description: Check and repair anti-hall (hooks, guards, legacy cleanup). Use for "is anti-hall working", "anti-hall doctor", "repair anti-hall".
 ---
 
 # Doctor
 
 ## When to use
 
-Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), the statusline is installed, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
+Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), legacy statusline cleanup is safe, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
 
 Answers the only question that matters for a guardrail plugin: **is it actually running,
 and do the guards actually fire?** It checks presence AND behavior — not just that files
@@ -29,11 +29,11 @@ changes nothing.
   normal spawn under healthy memory; model-routing-guard blocks a mechanical task pinned
   to a flagship model (synthetic payload: fetch/download description + `model:"opus"` +
   `subagent_type:"general-purpose"` → exit 2) and allows a benign spawn with no model and
-  no mechanical signals (exit 0); omc-detect.js (the OMC-deference shared helper consumed
-  by task-guard / tasklist-guard) is checked for presence + syntax validity.
+  no mechanical signals (exit 0); the OMC-deference detection consumed by task-guard / tasklist-guard is built
+  into the engine.
 - **Phantom Primary rows:** report-only detection of Primary registrations keyed by a submodule cwd; only `--repair` archives them (nothing is deleted).
 - **Handover format:** warns (report-only, nothing moved) about handover files tracked by git or sitting outside `.anti-hall/handovers/<date>/<session_id>/`, each with its canonical destination.
-- **Statusline:** whether a statusLine is installed and in which scope.
+- **Statusline:** whether an older anti-hall `statusLine` remains and can be cleaned up.
 - **DevSwarm RUNTIME health** (when the DevSwarm gate is active — same gate as the
   liveness supervisor section): store/journal health (sqlite `quick_check` via an
   isolated `--no-warnings` read-only probe, journal torn-line scan, store↔summary
@@ -169,17 +169,16 @@ Flags:
 **Two safety classes:**
 
 - **AUTO-SAFE** (always applied, honors `--dry-run`): legacy/GSD/DevSwarm-store state
-  migration; statusline install **only when NO statusLine is configured in any scope** (a
-  custom statusLine is never overridden); idempotent relaunch of an ALREADY-installed
-  supervisor; refresh of Codex hooks when a `.codex/config.toml` exists but the hooks are
-  unwired (it never creates a new `.codex`).
+  migration; retired statusline install is skipped and never writes `statusLine`;
+  idempotent relaunch of an ALREADY-installed supervisor; refresh of Codex hooks when
+  a `.codex/config.toml` exists but the hooks are unwired (it never creates a new `.codex`).
 - **GATED** — applied only when the **DevSwarm gate** is open: `isDevswarmActive(env)` (a
   DevSwarm-active session) **AND** `resolveWorktree(cwd)` is a real git worktree. Covers
   the ingest daemon install, the **v0.54.1 wrong-path ingest heal** (a unit whose
   `WorkingDirectory` no longer points inside a worktree is rebuilt from the right one),
   stale ExecStart script, the supervisor FIRST-install, and (**v0.58.1**) **`reconcile`**
   — draining every stranded per-worktree native hivecontrol queue into the shared store
-  (`node scripts/devswarm.js reconcile`, previously a MANUAL-only verb). Unlike the
+  (`~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile`, previously a MANUAL-only verb). Unlike the
   daemon fixes, `reconcile` never touches launchd/systemd, so it needs no scheduler.
   When the gate is closed, doctor **reports the gap plus the exact manual command** and
   mutates nothing.
@@ -240,12 +239,12 @@ sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --check   # read-only (CI)
 
 The engine runs the doctor (`ah-engine doctor`); Node's `hooks/doctor.js` answers only when the engine is absent. The engine
 doctor names what it does not check yet (the DevSwarm runtime checks of an active session, `--prune-cache`,
-`--reclaim-ingest-lock`, `--logs`): run `node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"` with that flag for those. The explicit
+`--reclaim-ingest-lock`, `--logs`): run `~/.anti-hall/ah-engine/bin/ah-engine doctor` with that flag for those. The explicit
 `--repair-ingest-orphans`, `--repair-test-stores` and `--repair-resurrected` flags preview by default and act with `--apply`.
 
 Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critical check
 (or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.
 
-After relaying the report, if anything failed: the most common fix is **Node missing/<22**
-(install Node ≥ 22) or **no statusLine** (repair mode installs it automatically, or run the
-`install-statusline` skill, then restart).
+After relaying the report, if anything failed: the most common fix is the **engine binary missing**
+(`sh hooks/ah-engine-bootstrap.sh -v`). For older anti-hall statusline entries, run `uninstall-statusline`
+to clean them up.

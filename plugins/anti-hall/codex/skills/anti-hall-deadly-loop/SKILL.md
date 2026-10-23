@@ -56,7 +56,7 @@ Round structure:
 4. Synthesize findings by evidence, not by vote alone. Before dedup-by-hand, write the
    three lenses' combined findings to a scratch JSON array
    (`{id, severity, file, line, text, round, seat}`) and run
-   `node "$ANTI_HALL_ROOT/scripts/finding-dedup.js" --file <scratch findings.json>` — the
+   `~/.anti-hall/ah-engine/bin/ah-engine finding-dedup --file <scratch findings.json>` — the
    opt-in Jev `findingDedup` integration (default `on`; see the Claude-side
    `deadly-loop` skill and CHANGELOG 0.108.4). It prints advisory "possible duplicates: A
    ~ B (conf 0.93)" lines to stderr; treat them as a hint, never an auto-collapse — you

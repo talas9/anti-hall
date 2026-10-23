@@ -199,6 +199,17 @@ fn foreign_open_batches(root: &Path, own: &Path, worktree: &str) -> bool {
 /// The first half of the plan: the ensure (what the descriptor, the registry and the summary become), decided without writing. The
 /// tick counts over [`Plan::ensured`], which is the descriptor Node's count reads after its own ensure.
 pub(crate) fn prepare(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
+    prepare_with(inv, id, desc, false)
+}
+
+/// [`prepare`] for the reconcile sweep, which has already run the project-wide fold: another registry row on the workspace's worktree
+/// is then one the fold deliberately LEFT (its descriptor, a live reader or a heartbeat anchors it; nothing may retire it), so it does
+/// not stop the pull. `prepare` itself defers it, because `inbox pull` would run the fold there.
+pub(crate) fn prepare_swept(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
+    prepare_with(inv, id, desc, true)
+}
+
+fn prepare_with(inv: &Inv, id: &str, desc: Option<&OVal>, rows_left_by_fold: bool) -> R<Plan> {
     if crate::meshw::heartbeat::is_primary_label(id) {
         return defer("primary-label");
     }
@@ -349,7 +360,7 @@ pub(crate) fn prepare(inv: &Inv, id: &str, desc: Option<&OVal>) -> R<Plan> {
     {
         return defer("registry-collision");
     }
-    if let Some(w) = desc_wt.as_deref() {
+    if let Some(w) = desc_wt.as_deref().filter(|_| !rows_left_by_fold) {
         let keep_mesh = ident::primary_workspace_id(w)?;
         if keep_mesh != id
             && let Some(keep_real) = ident::canonical_worktree_real_path(w)?
@@ -477,11 +488,6 @@ impl Plan {
         if foreign_open_batches(&root, &self.wal, &worktree) {
             return defer("wal-foreign");
         }
-        for p in &self.pending {
-            if import::rows(&self.id, &import::parse_batch(&p.raw), inv.now).iter().any(|r| r.ts_fallback) {
-                return defer("wal-replay-date");
-            }
-        }
         Ok(())
     }
 
@@ -494,7 +500,12 @@ impl Plan {
             return Ok(self);
         }
         self.check_wal(inv)?;
-        let c = hivecontrol::call(&defaults::list("mesh_write.hc_message_count"), &inv.env, defaults::millis("mesh_write.hivecontrol_timeout_ms"));
+        let c = hivecontrol::call_in(
+            &defaults::list("mesh_write.hc_message_count"),
+            &inv.env,
+            Some(&inv.cwd),
+            defaults::millis("mesh_write.hivecontrol_timeout_ms"),
+        );
         self.peek = if c.ok { Peek::Count(parse_count(&c.raw)) } else { Peek::Failed };
         if let Peek::Count(n) = self.peek
             && !line_form
@@ -564,14 +575,14 @@ pub(crate) struct Ingested {
     pub imported: usize,
     pub duplicate: usize,
     pub parsed: usize,
-    /// The store feed was left to Node (a date form the engine does not reproduce).
-    pub store_left: bool,
 }
 
 /// The hashes the inbox already holds (`collectExistingHashes`): the embedded content hash of each line; a torn line is skipped.
-fn inbox_hashes(inbox: &Path) -> std::collections::HashSet<String> {
+/// `Err` for an inbox that is no regular file (a FIFO would block the append that follows) or is over the read cap.
+fn inbox_hashes(inbox: &Path) -> Result<std::collections::HashSet<String>, String> {
     let mut seen = std::collections::HashSet::<String>::new();
-    if let Ok(bytes) = std::fs::read(inbox) {
+    let bytes = ident::read_bounded(inbox).map_err(|e| e.0)?;
+    if let Some(bytes) = bytes {
         for line in String::from_utf8_lossy(&bytes).split('\n') {
             let t = js_trim(line);
             if t.is_empty() {
@@ -585,7 +596,7 @@ fn inbox_hashes(inbox: &Path) -> std::collections::HashSet<String> {
             }
         }
     }
-    seen
+    Ok(seen)
 }
 
 /// One batch against the hashes already seen: the lines to append and the counts (a message already seen, in the inbox or earlier
@@ -599,9 +610,13 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
             Some(v) => v.clone(),
         }
     };
+    // the registered workspace checked out under a message's branch is its sender (a child's queue keeps the Primary's id)
+    let registry = if batch.messages.is_empty() { Vec::new() } else { import::registry_pairs(p.store.reader()) };
+    let scope = import::hash_scope(p.store.reader(), &p.id);
     for m in &batch.messages {
-        let h = import::message_hash(&p.id, m);
-        if seen.contains(&h) {
+        let h = import::message_hash(&scope, m);
+        // an inbox line written under the partition-id hash (before the label-scoped one) is the same message
+        if seen.contains(&h) || import::legacy_hash(&scope, &p.id, m).is_some_and(|l| seen.contains(&l)) {
             duplicate += 1;
             continue;
         }
@@ -611,7 +626,11 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
         for k in defaults::list("mesh_write.row_fields") {
             o.put(k, pick(m, k));
         }
-        o.put(defaults::text("mesh_write.row_sender_field"), p.sender.as_deref().map_or(OVal::Null, s));
+        let resolved = match m.get(defaults::text("devswarm_ingest.from_branch_key")) {
+            None | Some(OVal::Null) => None,
+            Some(b) => import::branch_sender(&registry, &import::js_string(b)),
+        };
+        o.put(defaults::text("mesh_write.row_sender_field"), resolved.or_else(|| p.sender.clone()).as_deref().map_or(OVal::Null, s));
         lines.push_str(&o.done().stringify());
         lines.push('\n');
         imported += 1;
@@ -622,7 +641,7 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
 /// What ingesting `raws` in order (the open batches, then the new one) would make of the LAST one: its imported and duplicate
 /// counts and the number of messages it parsed, without writing.
 pub(crate) fn preview(p: &Plan, raws: &[&str]) -> (usize, usize, usize) {
-    let mut seen = inbox_hashes(&p.inbox);
+    let mut seen = inbox_hashes(&p.inbox).unwrap_or_default();
     let mut last = (0, 0, 0);
     for raw in raws {
         let batch = import::parse_batch(raw);
@@ -632,16 +651,14 @@ pub(crate) fn preview(p: &Plan, raws: &[&str]) -> (usize, usize, usize) {
     last
 }
 
-/// Whether the store feed of this raw batch would be left to Node (a date form the engine does not reproduce).
-pub(crate) fn store_feed_left(inv: &Inv, p: &Plan, raw: &str) -> bool {
-    import::rows(&p.id, &import::parse_batch(raw), inv.now).iter().any(|r| r.ts_fallback)
-}
-
 /// `ingestRaw(raw)`: parse one raw native batch, append the new rows to the durable inbox (idempotent by the embedded content
 /// hash) and fsync it, then the best-effort store feed. `Err` when the durable append fails (the WAL entry then stays pending).
 fn ingest_raw(inv: &Inv, p: &Plan, raw: &str, at: &dyn Fn(&str)) -> Result<Ingested, String> {
     let batch = import::parse_batch(raw);
-    let mut seen = inbox_hashes(&p.inbox);
+    let mut seen = inbox_hashes(&p.inbox).inspect_err(|why| {
+        crate::metrics::bump("mesh_descriptor_read_skipped", &[("site", defaults::text("mesh_write.site_pull_inbox")), ("reason", why.as_str())]);
+    })?;
+    let before = seen.clone();
     let (lines, imported, duplicate) = batch_lines(p, &batch, &mut seen);
     // DURABLE append precedes the WAL `done`: one append of the whole batch, a leading newline after a torn tail, then the fsync
     if !lines.is_empty() {
@@ -655,16 +672,19 @@ fn ingest_raw(inv: &Inv, p: &Plan, raw: &str, at: &dyn Fn(&str)) -> Result<Inges
         std::fs::File::open(&p.inbox).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
     }
     at("inbox:after");
-    // the store parity feed: best effort, as in Node (`try { ... } catch (_) {}`)
-    let mut store_left = false;
-    if import::rows(&p.id, &batch, inv.now).iter().any(|r| r.ts_fallback) {
-        store_left = true;
-    } else if import::ingest_payload(&p.store, &inv.home, &p.id, raw, inv.now).is_ok()
+    // the store parity feed: best effort, as in Node (`try { ... } catch (_) {}`). A message whose time is a form `Date.parse`
+    // accepts but the port does not reproduce is stored at the import time (`import::rows`' fallback); its body and hash are the
+    // message's own, so the row is never lost or doubled and the batch closes like any other.
+    let fallbacks = import::rows(&p.id, &import::hash_scope(p.store.reader(), &p.id), &batch, inv.now).iter().filter(|r| r.ts_fallback).count();
+    if fallbacks > 0 {
+        crate::metrics::bump("mesh_pull_ts_fallback", &[]);
+    }
+    if import::ingest_payload_seen(&p.store, &inv.home, &p.id, raw, inv.now, &before).is_ok()
         && let Some(why) = summary::derive_after_write(&p.store, inv, &p.repo_key)
     {
         crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
     }
-    Ok(Ingested { imported, duplicate, parsed: batch.messages.len(), store_left })
+    Ok(Ingested { imported, duplicate, parsed: batch.messages.len() })
 }
 
 /// The ensure's writes (cache, descriptor, pre-created files, registry row, declared reader, summary), the caller holding the
@@ -720,14 +740,11 @@ pub(crate) fn lock_params() -> nodelock::Params {
 }
 
 /// REPLAY FIRST: every batch a previous pull captured but never closed is ingested (inbox, store) and closed before any new
-/// destructive read. A batch whose store feed is left to Node stays pending. `Err` when an ingest or a close failed: the rest
+/// destructive read. `Err` when an ingest or a close failed: the rest
 /// stays pending and nothing further is read.
 pub(crate) fn replay_pending(inv: &Inv, p: &Plan, at: &dyn Fn(&str)) -> Result<(), ()> {
     for entry in &p.pending {
         let Ok(r) = ingest_raw(inv, p, &entry.raw, at) else { return Err(()) };
-        if r.store_left {
-            continue;
-        }
         let raw_t = js_trim(&entry.raw);
         let empty = r.parsed == 0 && !raw_t.is_empty() && raw_t != defaults::text("mesh_write.empty_array");
         at("close:before");
@@ -760,7 +777,8 @@ pub(crate) enum Fresh {
     /// The delivery log cannot be appended and fsynced right now: no read was made.
     Blocked,
     /// `message-count` failed (no binary, a timeout, a non-zero exit): nothing was read.
-    CountFailed,
+    /// The text is what the call said: its exit code and the first line it printed (see [`hivecontrol::failure_detail`]).
+    CountFailed(String),
     /// Nothing waits.
     Empty,
     /// `read-messages` ran. `entry` is the log entry that holds its raw bytes (`None`: empty stdout or a log write that failed).
@@ -774,15 +792,19 @@ pub(crate) fn capture_fresh(inv: &Inv, p: &Plan, worktree: &str, at: &dyn Fn(&st
     if wal::preflight(&p.wal).is_some() {
         return Fresh::Blocked;
     }
-    let c = hivecontrol::call(&defaults::list("mesh_write.hc_message_count"), &inv.env, defaults::millis("mesh_write.hivecontrol_timeout_ms"));
-    if !c.ok {
-        return Fresh::CountFailed;
+    // hivecontrol names the workspace by the directory it runs in, so the call stands in the workspace's own checkout (a daemon's
+    // working directory is no git repository: "Not in a git repository")
+    let full =
+        hivecontrol::call_full(&defaults::list("mesh_write.hc_message_count"), &inv.env, Some(&inv.cwd), defaults::millis("mesh_write.hivecontrol_timeout_ms"));
+    if !full.call.ok {
+        return Fresh::CountFailed(hivecontrol::failure_detail(&full));
     }
+    let c = full.call;
     let native = parse_count(&c.raw);
     if native <= 0.0 {
         return Fresh::Empty;
     }
-    let r = hivecontrol::call(&defaults::list("mesh_write.hc_read_messages"), &inv.env, defaults::millis("mesh_write.pull_read_timeout_ms"));
+    let r = hivecontrol::call_in(&defaults::list("mesh_write.hc_read_messages"), &inv.env, Some(&inv.cwd), defaults::millis("mesh_write.pull_read_timeout_ms"));
     at("read:after");
     let (mut entry, mut wal_error) = (None, false);
     if !r.raw.is_empty() {
@@ -795,16 +817,16 @@ pub(crate) fn capture_fresh(inv: &Inv, p: &Plan, worktree: &str, at: &dyn Fn(&st
     Fresh::Read { native, ok: r.ok, entry, wal_error, raw: r.raw }
 }
 
+/// The workspace descriptor `<id>.json`, parsed; `None` when it is absent, unparsable or a file a read must not touch.
+fn read_descriptor(home: &Path, id: &str) -> Option<OVal> {
+    let file = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    ident::read_or_skip(&file, defaults::text("mesh_write.site_pull_descriptor")).and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
+}
+
 fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
     let blocked = Outcome { wal_blocked: true };
     // the descriptor is read again, as Node does (the ensure has written it)
-    let Some(desc) = std::fs::read(devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!(
-        "{}{}",
-        p.id,
-        defaults::text("mesh_write.json_suffix")
-    )))
-    .ok()
-    .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else {
+    let Some(desc) = read_descriptor(&inv.home, &p.id) else {
         return Outcome::default();
     };
     let worktree = field_str(&desc, defaults::text("mesh_write.field_worktree_path")).unwrap_or_else(|| p.cwd.clone());
@@ -825,7 +847,7 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
         return Outcome::default();
     }
     // ONE bounded read-messages (finite timeout, never monitor)
-    let r = hivecontrol::call(&defaults::list("mesh_write.hc_read_messages"), &inv.env, defaults::millis("mesh_write.pull_read_timeout_ms"));
+    let r = hivecontrol::call_in(&defaults::list("mesh_write.hc_read_messages"), &inv.env, Some(&inv.cwd), defaults::millis("mesh_write.pull_read_timeout_ms"));
     // WAL the RAW bytes immediately, before the exit status is looked at and before any parse
     let mut entry: Option<String> = None;
     let mut wal_error = false;
@@ -844,7 +866,7 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
     };
     let recovered = (got.imported + got.duplicate) as f64;
     let shortfall = recovered < native;
-    if !wal_error && !got.store_left {
+    if !wal_error {
         // a close that fails leaves the batch pending: the next pull replays it idempotently. An empty read has no entry id and
         // Node closes it as `null` all the same.
         let (kind, extra) = if shortfall {
@@ -883,4 +905,25 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
         );
     }
     Outcome { wal_blocked: wal_error }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::ident::fifo_kit::*;
+
+    #[test]
+    fn a_fifo_inbox_or_descriptor_returns_at_once_instead_of_blocking() {
+        let dir = scratch("pull");
+        let inbox = dir.join("in.ndjson");
+        fifo(&inbox);
+        let i = inbox.clone();
+        assert!(within("inbox_hashes", move || inbox_hashes(&i).is_err()), "a FIFO inbox is refused, not read and not appended to");
+        let home = dir.join("home");
+        let ws = devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&ws).unwrap();
+        fifo(&ws.join("w1.json"));
+        assert!(within("read_descriptor", move || read_descriptor(&home, "w1").is_none()));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }

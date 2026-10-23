@@ -26,7 +26,7 @@ struct Res {
     created: Regex,
 }
 
-fn res() -> &'static Res {
+fn res() -> std::sync::Arc<Res> {
     static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         terminal: jsre::compile(defaults::text("taskstate.terminal_status_re"), true),
@@ -106,8 +106,8 @@ fn rec_update(rec: &mut Rec, inp: &Value) -> R<()> {
         && let Some(s) = get(inp, "status").filter(|v| truthy(v))
     {
         rec.f.status = true;
-        let Value::String(text) = s else { return Err(Unsure) };
-        let text = text.clone();
+        // a non-string status is kept as JavaScript keeps it: Node only throws where the task that takes it is lowercased
+        let text = super::kept_status(Some(s))?.unwrap_or_default();
         if rec.need_status && terminal(&text) {
             rec.done = true;
         }
@@ -155,7 +155,7 @@ fn rec_update(rec: &mut Rec, inp: &Value) -> R<()> {
 fn rec_create(rec: &mut Rec, inp: &Value) -> R<()> {
     if !rec.f.status {
         rec.f.status = true;
-        rec.st = Some(super::truthy_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()));
+        rec.st = Some(super::kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()));
     }
     if !rec.f.owner {
         rec.f.owner = true;
@@ -273,12 +273,11 @@ fn id_of(inp: &Value) -> R<Option<String>> {
 
 fn classify(line: &str) -> R<Line> {
     let mut r = Line::default();
-    let entry: Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(_) => {
-            // Same rule as the window parser: a line JavaScript might still parse is not ours to skip.
-            return if super::parse::maybe_valid_for_js(line) { Err(Unsure) } else { Ok(r) };
-        }
+    let entry: Value = match super::parse::parse_line(line) {
+        super::parse::Line::Parsed(v) => v,
+        // Same rule as the window parser: a line JavaScript parses is read, one it cannot be read is not ours to skip.
+        super::parse::Line::Unsure => return Err(Unsure),
+        super::parse::Line::Skip => return Ok(r),
     };
     if entry.is_null() || get(&entry, "isSidechain") == Some(&Value::Bool(true)) {
         return Ok(r);
@@ -428,6 +427,7 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
         let n = (chunk as u64).min(pos) as usize;
         pos -= n as u64;
         scanned += n as u64;
+        crate::load::note_scan(n as u64);
         let Some(buf) = read_at(&mut f, pos, n) else { return Err(Unsure) };
         let mut comb = buf;
         comb.extend_from_slice(&carry);

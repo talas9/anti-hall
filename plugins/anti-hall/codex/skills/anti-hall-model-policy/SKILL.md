@@ -40,7 +40,7 @@ memorized in this file or any other doc.
    name from memory.
 
 A Claude-side caller doing this programmatically (workflow scripts, hooks)
-uses `plugins/anti-hall/companion/lib/codex-models.js`'s
+uses `plugins/anti-hall-node/companion/lib/codex-models.js`'s
 `resolveCodexModel(category)` — it implements exactly the steps above,
 spawn-free, and returns `null` on any failure so the caller omits `-m`.
 

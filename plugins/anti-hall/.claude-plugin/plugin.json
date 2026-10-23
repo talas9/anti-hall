@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anti-hall",
   "displayName": "Anti-Hall",
-  "version": "0.300.2",
+  "version": "0.301.0",
   "description": "Verify-first guardrails for Claude Code: hooks that block made-up APIs, force-push, AI commit credit and unverified \"done\" claims.",
   "author": {
     "name": "Mohammed Talas",
@@ -11,10 +11,6 @@
   "homepage": "https://github.com/talas9/anti-hall",
   "repository": "https://github.com/talas9/anti-hall",
   "license": "MIT",
-  "documentationUrl": "https://github.com/talas9/anti-hall/blob/main/docs/README.md",
-  "supportUrl": "https://github.com/talas9/anti-hall/issues",
-  "privacyPolicyUrl": "https://github.com/talas9/anti-hall/blob/main/PRIVACY.md",
-  "termsOfServiceUrl": "https://github.com/talas9/anti-hall/blob/main/LICENSE",
   "keywords": [
     "claude-code",
     "claude-code-plugin",

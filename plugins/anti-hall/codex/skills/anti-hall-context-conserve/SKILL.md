@@ -47,7 +47,7 @@ export ANTIHALL_LIMIT_THRESHOLD=85   # default threshold
 Status check:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/scripts/limit-conserve-status.js"
+~/.anti-hall/ah-engine/bin/ah-engine codex-limit-status
 ```
 
 ## Main-model downshift (flagship preservation)

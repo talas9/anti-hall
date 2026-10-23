@@ -35,9 +35,3 @@ fn passwd_home() -> Option<String> {
         std::ffi::CStr::from_ptr((*pw).pw_dir).to_str().ok().map(str::to_string)
     }
 }
-
-/// The real path of the plugin root's parent of `hooks`, which is where a Node hook's `path.join(__dirname, '..')` points.
-pub(crate) fn node_root(plugin_root: &str) -> Option<String> {
-    let hooks = std::fs::canonicalize(std::path::Path::new(plugin_root).join(defaults::text("devswarm_role.hooks_dir"))).ok()?;
-    Some(hooks.parent()?.to_str()?.to_string())
-}

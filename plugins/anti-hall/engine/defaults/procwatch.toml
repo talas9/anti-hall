@@ -162,6 +162,10 @@ value = "It may be hung, waiting on input, or finished without reporting; it kee
 doc = "What to do about a stuck agent."
 value = "Check its output file or SendMessage it, then TaskStop it if it is dead. Nothing was stopped."
 
+[procwatch.msg_proc_cwd]
+doc = "Appended to a named process when the report knows the directory it runs in (the project that owns it). Placeholder: {cwd}."
+value = " in {cwd}"
+
 [procwatch.msg_more]
 doc = "Remainder note; {m} more."
 value = " and {m} more"

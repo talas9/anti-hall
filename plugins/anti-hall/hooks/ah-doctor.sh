@@ -7,7 +7,7 @@
 # doctor's exact finding text (a test compares them). What it checks: the engine binary (kind, mode, header, OS, architecture,
 # Rosetta, quarantine, digest vs the bootstrap's marker, version vs the plugin's lock, whether `version` runs), the state directory,
 # the daemon's files (socket, lock, run marker, cooldowns), the plugin's defaults and pristine copy, the thin hooks files, HOME,
-# PATH, the tools, git and Node. The repairs and everything that needs the engine (live guard tests, migrations) stay with
+# PATH, the tools and git. The repairs and everything that needs the engine (live guard tests, migrations) stay with
 # `ah-engine doctor`.
 # Test-only knobs (honored ONLY with AH_WRAPPER_TEST=1): AH_BOOTSTRAP_UNAME_S / _M / _R (as in the bootstrap), AH_DOCTOR_ROSETTA
 # (path of the file that means Rosetta is installed).
@@ -77,10 +77,10 @@ uname_s=$(uname -s 2>/dev/null); uname_m=$(uname -m 2>/dev/null); uname_r=$(unam
 if [ "$test_mode" -eq 1 ]; then
   uname_s=${AH_BOOTSTRAP_UNAME_S:-$uname_s}; uname_m=${AH_BOOTSTRAP_UNAME_M:-$uname_m}; uname_r=${AH_BOOTSTRAP_UNAME_R:-$uname_r}
 fi
-case "$uname_s" in Darwin) host_os=macos; node_os=darwin ;; Linux) host_os=linux; node_os=linux ;; *) host_os=$uname_s; node_os=$uname_s ;; esac
-case "$uname_m" in arm64|aarch64) host_arch=aarch64; node_arch=arm64 ;; x86_64|amd64) host_arch=x86_64; node_arch=x64 ;; *) host_arch=$uname_m; node_arch=$uname_m ;; esac
+case "$uname_s" in Darwin) host_os=macos; os_name=darwin ;; Linux) host_os=linux; os_name=linux ;; *) host_os=$uname_s; os_name=$uname_s ;; esac
+case "$uname_m" in arm64|aarch64) host_arch=aarch64; arch_name=arm64 ;; x86_64|amd64) host_arch=x86_64; arch_name=x64 ;; *) host_arch=$uname_m; arch_name=$uname_m ;; esac
 if [ "$host_os" = macos ] && [ "$host_arch" = x86_64 ] && [ "$test_mode" -eq 0 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
-  host_arch=aarch64; node_arch=arm64   # a process under Rosetta reports x86_64 on an Apple Silicon machine
+  host_arch=aarch64; arch_name=arm64   # a process under Rosetta reports x86_64 on an Apple Silicon machine
 fi
 rosetta=0
 rosetta_marker=/Library/Apple/usr/libexec/oah/libRosettaRuntime
@@ -93,7 +93,7 @@ printf 'anti-hall doctor v%s\n' "$version"
 
 # ---- Environment --------------------------------------------------------------------------------------------------------------
 head_ Environment
-ok "Platform $node_os / $node_arch"
+ok "Platform $os_name / $arch_name"
 if [ -f "$root/.claude-plugin/plugin.json" ]; then ok "anti-hall plugin version $version"
 else warnl "plugin root not found (pass --plugin-root <dir> or set AH_ENGINE_PLUGIN_ROOT): the checks that read the plugin's own files were skipped"; fi
 if [ -n "${AH_DOCTOR_DEFAULTS_ERROR:-}" ]; then
@@ -288,6 +288,14 @@ else
     warnl "engine $m_ver is installed but the plugin pins $pinned - Fix: it updates at the next session start, or run: sh $bootstrap -v"
   fi
 fi
+# the hook wrapper runs ah-engine from PATH when the home install is not executable (ah-hook.sh): that engine counts
+if [ "$engine_usable" -eq 0 ] && [ ! -x "$bin" ]; then
+  path_engine=$(command -v ah-engine 2>/dev/null || true)
+  if [ -n "$path_engine" ] && [ -x "$path_engine" ]; then
+    engine_usable=1
+    infol "the hooks run ah-engine from PATH ($path_engine) because the home install is not executable"
+  fi
+fi
 
 # ---- State directory ---------------------------------------------------------------------------------------------------------
 head_ "State directory"
@@ -384,16 +392,7 @@ else
   [ "$grc" -eq 0 ] || warnl "git is on PATH but does not run (exit $grc $(printf '%s' "$gv" | first_line)) - Fix: xcode-select --install (macOS) or reinstall git"
 fi
 command -v gh >/dev/null 2>&1 || infol "gh is not on PATH; only the optional PR/CI helpers need it"
-if ! command -v node >/dev/null 2>&1; then
-  warnl "node is not on PATH; the Node fallback hooks cannot run (if the engine is down, guards fail closed) - Fix: install Node >= 22"
-  [ "$engine_usable" -eq 1 ] || bad "neither a working engine nor node is available; every guard fails closed - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v) or install Node"
-else
-  nv=$(node --version 2>&1); nrc=$?
-  nmajor=$(printf '%s' "$nv" | sed -n 's/^v\{0,1\}\([0-9][0-9]*\)\..*$/\1/p')
-  if [ "$nrc" -ne 0 ] || [ -z "$nmajor" ]; then bad "node does not run: exit $nrc $(printf '%s' "$nv" | first_line) - Fix: reinstall Node"
-  elif [ "$nmajor" -ge 22 ]; then ok "Node $nv (>= 22) — hooks can run"
-  else bad "Node $nv is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22."; fi
-fi
+[ "$engine_usable" -eq 1 ] || bad "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v)"
 
 # ---- verdict -------------------------------------------------------------------------------------------------------------------
 echo

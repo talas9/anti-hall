@@ -124,6 +124,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         ("codex-quota-detect.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("codex-nudge.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("command.js", r"\bcm(?:C|Set|ReAny)\('([a-z][a-z0-9_]*)'", "command"),
+        ("api-guard.js", r"\bagCfg\('([a-z][a-z0-9_]*)'\)", "api_guard_v1"),
     ] {
         let re = regex::Regex::new(helper).unwrap();
         for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == script)) {
@@ -146,6 +147,13 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
     let indirect = |k: &str| {
         k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
             || k.starts_with("jevrep.thr_")
+            || k.starts_with("opcli.ahc_") // the words and numbers of the L03 verbs, handed whole to the plugin scripts rules/operator-cli and rules/coordinator-work-baseline (`ops::opcli_cfg`)
+            || k.starts_with("opcli.dr_")
+            || k.starts_with("opcli.fd_")
+            || k.starts_with("opcli.cwb_")
+            || k.starts_with("flag.") // the documented flags, read whole by the reference generator (`docs::documented_flags`)
+            || k == "docs.external_flags" // read by the flag drift test (tests/it/reference.rs)
+            || ["env.auto_update", "env.install_lock_token", "env.release_base", "env.wrapper_diag"].contains(&k) // read by the shell wrappers, named here so the reference lists them
             || k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs
             || k.starts_with("job.") // scheduled jobs are read by prefix in schedule.rs
@@ -153,6 +161,20 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
             || k.starts_with("coordinator_work.lock_") // the lock timings of the coordinator-work-guard script, read as a group (`Params::from_group("coordinator_work")`)
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
+            || k.starts_with("launcher.") // the hook launcher (ah-launcher, binary ah-hook) reads these; the engine does not
+            || k.starts_with("files.launcher_") // the launcher's own log, drop counter, spawn lock and spawn log
+            || k.starts_with("msg.launcher_") // the launcher's texts
+            || k.starts_with("client.wrapper_") // the shell wrapper (`hooks/ah-hook.sh`) reads these before Rust starts
+            || k == "client.slow_fallback_max_ms" // the shell wrapper's watchdog extension for a call waiting on a slow daemon
+            || k.starts_with("client.cold_guard_") // the shell wrapper's cold-start wait for a guard event (the engine reads only the kick event's name)
+            || k == "files.cold_guard_notice" // the wrapper's once-per-session notice stamp
+            || k == "msg.cold_guard_notice" // the wrapper's notice text
+            || k == "files.unreachable_notice" // the wrapper's and the launcher's once-per-session stamp of the engine-unreachable notice
+            || k == "msg.engine_unreachable_notice" // that notice's text (read by hooks/ah-hook.sh and by the launcher)
+            || k == "msg.run_engine_missing" // the text scripts/ah-run.sh prints when no engine can run its command
+            || k.starts_with("rollback.") // the integrity script (`hooks/ah-engine-integrity.sh`) reads its names and thresholds itself; the engine reads only script and shell
+            || k == "files.integrity_log" // written by that script
+            || k == "files.wrapper_fail_log" // written by that script, from the hook wrapper's failure reports
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
             || k == "script.p95_budget_by_check" // read by tests/script_latency.rs, the go/no-go gate of the scripted checks
             || k.starts_with("procwatch.mode_") // each orphan class names its mode setting by key (procwatch.classes mode_key)

@@ -348,7 +348,7 @@ fn parse_test(o: &serde_json::Map<String, Json>) -> Result<Test, WhenError> {
 
 fn find_setting(key: &str) -> Option<SettingRef> {
     let (section, name) = key.split_once('.')?;
-    for e in defaults::all() {
+    for e in defaults::all().iter().copied() {
         if let V::Table(_) = e.value
             && e.value.str_field("section") == section
             && e.value.str_field("key") == name

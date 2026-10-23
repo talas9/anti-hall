@@ -409,6 +409,12 @@ pub fn held_by_other(path: &str, p: Params) -> bool {
     inspect(path, &p).is_some_and(|h| !stealable(&h, &p, Steal::StaleUnlessLive))
 }
 
+/// Whether [`acquire_respecting_live`] would be refused: a lock file exists whose holder it must not take over (a live one, or an
+/// unknown one that is not stale yet). Read-only.
+pub fn held_respecting_live(path: &str, p: Params) -> bool {
+    inspect(path, &p).is_some_and(|h| !stealable(&h, &p, Steal::RespectLive))
+}
+
 /// Which holders a waiter may take over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Steal {

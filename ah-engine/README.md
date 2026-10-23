@@ -11,6 +11,7 @@ Install, go-live, rollback and what still runs on Node: [`docs/AH-ENGINE.md`](..
 - What it is, what works today and what is **planned (D-n)**: [`docs/AH-ENGINE.md`](../docs/AH-ENGINE.md)
 - Every command, setting, metric, impact kind, check and error code (generated, cannot drift): [REFERENCE.md](REFERENCE.md)
 - The versioned design decision record (D1 to D70): [DECISIONS.md](DECISIONS.md)
+- October 2026 hardening: every failure, root cause, fix, test and status: [docs/HARDENING-2026-10.md](docs/HARDENING-2026-10.md)
 
 This directory is self-contained: its own Cargo workspace, CI (`.github/workflows/ah-engine.yml`), docs and tests. It is
 never a submodule (D69).
@@ -39,8 +40,6 @@ never a submodule (D69).
 | `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `tests/it/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
-| `parity/` | the parity harnesses of the older lanes (git, command, Jev, dispatcher, merge-side-pick, scan-throttle, ship-it, compact declaration), and `transcript-facts.js` / `run-transcript.js` for the transcript index |
 | `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
 
@@ -92,7 +91,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | No hangs: hard client deadline, read deadline, oversize rejection, CPU budget | `hung_engine_times_out_then_falls_back`, `oversize_input_skips_engine_and_daemon_rejects_oversize_requests`, `slow_sender_cannot_wedge_the_daemon`, `cpu_budget_trips_to_fallback` |
 | Watchdog, breaker, crash-loop stop | `stalled_loop_triggers_clean_exit_and_next_client_respawns`, `stuck_worker_triggers_exit`, `breaker_opens_after_repeated_failures_and_skips_engine`, `crash_loop_stops_respawning_records_reason_and_advises_once` |
 | Single instance, stale lock and socket recovery | `twenty_parallel_cold_clients_yield_exactly_one_daemon`, `stale_lock_from_dead_pid_is_recovered_but_live_engine_pid_is_not_stolen`, `non_socket_at_socket_path_is_never_deleted` |
-| Resource caps | `queue_overflow_answers_busy_and_clients_fall_back`, `rate_limited_session_gets_busy_so_it_falls_back`, `memory_limit_and_nice_are_applied_and_reported`, `rss_over_cap_restarts_cleanly_and_next_client_respawns` |
+| Resource caps | `queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode`, `rate_limited_session_gets_busy_so_it_falls_back`, `memory_limit_and_nice_are_applied_and_reported`, `rss_over_cap_restarts_cleanly_and_next_client_respawns` |
 | Safety: socket mode, private directory, symlinks, peer uid, payload never executed, project isolation | `socket_is_0600_and_state_dir_0700`, `long_path_socket_dir_is_private_and_owner_checked`, `symlinked_state_dir_is_refused`, `payload_text_is_never_executed`, `projects_are_isolated_through_the_daemon` |
 | Residency: stays up when idle by default; idle exit is a config key | `tests/it/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/it/agent_cli.rs` |
@@ -219,9 +218,24 @@ Deliberate differences from the Node guard:
   `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
   every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
   two cannot disagree. The window moves in with the command-guard port (planned, D75).
-- `devswarm-parent-inbox`, `devswarm-child-turn`: the gate of the two DevSwarm prompt hooks. Silent cases (not a Primary or not
-  a child, DevSwarm inactive, the hook's switch off, a Jev judge child) are answered; an active Primary or child defers to the
-  Node hook, which owns the roster, the mailbox and the dedupe state until the engine owns the mesh and mailbox (D45).
+- `devswarm-parent-inbox`: the DevSwarm Primary prompt hook, in a checkout or not. The silent cases, the communication-override
+  reminder, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds,
+  the live workspace table of the project's summary with its unread nudges, archive recommendation and not-draining /
+  stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it
+  was asked, the screenshot-sync ask and the parked supervisor escalations are answered. Handed to Node, each before the first
+  write: a seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the
+  supervisor's auto-archive owns, an own-reader cursor that changes the unread count, and the other rare states. Every deferral
+  writes its cause to the event log (`parent-inbox-defer`). Parity: `tests/it/devswarm_parent_inbox_parity.rs` (255 scenes on
+  real git repositories against the Node hook).
+- `devswarm-child-turn`: the DevSwarm child prompt hook, in a checkout or not. The silent cases, the heartbeat (with the git
+  push state), the registration of the child (descriptor, registry row and summary under the workspace lock, the project's store
+  created on the first turn), the ingest-daemon banners, the fixed reminder block, the step plan, unread parent mail, mesh-direct
+  mail and the archive request are answered. Handed to Node, each before the first write: an archived workspace, a truncated
+  builder id, a second registry row of the worktree, a phantom descriptor, a row at another worktree, a journal-backend store, a
+  workspace lock that stays busy, and (after the idempotent registration) mesh-direct mail while some reader of the partition holds
+  a cursor of its own, since the hook's reader identity comes from its process ancestry, which the daemon does not share. Every
+  deferral writes its cause to the event log (`child-turn-defer`). Parity: `tests/it/devswarm_child_turn_parity.rs` (42 scenes on
+  real git repositories against the Node hook).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both
@@ -264,7 +278,7 @@ Deliberate differences from the Node guard:
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Scripted checks (D88)
 
-A check whose decision is editable plugin JavaScript is registered as a `Scripted` entry (a name and a summary) and answered by `engine/logic/<check>.js` on the embedded QuickJS (`src/script`). Batch 1: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`, `verify-first-full`, `fable-availability`, `edit-guard`; batch 2: `ship-it-guard`, `compact-declaration-guard`, `devswarm-parent-inbox`, `devswarm-child-turn`. A script defines `decide(payload, opts, event)` and returns `'allow'`, `'defer'`, `null` (nothing to say, Node decides), `{block}`, `{advisory}` or `{exact: {code, out, err}}`. Its API is `ah.*` (`engine/logic/lib/00-ah.js`): `cfg`, `env`, `settings`, `fs`, `path`, `re`, `transcript`, and `state.writeAtomic`, `state.appendFile` and `state.remove` (the only writes: scoped to the state directory under `~/.anti-hall`, size-capped, no link below the root). Shared helpers: `lib/10-text.js` (message layout), `20-spawn.js` (home, state home, DevSwarm), `30-verify-first.js`, `40-coordinator.js`, `50-devswarm.js`. Edit a script in the plugin, or override it file by file in `~/.anti-hall/logic/`; the next call reloads it. A script that cannot answer defers to the Node hook; an engine-only check blocks on a guard event and allows elsewhere (`script.engine_only_checks`). Parity: `tests/golden/<check>.jsonl` (frozen from the compiled port) is replayed by `script::tests` and, against the Node hook, by `node parity/run-golden.js <check> hooks/<check>.js`. The v1.0 gate is `compiled_logic_checks_remaining` reaching 0 (`tests/compiled_logic_gate.rs`).
+A check whose decision is editable plugin JavaScript is registered as a `Scripted` entry (a name and a summary) and answered by `engine/logic/<check>.js` on the embedded QuickJS (`src/script`). Batch 1: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`, `verify-first-full`, `fable-availability`, `edit-guard`; batch 2: `ship-it-guard`, `compact-declaration-guard`, `devswarm-parent-inbox`, `devswarm-child-turn`. A script defines `decide(payload, opts, event)` and returns `'allow'`, `'defer'`, `null` (nothing to say, Node decides), `{block}`, `{advisory}` or `{exact: {code, out, err}}`. Its API is `ah.*` (`engine/logic/lib/00-ah.js`): `cfg`, `env`, `settings`, `fs`, `path`, `re`, `transcript`, and `state.writeAtomic` / `appendFile` / `remove` / `op` (the scoped writes: under `~/.anti-hall`, size-capped, no link below the root; `writeAtomic` is atomic). Shared helpers: `lib/10-text.js` (message layout), `20-spawn.js` (home, state home, DevSwarm), `30-verify-first.js`, `40-coordinator.js`, `50-devswarm.js`. Edit a script in the plugin, or override it file by file in `~/.anti-hall/logic/`; the next call reloads it. A script that cannot answer defers to the Node hook; an engine-only check blocks on a guard event and allows elsewhere (`script.engine_only_checks`). Parity: `tests/golden/<check>.jsonl` (frozen from the compiled port) is replayed by `script::tests` and, against the Node hook, by `node parity/run-golden.js <check> hooks/<check>.js`. The v1.0 gate is `compiled_logic_checks_remaining` reaching 0 (`tests/compiled_logic_gate.rs`).
 
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
 

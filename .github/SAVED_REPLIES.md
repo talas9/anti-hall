@@ -63,7 +63,7 @@ Labels named here are the repository's own (`status:*`, `priority:*`, `size:*`, 
 > - the docs and settings rows listed in [CONTRIBUTING.md](../CONTRIBUTING.md#adding-or-changing-a-guard)
 > - a regression test, including the dangerous forms that must stay blocked
 >
-> `node --test` names anything undocumented.
+> the engine's `docs_coverage` test names anything undocumented.
 
 ## Pull request contains AI credit lines
 

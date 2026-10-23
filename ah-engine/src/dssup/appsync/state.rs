@@ -35,12 +35,52 @@ fn name_file(home: &Path, id: &str) -> PathBuf {
 }
 
 /// `readName(home, id)`: the cached title, if any.
-pub(crate) fn read_name(home: &Path, id: &str) -> Option<String> {
+pub fn read_name(home: &Path, id: &str) -> Option<String> {
     let bytes = std::fs::read(name_file(home, id)).ok()?;
     match OVal::parse(&String::from_utf8_lossy(&bytes))?.get("name") {
         Some(OVal::Str(t)) if !t.is_empty() => Some(t.clone()),
         _ => None,
     }
+}
+
+/// `writeName(home, id, name, now)`: the title cache of one workspace (`false` for an empty name or a failed write).
+pub fn write_name(home: &Path, id: &str, name: &str, now: i64) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let p = name_file(home, id);
+    if let Some(dir) = p.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write below reports the failure
+    }
+    crate::atomic::write(&p, obj(vec![("name", s(name)), ("updatedAt", n(now as f64))]).stringify()).is_ok()
+}
+
+/// `parseChildrenList(raw)` as far as the name backfill reads it: `(id, label)` of every listed object with a non-empty string id
+/// (a flat array, or `{children: [...]}`; anything else is an empty list). The label is `None` unless it is a non-empty string.
+pub fn parse_labels(raw: &str) -> Vec<(String, Option<String>)> {
+    let parsed = OVal::parse(raw);
+    let list: &[OVal] = match &parsed {
+        Some(OVal::Arr(a)) => a,
+        Some(o @ OVal::Obj(_)) => match o.get(defaults::text("mesh_write.roster_children_key")) {
+            Some(OVal::Arr(a)) => a,
+            _ => &[],
+        },
+        _ => &[],
+    };
+    list.iter()
+        .filter(|e| matches!(e, OVal::Obj(_)))
+        .filter_map(|e| {
+            let id = match e.get("id") {
+                Some(OVal::Str(i)) if !i.is_empty() => i.clone(),
+                _ => return None,
+            };
+            let label = match e.get("label") {
+                Some(OVal::Str(l)) if !l.is_empty() => Some(l.clone()),
+                _ => None,
+            };
+            Some((id, label))
+        })
+        .collect()
 }
 
 /// `refreshNamesFromApp`: the app's own title for each workspace is written to the names cache when it differs. Returns

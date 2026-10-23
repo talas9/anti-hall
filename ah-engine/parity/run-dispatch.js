@@ -40,7 +40,7 @@ const refEnv = envFor(mk(path.join(tmp, 'h-ref')));
 const engEnv = (mode) => ({
   ...envFor(mk(path.join(tmp, 'h-' + mode))),
   AH_ENGINE_DIR: path.join(tmp, 'e-' + mode), AH_ENGINE_VERSION: 'parity', AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0',
-  AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_BREAKER_N: '1000000',
+  AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_SCRIPT_CUT_AT_DEADLINE: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_BREAKER_N: '1000000',
   AH_ENGINE_DISPATCH_IN_PROCESS: mode === 'oneshot' ? '1' : '0', AH_ENGINE_RULES: path.join(tmp, 'rules.json'),
 });
 fs.writeFileSync(path.join(tmp, 'rules.json'), JSON.stringify({ version: 1, rules: [] }));

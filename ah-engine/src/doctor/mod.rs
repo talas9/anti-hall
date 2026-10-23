@@ -8,20 +8,26 @@
 //!
 //! What it checks: the platform and versions, that the hook scripts the registry names are on disk, the live behaviour of the
 //! guards (each built-in check is run in-process on a crafted payload and must block or allow as the Node guard does; a payload
-//! the engine defers to its Node hook is reported as such, never as a pass), the statusline configuration and its render, the
+//! the engine does not decide is reported as a deferral, never as a pass), the statusline configuration and its render, the
 //! saved Workflow templates, oh-my-claudecode and the Codex port when present, other plugins' competing hooks and skills, the
 //! DevSwarm supervisor section (its files, the four mechanical hooks, the installed unit), orphaned ingest registrations and
 //! leaked test-fixture stores, and the repair pass. The explicit `--repair-ingest-orphans`, `--repair-test-stores` and
 //! `--repair-resurrected` flags (preview, `--apply` to act) run after the diagnostics, as in the Node doctor.
 //!
+//! `--logs` lists the recent warn/error entries of the central log (see [`logs`]).
+//!
+//! The doctor never starts Node: a check the engine does not decide is reported as a warning (a deferral), never a pass.
+//!
 //! What it does not do yet: the context-footprint measurement, the DevSwarm runtime checks of an active session (liveness
 //! verdicts, app-database view, delivery log, wake monitor; the report says so), the default repair rows that install or reap
-//! scheduler units, the leaked-unit and other store reports, and the flags `--prune-cache`, `--reclaim-ingest-lock` and `--logs`
-//! (each is reported when given; the Node doctor stays in place for them).
+//! scheduler units, the leaked-unit and other store reports, and the flags `--prune-cache` and `--reclaim-ingest-lock` (each is
+//! reported when given; the Node doctor stays in place for them).
 mod detect;
 mod devswarm;
 mod facts;
 mod install;
+mod jev;
+mod logs;
 mod orphans;
 mod plugin;
 mod render;
@@ -199,6 +205,19 @@ fn flags(p: &Parsed) -> Flags {
     }
 }
 
+/// The engine the hook wrapper falls back to: `ah-engine` on PATH, used only when the home install is not executable
+/// (`ah-hook.sh`). True (and an info line naming it) when that engine exists, so a PATH-installed engine is not "no engine".
+fn path_engine(doc: &mut Doc, ctx: &migrate::Ctx) -> bool {
+    let name = defaults::text("doctor.bin_name");
+    let home_bin = install::engine_dir(&ctx.home).join(defaults::text("doctor.bin_dir")).join(name);
+    if system::which(name, home_bin.parent().map(|p| p.to_string_lossy().into_owned()).as_deref().unwrap_or("")).is_some() {
+        return false; // the wrapper runs the home install, executable but unusable: nothing else is tried
+    }
+    let Some(found) = system::which(name, ctx.env.get("PATH").map(String::as_str).unwrap_or("")) else { return false };
+    doc.infol(defaults::render("doctor_msg.engine_on_path", &[("path", &found.display())]));
+    true
+}
+
 /// `process.platform` and `process.arch` as Node names them.
 fn node_platform() -> (&'static str, &'static str) {
     let names = defaults::raw("doctor.platform_names");
@@ -242,8 +261,10 @@ fn hooks_section(doc: &mut Doc, root: &Path) {
         }
     }
     doc.ok(defaults::render("doctor_msg.hooks_valid", &[("n", &scripts.len())]));
+    // the registry's commands run the scripts from the Node tree beside the plugin (`nodeback.node_dir`), so a script counts as present there too
+    let node_hooks = root.join(defaults::text("nodeback.node_dir")).join(defaults::text("doctor.hooks_dir"));
     for f in scripts {
-        if hooks.join(&f).exists() {
+        if hooks.join(&f).exists() || node_hooks.join(&f).exists() {
             doc.ok(defaults::render("doctor_msg.hook_present", &[("file", &f)]));
         } else {
             doc.bad(defaults::render("doctor_msg.hook_missing", &[("file", &f)]));
@@ -260,7 +281,7 @@ fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) 
         let Some(J::Str(cmd)) = settings.get("statusLine").and_then(|s| s.get("command")).filter(|c| migrate::j_truthy(Some(c))) else { continue };
         let label = scope.str_field("label");
         if cmd.contains(defaults::text("doctor.statusline_marker")) {
-            doc.ok(defaults::render("doctor_msg.statusline_installed", &[("label", &label)]));
+            doc.warnl(defaults::render("doctor_msg.statusline_installed", &[("label", &label)]));
         } else {
             let shown = slice16_lossy(cmd, defaults::num("doctor.statusline_shown") as usize);
             doc.ok(defaults::render("doctor_msg.statusline_set", &[("label", &label), ("command", &shown)]));
@@ -268,6 +289,23 @@ fn statusline_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) 
         return;
     }
     doc.warnl(defaults::text("doctor_msg.statusline_none").to_string());
+}
+
+/// The action audit: what the acting features did, their failure and mistake rates, and ledger keys left in doubt. Shown only
+/// when there is something to show; read-only.
+fn audit_section(doc: &mut Doc) {
+    if !defaults::raw("devswarm_act.audit_enabled").as_bool().unwrap_or(false) {
+        return;
+    }
+    let days = defaults::num("devswarm_act.audit_default_days");
+    let a = crate::dsact::audit::collect(&crate::paths::dir(), crate::health::now_ms() as i64, days);
+    if !crate::dsact::audit::has_data(&a) {
+        return;
+    }
+    doc.head(defaults::text("doctor_msg.head_audit"));
+    for (level, text) in crate::dsact::audit::findings(&a) {
+        if level == "warn" { doc.warnl(text) } else { doc.ok(text) }
+    }
 }
 
 fn workflows_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) {
@@ -360,7 +398,8 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
         }
     }
     crate::telemetry::emit::add_items(done);
-    if rows.is_empty() && fixes.is_empty() && doc.fail == 0 {
+    let units = crate::setup::units::heal_changes(f.dry_run);
+    if rows.is_empty() && fixes.is_empty() && units.is_none() && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
@@ -370,6 +409,17 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
             "failed" => doc.bad(defaults::render("doctor_msg.repair_failed", args)),
             "gated" => doc.warnl(defaults::render("doctor_msg.repair_gated", args)),
             _ => doc.infol(defaults::render("doctor_msg.repair_skipped", args)),
+        }
+    }
+    if let Some(u) = units {
+        let (id, msg) = (defaults::text("units.doctor_id"), u.to_text());
+        let args: &[(&str, &dyn std::fmt::Display)] = &[("id", &id), ("msg", &msg)];
+        if u.failed {
+            doc.bad(defaults::render("doctor_msg.repair_failed", args));
+        } else if f.dry_run {
+            doc.infol(defaults::render("doctor_msg.repair_would", args));
+        } else {
+            doc.ok(defaults::render("doctor_msg.repair_fixed", args));
         }
     }
 }
@@ -433,7 +483,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
         doc.warnl(defaults::text("doctor_msg.no_plugin_root").to_string());
     }
     runtime::daemon_section(&mut doc);
-    let engine_usable = install::section(&mut doc, &mut fixes, &ctx, root_path, &host);
+    let engine_usable = install::section(&mut doc, &mut fixes, &ctx, root_path, &host) || path_engine(&mut doc, &ctx);
     runtime::state_section(&mut doc, &mut fixes, uid);
     plugin::config_section(&mut doc, &mut fixes, &ctx);
     plugin::registry_section(&mut doc, &ctx, root_path, &version);
@@ -467,6 +517,11 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     }
     workflows_section(&mut doc, &ctx, &ctx.home, &ctx.cwd);
     detect::foreign_section(&mut doc, &ctx, root_path);
+    if p.rest.iter().any(|a| a == defaults::text("doctor.logs_flag")) {
+        logs::section(&mut doc, &ctx);
+    }
+    audit_section(&mut doc);
+    jev::section(&mut doc, Path::new(&ctx.home), &ctx.env);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
     } else if !f.check && f.explicit.is_empty() {

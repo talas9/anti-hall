@@ -22,7 +22,7 @@ struct Pats {
     straight: Regex,
 }
 
-fn pats() -> &'static Pats {
+fn pats() -> std::sync::Arc<Pats> {
     static P: crate::defaults::Cache<Pats> = crate::defaults::Cache::new();
     P.get_or_init(|| Pats {
         quote_line: jsre::compile(defaults::text("speculation_guard.quote_line_re"), false),

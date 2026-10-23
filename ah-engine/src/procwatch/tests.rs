@@ -195,7 +195,7 @@ fn unmarked_young_unreadable_and_protected_processes_are_never_candidates() {
     f.rows.push(row(952, 1, 5 * DAY, "/Users/u/.anti-hall/ah-engine-live/bundle/ah-engine serve"));
     f.envs.insert(952, marked(4_000_000));
     f.envs.insert(950, marked(4_000_000));
-    f.rows.push(row(951, 1, 5 * DAY, "/Users/u/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/companion/ingest.js"));
+    f.rows.push(row(951, 1, 5 * DAY, "/Users/u/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/ingest.js"));
     f.envs.insert(951, marked(4_000_000));
     let found = classify_with(&mut f, &h);
     assert!(found.iter().all(|x| x.pid != 950 && x.pid != 951 && x.pid != 952), "the live engine and the plugin's companions are protected");
@@ -516,6 +516,39 @@ fn at_critical_a_heavy_command_is_warned_about_and_blocking_is_an_opt_in() {
     assert_eq!(advise(&env, "PreToolUse", &light), Verdict::Allow);
     write_settings(&h, json!({"diskWatch": {"enabled": false}}));
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
+}
+
+fn orphan_report(h: &Path, pids: &[(u64, &str)]) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let listed: Vec<Value> = pids.iter().map(|(p, c)| json!({"pid": p, "cmd": c, "class": "other", "cwd": "/Users/u/Projects/other-app"})).collect();
+    let dir = h.join(".anti-hall/ah-engine");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("procwatch-report.json"), json!({"ts_s": now, "modes": {}, "orphans": {"count": listed.len(), "listed": listed}}).to_string())
+        .unwrap();
+}
+
+#[test]
+fn an_orphan_is_reported_once_per_session_names_its_project_and_a_new_one_still_is() {
+    let h = scratch("orphan-ack");
+    let env = script_env(&h, None);
+    let p = json!({"session_id": "s1"});
+    orphan_report(&h, &[(111, "adb server")]);
+    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("pid 111") && t.contains("/Users/u/Projects/other-app"), "the process and the project that owns it: {t}");
+    // the cooldown passing must not repeat an acknowledged process
+    let expire = || {
+        let state = h.join(".anti-hall").join(crate::defaults::text("paths.state_dir")).join(crate::defaults::text("procwatch.state_rel"));
+        let mut st: Value = serde_json::from_str(&std::fs::read_to_string(&state).expect("state file")).unwrap();
+        st["last"].as_object_mut().unwrap().remove("orphans:s1");
+        std::fs::write(&state, st.to_string()).unwrap();
+    };
+    expire();
+    orphan_report(&h, &[(111, "adb server")]);
+    assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "pid 111 was already shown to this session");
+    expire();
+    orphan_report(&h, &[(111, "adb server"), (222, "node dev")]);
+    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("pid 222") && !t.contains("pid 111"), "only the new process is reported: {t}");
 }
 
 #[test]
@@ -867,92 +900,6 @@ fn real_machine_smoke_the_host_reads_processes_memory_and_disk() {
     let cost = t.elapsed();
     eprintln!("procwatch smoke: {} processes, first sweep {:?}", rows.len(), cost);
     assert!(cost < std::time::Duration::from_secs(5));
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// shadow: the report-mode decisions against the Node originals that have an equivalent
-// ---------------------------------------------------------------------------------------------------------------------
-
-fn node_available() -> bool {
-    std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success())
-}
-
-#[test]
-fn shadow_stuck_agents_match_the_node_watchdog_on_heartbeats() {
-    if !node_available() {
-        eprintln!("node not installed: shadow comparison skipped");
-        return;
-    }
-    let home = scratch("shadow-hb");
-    let dir = home.join(".anti-hall/agents");
-    std::fs::create_dir_all(&dir).expect("agents dir");
-    let now_ms = crate::checks::agent_scan::now_ms();
-    let min = 60_000.0;
-    // (id, age in minutes, status): the Node watchdog lists everything past the threshold; the engine skips finished statuses
-    let fixtures = [("a-fresh", 3.0, "running"), ("b-stuck", 45.0, "running"), ("c-very-stuck", 300.0, "running"), ("d-edge-under", 19.0, "working")];
-    for (id, age, status) in fixtures {
-        let ts = (now_ms - age * min) as u64;
-        std::fs::write(dir.join(format!("{id}.json")), json!({"id": id, "ts": ts, "status": status, "step": "x", "session": "s1"}).to_string()).expect("hb");
-    }
-    let out = std::process::Command::new("node")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks/agent-watchdog.js"))
-        .arg((20.0 * min).to_string())
-        .env("HOME", &home)
-        .output()
-        .expect("run watchdog");
-    let node: std::collections::BTreeSet<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("STALE "))
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_string)
-        .collect();
-    // the stuck-agent advisory (the silent-agent-nudge script at UserPromptSubmit) names the agents of this session it finds silent
-    let advisory = match stuck(&home, "s1") {
-        Verdict::Advisory(j) => j,
-        other => panic!("an advisory naming the stuck agents: {other:?}"),
-    };
-    let engine: std::collections::BTreeSet<String> =
-        fixtures.iter().map(|(id, ..)| id.to_string()).filter(|id| advisory.contains(&format!("[{id}]"))).collect();
-    assert_eq!(engine, node, "the engine's stuck set equals the Node watchdog's for running agents of the session");
-    assert_eq!(engine, ["b-stuck", "c-very-stuck"].into_iter().map(str::to_string).collect());
-}
-
-/// Whether the Node session-end reaper (the shadow of the engine's `session-end-mcp-reaper` script) selects `cmd` as an orphaned
-/// MCP server: parent PID 1, an MCP signature, not a test runner or dev server.
-fn node_reaper_selects(cmd: &str) -> bool {
-    let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks");
-    let js = "const r=require(process.argv[1]+'/session-end-mcp-reaper.js');const m=require(process.argv[1]+'/../companion/mcp-reaper.js');process.stdout.write(String(r.matchesInvariant({pid:10,ppid:1,cmd:process.argv[2]},m,null,null)));";
-    let out = std::process::Command::new("node").args(["-e", js]).arg(&hooks).arg(cmd).output().expect("run node");
-    String::from_utf8_lossy(&out.stdout) == "true"
-}
-
-#[test]
-fn shadow_mcp_orphans_are_a_superset_of_what_the_mcp_reaper_selects() {
-    let h = scratch("shadow-mcp");
-    let cfg = cfg_default(&h);
-    let class = "mcp_server";
-    let cmds = [
-        "node /home/u/.npm/_npx/abc/node_modules/.bin/mcp-server-fetch",
-        "npx -y @modelcontextprotocol/server-filesystem /tmp",
-        "uvx mcp-server-git --repository /work/repo",
-        "node /opt/tools/chrome-devtools-mcp/index.js",
-        "mcp start",
-        "node server-sequential-thinking.js",
-        "node /work/app/vitest.js", // never an MCP server
-        "/usr/bin/vim notes.txt",
-    ];
-    for cmd in cmds {
-        let reaper = node_reaper_selects(cmd);
-        let mut f = Fake { rows: vec![row(1, 0, 9 * DAY, "/sbin/launchd"), row(10, 1, 9 * DAY, cmd)], ..Fake::default() };
-        f.envs.insert(10, marked(4_000_000));
-        let rows = f.rows.clone();
-        let found = orphan::classify(&mut f, &rows, &cfg, &HashSet::new());
-        let ours = found.iter().any(|x| x.class == class);
-        if reaper {
-            assert!(ours, "procwatch must report every process the MCP reaper would select, missed: {cmd}");
-        }
-        assert!(!found.iter().any(|x| x.class == class) || reaper || cmd.contains("mcp"), "{cmd}");
-    }
 }
 
 #[test]

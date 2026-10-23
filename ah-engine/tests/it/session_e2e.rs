@@ -124,8 +124,10 @@ fn the_in_process_dispatcher_answers_a_fresh_cache_itself_and_writes_the_client_
     assert!(std::fs::read_to_string(home.join(CLI_FILE)).unwrap().contains("\"lastAdvised\":{\"installed\":\"2.2.0\",\"baseline\":\"2.1.238\"}"));
 }
 
+/// v1.0 lane L06: a stale cache no longer hands the hook to Node (whose hook started a detached refresh script); the engine
+/// asks its refresh job with a request file and says nothing this session, as Node did. The cache itself is left alone.
 #[test]
-fn a_stale_cache_runs_the_node_hook_and_leaves_the_files_alone() {
+fn a_stale_cache_asks_the_refresh_job_and_leaves_the_cache_alone() {
     let e = Env::new("stale");
     let home = e.home("home");
     std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
@@ -135,8 +137,10 @@ fn a_stale_cache_runs_the_node_hook_and_leaves_the_files_alone() {
     let a = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
     let (code, out, _) = e.run(&a, true, &payload(&e), &home, &[]);
     assert_eq!(code, 0);
-    assert!(out.contains("NODE-RAN-CLI") && !out.contains(ADVICE), "{out}");
+    assert!(!out.contains("NODE-RAN-CLI") && !out.contains(ADVICE), "{out}");
     assert_eq!(std::fs::read_to_string(home.join(CLI_FILE)).unwrap(), stale);
+    let req = std::fs::read_to_string(home.join(".anti-hall/refresh/claude_cli.json")).expect("a refresh request");
+    assert!(req.contains("\"requestedAt\":"), "{req}");
 }
 
 /// D76 for these checks: the daemon is started by a client with one HOME and switch set; a second client with another HOME

@@ -99,7 +99,7 @@ Before fixing an anti-hall bug, run `similar` and read the past fixes for that c
 If the component is a hotspot, fix the class of bug, not just this instance.
 
 Optional fields on `report` and `rule`: `--component <path or module>` (normalized:
-`plugins/anti-hall/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
+`plugins/anti-hall-node/hooks/lib/x.js` becomes `hooks/x`), `--cause <class>` and
 `--regression-of <fp>`. Records without these fields still load. `--cause` must be one of:
 `archived-or-held-state`, `id-mismatch`, `home-or-state-leak`, `lock-or-race`,
 `timing-or-load-flake`, `transcript-parse`, `blocking-hook-loop`, `fail-open-missing`,

@@ -21,6 +21,11 @@ value = 65536
 unit = "bytes"
 min = 4096
 
+[agent_scan.cut_check_lines]
+doc = "How many transcript lines the agent scan reads between two looks at its request's client deadline: a scripted check cut at that deadline (script.cut_at_request_deadline) stops its scan there instead of reading the rest of a window of many megabytes, which the interpreter cannot interrupt (measured 2026-10-09 under load: silent-agent-nudge's 64 MB scan ran 4.4 s past a 0.7 s remainder)."
+value = 256
+min = 1
+
 [agent_scan.reader_buf_bytes]
 doc = "Capacity of the buffered reader over the tail of a transcript the agent scan reads."
 value = 1048576

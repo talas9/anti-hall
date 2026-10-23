@@ -6,8 +6,8 @@
 //! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
-    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by,
-    norm_owner, norm_priority, number_of_digits, priority_field, truthy_status,
+    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, is_non_string_status,
+    kept_status, norm_blocked_by, norm_owner, norm_priority, number_of_digits, priority_field, status_text,
 };
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
@@ -35,7 +35,7 @@ struct Res {
     since_status: Regex,
 }
 
-fn res() -> &'static Res {
+fn res() -> std::sync::Arc<Res> {
     static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| Res {
         created: jsre::compile(defaults::text("taskstate.re_created"), true),
@@ -59,6 +59,26 @@ pub fn is_not_found(s: &str) -> bool {
 /// other bad line is invalid for JavaScript too and is skipped, as the Node code skips it.
 pub fn maybe_valid_for_js(line: &str) -> bool {
     crate::checks::guardkit::jsdiff::js_reads_differently_str(line)
+}
+
+/// One transcript line as the scans read it: parsed (as `JSON.parse` would, see [`jsdiff::parse_as_js`](crate::checks::guardkit::jsdiff::parse_as_js)),
+/// skipped (invalid for JavaScript too, as the Node code skips it), or not understood (JavaScript reads it and the engine cannot).
+pub enum Line {
+    /// The line, parsed.
+    Parsed(Value),
+    /// Invalid for JavaScript too: skipped.
+    Skip,
+    /// JavaScript reads it, the engine cannot.
+    Unsure,
+}
+
+/// See [`Line`].
+pub fn parse_line(t: &str) -> Line {
+    match crate::checks::guardkit::jsdiff::parse_as_js(t) {
+        Some(v) => Line::Parsed(v),
+        None if maybe_valid_for_js(t) => Line::Unsure,
+        None => Line::Skip,
+    }
 }
 
 /// The tool uses inside an entry (`collectToolUses`): the node itself when it is a tool use with a name, then everything
@@ -173,10 +193,10 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         if variant == Variant::State && !t.contains("Task") && !t.contains("TodoWrite") {
             continue;
         }
-        let entry: Value = match serde_json::from_str(t) {
-            Ok(v) => v,
-            Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
-            Err(_) => continue,
+        let entry: Value = match parse_line(t) {
+            Line::Parsed(v) => v,
+            Line::Unsure => return Err(Unsure),
+            Line::Skip => continue,
         };
         // `entry.type` on a JSON `null` throws in JavaScript.
         if entry.is_null() {
@@ -245,8 +265,9 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                 Some(v) if truthy(v) && v.is_object() => v,
                 _ => &empty,
             };
-            if let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) {
-                let Value::String(tid) = id_v else { return Err(Unsure) };
+            // A tool-use id that is not a string (a number or a boolean) is a Map key no tool_result can match: it is recorded for no
+            // call (the lookup is by the result's string id) and a TaskCreate under it lives under `String(id)`.
+            if let Some(Value::String(tid)) = get(tu, "id").filter(|v| truthy(v)) {
                 let task_id = match defaults::list("taskstate.id_keys").iter().find_map(|k| get(inp0, k).filter(|v| !v.is_null())) {
                     Some(v) => Some(scalar_string(v)?),
                     None => None,
@@ -281,7 +302,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                     id: id.clone(),
                                     content,
                                     description: String::new(),
-                                    status: Some(truthy_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
+                                    status: Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
                                     owner: norm_owner(get(todo, "owner")),
                                     blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
                                     blocked_on: if guard { todo_blocked_on(todo) } else { None },
@@ -297,11 +318,17 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                 }
                 "TaskCreate" => {
                     let inp = inp0;
-                    let Some(Value::String(tid)) = get(tu, "id").filter(|v| truthy(v)) else {
+                    let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) else {
                         // `if (tid)`: a create without an id is never recorded.
                         continue;
                     };
-                    let tid_v = Value::String(tid.clone());
+                    let (tid, tid_v) = match id_v {
+                        Value::String(s) => (s.clone(), id_v.clone()),
+                        // a number or boolean id: its own Map key (distinct from the same text as a string), the task key `String(id)`
+                        Value::Number(_) | Value::Bool(_) => (format!("{NON_STRING_ID}{}", scalar_string(id_v)?), id_v.clone()),
+                        _ => return Err(Unsure),
+                    };
+                    let tid = &tid;
                     let content_v =
                         first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v);
                     let rec = Prov {
@@ -310,7 +337,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             Some(Value::String(s)) if variant == Variant::State => s.clone(),
                             _ => String::new(),
                         },
-                        status: truthy_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
+                        status: kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
                         owner: norm_owner(get(inp, "owner")),
                         blocked_by: norm_blocked_by(get(inp, "blockedBy"))?,
                         blocked_on: create_blocked_on(inp),
@@ -326,14 +353,15 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                     let inp = inp0;
                     let Some(id) = update_id(inp)? else { continue };
                     let ex = tasks.get(&id).cloned().unwrap_or_else(|| Task::unseen(&id));
-                    let status = match truthy_status(get(inp, "status"))? {
+                    let status = match kept_status(get(inp, "status"))? {
                         Some(s) => Some(s),
                         None => ex.status.clone(),
                     };
                     let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
                     let upd = Task {
                         id: ex.id.clone(),
-                        content: if variant == Variant::State { subject.map_or_else(|| ex.content.clone(), str::to_string) } else { ex.content.clone() },
+                        // a rename counts in both variants: a task is listed by its current subject, not the one it was created with
+                        content: subject.map_or_else(|| ex.content.clone(), str::to_string),
                         description: if variant == Variant::State {
                             match get(inp, "description") {
                                 Some(Value::String(s)) => s.clone(),
@@ -351,14 +379,11 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             true => ex.priority.clone(),
                             false => None,
                         },
-                        subject_updated: if variant == Variant::State && subject.is_some() { true } else { variant == Variant::State && ex.subject_updated },
+                        subject_updated: subject.is_some() || ex.subject_updated,
                         unknown: gaps_after_update(ex.unknown, inp),
                         block_unknown: false,
-                        // `String(inp.status || '')` against the pending / in-progress pattern; a truthy non-string status was refused above
-                        since: match get(inp, "status").and_then(Value::as_str) {
-                            Some(s) if guard && res().since_status.is_match(s) => since,
-                            _ => ex.since,
-                        },
+                        // `String(inp.status || '')` against the pending / in-progress pattern
+                        since: if guard && res().since_status.is_match(&status_text(get(inp, "status"))?) { since } else { ex.since },
                     };
                     tasks.set(&id, upd);
                 }
@@ -367,6 +392,10 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         }
     }
     resolve_provisional(&mut tasks, &prov, &result_ids, variant);
+    // a task that ends the scan with a non-string status: the Node code lowercases it and throws
+    if tasks.values().any(|t| is_non_string_status(t.status.as_deref())) {
+        return Err(Unsure);
+    }
     Ok(Facts { tasks, window_reset, first_created })
 }
 
@@ -375,10 +404,19 @@ fn todo_blocked_on(todo: &Value) -> Option<Value> {
     create_blocked_on(todo)
 }
 
+/// Marks a provisional key that came from a tool-use id that was not a string, so it never equals a string id of the same text (they are
+/// two Map keys in the Node code); the task key is the text after it.
+pub(super) const NON_STRING_ID: char = '\u{1}';
+
 /// The end-of-scan step: every TaskCreate gets the number its result named (or stays under its tool-use id).
 fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids: &[(String, String)], variant: Variant) {
     for (tid, rec) in prov {
-        let numeric = result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| tid.clone());
+        let numeric = result_ids
+            .iter()
+            .find(|(k, _)| k == tid)
+            .map(|(_, n)| n.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
         let key = numeric;
         let mut ex = tasks.get(&key).cloned();
         if let Some(e) = &ex
@@ -416,12 +454,13 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                 },
             ),
             (Variant::Guard, Some(e)) => {
-                if e.content.is_empty() || e.content == key {
+                if e.content.is_empty() || e.content == key || e.subject_updated {
                     tasks.set(
                         &key,
                         Task {
                             id: key.clone(),
-                            content: rec.content.clone(),
+                            // a subject an update set is newer than the create's
+                            content: if e.subject_updated { e.content.clone() } else { rec.content.clone() },
                             description: String::new(),
                             status: e.status.clone(),
                             owner: if e.owner.is_empty() { rec.owner.clone() } else { e.owner.clone() },

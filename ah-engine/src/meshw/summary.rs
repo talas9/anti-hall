@@ -5,7 +5,8 @@
 //! parent-inbox hook and the Stop gates read it. So the engine refreshes it too, byte for byte.
 //!
 //! Boundary (defer, never guess): every branch whose evidence the engine does not read is a [`Defer`] — an orphan
-//! partition with unread mail (its classification needs the archive gate and liveness ranking), a durable NDJSON inbox
+//! partition with unread mail that `meshw::orphan` cannot sort (the archive gate's liveness proof, the forwarded-drained
+//! proof), a durable NDJSON inbox
 //! with unread lines (the loss-free union count), a settings tier the engine cannot resolve. A verb calls [`check`]
 //! BEFORE it writes, so such a store is handed to Node whole; after its write it calls [`derive_after_write`], which can
 //! no longer hand anything to Node (that would write twice) and therefore logs a failure instead of returning it.
@@ -252,6 +253,12 @@ impl Cursors {
             Some(min) => baseline.max(min),
         })
     }
+}
+
+/// `floorCursor(store, id, home)` (a failed read is 0): the store-namespace floor of one partition.
+pub(crate) fn store_floor(st: &MeshStore, home: &Path, id: &str) -> f64 {
+    let mut cur = Cursors::new(home);
+    floor_of(st, &mut cur, home, id, false).unwrap_or(0.0)
 }
 
 /// `floorOf(store, partition, ns)`: the `#floor` reader-cursor row, else the legacy floor.
@@ -654,24 +661,38 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         }
         let total = st.reader().message_count(&d.id).or_else(|e| err("count", e))? as f64;
         let floor = floor_of(st, &mut cur, home, &d.id, false)?;
-        let cursor = floor;
+        // #181: the roster counts from the least-advanced LIVE reader of the partition (computed now, never the stored floor a dead
+        // reader can hold back), so no live reader's unread is hidden; a partition with no live reader row falls back to the floor
+        let owner = crate::meshw::union::live_base_of(&st.reader().reader_cursors(&d.id).or_else(|e| err("reader-cursors", e))?);
+        if owner.is_none() {
+            crate::metrics::bump("mesh_summary_owner_fallback", &[]);
+        }
+        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor);
         let mut unread = (total - cursor).max(0.0);
+        // unread rows the recipient's own family sent, when the union already counted them (the store-only path counts them below)
+        let mut own_unread: Option<usize> = None;
+        let family = recipient_family(&d.id, &rows);
         if d.inbox_path.is_some() || d.cursor_path.is_some() {
-            let nd_floor = floor_of(st, &mut cur, home, &d.id, true)?;
+            let nd_floor = match owner.as_ref().and_then(|o| o.nd) {
+                Some(v) => v,
+                None => floor_of(st, &mut cur, home, &d.id, true)?,
+            };
             let (known, lines) = ndjson_backlog(d.inbox_path.as_deref(), d.cursor_path.as_deref());
             if known && lines > nd_floor {
                 // the NDJSON side has unread lines: the summary counts the loss-free union at the floors (reader-cursors
                 // `countFor` with no reader), which `unionUnreadFor` reports when it is known
-                let u = crate::meshw::union::union_unread(&crate::meshw::union::UnionIn {
-                    inbox: d.inbox_path.as_deref(),
-                    cursor_file: d.cursor_path.as_deref(),
-                    id: &d.id,
-                    store: Some(st.reader()),
-                    store_base: floor,
-                    nd_base: nd_floor,
-                    now: inv.now,
-                })?;
-                unread = u.unread as f64;
+                let u = crate::meshw::union::unread_at(
+                    st.reader(),
+                    &d.id,
+                    d.inbox_path.as_deref(),
+                    d.cursor_path.as_deref(),
+                    (cursor, nd_floor),
+                    &family,
+                    inv.now,
+                )?;
+                crate::meshw::tick::note_own_excluded(&u);
+                unread = u.union.unread as f64;
+                own_unread = Some(u.own_excluded);
             }
         }
         let (gate_vals, gate_by) = {
@@ -758,7 +779,12 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             }
         }
         let bc_cursor = st.reader().broadcast_cursor(&d.id).or_else(|e| err("broadcast-cursor", e))? as f64;
-        let family = recipient_family(&d.id, &rows);
+        // directUnread: the unread direct mail without what the recipient's own identity family sent
+        let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
+        let direct_unread = (unread - own_unread as f64).max(0.0);
+        // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
+        let direct_from_others =
+            if family.is_empty() { total } else { st.reader().message_count_from_others(&d.id, &family).or_else(|e| err("count", e))? as f64 };
         let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
         let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
         let mut working_on = OVal::Null;
@@ -777,7 +803,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             ("total".into(), num(total)),
             ("cursor".into(), num(cursor)),
             ("unread".into(), num(unread)),
-            ("directUnread".into(), num(unread)),
+            ("directTotalFromOthers".into(), num(direct_from_others)),
+            ("directUnread".into(), num(direct_unread)),
             ("oldestDirectUnreadTs".into(), opt_num(oldest_ts)),
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),
             ("broadcastUnread".into(), n(unread_bc.len() as f64)),
@@ -911,25 +938,38 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             OVal::Obj(e)
         })
         .collect();
-    // orphans: a partition with unread mail and no live registry row. Classifying it (archived-stranded, forwarded-
-    // drained, held, plain) needs the archive gate and liveness ranking, which stay with Node.
+    // orphans: a partition with unread mail and no live registry row, sorted the way `computeSummary` does (archived-stranded,
+    // forwarded-drained, owner-held, plain). The archive gate's liveness proof and the forwarded-drained proof stay with Node.
     let mut candidates: Vec<String> = st.reader().workspace_ids();
     if let Some(t) = touched
         && !candidates.iter().any(|c| c == t)
     {
         candidates.push(t.to_string());
     }
+    let (mut orphans, mut stranded, mut held_out): (Vec<OVal>, Vec<OVal>, Vec<OVal>) = (Vec::new(), Vec::new(), Vec::new());
+    let mut sorter = crate::meshw::orphan::Classifier::new(home, rows.iter().filter_map(|r| r.worktree_path.clone()).filter(|w| !w.is_empty()).collect());
     for id in &candidates {
         if id == bpart || registry_ids.contains(id) || !is_safe_id(id) {
             continue;
         }
         let total = st.reader().message_count(id).or_else(|e| err("count", e))? as f64;
         let floor = floor_of(st, &mut cur, home, id, false)?;
-        if total - floor > 0.0 || touched == Some(id.as_str()) {
-            return defer("summary-orphan");
+        if touched == Some(id.as_str()) {
+            return defer("summary-orphan"); // the write would create an orphan
+        }
+        let unread = (total - floor).max(0.0);
+        if unread <= 0.0 {
+            continue;
+        }
+        let entry = OVal::Obj(vec![("id".into(), s(id)), ("messageCount".into(), n(total)), ("unread".into(), n(unread))]);
+        if sorter.classify(id)? == crate::meshw::orphan::Class::Stranded {
+            stranded.push(entry);
+        } else if held.contains(id) {
+            held_out.push(entry);
+        } else {
+            orphans.push(entry);
         }
     }
-    let _ = held; // held ids only divert orphans, and any orphan defers above
     let mut stale: Vec<OVal> = Vec::new();
     for d in &rows {
         if d.id == bpart || !is_safe_id(&d.id) || archived.contains(&d.id) {
@@ -953,6 +993,11 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         ("recent".into(), OVal::Arr(recent)),
         ("archivedRegistryRows".into(), OVal::Arr(archived_rows)),
     ];
+    for (key, list) in [("orphans", orphans), ("archivedStranded", stranded), ("heldPartitions", held_out)] {
+        if !list.is_empty() {
+            out.push((key.into(), OVal::Arr(list)));
+        }
+    }
     if !stale.is_empty() {
         out.push(("staleRegistryPartitions".into(), OVal::Arr(stale)));
     }
@@ -1031,5 +1076,60 @@ mod tests {
         assert!(cross_linked("x", None, "y", Some("x")));
         assert!(!cross_linked("x", Some("x"), "x", None));
         assert!(!cross_linked("x", None, "y", None));
+    }
+
+    /// A scratch store holding workspace "X" with three directs from "other", `#floor` at 1 and the given store reader rows
+    /// `(reader, position, retired_line)`; the summary row of X.
+    fn summary_row_of_x(tag: &str, readers: &[(&str, i64, Option<i64>)]) -> (i64, i64) {
+        use crate::meshw::store::{CursorPut, RegistryRow};
+        let dir = std::env::temp_dir().join(format!("ah-summary-owner-{}-{tag}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        for i in 0..3 {
+            st.append_message_from("X", 1_700_000_000_000 + i, Some(&format!("h{i}")), "m", Some("other")).unwrap();
+        }
+        let put = |ns: &str, reader: &str, value: i64, retired_line: Option<i64>| CursorPut {
+            partition: "X".into(),
+            ns: ns.into(),
+            reader: reader.into(),
+            value,
+            retired_line: retired_line.map(Some),
+            updated_at: 1,
+        };
+        let mut puts = vec![put("store", "#floor", 1, None), put("nd", "#floor", 0, None)];
+        puts.extend(readers.iter().map(|(r, v, line)| put("store", r, *v, *line)));
+        st.reader_cursor_txn(&puts).unwrap();
+        let inv = Inv {
+            home: dir.clone(),
+            env: HashMap::new(),
+            cwd: dir.to_string_lossy().into_owned(),
+            now: 1_700_000_100_000,
+            stdin: None,
+            write_home: dir.clone(),
+            store_override: None,
+        };
+        let sum = compute(&st, &inv, None).unwrap();
+        let w = sum.get("workspaces").and_then(|w| w.get("X")).expect("X is in the summary").clone();
+        let num = |k: &str| match w.get(k) {
+            Some(OVal::Num(x)) => *x as i64,
+            _ => panic!("{k} is no number"),
+        };
+        let got = (num("unread"), num("cursor"));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+        got
+    }
+
+    #[test]
+    fn the_roster_counts_from_the_least_advanced_live_reader_never_a_dead_ones_floor() {
+        // #181: 3 messages, stored `#floor` 1 held by a RETIRED reader, the live reader X read all 3: no phantom unread
+        assert_eq!(summary_row_of_x("dead", &[("h:1:1", 3, None), ("h:2:2", 1, Some(1))]), (0, 3));
+        // two LIVE readers at 3 and 1: the lagging one's 2 unread are not hidden
+        assert_eq!(summary_row_of_x("live", &[("h:1:1", 3, None), ("h:2:2", 1, None)]), (2, 1));
+        // no reader row: the floor is the fallback
+        assert_eq!(summary_row_of_x("floor", &[]), (2, 1));
     }
 }

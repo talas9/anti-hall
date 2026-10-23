@@ -5,11 +5,26 @@
 // state file. A silent agent not yet nudged for this snapshot and not covered by the once-per-agent cap is nudged: the state is
 // written (after the reply is delivered) and the Stop is blocked, unless the host already registered a newer plugin version than
 // the one running (stop-version-gate: nothing said, nothing written) or this exact set of agents was acked for the session
-// (stop-ack: state written, nothing said). Anything this script cannot reproduce exactly defers BEFORE a write. Keys and texts:
-// agent_controls.toml (silent_nudge.*, agent_scan.*).
+// (stop-ack: state written, nothing said). Every Stop is decided here: a relative HOME, transcript or output path resolves against the stand-in
+// directory (hookProc); an input the interpreter cannot read as V8 does is counted and logged (silent_nudge.unsure_log_kind) and read
+// the way that never says less than Node: the state or ack file over the read cap or too deep to parse is read as no state and no ack
+// (every silent agent counts as not yet nudged and not acked), a heartbeat file too deep to parse is no heartbeat (one whose text is
+// not a JSON object Node skips too), and a transcript tail the scan cannot read exactly adds no transcript agents while the heartbeats
+// are still judged. Keys and texts: agent_controls.toml (silent_nudge.*, agent_scan.*).
 'use strict';
 
 function snNum(v) { return typeof v === 'number' && isFinite(v); }
+
+// Log and count (native_unable) an input this script cannot read exactly as Node does. Returns true; the caller reads the input the
+// way that never says less than Node (see the header).
+function snUnsure(why) {
+  ah.unable('silent-agent-nudge:' + why);
+  ah.log(ah.cfg('silent_nudge.unsure_log_kind'), why);
+  return true;
+}
+
+// A JSON array member of the state read the way Node's Object.keys reads it: an object keyed by the indices.
+function snIndexObj(a) { var o = {}; for (var i = 0; i < a.length; i++) o[String(i)] = a[i]; return o; }
 
 // `Number(v)` of a stored time, NaN where JavaScript gives NaN.
 function snNumber(v) { return v === null ? 0 : Number(v); }
@@ -26,9 +41,10 @@ function snFromOtherSession(outputFile, session) {
 function snCandidates(p, home, now, threshold, session) {
   var out = [], transcript = typeof p.transcript_path === 'string' ? p.transcript_path : '';
   if (transcript) {
+    transcript = hookProc.open(p, transcript); // Node reads a relative path from its own directory, the payload's cwd
     var scan = ah.transcript.agentScan(transcript, ah.cfgNum('silent_nudge.scan_bytes'));
+    if (scan !== null && scan.unsure) { snUnsure('transcript'); scan = null; } // no transcript agents; the heartbeats are still judged
     if (scan !== null) {
-      if (scan.unsure) return null;
       var terminal = {};
       scan.terminal.forEach(function (id) { terminal[id] = true; });
       for (var i = 0; i < scan.launched.length; i++) {
@@ -36,9 +52,8 @@ function snCandidates(p, home, now, threshold, session) {
         if (terminal[id] === true || rec.pendingMessage) continue;
         if (snFromOtherSession(rec.outputFile, session)) continue; // a previous session's agent, not ours
         var reference = NaN, snapshot = ah.cfg('silent_nudge.missing'), missing = true;
-        if (rec.outputFile && rec.outputFile.charAt(0) !== '/') return null;
         if (rec.outputFile) {
-          var m = ah.fs.mtimeMs(rec.outputFile);
+          var m = ah.fs.mtimeMs(hookProc.open(p, rec.outputFile));
           if (m !== null) { reference = m; snapshot = String(Math.floor(m)); missing = false; }
         }
         if (missing) {
@@ -46,18 +61,22 @@ function snCandidates(p, home, now, threshold, session) {
           reference = snNum(rec.launchedAtMs) ? rec.launchedAtMs : 0;
           snapshot = ah.cfg('silent_nudge.missing');
         }
-        if (id.indexOf('/') >= 0 || id.indexOf('..') >= 0) return null;
         var dir = transcript.replace(/\/+$/, ''), cut = dir.lastIndexOf('/');
         var base = dir.slice(cut + 1), parent = cut === 0 ? '/' : (cut < 0 ? '.' : dir.slice(0, cut));
         var ext = ah.cfg('agent_scan.transcript_ext');
         if (base.length > ext.length && base.slice(-ext.length) === ext) base = base.slice(0, -ext.length);
-        var side = ah.fs.mtimeMs(parent + '/' + base + '/' + ah.cfg('agent_scan.subagents_dir') + '/' + ah.cfg('silent_nudge.sidechain_file_prefix') + id + ext);
+        // path.join: an id holding '/' or '..' is normalized the way Node joins it
+        var side = ah.fs.mtimeMs(ah.path.resolveAbs(parent + '/' + base + '/' + ah.cfg('agent_scan.subagents_dir') + '/' + ah.cfg('silent_nudge.sidechain_file_prefix') + id + ext));
         if (side !== null && side > reference) reference = side;
         if (snNum(rec.lastSeenMs) && rec.lastSeenMs > reference) reference = rec.lastSeenMs;
         var resumed = snNum(rec.resumedAtMs) ? rec.resumedAtMs : 0;
         if (resumed > reference) reference = resumed;
         if (resumed !== 0) snapshot = snapshot + ah.cfg('silent_nudge.resume_mark') + String(resumed);
         if (now - reference < threshold) continue;
+        var staleMax = ah.cfgNum('silent_nudge.stale_max_ms');
+        if (staleMax > 0 && now - reference >= staleMax) continue; // a record this old outlived its agent
+        var isShell = rec.taskType === ah.cfg('silent_nudge.shell_task_type');
+        if (isShell && jx.re('silent_nudge.daemon_re', 'i').test(rec.description || '')) continue; // a daemon is quiet by design
         out.push({ key: ah.cfg('silent_nudge.key_transcript') + id, id: id, resumedAt: resumed, snapshot: snapshot, label: rec.description ? rec.description : id, age: now - reference, shell: rec.taskType === ah.cfg('silent_nudge.shell_task_type') });
       }
     }
@@ -72,7 +91,7 @@ function snCandidates(p, home, now, threshold, session) {
     var txt = ah.fs.readText(home + '/' + ah.cfg('silent_nudge.agents_dir') + '/' + f);
     if (txt === null) continue;
     var r = jx.parse(txt);
-    if (r.unsure) return null;
+    if (r.unsure) { snUnsure('heartbeat'); continue; } // too deep for the interpreter: read as no heartbeat
     if (r.invalid || !jx.isObj(r.v)) continue;
     var d = r.v;
     if (typeof d.id !== 'string' || !d.id || typeof d.status !== 'string') continue;
@@ -83,29 +102,29 @@ function snCandidates(p, home, now, threshold, session) {
     var status = d.status.trim().toLowerCase();
     if (finished.some(function (w) { return w.toLowerCase() === status; })) continue;
     if (now - ts < threshold) continue;
-    if (ts !== Math.trunc(ts) || Math.abs(ts) >= ah.cfgNum('agent_scan.safe_int')) return null;
+    if (ah.cfgNum('silent_nudge.stale_max_ms') > 0 && now - ts >= ah.cfgNum('silent_nudge.stale_max_ms')) continue; // a heartbeat this old outlived its agent
     out.push({ key: ah.cfg('silent_nudge.key_heartbeat') + d.id, id: d.id, resumedAt: 0, snapshot: String(ts), label: typeof d.step === 'string' && d.step ? d.step : d.id, age: now - ts, shell: false });
   }
   return out;
 }
 
-// {nudged: {key: snapshot}, ever: {key: time}} of the state file; null to defer (an array member: JavaScript reads its indices as keys).
+// {nudged: {key: snapshot}, ever: {key: time}} of the state file (an array member: JavaScript reads its indices as keys). A file the
+// interpreter cannot read as Node reads it (over the read cap, too deep to parse) is read as no state: every silent agent counts as
+// not yet nudged, so the answer never says less than Node's, and the rewritten state replaces it.
 function snState(path) {
   var empty = { nudged: {}, ever: {} };
   var f = jx.read(path);
-  if (f.big) return null;
+  if (f.big) { snUnsure('state_big'); return empty; }
   if (f.text === undefined) return empty;
   var r = jx.parse(f.text);
-  if (r.unsure) return null;
+  if (r.unsure) { snUnsure('state_parse'); return empty; }
   if (r.invalid || !jx.isObj(r.v)) return empty;
   var out = {};
   var keys = ['nudged', 'ever'];
   for (var i = 0; i < 2; i++) {
     var m = r.v[ah.cfg('silent_nudge.' + (i === 0 ? 'nudged_key' : 'ever_key'))];
-    if (Array.isArray(m)) return null;
-    if (jx.isObj(m)) {
-      for (var k in m) if (/^(0|[1-9][0-9]*)$/.test(k) && Number(k) < 4294967295) return null; // JavaScript orders index-like keys first
-    }
+    if (Array.isArray(m)) m = snIndexObj(m);
+    // an index-like key is ordered first by both interpreters (ordinary own property keys), so the rewritten state matches Node
     out[keys[i]] = jx.isObj(m) ? m : {};
   }
   return out;
@@ -114,8 +133,8 @@ function snState(path) {
 function snOneLine(s, max) {
   var o = jx.replaceAll(ah.cfg('silent_nudge.control_re'), '', s, ' ').replace(/\s+/g, ' ').trim();
   if (o.length > max) {
-    var cut = o.slice(0, max), last = cut.charCodeAt(cut.length - 1);
-    if (last >= 0xd800 && last <= 0xdbff) return null; // a cut through a surrogate pair
+    // a cut through a surrogate pair keeps the lone high half, as Node does (JSON.stringify writes it as the ASCII escape \ud83d)
+    var cut = o.slice(0, max);
     return cut.replace(/\s+$/, '') + ah.cfg('silent_nudge.ellipsis');
   }
   return o;
@@ -141,8 +160,8 @@ function snStuckAdvisory(p) {
   var session = typeof p.session_id === 'string' ? p.session_id : '';
   var minutes = Math.max(1, ah.settings.num('procwatch.stuck_minutes'));
   var now = ah.clock.now();
-  // a transcript or heartbeat this scan cannot read exactly is no warning (the Stop nudge defers for it; an advisory stays quiet)
-  var cands = snCandidates(p, home, now, minutes * 60000, session);
+  // a transcript tail this scan cannot read exactly adds no agents and a heartbeat it cannot parse is none (no Node twin to defer to)
+  var cands = snCandidates(p, home, now, minutes * 60000, session, false);
   if (cands === null || cands.length === 0) return 'allow';
   var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + ah.cfg('procwatch.stuck_state_file');
   var nowS = Math.floor(now / 1000), last = {};
@@ -167,11 +186,16 @@ function snStuckAdvisory(p) {
   return { advisory: text.advisoryJson(ah.cfg('procwatch.stuck_event'), msg) };
 }
 
-function decide(p, opts) {
+function decide(p, opts) { return snDecide(p, opts); }
+
+function snDecide(p, opts) {
   if (ah.env.get(ah.cfg('silent_nudge.judge_child_env')) === ah.cfg('silent_nudge.judge_child_value')) return 'allow';
   if (p !== null && typeof p === 'object' && p[ah.cfg('procwatch.f_event')] === ah.cfg('procwatch.stuck_event')) return snStuckAdvisory(p);
-  var home = ah.env.get(ah.cfg('env.home'));
-  if (!home || home.charAt(0) !== '/') return 'defer';
+  // Node: HOME || USERPROFILE (an empty one falls through), and no nudge without either. A relative one names a directory of the hook
+  // process's own: it resolves against the stand-in directory (counted).
+  var home = ah.env.get(ah.cfg('env.home')) || ah.env.get(ah.cfg('silent_nudge.home_fallback_env'));
+  if (!home) return 'allow';
+  if (home.charAt(0) !== '/') { snUnsure('relative_home'); home = ah.path.resolveAbs(hookProc.base() + '/' + home); }
   if (!ah.settings.bool('silent_nudge.setting')) return 'allow';
   var guard = ah.cfg('silent_nudge.guard_name');
   if (ah.settings.skipped(guard)) return 'allow';
@@ -180,12 +204,11 @@ function decide(p, opts) {
   var minutes = ah.settings.num('silent_nudge.min_setting');
   if (!isFinite(minutes) || minutes < 1) minutes = ah.cfgNum('silent_nudge.min_default');
   var threshold = minutes * 60000, now = ah.clock.now();
-  var candidates = snCandidates(p, home, now, threshold, session);
-  if (candidates === null) return 'defer';
-  if (candidates.length === 0) return 'allow';
+  var candidates = snCandidates(p, home, now, threshold, session, true);
+  if (candidates === null || candidates.length === 0) return 'allow';
   var stateRel = ah.cfg('silent_nudge.state_file');
   var state = snState(home + '/' + stateRel);
-  if (state === null) return 'defer';
+  if (state === null) return 'allow';
 
   var live = {};
   candidates.forEach(function (c) { live[c.key] = true; });
@@ -197,46 +220,44 @@ function decide(p, opts) {
   function everKey(c) { return session + ah.cfg('silent_nudge.ever_sep') + c.id + (c.resumedAt !== 0 ? ah.cfg('silent_nudge.resume_mark') + String(c.resumedAt) : ''); }
   var toNudge = stale.filter(function (c) { return !session || !Object.prototype.hasOwnProperty.call(nextEver, everKey(c)); });
   function render() {
-    for (var nk in nextNudged) if (typeof nextNudged[nk] !== 'string') return null;
-    for (var ek in nextEver) if (nextEver[ek] !== Math.trunc(nextEver[ek]) || Math.abs(nextEver[ek]) >= ah.cfgNum('agent_scan.safe_int')) return null;
     var o = {}; o[ah.cfg('silent_nudge.nudged_key')] = nextNudged; o[ah.cfg('silent_nudge.ever_key')] = nextEver;
     return JSON.stringify(o);
   }
   if (toNudge.length === 0) {
     stale.forEach(function (c) { nextNudged[c.key] = c.snapshot; });
-    var quiet = render();
-    if (quiet === null) return 'defer';
-    ah.state.op(home, 'after_reply', stateRel, quiet);
+    ah.state.op(home, 'after_reply', stateRel, render());
     return 'allow';
   }
 
   // stale-build downgrade: a newer version is already registered than the running plugin; say nothing, keep the state as it was
-  // the rule's plugin_root option, else the engine's variable for it; empty is unknown (Node judges against its own install directory)
+  // the rule's plugin_root option, else the engine's variable for it. Unreadable versions: no newer build is known to be waiting,
+  // so the gate passes and the nudge is said (Node's answer whenever its own install is the newest)
   var root = opts !== null && typeof opts === 'object' && typeof opts.plugin_root === 'string' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root')) || '';
-  if (!root) return 'defer';
-  if (ah.settings.bool('silent_nudge.version_gate_setting')) {
+  // no root to judge by: Node judges against its own install directory and may stay quiet; the gate passes and the nudge is said (counted)
+  if (!root && ah.settings.bool('silent_nudge.version_gate_setting')) snUnsure('no_plugin_root');
+  if (root && ah.settings.bool('silent_nudge.version_gate_setting')) {
     var v = ah.plugin.versions(root);
-    if (v.unsure) return 'defer';
-    if (v.registered && v.running && jx.isSemver(v.registered) && jx.isSemver(v.running) && jx.cmpVersions(v.running, v.registered) < 0) return 'allow';
+    if (v.unsure) ah.log(ah.cfg('silent_nudge.unsure_log_kind'), 'plugin_versions');
+    if (!v.unsure && v.registered && v.running && jx.isSemver(v.registered) && jx.isSemver(v.running) && jx.cmpVersions(v.running, v.registered) < 0) return 'allow';
   }
   stale.forEach(function (c) { nextNudged[c.key] = c.snapshot; });
   var seen = {}, shown = toNudge.filter(function (c) { if (seen[c.id]) return false; seen[c.id] = true; return true; });
   if (session) shown.forEach(function (c) { nextEver[everKey(c)] = now; });
   var stateText = render();
-  if (stateText === null) return 'defer';
   var max = ah.cfgNum('silent_nudge.label_max'), labels = [];
-  for (var i = 0; i < shown.length; i++) { var l = snOneLine(shown[i].label, max); if (l === null) return 'defer'; labels.push(l); }
+  for (var i = 0; i < shown.length; i++) labels.push(snOneLine(shown[i].label, max));
   var ids = shown.map(function (c) { return c.id; }).sort();
   var signature = ah.sha1(ids.join(ah.cfg('silent_nudge.ack_subject_sep'))).slice(0, ah.cfgNum('silent_nudge.signature_len'));
   var ackKey = guard + ah.cfg('silent_nudge.ack_sep') + signature;
   var acked = false;
   if (session && ah.settings.bool('silent_nudge.ack_setting')) {
     var a = jx.read(snAckPath(home, session));
-    if (a.big) return 'defer';
-    if (a.text !== undefined) {
+    // an ack file the interpreter cannot read as Node reads it is no ack: the nudge is said (never less than Node)
+    if (a.big) snUnsure('ack_big');
+    else if (a.text !== undefined) {
       var ar = jx.parse(a.text);
-      if (ar.unsure) return 'defer';
-      acked = !ar.invalid && jx.isObj(ar.v) && snNum(ar.v[ackKey]) && ar.v[ackKey] > 0;
+      if (ar.unsure) snUnsure('ack_parse');
+      acked = !ar.invalid && !ar.unsure && jx.isObj(ar.v) && snNum(ar.v[ackKey]) && ar.v[ackKey] > 0;
     }
   }
   ah.state.op(home, 'after_reply', stateRel, stateText);

@@ -194,6 +194,13 @@ fn kill_9_mid_burst_never_loses_an_acknowledged_write_or_half_applies_one() {
                 std::thread::spawn(move || burst(&d, lp, t, stop, seen))
             })
             .collect();
+        // Let the bursts get a first write acknowledged before the kill: on a loaded machine the first 2-32 ms can pass with nothing
+        // acknowledged yet, which only starves the check below of writes (measured: 4 of 10 runs under load acknowledged 16-46 writes
+        // in total, none lost). Bounded, and the kill still lands inside the bursts.
+        let first_ack = Instant::now();
+        while first_ack.elapsed() < Duration::from_secs(5) && !seen.iter().any(|s| !s.lock().unwrap().puts_acked.is_empty()) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;

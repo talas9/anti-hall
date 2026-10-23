@@ -285,6 +285,105 @@ fn a_hung_subagent_is_reported_to_the_session_that_launched_it() {
     assert!(queue(&h, "abc").is_empty(), "hung is not routed to the hung agent itself");
 }
 
+fn notice(ts: u64, id: &str, status: &str) -> String {
+    let body = format!("<task-notification>\n<task-id>{id}</task-id>\n<status>{status}</status>\n</task-notification>");
+    json!({"type": "user", "timestamp": iso(ts), "message": {"role": "user", "content": body}}).to_string()
+}
+
+#[test]
+fn a_stopped_subagent_is_done_not_hung_and_a_live_one_still_is() {
+    let h = home("stopped");
+    let n = now0();
+    write(&sess(&h, "parent"), &[prompt(n - 60 * MIN, "/w"), notice(n - 30 * MIN, "abc", "killed")]);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    for id in ["abc", "def"] {
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
+    }
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "a killed agent is done");
+    assert_eq!(signals::state_of(agent(&st, "def")), "running", "an agent nothing ended is still tracked as running");
+    let hung: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "hung").collect();
+    assert!(hung.iter().all(|r| !r["text"].as_str().unwrap().contains("abc")), "no hung reminder about the stopped agent: {hung:?}");
+    assert!(hung.iter().any(|r| r["text"].as_str().unwrap().contains("def")), "the true positive still fires: {hung:?}");
+}
+
+/// #177: a subagent the coordinator stopped with `TaskStop` (a tool call answered by its result, no completion notice) is done,
+/// not hung; an unanswered stop does not end it, and a stop naming another task leaves it running.
+#[test]
+fn a_subagent_stopped_with_task_stop_is_done_not_hung() {
+    let h = home("taskstop");
+    let n = now0();
+    write(
+        &sess(&h, "parent"),
+        &[
+            prompt(n - 60 * MIN, "/w"),
+            tool(n - 30 * MIN, "p1", 5, "toolu_stop1", "TaskStop", json!({"task_id": "abc"})),
+            result(n - 30 * MIN + 1000, "toolu_stop1", "Successfully stopped task: abc (Docs-drift review)", false),
+            tool(n - 29 * MIN, "p2", 5, "toolu_stop2", "TaskStop", json!({"task_id": "ghi"})),
+        ],
+    );
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    for id in ["abc", "def", "ghi"] {
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
+    }
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "an answered TaskStop ends the agent");
+    assert_eq!(signals::state_of(agent(&st, "def")), "running", "nothing ended it");
+    assert_eq!(signals::state_of(agent(&st, "ghi")), "running", "a stop with no result yet is not a kill");
+    let hung: Vec<Value> = queue(&h, "parent").into_iter().filter(|r| r["signal"] == "hung").collect();
+    assert!(hung.iter().all(|r| !r["text"].as_str().unwrap().contains("abc")), "no hung reminder about the stopped agent: {hung:?}");
+}
+
+/// A teammate is stopped by NAME (`TaskStop {"task_id":"W3"}`); the tool answers with another task id, or "No task found" when it was
+/// already gone. The tracked subagent is the transcript `agent-<agent_id>`: both stops must end it; a stop issued before a respawn
+/// of the same name must not end the new agent.
+#[test]
+fn a_teammate_stopped_by_name_is_done_not_hung() {
+    let h = home("stopname");
+    let n = now0();
+    let spawn = |ts: u64, tuid: &str, name: &str, aid: &str| {
+        json!({"type": "user", "timestamp": iso(ts), "toolUseResult": {"status": "teammate_spawned", "name": name, "agent_id": aid},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tuid, "content": "Spawned successfully."}]}})
+        .to_string()
+    };
+    write(
+        &sess(&h, "parent"),
+        &[
+            prompt(n - 80 * MIN, "/w"),
+            tool(n - 70 * MIN, "p0", 5, "toolu_a1", "Agent", json!({"name": "W3"})),
+            spawn(n - 70 * MIN + 1000, "toolu_a1", "W3", "aw3-1111"),
+            tool(n - 69 * MIN, "p1", 5, "toolu_a2", "Agent", json!({"name": "live31"})),
+            spawn(n - 69 * MIN + 1000, "toolu_a2", "live31", "alive31-2222"),
+            tool(n - 68 * MIN, "p2", 5, "toolu_a3", "Agent", json!({"name": "W4"})),
+            spawn(n - 68 * MIN + 1000, "toolu_a3", "W4", "aw4-3333"),
+            tool(n - 30 * MIN, "p3", 5, "toolu_s1", "TaskStop", json!({"task_id": "W3"})),
+            result(n - 30 * MIN + 1000, "toolu_s1", "{\"message\":\"Successfully stopped task: t9xu321q2 (x)\",\"task_id\":\"t9xu321q2\"}", false),
+            tool(n - 29 * MIN, "p4", 5, "toolu_s2", "TaskStop", json!({"task_id": "live31"})),
+            result(n - 29 * MIN + 1000, "toolu_s2", "<tool_use_error>No task found with ID: live31</tool_use_error>", true),
+        ],
+    );
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    for id in ["aw3-1111", "alive31-2222", "aw4-3333"] {
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
+    }
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "aw3-1111")), "done", "stopped by name, answered with another task id");
+    assert_eq!(signals::state_of(agent(&st, "alive31-2222")), "done", "stopped by name, task already gone");
+    assert_eq!(signals::state_of(agent(&st, "aw4-3333")), "running", "never stopped");
+}
+
 // ---- wake paths ---------------------------------------------------------------------------------------------
 
 fn parent_with_bg(h: &Path, n: u64, arm: Option<Value>) {
@@ -351,7 +450,7 @@ fn outbox(h: &Path) -> Vec<Value> {
 }
 
 #[test]
-fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_over_the_mesh() {
+fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_session_queue_and_the_mesh() {
     let h = home("ws-stale");
     let n = now0();
     devswarm(&h, n, Some(n - 10 * MIN));
@@ -375,8 +474,13 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_over_the_
     let rows = outbox(&h);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!((rows[0]["workspace"].as_str(), rows[0]["to_parent"].as_bool()), (Some("ws1"), Some(false)));
-    assert!(rows[0]["text"].as_str().unwrap().contains("node /plug/companion/lib/devswarm-wake-watch.js"), "{rows:?}");
-    assert!(queue(&h, "sessW").is_empty(), "a workspace is not reached through a session queue");
+    assert!(rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT=\"/plug\"") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
+    assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
+    // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
+    // delivery that reaches it; it is a session, and its hook delivers the queue
+    let q = queue(&h, "sessW");
+    assert_eq!(q.len(), 1, "{q:?}");
+    assert!(q[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto") && !q[0]["text"].as_str().unwrap().contains("node "), "{q:?}");
 }
 
 #[test]
@@ -389,6 +493,21 @@ fn a_workspace_with_a_fresh_live_wake_watch_is_quiet() {
     assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(true));
     assert!(agent(&st, "sessW").flags.is_empty());
     assert!(outbox(&h).is_empty());
+}
+
+#[test]
+fn a_workspace_is_armed_by_a_live_lock_of_another_row_on_its_checkout() {
+    // #181: the Monitor armed under a sibling row id of the same checkout still covers ws1 (the check `inbox tick` makes)
+    let h = home("ws-armed-by-checkout");
+    let n = now0();
+    devswarm(&h, n, None);
+    let d = h.join(".anti-hall/devswarm");
+    std::fs::write(d.join("workspaces/ws2.json"), r#"{"id":"ws2","sessionId":"sessW2","worktreePath":"/wt/x"}"#).unwrap();
+    std::fs::write(d.join("locks/wake-watch-ws2.lock"), json!({"ts": n, "pid": std::process::id()}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(true));
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"));
 }
 
 #[test]
@@ -421,39 +540,15 @@ fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_
     assert!(q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
 }
 
-#[test]
-fn the_heartbeat_rule_agrees_with_the_node_watchdog_on_running_agents() {
-    let Ok(node) = std::process::Command::new("node").arg("--version").output() else { return };
-    if !node.status.success() {
-        return;
-    }
-    let h = home("witness");
-    let n = now0();
-    let hb = h.join(".anti-hall/agents");
-    std::fs::create_dir_all(&hb).unwrap();
-    for (id, age) in [("old", 30 * MIN), ("fresh", MIN), ("older", 90 * MIN)] {
-        std::fs::write(hb.join(format!("{id}.json")), json!({"id": id, "ts": n - age, "status": "running"}).to_string()).unwrap();
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks/agent-watchdog.js");
-    let out = std::process::Command::new("node").arg(root).arg(lim("heartbeat_stale_ms").to_string()).env("HOME", &h).output().unwrap();
-    let mut node_ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("STALE "))
-        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
-        .collect();
-    node_ids.sort();
-    let mut st = State::default();
-    tick(&env(&h, n), &mut st);
-    let mut ours: Vec<String> = st.agents.values().filter(|a| a.flags.contains_key("heartbeat_stale")).map(|a| a.name.clone()).collect();
-    ours.sort();
-    assert_eq!(ours, node_ids, "the engine and the Node watchdog flag the same running heartbeats");
-}
-
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
+
+/// The injected clock of the cooldown, cap and outcome tests: noon UTC of a fixed day, so the day bucket (`now_ms / day_ms`) of the
+/// later ticks never depends on the time of day the suite runs at (it used to split within 40 minutes before 00:00 UTC).
+const HUNG_CLOCK_MS: u64 = 1_768_478_400_000;
 
 fn hung_home(tag: &str) -> (PathBuf, u64, PathBuf) {
     let h = home(tag);
-    let n = now0();
+    let n = HUNG_CLOCK_MS;
     let p = sess(&h, "s1");
     write(&p, &[prompt(n - 60 * MIN, "/w"), asst(n - 55 * MIN, "m1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
     (h, n, p)
@@ -550,7 +645,13 @@ fn the_hook_check_delivers_queued_reminders_once_and_the_tick_sees_the_delivery(
     let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1"});
     let first = crate::script::run_forced("agent-reminders", &payload, &Value::Null, "UserPromptSubmit", &renv).expect("a shipped script").expect("a verdict");
     match first {
-        crate::checks::Verdict::Advisory(j) => assert!(j.contains("no output"), "{j}"),
+        crate::checks::Verdict::Advisory(j) => {
+            // the advisory is the hook's stdout line: a JSON object the dispatcher can combine with other hooks' answers, not plain text
+            let v = crate::dispatch::combine::parse_object(&j).unwrap_or_else(|| panic!("an advisory is a JSON object: {j}"));
+            let ctx = crate::dispatch::combine::context_of(&j).expect("the reminders ride in additionalContext");
+            assert!(ctx.contains("no output"), "{ctx}");
+            assert!(v.to_json().contains("\"hookEventName\":\"UserPromptSubmit\""), "{j}");
+        }
         other => panic!("expected an advisory, got {other:?}"),
     }
     let second = crate::script::run_forced("agent-reminders", &payload, &Value::Null, "PostToolUse", &renv).expect("a shipped script").expect("a verdict");
@@ -643,8 +744,9 @@ fn the_cli_listing_settles_busy_waiting_and_gone_and_a_broken_cli_falls_back_to_
     let var = defaults::env_name("claude_bin");
     let good = fake_claude(
         &h,
-        "case \"$1\" in --version) echo '2.1.295 (Claude Code)';; agents) echo '[{\"sessionId\":\"s1\",\"kind\":\"interactive\",\"status\":\"waiting\"}]';; esac",
+        "case \"$1\" in --version) echo '2.1.295 (Claude Code)';; agents) echo x >> \"$0.count\"; echo '[{\"sessionId\":\"s1\",\"kind\":\"interactive\",\"status\":\"waiting\"}]';; esac",
     );
+    let listings = || std::fs::read_to_string(format!("{}.count", good.display())).map_or(0, |t| t.lines().count());
     // SAFETY: only this test sets the variable; the other tests run with the CLI source off and never read it.
     unsafe { std::env::set_var(var, &good) };
     let mut e = env(&h, n);
@@ -655,6 +757,24 @@ fn the_cli_listing_settles_busy_waiting_and_gone_and_a_broken_cli_falls_back_to_
     assert!(agent(&st, "s1").flags.is_empty(), "the host says s1 waits for input: silent is not hung");
     assert_eq!(state::of(agent(&st, "s1")), state_name("waiting"));
     assert!(agent(&st, "s2").gone && agent(&st, "s2").flags.is_empty(), "a session the host no longer lists has no process");
+    // between listings the host's answer is kept, not asked for again at every tick (one heavy process a minute otherwise)
+    let base = listings(); // the first tick asks twice: once to probe the capability, once to list
+    let ttl = lim("cli_list_ttl_ms");
+    let mut e2 = env(&h, n + ttl / 5);
+    e2.use_cli = true;
+    let l = tick(&e2, &mut st);
+    assert_eq!(listings(), base, "inside the listing ttl the CLI is not asked");
+    assert!(l.cli_used, "the kept listing still counts as used");
+    assert!(agent(&st, "s2").gone && agent(&st, "s1").host == "waiting", "gone and the host state are kept, not cleared");
+    let mut e3 = env(&h, n + ttl + 1);
+    e3.use_cli = true;
+    tick(&e3, &mut st);
+    assert_eq!(listings(), base + 1, "past the ttl it is asked again");
+    write(&sess(&h, "s3"), &[prompt(n + ttl, "/w"), asst(n + ttl, "m3", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
+    let mut e4 = env(&h, n + ttl + 2);
+    e4.use_cli = true;
+    tick(&e4, &mut st);
+    assert_eq!(listings(), base + 2, "a session the last listing did not cover is listed at once");
     let bad = fake_claude(&h, "exit 1");
     // SAFETY: as above; this test is the only one that touches the variable.
     unsafe { std::env::set_var(var, &bad) };
@@ -664,4 +784,522 @@ fn the_cli_listing_settles_busy_waiting_and_gone_and_a_broken_cli_falls_back_to_
     assert!(agent(&st2, "s1").flags.contains_key("hung"), "without the CLI the transcript decides");
     // SAFETY: as above.
     unsafe { std::env::remove_var(var) };
+}
+
+#[test]
+fn a_state_file_written_before_the_listing_cache_still_loads() {
+    // the seeded old shape: a state of the previous version has neither cli_listed nor cli_seen
+    let mut v = serde_json::to_value(State::default()).unwrap();
+    let o = v.as_object_mut().unwrap();
+    assert!(o.remove("cli_listed").is_some() && o.remove("cli_seen").is_some());
+    let st: State = serde_json::from_value(v).unwrap();
+    assert_eq!((st.cli_listed, st.cli_seen.len()), (0, 0), "defaults: the first tick lists");
+}
+
+// ---- the wake channel (#256) --------------------------------------------------------------------------------
+
+fn wake_rows(h: &Path, key: &str) -> Vec<Value> {
+    let p = h.join(".anti-hall/agent-tracker/wake").join(format!("{key}.ndjson"));
+    std::fs::read_to_string(p).map(|t| t.lines().map(|l| serde_json::from_str(l).unwrap()).collect()).unwrap_or_default()
+}
+
+/// A coordinating main session and one subagent that finished its turn `idle_min` minutes ago with a task still open.
+fn idle_subagent(h: &Path, n: u64, idle_min: u64) {
+    write(&sess(h, "parent"), &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/parent/subagents/agent-w1.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/w"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - idle_min * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    std::fs::write(h.join(".claude/projects/p/parent/subagents/agent-w1.meta.json"), r#"{"description":"gauge worker"}"#).unwrap();
+}
+
+#[test]
+fn every_route_names_a_configured_target() {
+    let routes = defaults::raw("agent_tracker.routes");
+    let targets = defaults::raw("agent_tracker.targets");
+    for sig in defaults_signals() {
+        let names = routes.get(sig).map(V::strings).unwrap_or_default();
+        assert!(!names.is_empty() || sig == "never", "signal {sig} has a route");
+        for r in names {
+            assert!(targets.get(r).is_some(), "route {r} of {sig} is a row of agent_tracker.targets");
+        }
+    }
+}
+
+#[test]
+fn an_agent_idle_with_an_open_task_wakes_its_coordinator_once() {
+    let h = home("idle-open");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let a = agent(&st, "w1");
+    assert!(a.open && a.flags.contains_key("idle_open_task"), "open={} flags={:?}", a.open, a.flags.keys().collect::<Vec<_>>());
+    let wake = wake_rows(&h, "parent");
+    assert_eq!(wake.len(), 1, "{wake:?}");
+    let text = wake[0]["text"].as_str().unwrap();
+    assert!(text.contains("gauge worker") && text.contains("Porting the gauge") && text.contains("idle for"), "{text}");
+    assert_eq!(queue(&h, "parent").iter().filter(|r| r["signal"] == "idle_open_task").count(), 1, "the queue carries it too");
+    // an unchanged state repeats nothing, however long it lasts
+    ticks(&h, &mut st, &[n + 2 * MIN, n + 3 * MIN, n + 90 * MIN, n + 91 * MIN]);
+    assert_eq!(wake_rows(&h, "parent").len(), 1, "no repeat for an unchanged state");
+}
+
+#[test]
+fn an_agent_idle_for_less_than_the_window_or_with_no_open_task_wakes_nobody() {
+    let h = home("idle-short");
+    let n = now0();
+    idle_subagent(&h, n, 3);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(wake_rows(&h, "parent").is_empty(), "idle for 3 minutes is inside idle_open_ms");
+    let h2 = home("idle-closed");
+    idle_subagent(&h2, n, 30);
+    let done = json!({"todos": [{"content": "Port the gauge", "status": "completed", "activeForm": "Porting the gauge"}]});
+    append(
+        &h2.join(".claude/projects/p/parent/subagents/agent-w1.jsonl"),
+        &[
+            tool(n - 29 * MIN, "s3", 5, "t2", "TodoWrite", done),
+            result(n - 29 * MIN + 1000, "t2", "ok", false),
+            asst(n - 28 * MIN, "s4", 5, 5, json!([{"type": "text", "text": "all done"}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h2, &mut st, &[n, n + MIN]);
+    assert!(!agent(&st, "w1").open);
+    assert!(wake_rows(&h2, "parent").is_empty(), "a finished task list is not open work");
+}
+
+fn user_text(ts: u64, body: &str) -> String {
+    json!({"type": "user", "timestamp": iso(ts), "message": {"role": "user", "content": body}}).to_string()
+}
+
+#[test]
+fn a_watched_background_process_that_ends_wakes_the_session_once() {
+    let h = home("watched");
+    let n = now0();
+    let bg = json!({"command": "cargo test", "run_in_background": true});
+    write(
+        &sess(&h, "s1"),
+        &[
+            prompt(n - 30 * MIN, "/w"),
+            tool(n - 20 * MIN, "m1", 5, "u1", "Bash", bg),
+            result(n - 20 * MIN + 1000, "u1", "Command running in background with ID: bq1. Output is being written to: /tmp/x", false),
+            asst(n - 19 * MIN, "m2", 5, 5, json!([{"type": "text", "text": "waiting for the run"}]), Some("end_turn")),
+            user_text(n - 5 * MIN, "<task-notification>\n<task-id>bq1</task-id>\n<status>completed</status>\n</task-notification>"),
+            asst(n - 4 * MIN, "m3", 5, 5, json!([{"type": "text", "text": "idle again"}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let wake = wake_rows(&h, "s1");
+    assert_eq!(wake.len(), 1, "{wake:?}");
+    assert!(wake[0]["text"].as_str().unwrap().contains("bq1"), "{wake:?}");
+    ticks(&h, &mut st, &[n + 2 * MIN, n + 3 * MIN, n + 4 * MIN]);
+    assert_eq!(wake_rows(&h, "s1").len(), 1, "no repeat for an unchanged state");
+}
+
+#[test]
+fn a_notice_for_a_task_the_agent_did_not_start_is_not_a_watched_exit() {
+    let h = home("watched-other");
+    let n = now0();
+    write(
+        &sess(&h, "s1"),
+        &[prompt(n - 30 * MIN, "/w"), user_text(n - 5 * MIN, "<task-notification>\n<task-id>zz9</task-id>\n<status>completed</status>\n</task-notification>")],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(wake_rows(&h, "s1").is_empty());
+}
+
+/// A main session with a running subagent and nothing to wake it is told so; a live wake-watch stamp is a wake path.
+#[test]
+fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watcher_silences_it() {
+    let run = |tag: &str, armed: bool| {
+        let h = home(tag);
+        let n = now0();
+        write(&sess(&h, "m1"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
+        write(
+            &h.join(".claude/projects/p/m1/subagents/agent-r1.jsonl"),
+            &[prompt(n - 20 * MIN, "/w"), asst(n - MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
+        );
+        if armed {
+            std::fs::create_dir_all(h.join(".anti-hall/agent-tracker/wake")).unwrap();
+            std::fs::write(h.join(".anti-hall/agent-tracker/wake/m1.armed"), "{}").unwrap();
+        }
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+        (agent(&st, "m1").flags.contains_key("monitor_unarmed"), queue(&h, "m1"))
+    };
+    let (flagged, q) = run("unarmed-main", false);
+    assert!(flagged);
+    let line = q.iter().find(|r| r["signal"] == "monitor_unarmed").expect("the reminder is queued")["text"].as_str().unwrap().to_string();
+    assert!(!line.contains('\n') && line.len() < 260, "one short line: {line}");
+    assert!(!run("armed-main", true).0, "a live wake-watch is a wake path");
+}
+
+#[test]
+fn the_wake_watch_prints_each_row_once_and_marks_the_session_armed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let h = home("pump");
+    let n = now0();
+    let e = env(&h, n);
+    let (seen, stop) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicBool::new(false)));
+    let t = {
+        let (seen, stop, e2) = (Arc::clone(&seen), Arc::clone(&stop), env(&h, n));
+        std::thread::spawn(move || {
+            wake::pump(&e2, "parent", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed))
+        })
+    };
+    let wait = |want: usize| {
+        for _ in 0..200 {
+            if seen.lock().unwrap().len() >= want {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(sinks::wake_armed(&e, "parent"), "the stamp says the session can be woken");
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    wait(1);
+    ticks(&h, &mut st, &[n + 2 * MIN, n + 3 * MIN]);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    stop.store(true, Ordering::Relaxed);
+    t.join().unwrap();
+    let lines = seen.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("[agent-wake] ") && lines[0].contains("gauge worker"), "{lines:?}");
+    assert!(!sinks::wake_armed(&e, "parent"), "a stopped watcher removes its stamp");
+}
+
+// ---- every kind of agent (process liveness, teammates, Codex, the tree) -----------------------------------
+
+/// A registry file of the host: one live (or dead) session process.
+fn register(h: &Path, pid: u32, sid: &str, status: &str, started: u64) {
+    let dir = h.join(".claude/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let rec = json!({"pid": pid, "sessionId": sid, "cwd": "/w", "startedAt": started, "kind": "interactive", "status": status});
+    std::fs::write(dir.join(format!("{pid}.json")), rec.to_string()).unwrap();
+}
+
+/// Make a file look last written `ago_ms` ago.
+fn age_file(p: &Path, ago_ms: u64) {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_millis(ago_ms);
+    std::fs::OpenOptions::new().write(true).open(p).unwrap().set_modified(t).unwrap();
+}
+
+fn dead_pid() -> u32 {
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let pid = c.id();
+    c.wait().unwrap();
+    pid
+}
+
+#[test]
+fn a_live_process_is_running_or_waiting_whatever_its_transcript_says_and_a_dead_one_is_done() {
+    let h = home("liveproc");
+    let n = now0();
+    let quiet = |id: &str| {
+        let p = sess(&h, id);
+        write(&p, &[prompt(n - 9 * 3_600_000, "/w"), asst(n - 8 * 3_600_000, "m1", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))]);
+        age_file(&p, 8 * 3_600_000); // older than limits.active_window_ms: only the process keeps it in view
+    };
+    quiet("busy1");
+    quiet("idle1");
+    write(&sess(&h, "dead1"), &[prompt(n - 5 * MIN, "/w"), asst(n - 4 * MIN, "m2", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
+    let me = std::process::id();
+    register(&h, me, "busy1", "busy", n);
+    register(&h, dead_pid(), "dead1", "busy", n);
+    // a second live process (this test's parent shell is not guaranteed, so reuse our own pid under another session id)
+    let dir = h.join(".claude/sessions");
+    std::fs::write(dir.join("other.json"), json!({"pid": me, "sessionId": "idle1", "cwd": "/w", "startedAt": n, "status": "idle"}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let (b, i, d) = (agent(&st, "busy1"), agent(&st, "idle1"), agent(&st, "dead1"));
+    assert_eq!((b.kind.as_str(), state::of(b), b.pid), ("main", "running", me), "a busy process is running though its transcript ended its turn 8 h ago");
+    assert_eq!((state::of(i), i.pid), ("waiting", me), "an idle process waits");
+    assert_eq!(state::of(d), "done", "a session whose process is gone is done, even with an unfinished turn");
+}
+
+fn teammate(h: &Path, n: u64) {
+    idle_subagent(h, n, 20);
+    std::fs::write(
+        h.join(".claude/projects/p/parent/subagents/agent-w1.meta.json"),
+        r#"{"agentType":"gauge","description":"gauge worker","name":"gauger","taskKind":"in_process_teammate","teamName":"team-7"}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_in_process_teammate_is_its_own_kind_with_its_parent_and_team() {
+    let h = home("mate");
+    let n = now0();
+    teammate(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.kind.as_str(), a.parent.as_str(), a.name.as_str(), a.team.as_str()), ("teammate", "parent", "gauger", "team-7"));
+    // the tree: the parent lists it and is a primary; the teammate shows its parent, project and transcript
+    let doc = status::document(&env(&h, n + MIN), &st, &sources::Listing::default());
+    let row = |id: &str| doc["agents"].as_array().unwrap().iter().find(|r| r["agent"] == id).unwrap().clone();
+    assert_eq!((row("parent")["role"].as_str(), row("parent")["children"][0].as_str()), (Some("primary"), Some("w1")));
+    let r = row("w1");
+    assert_eq!((r["parent"].as_str(), r["project"].as_str(), r["team"].as_str()), (Some("parent"), Some("/w"), Some("team-7")));
+    assert!(r["transcript"].as_str().unwrap().ends_with("agent-w1.jsonl"));
+}
+
+#[test]
+fn an_idle_teammate_with_an_open_task_wakes_its_parent_not_itself() {
+    let h = home("mate-wake");
+    let n = now0();
+    teammate(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "w1").flags.contains_key("idle_open_task"));
+    let wake = wake_rows(&h, "parent");
+    assert_eq!(wake.len(), 1, "{wake:?}");
+    assert!(wake[0]["text"].as_str().unwrap().contains("gauger"), "{wake:?}");
+    assert!(wake_rows(&h, "w1").is_empty(), "the teammate's own feed is not the target");
+}
+
+#[test]
+fn a_solo_session_outside_devswarm_is_main_running_and_solo() {
+    let h = home("solo");
+    let n = now0();
+    write(&sess(&h, "solo1"), &[prompt(n - 5 * MIN, "/proj"), asst(n - 4 * MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), Some("end_turn"))]);
+    register(&h, std::process::id(), "solo1", "busy", n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let a = agent(&st, "solo1");
+    assert_eq!((a.kind.as_str(), state::of(a)), ("main", "running"));
+    let doc = status::document(&env(&h, n + MIN), &st, &sources::Listing::default());
+    let r = &doc["agents"][0];
+    assert_eq!((r["role"].as_str(), r["project"].as_str(), r["pid"].as_u64()), (Some("solo"), Some("/proj"), Some(std::process::id() as u64)));
+}
+
+#[test]
+fn a_codex_rollout_is_a_codex_agent_running_while_it_is_written() {
+    let h = home("codex");
+    let n = now0();
+    let day = h.join(".codex/sessions/2026/10/22");
+    std::fs::create_dir_all(&day).unwrap();
+    let rollout = |stamp: &str, id: &str| {
+        let p = day.join(format!("rollout-{stamp}-{id}.jsonl"));
+        let meta = json!({"type": "session_meta", "payload": {"id": id, "cwd": "/cx"}}).to_string();
+        write(&p, &[meta, json!({"type": "response_item", "payload": {}}).to_string()]);
+        p
+    };
+    rollout("2026-10-22T05-21-20", "01a16132-aaaa");
+    let old = rollout("2026-10-22T01-00-00", "01a16132-bbbb");
+    age_file(&old, 30 * MIN);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let (live, quiet) = (agent(&st, "01a16132-aaaa"), agent(&st, "01a16132-bbbb"));
+    assert_eq!((live.kind.as_str(), state::of(live), live.cwd.as_str(), live.source.as_str()), ("codex", "running", "/cx", "codex"));
+    assert_eq!((quiet.kind.as_str(), state::of(quiet)), ("codex", "waiting"));
+}
+
+#[test]
+fn headless_one_shot_runs_are_not_agents_and_are_not_counted() {
+    let h = home("headless");
+    let n = now0();
+    let line = |ts: u64| {
+        json!({"type": "user", "timestamp": iso(ts), "cwd": "/w", "entrypoint": "sdk-cli", "message": {"role": "user", "content": "judge"}}).to_string()
+    };
+    write(
+        &sess(&h, "judge1"),
+        &[
+            json!({"type": "queue-operation", "timestamp": iso(n)}).to_string(),
+            line(n - MIN),
+            asst(n - MIN, "j1", 5, 5, json!([{"type": "text", "text": "{}"}]), Some("end_turn")),
+        ],
+    );
+    write(&h.join(".claude/projects/-x-double-shot-latte/judge2.jsonl"), &[prompt(n - MIN, "/w")]);
+    write(&sess(&h, "real1"), &[prompt(n - MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(st.agents.keys().collect::<Vec<_>>(), vec!["real1"], "only the interactive session is an agent");
+    let doc = status::document(&env(&h, n + MIN), &st, &sources::Listing::default());
+    assert_eq!((doc["summary"]["headless_skipped"].as_u64(), doc["agents"].as_array().unwrap().len()), (Some(2), 1));
+}
+
+#[test]
+fn the_list_is_live_agents_plus_a_short_recently_finished_window_and_the_summary_counts_live_ones() {
+    let h = home("window");
+    let n = now0();
+    write(
+        &sess(&h, "parent"),
+        &[prompt(n - 3 * 3_600_000, "/w"), asst(n - 2 * 3_600_000, "p1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))],
+    );
+    register(&h, std::process::id(), "parent", "busy", n);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    for (id, ago) in [("old", 2 * 3_600_000), ("fresh", 5 * MIN)] {
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - ago - MIN, "/w"), asst(n - ago, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))],
+        );
+        std::fs::write(dir.join(format!("agent-{id}.meta.json")), r#"{"finished":true}"#).unwrap();
+    }
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let doc = status::document(&env(&h, n + MIN), &st, &sources::Listing::default());
+    let ids: Vec<&str> = doc["agents"].as_array().unwrap().iter().map(|r| r["agent"].as_str().unwrap()).collect();
+    assert!(ids.contains(&"parent") && ids.contains(&"fresh") && !ids.contains(&"old"), "{ids:?}");
+    let s = &doc["summary"];
+    assert_eq!((s["sessions_live"].as_u64(), s["subagents_live"].as_u64(), s["done_hidden"].as_u64()), (Some(1), Some(0), Some(1)), "{s}");
+}
+
+#[test]
+fn the_wake_watch_finds_its_session_from_the_process_tree_when_no_variable_is_set() {
+    let h = home("wake-tree");
+    let n = now0();
+    assert_eq!(wake::session_from_tree(&env(&h, n), std::process::id()), None, "no registry, no session");
+    // the registered process is this one: a watcher started under it (here: itself) resolves the session
+    register(&h, std::process::id(), "sess-tree", "busy", n);
+    assert_eq!(wake::session_from_tree(&env(&h, n), std::process::id()).as_deref(), Some("sess-tree"));
+    // a registered ancestor is found by walking up
+    let parent = crate::procid::parent(std::process::id()).unwrap();
+    std::fs::remove_dir_all(h.join(".claude/sessions")).unwrap();
+    register(&h, parent, "sess-up", "busy", n);
+    assert_eq!(wake::session_from_tree(&env(&h, n), std::process::id()).as_deref(), Some("sess-up"));
+}
+
+#[test]
+fn a_primary_is_not_told_to_arm_the_devswarm_watcher_it_declines_while_idle() {
+    let h = home("primary-ws");
+    let n = now0();
+    devswarm(&h, n, None);
+    std::fs::rename(h.join(".anti-hall/devswarm/workspaces/ws1.json"), h.join(".anti-hall/devswarm/workspaces/primary-1.json")).unwrap();
+    std::fs::write(h.join(".anti-hall/devswarm/workspaces/primary-1.json"), r#"{"id":"primary-1","sessionId":"sessW","worktreePath":"/wt/x"}"#).unwrap();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(a.ws.as_ref().is_some_and(|w| w.armed.is_none()), "a Primary's DevSwarm watcher state is not judged");
+    assert!(outbox(&h).is_empty() && queue(&h, "sessW").iter().all(|r| !r["text"].as_str().unwrap().contains("wake-watch --auto")), "nobody is told to arm it");
+}
+
+// ---- teammates the host no longer lists (#15) -----------------------------------------------------------------
+
+/// The host's team roster (`<home>/.claude/teams/<team>/config.json`): the lead plus the members that are still alive.
+fn roster(h: &Path, team: &str, members: &[&str]) {
+    let m: Vec<Value> = std::iter::once("team-lead").chain(members.iter().copied()).map(|n| json!({"name": n, "agentId": format!("{n}@{team}")})).collect();
+    let p = h.join(".claude/teams").join(team).join("config.json");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(p, json!({"name": team, "members": m}).to_string()).unwrap();
+}
+
+/// A teammate transcript `agent-<id>` of session `parent` with its meta file; `lines` is its transcript.
+fn mate(h: &Path, id: &str, name: &str, team: &str, lines: &[String]) {
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    write(&dir.join(format!("agent-{id}.jsonl")), lines);
+    let meta = json!({"agentType": name, "name": name, "taskKind": "in_process_teammate", "teamName": team});
+    std::fs::write(dir.join(format!("agent-{id}.meta.json")), meta.to_string()).unwrap();
+}
+
+/// The shapes of the real session (2026-10-22): the lead spawned the teammates ~45 min ago, stopped some by name with `TaskStop`
+/// (answered with the task's own id), and kept working; its transcript then grew far past the scan window (`agent_scan.tail_bytes`),
+/// so neither the spawn nor the stop is in the window any more. Stopped teammates write no closing line.
+#[test]
+fn a_stopped_teammate_stays_done_after_the_stop_left_the_scan_window() {
+    let h = home("rosterstop");
+    let n = now0();
+    let spawn = |ts: u64, tuid: &str, name: &str, aid: &str| {
+        json!({"type": "user", "timestamp": iso(ts), "toolUseResult": {"status": "teammate_spawned", "name": name, "agent_id": aid},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tuid, "content": "Spawned successfully."}]}})
+        .to_string()
+    };
+    let mut parent = vec![prompt(n - 80 * MIN, "/w")];
+    for (i, (name, aid)) in [("gone", "agone-1"), ("quiet", "aquiet-2")].iter().enumerate() {
+        parent.push(tool(n - 70 * MIN + i as u64, "p0", 5, &format!("toolu_a{i}"), "Agent", json!({"name": name})));
+        parent.push(spawn(n - 70 * MIN + 1000 + i as u64, &format!("toolu_a{i}"), name, aid));
+    }
+    parent.push(tool(n - 50 * MIN, "p3", 5, "toolu_s1", "TaskStop", json!({"task_id": "gone"})));
+    parent.push(result(n - 50 * MIN + 1000, "toolu_s1", "{\"message\":\"Successfully stopped task: tdrz6qcoo (x)\",\"task_id\":\"tdrz6qcoo\"}", false));
+    // the lead goes on for several MiB: the stop is now far outside the window of the default scan
+    let filler = "x".repeat(1000);
+    for i in 0..3500u64 {
+        parent.push(json!({"type": "system", "timestamp": iso(n - 49 * MIN + i), "content": filler}).to_string());
+    }
+    write(&sess(&h, "parent"), &parent);
+    let silent = |tail: Option<&str>| vec![prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), tail)];
+    mate(&h, "agone-1", "gone", "team-r", &silent(None));
+    mate(&h, "aquiet-2", "quiet", "team-r", &silent(None));
+    // an idle teammate that is alive and mid-task, and a subagent that finished its turn
+    mate(&h, "aidle-3", "idle", "team-r", &silent(Some("end_turn")));
+    roster(&h, "team-r", &["quiet", "idle"]);
+    write(
+        &h.join(".claude/projects/p/parent/subagents/agent-sub9.jsonl"),
+        &[prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s9", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "agone-1")), "done", "stopped by name, no longer on the roster");
+    assert!(!agent(&st, "agone-1").flags.contains_key("hung"), "a stopped teammate is never reported hung");
+    assert_eq!(signals::state_of(agent(&st, "aquiet-2")), "running", "alive on the roster, silent: still running");
+    assert!(agent(&st, "aquiet-2").flags.contains_key("hung"), "an alive teammate that is truly silent still alerts");
+    assert!(!agent(&st, "aidle-3").finished, "an idle teammate on the roster is not finished");
+    assert_eq!(signals::state_of(agent(&st, "sub9")), "done", "a subagent that ended its turn");
+}
+
+/// Prevention: every way the host says an agent has ended must end an agent whose own transcript still reads "running and silent".
+/// A liveness source that is added later and ignores these fails here.
+#[test]
+fn every_end_signal_ends_a_silent_running_agent() {
+    let n = now0();
+    let silent = vec![prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), None)];
+    // (case, how the host records the end)
+    for case in ["meta_finished", "off_roster", "stop_in_window", "rejoined_name", "not_rediscovered"] {
+        let h = home(&format!("endsig-{case}"));
+        write(&sess(&h, "parent"), &[prompt(n - 80 * MIN, "/w")]);
+        let dir = h.join(".claude/projects/p/parent/subagents");
+        write(&dir.join("agent-ax-1.jsonl"), &silent);
+        let mut meta = json!({"agentType": "ax", "name": "ax", "taskKind": "in_process_teammate", "teamName": "team-e"});
+        match case {
+            "meta_finished" => {
+                meta["finished"] = json!(true);
+                roster(&h, "team-e", &["ax"]);
+            }
+            "off_roster" | "not_rediscovered" => roster(&h, "team-e", if case == "off_roster" { &[] } else { &["ax"] }),
+            // the same name was spawned again later: the roster lists it, joined after this agent started
+            "rejoined_name" => {
+                roster(&h, "team-e", &["ax"]);
+                let p = h.join(".claude/teams/team-e/config.json");
+                let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                v["members"][1]["joinedAt"] = json!(n + 60 * MIN);
+                std::fs::write(p, v.to_string()).unwrap();
+            }
+            _ => {
+                roster(&h, "team-e", &["ax"]);
+                let p = sess(&h, "parent");
+                append(&p, &[
+                    json!({"type": "user", "timestamp": iso(n - 60 * MIN), "toolUseResult": {"status": "teammate_spawned", "name": "ax", "agent_id": "ax-1"},
+                           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_a", "content": "Spawned successfully."}]}}).to_string(),
+                    tool(n - 50 * MIN, "p3", 5, "toolu_s", "TaskStop", json!({"task_id": "ax"})),
+                    result(n - 50 * MIN + 1000, "toolu_s", "{\"message\":\"Successfully stopped task: t1 (x)\",\"task_id\":\"t1\"}", false),
+                ]);
+            }
+        }
+        std::fs::write(dir.join("agent-ax-1.meta.json"), meta.to_string()).unwrap();
+        let mut st = State::default();
+        if case == "not_rediscovered" {
+            // followed first, then left out of the tick (the cap) while the host drops it from the roster
+            ticks(&h, &mut st, &[n]);
+            assert_eq!(signals::state_of(agent(&st, "ax-1")), "running");
+            roster(&h, "team-e", &[]);
+            let moved = h.join("moved.jsonl");
+            std::fs::rename(dir.join("agent-ax-1.jsonl"), moved).unwrap();
+        }
+        ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
+        assert_eq!(signals::state_of(agent(&st, "ax-1")), "done", "end signal {case} must end the agent");
+    }
 }

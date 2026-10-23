@@ -39,9 +39,6 @@ jobs:
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-audit,cargo-deny
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
       - name: Update the lock
         run: cargo update
       - name: Audit and deny (always, so a new advisory fails the weekly run even when the lock is unchanged)
@@ -67,14 +64,6 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo doc --no-deps
           ./test.sh
-      - name: Git parity (oneshot and daemon, must be 100%)
-        if: steps.lock.outputs.changed == 'true'
-        run: |
-          set -eu
-          cargo build --release
-          node parity/run-git.js --engine target/release/ah-engine --hooks ../plugins/anti-hall/hooks --corpus parity/corpus.jsonl --mode both --out "$RUNNER_TEMP/mismatches.json" | tee "$RUNNER_TEMP/parity.txt"
-          # run-git.js reports agreement but does not set an exit code, so check the numbers here.
-          [ "$(grep -c 'agreement: .* = 100.00%' "$RUNNER_TEMP/parity.txt")" = 2 ]
       - name: Open the pull request
         if: steps.lock.outputs.changed == 'true'
         env:
@@ -94,4 +83,4 @@ jobs:
           git commit -m "ah-engine: weekly cargo update (D84)"
           git push origin "$branch"
           gh pr create --base dev --head "$branch" --title "ah-engine: weekly cargo update (D84)" \
-            --body "Automated \`cargo update\`. The full gates (fmt, clippy, doc, test.sh, git parity), cargo audit and cargo deny passed on this lock."
+            --body "Automated \`cargo update\`. The full gates (fmt, clippy, doc, test.sh), cargo audit and cargo deny passed on this lock."

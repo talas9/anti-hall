@@ -1,0 +1,30 @@
+{
+  "answer": {
+    "attempted": true,
+    "count": 0,
+    "detail": "reconciled 0 worktree(s) — imported 0 message(s) into the shared store",
+    "imported": 0,
+    "lost": 0,
+    "nativeTimeouts": 0,
+    "results": [],
+    "skipped": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755"
+  },
+  "stores": {
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w1",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    }
+  }
+}

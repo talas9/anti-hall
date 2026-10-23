@@ -1,0 +1,143 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "reader-floor repair: repaired 2 partition(s) (5 pinning row(s) retired, 2 floor(s) raised) of 2 across 1 store(s)",
+    "errors": 0,
+    "partitions": 2,
+    "repaired": 2,
+    "retired": 5,
+    "stores": 1
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/cursors/": "755",
+    ".anti-hall/devswarm/cursors/p1.json": "644 5",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/nd-p2.cursor\"}",
+    ".anti-hall/update-sweep-state.json": "644 {\"repairReaderFloors\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [
+        {
+          "value": 5,
+          "workspace_id": "p1"
+        }
+      ],
+      "messages": [
+        {
+          "hash": "c0",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c1",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c2",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c3",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c4",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c5",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "d0",
+          "workspace_id": "p2"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:999999:1000000000001",
+          "retired_line": 0,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:{PID}:4000000000000",
+          "retired_line": 0,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:{PID}:5000000000000",
+          "retired_line": 2,
+          "updated_at": 1000,
+          "value": 2
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 5
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:999999:1000000000001",
+          "retired_line": 0,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:{PID}:4000000000000",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 5
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:{PID}:5000000000000",
+          "retired_line": 2,
+          "updated_at": 1000,
+          "value": 2
+        },
+        {
+          "ns": "nd",
+          "partition": "p2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": "<now>",
+          "value": 4
+        },
+        {
+          "ns": "store",
+          "partition": "p2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        }
+      ],
+      "registry": []
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "wake-monitor NOT shipped: watcher script loaded but is missing expected exports (resolveIdentity/lockPathFor)",
+    "live": false,
+    "shipped": false
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/ws-wake.json": "644 {\"id\":\"ws-wake\",\"worktreePath\":\"{ROOT}/home\",\"sessionId\":\"s-wake\"}"
+  },
+  "stores": {}
+}

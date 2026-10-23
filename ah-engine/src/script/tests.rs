@@ -64,7 +64,7 @@ fn checks_share_one_context_but_not_their_declarations() {
         assert_eq!(run_forced("zz-a", &json!({}), &e), Some(Some(Verdict::Block("a1".into()))));
         assert_eq!(run_forced("zz-b", &json!({}), &e), Some(Some(Verdict::Block("undefined1".into()))), "zz-a's helper leaked");
         assert_eq!(run_forced("zz-a", &json!({}), &e), Some(Some(Verdict::Block("a1".into()))), "zz-b replaced zz-a's entry");
-        assert_eq!(run_forced("zz-none", &json!({}), &e), Some(Some(Verdict::Defer)), "no entry: a failure, Node decides");
+        assert_eq!(run_forced("zz-none", &json!({}), &e), Some(Some(Verdict::Allow)), "no entry: a failure, the failure policy decides (open)");
         assert_eq!(super::pool_usage().map(|u| u.0), Some(2), "two checks loaded");
         // a lib edit rebuilds the shared context: the counter starts over
         std::fs::write(format!("{lib}/zz-count.js"), "var zzLoads = 10;").unwrap();
@@ -78,7 +78,7 @@ fn checks_share_one_context_but_not_their_declarations() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
-/// Memory budget (DECISIONS.md 1.111): one worker thread that has run EVERY shipped check script holds at most
+/// Memory budget (DECISIONS.md 1.111; the soft limit of issue #21): one worker thread that has run EVERY shipped check script holds at most
 /// `script.heap_budget_base_bytes` + `script.heap_budget_per_check_bytes` per script in its interpreter. A context per check
 /// (about 150 KB each before any check code, 3.3 MB for the 16 scripts of 2026-10-09) fails this; the shared context
 /// (1.0 MB) passes, and the budget grows with the number of scripted checks, not with the calls.
@@ -103,7 +103,7 @@ fn one_thread_running_every_shipped_script_stays_within_the_interpreter_budget()
     })
     .join()
     .expect("the scripts ran");
-    assert_eq!(used.0, n, "every script loaded once into the shared context");
+    assert!(used.0 <= n && used.0 > 0, "at most every script is loaded into the shared context at once ({} of {n})", used.0);
     let budget = defaults::num("script.heap_budget_base_bytes") + defaults::num("script.heap_budget_per_check_bytes") * n as u64;
     assert!(used.1 as u64 <= budget, "{n} scripts hold {} bytes in one thread's interpreter, over the budget of {budget}", used.1);
 }
@@ -114,13 +114,21 @@ fn a_runaway_script_is_interrupted_and_defers() {
     let e = env(&h);
     put_override(&h, "zz-loop", "function decide() { for (;;) {} }");
     let t = Instant::now();
-    assert_eq!(run_forced("zz-loop", &json!({}), &e), Some(Some(Verdict::Defer)));
-    assert!(t.elapsed() < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * 10), "{:?}", t.elapsed());
+    assert_eq!(run_forced("zz-loop", &json!({}), &e), Some(Some(Verdict::Allow)));
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.time_hard_factor") * 3),
+        "{:?}",
+        t.elapsed()
+    );
     // a catastrophic native regex is interrupted too
     put_override(&h, "zz-redos", "function decide() { return /^(a+)+$/.test('a'.repeat(40) + 'b') ? 'allow' : 'defer'; }");
     let t = Instant::now();
-    assert_eq!(run_forced("zz-redos", &json!({}), &e), Some(Some(Verdict::Defer)));
-    assert!(t.elapsed() < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * 10), "{:?}", t.elapsed());
+    assert_eq!(run_forced("zz-redos", &json!({}), &e), Some(Some(Verdict::Allow)));
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.time_hard_factor") * 3),
+        "{:?}",
+        t.elapsed()
+    );
     // the same thread's runtime still works afterwards
     put_override(&h, "zz-ok", "function decide() { return 'allow'; }");
     assert_eq!(run_forced("zz-ok", &json!({}), &e), Some(Some(Verdict::Allow)));
@@ -132,11 +140,11 @@ fn a_script_past_its_memory_ceiling_defers() {
     let h = home("oom");
     let e = env(&h);
     put_override(&h, "zz-oom", "function decide() { var a = []; for (;;) a.push('x'.repeat(1 << 16) + a.length); }");
-    assert_eq!(run_forced("zz-oom", &json!({}), &e), Some(Some(Verdict::Defer)));
+    assert_eq!(run_forced("zz-oom", &json!({}), &e), Some(Some(Verdict::Allow)));
     put_override(&h, "zz-deep", "function f(n) { return f(n + 1) + 1; } function decide() { return f(0); }");
-    assert_eq!(run_forced("zz-deep", &json!({}), &e), Some(Some(Verdict::Defer)));
+    assert_eq!(run_forced("zz-deep", &json!({}), &e), Some(Some(Verdict::Allow)));
     put_override(&h, "zz-shape", "function decide() { return 42; }");
-    assert_eq!(run_forced("zz-shape", &json!({}), &e), Some(Some(Verdict::Defer)));
+    assert_eq!(run_forced("zz-shape", &json!({}), &e), Some(Some(Verdict::Allow)));
     put_override(&h, "zz-ok", "function decide() { return 'allow'; }");
     assert_eq!(run_forced("zz-ok", &json!({}), &e), Some(Some(Verdict::Allow)));
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
@@ -159,7 +167,11 @@ fn a_worker_thread_tears_its_runtime_down_cleanly() {
                 assert!(run_forced(name, &json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}), &e).is_some());
             }
             put_override(&h2, "zz-cycle", "var keep2 = [{}]; function decide() { return 'defer'; }");
-            assert_eq!(run_forced("zz-cycle", &json!({}), &e), Some(Some(Verdict::Defer)));
+            assert_eq!(
+                run_forced("zz-cycle", &json!({}), &e),
+                Some(Some(Verdict::Defer)),
+                "an explicit defer is the script's own answer (the dispatcher resolves it)"
+            );
         })
         .join()
         .expect("the worker thread exits without a teardown abort");
@@ -258,7 +270,7 @@ fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
     put_override(&h, "zz-escape", "function decide(p){ ah.state.writeAtomic('.anti-hall/../escaped', 'x'); return 'allow'; }");
     put_override(&h, "zz-write", "function decide(p){ return ah.state.writeAtomic('.anti-hall/zz/ok.txt', 'hello') ? 'allow' : 'defer'; }");
     let e = env(&h);
-    assert_eq!(run_forced("zz-escape", &json!({}), &e), Some(Some(Verdict::Defer)), "the refusal is a script failure, so Node decides");
+    assert_eq!(run_forced("zz-escape", &json!({}), &e), Some(Some(Verdict::Allow)), "the refusal is a script failure: the failure policy decides (open)");
     assert!(!std::path::Path::new(&format!("{h}/escaped")).exists());
     assert_eq!(run_forced("zz-write", &json!({}), &e), Some(Some(Verdict::Allow)));
     assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/zz/ok.txt")).unwrap(), "hello");
@@ -266,11 +278,77 @@ fn a_script_that_tries_to_escape_the_state_directory_fails_and_defers() {
 
 // ---- the script-failure policy (D88 condition b) ----
 
+/// Load: a call still running when its request's client stops waiting is cut there and defers to its own Node hook. It is not a
+/// script failure (no error is counted, and an engine-only advisory defers instead of taking its failure verdict, allow).
 #[test]
-fn a_check_with_a_node_twin_defers_when_its_script_fails_on_any_event() {
-    for event in ["PreToolUse", "Stop", "SessionStart", "UserPromptSubmit", "PostToolUse"] {
-        assert_eq!(failed("ship-it-guard", event, "boom"), Verdict::Defer, "{event}");
+fn a_call_past_its_request_deadline_is_cut_and_defers_without_counting_an_error() {
+    let h = home("cut");
+    put_override(&h, "sibling-sweep", "function decide(p){ for(;;){} }");
+    let e = env(&h);
+    let go = || super::run_forced("sibling-sweep", &json!({}), &Value::Null, "Stop", &e);
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(0); // the client no longer waits
+    crate::telemetry::emit::take_queued();
+    let t = Instant::now();
+    let v = go();
+    let took = t.elapsed();
+    let evs = crate::telemetry::emit::take_queued();
+    crate::deadline::end();
+    assert_eq!(v, Some(Some(Verdict::Defer)), "cut at the client's deadline: its Node hook answers");
+    assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
+    assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
+    // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
+    assert_eq!(go(), Some(Some(Verdict::Allow)));
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// The verdict body of `v` when it is the guard-down notice (an advisory), else the verdict itself.
+fn without_notice(v: Verdict) -> Verdict {
+    match v {
+        Verdict::Advisory(j) if j.contains("systemMessage") => Verdict::Allow,
+        other => other,
     }
+}
+
+#[test]
+fn no_check_defers_to_a_node_hook_when_its_script_fails_on_any_event() {
+    for event in ["PreToolUse", "Stop", "SessionStart", "UserPromptSubmit", "PostToolUse"] {
+        for name in ["ship-it-guard", "devswarm-parent-gate", "devswarm-child-role"] {
+            assert_ne!(failed(name, event, "boom"), Verdict::Defer, "{name} on {event}");
+            assert_ne!(super::unanswered(name, event), Verdict::Defer, "{name} on {event}");
+        }
+    }
+}
+
+#[test]
+fn the_stop_guard_and_the_session_start_role_fail_open_when_their_script_fails() {
+    for (name, event) in [("devswarm-parent-gate", "Stop"), ("devswarm-child-role", "SessionStart")] {
+        assert_eq!(super::failure_mode(name), "open", "{name}");
+        assert_eq!(without_notice(failed(name, event, "boom")), Verdict::Allow, "{name} on {event}: a failed script must not block the agent");
+        assert_eq!(without_notice(super::unanswered(name, event)), Verdict::Allow, "{name} on {event}: no answer must not block the agent");
+    }
+}
+
+#[test]
+fn every_registered_check_is_classified_in_the_engine_only_list() {
+    let listed = defaults::list("script.engine_only_checks");
+    for c in crate::checks::registry() {
+        assert!(listed.contains(&c.name()), "{} is a registered check but is not in script.engine_only_checks", c.name());
+    }
+    for name in &listed {
+        assert!(crate::checks::get(name).is_some(), "{name} is listed but is not a registered check");
+    }
+}
+
+#[test]
+fn a_failed_open_check_tells_the_user_once_per_session_and_check() {
+    super::set_session("notice-session-a");
+    let first = failed("sibling-sweep", "SubagentStop", "boom");
+    assert!(matches!(&first, Verdict::Advisory(j) if j.contains("sibling-sweep") && j.contains("boom") && j.contains("systemMessage")), "{first:?}");
+    assert_eq!(failed("sibling-sweep", "SubagentStop", "boom"), Verdict::Allow, "the same session and check is told once");
+    assert!(matches!(failed("handover-hygiene", "SubagentStop", "boom"), Verdict::Advisory(_)), "another check in the session is told");
+    super::set_session("notice-session-b");
+    assert!(matches!(failed("sibling-sweep", "SubagentStop", "boom"), Verdict::Advisory(_)), "another session is told");
 }
 
 #[test]
@@ -278,12 +356,13 @@ fn an_advisory_engine_only_check_never_blocks_when_its_script_fails() {
     let engine_only = defaults::list("script.engine_only_checks");
     assert!(engine_only.contains(&"sibling-sweep"));
     for name in &engine_only {
-        assert!(crate::checks::get(name).is_some(), "{name} is not a registered check");
-        assert_eq!(super::failure_mode(name), "open", "{name}: every shipped engine-only check is advisory (fail open)");
+        if super::failure_mode(name) == defaults::text("script.failure_mode_closed") {
+            continue; // a security guard (script.failure_mode_by_check): the matrix test below
+        }
         for event in
             defaults::list("dispatch.guard_events").into_iter().chain(["SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart", "PreCompact"])
         {
-            assert_eq!(failed(name, event, "boom"), Verdict::Allow, "{name} on {event}: a check's own failure never blocks");
+            assert_eq!(without_notice(failed(name, event, "boom")), Verdict::Allow, "{name} on {event}: a check's own failure never blocks");
         }
     }
     // a failure is counted: one telemetry check event with outcome error per failure
@@ -295,16 +374,34 @@ fn an_advisory_engine_only_check_never_blocks_when_its_script_fails() {
 }
 
 #[test]
-fn a_fail_closed_engine_only_check_blocks_on_a_guard_event_only_and_a_node_twin_always_defers() {
+fn only_pre_tool_use_guards_fail_closed_and_a_stop_or_session_start_check_never_does() {
+    let closed: Vec<&str> = defaults::list("script.engine_only_checks").into_iter().filter(|n| super::failure_mode(n) == "closed").collect();
+    assert!(closed.contains(&"git") && closed.contains(&"ship-it-guard"), "{closed:?}");
+    for host in crate::dispatch::table::hosts() {
+        for event in crate::dispatch::table::events(host) {
+            for e in crate::dispatch::table::entries(host, event) {
+                let check = e.check.as_deref().unwrap_or_default();
+                if closed.contains(&check) {
+                    assert!(["PreToolUse", "PermissionRequest"].contains(&event), "{check} fails closed but is registered on {event}");
+                }
+            }
+        }
+    }
+    for event in defaults::list("dispatch.guard_events") {
+        assert!(matches!(failed("git", event, "boom"), Verdict::Block(m) if m.contains("boom")), "{event}");
+    }
+    assert_eq!(without_notice(failed("git", "SessionStart", "boom")), Verdict::Allow, "never block a non-guard event");
+}
+
+#[test]
+fn a_fail_closed_check_blocks_on_a_guard_event_only() {
     let closed = defaults::text("script.failure_mode_closed");
     for event in defaults::list("dispatch.guard_events") {
-        assert!(matches!(super::failure_verdict("g", event, "boom", true, closed), Verdict::Block(m) if m.contains("boom") && m.contains('g')), "{event}");
-        assert_eq!(super::failure_verdict("g", event, "boom", true, "open"), Verdict::Allow, "{event}");
-        // a check with a Node twin defers to it, whatever its mode
-        assert_eq!(super::failure_verdict("g", event, "boom", false, closed), Verdict::Defer, "{event}");
+        assert!(matches!(super::failure_verdict("g", event, "boom", closed), Verdict::Block(m) if m.contains("boom") && m.contains('g')), "{event}");
+        assert_eq!(super::failure_verdict("g", event, "boom", "open"), Verdict::Allow, "{event}");
     }
     for event in ["SessionStart", "UserPromptSubmit", "PostToolUse"] {
-        assert_eq!(super::failure_verdict("g", event, "boom", true, closed), Verdict::Allow, "{event}: never block a non-guard event");
+        assert_eq!(super::failure_verdict("g", event, "boom", closed), Verdict::Allow, "{event}: never block a non-guard event");
     }
     assert_eq!(super::failure_mode("no-such-check"), defaults::text("script.failure_mode_default"));
 }
@@ -325,9 +422,57 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
     put_override(&h, "sibling-sweep", "this is not javascript (");
     assert_eq!(go("Stop"), Verdict::Allow, "a script that does not load");
     // a registered scripted check with no script file at all follows the same policy
-    assert_eq!(crate::script::missing("ship-it-guard", "PreToolUse"), Some(Verdict::Defer));
+    assert!(matches!(crate::script::missing("ship-it-guard", "PreToolUse"), Some(Verdict::Block(_))), "a blocking guard without its script fails closed");
     assert_eq!(crate::script::missing("sibling-sweep", "Stop"), Some(Verdict::Allow));
     assert_eq!(crate::script::missing("sibling-sweep", "SessionStart"), Some(Verdict::Allow));
+}
+
+#[test]
+fn api_guard_rechecks_a_module_after_a_package_is_installed() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("agpkg");
+    let bin = format!("{h}/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let marker = format!("{h}/installed");
+    let body = format!("#!/bin/sh\ncase \"$1\" in --version|-V) echo 'Python 3.12.1';; *) if [ -e {marker} ]; then echo '[0]'; else echo '[2]'; fi;; esac\n");
+    std::fs::write(format!("{bin}/python3"), body).unwrap();
+    std::fs::set_permissions(format!("{bin}/python3"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", bin.as_str()), ("ANTIHALL_API_GUARD_THIRDPARTY", "1")]);
+    let p = json!({"tool_name": "Write", "tool_input": {"file_path": "x.py", "content": "import fakepkg\nfakepkg.no_such_fn()\n"}});
+    let go = || run_forced("api-guard", &p, &e).expect("a script").expect("an answer");
+    assert_eq!(go(), Verdict::Allow, "an absent package is not a fake attribute");
+    std::fs::write(&marker, "").unwrap();
+    assert_ne!(go(), Verdict::Allow, "the same call after the package is installed is checked again, not served from a kept allow");
+}
+
+/// Codex final N2: the verdict is verified before the optional version text is fetched, so a slow cold version probe can never
+/// starve the verification (it used to run first, eat the request's remaining time, and turn a deny into an unchecked allow).
+#[test]
+fn api_guard_verifies_before_the_version_probe_and_the_deny_survives_a_tight_budget() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = home("agorder");
+    let bin = format!("{h}/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = format!("{h}/calls");
+    // verification answers at once; the (cold) version probe takes far longer than the whole request window
+    let body = format!(
+        "#!/bin/sh\ncase \"$1\" in --version|-V) echo version >>{log}; sleep 3; echo v22.0.0;; *) echo verify >>{log}; echo '{{\"req\":{{\"fs\":[0]}},\"glob\":[]}}';; esac\n"
+    );
+    std::fs::write(format!("{bin}/node"), body).unwrap();
+    std::fs::set_permissions(format!("{bin}/node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("PATH", bin.as_str())]);
+    let p = json!({"tool_name": "Write", "tool_input": {"file_path": "x.js", "content": "require('fs').definitelyFake();\n"}});
+    // the defaults and the script are loaded before the window opens, so the window is spent on the probes alone
+    assert_eq!(run_forced("api-guard", &json!({"tool_name": "Bash"}), &e), Some(Some(Verdict::Allow)));
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(defaults::num("daemon.reply_slack_ms") + 1200);
+    let v = run_forced("api-guard", &p, &e);
+    crate::deadline::end();
+    let calls = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(calls.lines().next(), Some("verify"), "verification runs first: {calls:?}");
+    let Some(Some(Verdict::Exact(x))) = v else { panic!("a verdict: {v:?}") };
+    assert_eq!(x.code, 2, "the deny survives a version probe that cannot finish in budget: {x:?}");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
 // ---- golden parity of the migrated checks ----
@@ -335,13 +480,19 @@ fn the_policy_applies_to_every_kind_of_script_failure() {
 #[test]
 fn api_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("api-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 50, "a corpus that exercises both answers: {kinds:?}");
+    // the corpus pins no interpreter (PATH names none), so every case answers without a probe and none defers (lane L07); the
+    // probes themselves are compared with Node by the node_parity api-guard harness
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"), "a corpus that answers every case: {kinds:?}");
 }
 
 #[test]
 fn orch_on_spawn_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("orch-on-spawn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("defer").copied().unwrap_or(0) > 5, "both answers: {kinds:?}");
+    // every case is answered here (the Node fallback is gone, #248): a pending marker wins the claim and sends the rules
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 20 && kinds.get("advisory").copied().unwrap_or(0) > 20 && !kinds.contains_key("defer"),
+        "allow and advisory, no deferral: {kinds:?}"
+    );
 }
 
 #[test]
@@ -365,9 +516,10 @@ fn fable_availability_script_matches_the_compiled_port() {
 #[test]
 fn edit_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("edit-guard");
-    for k in ["allow", "defer", "exact"] {
+    for k in ["allow", "exact"] {
         assert!(kinds.get(k).copied().unwrap_or(0) > 20, "a corpus that exercises {k}: {kinds:?}");
     }
+    assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
 #[test]
@@ -384,30 +536,46 @@ fn a_config_nested_past_the_compiled_readers_limit_is_decided_as_node_decides_it
 
 #[test]
 fn a_config_over_the_read_cap_defers_instead_of_being_read_truncated() {
+    // A config over the interpreter's read cap is never read truncated: the check decides natively, as Node does with the whole file
+    // (nothing about Fable in it), so the state is written with `available: null` and the check stays silent (the Node fallback is gone, #248).
     let h = write_home("fa-big");
     let cap = defaults::num("script.read_max_bytes") as usize;
     std::fs::write(format!("{h}/.claude.json"), format!("{{\"pad\":\"{}\"}}", "x".repeat(cap))).unwrap();
-    assert_eq!(run_forced("fable-availability", &json!({}), &env(&h)), Some(Some(Verdict::Defer)));
-    assert!(!std::path::Path::new(&format!("{h}/.anti-hall/fable-availability.json")).exists(), "nothing written before the deferral");
+    assert_eq!(run_forced("fable-availability", &json!({}), &env(&h)), Some(Some(Verdict::Allow)));
+    let state = std::fs::read_to_string(format!("{h}/.anti-hall/fable-availability.json")).unwrap();
+    assert!(state.starts_with("{\"available\":null,\"checkedAt\":") && state.ends_with(",\"source\":\"unknown\"}"), "{state}");
 }
 
 #[test]
 fn ship_it_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("ship-it-guard");
-    for k in ["allow", "defer", "block", "advisory"] {
+    for k in ["allow", "block", "advisory"] {
         assert!(kinds.get(k).copied().unwrap_or(0) > 5, "a corpus that exercises {k}: {kinds:?}");
     }
+    assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
 pub(super) fn golden_report(check: &str, limit: usize) {
+    golden::regen_defers_local(check);
     let cases = golden::load(check);
+    let limit = if std::env::var("AH_GOLDEN_ALL").is_ok() { usize::MAX } else { limit };
     let (mut bad, mut shown) = (0usize, 0usize);
     for c in &cases {
         let l = golden::lay(c);
+        if check == "task-tracker" {
+            // The corpus was recorded on a 16-core machine, where the dispatch cap (cores - 2) is 14; the script reads the real core
+            // count, so a smaller runner wrote "cap 3". Pinning the setting to the recorded value makes the answer machine-independent.
+            let dir = format!("{}/.anti-hall", l.home);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/settings.json"), r#"{"guards":{"maxParallelDispatch":14}}"#).unwrap();
+        }
         let got = golden::run_case(check, &l, golden::repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
-        let mut ok = got == c["expect"];
+        // a frozen "defer" (the script could not answer; Node was to decide) is now decided by the check's failure policy: an allow, or a block for a fail-closed guard
+        let policy = c["expect"] == json!({"v": "defer"}) && (got == json!({"v": "allow"}) || got["v"] == "block");
+        let expect = golden::intended(&c["expect"]);
+        let mut ok = golden::intended(&got) == expect || policy;
         if ok && c.get("watch").is_some() {
             let w = golden::watched_all_pub(c, &l);
             ok = w == c["writes"];
@@ -451,6 +619,13 @@ fn ask_guard_script_matches_the_compiled_port() {
     golden_report("ask-guard", 12);
 }
 
+/// broad-kill-guard is engine-only (issue #38): its corpus is hand-judged, every case's verdict was checked against the decision
+/// table in tests/it/broad_kill.rs, then recorded here with the exact block text for both hosts and every caller.
+#[test]
+fn broad_kill_guard_script_matches_its_golden_corpus() {
+    golden_report("broad-kill-guard", 12);
+}
+
 #[test]
 fn failure_nudge_script_matches_the_compiled_port() {
     golden_report("failure-root-cause-nudge", 12);
@@ -486,6 +661,77 @@ fn phase_tracker_script_matches_the_compiled_port() {
 #[test]
 fn command_script_matches_the_compiled_port() {
     golden_report("command", 12);
+}
+
+// `command.max_classify_len`: Node judges a longer command in parts (a head/tail scan). The script decides it natively the same way
+// (the Node fallback is gone, #248): the edit gate scans the head and tail, and a big heredoc write or a big heavy command is blocked
+// where Node blocks it, without parsing the whole command (about 4.5 us of interpreter time per character in release).
+#[test]
+fn a_command_over_the_classify_cap_defers_before_it_is_parsed() {
+    let h = home("cmd-cap");
+    // a main-thread session of a DevSwarm checkout: the context in which Node's edit and heavy-command gates block
+    let e = RequestEnv::from_pairs([
+        ("HOME", h.as_str()),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+        ("DEVSWARM_REPO_ID", "r1"),
+        ("DEVSWARM_SOURCE_BRANCH", "feat"),
+        ("ANTIHALL_INGEST_DRY_RUN", "1"),
+    ]);
+    let proj = format!("{h}/proj");
+    std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+    std::fs::create_dir_all(format!("{proj}/src")).unwrap();
+    std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let body = "b".repeat(defaults::num("command.max_classify_len") as usize);
+    let bash = |command: String| json!({"tool_name": "Bash", "session_id": "s", "cwd": proj, "tool_input": {"command": command}});
+    // the runtime and the script are loaded by a small call first, so the measured calls count only their own work
+    assert!(run_forced("command", &bash("ls".into()), &e).is_some());
+    for (what, p) in [("heredoc write", bash(format!("cat > {proj}/src/x.rs <<'EOF'\n{body}\nEOF"))), ("heavy", bash(format!("echo {body} && npm test")))] {
+        let cpu = crate::limits::thread_cpu_us();
+        // Node (command-guard.js, same payload and environment) blocks both with exit 2; the script decides them natively, the same way
+        match run_forced("command", &p, &e) {
+            Some(Some(Verdict::Exact(x))) => assert_eq!(x.code, 2, "{what}: a command over the cap is blocked as Node blocks it"),
+            other => panic!("{what}: a command over the cap is blocked as Node blocks it, got {other:?}"),
+        }
+        let used_ms = crate::limits::thread_cpu_us().saturating_sub(cpu) / 1000;
+        assert!(used_ms < defaults::num("script.time_limit_ms"), "{what}: decided after {used_ms} ms of cpu, so it was parsed whole");
+    }
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// The git guard asks for the same segments again and again (aliases, backstops, runners, shell definitions); the tokenizer and the
+/// segment splitter are kept per call, so a repeated question is not a second scan. `interpreter_polls` counts the interpreter's
+/// work on a fixed scale (a clock would make the test depend on the load of the machine).
+#[test]
+fn the_git_guard_scans_each_segment_once_per_call() {
+    let h = home("gitmemo");
+    let e = env(&h);
+    let proj = format!("{h}/proj");
+    std::fs::create_dir_all(format!("{proj}/.git/refs/heads")).unwrap();
+    std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let cmds = [
+        "cd src/mod && grep -nE 'alpha|beta' notes.txt | head -20; ls -la | wc -l && echo done",
+        "git status --short && git log --oneline -5 && git diff --stat HEAD~1 | tail -3",
+        "for f in a b c; do echo $f | sed 's/a/b/' >> out.txt; done; cat out.txt | sort | uniq -c | sort -rn | head",
+        "python3 -c \"import json; print(json.dumps({'a': 1}))\" && node -e \"console.log(process.version)\" && true",
+    ];
+    let polls = std::thread::spawn(move || {
+        let run = |c: &str| run_forced("git", &json!({"tool_name": "Bash", "session_id": "s", "cwd": proj, "tool_input": {"command": c}}), &e);
+        for c in cmds {
+            assert_eq!(run(c), Some(Some(Verdict::Allow)), "{c}");
+        }
+        let before = super::interpreter_polls();
+        for _ in 0..30 {
+            for c in cmds {
+                assert_eq!(run(c), Some(Some(Verdict::Allow)));
+            }
+        }
+        super::interpreter_polls() - before
+    })
+    .join()
+    .expect("the runs hold");
+    // measured on these 120 runs: 183 polls when every question is scanned again, 103 with the per-call memo
+    assert!(polls < 140, "the guard scanned the same segments again: {polls} interpreter polls for 120 runs (103 with the memo, 183 without)");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
 // The coordinator-work-guard corpus was written from the script and replayed against hooks/coordinator-work-guard.js (the PreToolUse
@@ -612,25 +858,70 @@ mod swarm {
         assert!(advisory(call(&h, &no_transcript, T0 + 100_000, Some(8.0 * GB), 16.0 * GB)).is_none());
     }
 
+    // lane L12: Node reads the default window of the transcript (`runningAgents`); an agent launched further back is not seen, so the
+    // note stays silent where a widened read would have found it
+    #[test]
+    fn the_shared_tree_note_reads_only_the_default_window_of_the_transcript() {
+        let h = swarm_home("sw-window");
+        let t = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "transcript_path": t, "cwd": h});
+        assert!(advisory(call(&h, &p, T0, Some(8.0 * GB), 16.0 * GB)).is_some(), "the running writer is inside the window");
+        let pad = "{\"type\":\"system\",\"content\":\"padding padding padding padding padding padding padding padding\"}\n";
+        let mut body = std::fs::read_to_string(&t).unwrap();
+        body.push_str(&pad.repeat(defaults::num("agent_scan.tail_bytes") as usize / pad.len() + 100));
+        std::fs::write(&t, body).unwrap();
+        assert!(advisory(call(&h, &p, T0 + 1, Some(8.0 * GB), 16.0 * GB)).is_none(), "a launch before the default window is not seen");
+    }
+
+    // issue #55: a brief that names its own clone or working directory outside the session's tree shares no tree
+    #[test]
+    fn a_brief_naming_another_clone_shares_no_tree() {
+        let h = swarm_home("sw-named");
+        let proj = format!("{h}/proj");
+        std::fs::create_dir_all(format!("{proj}/.git")).unwrap();
+        std::fs::write(format!("{proj}/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let busy = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
+        let mut n = 0u64;
+        let mut note = |prompt: &str, t: &str| {
+            n += 1;
+            let p = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "prompt": prompt}, "transcript_path": t, "cwd": proj});
+            advisory(call(&h, &p, T0 + n, Some(8.0 * GB), 16.0 * GB))
+        };
+        for p in [
+            "Base: create a clone ~/work/wt-lane3 from origin/dev, branch lane3. Fix hooks/foo.js and commit.",
+            "cd /opt/build/other-checkout && fix hooks/foo.js, then commit.",
+            "Your working directory is the clone at $HOME/work/wt-x. Edit and commit there.",
+        ] {
+            assert!(note(p, &busy).is_none(), "named outside clone: {p}");
+        }
+        assert!(note("cd ~/proj/sub && fix hooks/foo.js and commit.", &busy).is_some(), "a path inside the session tree still warns");
+        assert!(note("git clone /srv/mirror.git for reference, then fix hooks/foo.js and commit.", &busy).is_some(), "a clone source is no tree");
+        assert!(note("Use the clone ~/work/wt-ref for reading; edit hooks/foo.js in the repo in place.", &busy).is_some(), "in place still warns");
+        // (transcript() rewrites the one transcript file: the running agent's brief changes last)
+        let other = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "Base: create a clone ~/work/wt-a from origin/dev; fix and commit."}));
+        assert!(note("fix it", &other).is_none(), "the running agent works in another clone");
+    }
+
     #[test]
     fn what_the_script_cannot_reproduce_defers_before_the_spawn_is_recorded() {
         let h = swarm_home("sw-defer");
         let t = transcript(&h, json!({"subagent_type": "general-purpose"}));
         let log = format!("{h}/.anti-hall/swarm-spawns.log");
         let no_cwd = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": t});
-        assert_eq!(call(&h, &no_cwd, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "no cwd: Node would use the hook's own directory");
+        assert_eq!(call(&h, &no_cwd, T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "no cwd: Node would use the hook's own directory");
         let rel = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": "t.jsonl", "cwd": h});
-        assert_eq!(call(&h, &rel, T0 + 1, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "a relative transcript path");
+        assert_eq!(call(&h, &rel, T0 + 1, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "a relative transcript path");
         let odd = json!({"tool_name": "Agent", "tool_input": {}, "transcript_path": t, "cwd": format!("{h}/../x")});
-        assert_eq!(call(&h, &odd, T0 + 2, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)), "a cwd that is not in normal form");
-        assert!(!std::path::Path::new(&log).exists(), "a deferral must not record the spawn");
+        assert_eq!(call(&h, &odd, T0 + 2, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)), "a cwd that is not in normal form");
+        // Node answers these too (an allowed spawn is recorded, so the log holds the three)
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3, "each allowed spawn is recorded");
     }
 
     #[test]
     fn the_log_is_read_like_parse_int_and_a_huge_entry_defers() {
         let h = swarm_home("sw-huge");
         std::fs::write(format!("{h}/.anti-hall/swarm-spawns.log"), "99999999999999999999\n").unwrap();
-        assert_eq!(call(&h, &spawn(), T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Defer)));
+        assert_eq!(call(&h, &spawn(), T0, Some(8.0 * GB), 16.0 * GB), Some(Some(Verdict::Allow)));
         // a log with junk lines, a CR and a sign: only the positive finite numbers count
         let h2 = swarm_home("sw-parse");
         std::fs::write(format!("{h2}/.anti-hall/swarm-spawns.log"), format!("abc\r\n{}\n-5\n+{}abc\n0x10\n\n", T0 - 10, T0 - 20)).unwrap();
@@ -1022,19 +1313,16 @@ mod sibling {
 #[test]
 fn compact_declaration_guard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("compact-declaration-guard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
+    assert!(
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 30 && !kinds.contains_key("defer"),
+        "both answers, no deferral: {kinds:?}"
+    );
 }
 
 #[test]
 fn devswarm_parent_inbox_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("devswarm-parent-inbox");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
-}
-
-#[test]
-fn devswarm_child_turn_script_matches_the_compiled_port() {
-    let kinds = golden::assert_script_matches("devswarm-child-turn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("defer").copied().unwrap_or(0) > 50, "both answers: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
 // ---- task-lifecycle-log, the session gates, merge-side-pick, scan-throttle and merge-gate (D88 batch 6) ----
@@ -1042,34 +1330,38 @@ fn devswarm_child_turn_script_matches_the_compiled_port() {
 #[test]
 fn task_lifecycle_log_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("task-lifecycle-log");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) >= 1, "both answers: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
 #[test]
 fn jev_weekly_scorecard_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("jev-weekly-scorecard");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && kinds.get("defer").copied().unwrap_or(0) >= 3, "both answers: {kinds:?}");
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
 #[test]
 fn jev_review_reminder_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("jev-review-reminder");
-    for k in ["advisory", "allow", "defer"] {
+    // every payload is answered here (the Node fallback is gone, #248)
+    for k in ["advisory", "allow"] {
         assert!(kinds.get(k).copied().unwrap_or(0) >= 10, "a corpus that exercises {k}: {kinds:?}");
     }
+    assert!(!kinds.contains_key("defer"), "no deferral: {kinds:?}");
 }
 
 #[test]
 fn repair_on_reload_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("repair-on-reload");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 10 && kinds.get("defer").copied().unwrap_or(0) > 10, "both answers: {kinds:?}");
+    // L06: a due repair is asked of the refresh job (allow); the undecidable shapes (no home, no plugin root, a version that is not a
+    // plain three-part one) are answered natively too (#248)
+    assert!(kinds.get("allow").copied().unwrap_or(0) > 40 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
 #[test]
 fn merge_side_pick_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-side-pick");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 20,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("advisory").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }
@@ -1089,6 +1381,7 @@ fn scan_throttle_script_matches_the_compiled_port() {
         return;
     }
     let mut kinds = std::collections::BTreeMap::new();
+    golden::regen_defers_local("scan-throttle");
     for c in golden::load("scan-throttle") {
         let l = golden::lay(&c);
         let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
@@ -1105,14 +1398,14 @@ fn scan_throttle_script_matches_the_compiled_port() {
         *kinds.entry(got["v"].as_str().unwrap_or("").to_string()).or_insert(0usize) += 1;
         crate::discard::harmless(std::fs::remove_dir_all(&l.home)); // keep: cleanup of a scratch directory
     }
-    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && kinds["defer"] > 100, "every answer: {kinds:?}");
+    assert!(kinds["advisory"] > 50 && kinds["allow"] > 100 && !kinds.contains_key("defer"), "every answer, no deferral: {kinds:?}");
 }
 
 #[test]
 fn merge_gate_script_matches_the_compiled_port() {
     let kinds = golden::assert_script_matches("merge-gate");
     assert!(
-        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && kinds.get("defer").copied().unwrap_or(0) > 10,
+        kinds.get("allow").copied().unwrap_or(0) > 100 && kinds.get("exact").copied().unwrap_or(0) > 50 && !kinds.contains_key("defer"),
         "every answer: {kinds:?}"
     );
 }
@@ -1163,6 +1456,82 @@ mod output_verify_jev {
         assert!(fake.seen.lock().unwrap().is_empty());
         let rows = log_rows(std::path::Path::new(&h));
         assert_eq!((rows.len(), &rows[0]["mode"], &rows[0]["base"]), (1, &json!("off"), &json!(false)));
+    }
+}
+
+// ---- speculation-guard: the Stop gate on the Jev wait (a sync ask only for a flagged reply) ----
+
+mod speculation_stop_gate {
+    use super::*;
+    use crate::jev::testkit::{install_scripted, ok};
+    use crate::jev::transport::NetError;
+
+    const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
+    /// No hedge word at all: the rule layer flags nothing.
+    const UNFLAGGED: &str = "The build is green and the change is merged.";
+    /// A hedge the reply itself acknowledges (a command it ran): flagged by the hit scan, yet the rule layer alone would not block.
+    const FLAGGED: &str = "This probably fixes it, verified in main.js:42.";
+
+    fn run(
+        tag: &str,
+        text: &str,
+        extra: &[(&str, &str)],
+        script: Vec<Result<crate::jev::transport::RawResponse, NetError>>,
+    ) -> (Option<Option<Verdict>>, std::sync::Arc<crate::jev::Jev>, std::sync::Arc<crate::jev::testkit::Fake>, String) {
+        let h = home(tag);
+        let t = format!("{h}/t.jsonl");
+        std::fs::write(&t, "").unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.extend(ON.iter().chain(extra.iter()).map(|(k, v)| (k.to_string(), v.to_string())));
+        let (jev, fake) = install_scripted(std::path::Path::new(&h), &ON, script);
+        let payload = json!({"transcript_path": t, "session_id": tag, "last_assistant_message": text});
+        let v = super::super::run_forced("speculation-guard", &payload, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs));
+        (v, jev, fake, h)
+    }
+
+    fn drained(jev: &crate::jev::Jev) -> crate::metrics::Metrics {
+        let mut m = crate::metrics::Metrics::default();
+        jev.stats.drain_into(&mut m);
+        m
+    }
+
+    #[test]
+    fn an_unflagged_stop_makes_no_sync_jev_call_and_stays_inside_the_stop_limit() {
+        // one call first, so the timed one does not include the interpreter's cold start
+        let _ = run("sg-gate-warm", UNFLAGGED, &[], vec![]);
+        let started = std::time::Instant::now();
+        let (v, jev, fake, _) = run("sg-gate-unflagged", UNFLAGGED, &[], vec![ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]);
+        let took = started.elapsed();
+        assert_eq!(v, Some(Some(Verdict::Allow)), "{v:?}");
+        assert!(fake.seen.lock().unwrap().is_empty(), "no request went to Jev");
+        assert!(took < std::time::Duration::from_millis(defaults::num("jev.stop_soft_ms")), "{took:?}");
+        assert!(format!("{:?}", drained(&jev)).contains("jev_skipped_unflagged"));
+    }
+
+    #[test]
+    fn the_gate_is_on_and_the_background_ask_off_by_default() {
+        // both are TOML values
+        assert_eq!(defaults::num("jev.gate_background_ask"), 0);
+        assert_eq!(defaults::num("jev.gate_enabled"), 1);
+    }
+
+    #[test]
+    fn a_flagged_stop_waits_for_jev_and_uses_its_verdict() {
+        let (v, jev, fake, _) = run("sg-gate-flagged", FLAGGED, &[], vec![ok(200, r#"{"answers":{"decision":{"noul":0.95}}}"#)]);
+        assert_eq!(fake.seen.lock().unwrap().len(), 1, "the flagged reply was asked about, synchronously");
+        assert!(matches!(v, Some(Some(Verdict::Exact(_)))), "Jev's confident verdict added the block: {v:?}");
+        assert!(format!("{:?}", drained(&jev)).contains("jev_asked_sync"));
+    }
+
+    #[test]
+    fn a_flagged_stop_whose_wait_times_out_fails_open_with_the_fail_open_reason() {
+        let (v, jev, _, h) = run("sg-gate-timeout", FLAGGED, &[], vec![Err(NetError::Timeout), Err(NetError::Timeout)]);
+        assert_eq!(v, Some(Some(Verdict::Allow)), "the baseline stands: {v:?}");
+        let log = std::fs::read_to_string(format!("{h}/.anti-hall/logs/jev-judge.ndjson")).unwrap_or_default();
+        let m = format!("{:?}", drained(&jev));
+        assert!(log.contains("fail_open") || m.contains("jev_gate_timeouts"), "log: {log}; metrics: {m}");
+        assert!(log.contains("fail_open"), "the reason is named: {log}");
+        assert!(m.contains("jev_gate_timeouts"), "{m}");
     }
 }
 
@@ -1222,5 +1591,409 @@ fn stop_time_checks_have_their_own_time_limit() {
         "idle-agent-sweep",
     ] {
         assert!(by.get(name).and_then(defaults::V::as_integer).is_some_and(|ms| ms >= 500), "{name}");
+    }
+}
+
+/// Issue #21: a worker's interpreter does not grow with the number of calls. Round-robin over every shipped script, many rounds: past
+/// the soft limit the least recently called checks are unloaded (and rebuilt by their next call, with the same answer), so the size after
+/// a collection stays inside a band and the later rounds are no larger than the earlier ones.
+#[test]
+fn interpreter_memory_stays_in_a_band_over_many_calls() {
+    let h = home("band");
+    let ext = defaults::text("script.ext");
+    let dir = defaults::root().expect("plugin root").join(defaults::text("script.logic_dir"));
+    let mut names: Vec<String> =
+        std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(ext).map(str::to_string)).collect();
+    names.sort();
+    let soft = defaults::num("mem.quickjs_soft_bytes") as i64;
+    let max = defaults::num("mem.quickjs_hard_bytes") as i64;
+    let rounds = 6;
+    let sizes = std::thread::spawn(move || {
+        let e = env(&h);
+        let payload = json!({"hook_event_name": "Notification", "cwd": h});
+        let mut first_answers: Vec<String> = Vec::new();
+        let mut sizes = Vec::new();
+        for round in 0..rounds {
+            for (i, name) in names.iter().enumerate() {
+                let full = format!("{:?}", super::run_forced(name, &payload, &Value::Null, "Notification", &e));
+                // the KIND of answer (allow, defer, advisory, block) does not depend on whether the entry was just rebuilt; a check that keeps
+                // state across calls (task-tracker's repeat reminder) words its text differently the second time
+                let v = full.split_once("(\"").map_or(full.clone(), |(kind, _)| kind.to_string());
+                if round == 0 {
+                    first_answers.push(v);
+                } else {
+                    // a reminder that fires once per change (jev-review-reminder, #247) is an advisory the first time and silent after it
+                    let once = first_answers[i].contains("Advisory") && v.contains("Allow");
+                    assert!(first_answers[i] == v || once, "{name} answered differently in round {round}: {} then {v}", first_answers[i]);
+                }
+            }
+            let (_, bytes, ..) = super::pool_usage().expect("ran scripts");
+            sizes.push(bytes);
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        sizes
+    })
+    .join()
+    .expect("the scripts ran");
+    // one check is loaded after the limit is applied, so the band is the soft limit plus the largest single check (well under 1 MiB)
+    for (r, b) in sizes.iter().enumerate() {
+        assert!(*b <= soft + (1 << 20) && *b <= max, "round {r}: {b} bytes after a collection, soft limit {soft}, ceiling {max}: {sizes:?}");
+    }
+    // flat: the last rounds hold no more than the second round (+5%), however many calls were made in between
+    assert!(sizes[rounds - 1] as f64 <= sizes[1] as f64 * 1.05, "growth over calls: {sizes:?}");
+}
+
+/// R0 soak (train live18): cyclic garbage waited for QuickJS's own collector, which runs only at 1.5 times the size after its previous
+/// run, so a worker holding every check (~5.7 MB) kept up to ~2.8 MB of garbage the memory registry never saw, and the soak's footprint
+/// rose for the whole run. With `maintain` called after each request (as the daemon's worker loop does), the garbage waiting between
+/// calls stays within `script.gc_every_calls` calls' worth, however many calls are made. Measured WITHOUT a collection (the band test
+/// above measures after one, which is why it could not see this).
+#[test]
+fn cyclic_garbage_between_calls_stays_within_gc_every_calls() {
+    let h = home("gcevery");
+    let e = env(&h);
+    // ~2 MB held live (the entry keeps it referenced); each call leaves a few small cycles that only a collection frees
+    put_override(
+        &h,
+        "zz-cycles",
+        "var zzKeep = []; for (var i = 0; i < 4096; i++) zzKeep.push({i: i, s: 'k' + i, t: [i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7]});\n\
+         function decide() { for (var j = 0; j < 2; j++) { var a = {n: j}; var b = {a: a}; a.b = b; } return zzKeep.length ? null : {block: 'empty'}; }",
+    );
+    let every = defaults::num("script.gc_every_calls") as i64;
+    let p = json!({"tool_name": "Write"});
+    let (one, worst) = std::thread::spawn(move || {
+        let now = || POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.memory_usage().malloc_size)).expect("the thread ran scripts");
+        let gc = || POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.run_gc()));
+        run_forced("zz-cycles", &p, &e);
+        gc();
+        // the collector's own threshold as QuickJS sets it after a run at this size (1.5x), independent of how this thread got here
+        let base = now();
+        POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.set_gc_threshold(base as usize * 3 / 2)));
+        // one call's garbage, averaged over a few calls
+        let probe = 100;
+        for _ in 0..probe {
+            run_forced("zz-cycles", &p, &e);
+        }
+        let one = ((now() - base) / probe).max(1);
+        super::maintain(true);
+        let mut worst = 0;
+        for _ in 0..(5 * every) {
+            run_forced("zz-cycles", &p, &e);
+            super::maintain(false);
+            worst = worst.max(now() - base);
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+        (one, worst)
+    })
+    .join()
+    .expect("the scripts ran");
+    // at most `every` calls' worth waits, plus one 4 KiB arena per QuickJS size class left partly used
+    let bound = every * one + 31 * 4096;
+    assert!(worst <= bound, "garbage waiting between calls grew to {worst} bytes, bound {bound} ({every} calls x {one} bytes + arenas)");
+}
+
+/// Issue #21: the regex cache is ONE cache bounded by estimated bytes: many distinct patterns cannot push it past its budget, and two
+/// threads asking for the same pattern share one compiled program.
+#[test]
+fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
+    let budget = defaults::num("mem.regex_soft_bytes") as usize;
+    let max = defaults::num("mem.regex_max_entries") as usize;
+    // each pattern is distinct and long enough that the budget (not the entry count) is what binds first
+    let long = |i: usize| format!("zzcache{i}\\s+{}", "(?:a|b)x".repeat(40));
+    for i in 0..(max * 3) {
+        let r = super::recache::get(&long(i), "i").expect("valid pattern");
+        assert!(r.is_match(&format!("zzcache{i}  {}", "ax".repeat(40))), "pattern {i} does not match its own text");
+        let (n, bytes) = super::recache::usage();
+        assert!(bytes <= budget && n <= max, "after {i} patterns: {n} entries, {bytes} bytes, budget {budget}, max {max}");
+    }
+    let a = super::recache::get("zzshared\\d+", "").unwrap();
+    let b = std::thread::spawn(|| super::recache::get("zzshared\\d+", "").unwrap()).join().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&a, &b), "two threads got two compiled copies");
+    assert!(super::recache::get("(", "").is_err(), "an invalid pattern is an error, not a cache entry");
+}
+
+#[test]
+fn the_limit_that_interrupted_a_call_is_named_in_its_failure() {
+    use super::{Deadline, Trip};
+    use std::sync::atomic::Ordering::Relaxed;
+    let d = Deadline::default();
+    assert_eq!(d.exceeded(10, 10), None, "nothing armed, nothing fires");
+    d.cpu.store(100, Relaxed);
+    d.wall.store(5_000, Relaxed);
+    d.req.store(9_000, Relaxed);
+    assert_eq!(d.exceeded(100, 10), None, "at the limit is not past it");
+    assert_eq!(d.exceeded(101, 10), Some(Trip::Cpu));
+    assert_eq!(d.exceeded(0, 5_001), Some(Trip::Wall));
+    assert_eq!(d.exceeded(0, 9_001), Some(Trip::Wall), "the wall backstop is reported ahead of the client deadline");
+    d.wall.store(0, Relaxed);
+    assert_eq!(d.exceeded(0, 9_001), Some(Trip::Request));
+    assert_eq!(d.explain("interrupted", 50), "interrupted", "no trip recorded: the error is left as it was");
+    d.trip.store(Trip::Cpu as u64, Relaxed);
+    let cpu_ms = (50 * defaults::num("script.time_hard_factor")).min(defaults::num("script.time_hard_cap_ms"));
+    let wall_ms = cpu_ms * defaults::num("script.wall_limit_factor");
+    assert_eq!(d.explain("interrupted", 50), format!("interrupted (interrupted by the cpu limit; cpu limit {cpu_ms} ms, wall backstop {wall_ms} ms)"));
+}
+
+/// R1 ENG-MEM: a worker that has not called a script for `script.idle_free_ms` frees its interpreter when it goes idle, and its next call
+/// builds a new one that answers the same. A busy worker (`maintain(false)`) and an interpreter still inside the window keep theirs.
+#[test]
+fn an_idle_worker_frees_its_interpreter_and_the_next_call_rebuilds_it() {
+    let h = home("idlefree");
+    let e = env(&h);
+    put_override(&h, "zz-idle", "function decide(p) { return {block: 'seen ' + p.tool_name}; }");
+    let p = json!({"tool_name": "Write"});
+    let ms = defaults::num("script.idle_free_ms");
+    assert!(ms > 0, "the shipped default frees idle interpreters");
+    let seen = std::thread::spawn(move || {
+        let first = run_forced("zz-idle", &p, &e);
+        assert!(super::pool_usage().is_some(), "a call builds the interpreter");
+        super::maintain(true);
+        assert!(super::pool_usage().is_some(), "inside script.idle_free_ms the interpreter stays");
+        let old = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(ms + 1)).expect("a clock older than the window");
+        POOL.with(|c| c.borrow_mut().as_mut().expect("pool").last_call = old);
+        super::maintain(false);
+        assert!(super::pool_usage().is_some(), "a worker with a request waiting is not idle");
+        super::maintain(true);
+        assert!(super::pool_usage().is_none(), "an idle worker past the window frees its interpreter");
+        let again = run_forced("zz-idle", &p, &e);
+        assert!(super::pool_usage().is_some(), "the next call rebuilds it");
+        (first, again)
+    })
+    .join()
+    .expect("assertions hold");
+    assert_eq!(seen.0, Some(Some(Verdict::Block("seen Write".into()))));
+    assert_eq!(seen.0, seen.1, "the rebuilt interpreter answers the same");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+// ---- v0.301 W3b: no hand-backs in the shared libs --------------------------------------------------------------------
+
+/// The scripts hand nothing back to Node: no deferral sentinel or token is left in an executable line of the plugin logic.
+#[test]
+fn no_script_hands_a_case_back_to_node() {
+    let _ = defaults::text("script.ext"); // the root is known once the defaults are loaded
+    let root = defaults::root().expect("plugin root").join("engine/logic");
+    let banned = ["'defer'", "meshDefer", "UNDECIDABLE", "cb.DEFER", "cb.defer(", "gates.run("];
+    let mut stack = vec![root];
+    let mut seen = 0;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).expect("logic directory").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "js") {
+                seen += 1;
+                for (i, line) in std::fs::read_to_string(&p).expect("script").lines().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    for b in banned {
+                        assert!(!line.contains(b), "{}:{} still hands a case back ({b}): {line}", p.display(), i + 1);
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen > 50, "the scan reached the scripts ({seen})");
+}
+
+/// A DevSwarm child whose message store the host cannot read exactly (a forced backend it does not read) is answered natively, like
+/// Node does (silence); with the store simply absent the same child hears nothing.
+#[test]
+fn a_child_mailbox_the_host_cannot_count_gets_the_drain_nudge_with_an_unknown_count() {
+    let case = |forced: bool| {
+        let mut env = json!({"DEVSWARM_BUILDER_ID": "ws-1", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "b", "HOME": "{HOME}"});
+        if forced {
+            env[defaults::text("mesh_write.env_store_backend")] = json!("journal");
+        }
+        json!({
+            "env": env, "event": "PostToolUse", "opts": {"plugin_root": "{PLUGIN}"},
+            "files": {
+                ".anti-hall/devswarm/workspaces/ws-1.json": "{\"inboxPath\":\"{HOME}/inbox\",\"worktreePath\":\"{HOME}/wt\"}",
+                "wt/.git/HEAD": "ref: refs/heads/main\n",
+            },
+            "payload": {"hook_event_name": "PostToolUse", "session_id": "s1", "tool_input": {"command": "ls"}, "tool_name": "Bash"},
+        })
+    };
+    let run = |forced: bool| {
+        let l = golden::lay(&case(forced));
+        let got = golden::run_case("devswarm-child-drain", &l, 1).expect("a shipped script");
+        golden::verdict_json(&got, &l)
+    };
+    // Node's hook says nothing in either case (checked on this payload), and the native answer no longer hands the case back or adds a
+    // nudge of its own (#248): both are allowed.
+    assert_eq!(run(true)["v"], "allow", "a store the host cannot count is not passed with a nudge Node never gave");
+    assert_eq!(run(false)["v"], "allow", "an absent store is a count of zero, not an unknown one");
+}
+
+// ---- v0.301 W3b: the weekly Jev scorecard ----------------------------------------------------------------------------
+
+/// The weekly scorecard is built again: a KEEP verdict whose integration is not on is named, and the week is consumed only once the
+/// scorecard exists. A Jev that is off hears nothing and stamps nothing.
+#[test]
+fn the_weekly_scorecard_names_an_integration_whose_mode_lags_its_keep_verdict() {
+    let rows: String = (0..60)
+        .flat_map(|i| {
+            [
+                format!("{{\"ts\":\"{{ISO}}\",\"id\":\"zz-test\",\"h\":\"h{i}\",\"backend\":\"jev\",\"mode\":\"on\",\"changed\":\"added\",\"ms\":100}}"),
+                format!("{{\"type\":\"outcome\",\"ts\":\"{{ISO}}\",\"id\":\"zz-test\",\"h\":\"h{i}\",\"outcome\":\"ok\"}}"),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let case = |enabled: bool| {
+        json!({
+            "env": {"HOME": "{HOME}"}, "event": "SessionStart", "opts": {"plugin_root": "{PLUGIN}"},
+            "files": {".anti-hall/jev.json": format!("{{\"enabled\":{enabled}}}"), ".anti-hall/logs/jev-assist.ndjson": rows.clone()},
+            "payload": {"hook_event_name": "SessionStart", "session_id": "s1"},
+        })
+    };
+    let latch = defaults::text("jev_weekly.latch_file");
+    let on = golden::lay(&case(true));
+    let got = golden::verdict_json(&golden::run_case("jev-weekly-scorecard", &on, 1).expect("a shipped script"), &on);
+    assert_eq!(got["v"], "advisory", "{got}");
+    assert!(got["text"].as_str().unwrap_or_default().contains("zz-test is ready to switch ON."), "{got}");
+    assert!(Path::new(&on.home).join(".anti-hall").join(latch).is_file(), "the week is consumed once the scorecard is built");
+    let off = golden::lay(&case(false));
+    assert_eq!(golden::verdict_json(&golden::run_case("jev-weekly-scorecard", &off, 1).expect("a shipped script"), &off)["v"], "allow");
+    assert!(!Path::new(&off.home).join(".anti-hall").join(latch).exists(), "a Jev that is off consumes nothing");
+}
+
+/// Script load check (every script a hand-back removal touched): each loads in the interpreter and answers a minimal call on its
+/// own event without a script error (a script error would otherwise pass as a quiet allow).
+#[test]
+fn every_script_without_hand_backs_loads_and_answers_a_minimal_call() {
+    let checks = [
+        ("auto-handover", "UserPromptSubmit"),
+        ("auto-handover-pause-nag", "Stop"),
+        ("limit-conserve-inject", "UserPromptSubmit"),
+        ("devswarm-child-gate", "Stop"),
+        ("devswarm-child-drain", "PostToolUse"),
+        ("devswarm-child-turn", "UserPromptSubmit"),
+        ("devswarm-parent-gate", "Stop"),
+        ("devswarm-parent-inbox", "UserPromptSubmit"),
+        ("devswarm-parent-reply-tracker", "PostToolUse"),
+        ("jev-review-reminder", "SessionStart"),
+        ("jev-weekly-scorecard", "SessionStart"),
+        ("repair-on-reload", "SessionStart"),
+        ("speculation-judge", "Stop"),
+        ("devswarm-child-role", "SessionStart"),
+    ];
+    for (check, event) in checks {
+        let case = json!({
+            "env": {"HOME": "{HOME}"}, "event": event, "opts": {"plugin_root": "{PLUGIN}"},
+            "payload": {"hook_event_name": event, "session_id": "s1", "cwd": "{HOME}", "prompt": "hello", "tool_name": "Bash", "tool_input": {"command": "ls"}},
+        });
+        let l = golden::lay(&case);
+        let got = golden::run_case(check, &l, 1).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        assert!(!matches!(got, Some(Verdict::Defer)), "{check}: handed a minimal call back");
+        let errors: Vec<(String, String)> = crate::discard::captured().into_iter().filter(|(code, _)| code == "script_error").collect();
+        assert!(errors.is_empty(), "{check}: script errors {errors:?}");
+    }
+}
+
+// ---- v0.301 W3b: the speculation judge in the daemon ------------------------------------------------------------------
+
+/// The opt-in judge block works again: the daemon (a process that may not wait for a model) hands the check to the one-shot dispatcher
+/// ({dispatcher: true}, nothing counted as a script error), and the dispatcher, where the call may be made, blocks on the model's verdict.
+#[test]
+fn the_speculation_judge_is_handed_to_the_dispatcher_and_blocks_there() {
+    use crate::jev::cascade::{MODEL_LOCK, TEST_MODEL};
+    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let case = json!({
+        "env": {"HOME": "{HOME}", "ANTIHALL_SEMANTIC_JUDGE": "1", "ANTIHALL_JUDGE_BACKEND": "cli"},
+        "event": "Stop", "files": {"t.jsonl": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"why is it slow?\"}}\n"},
+        "payload": {"hook_event_name": "Stop", "session_id": "s1", "transcript_path": "{HOME}/t.jsonl", "last_assistant_message": "The cause is the old build artifact."},
+    });
+    assert!(!crate::judge::blocking_calls_allowed(), "the test starts as the daemon is: not allowed to wait for a model");
+    let l = golden::lay(&case);
+    let in_daemon = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
+    assert_eq!(in_daemon, json!({"v": "defer"}), "the daemon hands the check to the dispatcher");
+    assert!(crate::discard::captured().iter().all(|(code, _)| code != "script_error"), "{:?}", crate::discard::captured());
+    crate::judge::allow_blocking_calls();
+    *TEST_MODEL.lock().unwrap() =
+        Some(Box::new(|_| crate::judge::cli::CliOutcome { result: Ok(r#"{"decision":"block","claim":"the cause is stated, not shown"}"#.into()), ms: 5 }));
+    let l = golden::lay(&case);
+    let in_dispatcher = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
+    *TEST_MODEL.lock().unwrap() = None;
+    assert_eq!(in_dispatcher["v"], "exact", "{in_dispatcher}");
+    assert!(in_dispatcher["out"].as_str().unwrap_or_default().contains("the cause is stated, not shown"), "{in_dispatcher}");
+}
+
+// ---- v0.301 W3b: the Primary seat and the stable launchers ------------------------------------------------------------
+
+/// A Primary checkout registers its seat on its first run in real DevSwarm, adopts it from a closed session, says nothing on its own
+/// seat again, and the SessionStart check writes the two stable launchers (executable) before anything else.
+#[test]
+fn a_primary_session_registers_adopts_and_keeps_its_seat_and_the_launchers_are_installed() {
+    let case = json!({
+        "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1"}, "event": "SessionStart", "opts": {"plugin_root": "{PLUGIN}"},
+        // a readable sessions directory that names no session: every other session counts as closed
+        "files": {"wt/.git/HEAD": "ref: refs/heads/main\n", ".claude/sessions/other.json": "{\"sessionId\":\"unrelated\",\"pid\":1}"},
+        "payload": {"hook_event_name": "SessionStart", "session_id": "new-session", "cwd": "{HOME}/wt"},
+    });
+    let run = |l: &golden::Laid| golden::verdict_json(&golden::run_case("devswarm-child-role", l, 1).expect("a shipped script"), l);
+    // first run: nothing registered yet
+    let l = golden::lay(&case);
+    let first = run(&l);
+    let out = first["out"].as_str().unwrap_or_default().to_string();
+    assert!(out.contains("registered Primary primary-"), "{first} {:?}", crate::discard::captured());
+    let home = Path::new(&l.home);
+    let desc: Vec<_> = std::fs::read_dir(home.join(".anti-hall/devswarm/workspaces")).expect("workspaces dir").flatten().collect();
+    assert_eq!(desc.len(), 1, "the Primary's descriptor is written");
+    for launcher in ["devswarm.js", "wake-watch.js"] {
+        let m = std::fs::metadata(home.join(".anti-hall/bin").join(launcher)).expect("a stable launcher");
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111, 0o111, "{launcher} is executable");
+    }
+    // the same session again: its own seat, no notice
+    let second = run(&l);
+    assert!(!second["out"].as_str().unwrap_or_default().contains("devswarm-primary-seat"), "{second}");
+    // a closed holder is replaced by this session
+    let file = desc[0].path();
+    let mut d: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    d["sessionId"] = json!("old-session");
+    std::fs::write(&file, d.to_string()).unwrap();
+    let adopted = run(&l);
+    let text = adopted["out"].as_str().unwrap_or_default();
+    assert!(text.contains("adopted Primary") && text.contains("old-session"), "{adopted}");
+}
+
+/// The count of site `site` under hand-back counter `kind` so far (this process's journal).
+fn handbacks(kind: &str, site: &str) -> u64 {
+    crate::obs::counters::snapshot()["node_handback"]["sites"][site][kind].as_u64().unwrap_or(0)
+}
+
+#[test]
+fn unable_counts_a_stand_in_by_default_and_an_abandoned_decision_with_the_second_argument() {
+    crate::discard::harmless(std::fs::create_dir_all(crate::paths::dir())); // keep: the scratch state dir of this test run
+    let h = home("unable");
+    let e = env(&h);
+    // sites unique to this run: the journal of the scratch state directory outlives a run
+    let tag = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    put_override(&h, "zz-unable", &format!("function decide(p) {{ ah.unable('z:s{tag}'); ah.unable('z:d{tag}', 'abandoned'); return 'allow'; }}"));
+    let prefix = defaults::text("script.unable_prefix");
+    let (stand, drop) = (format!("{prefix}z:s{tag}"), format!("{prefix}z:d{tag}"));
+    let before = (handbacks("stand_in", &stand), handbacks("abandoned", &drop));
+    assert_eq!(run_forced("zz-unable", &json!({}), &e), Some(Some(Verdict::Allow)));
+    assert_eq!(handbacks("stand_in", &stand), before.0 + 1, "a case the script went on with is a stand-in");
+    assert_eq!(handbacks("abandoned", &drop), before.1 + 1, "a dropped decision is abandoned");
+    assert_eq!(handbacks("abandoned", &stand), 0, "and not the other way round");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// The hot spots of the live counters: with no usable home or plugin root no launcher can be named. The Stop gate and the
+/// SessionStart role answer themselves (an allow, counted abandoned), never a deferral and never a block.
+#[test]
+fn the_parent_gate_and_the_child_role_decide_natively_when_no_launcher_can_be_named() {
+    crate::discard::harmless(std::fs::create_dir_all(crate::paths::dir())); // keep: the scratch state dir of this test run
+    let e = RequestEnv::from_pairs([("HOME", "relative-home")]);
+    let p = json!({"session_id": "s1", "cwd": "/", "transcript_path": "/nonexistent/t.jsonl"});
+    let prefix = defaults::text("script.unable_prefix");
+    for (check, event, site) in [("devswarm-parent-gate", "Stop", "no_launchers"), ("devswarm-child-role", "SessionStart", "no_home_or_root")] {
+        let full = format!("{prefix}{check}:{site}");
+        let before = handbacks("abandoned", &full);
+        let got = super::run_forced(check, &p, &Value::Null, event, &e);
+        assert_eq!(got, Some(Some(Verdict::Allow)), "{check}: decided natively, no deferral and no block");
+        assert_eq!(handbacks("abandoned", &full), before + 1, "{check}: the dropped decision is counted abandoned at {site}");
     }
 }

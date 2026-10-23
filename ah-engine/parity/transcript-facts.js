@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The Node side of the transcript-index parity check (X1): prints, for one transcript file, the facts the engine's
 // index derives, computed by the real Node readers over the WHOLE file:
-//   node transcript-facts.js <transcript.jsonl> --hooks <repo>/plugins/anti-hall/hooks
+//   node transcript-facts.js <transcript.jsonl> --hooks <repo>/plugins/anti-hall-node/hooks
 // Authorities (each fact names its reader):
 //   last assistant (dedup + legacy)  hooks/speculation-guard.js collectTextFromEntryDedup/Legacy (sliced from the
 //                                    source, so a change there is a change here; the guard exports nothing) driven by
@@ -14,7 +14,7 @@
 const fs = require('fs'), path = require('path');
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const file = process.argv[2];
-const HOOKS = path.resolve(arg('--hooks', path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks')));
+const HOOKS = path.resolve(arg('--hooks', path.join(__dirname, '..', '..', 'plugins', 'anti-hall-node', 'hooks')));
 const PLUGIN = path.resolve(HOOKS, '..');
 
 // Slice top-level functions out of a hook script (which has side effects on require) and build them in isolation.

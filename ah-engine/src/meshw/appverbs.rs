@@ -50,9 +50,14 @@ fn concat(v: Option<&OVal>) -> R<String> {
     })
 }
 
-/// `String(id).slice(0, 8)`.
-fn short(id: &str) -> R<String> {
-    slice_utf16(id, defaults::num("devswarm_cli.app_short_id") as usize).ok_or_else(|| crate::meshw::ident::Defer("surrogate-cut".into()))
+/// `names.shortId(id)`: the first `app_short_id` characters, after the mesh prefix when the id carries one (GH #203).
+pub fn short(id: &str) -> R<String> {
+    let mut width = defaults::num("devswarm_cli.app_short_id") as usize;
+    let prefix = defaults::text("devswarm_cli.app_short_id_mesh_prefix");
+    if id.starts_with(prefix) {
+        width += prefix.encode_utf16().count();
+    }
+    slice_utf16(id, width).ok_or_else(|| crate::meshw::ident::Defer("surrogate-cut".into()))
 }
 
 /// `a || b` over two strings-or-scalars, as the text `+` prints.
@@ -404,4 +409,17 @@ pub fn app_sync_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     o.put("gapTotal", rec["gapTotal"].as_f64().map_or(OVal::Null, n));
     o.put("missing", count(rec, "schemaMissing")).put("elapsedMs", n(elapsed));
     Ok(answer(0, o.done().stringify()))
+}
+
+#[cfg(test)]
+mod short_tests {
+    use super::short;
+
+    #[test]
+    fn a_mesh_id_keeps_its_hash_and_a_uuid_keeps_eight() {
+        assert_eq!(short("primary-d7a18d81").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("primary-d7a18d81ffee").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("48f38c9e-8dc2-426a-adb2-f9401ab84e99").unwrap(), "48f38c9e");
+        assert_eq!(short("abc").unwrap(), "abc");
+    }
 }

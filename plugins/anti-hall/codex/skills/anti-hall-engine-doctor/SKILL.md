@@ -14,12 +14,16 @@ Health check, repair, migrations and capability scans.
 | `ah-engine briefing` | `[--root <plugin dir>]` A derived inventory of a plugin tree (D81, the port of scripts/briefing.js): every registered hook by event with the purpose from its... | main, codex, workspace, subagent |
 | `ah-engine capability-scan` | `[--root <plugin dir>]` A read-only gap report (D81, the port of scripts/capability-scan.js): for each opt-in capability of a plugin tree, whether it is shipped... | main, codex, workspace, subagent |
 | `ah-engine defect` | `<report\|list\|show\|rule\|archive\|backfill\|recurring\|similar> [flags] [--json]` File, list, show and rule anti-hall defect reports and query the bug history (L9a, the port of scripts/defect.js): `report`, `list... | main, codex, workspace, subagent (owner args: rule, archive) |
-| `ah-engine doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the... | main, codex, workspace, subagent (owner args: --repair, --fix) |
+| `ah-engine doctor` | `[--check] [--repair\|--fix] [--dry-run] [--migrations-only] [--quiet] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>] [--repair-ingest-orphans] [--repair-test-stores] [--repair-resurrected] [--apply]` The health check and repair of anti-hall (D81), with the Node doctor's report layout and finding texts: the platform and versions, the... | main, codex, workspace, subagent (owner args: --repair, --fix) |
+| `ah-engine fallback` | `<node\|off\|status>` The manual fallback switch of the Node backup (stage 2): `node` makes the launcher run the original Node hooks directly instead of the... | main, codex |
 | `ah-engine harvest` | `[--dir <path>] [--stale-days <n>]` Scan a code tree for deliberate-debt markers, `anti-hall: <ceiling>, <when>` in any comment syntax (D81, the port of... | main, codex, workspace, subagent |
 | `ah-engine install-codex` | `[--global] [--dry-run] [--root <plugin dir>]` Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into... | main, codex |
 | `ah-engine migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state,... | main, codex |
-| `ah-engine shadow-compare` | `<scratch dir>` Internal: the detached half of a Node shadow (L9a) | main, codex, workspace, subagent |
+| `ah-engine shadow-compare` | `[--days N] [--check ID] [--event NAME] [--daily]` Report how the engine and the original Node hooks agree (the Node backup, stage 1): pairs the shadow ledger's engine rows and node rows... | main, codex, workspace, subagent |
+| `ah-engine shadow-run` | `<job file>` Internal: the detached half of the Node shadow | main, codex, workspace, subagent |
 | `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the port of skills/update/scripts/update.js): `git pull --ff-only` of the marketplace clone (a dirty... | main, codex |
+| `ah-engine refresh` | `[--force] [--home <dir>]` Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert),... | main, codex |
+| `ah-engine engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` Update the engine binary: runs the plugin's updater script (hooks/ah-update.sh) with the given arguments (--from FILE [--sha256 X]... | main, codex |
 
 ## Guards
 
@@ -48,5 +52,6 @@ Health check, repair, migrations and capability scans.
 - `maintenance.repairOnReload` = true: The switch maintenance.repairOnReload (on by default)
 - `codexNudge.enabled` = true: Where the Codex nudge switch is read from (codexNudge.enabled, default on)
 - `guards.codexQuotaDetect` = true: Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on)
+- `maintenance.unitsHeal` = "on": The switch of the units heal that update's post-pull stage and `doctor --repair` run, maintenance.unitsHeal: on (the default) writes the...
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

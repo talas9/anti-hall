@@ -46,8 +46,8 @@ doc = "Placeholder in the compact protocol texts that is replaced by the plugin 
 value = "<abs>"
 
 [verify_first.root_probe]
-doc = "File under the plugin root whose real location gives the plugin root, the way Node derives it (the directory two levels above hooks/verify-first-core.js, symbolic links resolved)."
-value = "hooks/verify-first-core.js"
+doc = "File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file."
+value = "hooks/ah-hook.sh"
 
 [verify_first.summary_subagent]
 doc = "One-line description of the verify-first-subagent check in the generated reference."

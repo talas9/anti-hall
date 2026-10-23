@@ -1,0 +1,53 @@
+name: no-node
+
+# "No Node installed" acceptance harness (v1.0 Node-free plan, lane L01): ah-engine/tests/no_node drives every hook event
+# of both hosts, every skill and agent command line, the status line, the monitors and the daemon in a scratch HOME whose
+# PATH has no Node (a recording `node` shim proves nothing starts it). Node paths that remain are listed in
+# ah-engine/tests/no_node/expected_failures.toml; the job fails on a new one and on a listed one that is gone.
+# Node is deliberately NOT set up here: the harness builds its own PATH, and the runner's Node must not be needed.
+on:
+  push:
+    branches: [engine-proto]
+    paths: ['ah-engine/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
+  pull_request:
+    paths: ['ah-engine/**', 'plugins/anti-hall/**', '.github/workflows/no-node.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-node:
+    name: no-node (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS arm64 and Linux x86_64 first (issue checklist); macOS Intel and Linux arm64 follow with the platform lane.
+        os: [macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: ah-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine
+      - uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        with:
+          tool: cargo-nextest
+      - name: No-Node harness
+        run: cargo nextest run --profile ci --test no_node
+        env:
+          # Headroom for the script CPU limit on a loaded shared runner (as in ah-engine.yml).
+          AH_ENGINE_SCRIPT_TIME_MS: "2000"
+      - name: Upload the harness reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: no-node-reports-${{ matrix.os }}
+          path: ah-engine/target/tmp/no_node/
+          if-no-files-found: warn

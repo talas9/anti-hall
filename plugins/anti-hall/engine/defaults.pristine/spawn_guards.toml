@@ -78,7 +78,7 @@ value = "Direct Claude remote-agent messaging between a DevSwarm Primary/child a
 
 [devswarm_comms.msg_block_instead]
 doc = "What to do instead of the blocked send."
-value = "use the DevSwarm mesh: `node plugins/anti-hall/scripts/devswarm.js send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
+value = "use the DevSwarm mesh: `~/.anti-hall/bin/devswarm.js send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
 
 [devswarm_comms.msg_ok_what]
 doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."
@@ -325,11 +325,33 @@ value = [
   '''\b(?:cwd\s+is|cwd|work(?:ing)?\s+(?:in|inside)|working\s+dir(?:ectory)?|cd(?:\s+into)?)\s*[:=]?\s*{path}''',
   '''\bscratch\s+(?:clone|dir(?:ectory)?|copy)\s+(?:under|at|in)\s+{path}''',
   '''\bclone\s+(?:\S+\s+)?into\s+{path}[^\s]*\s+and\s+(?:work|edit|make|fix)\b''',
+  '''\bgit\s+(?:-C\s+\S+\s+)?worktree\s+add\s+(?:-\S+\s+)*[\x60'"]?(?:~\/|\/|\$HOME\/)''',
+  '''\b(?:its|your|their)\s+own\s+(?:git\s+)?worktrees?\b''',
 ]
+
+[swarm_guard.re_named_tree]
+doc = "JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree (\"a|your|its|scratch… clone\", worktree, checkout, cd, cwd or work-in target; a bare \"git clone <src>\" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it."
+value = '''\b(?:(?:a|an|the|your|its|their|own|scratch|separate|fresh|lane)\s+(?:clone|worktree|checkout)|worktree|cwd(?:\s+is)?|cd(?:\s+into)?|work(?:ing)?\s+(?:in|inside|from)|working\s+dir(?:ectory)?)\s*(?:(?:at|in|under|into|is|to)\s+)?[:=]?\s*[\x60'"]?(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_path]
+doc = "JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path)."
+value = '''(?:~|\$HOME)?\/[^\s\x60'",;)]+'''
+
+[swarm_guard.re_named_tree_trim]
+doc = "JavaScript regex source: trailing sentence punctuation cut from a named-tree path."
+value = '''[.:]+$'''
+
+[swarm_guard.re_named_tree_home]
+doc = "JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory."
+value = '''^(?:~|\$HOME)'''
 
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."
 value = '''\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b'''
+
+[swarm_guard.re_api_only]
+doc = "JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it."
+value = '''\b(?:gh|github)[- ](?:api|cli)[- ]only\b|\bonly\s+(?:calls?|uses?|runs?|via)\s+(?:the\s+)?(?:github\s+api|gh\s+(?:api|cli|commands?))\b|\b(?:via|through|using)\s+the\s+github\s+api\s+only\b|\bno\s+(?:local\s+)?(?:checkout|file\s+(?:edits|writes|changes)|working[- ]tree)\b|\b(?:does\s+not|doesn'?t|do\s+not|don'?t|never)\s+(?:touch|write\s+to|edit|modify)\s+(?:the\s+|any\s+|a\s+)?(?:local\s+)?(?:checkout|working\s+tree|repo\s+files?)\b'''
 
 [swarm_guard.re_in_place]
 doc = "JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading."

@@ -22,40 +22,6 @@ value = "ANTIHALL_UPDATE_QUIET"
 doc = "The running Claude Code binary; the fallback `update` runs `plugin update` with when `claude` is not on the PATH."
 value = "CLAUDE_CODE_EXECPATH"
 
-# ---- shadow comparison --------------------------------------------------------------------------------------------------
-
-[operator.shadow]
-doc = "1 = the Node version of an operator command runs read-only beside the engine's (update: `--check` after the update; install-codex: `--dry-run` before the write) and a difference in the reported result is logged. The engine's result is always the real one; the Node script is never run in a way that repeats a side effect. 0 = off."
-value = 1
-min = 0
-max = 1
-
-[operator.shadow_timeout_ms]
-doc = "How long the Node shadow run may take before it is abandoned (nothing is logged for an abandoned run)."
-value = 30000
-unit = "ms"
-min = 1000
-
-[operator.shadow_update_log]
-doc = "Event-log text when the Node `update.js --check` disagrees with the engine's update about the latest version."
-value = "update shadow mismatch: node --check reports latest {nl}, the engine updated to {el}"
-
-[operator.shadow_check_log]
-doc = "Event-log text when the Node `update.js --check` prints a different status line than `update --check`."
-value = "update --check shadow mismatch: node={node} engine={engine}"
-
-[operator.shadow_codex_log]
-doc = "Event-log text when the Node `install-codex.js --dry-run` reports something other than what the engine then wrote."
-value = "install-codex shadow mismatch: node={node} engine={engine}"
-
-[operator.dry_run_flag]
-doc = "The flag that makes install-codex write nothing (given to the Node shadow run)."
-value = "--dry-run"
-
-[operator.codex_script_rel]
-doc = "The Node installer inside the plugin directory."
-value = "codex/install-codex.js"
-
 # ---- update: paths and limits ---------------------------------------------------------------------------------------------
 
 [update.marketplace_rel]
@@ -69,6 +35,10 @@ value = "cache/anti-hall/anti-hall"
 [update.installed_json]
 doc = "The harness-owned registry of installed plugins under the plugins root. `update` reads it and never writes it."
 value = "installed_plugins.json"
+
+[update.settings_rel]
+doc = "The user's harness settings file, relative to the plugins root: its `enabledPlugins` says which registered install is the enabled one."
+value = "../settings.json"
 
 [update.plugin_src_rel]
 doc = "The plugin directory inside the marketplace clone."
@@ -86,9 +56,6 @@ value = "CHANGELOG.md"
 doc = "The manifest as git names it on a remote ref (`--check` reads the remote version from it)."
 value = "plugins/anti-hall/.claude-plugin/plugin.json"
 
-[update.node_script_rel]
-doc = "The Node update script inside the plugin directory, run with --post-pull-only for the stages the engine does not port (the DevSwarm store sweeps and the settings migration)."
-value = "skills/update/scripts/update.js"
 
 [update.max_bytes]
 doc = "Largest manifest, registry or changelog `update` reads; a larger file counts as unread."
@@ -118,10 +85,6 @@ doc = "The post-pull stages' overall budget when the environment does not set on
 value = 90000
 unit = "ms"
 
-[update.reexec_margin_ms]
-doc = "Extra wait for the Node stage run beyond its budget and the harness registration (one overrunning stage plus process start)."
-value = 60000
-unit = "ms"
 
 [update.poll_ms]
 doc = "How often `update` checks a child process it waits for."
@@ -216,6 +179,10 @@ value = "(?i)accept-command|sha256"
 [update.confirm_shown]
 doc = "How many UTF-16 units of that reply are shown."
 value = 300
+
+[update.available_re]
+doc = "The start of a `--check` status action that says a newer version exists; the human summary headline then reads as available, not up to date."
+value = "^update available \\("
 
 [update.failed_re]
 doc = "The words in a status action that make the human summary read as a failure."
@@ -327,9 +294,6 @@ value = "copied {version}"
 doc = "Cache sync reason."
 value = "copy failed: {error}"
 
-[update_msg.stage_script_missing]
-doc = "Why a post-pull stage could not run in Node. Placeholder: script."
-value = "{script} is not there"
 
 [update_msg.stage_start]
 doc = "Progress line on stderr before a stage."
@@ -372,6 +336,10 @@ value = "not updated"
 [update_human.state_updated]
 doc = "Head state."
 value = "updated to v{latest}"
+
+[update_human.state_available]
+doc = "Head state: `--check` found a newer version."
+value = "v{latest} available"
 
 [update_human.state_ok]
 doc = "Head state."

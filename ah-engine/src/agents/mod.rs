@@ -17,12 +17,14 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 mod facts;
+mod live;
 mod signals;
 mod sinks;
 mod sources;
 mod status;
 #[cfg(test)]
 mod tests;
+mod wake;
 
 use crate::checks::git::util::Settings;
 use crate::defaults::{self, V};
@@ -61,6 +63,10 @@ pub(crate) fn state_name(k: &str) -> &'static str {
 }
 pub(crate) fn chan(k: &str) -> &'static str {
     defaults::raw("agent_tracker.channels").str_field(k)
+}
+/// A subagent or an in-process teammate: an agent a session launched, which finishes ("done") rather than waits.
+pub(crate) fn is_child(a: &Agent) -> bool {
+    a.kind == kind_name("subagent") || a.kind == kind_name("teammate")
 }
 /// `Math.min`-style cap of a text to `n` characters.
 pub(crate) fn cap(s: &str, n: u64) -> String {
@@ -147,6 +153,9 @@ pub struct Pending {
     pub label: String,
     /// `commit`, `test` or empty.
     pub class: String,
+    /// A background shell command: its result names the task whose end the session is told of.
+    #[serde(default)]
+    pub bg: bool,
 }
 
 /// A raised signal on one agent.
@@ -190,7 +199,7 @@ pub struct Ws {
 pub struct Agent {
     /// The agent id (a session id, a subagent id, a heartbeat id).
     pub id: String,
-    /// `main`, `subagent`, `workspace` or `heartbeat`.
+    /// `main`, `subagent`, `teammate`, `codex`, `workspace` or `heartbeat`.
     pub kind: String,
     /// The session that launched it (a subagent), or its own session id.
     pub parent: String,
@@ -240,6 +249,18 @@ pub struct Agent {
     pub host: String,
     /// The host reports it exited.
     pub gone: bool,
+    /// The team a teammate belongs to (its meta file).
+    #[serde(default)]
+    pub team: String,
+    /// The host's meta file records the agent as finished.
+    #[serde(default)]
+    pub finished: bool,
+    /// Its transcript start was checked and is not a headless run (checked once).
+    #[serde(default)]
+    pub interactive: bool,
+    /// The pid of the live process the session registry joined to this agent (0 = none).
+    #[serde(default)]
+    pub pid: u32,
     /// Unanswered tool calls by id.
     pub pending: BTreeMap<String, Pending>,
     /// Message ids already counted (the transcript repeats a message's usage on every line).
@@ -264,6 +285,15 @@ pub struct Agent {
     pub armed_until: u64,
     /// The last time a wake path was armed (0 = never in the window).
     pub armed_at: u64,
+    /// A task is open (a declared step not yet completed): set when a step is declared, cleared when the task list or an update completes it.
+    #[serde(default)]
+    pub open: bool,
+    /// Background shell tasks it started and has not seen end: task id, when it started.
+    #[serde(default)]
+    pub bg_ids: BTreeMap<String, u64>,
+    /// Background shell tasks that ended and are not yet reported: task id, when it ended.
+    #[serde(default)]
+    pub exited: Vec<(String, u64)>,
     /// DevSwarm facts, when it is a workspace.
     pub ws: Option<Ws>,
     /// Heartbeat file facts.
@@ -320,6 +350,15 @@ pub struct State {
     pub cli_ok: Option<bool>,
     /// When the CLI source was last probed.
     pub cli_checked: u64,
+    /// When the host's session listing was last taken, and the main and workspace agents it named.
+    #[serde(default)]
+    pub cli_listed: u64,
+    /// The ids of the main and workspace agents the last listing was taken for.
+    #[serde(default)]
+    pub cli_seen: Vec<String>,
+    /// Headless one-shot transcripts seen in the active window (not agents: never tracked or listed).
+    #[serde(default)]
+    pub headless: std::collections::BTreeSet<String>,
 }
 
 impl State {

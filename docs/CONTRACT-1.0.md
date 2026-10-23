@@ -8,20 +8,18 @@ Status: **draft**, written against the `dev` branch at plugin version 0.202.0. E
 names the file it comes from; when this document and the code disagree, the code is
 right and this document gets a fix.
 
-1.0 ships with the Rust engine (`ah-engine`) as the only runtime and no Node requirement; the Node hooks are a temporary compatibility fallback removed in 1.0.
-
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 330 in 20 sections | `plugins/anti-hall/hooks/lib/settings-schema.js` (`SECTIONS`) |
-| `devswarm.js` verbs | 47 | `plugins/anti-hall/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
+| Settings keys | 332 in 20 sections | `plugins/anti-hall-node/hooks/lib/settings-schema.js` (`SECTIONS`) |
+| `devswarm.js` verbs | 47 | `plugins/anti-hall-node/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (83 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
-| Codex hook scripts | 44 (59 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
+| Hook scripts | 62 (84 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
+| Codex hook scripts | 44 (60 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
 | Skills | 29 Claude, 32 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys
 
-**Schema:** `plugins/anti-hall/hooks/lib/settings-schema.js`. Each entry has `key`, `type`
+**Schema:** `plugins/anti-hall-node/hooks/lib/settings-schema.js`. Each entry has `key`, `type`
 (`boolean`, `number`, `string`, `enum`, `csv`, `object`), `default`, and optionally `env`,
 `values`, `min`/`max`, `legacy`, `pluginOption`, `advanced`, `locked`, `homeOnly`. A key is
 addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArchive.mode`).
@@ -29,11 +27,11 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | Section | Label | Keys | Headline keys (keep a native `/config` row) |
 |---|---|---|---|
 | `autoHandover` | Auto Handover | 10 | `enabled`, `pct` |
-| `guards` | Guards | 74 | `modelRouting` |
+| `guards` | Guards | 75 | `modelRouting` |
 | `safety` | Safety Guards | 4 | `gitGuard`, `commandGuard`, `editGuard`, `swarmGuard` |
 | `context` | Context Injections | 22 | |
 | `maintenance` | Maintenance | 5 | |
-| `agents` | Agent tracker | 3 | |
+| `agents` | Agent tracker | 4 | |
 | `versionAlerts` | Version Alerts | 3 | |
 | `updates` | Updates / Maintenance | 5 | |
 | `limitConserve` | Limit Conservation | 3 | `mode` |
@@ -49,12 +47,12 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `engine` | Engine | 2 | |
 | `defects` | Defects | 1 | |
 
-Of the 330 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 251
-have an env override, 13 are `locked` (safety keys), 3 are `homeOnly`. The full list with
+Of the 332 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 253
+have an env override, 14 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
 
-**Precedence** (`plugins/anti-hall/hooks/lib/settings.js`, `get()` and `resolveBelowFile()`),
+**Precedence** (`plugins/anti-hall-node/hooks/lib/settings.js`, `get()` and `resolveBelowFile()`),
 highest first:
 
 1. **env**: the key's own env var (`entry.env`), then any deprecated `envAliases` (the canonical `ANTIHALL_*` name wins when both are set), when the value parses for the key's type. `guards.scanThrottle` and `maintenance.sessionEndReaper` keep their old `ANTI_HALL_SCAN_THROTTLE` / `ANTI_HALL_SESSION_END_REAPER` names as aliases.
@@ -94,7 +92,7 @@ forward-migrated (`companion/lib/migrations.js` `migrateSettingsFromLegacy`).
 
 ### `scripts/devswarm.js`
 
-Source: the `run()` switch in `plugins/anti-hall/scripts/devswarm.js`. `devswarm.js help`
+Source: the `run()` switch in `plugins/anti-hall-node/scripts/devswarm.js`. `devswarm.js help`
 (and `help --short`, `help <verb>`, `<verb> --help`, `-h`) lists the verbs from that switch,
 and so does the `unknown command:` error, so neither can drift from the dispatcher. 47 verbs:
 
@@ -260,7 +258,7 @@ Hooks marked "none (not toggleable)" are listed in `NOT_TOGGLEABLE`
   `compact-advice-guard`) also honour `stop_hook_active`.
 - **No network unless documented.** Hooks make no network calls except those listed in
   [`PRIVACY.md`](../PRIVACY.md): the update check (`git ls-remote --tags`, on by default),
-  the one-time download of the `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
+  the one-time download of the optional `ah-engine` binary from the GitHub Release (sha256-pinned in `ah-engine.lock`; the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0` skips it), and the opt-in Jev, semantic-judge and triage calls. A new outbound call is a MINOR
   change that must land in `PRIVACY.md` in the same release; a new default-on one is MAJOR.
 - **No automated deletion.** Automatic paths (hooks, `update.js`, `doctor --repair`,
   the supervisor) never delete messages, user files or repo content. Deletion-class
@@ -289,7 +287,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | `<repo>/.anti-hall/handovers/` | `INDEX.md` + `<date>/<session>/<name>` | `hooks/lib/auto-handover-text.js`, `hooks/lib/handover-find.js` |
 | `<repo>/.anti-hall/command-allow.json`, `edit-allow.json` | per-project allowlists (used only once trusted) | `hooks/lib/command-allow.js` |
 
-Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the engine's binary, state databases, local telemetry and last-known-good copies), every
+Everything else under `~/.anti-hall/` (`cache/`, `state/`, `agents/`, `bin/`, `ah-engine/` (the optional engine's binary, state databases, local telemetry and last-known-good copies), every
 `*-state.json`, lock and marker files, the SQLite schema inside `devswarm.db`) is internal:
 its location and format may change in any release.
 

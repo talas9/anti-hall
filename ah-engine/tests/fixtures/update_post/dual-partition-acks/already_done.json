@@ -1,0 +1,97 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "dual-partition-acks: already completed for 0.1.0 - skipped (one-time per-version migration)",
+    "errors": 0,
+    "raised": 0,
+    "rows": 0,
+    "skippedAlreadyDone": true,
+    "stores": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/update-sweep-state.json": "644 {\"reconcileDualPartitionAcks\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "x1",
+          "workspace_id": "{ANCHOR}"
+        },
+        {
+          "hash": "x2",
+          "workspace_id": "{ANCHOR}"
+        },
+        {
+          "hash": "x3",
+          "workspace_id": "{ANCHOR}"
+        },
+        {
+          "hash": "y1",
+          "workspace_id": "kid-1"
+        },
+        {
+          "hash": "y2",
+          "workspace_id": "kid-1"
+        },
+        {
+          "hash": "y3",
+          "workspace_id": "kid-1"
+        },
+        {
+          "hash": "y4",
+          "workspace_id": "kid-1"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "kid-1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "kid-1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "{ANCHOR}",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "{ANCHOR}",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 2
+        }
+      ],
+      "registry": [
+        {
+          "id": "kid-1",
+          "session_id": null,
+          "worktree_path": "{REPO}"
+        },
+        {
+          "id": "{ANCHOR}",
+          "session_id": null,
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

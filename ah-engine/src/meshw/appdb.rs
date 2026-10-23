@@ -35,6 +35,10 @@ pub struct State {
     pub worktree: Option<String>,
     /// `builderType`.
     pub builder_type: Option<String>,
+    /// `branchName` (read from the database only; a cache file does not hold it).
+    pub branch: Option<String>,
+    /// `label`, the workspace title (read from the database only; a cache file does not hold it).
+    pub label: Option<String>,
 }
 
 /// The cache file the verb writes after its own commit point.
@@ -192,6 +196,8 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         idx(defaults::text("mesh_write.app_col_worktree")),
         idx(defaults::text("mesh_write.app_col_builder_type")),
     );
+    let i_branch = idx(defaults::text("mesh_write.app_col_branch"));
+    let i_label = idx(defaults::text("mesh_write.app_col_label"));
     let (Some(i_id), Some(i_active)) = (i_id, i_active) else { return Ok(None) };
     let Ok(mut st) = conn.prepare(&q) else { return Ok(None) };
     let Ok(mut rows) = st.query([]) else { return Ok(None) };
@@ -225,7 +231,15 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
             Some(i) => text_of(get(i)?)?,
             None => None,
         };
-        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type };
+        let branch = match i_branch {
+            Some(i) => text_of(get(i)?)?,
+            None => None,
+        };
+        let label = match i_label {
+            Some(i) => text_of(get(i)?)?,
+            None => None,
+        };
+        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type, branch, label };
         match at.get(&id) {
             Some(&p) => out[p] = st,
             None => {
@@ -316,7 +330,7 @@ fn read_cache(home: &Path, file: &str, sig: &Sig, now: i64) -> R<Option<Vec<Stat
             OVal::Arr(_) => return defer("app-cache-shape"),
             _ => continue, // `!v || typeof v !== 'object'`
         };
-        let st = State { id: id.clone(), active, archived, worktree, builder_type };
+        let st = State { id: id.clone(), active, archived, worktree, builder_type, branch: None, label: None };
         match at_ix.get(id) {
             Some(&p) => out[p] = st,
             None => {
@@ -363,18 +377,23 @@ pub fn builder_states(home: &Path, env: &Env, now: i64, xcache: bool) -> R<Optio
 pub fn archived_verdict(home: &Path, env: &Env, now: i64, id: &str, worktree: Option<&str>, xcache: bool) -> R<(Option<bool>, Option<CacheWrite>)> {
     let Some(found) = builder_states(home, env, now, xcache)? else { return Ok((None, None)) };
     let cache = found.cache;
+    Ok((verdict_in(&found.states, id, worktree)?, cache))
+}
+
+/// The verdict of [`archived_verdict`] for states already read: a caller that asks about many workspaces reads them once.
+pub fn verdict_in(states: &[State], id: &str, worktree: Option<&str>) -> R<Option<bool>> {
     if !id.is_empty()
-        && let Some(st) = found.states.iter().find(|s| s.id == id)
+        && let Some(st) = states.iter().find(|s| s.id == id)
     {
-        return Ok((st.archived, cache));
+        return Ok(st.archived);
     }
-    let Some(wt) = worktree.map(norm_path).transpose()?.flatten() else { return Ok((None, cache)) };
+    let Some(wt) = worktree.map(norm_path).transpose()?.flatten() else { return Ok(None) };
     let mut saw_archived = false;
-    for b in found.states.iter().filter(|b| b.worktree.as_deref() == Some(wt.as_str())) {
+    for b in states.iter().filter(|b| b.worktree.as_deref() == Some(wt.as_str())) {
         if b.active || b.archived != Some(true) {
-            return Ok((Some(false), cache));
+            return Ok(Some(false));
         }
         saw_archived = true;
     }
-    Ok((saw_archived.then_some(true), cache))
+    Ok(saw_archived.then_some(true))
 }

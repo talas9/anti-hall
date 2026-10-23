@@ -110,6 +110,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Roadmap: ROADMAP.md
   - Getting started:
       - Install: start/install.md
       - Update: start/update.md

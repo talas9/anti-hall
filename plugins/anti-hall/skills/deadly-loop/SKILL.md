@@ -114,35 +114,21 @@ Record these in the loop state record. Compare every round to detect drift.
 
 ### A3. Lock the verification preamble
 
-Every spawned agent MUST run this before any read/write. It is pure Node
-(`child_process.execFileSync`), so it runs unchanged on macOS and Linux —
-no POSIX shell, no `$(...)`, no `[ ... ]`. Save as `verify-branch.js` (or paste into
-`node -e`) and run `node verify-branch.js <expected_dir> <branch> <sha>`:
+Every spawned agent MUST run this before any read/write. It is plain `git`, so it runs
+unchanged on macOS and Linux. Substitute `<expected_dir> <branch> <sha>`:
 
-```js
-// verify-branch.js — exits 1 on branch/SHA drift, 0 when the worktree matches.
-'use strict';
-const { execFileSync } = require('child_process');
-const [dir, expBranch, expSha] = process.argv.slice(2);
-const git = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
-const actualBranch = git('branch', '--show-current');
-const actualSha = git('rev-parse', '--short', 'HEAD');
-if (actualBranch !== expBranch || actualSha !== expSha) {
-  console.error(`BRANCH/SHA MISMATCH: expected=${expBranch}@${expSha} actual=${actualBranch}@${actualSha}`);
-  console.error('STOP — surface to orchestrator before proceeding');
-  process.exit(1);
-}
-console.log(`OK ${actualBranch}@${actualSha}`);
+```sh
+act_branch=$(git -C <expected_dir> branch --show-current)
+act_sha=$(git -C <expected_dir> rev-parse --short HEAD)
+if [ "$act_branch" != "<branch>" ] || [ "$act_sha" != "<sha>" ]; then
+  echo "BRANCH/SHA MISMATCH: expected=<branch>@<sha> actual=$act_branch@$act_sha" >&2
+  echo "STOP — surface to orchestrator before proceeding" >&2
+  exit 1
+fi
+echo "OK $act_branch@$act_sha"
 ```
 
 The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha>` from the moment of dispatch.
-
-> POSIX-only equivalent (Linux/macOS shells), if a Node verifier is unavailable:
-> ```bash
-> cd <expected_dir>
-> [ "$(git branch --show-current)" = "<branch>" ] && [ "$(git rev-parse --short HEAD)" = "<sha>" ] \
->   || { echo "BRANCH/SHA MISMATCH — STOP, surface to orchestrator"; exit 1; }
-> ```
 
 ## Phase B — Round N debate
 
@@ -276,7 +262,7 @@ Run independently of the Reviewer and Auditor agents.
 All three seats return → **before** you dedup by hand, write their combined findings to a
 scratch JSON array (`{id, severity, file, line, text, round, seat}` per finding — `seat` is
 `'reviewer'|'auditor'|'critic'`) and run
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/finding-dedup.js" --file <scratch findings.json>`.
+`~/.anti-hall/ah-engine/bin/ah-engine finding-dedup --file <scratch findings.json>`.
 This is the opt-in Jev `findingDedup` integration (default `on` — 65/65 correct at
 confidence ≥0.85 on a 30-day, 3-project offline benchmark; see CHANGELOG 0.108.4 and the
 `jev` skill's integrations table): it groups findings the classifier judges to describe

@@ -14,11 +14,14 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 static ALLOC: ah_engine::memstat::Counting = ah_engine::memstat::Counting;
 
 fn main() {
-    std::panic::set_hook(Box::new(|_| {})); // a panic must never reach the host's stderr
+    ah_engine::crash::install_panic_hook();
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(feature = "diag")]
-    if args.first().map(String::as_str) == Some("diag") {
+    if args.first().map(String::as_str) == Some("diag") && args.get(1).map(String::as_str) == Some("heap") {
         std::process::exit(ah_engine::diag::run(&args[1..]));
     }
-    std::process::exit(cli::run(&args));
+    // a panic is recorded by the hook; a write to a closed pipe (`ah-engine docs | head`) is the reader leaving, so exit
+    // quietly with the SIGPIPE convention (128 + 13) instead of the panic exit code
+    let code = std::panic::catch_unwind(|| cli::run(&args)).unwrap_or_else(|_| if ah_engine::crash::broken_pipe_seen() { 141 } else { 101 });
+    std::process::exit(code);
 }

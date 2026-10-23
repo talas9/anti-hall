@@ -277,7 +277,8 @@ impl Store for SqliteStore {
     }
 
     fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
-        let (ts, body): (i64, String) = self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok()?;
+        let (ts, body): (i64, String) =
+            self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok_logged("storage_metrics_load")?;
         Some((ts.max(0) as u64, serde_json::from_str(&body).ok()?))
     }
 

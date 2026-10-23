@@ -3,7 +3,7 @@
 // tools/gen-kb-counts.js — regenerate the component counts in docs/KB.md's
 // "Re-verified against the working tree" note from disk, so they cannot drift
 // (a hand-edited "59 hooks" sat next to 61 files on disk):
-//   Hooks: **N** `.js` files      <- plugins/anti-hall/hooks/*.js
+//   Hooks: **N** `.js` files      <- plugins/anti-hall-node/hooks/*.js
 //   N scripts registered in `hooks.json`, M of them also in `codex/hooks/hooks.json`
 //   Claude skills: **N**          <- plugins/anti-hall/skills/*/
 //   Codex skills: **N**           <- plugins/anti-hall/codex/skills/*/
@@ -40,7 +40,7 @@ function counts() {
   const claude = registered(P('hooks', 'hooks.registry.json'));
   const codex = registered(P('codex', 'hooks', 'hooks.registry.json'));
   return {
-    hooks: fs.readdirSync(P('hooks')).filter((f) => f.endsWith('.js')).length,
+    hooks: fs.readdirSync(P('..', 'anti-hall-node', 'hooks')).filter((f) => f.endsWith('.js')).length,
     registered: claude.size,
     alsoCodex: [...claude].filter((f) => codex.has(f)).length,
     claudeSkills: dirs(P('skills')),

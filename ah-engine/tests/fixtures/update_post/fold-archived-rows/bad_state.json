@@ -1,0 +1,34 @@
+{
+  "answer": {
+    "attempted": true,
+    "budgetExhausted": false,
+    "detail": "fold-archived-rows: retired 1 registry row(s) of archived workspace(s)",
+    "errors": 0,
+    "familyDescriptorsErrors": 0,
+    "familyDescriptorsLeft": 0,
+    "familyDescriptorsOk": true,
+    "familyDescriptorsRetired": 0,
+    "forwarded": 0,
+    "left": 0,
+    "notStamped": [],
+    "retired": 1,
+    "skipped": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/archived/": "755",
+    ".anti-hall/devswarm/archived/a1.json": "644 {\"id\":\"a1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/devswarm/summaries/": "755",
+    ".anti-hall/devswarm/summaries/{REPOKEY}.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/update-sweep-state.json": "644 {\"foldArchivedRows\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null},\"foldArchivedFamilyDescriptors\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": []
+    }
+  }
+}

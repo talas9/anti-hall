@@ -7,6 +7,7 @@ use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::health;
 use crate::paths;
+use crate::procwatch::host::{Host, RealHost, env_get};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -215,6 +216,62 @@ pub fn extra_daemons(logged: &[u32], running: impl Fn(u32) -> bool, legit: Optio
     logged.iter().copied().filter(|p| Some(*p) != legit && running(*p)).collect()
 }
 
+fn same_path(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
+
+fn real_home() -> Option<PathBuf> {
+    // SAFETY: getpwuid reads the system passwd entry for this uid; a null result is handled below.
+    let pwd = unsafe { libc::getpwuid(libc::getuid()) };
+    if pwd.is_null() {
+        return None;
+    }
+    // SAFETY: `pwd` is non-null and `pw_dir` is a NUL-terminated C string owned by libc for the life of this call.
+    let dir = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }.to_string_lossy();
+    (!dir.is_empty()).then(|| PathBuf::from(dir.as_ref()))
+}
+
+fn live_state_dir(dir: &Path) -> bool {
+    let Some(home) = real_home() else { return false };
+    [
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")),
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.live_state_dir")),
+    ]
+    .iter()
+    .any(|p| same_path(dir, p))
+}
+
+fn state_from_env(env: &[(String, String)]) -> Option<PathBuf> {
+    env_get(env, defaults::env_name("dir")).filter(|d| !d.is_empty()).map(PathBuf::from).or_else(|| {
+        env_get(env, defaults::env_name("home"))
+            .filter(|h| !h.is_empty())
+            .map(|h| Path::new(h).join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")))
+    })
+}
+
+/// Every `ah-engine serve` process whose state is not the installed live state. The socket is derived from that process's
+/// environment when the OS exposes it.
+pub fn non_live_serve_processes(host: &mut dyn Host) -> Vec<(u32, PathBuf)> {
+    let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default();
+    if exe.is_empty() {
+        return Vec::new();
+    }
+    let serve = format!(" {}", defaults::text("health.serve_arg"));
+    let mut out = Vec::new();
+    for row in host.procs().into_iter().filter(|r| r.cmd.contains(&exe) && r.cmd.contains(&serve)) {
+        let Some(env) = host.environ(row.pid) else { continue };
+        let Some(state) = state_from_env(&env) else { continue };
+        if live_state_dir(&state) {
+            continue;
+        }
+        out.push((row.pid, paths::socket_in(&state)));
+    }
+    out.sort_by_key(|(pid, _)| *pid);
+    out.dedup_by_key(|(pid, _)| *pid);
+    out
+}
+
 /// DMN-01..12: the daemon, the pid files, the cooldowns, the recorded failure.
 pub fn daemon_section(doc: &mut Doc) {
     doc.head(defaults::text("doctor_msg.head_engine"));
@@ -228,6 +285,17 @@ pub fn daemon_section(doc: &mut Doc) {
     match (&reply, &sock_kind) {
         (Some(r), _) => {
             doc.ok(defaults::render("doctor_msg.daemon_up", &[("reply", &js_trim(r))]));
+            if let Some(fo) = crate::client::ctl_json("status").and_then(|st| st.get("fail_open").cloned()).filter(|f| f.is_object()) {
+                let num = |k: &str| fo.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+                let (n, window, top) = (num("in_window"), num("window_s"), fo.get("top_reason").and_then(serde_json::Value::as_str).unwrap_or(""));
+                let effect = crate::failopen::effect(top);
+                let args: [(&str, &dyn std::fmt::Display); 4] = [("n", &n), ("window", &window), ("top", &top), ("effect", &effect)];
+                match fo.get("state").and_then(serde_json::Value::as_str) {
+                    Some(s) if s == defaults::text("fail_open.state_hard") => doc.bad(defaults::render("doctor_msg.fail_open_hard", &args)),
+                    Some(s) if s == defaults::text("fail_open.state_soft") => doc.warnl(defaults::render("doctor_msg.fail_open_soft", &args)),
+                    _ => {}
+                }
+            }
             let their = r.split_whitespace().nth(1).unwrap_or("");
             if !their.is_empty() && their != crate::version() {
                 doc.infol(defaults::render("doctor_msg.daemon_other_version", &[("daemon", &their), ("engine", &crate::version())]));
@@ -262,6 +330,9 @@ pub fn daemon_section(doc: &mut Doc) {
             &[("n", &(extra.len() + usize::from(legit.is_some()))), ("pids", &extra.join(", ")), ("sock", &sock.display())],
         ));
     }
+    for (pid, socket) in non_live_serve_processes(&mut RealHost::new()) {
+        doc.warnl(defaults::render("doctor_msg.daemon_non_live_serve", &[("pid", &pid), ("sock", &socket.display())]));
+    }
     if let Some(left) = health::crashloop_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.bad(defaults::render("doctor_msg.crashloop", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));
@@ -274,11 +345,15 @@ pub fn daemon_section(doc: &mut Doc) {
         let (class, reason, hint) = (f["class"].as_str().unwrap_or(""), f["reason"].as_str().unwrap_or(""), f["hint"].as_str().unwrap_or(""));
         doc.warnl(defaults::render("doctor_msg.failure_recorded", &[("class", &class), ("reason", &reason), ("hint", &hint)]));
     }
+    if let Some(c) = health::last_crash() {
+        doc.warnl(defaults::render("doctor_msg.last_crash", &[("crash", &c)]));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::procwatch::host::{MemInfo, Pressure, ProcRow, Space};
 
     #[test]
     fn io_errors_classify() {
@@ -301,6 +376,55 @@ mod tests {
         assert!(extra_daemons(&[10, 11], |p| p == 10, Some(10)).is_empty());
         // no legitimate daemon (down) and a leftover one still running
         assert_eq!(extra_daemons(&[14], |_| true, None), vec![14]);
+    }
+
+    struct FakeHost {
+        rows: Vec<ProcRow>,
+        env: Vec<(String, String)>,
+    }
+
+    impl Host for FakeHost {
+        fn now_s(&self) -> u64 {
+            0
+        }
+        fn procs(&mut self) -> Vec<ProcRow> {
+            self.rows.clone()
+        }
+        fn proc_row(&mut self, _: u32) -> Option<ProcRow> {
+            None
+        }
+        fn environ(&mut self, _: u32) -> Option<Vec<(String, String)>> {
+            Some(self.env.clone())
+        }
+        fn cwd(&mut self, _: u32) -> Option<PathBuf> {
+            None
+        }
+        fn mem(&mut self) -> MemInfo {
+            MemInfo { swap_used: 0, pressure: Pressure::Unknown }
+        }
+        fn space(&self, _: &Path) -> Option<Space> {
+            None
+        }
+        fn signal(&mut self, _: u32, _: bool) -> bool {
+            false
+        }
+        fn renice(&mut self, _: u32, _: i32) -> bool {
+            false
+        }
+        fn sleep_ms(&mut self, _: u64) {}
+    }
+
+    #[test]
+    fn doctor_finds_non_live_serve_processes_with_pid_and_socket() {
+        crate::defaults::init().unwrap();
+        let state = PathBuf::from("/tmp/ah-engine-doctor-non-live-state");
+        let exe = std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().to_string();
+        let mut host = FakeHost {
+            rows: vec![ProcRow { pid: 4242, ppid: 1, start_s: 0, cpu_pct: 0.0, mem_bytes: 0, cmd: format!("/x/{exe} {}", defaults::text("health.serve_arg")) }],
+            env: vec![(defaults::env_name("dir").to_string(), state.to_string_lossy().into_owned())],
+        };
+        let rows = non_live_serve_processes(&mut host);
+        assert_eq!(rows, vec![(4242, paths::socket_in(&state))]);
     }
 
     #[test]

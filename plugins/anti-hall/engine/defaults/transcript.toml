@@ -123,6 +123,80 @@ doc = "Most characters of text `ah.transcript.evidence` returns in all; a transc
 value = 16777216
 min = 65536
 
+[transcript.evidence_cache_max_paths]
+doc = "How many transcripts' evidence `ah.transcript.evidence` keeps between calls, so a Stop reads only the bytes appended since the last one (0 turns the cache off and every call reads its whole window). The least recently used is dropped first, so more concurrently stopping sessions than this each read their whole window every time."
+value = 8
+min = 0
+unit = "count"
+
+[transcript.evidence_cache_idle_ms]
+doc = "How long a kept transcript evidence may sit unused before it is dropped."
+value = 600000
+min = 0
+unit = "ms"
+
+[transcript.evidence_cache_entry_max_bytes]
+doc = "Largest estimated size of one kept transcript evidence; a larger one is not kept (the next call reads its window afresh)."
+value = 6291456
+min = 65536
+unit = "bytes"
+
+[transcript.evidence_walk_max_entries]
+doc = "How many evidence walks (`ah.transcript.evidenceWalk`, the claim ledger's) are kept at once: one per script run in flight, replaced by the next walk of the same worker. The least recently used is dropped first, and a question about a dropped walk makes the check fail open."
+value = 16
+min = 1
+unit = "count"
+
+[transcript.evidence_walk_idle_ms]
+doc = "How long a kept evidence walk may sit unused before it is dropped (it is only asked about within the script run that made it)."
+value = 30000
+min = 0
+unit = "ms"
+
+[transcript.msg_walk_lost]
+doc = "Thrown by `ah.transcript.walkHas` / `walkNumbers` when the thread has no kept evidence walk (it was never made, or the memory registry dropped it)."
+value = "No evidence walk is kept for this check run."
+
+[transcript.msg_walk_which]
+doc = "Thrown by `ah.transcript.walkHas` / `walkNumbers` for a text other than `evidence` or `withLast`; {which} is the name given."
+value = "Unknown evidence walk text {which}; expected evidence or withLast."
+
+[transcript.tasks_cache_max_paths]
+doc = "How many transcript windows' task lines `ah.transcript.tasks` keeps between calls, so a Stop reads only the bytes appended since the last one (0 turns the cache off and every call reads and parses its whole window). Each window size of a transcript is one entry. The least recently used is dropped first."
+value = 24
+min = 0
+unit = "count"
+
+[transcript.tasks_cache_idle_ms]
+doc = "How long kept task lines may sit unused before they are dropped."
+value = 600000
+min = 0
+unit = "ms"
+
+[transcript.tasks_cache_probe_bytes]
+doc = "Bytes the first look for the newline that ends the cut first line of a window reads (a line is usually shorter); each further look reads twice as much, up to transcript.evidence_read_chunk_bytes."
+value = 4096
+min = 1
+unit = "bytes"
+
+[transcript.tasks_cache_entry_max_bytes]
+doc = "Largest estimated size of the kept task lines of one window; a larger one is not kept (the next call reads its window afresh)."
+value = 4194304
+min = 65536
+unit = "bytes"
+
+[transcript.evidence_fingerprint_bytes]
+doc = "Bytes hashed at each end of the kept lines to notice that a transcript was rewritten in place."
+value = 4096
+min = 1
+unit = "bytes"
+
+[transcript.evidence_read_chunk_bytes]
+doc = "Bytes read at a time while looking for the newline that ends the cut first line of a window."
+value = 65536
+min = 1
+unit = "bytes"
+
 [transcript.ev_type_text]
 doc = "The content block type of a text block."
 value = "text"

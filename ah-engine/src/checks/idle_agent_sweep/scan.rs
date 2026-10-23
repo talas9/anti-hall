@@ -41,9 +41,10 @@ struct Res {
     task_id: Regex,
     status: Regex,
     system_reminder_notice: Regex,
+    stop_gone: Regex,
 }
 
-fn res() -> &'static Res {
+fn res() -> std::sync::Arc<Res> {
     static R: crate::defaults::Cache<Res> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let c = |k: &str, ci: bool| jsre::compile(defaults::text(k), ci);
@@ -59,6 +60,7 @@ fn res() -> &'static Res {
             task_id: c("idle_sweep.re_task_id", false),
             status: c("idle_sweep.re_status", false),
             system_reminder_notice: c("idle_sweep.re_system_reminder_notice", false),
+            stop_gone: c("idle_sweep.re_stop_gone", true),
         }
     })
 }
@@ -121,6 +123,8 @@ struct Scan {
     launched: HashSet<String>,
     terminal: HashSet<String>,
     errored: HashSet<String>,
+    /// Tool-use ids whose result says the task no longer exists: the stop's goal (the agent is gone) is met.
+    gone: HashSet<String>,
     stops: Vec<(String, usize, Option<String>, f64)>,
 }
 
@@ -321,6 +325,7 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
         launched: HashSet::new(),
         terminal: HashSet::new(),
         errored: HashSet::new(),
+        gone: HashSet::new(),
         stops: Vec::new(),
     };
     let marks = defaults::list("idle_sweep.prefilter");
@@ -440,6 +445,12 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
             }
             let mut texts = Vec::new();
             extract_texts(b.inner, &mut texts);
+            if b.is_tool_result
+                && let Some(t) = b.tuid
+                && texts.iter().any(|x| r.stop_gone.is_match(x))
+            {
+                sc.gone.insert(t.to_string());
+            }
             for text in texts {
                 if b.is_tool_result
                     && has_launch
@@ -471,7 +482,7 @@ pub fn finished_teammates<S: AsRef<str>>(lines: impl IntoIterator<Item = S>) -> 
     let background: HashSet<String> = sc.launched.union(&sc.terminal).cloned().collect();
     let stops = std::mem::take(&mut sc.stops);
     for (id, sseq, tuid, sts) in stops {
-        if tuid.as_ref().is_some_and(|t| sc.errored.contains(t)) {
+        if tuid.as_ref().is_some_and(|t| sc.errored.contains(t) && !sc.gone.contains(t)) {
             continue;
         }
         let named: Vec<String> = sc.team_info.items.iter().filter(|(_, info)| info.agent_id == id).map(|(n, _)| n.clone()).collect();

@@ -37,9 +37,9 @@ takes effect in-session — this skill does not over-promise.
   without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
   a daemon installed before this fix shipped.
 
-## What the helper does (`skills/update/scripts/update.js`)
+## What the helper does (`ah-engine update`)
 
-Pure Node ≥ 22 built-ins, macOS + Linux (Windows is not supported), fail-open
+macOS + Linux (Windows is not supported), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).
@@ -125,7 +125,7 @@ its own purposes).
      `installed_plugins.json` itself is still never written directly by this
      helper.
    - **Reconcile (auto, DevSwarm-session-only, fail-open — `reconcilePostUpdate`,
-     v0.58.1):** every update run ALSO drains `node scripts/devswarm.js reconcile`
+     v0.58.1):** every update run ALSO drains `~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile`
      in-process — no separate agent step needed for this part. `reconcile` (v0.58.0)
      drains every worktree registered in this project's shared store once, recovering
      messages stranded in a per-worktree native hivecontrol queue whose child never ran
@@ -143,7 +143,7 @@ its own purposes).
      as `reconcile: {attempted, count, imported, results, detail}` on the JSON status
      line and as a per-worktree breakdown in the human summary. Gate-closed or an
      internal error are both reported and NEVER fatal to the update. The manual verb
-     (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
+     (`~/.anti-hall/ah-engine/bin/ah-engine mesh reconcile`) stays available for an on-demand sweep
      outside an update.
    - **Promote unclaimed sessions (auto, fail-open — `promoteUnclaimedPostUpdate`,
      v0.90.0):** every update run also sweeps every descriptor for the `unclaimed:`
@@ -237,7 +237,7 @@ Modes:
    - `action: run manually: claude plugin update … — then run /reload-plugins …`:
      relay the command for the human to run, then the reload.
 6. After pulling a new plugin version, run
-   `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
+   `~/.anti-hall/ah-engine/bin/ah-engine migrate` once per repo (idempotent,
    safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
    `.anti-hall-history.md` files into the new dated `.anti-hall/history/`
    structure (copy-only; the originals are never touched). A GSD `.planning/`
@@ -265,7 +265,7 @@ Modes:
      DevSwarm workspace (do NOT trigger on machine-level descriptor presence
      alone; the session might be running outside DevSwarm). If inside a
      DevSwarm session, run its `how` command
-     (`node companion/install-devswarm-supervisor.js`) regardless of the
+     (`~/.anti-hall/ah-engine/bin/ah-engine units heal`) regardless of the
      capability scan's `active` value — run it **in-session, foreground** (it
      writes a launchd/systemd/cron job; installs are handled by the main session,
      which judges a failure — command-guard allows this exact installer). The installer is idempotent (`launchctl unload && load` on
@@ -284,7 +284,7 @@ Modes:
      DevSwarm-session-only, no-offer, no-ask posture as the supervisor above**,
      in the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
      session, also run its `how` command
-     (`node companion/install-devswarm-ingest.js`) regardless of the scan's
+     (`~/.anti-hall/ah-engine/bin/ah-engine units heal`) regardless of the scan's
      `active` value — run it **in-session, foreground**
      (it writes a launchd/systemd/cron unit; installs are handled by the main
      session, which judges a failure — command-guard allows this exact installer). It is idempotent

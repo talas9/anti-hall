@@ -6,32 +6,32 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\" --post",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\" --post",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\" --audit",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\" --audit",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/output-verify-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/output-verify-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-reply-tracker.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-drain.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-drain.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\" --post",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js\" --post",
             "timeout": 10
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-quota-detect.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/codex-quota-detect.js\"",
             "timeout": 10
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-tier.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/dispatch-tier.js\"",
             "timeout": 10
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/failure-root-cause-nudge.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/failure-root-cause-nudge.js\"",
             "timeout": 10
           }
         ]
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact-snapshot.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/precompact-snapshot.js\"",
             "timeout": 10
           }
         ]
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-declaration-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
             "timeout": 10
           }
         ]
@@ -105,32 +105,32 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/git-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/command-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/coordinator-work-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-side-pick.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/merge-gate.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scan-throttle.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/scan-throttle.js\"",
             "timeout": 10
           }
         ]
@@ -140,12 +140,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
             "timeout": 45
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
             "timeout": 10
           }
         ]
@@ -155,7 +155,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/edit-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
             "timeout": 10
           }
         ]
@@ -165,7 +165,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/inbox-read-guard.js\"",
             "timeout": 10
           }
         ]
@@ -175,17 +175,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/model-routing-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/swarm-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
             "timeout": 10
           }
         ]
@@ -195,17 +195,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/model-routing-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/swarm-guard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/phase-tracker.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
             "timeout": 10
           }
         ]
@@ -215,7 +215,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/orch-on-spawn.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
             "timeout": 10
           }
         ]
@@ -225,7 +225,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-comms-guard.js\"",
             "timeout": 10
           }
         ]
@@ -235,7 +235,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/ask-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ask-guard.js\"",
             "timeout": 10
           }
         ]
@@ -245,7 +245,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/stale-agent-stop-note.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/stale-agent-stop-note.js\"",
             "timeout": 10
           }
         ]
@@ -262,6 +262,11 @@
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"",
+            "timeout": 10
           }
         ]
       }
@@ -271,7 +276,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-mcp-reaper.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/session-end-mcp-reaper.js\"",
             "timeout": 5
           }
         ]
@@ -282,57 +287,57 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-full.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-full.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-orch.js\" --host=claude",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-orch.js\" --host=claude",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-role.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-role.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/version-alert.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/version-alert.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/fable-availability.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/fable-availability.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-availability.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/codex-availability.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-version.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-version.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/claude-cli-version.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/claude-cli-version.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-self-drift.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repo-self-drift.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/progress-prune.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/progress-prune.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-resume.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/handover-resume.js\"",
             "timeout": 10
           },
           {
@@ -342,27 +347,27 @@
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-weekly-scorecard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/jev-review-reminder.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-review-reminder.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/emit-dedupe-reset.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/defect-nudge.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
             "timeout": 10
           },
           {
@@ -383,57 +388,57 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-guard.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/tasklist-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/tasklist-guard.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-guard.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-guard.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/speculation-judge.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-judge.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/claim-ledger.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/claim-ledger.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/codex-nudge.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/codex-nudge.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-gate.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-gate.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-gate.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover-pause-nag.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover-pause-nag.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-agent-nudge.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/silent-agent-nudge.js\"",
             "timeout": 30
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-advice-guard.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js\"",
             "timeout": 30
           },
           {
@@ -449,7 +454,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first-subagent.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-subagent.js\"",
             "timeout": 10
           },
           {
@@ -476,7 +481,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js\"",
             "timeout": 10
           }
         ]
@@ -487,7 +492,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/task-lifecycle-log.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js\"",
             "timeout": 10
           }
         ]
@@ -498,27 +503,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-first.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/task-tracker.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/idle-agent-sweep.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/limit-conserve-inject.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-parent-inbox.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-inbox.js\"",
             "timeout": 10
           },
           {
@@ -528,17 +533,17 @@
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/hooks/auto-handover.js\"",
+            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js\"",
             "timeout": 10
           },
           {

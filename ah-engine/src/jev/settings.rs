@@ -108,6 +108,12 @@ impl Env {
         self.0.clone()
     }
 
+    /// Estimated retained bytes of this snapshot. It is deliberately just keys plus values; the map's bucket overhead is small
+    /// next to session environments and only needs to be monotonic enough for the memory guard.
+    pub fn bytes(&self) -> usize {
+        self.0.iter().map(|(k, v)| k.len() + v.len()).sum()
+    }
+
     /// A stable SHA-256 digest (lowercase hex) of the whole environment, used to tell two sessions' environments apart.
     /// A digest, not the text: the memo that holds it never contains a key value.
     pub fn digest(&self) -> String {
@@ -266,12 +272,12 @@ pub fn integration_option_name(id: &str) -> String {
 
 /// The default mode of a known integration (the shipped table), `None` for an id it does not list.
 pub fn default_mode(id: &str) -> Option<Mode> {
-    defaults::raw("jev.integrations").get(id).and_then(|v| v.as_str()).and_then(Mode::parse)
+    defaults::raw("jev.default_modes").get(id).and_then(|v| v.as_str()).and_then(Mode::parse)
 }
 
 /// The ids of every integration in the shipped table, in table order.
 pub fn known_integrations() -> Vec<&'static str> {
-    defaults::raw("jev.integrations").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default()
+    defaults::raw("jev.default_modes").as_table().map(|t| t.iter().map(|(k, _)| *k).collect()).unwrap_or_default()
 }
 
 /// A resolved vendor endpoint override that passed the loopback rule, in its canonical form (see [`super::loopback`]).

@@ -16,13 +16,17 @@
 //! Where the Node tool's behaviour cannot be reproduced exactly (a lock held by a live writer, a repository layout the
 //! resolver cannot classify) the command writes nothing, says so on stderr and exits with the deferral code, so the Node
 //! command can be run instead.
+pub(crate) mod ahconfig;
 pub(crate) mod allow;
+pub(crate) mod codex;
+pub(crate) mod cwbaseline;
 pub(crate) mod defect;
+pub(crate) mod dispatch_report;
+pub(crate) mod finding_dedup;
 pub(crate) mod js;
 pub(crate) mod jsio;
 pub(crate) mod phase;
 pub(crate) mod settings;
-pub(crate) mod shadow;
 pub(crate) mod slcfg;
 pub(crate) mod statusline;
 
@@ -31,40 +35,13 @@ use crate::defaults;
 use std::collections::BTreeMap;
 use std::io::Write;
 
-static OUT_CAPTURE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
-static ERR_CAPTURE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
-
-/// From now on keep a copy of everything written through [`out`] and [`err`] (for the Node shadow comparison).
-pub(crate) fn start_capture() {
-    *OUT_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
-    *ERR_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
-}
-
-/// The captured stdout, emptied.
-pub(crate) fn out_capture_take() -> Vec<u8> {
-    OUT_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
-}
-
-/// The captured stderr, emptied.
-pub(crate) fn err_capture_take() -> Vec<u8> {
-    ERR_CAPTURE.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
-}
-
-fn tee(cap: &std::sync::Mutex<Option<Vec<u8>>>, text: &str) {
-    if let Some(buf) = cap.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        buf.extend_from_slice(text.as_bytes());
-    }
-}
-
 /// Text on stdout. A closed pipe has nobody left to tell, so the failure is dropped.
 pub(crate) fn out(text: &str) {
-    tee(&OUT_CAPTURE, text);
     crate::discard::harmless(std::io::stdout().lock().write_all(text.as_bytes())); // keep: stdout closed, nowhere to report it
 }
 
 /// Text on stderr (same rule as [`out`]).
 pub(crate) fn err(text: &str) {
-    tee(&ERR_CAPTURE, text);
     crate::discard::harmless(std::io::stderr().lock().write_all(text.as_bytes())); // keep: stderr closed, nowhere to report it
 }
 
@@ -83,11 +60,6 @@ pub(crate) fn plugin_root(env: &BTreeMap<String, String>) -> Option<String> {
     env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned().or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned()))
 }
 
-/// The exit code a command returns when it leaves the work to the Node tool (nothing written).
-pub(crate) fn defer_code() -> i32 {
-    defaults::num("ops.defer_exit") as i32
-}
-
 /// `settings <verb> ...`
 pub fn cmd_settings(p: &Parsed) -> i32 {
     settings::run(p)
@@ -101,6 +73,16 @@ pub fn cmd_defect(p: &Parsed) -> i32 {
 /// `statusline`
 pub fn cmd_statusline(p: &Parsed) -> i32 {
     statusline::run(p)
+}
+
+/// `codex-limit-status`
+pub fn cmd_codex_limit_status(p: &Parsed) -> i32 {
+    codex::cmd_limit_status(p)
+}
+
+/// `codex-activate`
+pub fn cmd_codex_activate(p: &Parsed) -> i32 {
+    codex::cmd_activate(p)
 }
 
 /// `phase <set|advance|step|agents|update|clear> ...`
@@ -118,7 +100,45 @@ pub fn cmd_uninstall_statusline(p: &Parsed) -> i32 {
     slcfg::run_uninstall(p)
 }
 
-/// `shadow-compare <dir>` (internal): the detached half of a Node shadow.
-pub fn cmd_shadow_compare(p: &Parsed) -> i32 {
-    p.raw.first().map_or(1, |d| shadow::compare(std::path::Path::new(d)))
+// ---- the rules-script verbs of lane L03 (auto-handover-config, dispatch-report, finding-dedup, coordinator-work-baseline) -------
+
+/// Every `opcli.*` setting as JSON, keyed without the prefix: the thresholds and texts the rules scripts read.
+pub(crate) fn opcli_cfg() -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> =
+        defaults::with_prefix("opcli.").into_iter().filter_map(|e| e.key.strip_prefix("opcli.").map(|k| (k.to_string(), e.value.to_json()))).collect();
+    serde_json::Value::Object(map)
+}
+
+/// Ask the plugin script `script` for `func` (JSON in, JSON out); a run that could not answer says so on stderr.
+pub(crate) fn opcli_call(verb: &str, script: &str, func: &str, input: &serde_json::Value) -> Option<serde_json::Value> {
+    let r = crate::script::call_fn(script, func, input);
+    if r.is_none() {
+        err(&(defaults::render("opcli.rules_failed", &[("verb", &verb)]) + "\n"));
+    }
+    r
+}
+
+/// The text of a file, `None` when it cannot be read (decoded as Node's `utf8` does).
+pub(crate) fn read_lossy(path: &std::path::Path) -> Option<String> {
+    std::fs::read(path).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// `auto-handover-config <verb>`
+pub fn cmd_auto_handover_config(p: &Parsed) -> i32 {
+    ahconfig::run(p)
+}
+
+/// `dispatch-report [--json]`
+pub fn cmd_dispatch_report(p: &Parsed) -> i32 {
+    dispatch_report::run(p)
+}
+
+/// `finding-dedup [--file <findings.json>]`
+pub fn cmd_finding_dedup(p: &Parsed) -> i32 {
+    finding_dedup::run(p)
+}
+
+/// `coordinator-work-baseline <transcript.jsonl> [--from-line N] [--cwd DIR] [--json]`
+pub fn cmd_coordinator_work_baseline(p: &Parsed) -> i32 {
+    cwbaseline::run(p)
 }

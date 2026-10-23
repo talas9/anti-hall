@@ -321,12 +321,12 @@ fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
 
 // ---- task-notifications -----------------------------------------------------------------------------------------
 
-fn block_re() -> &'static Regex {
+fn block_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"(?s)<task-notification>(.*?)</task-notification>"))
 }
 
-fn wrapped_re() -> &'static Regex {
+fn wrapped_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| crate::checks::lit_re(r"<system-reminder>[\s\x{feff}]*<task-notification>"))
 }
@@ -366,7 +366,7 @@ fn notification_texts(e: &Value) -> Vec<(Shape, String)> {
     out
 }
 
-fn final_re() -> &'static Regex {
+fn final_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| {
         let alt = defaults::words("transcript.final_statuses").iter().map(|w| regex::escape(w)).collect::<Vec<_>>().join("|");
@@ -390,7 +390,7 @@ struct TagRes {
     tool_idle: Regex,
 }
 
-fn tag_res() -> &'static TagRes {
+fn tag_res() -> std::sync::Arc<TagRes> {
     static R: crate::defaults::Cache<TagRes> = crate::defaults::Cache::new();
     R.get_or_init(|| TagRes {
         task_raw: tag_re("task-id", false),

@@ -80,6 +80,34 @@ impl FileCache {
         Some(self.read()?.iter().any(|(k, v)| k == hash && truthy(v)))
     }
 
+    /// What the dispatch-tier annotator reads of the entry under `hash` (`readCacheEntry` and the tests on it): `None` when the
+    /// file is one only JavaScript reads; `Some(None)` when there is no truthy entry; else the entry's `answer` when it is a
+    /// string and its `confidence` when it is a finite number.
+    pub fn peek(&self, hash: &str) -> Option<Option<(Option<String>, Option<f64>)>> {
+        let all = self.read()?;
+        // a key repeated in the file: JSON.parse keeps the last
+        let Some((_, v)) = all.iter().rev().find(|(k, _)| k == hash) else { return Some(None) };
+        let truthy = match v {
+            J::Null => false,
+            J::Bool(b) => *b,
+            J::Num(n) => *n != 0.0 && !n.is_nan(),
+            J::Str(s) => !s.is_empty(),
+            J::Arr(_) | J::Obj(_) => true,
+        };
+        if !truthy {
+            return Some(None);
+        }
+        let answer = match v.get("answer") {
+            Some(J::Str(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let confidence = match v.get("confidence") {
+            Some(J::Num(n)) if n.is_finite() => Some(*n),
+            _ => None,
+        };
+        Some(Some((answer, confidence)))
+    }
+
     /// The file as Node's `readCache` sees it: a missing, unparsable or non-object file is an empty cache. `None` when
     /// the file is JSON that only JavaScript reads (nesting, lone surrogate): then it is left alone.
     fn read(&self) -> Option<Vec<(String, J)>> {

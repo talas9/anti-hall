@@ -34,14 +34,6 @@ value = "CLAUDE_PLUGIN_OPTION_JEV_TYPESAFE_API_KEY"
 doc = "The legacy vendor-less key option, used only for the vendor it is bound to (Node: CLAUDE_PLUGIN_OPTION_JEV_API_KEY)."
 value = "CLAUDE_PLUGIN_OPTION_JEV_API_KEY"
 
-[env.jev_legacy_key_vercel]
-doc = "Legacy Vercel key variable, read only when the jev.allowLegacyKeyRead setting is on (Node: AI_GATEWAY_API_KEY)."
-value = "AI_GATEWAY_API_KEY"
-
-[env.jev_legacy_key_typesafe]
-doc = "Legacy TypeSafe key variable, read only when the jev.allowLegacyKeyRead setting is on (Node: TYPESAFE_API_KEY)."
-value = "TYPESAFE_API_KEY"
-
 [env.jev_integration_prefix]
 doc = "Prefix of the per-integration kill switch: the integration id in upper snake case is appended and a value of 0 forces that one integration off (Node: ANTIHALL_JEV_<ID>)."
 value = "ANTIHALL_JEV_"
@@ -73,11 +65,45 @@ doc = "Model name sent to the direct TypeSafe transport (Node: TYPESAFE.model)."
 value = "jev-latest"
 
 [jev.timeout_ms]
-doc = "Per-call time budget for one Jev call, request, headers and body together (Node: DEFAULT_TIMEOUT_MS)."
+doc = "HARD limit (the per-call time budget) for one Jev call, request, headers and body together; the SOFT limit is jev.soft_ms (Node: DEFAULT_TIMEOUT_MS)."
 value = 1500
 min = 1
 max = 3000
 unit = "ms"
+
+[jev.soft_ms]
+doc = "SOFT limit of one Jev call: a call slower than this is logged (jev_slow) and counted, and its answer is still used. The HARD limit that cuts the call (and falls back to the baseline) is jev.timeout_ms, capped by jev.max_timeout_ms."
+value = 800
+min = 1
+unit = "ms"
+
+[jev.stop_soft_ms]
+doc = "SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used."
+value = 500
+min = 1
+unit = "ms"
+
+[jev.stop_hard_ms]
+doc = "HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously."
+value = 1000
+min = 1
+unit = "ms"
+
+[jev.gate_enabled]
+doc = "1 (default) gates the Stop/SubagentStop Jev wait: a check that passes `flagged` (its cheap rule layer found a likely unverified claim, with the evidence in hand) waits for Jev within jev.stop_soft_ms / jev.stop_hard_ms; an unflagged one keeps its baseline without asking synchronously. 0 asks on every Stop, as before the gate."
+value = 1
+min = 0
+max = 1
+
+[jev.gate_background_ask]
+doc = "1 also sends the question of an unflagged Stop out in the background (its answer lands in the cache and the log for a later turn, adding no Stop latency); 0 (default) does not ask at all."
+value = 0
+min = 0
+max = 1
+
+[jev.reason_fail_open]
+doc = "The reason a flagged Stop reports when its wait for Jev ran out and the check kept its baseline (fail-open)."
+value = "fail_open"
 
 [jev.max_timeout_ms]
 doc = "Hard ceiling on any configured or per-call timeout, so a Jev call can never outlast the hook that asked (Node: MAX_TIMEOUT_MS)."
@@ -191,7 +217,7 @@ unit = "bytes"
 
 # ---- trust, modes and the cache ----------------------------------------------------------------------------
 
-[jev.integrations]
+[jev.default_modes]
 doc = "Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36)."
 value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on" }
 
@@ -206,6 +232,17 @@ value = ["speculation", "triage"]
 [jev.legacy_triage_key]
 doc = "Id of the integration that the pre-integrations-map triage switch (jev.triage set to false) still turns off."
 value = "triage"
+
+[jev.sync_min_ms]
+doc = "Least time a request must still have for a check inside it to wait on Jev; with less, the check keeps its baseline, the question goes out asynchronously and its answer is cached for the next ask of the same text. Jev answered in 300-680 ms in live use while a hook client waits about 250 ms, so a shorter wait could only time out and open the breaker."
+value = 700
+min = 1
+max = 3000
+unit = "ms"
+
+[jev.breaker_scope_sep]
+doc = "Joins a vendor and an integration id in the breaker file (`vendor/integration`), so one integration's failures open only its own breaker. A call that names no integration uses the bare vendor key, which the Node hooks also read and write."
+value = "/"
 
 [jev.relax_sync_cap_ms]
 doc = "Longest a relax-block consult inside a hook that is about to nudge or block waits for Jev when the integration is on; a slower answer keeps today's verdict (Node: RELAX_SYNC_CAP_MS)."
@@ -343,9 +380,25 @@ value = "usage: ah-engine jev ask|status|scrub|triage|evidence (ask reads one JS
 doc = "Jev decisions asked for, by backend (jev, cache or baseline-only) and mode."
 value = { kind = "counter", unit = "calls", labels = ["backend", "mode"] }
 
+[metric.jev_slow]
+doc = "Jev calls slower than the SOFT limit (jev.soft_ms); their answers were still used."
+value = { kind = "counter", unit = "calls", labels = [] }
+
 [metric.jev_timeouts]
 doc = "Jev calls that ran out of their time budget."
 value = { kind = "counter", unit = "calls", labels = [] }
+
+[metric.jev_asked_sync]
+doc = "Stop/SubagentStop asks the gate let wait for Jev (the rule layer had flagged a likely unverified claim), by integration."
+value = { kind = "counter", unit = "calls", labels = ["id"] }
+
+[metric.jev_skipped_unflagged]
+doc = "Stop/SubagentStop asks the gate skipped because the rule layer flagged nothing: no synchronous Jev call, the check kept its baseline. By integration."
+value = { kind = "counter", unit = "calls", labels = ["id"] }
+
+[metric.jev_gate_timeouts]
+doc = "Flagged Stop/SubagentStop asks whose wait for Jev ran out (the check failed open on its baseline), by integration."
+value = { kind = "counter", unit = "calls", labels = ["id"] }
 
 [metric.jev_cooldowns]
 doc = "Jev calls skipped because a vendor's circuit breaker was open."
@@ -376,12 +429,6 @@ unit = "bytes"
 doc = "Most call-latency samples held between two metrics flushes; past it new samples are dropped until the flush drains them (a bound on memory if the flush stalls)."
 value = 4096
 min = 1
-
-[jev.lane_cap]
-doc = "How many home directories keep a resident Jev lane at once (one per user in practice; the oldest is dropped past the cap)."
-value = 8
-min = 1
-
 [jev.turn_ref_window_bytes]
 doc = "How much of the end of a transcript is scanned for the turn pointer on a decision row (Node: the 64 KiB window of turnRefFromTranscript)."
 value = 65536

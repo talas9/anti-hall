@@ -84,7 +84,7 @@ pub fn is_codex_platform(p: &Value) -> bool {
     }
     let tp = jsval::get(p, "transcript_path").and_then(Value::as_str).unwrap_or("");
     static RE: crate::defaults::Cache<(regex::Regex, regex::Regex)> = crate::defaults::Cache::new();
-    let (rollout, dotcodex) =
-        RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
+    let res = RE.get_or_init(|| (jsre::compile(defaults::text("taskkit.codex_rollout"), false), jsre::compile(defaults::text("taskkit.codex_dir"), false)));
+    let (rollout, dotcodex) = &*res;
     rollout.is_match(tp) || dotcodex.is_match(tp)
 }

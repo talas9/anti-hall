@@ -160,12 +160,60 @@ doc = "The plugin manifest that names the build the watcher runs, relative to th
 value = ".claude-plugin/plugin.json"
 
 [wake_watch.stale_script_rel]
-doc = "The watcher script of another build, relative to that build's cache directory: a newer build is handed over to only when this file exists."
-value = "companion/lib/devswarm-wake-watch.js"
+doc = "The Node watcher script of another build, relative to that build's cache directory: named only in the re-arm line printed when a handoff is refused. A handoff itself needs only that build's manifest and never runs this script."
+value = "../anti-hall-node/companion/lib/devswarm-wake-watch.js"
 
-[wake_watch.node_bin]
-doc = "The interpreter that runs the newer build's watcher script on a handoff."
-value = "node"
+[wake_watch.plugins_rel]
+doc = "The harness's plugins directory, relative to the home: its cache, registry and marketplace records."
+value = ".claude/plugins"
+
+[wake_watch.cache_dir]
+doc = "The cache directory under the plugins directory (one directory per marketplace, plugin and version)."
+value = "cache"
+
+[wake_watch.installed_file]
+doc = "The harness registry of installed plugins, under the plugins directory."
+value = "installed_plugins.json"
+
+[wake_watch.registry_plugins_field]
+doc = "The registry member that maps `<plugin>@<marketplace>` to its install records."
+value = "plugins"
+
+[wake_watch.known_marketplaces_file]
+doc = "The harness record of registered marketplaces, under the plugins directory."
+value = "known_marketplaces.json"
+
+[wake_watch.install_location_field]
+doc = "The member of a registered marketplace that names the directory it lives in."
+value = "installLocation"
+
+[wake_watch.marketplace_plugin_rel]
+doc = "Where a marketplace keeps the plugin, relative to the marketplace directory: the manifest of the newest source build is read there."
+value = "plugins/anti-hall"
+
+[wake_watch.manifest_name_field]
+doc = "The manifest member that names the plugin (the first half of the install key)."
+value = "name"
+
+[wake_watch.key_sep]
+doc = "Between plugin and marketplace in an install key (`plugin@marketplace`)."
+value = "@"
+
+[wake_watch.install_key_prefix]
+doc = "The start of every anti-hall install key in the registry and in `enabledPlugins` (`anti-hall@<marketplace>`): the registered installs the enabled one is chosen from."
+value = "anti-hall@"
+
+[wake_watch.install_fallback_key]
+doc = "The install key used when no registered anti-hall install is enabled in the user's settings."
+value = "anti-hall@anti-hall"
+
+[wake_watch.user_settings_rel]
+doc = "The user's harness settings file, relative to the home: it says which installs are enabled."
+value = ".claude/settings.json"
+
+[wake_watch.enabled_plugins_field]
+doc = "The settings member that maps an install key to whether it is enabled."
+value = "enabledPlugins"
 
 [wake_watch.repos_root_re]
 doc = "Regex source: a worktree under the DevSwarm repos root, the only kind the supervisor's active list can call archived."
@@ -277,7 +325,7 @@ value = "[wake-watch] ERROR watching {role} {id}: {n} consecutive read failures 
 
 [wake_watch.line_stale]
 doc = "A newer build is installed and its watcher script exists, but the watcher may not hand over: the re-arm instruction, then exit. {role} {id} {own} {newest} {script}."
-value = "[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {own}, but {newest} is registered/cached. Re-arm with `node {script}` (Monitor tool, persistent: true if supported — otherwise max timeout_ms + re-arm on the tool's final/expired event) to pick it up. Exiting now — never running on as a silent stale watcher."
+value = "[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {own}, but {newest} is registered/cached. Re-arm with `{script}` (Monitor tool, persistent: true if supported — otherwise max timeout_ms + re-arm on the tool's final/expired event) to pick it up. Exiting now — never running on as a silent stale watcher."
 
 [wake_watch.line_update_registered]
 doc = "A newer version is registered but not yet copied into the cache: say so once and keep running. {role} {id} {own} {newest}."
@@ -332,3 +380,31 @@ value = "[wake-watch] lock restamp failed transiently (not lock loss) - retrying
 [wake_watch.diag_restamp_stale]
 doc = "Printed on stderr when the lock could not be re-stamped for longer than it stays valid."
 value = "[wake-watch] lock restamp failed transiently for longer than the lock stale threshold - treating the lock as lost\n"
+
+[wake_watch.line_idle_skip]
+doc = "Printed once, then the watcher exits 0, when a Primary has no live child workspace (the idle-skip). One stdout line wakes the session, so it says what to do next."
+value = "[wake-watch] idle-skip: no live child workspaces - not arming. Arm this watcher again after you spawn a workspace; the mailbox tick stays your fallback wake path."
+
+[wake_watch.diag_deferred]
+doc = "Printed (stderr; stdout too when armed by hand) when the engine cannot decide and ends with the defer exit code instead of arming. {why}."
+value = "[wake-watch] not armed: {why}\n"
+
+[wake_watch.why_settings]
+doc = "Why: the settings file cannot be parsed the way the host reads it."
+value = "a settings file could not be read"
+
+[wake_watch.why_gate]
+doc = "Why: the DevSwarm check could not be answered."
+value = "could not tell whether this is a DevSwarm session"
+
+[wake_watch.why_identity]
+doc = "Why: the workspace identity could not be resolved (the checkout may be nested in another one)."
+value = "could not resolve the DevSwarm workspace identity"
+
+[wake_watch.why_idle_check]
+doc = "Why: the live-children check could not be answered."
+value = "could not check for live child workspaces"
+
+[wake_watch.why_repo]
+doc = "Why: the repo identity needed to find the mailbox summary could not be resolved."
+value = "could not resolve the repo identity of this checkout"

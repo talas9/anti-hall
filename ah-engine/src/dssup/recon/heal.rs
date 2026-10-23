@@ -1,4 +1,4 @@
-//! Slice S2: `healRegistry`, `rehomeMiskeyedRow` and `rehomeCore` (`scripts/devswarm-lib/fold.js`).
+//! Slice S2: `healRegistry`, `rehomeMiskeyedRow` and `repairRootMappedChildRows` (`scripts/devswarm-lib/fold.js`).
 //!
 //! `healRegistry(home, repoKey)` visits every registry row of one store and asks `rehomeMiskeyedRow` what is wrong with it. Natively
 //! decided, per row:
@@ -7,12 +7,13 @@
 //! * the descriptor is missing or belongs to another session (`no-descriptor`, `descriptor-identity-mismatch`) or its worktree
 //!   names no repository (`unresolvable`): nothing changes;
 //! * the row is correctly keyed: a stale `ownerKey` / `repoKey` on the descriptor is rewritten in place, and a stale registry
-//!   `worktree_path` is refreshed from the descriptor (an `upsertRegistry` with the path-change opt-in, then the summary).
+//!   `worktree_path` is refreshed from the descriptor (an `upsertRegistry` with the path-change opt-in, then the summary);
+//! * the row is genuinely mis-keyed (its worktree belongs to another store): it is moved there (`super::rehome`: copy, verify,
+//!   then tombstone the source registry row; no message row is ever deleted).
 //!
-//! A genuinely mis-keyed row needs `rehomeAcrossStores` (message copy, destination row, source tombstone), which is NOT ported in
-//! this slice: that row is returned as deferred and Node's `rehomeMiskeyedRow` handles it. `rehomeCore` likewise answers the two
-//! trivial cases (no repository key; legacy bucket equal to it) and defers every real move.
+//! A child row registered against the Primary checkout's path is first repaired from the app's own builder record.
 use super::gate::{self, Job};
+use super::rehome;
 use super::view::{self, archived_rel, descriptor_rel, registry};
 use super::{Hooks, Op, RegRow, Scope, Unit, UnitEnd};
 use crate::checks::guardkit::ojson::OVal;
@@ -29,8 +30,10 @@ use std::path::Path;
 pub struct HealPlan {
     /// The gate job: one unit per visited row, the Node call and what it must return.
     pub job: Job,
-    /// The rows that need Node's `rehomeMiskeyedRow` (id, why), decided before anything was written.
+    /// The rows handed back (id, why): none are decided here any more, the field is kept for a unit that cannot apply.
     pub deferred: Vec<(String, String)>,
+    /// The mis-keyed rows to move (id, fresh repo key, the descriptor's worktree path), decided before anything was written.
+    pub needs: Vec<(String, String, String)>,
     /// Node's `healRegistry` result for the rows handled here (the aggregate over all rows when none is deferred).
     pub result: Value,
     /// For each unit of the job, the row's id.
@@ -99,8 +102,8 @@ fn row_result(id: &str, healed_descriptor: bool, reason: Option<&str>, healed_pa
 enum Row {
     /// Decided here: the result and the ops (maybe none).
     Done(Value, Vec<Op>),
-    /// Needs `rehomeAcrossStores`.
-    Needs(String),
+    /// Genuinely mis-keyed: needs the move into the store its worktree belongs to (`fresh`), with the descriptor's path.
+    Needs { fresh: String, worktree: String },
 }
 
 fn plan_row(home: &Path, store: &str, cur: &RegRow) -> R<Row> {
@@ -120,7 +123,7 @@ fn plan_row(home: &Path, store: &str, cur: &RegRow) -> R<Row> {
     }
     let Some(fresh) = repo_key_for_worktree(&wt)? else { return reason("unresolvable") };
     if fresh != store {
-        return Ok(Row::Needs(defaults::text("devswarm_recon.why_rehome_across").to_string()));
+        return Ok(Row::Needs { fresh, worktree: wt });
     }
     let mut ops = Vec::new();
     let mut healed_descriptor = false;
@@ -147,7 +150,7 @@ fn plan_row(home: &Path, store: &str, cur: &RegRow) -> R<Row> {
 
 /// Plan `healRegistry(home, repoKey)` for one store.
 pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
-    let empty = |rows: Vec<Value>| json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "skipped": 0, "rows": rows});
+    let empty = |rows: Vec<Value>| json!({"repoKey": repo_key, "checked": 0, "healed": 0, "rehomed": 0, "rootMapped": 0, "skipped": 0, "rows": rows});
     if repo_key.is_empty() {
         let result = empty(Vec::new());
         let job = Job {
@@ -157,10 +160,11 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
             calls: vec![json!({"fn": "healRegistry", "args": {"repoKey": repo_key}})],
             expect: vec![Some(result.clone())],
         };
-        return Ok(HealPlan { job, deferred: Vec::new(), result, ids: Vec::new(), pre_skipped: 0 });
+        return Ok(HealPlan { job, deferred: Vec::new(), needs: Vec::new(), result, ids: Vec::new(), pre_skipped: 0 });
     }
     let rows = registry(home, repo_key)?;
-    let (mut units, mut ids, mut deferred) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut units, mut ids, deferred) = (Vec::new(), Vec::new(), Vec::<(String, String)>::new());
+    let mut needs: Vec<(String, String, String)> = Vec::new();
     let (mut checked, mut healed, mut skipped, mut pre_skipped) = (0, 0, 0, 0);
     let (mut out_rows, mut handled_ids): (Vec<Value>, Vec<String>) = (Vec::new(), Vec::new());
     let mut files = Vec::new();
@@ -185,8 +189,8 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
         }
         checked += 1;
         match plan_row(home, repo_key, cur)? {
-            Row::Needs(why) => {
-                deferred.push((id, why));
+            Row::Needs { fresh, worktree } => {
+                needs.push((id, fresh, worktree));
             }
             Row::Done(res, ops) => {
                 if res["healedDescriptor"] == json!(true) || res["healedRegistryPath"] == json!(true) {
@@ -202,7 +206,7 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
             }
         }
     }
-    let result = json!({"repoKey": repo_key, "checked": checked, "healed": healed, "rehomed": 0, "skipped": skipped, "rows": out_rows});
+    let result = json!({"repoKey": repo_key, "checked": checked, "healed": healed, "rehomed": 0, "rootMapped": 0, "skipped": skipped, "rows": out_rows});
     let (call, expect) = if deferred.is_empty() {
         (json!({"fn": "healRegistry", "args": {"repoKey": repo_key}}), result.clone())
     } else {
@@ -216,12 +220,15 @@ pub fn plan(home: &Path, repo_key: &str) -> R<HealPlan> {
         }
     }
     let job = Job { label: defaults::text("devswarm_recon.job_heal").into(), scope, units, calls: vec![call], expect: vec![Some(expect)] };
-    Ok(HealPlan { job, deferred, result, ids, pre_skipped })
+    Ok(HealPlan { job, deferred, needs, result, ids, pre_skipped })
 }
 
-/// Plan, witness and apply `healRegistry` for one store. A row the engine cannot decide, and every row of a store whose witness
-/// did not agree, is reported in `deferred` with nothing written for it.
+/// Plan and apply `healRegistry` for one store: the root-mapped child rows first (proof from the app's own builder record), then
+/// every row: correctly keyed rows are healed in place (units, each under its id's lock), genuinely mis-keyed rows are MOVED into the
+/// store their worktree belongs to (`super::rehome`). A unit that cannot apply (a busy lock, a drifted precondition) is reported in
+/// `deferred` with nothing written for it.
 pub fn run(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, hooks: &Hooks) -> R<HealRun> {
+    let root_fixed = rehome::repair_root_mapped(ctx, repo_key);
     let p = plan(ctx.home, repo_key)?;
     let out = gate::run(ctx, runner, &p.job, hooks);
     let mut deferred = p.deferred.clone();
@@ -232,30 +239,18 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, hooks: &Hooks) -> R<H
             UnitEnd::Deferred(why) | UnitEnd::Failed(why) => deferred.push((id.clone().unwrap_or_default(), why.clone())),
         }
     }
+    for (id, fresh, worktree) in &p.needs {
+        kept.push(rehome::mis_keyed(ctx, id, repo_key, fresh, worktree));
+    }
     let flagged = |r: &Value| r["healedDescriptor"] == json!(true) || r["healedRegistryPath"] == json!(true);
-    let healed = kept.iter().filter(|r| flagged(r)).count();
+    let rehomed = kept.iter().filter(|r| rehome::is_rehomed(r)).count();
+    let healed_rows = kept.iter().filter(|r| !rehome::is_rehomed(r) && flagged(r)).count();
     let mut result = p.result.clone();
     result["checked"] = json!(kept.len());
-    result["healed"] = json!(healed);
-    result["skipped"] = json!(p.pre_skipped + kept.len() - healed);
+    result["healed"] = json!(healed_rows + root_fixed);
+    result["rehomed"] = json!(rehomed);
+    result["rootMapped"] = json!(root_fixed);
+    result["skipped"] = json!(p.pre_skipped + kept.len() - healed_rows - rehomed);
     result["rows"] = Value::Array(kept);
     Ok(HealRun { result, deferred, verdict: out.verdict })
-}
-
-/// The outcome of `rehomeCore`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Core {
-    /// Node's `{rehomed:false, movedMessages:0, movedRegistry:false}`: there is nothing to move.
-    Nothing,
-    /// A real move; `rehomeAcrossStores` is Node's in this slice. The text says why.
-    Node(String),
-}
-
-/// `rehomeCore(home, id, repoKey)`: no repository key, or a legacy bucket that already is the repository key, is a no-op in
-/// Node; every real move is handed to Node.
-pub fn rehome_core(id: &str, repo_key: &str) -> Core {
-    if repo_key.is_empty() || crate::meshw::send::hash_from_workspace_id(id) == repo_key {
-        return Core::Nothing;
-    }
-    Core::Node(defaults::text("devswarm_recon.why_rehome_across").to_string())
 }

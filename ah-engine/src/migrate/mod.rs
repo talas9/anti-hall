@@ -14,8 +14,14 @@
 //! journal stores, the workspace registry and descriptors) are not in the engine yet: while any of those directories holds an
 //! entry, such a step reports `skipped`, says it is left to the Node doctor, and does not stamp its marker, so the Node doctor
 //! still does it. With no DevSwarm state they report exactly what Node reports ("nothing to migrate") and stamp.
+pub mod childlabels;
 pub mod cli;
+pub mod cursorhyg;
+pub mod poststages;
+pub mod promote;
+pub mod readercur;
 pub mod settings;
+pub mod splitmerge;
 pub mod state;
 pub mod sweeps;
 
@@ -573,18 +579,7 @@ pub fn run(ctx: &Ctx) -> Vec<Row> {
     store_fix(ctx, &mut rows, step("recover"));
     heal_registry_rows(ctx, &mut rows);
     sweeps::all(ctx, &mut rows);
-    statusline_upgrade(ctx, &mut rows);
     rows
-}
-
-/// Engine only (Node's repair pass has no such step): a status line command that anti-hall installed in the Node-only form runs
-/// the engine first from now on. A row is reported only when a file is changed (or would be, on a dry run, or could not be), so a
-/// home with nothing to upgrade reports exactly what Node reports.
-fn statusline_upgrade(ctx: &Ctx, rows: &mut Vec<Row>) {
-    let id = step("statusline");
-    for u in crate::ops::slcfg::upgrade_commands(&ctx.home, &ctx.cwd, &ctx.env, ctx.dry_run) {
-        rows.push(Row::new(id, id, u.status, u.msg));
-    }
 }
 
 /// The report `doctor.js --repair --migrations-only` prints: `{ok, action, version, error, repairs}`.

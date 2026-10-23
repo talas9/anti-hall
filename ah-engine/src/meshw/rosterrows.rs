@@ -20,7 +20,7 @@
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or torn optional file is the absent one (Node: `try { JSON.parse(readFileSync(...)) } catch (_) {}`)
 use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
-use crate::checks::guardkit::text::{js_number_of_str, slice_utf16};
+use crate::checks::guardkit::text::js_number_of_str;
 use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dssup::appsync::plan::{app_sourced, dir_of, read_json_dir, wt_key};
@@ -236,8 +236,8 @@ fn idle_ms(e: &Eng) -> f64 {
     if n.is_finite() && n > 0.0 { n } else { defaults::num("devswarm_cli.rr_idle_ms_default") as f64 }
 }
 
-/// `isDormantByActivity(row, home, { now, lastOutboundTs })`.
-fn dormant_by_activity(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>, last_out: Option<f64>) -> R<bool> {
+/// `readActivityTs(row, home, { lastOutboundTs })`: the newest activity signal (0 for none) and whether the session transcript was seen.
+fn activity(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>, last_out: Option<f64>) -> R<(f64, bool)> {
     let home = e.inv.home.as_path();
     let mut best = 0.0f64;
     if is_safe_id(id)
@@ -269,6 +269,12 @@ fn dormant_by_activity(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str
     {
         best = t;
     }
+    Ok((best, saw_transcript))
+}
+
+/// `isDormantByActivity(row, home, { now, lastOutboundTs })`.
+fn dormant_by_activity(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>, last_out: Option<f64>) -> R<bool> {
+    let (best, saw_transcript) = activity(e, id, wt, session, last_out)?;
     if best <= 0.0 || !e.now.is_finite() {
         return Ok(false);
     }
@@ -288,6 +294,22 @@ fn session_alive(e: &Eng, session: Option<&str>) -> R<bool> {
     }
 }
 
+/// `isSiblingPartitionLive(row, home, { now })` (companion/lib/liveness.js): a fresh heartbeat is live; a row without a real session id
+/// (none, or the `unclaimed:` placeholder) is not; otherwise live unless its activity is positively stale and its session is gone.
+/// A case only Node decides (`Defer`) is the caller's to hand over (Node reads an undetermined row as live).
+pub(crate) fn sibling_partition_live(inv: &Inv, now: f64, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {
+    let e = Eng { inv, now, repo_key: "", dormant: std::cell::OnceCell::new() };
+    if fresh_beat(&e, id) {
+        return Ok(true);
+    }
+    match session {
+        Some(sid) if !sid.is_empty() && !sid.starts_with(key("mesh_write.synthetic_session_prefix")) => {
+            Ok(!(dormant_by_activity(&e, id, wt, session, None)? && !session_alive(&e, session)?))
+        }
+        _ => Ok(false),
+    }
+}
+
 /// `computeRowLive(row, home, { now })`.
 fn row_live(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {
     if fresh_beat(e, id) {
@@ -304,36 +326,10 @@ fn row_live(e: &Eng, id: &str, wt: Option<&str>, session: Option<&str>) -> R<boo
 /// The `waiting-on-human` hint of `childBusyState`: a heartbeat of another session reports nothing; otherwise the bounded tail
 /// of the session transcript is read (`rostertail`), which also reports nothing for a missing, unreadable or empty file.
 fn waiting_hint(e: &Eng, id: &str, wt: &str, session: &str) -> R<Option<String>> {
-    if is_safe_id(id)
-        && let Some(beat) = read_obj(&file_in(e, "mesh_write.dir_heartbeats", id))
-        && let Some(theirs) = beat.get(key("mesh_write.field_session_id"))
-        && theirs.truthy()
-    {
-        let theirs = match theirs {
-            OVal::Str(t) => t.clone(),
-            OVal::Num(x) => to_js_string(*x),
-            OVal::Bool(b) => b.to_string(),
-            _ => return defer("heartbeat-session-type"),
-        };
-        if theirs != session {
-            return Ok(None);
-        }
+    match rostertail::transcript_file(&e.inv.home, id, wt, session)? {
+        Some(file) => rostertail::waiting_hint(&file, e.now),
+        None => Ok(None),
     }
-    if session.contains('/') || session.contains('\\') || session.contains("..") {
-        return defer("session-path");
-    }
-    let encoded: String = {
-        let from = key("devswarm_sup.lv_encode_chars");
-        wt.chars().map(|c| if from.contains(c) { key("devswarm_sup.lv_encode_to").to_string() } else { c.to_string() }).collect()
-    };
-    let file = e
-        .inv
-        .home
-        .join(key("mesh_write.claude_dir"))
-        .join(key("devswarm_sup.lv_projects_dir"))
-        .join(encoded)
-        .join(format!("{session}{}", key("devswarm_sup.lv_transcript_ext")));
-    rostertail::waiting_hint(&file, e.now)
 }
 
 /// `rosterHints(home, id, worktreePath, now, sessionId, { registryBacked })`.
@@ -724,6 +720,51 @@ fn fold(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<&Snap>) -> R<()> {
     Ok(())
 }
 
+/// The row-state readers the Primary prompt hook needs apart from [`Verdicts`]: the app's verdict alone (`appArchivedVerdict`, then the
+/// supervisor's active-list cache), the ghost-label fold target, and the two activity windows.
+pub(crate) struct Windows<'a>(Eng<'a>);
+
+impl<'a> Windows<'a> {
+    pub(crate) fn new(inv: &'a Inv, repo_key: &'a str) -> Windows<'a> {
+        Windows(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new() })
+    }
+
+    /// The app side of "archived" for a row.
+    pub(crate) fn app_archived(&self, id: &str, wt: Option<&str>) -> R<bool> {
+        app_archived(&self.0, id, wt)
+    }
+
+    /// `rosterFoldTarget(home, id, present, { aliases, appBuilderId })`.
+    pub(crate) fn fold_target(&self, id: &str, present: &HashSet<String>, aliases: &[(String, String)], app_builder: Option<&str>) -> R<Option<String>> {
+        fold_target(&self.0, id, present, aliases, app_builder)
+    }
+
+    /// `dormantThresholdMs(env)` (defers on a value the engine does not reproduce).
+    pub(crate) fn dormant_ms(&self) -> R<f64> {
+        dormant_ms(&self.0)
+    }
+
+    /// `idleThresholdMs(env)`.
+    pub(crate) fn idle_ms(&self) -> f64 {
+        idle_ms(&self.0)
+    }
+
+    /// `isSessionAliveRow({ sessionId })`.
+    pub(crate) fn session_alive(&self, session: Option<&str>) -> R<bool> {
+        session_alive(&self.0, session)
+    }
+
+    /// `readActivityTs`: the newest activity signal (0 for none) and whether the session transcript was seen.
+    pub(crate) fn activity(&self, id: &str, wt: Option<&str>, session: Option<&str>, last_out: Option<f64>) -> R<(f64, bool)> {
+        activity(&self.0, id, wt, session, last_out)
+    }
+
+    /// `isDormantByActivity`.
+    pub(crate) fn dormant_by_activity(&self, id: &str, wt: Option<&str>, session: Option<&str>, last_out: Option<f64>) -> R<bool> {
+        dormant_by_activity(&self.0, id, wt, session, last_out)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // the roster
 // ---------------------------------------------------------------------------------------------------------------------
@@ -920,9 +961,7 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
             let last = id.and_then(|i| last_outbound(&e, i));
             let name = match (field(r, "wsName"), id) {
                 (Some(OVal::Str(n)), Some(i)) if !n.is_empty() => {
-                    let width = defaults::num("devswarm_cli.app_short_id") as usize;
-                    let short = if i.encode_utf16().count() > width { slice_utf16(i, width) } else { Some(i.to_string()) };
-                    let Some(short) = short else { return defer("surrogate-cut") };
+                    let short = crate::meshw::appverbs::short(i)?;
                     tpl("devswarm_cli.rr_text_name", &[("name", n), ("short", &short)])
                 }
                 (_, Some(i)) => i.to_string(),
@@ -940,4 +979,24 @@ pub fn human_text(inv: &Inv, rows: &[Obj], all: bool, now: f64) -> R<String> {
         lines.push(tpl("devswarm_cli.rr_text_hidden", &[("n", &hidden.to_string())]));
     }
     Ok(lines.join("\n"))
+}
+
+/// The row-state readers of the roster for another verb (`diagnose`, `healthcheck`): the same archived and live verdicts.
+pub(crate) struct Verdicts<'a>(Eng<'a>);
+
+impl<'a> Verdicts<'a> {
+    /// Verdicts for one project at the invocation's clock.
+    pub(crate) fn new(inv: &'a Inv, repo_key: &'a str) -> Verdicts<'a> {
+        Verdicts(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new() })
+    }
+
+    /// `rowEligibility(...).archived`: anti-hall's archive marker or the app's verdict.
+    pub(crate) fn archived(&self, id: &str, wt: Option<&str>) -> R<bool> {
+        archived(&self.0, id, wt)
+    }
+
+    /// `computeRowLive` / `isSiblingPartitionLive` of a row (`session` already empty-to-none).
+    pub(crate) fn live(&self, id: &str, wt: Option<&str>, session: Option<&str>) -> R<bool> {
+        row_live(&self.0, id, wt, session)
+    }
 }

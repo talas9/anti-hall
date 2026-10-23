@@ -9,8 +9,8 @@
 //! | `kind(path)` | `"file"`, `"dir"`, `"link"` (not followed) or `null` |
 //! | `mtimeMs(path)` | the modification time with its fraction, or `null` |
 //! | `listDir(path)` | the names in a directory sorted by bytes (as `fs.readdirSync`), or `null` |
-//! | `fileOp(root, rel, text, op)` | `op` `write`, `after_reply`, `append`, `mkdir`, `remove`, `rename`: see [`super::host::scoped`] |
-//! | `settingGet(key, dfltJson, pluginRoot)` | `get(section, key, dflt)` of the settings chain: `[status, valueJson]`, status 0 = a value, 1 = nothing, 2 = undecidable |
+//! | `fileOp(root, rel, text, op)` | `op` `write`, `after_reply`, `append`, `mkdir`, `remove`, `rename`, `create` (only when absent), `touch`: see [`super::host::scoped`] |
+//! | `settingGet(key, dfltJson, pluginRoot)` | `get(section, key, dflt)` of the settings chain: `[status, valueJson]`, status 0 = a value, 1 = nothing, 2 = undecidable (no plugin root, not even the engine's own) |
 use super::host::{Op, err, scoped, with_settings};
 use crate::checks::guardkit::settings;
 use crate::defaults;
@@ -25,6 +25,8 @@ fn op_of(s: &str) -> rquickjs::Result<Op> {
         "rename" => Op::Rename,
         "mkdir" => Op::Mkdir,
         "remove" => Op::Remove,
+        "create" => Op::Create,
+        "touch" => Op::Touch,
         _ => return Err(err("fileOp", defaults::render("script.msg_unknown_op", &[("op", &s)]))),
     })
 }
@@ -64,6 +66,8 @@ pub fn install<'a>(c: &rquickjs::Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()
         Function::new(c.clone(), |key: String, dflt: String, root: String| -> rquickjs::Result<String> {
             let e = defaults::get(&key).ok_or_else(|| err("settingGet", defaults::render("script.msg_unknown_key", &[("key", &key)])))?;
             let dflt: Option<Value> = if dflt.is_empty() { None } else { serde_json::from_str(&dflt).ok() };
+            // a request without a plugin root asks the root of the plugin this engine runs (the one the node hook would be loaded from)
+            let root = if root.is_empty() { defaults::root().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default() } else { root };
             with_settings(|st| match settings::get_setting(st, &e.value, dflt, &root) {
                 Ok(Some(v)) => format!("[0,{v}]"),
                 Ok(None) => "[1,null]".to_string(),

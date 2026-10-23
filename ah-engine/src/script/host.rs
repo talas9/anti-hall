@@ -21,6 +21,7 @@
 //! | `settingEnum(key)` / `settingNum(key)` / `settingNumStrict(key)` / `settingStr(key)` | the effective value of the enum / numeric (clamped to the entry's range; strict: a value below its minimum is dropped, as `settings.get` does) / string setting described by defaults entry `key` |
 //! | `fileSize(path)` | the size in bytes of a regular file, or `null` |
 //! | `passwdHome()` | the user's home as the passwd database has it, or `null` |
+//! | `useHome(path)` | make the absolute `path` the home directory of the rest of the call (settings, skips, scoped state), as a Node hook whose `os.homedir()` fell back to the passwd home sees it; `false` (nothing changed) for a relative path |
 //! | `realpath(path)` | the canonical path (links resolved), or `null` when it does not exist |
 //! | `pathResolve(base, p)` | Node `path.resolve(base, p)` (posix) |
 //! | `writeAtomic(rel, text, leaveTemp?)` | the SCOPED write (`rel` is relative to the home directory, under the state directory; `leaveTemp`: a failed rename keeps the temporary file, as the Node writers do): see [`write_atomic`] |
@@ -54,18 +55,16 @@
 
 use crate::checks::compact_decl::{contains_ci, read_tail, turn_texts};
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::{jsre, paths, settings};
+use crate::checks::guardkit::{paths, settings};
 use crate::defaults;
 use regex::Regex;
 use rquickjs::{Ctx, Error, Function, Object};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 thread_local! {
     static CALL: RefCell<Option<Settings>> = const { RefCell::new(None) };
-    static RES: RefCell<HashMap<(String, String), Regex>> = RefCell::new(HashMap::new());
 }
 
 /// Let the interrupt handler know which deadline belongs to the call in progress (`None` when it ends).
@@ -96,8 +95,19 @@ pub(super) fn lift_deadline() {
         if let Some(d) = c.borrow().as_ref() {
             d.wall.store(0, std::sync::atomic::Ordering::Relaxed);
             d.cpu.store(0, std::sync::atomic::Ordering::Relaxed);
+            d.req.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     });
+    crate::deadline::set_cut_armed(false);
+}
+
+/// `r`, or an exception when the request's client stopped waiting while it ran ([`crate::deadline::cut_due`]): a native scan cut
+/// short must not read as an answer, so the script call fails as a cut and its check takes its failure policy.
+pub(super) fn unless_cut<T>(r: T) -> rquickjs::Result<T> {
+    if crate::deadline::cut_due() {
+        return Err(rquickjs::Error::new_from_js_message("scan", "cut", defaults::text("script.msg_scan_cut").to_string()));
+    }
+    Ok(r)
 }
 
 /// Run `f` with `st` as the request state the host functions read.
@@ -105,6 +115,10 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     CALL.with(|c| *c.borrow_mut() = Some(st));
     EXECS.with(|c| *c.borrow_mut() = 0);
     super::host_proc::reset_call();
+    super::host_mesh::reset_call();
+    super::host_childturn::reset_call();
+    super::host_parentinbox::reset_call();
+    super::host_spawn::reset_call();
     let r = f();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
@@ -126,28 +140,20 @@ fn entry(key: &str) -> rquickjs::Result<&'static defaults::Entry> {
     defaults::get(key).ok_or_else(|| err("cfg", defaults::render("script.msg_unknown_key", &[("key", &key)])))
 }
 
-/// Compile (cached) a pattern for `flags`.
+/// Patterns the shared regex cache holds (for the memory snapshot).
+pub(super) fn regex_cache_len() -> usize {
+    super::recache::usage().0
+}
+
+/// (programs compiled, estimated bytes, measured bytes, how many were measured) of the shared regex cache.
+pub(super) fn regex_totals() -> (u64, u64, u64, u64) {
+    super::recache::compiled_totals()
+}
+
+/// Run `f` on the compiled pattern for `flags` (shared cache, see [`super::recache`]).
 pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
-    RES.with(|cache| {
-        let mut m = cache.borrow_mut();
-        let key = (src.to_string(), flags.to_string());
-        if !m.contains_key(&key) {
-            let re = if flags.contains('r') {
-                Regex::new(src).ok()
-            } else if flags.contains('m') {
-                // JavaScript syntax with the `m` flag: `^` and `$` match at line boundaries
-                Regex::new(&format!("(?m:{})", jsre::translate(src, flags.contains('i')))).ok()
-            } else {
-                jsre::try_compile(src, flags.contains('i'))
-            }
-            .ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
-            if m.len() >= defaults::num("script.regex_cache_max") as usize {
-                m.clear();
-            }
-            m.insert(key.clone(), re);
-        }
-        Ok(f(&m[&key]))
-    })
+    let re = super::recache::get(src, flags)?;
+    Ok(f(&re))
 }
 
 /// UTF-16 length of `s[..byte]`.
@@ -233,6 +239,10 @@ pub enum Op {
     Remove,
     /// Rename the file to the path named by `text` (also under the write root).
     Rename,
+    /// Create the file with `text` only when it does not exist yet (`O_EXCL`): `true` for the one caller that created it.
+    Create,
+    /// Set the modification and access times of an existing regular file to now (`utimes`), leaving its content alone.
+    Touch,
 }
 
 /// The scoped file API under any absolute `root` (the home directory, or a project root the script names): `rel` must start with
@@ -249,6 +259,20 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
             Ok(std::fs::rename(from, to).is_ok())
         }
         Op::Mkdir => Ok(scoped_target(root, rel, 0, true)?.is_some()),
+        Op::Create => {
+            let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
+            use std::os::unix::fs::OpenOptionsExt;
+            let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) else { return Ok(false) };
+            // the file exists now: a failed write still leaves the claim standing, as the Node writer does
+            crate::discard::harmless(std::io::Write::write_all(&mut f, text.as_bytes()));
+            Ok(true)
+        }
+        Op::Touch => {
+            let Some(path) = scoped_existing(root, rel)? else { return Ok(false) };
+            let now = std::time::SystemTime::now();
+            let times = std::fs::FileTimes::new().set_accessed(now).set_modified(now);
+            Ok(std::fs::File::open(&path).and_then(|f| f.set_times(times)).is_ok())
+        }
         Op::WriteAfterReply => {
             let Some(path) = scoped_target(root, rel, text.len(), false)? else { return Ok(false) };
             let style = crate::atomic::Style { skip_sync: defaults::num("script.write_sync") == 0, ..crate::atomic::Style::default() };
@@ -439,6 +463,22 @@ pub fn agents(path: &str) -> String {
         Ok(None) => "null".into(),
         Ok(Some(rows)) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
+            serde_json::json!({"rows": rows}).to_string()
+        }
+    }
+}
+
+/// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
+/// it (no widening to a longer window, and no refusal to count when the window shows none): `null` (unreadable),
+/// `{"unsure":true}`, else `{"rows":[...]}` as [`agents`].
+pub fn agents_window(path: &str) -> String {
+    use crate::checks::agent_scan;
+    let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
+    match agent_scan::scan_transcript(path, defaults::num("agent_scan.tail_bytes"), &opts) {
+        Err(_) => r#"{"unsure":true}"#.into(),
+        Ok(None) => "null".into(),
+        Ok(Some(scan)) => {
+            let rows: Vec<serde_json::Value> = scan.rows().iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
             serde_json::json!({"rows": rows}).to_string()
         }
     }
@@ -677,6 +717,7 @@ fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, O
     let size = f.metadata().ok()?.len();
     let start = size.saturating_sub(window);
     f.seek(SeekFrom::Start(start)).ok()?;
+    crate::load::note_scan(size - start);
     let mut r = std::io::BufReader::with_capacity(defaults::num("script.tail_buf_bytes") as usize, f.take(size - start));
     let mut offset = start;
     let mut buf: Vec<u8> = Vec::new();
@@ -700,7 +741,7 @@ fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, O
                     over = true;
                     buf.clear();
                 } else {
-                    buf.extend_from_slice(&chunk[..take]);
+                    buf.extend_from_slice(chunk.get(..take).unwrap_or_default());
                 }
             }
             std::io::BufRead::consume(&mut r, take);
@@ -777,6 +818,34 @@ pub fn exec(prog: &str, args: &[String], cwd: Option<&str>, env_pairs: &[String]
     Ok(serde_json::json!({"status": o.status.code(), "stdout": cut(&o.stdout), "stderr": cut(&o.stderr), "truncated": truncated}).to_string())
 }
 
+/// `realpath(p)`: the canonical path, or `null`; a path with a lone surrogate is looked up as Node would encode it.
+fn realpath_js<'js>(ctx: Ctx<'js>, p: rquickjs::String<'js>) -> rquickjs::Result<Option<String>> {
+    let p = well_formed(&ctx, &p)?;
+    Ok(std::fs::canonicalize(p).ok().map(|r| r.to_string_lossy().into_owned()))
+}
+
+/// `pathRelative(from, to)` over strings that may hold a lone surrogate (see [`well_formed`]).
+fn path_relative_js<'js>(ctx: Ctx<'js>, a: rquickjs::String<'js>, b: rquickjs::String<'js>) -> rquickjs::Result<String> {
+    Ok(paths::relative(&well_formed(&ctx, &a)?, &well_formed(&ctx, &b)?))
+}
+
+/// `pathResolve(base, rel)` over strings that may hold a lone surrogate (see [`well_formed`]).
+fn path_resolve_js<'js>(ctx: Ctx<'js>, a: rquickjs::String<'js>, b: rquickjs::String<'js>) -> rquickjs::Result<String> {
+    Ok(paths::resolve(&well_formed(&ctx, &a)?, &well_formed(&ctx, &b)?))
+}
+
+/// The text of a JavaScript string as Rust sees it: a lone surrogate (which no UTF-8 string can hold) becomes U+FFFD, which is
+/// what Node writes when it encodes such a string into a path.
+fn well_formed<'js>(ctx: &Ctx<'js>, s: &rquickjs::String<'js>) -> rquickjs::Result<String> {
+    if let Ok(t) = s.to_string() {
+        return Ok(t);
+    }
+    let proto: Object = ctx.globals().get::<_, Object>("String")?.get("prototype")?;
+    let fix: Function = proto.get("toWellFormed")?;
+    let fixed: rquickjs::String = fix.call((rquickjs::function::This(s.clone()),))?;
+    fixed.to_string()
+}
+
 /// The user's home as the passwd database has it.
 fn passwd_home() -> Option<String> {
     crate::checks::spawnctx::passwd_home()
@@ -847,8 +916,18 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     h.set("fileSize", Function::new(c.clone(), |p: String| std::fs::metadata(p).ok().filter(std::fs::Metadata::is_file).map(|m| m.len() as f64))?)?;
     h.set("passwdHome", Function::new(c.clone(), passwd_home)?)?;
-    h.set("realpath", Function::new(c.clone(), |p: String| std::fs::canonicalize(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
-    h.set("pathResolve", Function::new(c.clone(), |a: String, b: String| paths::resolve(&a, &b))?)?;
+    h.set(
+        "useHome",
+        Function::new(c.clone(), |home: String| -> rquickjs::Result<bool> {
+            if !paths::is_absolute(&home) {
+                return Ok(false);
+            }
+            CALL.with(|c| c.borrow_mut().as_mut().map(|st| st.home = home)).ok_or_else(|| err("useHome", defaults::text("script.msg_no_request")))?;
+            Ok(true)
+        })?,
+    )?;
+    h.set("realpath", Function::new(c.clone(), realpath_js)?)?;
+    h.set("pathResolve", Function::new(c.clone(), path_resolve_js)?)?;
     h.set(
         "writeAtomic",
         Function::new(c.clone(), |rel: String, text: String, leave_temp: Option<bool>| -> rquickjs::Result<bool> {
@@ -916,12 +995,13 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
+    h.set("agentsWindow", Function::new(c.clone(), |p: String| agents_window(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
     h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
-    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| tail_lines(&p, w, l))?)?;
+    h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
     h.set(
         "pruneState",
@@ -931,6 +1011,21 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             Ok(())
         })?,
     )?;
+    // a case the script could not model exactly: counted per site as a stand-in (it went on with a stand-in value), or, with the second
+    // argument `script.unable_abandoned`, as abandoned (it dropped the decision)
+    h.set(
+        "unable",
+        Function::new(c.clone(), |site: String, kind: rquickjs::function::Opt<String>| {
+            let counter = if kind.0.as_deref() == Some(defaults::text("script.unable_abandoned")) {
+                crate::obs::counters::Handback::Abandoned
+            } else {
+                crate::obs::counters::Handback::StandIn
+            };
+            crate::obs::counters::handback(counter, &format!("{}{site}", defaults::text("script.unable_prefix")))
+        })?,
+    )?;
+    // one advisory event for advisory kind `kind` (flagged, asked, confirmed, injected, suppressed, jev_error)
+    h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;
@@ -951,7 +1046,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("pathBasename", Function::new(c.clone(), |p: String| paths::basename(&p).to_string())?)?;
     h.set("pathJoin", Function::new(c.clone(), |a: String, b: String| paths::join(&a, &b))?)?;
     h.set("pathResolveAbs", Function::new(c.clone(), |p: String| paths::resolve_abs(&p))?)?;
-    h.set("pathRelative", Function::new(c.clone(), |a: String, b: String| paths::relative(&a, &b))?)?;
+    h.set("pathRelative", Function::new(c.clone(), path_relative_js)?)?;
     h.set(
         "reTest",
         Function::new(c.clone(), |src: String, flags: String, text: String| -> rquickjs::Result<bool> { with_re(&src, &flags, |re| re.is_match(&text)) })?,
@@ -982,9 +1077,17 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("turnText", Function::new(c.clone(), |p: String, max: f64, hint: String| turn_text(&p, max.max(0.0) as u64, &hint))?)?;
     super::host_io::install(c, &h)?;
     super::host_b3::install(c, &h)?;
+    super::host_shell::install(c, &h)?;
     super::host_d::install(c, &h)?;
+    super::host_mesh::install(c, &h)?;
+    super::host_childturn::install(c, &h)?;
+    super::host_parentinbox::install(c, &h)?;
+    super::host_seat::install(c, &h)?;
+    super::host_port::install(c, &h)?;
     super::host_proc::install(c, &h)?;
+    super::host_spawn::install(c, &h)?;
     super::host_ts::install(c, &h)?;
+    super::host_transcript::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
 }

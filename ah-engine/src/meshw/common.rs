@@ -121,7 +121,7 @@ fn pid_alive(pid: f64) -> bool {
 }
 
 /// `ingest-health.js` `daemonHealth(home, repoKey).status === 'healthy'`.
-fn daemon_healthy(inv: &Inv, repo_key: Option<&str>) -> R<bool> {
+pub(crate) fn daemon_healthy(inv: &Inv, repo_key: Option<&str>) -> R<bool> {
     let Some(rk) = repo_key else { return Ok(false) };
     let root = devswarm_root(&inv.home);
     let beat = read_json(&root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!(
@@ -184,6 +184,32 @@ pub fn open_store(inv: &Inv, repo_key: &str) -> R<MeshStore> {
     }
     let db = inv.store_override.clone().unwrap_or_else(|| dir.join(defaults::text("mesh_write.store_file")));
     MeshStore::open(&db).map_err(|e| Defer(format!("store-open:{e}")))
+}
+
+/// The first creation of a project's store (`resolveStoreBackend` on a fresh directory): the directory and the sqlite marker, so that
+/// [`open_store`] then opens (creating) the database. A directory that already holds a journal store, or any other backend, defers.
+pub fn init_new_store(inv: &Inv, repo_key: &str) -> R<()> {
+    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(repo_key);
+    let forced = inv.env("mesh_write.env_store_backend").map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if !forced.is_empty() && forced != defaults::text("mesh.backend_sqlite") {
+        return defer("journal-backend");
+    }
+    let has_db = std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).is_ok_and(|m| m.len() > 0);
+    let has_journal = std::fs::read_dir(dir.join(defaults::text("devswarm_role.pg_journal_dir"))).is_ok_and(|mut r| r.next().is_some());
+    if has_journal || (!has_db && std::fs::metadata(dir.join(defaults::text("mesh.backend_marker"))).is_ok_and(|m| m.len() > 0) && !dir_marker_is_sqlite(&dir))
+    {
+        return defer("store-backend");
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("store-dir:{e}")))?;
+    if !dir_marker_is_sqlite(&dir) {
+        std::fs::write(dir.join(defaults::text("mesh.backend_marker")), defaults::text("mesh.backend_sqlite"))
+            .map_err(|e| Defer(format!("store-marker:{e}")))?;
+    }
+    Ok(())
+}
+
+fn dir_marker_is_sqlite(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).is_ok_and(|m| m.trim().to_lowercase() == defaults::text("mesh.backend_sqlite"))
 }
 
 /// Jev triage might label an arrival (`jev-triage.js` `loadTriageConfig(home).enabled` can be true): Node then appends
@@ -278,6 +304,59 @@ pub fn read_aliases(home: &Path) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// The sender alias of a child caller (`senderIdentityDetailed` -> `writeAlias(home, label, child, worktree)`): the worktree label the
+/// child's registered id replaces, written to the alias map when it does not already say so. Best effort (Node: `catch (_) {}`); a
+/// caller that is not a child needs none. `cwd` names the worktree recorded with the alias.
+pub fn ensure_alias(inv: &Inv, who: &ident::Caller, cwd: &str) {
+    if who.kind != defaults::text("mesh_write.kind_child") {
+        return;
+    }
+    let Some(label) = who.mesh_id.as_deref() else { return };
+    if read_aliases(&inv.home).into_iter().any(|(k, v)| k == label && v == who.identity) {
+        return;
+    }
+    let worktree = ident::resolve_caller_worktree(cwd).ok().flatten();
+    write_alias(inv, label, &who.identity, worktree.as_deref());
+}
+
+/// `writeAlias(home, label, to, worktree)`: `{version: 1, aliases: {label: {to, worktree, at}}}`, pretty-printed with a final newline,
+/// through a temp file and a rename. `false` when nothing was written (an unsafe or equal pair, the same alias on file, an error).
+pub fn write_alias(inv: &Inv, label: &str, to: &str, worktree: Option<&str>) -> bool {
+    use crate::meshw::idlock::is_safe_id;
+    if !is_safe_id(label) || !is_safe_id(to) || label == to {
+        return false;
+    }
+    let file = devswarm_root(&inv.home).join(defaults::text("mesh_write.alias_file"));
+    let key = defaults::text("mesh_write.alias_key");
+    // absent or corrupt: start fresh (corrupt content is replaced, never merged)
+    let mut aliases: Vec<(String, OVal)> = match read_json(&file).and_then(|j| j.get(key).cloned()) {
+        Some(OVal::Obj(a)) => a,
+        _ => Vec::new(),
+    };
+    if let Some((_, cur)) = aliases.iter().find(|(k, _)| k == label)
+        && matches!(cur.get("to"), Some(OVal::Str(t)) if t == to)
+    {
+        return false;
+    }
+    let now = if defaults::env_var("mesh_now").is_some() { inv.now } else { now_ms() };
+    let entry = OVal::Obj(vec![
+        ("to".into(), OVal::Str(to.to_string())),
+        ("worktree".into(), worktree.map_or(OVal::Null, |w| OVal::Str(w.to_string()))),
+        ("at".into(), OVal::Num(now as f64)),
+    ]);
+    match aliases.iter_mut().find(|(k, _)| k == label) {
+        Some(slot) => slot.1 = entry,
+        None => aliases.push((label.to_string(), entry)),
+    }
+    let doc = OVal::Obj(vec![("version".into(), OVal::Num(1.0)), (key.to_string(), OVal::Obj(aliases))]);
+    if let Some(d) = file.parent()
+        && std::fs::create_dir_all(d).is_err()
+    {
+        return false;
+    }
+    crate::atomic::write(&file, format!("{}\n", doc.stringify_pretty())).is_ok()
 }
 
 /// Write the send receipt (`writeSendReceipt`): `<devswarm>/send-receipts/<UTC day>/<hash>.json`, tmp then rename.

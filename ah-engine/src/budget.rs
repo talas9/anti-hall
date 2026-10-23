@@ -1,0 +1,146 @@
+//! The daemon's resource budgets (CPU and memory), checked by the watchdog and reported in `status`, the `daemon` health event and
+//! the health log.
+//!
+//! The limits are `diagnostics.budget_cpu_pct`, `diagnostics.budget_cpu_windows` and `diagnostics.budget_mem_mb`. CPU is the
+//! percent of one core over each `daemon.cpu_check_ms` window; it breaches after `budget_cpu_windows` windows in a row at or above
+//! the limit (one busy window is a burst). Memory is the figure `daemon.mem_metric` selects, and it breaches while over the limit.
+//! A budget of 0 is off. Reporting only: a breach never stops or slows anything (the RSS cap and the CPU back-off are other rules).
+use serde_json::{Value, json};
+
+/// Which budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    /// CPU, percent of one core.
+    Cpu,
+    /// Memory, MB.
+    Mem,
+}
+
+impl Which {
+    /// The name in logs and in `status`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Which::Cpu => "cpu",
+            Which::Mem => "mem",
+        }
+    }
+}
+
+/// The budget state the watchdog updates.
+#[derive(Debug, Default)]
+pub struct State {
+    /// CPU % of one core over the last window.
+    cpu_pct: f64,
+    /// Consecutive windows at or above the CPU budget.
+    over_windows: u64,
+    /// Memory in KB at the last sample.
+    mem_kb: u64,
+    /// The CPU budget is breached now.
+    cpu_breached: bool,
+    /// The memory budget is breached now.
+    mem_breached: bool,
+    /// Breaches begun since start (a breach that clears and returns counts twice).
+    breaches: u64,
+}
+
+/// A breach that began or ended: `(which, began)`.
+pub type Edge = Option<(Which, bool)>;
+
+impl State {
+    fn set(&mut self, which: Which, on: bool) -> Edge {
+        let slot = match which {
+            Which::Cpu => &mut self.cpu_breached,
+            Which::Mem => &mut self.mem_breached,
+        };
+        if *slot == on {
+            return None;
+        }
+        *slot = on;
+        if on {
+            self.breaches += 1;
+        }
+        Some((which, on))
+    }
+
+    /// One CPU window of `pct` percent of one core against the budget (`limit_pct` 0 = off, `windows` in a row to breach).
+    pub fn cpu_window(&mut self, pct: f64, limit_pct: u64, windows: u64) -> Edge {
+        self.cpu_pct = pct;
+        if limit_pct == 0 {
+            self.over_windows = 0;
+            return self.set(Which::Cpu, false);
+        }
+        self.over_windows = if pct >= limit_pct as f64 { self.over_windows + 1 } else { 0 };
+        self.set(Which::Cpu, self.over_windows >= windows.max(1))
+    }
+
+    /// One memory sample of `mem_kb` against the budget (`limit_mb` 0 = off).
+    pub fn mem_sample(&mut self, mem_kb: u64, limit_mb: u64) -> Edge {
+        self.mem_kb = mem_kb;
+        self.set(Which::Mem, limit_mb != 0 && mem_kb > limit_mb.saturating_mul(1024))
+    }
+
+    /// The breach mask for the health event: bit 0 CPU, bit 1 memory.
+    pub fn mask(&self) -> u64 {
+        u64::from(self.cpu_breached) | (u64::from(self.mem_breached) << 1)
+    }
+
+    /// CPU over the last window, in permille of one core (the health event carries integers).
+    pub fn cpu_permille(&self) -> u64 {
+        (self.cpu_pct * 10.0).round().max(0.0) as u64
+    }
+
+    /// The report for `status`, with the budgets now in force.
+    pub fn report(&self, cpu_budget_pct: u64, mem_budget_mb: u64) -> Value {
+        let breached: Vec<&str> =
+            [(self.cpu_breached, Which::Cpu), (self.mem_breached, Which::Mem)].into_iter().filter(|(on, _)| *on).map(|(_, w)| w.name()).collect();
+        json!({
+            "cpu_pct": (self.cpu_pct * 100.0).round() / 100.0,
+            "cpu_budget_pct": cpu_budget_pct,
+            "cpu_over_windows": self.over_windows,
+            "mem_mb": self.mem_kb / 1024,
+            "mem_budget_mb": mem_budget_mb,
+            "breached": breached,
+            "breaches": self.breaches,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_breaches_after_consecutive_windows_and_clears_on_one_quiet_window() {
+        let mut s = State::default();
+        assert_eq!(s.cpu_window(5.0, 2, 2), None, "one busy window is a burst");
+        assert_eq!(s.cpu_window(5.0, 2, 2), Some((Which::Cpu, true)));
+        assert_eq!(s.cpu_window(9.0, 2, 2), None, "already breached: no second event");
+        assert_eq!(s.mask(), 1);
+        assert_eq!(s.cpu_window(0.5, 2, 2), Some((Which::Cpu, false)));
+        assert_eq!(s.cpu_window(5.0, 2, 2), None, "the count restarted");
+        assert_eq!(s.report(2, 100)["breaches"], 1);
+    }
+
+    #[test]
+    fn memory_breaches_while_over_and_a_zero_budget_is_off() {
+        let mut s = State::default();
+        assert_eq!(s.mem_sample(100 * 1024, 100), None, "at the limit is within it");
+        assert_eq!(s.mem_sample(100 * 1024 + 1, 100), Some((Which::Mem, true)));
+        assert_eq!(s.mask(), 2);
+        assert_eq!(s.mem_sample(90 * 1024, 100), Some((Which::Mem, false)));
+        assert_eq!(s.mem_sample(900 * 1024, 0), None, "0 turns the budget off");
+        assert_eq!(s.cpu_window(500.0, 0, 1), None);
+        assert_eq!(s.mask(), 0);
+    }
+
+    #[test]
+    fn the_report_names_the_breached_budgets() {
+        let mut s = State::default();
+        s.cpu_window(7.25, 2, 1);
+        s.mem_sample(200 * 1024, 100);
+        let r = s.report(2, 100);
+        assert_eq!(r["breached"], json!(["cpu", "mem"]));
+        assert_eq!(r["mem_mb"], 200);
+        assert_eq!(s.cpu_permille(), 73);
+    }
+}

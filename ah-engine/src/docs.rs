@@ -38,8 +38,65 @@ fn is_setting(key: &str) -> bool {
         || key.starts_with("metric.")
         || key.starts_with("impact.")
         || key.starts_with("protocol.")
+        || key.starts_with("flag.")
         || key.starts_with("msg.")
         || key.starts_with("git.msg_"))
+}
+
+/// Every `--flag` token of a command's argument synopsis (and its `read_only_flags`), by flag, with the commands that take it.
+pub fn command_flags() -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut m: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for c in cli::commands() {
+        let toks = c.args.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-')).filter(|t| t.starts_with("--") && t.len() > 2);
+        for f in toks.map(str::to_string).chain(c.read_only_flags.iter().cloned()) {
+            let users = m.entry(f).or_default();
+            if !users.contains(&c.name) {
+                users.push(c.name.clone());
+            }
+        }
+    }
+    m
+}
+
+/// The documented flags: the `flag.<name>` entries as (`--name`, doc).
+pub fn documented_flags() -> Vec<(String, &'static str)> {
+    defaults::all().iter().filter(|e| e.key.starts_with("flag.")).map(|e| (format!("--{}", &e.key["flag.".len()..]), e.doc)).collect()
+}
+
+/// Flags section: every flag a command takes or the code reads, who takes it, and what it means.
+fn flags_section(o: &mut String) {
+    crate::discard::harmless(writeln!(o, "## Flags\n\n{}\n", defaults::text("msg.docs_flags_intro"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "| Flag | Commands | What it does |\n|---|---|---|")); // keep: formatting into a String cannot fail
+    let used = command_flags();
+    let docs: std::collections::BTreeMap<String, &str> = documented_flags().into_iter().collect();
+    let names: std::collections::BTreeSet<&String> = used.keys().chain(docs.keys()).collect();
+    for f in names {
+        let users = used.get(f).map(|u| u.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+        crate::discard::harmless(writeln!(o, "| `{f}` | {users} | {} |", esc(docs.get(f).copied().unwrap_or("undocumented")))); // keep: formatting into a String cannot fail
+    }
+    crate::discard::harmless(writeln!(o)); // keep: formatting into a String cannot fail
+}
+
+/// Environment variables section: every `env.*` name the engine, its client or its shell wrappers read, and every
+/// setting's numeric override variable, sorted by name.
+fn env_section(o: &mut String, all: &[&defaults::Entry]) {
+    crate::discard::harmless(writeln!(o, "## Environment variables\n\n{}\n", defaults::text("msg.docs_env_intro"))); // keep: formatting into a String cannot fail
+    crate::discard::harmless(writeln!(o, "| Variable | Setting | What it does |\n|---|---|---|")); // keep: formatting into a String cannot fail
+    let mut rows: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
+    for e in all {
+        // a setting whose whole value is a variable name (`env.*`, `diagnostics.allocator_env`, ...) documents that variable
+        let named = e.value.as_str().filter(|v| v.starts_with("AH_ENGINE_") && v.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
+        if let Some(name) = named {
+            let setting = if e.key.starts_with("env.") { String::new() } else { format!("`{}`", e.key) };
+            rows.entry(name.to_string()).and_modify(|r| r.1.push_str(&format!(" {}", esc(e.doc)))).or_insert((setting, esc(e.doc)));
+        } else if let Some(name) = e.env {
+            rows.insert(name.to_string(), (format!("`{}`", e.key), esc(e.doc)));
+        }
+    }
+    for (name, (setting, doc)) in rows {
+        crate::discard::harmless(writeln!(o, "| `{name}` | {setting} | {doc} |")); // keep: formatting into a String cannot fail
+    }
+    crate::discard::harmless(writeln!(o)); // keep: formatting into a String cannot fail
 }
 
 /// The reference as Markdown.
@@ -62,6 +119,9 @@ pub fn markdown() -> String {
         )); // keep: formatting into a String cannot fail
     }
 
+    crate::discard::harmless(writeln!(o)); // keep: formatting into a String cannot fail
+    flags_section(&mut o);
+    env_section(&mut o, &all);
     crate::discard::harmless(writeln!(o, "\n## Socket protocol\n\n| Name | Request | Reply | What it does |\n|---|---|---|---|")); // keep: formatting into a String cannot fail
     for e in all.iter().filter(|e| e.key.starts_with("protocol.")) {
         crate::discard::harmless(writeln!(
@@ -158,6 +218,8 @@ pub fn json() -> Value {
         "commands": commands,
         "checks": checks,
         "settings": settings,
+        "flags": documented_flags().into_iter().map(|(f, d)| json!({"flag": f, "commands": command_flags().get(&f), "doc": d})).collect::<Vec<_>>(),
+        "env": defaults::all().iter().filter(|e| e.key.starts_with("env.")).map(|e| json!({"name": e.value.to_json(), "doc": e.doc})).collect::<Vec<_>>(),
         "metrics": defaults::all().iter().filter(|e| e.key.starts_with("metric.")).map(|e| json!({"name": &e.key["metric.".len()..], "spec": e.value.to_json(), "doc": e.doc})).collect::<Vec<_>>(),
         "impact_kinds": crate::impact::kinds(),
     })
@@ -193,6 +255,26 @@ mod tests {
                 assert!(md.contains(&format!("`{env}`")), "env {env} missing");
             }
         }
+    }
+
+    #[test]
+    fn every_command_flag_has_a_description() {
+        let docs: std::collections::BTreeMap<String, &str> = documented_flags().into_iter().collect();
+        for (flag, users) in command_flags() {
+            assert!(docs.contains_key(&flag), "flag {flag} (used by {users:?}) has no `[flag.*]` entry in flags.toml");
+        }
+        for (flag, doc) in &docs {
+            assert!(!doc.trim().is_empty(), "flag {flag} has an empty description");
+        }
+    }
+
+    #[test]
+    fn the_reference_has_flag_and_environment_sections() {
+        let md = markdown();
+        assert!(md.contains("\n## Flags\n"), "flags section missing");
+        assert!(md.contains("\n## Environment variables\n"), "environment section missing");
+        assert!(md.contains("| `--json` |"), "--json missing");
+        assert!(md.contains("| `AH_ENGINE_DIR` |"), "AH_ENGINE_DIR missing");
     }
 
     #[test]

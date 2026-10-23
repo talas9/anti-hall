@@ -55,6 +55,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("gen-hooks", cmd_gen_hooks),
         ("version", cmd_version),
         ("ctl", cmd_ctl),
+        ("diag", cmd_diag),
         ("stop", cmd_stop),
         ("reset", cmd_reset),
         ("proj", cmd_proj),
@@ -79,15 +80,27 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("settings", crate::ops::cmd_settings),
         ("defect", crate::ops::cmd_defect),
         ("jev-report", crate::jev::report::run_cmd),
+        ("auto-handover-config", crate::ops::cmd_auto_handover_config),
+        ("dispatch-report", crate::ops::cmd_dispatch_report),
+        ("finding-dedup", crate::ops::cmd_finding_dedup),
+        ("coordinator-work-baseline", crate::ops::cmd_coordinator_work_baseline),
         ("statusline", crate::ops::cmd_statusline),
         ("phase", crate::ops::cmd_phase),
+        ("shadow-run", crate::nodeback::cmd_shadow_run),
+        ("shadow-compare", crate::nodeback::report::run),
+        ("fallback", crate::nodeback::fallback::run),
         ("install-statusline", crate::ops::cmd_install_statusline),
         ("uninstall-statusline", crate::ops::cmd_uninstall_statusline),
-        ("shadow-compare", crate::ops::cmd_shadow_compare),
         ("update", crate::operator::update::run),
+        ("engine-update", crate::operator::engine_update::run),
         ("install-codex", crate::operator::install_codex::run),
+        ("codex-limit-status", crate::ops::cmd_codex_limit_status),
+        ("codex-activate", crate::ops::cmd_codex_activate),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
+        ("refresh", crate::refresh::run_cmd),
+        ("units", crate::setup::units::cmd_units),
+        ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
     ]
 }
 
@@ -191,11 +204,17 @@ pub fn run(args: &[String]) -> i32 {
     // commands that only talk to the daemon or print a version need a few settings, not the docs of all of them
     // the status line runs after every turn: like the hook client it reads the snapshot cache instead of parsing every file
     let statusline = p.command == "statusline";
-    if hook || statusline || ["version", "status", "ping", "ctl", "stop"].contains(&p.command.as_str()) {
+    // the wake watcher runs for a whole session, once per session: it reads the cache too, keeping one key at a time
+    // in memory instead of the parsed 2 MB of every file (about 40 MB resident for as long as the session lives)
+    let wake_watch = (p.command == "devswarm" || p.command == "agents") && p.rest.first().is_some_and(|v| v == "wake-watch");
+    if hook || statusline || wake_watch || ["version", "status", "ping", "ctl", "stop"].contains(&p.command.as_str()) {
         defaults::use_cache();
     }
-    if hook || statusline || p.command == "serve" {
+    if hook || statusline || wake_watch || p.command == "serve" {
         defaults::write_cache_on_load();
+    }
+    if hook {
+        defaults::leave_after_load_to_daemon();
     }
     if let Err(e) = defaults::init() {
         if p.command == "doctor" {
@@ -209,6 +228,11 @@ pub fn run(args: &[String]) -> i32 {
         // nothing can be answered without settings: a hook defers to Node through the wrapper, anything else is a plain failure
         return if hook { crate::bootstrap::UNAVAILABLE_EXIT } else { 70 };
     }
+    // debug mode for this process (the environment variable or the flag); the daemon also follows the config setting
+    crate::debug::init(&p.rest);
+    // #195: every `defaults::*` read answers the owner's settings.json and config.toml, not only the shipped value (a daemon's
+    // config store takes this over with its own snapshots, see `cfgstore::ConfigStore::load`)
+    crate::cfgstore::install_process_overlay();
     let infos = commands();
     let Some(info) = infos.iter().find(|c| c.name == p.command) else {
         let names: Vec<String> = infos.iter().map(|c| c.name.clone()).collect();
@@ -216,6 +240,10 @@ pub fn run(args: &[String]) -> i32 {
         if p.json && !p.command.is_empty() {
             println!("{}", json!({"error": defaults::render("msg.cli_unknown", &[("command", &p.command)]), "usage": usage}));
         } else {
+            // what was typed and why it failed, then the usage line as the hint (a bare `ah-engine` just prints the usage)
+            if !p.command.is_empty() {
+                eprintln!("{}", defaults::render("msg.cli_unknown", &[("command", &p.command)]));
+            }
             eprintln!("{usage}");
         }
         return 64;
@@ -270,22 +298,52 @@ fn run_recorded(p: &Parsed, h: Handler) -> i32 {
 }
 
 fn cmd_serve(_: &Parsed) -> i32 {
+    crate::daemonenv::sanitize(); // before any thread: the daemon serves every session, so it keeps nothing of the one that started it
     daemon::serve();
     0
 }
 
 fn cmd_hook(p: &Parsed) -> i32 {
-    if crate::dispatch::requested(&p.rest) {
-        return crate::dispatch::hook_main(&p.rest);
-    }
-    client::hook_main(&p.rest)
+    let code = if crate::dispatch::requested(&p.rest) { crate::dispatch::hook_main(&p.rest) } else { client::hook_main(&p.rest) };
+    client::finish_ack(); // the verdict is printed and flushed: tell the daemon it arrived (ack protocol, `crate::wire`)
+    code
 }
 
 fn cmd_status(p: &Parsed) -> i32 {
-    let v = client::status_value();
+    // `--threads`: the live daemon's per-thread CPU % and work counters per second, over `diagnostics.threads_window_ms`
+    if p.rest.iter().any(|a| a == defaults::text("diagnostics.threads_flag")) {
+        let ctl = defaults::text("diagnostics.threads_ctl");
+        let first = client::ctl_json(ctl);
+        let t0 = std::time::Instant::now();
+        std::thread::sleep(defaults::millis("diagnostics.threads_window_ms"));
+        let v = match (first, client::ctl_json(ctl)) {
+            (Some(a), Some(b)) => crate::threads::report(&a, &b, t0.elapsed().as_micros() as u64),
+            _ => json!({"running": false, "note": defaults::text("msg.cli_not_running")}),
+        };
+        emit(p, human(&v), v);
+        return 0;
+    }
+    // `--migration`: the Node-to-engine migration report, generated from the registries (no daemon needed)
+    if p.rest.iter().any(|a| a == defaults::text("opcli.migration_flag")) {
+        let v = crate::migration::report();
+        emit(p, crate::migration::human(&v), v);
+        return 0;
+    }
+    let mut v = client::status_value();
+    // the v1.0 gate of D88, from this binary's own registry (the daemon may be an older build)
+    if let Some(m) = v.as_object_mut() {
+        // the hand-back and accounting counters: the daemon's reply carries them; with no daemon (or an older one) the journal does
+        if !m.contains_key("node_handback")
+            && let Some(o) = crate::obs::counters::snapshot().as_object()
+        {
+            m.extend(o.clone());
+        }
+        m.insert("compiled_logic_checks_remaining".to_string(), json!(crate::checks::compiled_logic_checks_remaining()));
+    }
     // `--memory`: just the memory breakdown (live heap against RSS, and the size of every long-lived in-memory structure)
     let v = if p.rest.iter().any(|a| a == "--memory") {
-        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"]})
+        json!({"running": v["running"], "rss_peak_kb": v["rss_peak_kb"], "rss_cap_kb": v["rss_cap_kb"], "memory": v["memory"],
+            "latest_snapshot": crate::memdiag::latest_snapshot(), "mem_log": crate::memdiag::summary()})
     } else {
         v
     };
@@ -388,9 +446,47 @@ fn cmd_version(p: &Parsed) -> i32 {
 }
 
 fn cmd_ctl(p: &Parsed) -> i32 {
-    let verb = p.rest.first().map(String::as_str).unwrap_or("ping");
-    match client::ctl(verb) {
+    // the whole request goes to the daemon (`ctl profile on --for 10m`); `--for <dur>` travels as `for=<dur>`
+    let mut words: Vec<String> = Vec::new();
+    let mut args = p.rest.iter();
+    while let Some(a) = args.next() {
+        match (a.as_str(), args.as_slice().first()) {
+            ("--for", Some(v)) => {
+                words.push(format!("for={v}"));
+                args.next();
+            }
+            _ => words.push(a.clone()),
+        }
+    }
+    let verb = if words.is_empty() { "ping".to_string() } else { words.join(" ") };
+    match client::ctl(&verb) {
         Some(r) => emit(p, r.clone(), json!({"reply": r})),
+        None => return no_daemon(p),
+    }
+    0
+}
+
+/// `ah-engine diag <topic>`: a read-only report over state the engine already keeps. `fs` and `locks` read the state directory
+/// here; the others come from the daemon, except `trace`, which falls back to the last dump on disk.
+fn cmd_diag(p: &Parsed) -> i32 {
+    let topics = crate::obs::diagverbs::topics();
+    let topic = p.rest.first().map(String::as_str).unwrap_or("");
+    if !topics.contains(&topic) {
+        let msg = if topic.is_empty() {
+            defaults::render("msg.obs_diag_usage", &[("topics", &topics.join("|"))])
+        } else {
+            defaults::render("msg.obs_diag_unknown", &[("topic", &topic)])
+        };
+        emit(p, msg.clone(), json!({"error": msg}));
+        return 64;
+    }
+    let report = crate::obs::diagverbs::local(topic).or_else(|| client::ctl_json(&format!("diag {topic}")));
+    match report {
+        Some(v) => emit(p, human(&v), v),
+        None if topic == "trace" => {
+            let v = crate::obs::diagverbs::last_trace_dump();
+            emit(p, human(&v), v);
+        }
         None => return no_daemon(p),
     }
     0

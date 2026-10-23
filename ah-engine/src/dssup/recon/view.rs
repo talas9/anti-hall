@@ -56,16 +56,20 @@ pub fn exists(home: &Path, rel: &str) -> bool {
     home.join(rel).exists()
 }
 
-fn sqlite_marker(home: &Path, hash: &str) -> bool {
-    std::fs::read_to_string(home.join(store_rel(hash)).join(defaults::text("mesh.backend_marker")))
-        .is_ok_and(|m| m.trim().to_ascii_lowercase() == defaults::text("mesh.backend_sqlite"))
+fn marker_of(home: &Path, hash: &str) -> String {
+    std::fs::read_to_string(home.join(store_rel(hash)).join(defaults::text("mesh.backend_marker"))).map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default()
 }
 
 /// Every registry row of a store as stored, ordered by id, or a deferral: not a sqlite store, no database, a registry without
 /// `write_seq`, a column the reader cannot decode.
 pub fn registry(home: &Path, hash: &str) -> R<Vec<RegRow>> {
-    if !sqlite_marker(home, hash) {
-        return defer("store-backend");
+    let marker = marker_of(home, hash);
+    if marker == defaults::text("mesh_write.backend_journal") {
+        // the legacy journal backend (Node older than 22.5): the engine does not read it, and nothing waits for it (see `reason_store_backend`)
+        return defer(defaults::text("devswarm_recon.reason_store_backend"));
+    }
+    if marker != defaults::text("mesh.backend_sqlite") {
+        return defer(defaults::text("devswarm_recon.reason_store_unpinned"));
     }
     let db = store_db(home, hash);
     let reader = crate::mesh::MeshReader::open(&db).map_err(|e| Defer(format!("store-open:{e}")))?;
@@ -306,4 +310,10 @@ pub fn partition_sig(home: &Path, store: &str, id: &str) -> R<String> {
         s.push_str(&format!("|{}:{}:{}:{:?}:{}", r.ns, r.reader, r.value, r.retired_line, r.updated_at));
     }
     Ok(s)
+}
+
+/// `hasFreshHeartbeat(id, home, { now })`: the partition's own heartbeat file is newer than the freshness window.
+pub fn fresh_heartbeat(home: &Path, id: &str, now: f64) -> bool {
+    crate::meshw::idlock::is_safe_id(id)
+        && crate::dssup::liveness::is_fresh(crate::dssup::liveness::heartbeat_ts(home, id), now, defaults::num("devswarm_sup.lv_heartbeat_fresh_ms") as f64)
 }

@@ -33,3 +33,8 @@ max_download_bytes = 134217728
 
 # engine.autoUpdate: least seconds between two automatic checks.
 auto_interval_s = 86400
+
+# The launcher (relative to the plugin root) that self-tests a candidate engine before it is swapped in
+# (`ah-hook --selftest --engine <new>`); a missing launcher is skipped with a note, a rejection aborts the update.
+launcher_bin = "hooks/ah-hook"
+launcher_selftest_timeout_s = 20

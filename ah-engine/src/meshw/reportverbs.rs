@@ -84,7 +84,7 @@ struct Jev {
 
 /// One day's rollup (`emptyRollup`).
 #[derive(Debug, Clone, Default)]
-struct Roll {
+pub(crate) struct Roll {
     plans: f64,
     steps: f64,
     warnings: Counts,
@@ -162,7 +162,7 @@ fn includes(v: Option<&OVal>, word: &str) -> bool {
 }
 
 /// `buildDailyRollups(rows)`: per UTC day, in order of first appearance.
-fn build_daily(rows: &[OVal]) -> R<Vec<(String, Roll)>> {
+pub(crate) fn build_daily(rows: &[OVal]) -> R<Vec<(String, Roll)>> {
     let mut days: Vec<(String, Roll)> = Vec::new();
     let t = |k: &str| defaults::text(k);
     for r in rows {
@@ -397,7 +397,7 @@ fn rate(a: f64, b: f64) -> Option<f64> {
 }
 
 /// The retained generations of the supervision log, oldest first, then the current file.
-fn log_files(dir: &Path, base: &str) -> R<Vec<std::path::PathBuf>> {
+pub(crate) fn log_files(dir: &Path, base: &str) -> R<Vec<std::path::PathBuf>> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Ok(Vec::new()) };
     let mut gens: Vec<f64> = Vec::new();
     for e in rd.flatten() {
@@ -426,7 +426,7 @@ fn log_files(dir: &Path, base: &str) -> R<Vec<std::path::PathBuf>> {
 }
 
 /// `readNdjsonFiles(files)`: every line that parses, as the value it holds.
-fn read_rows(files: &[std::path::PathBuf]) -> Vec<OVal> {
+pub(crate) fn read_rows(files: &[std::path::PathBuf]) -> Vec<OVal> {
     let mut rows = Vec::new();
     for f in files {
         let Ok(bytes) = std::fs::read(f) else { continue };
@@ -539,6 +539,55 @@ fn gather(inv: &Inv, days_in: f64) -> R<Report> {
 
 fn counts_obj(c: &Counts) -> OVal {
     OVal::Obj(c.0.iter().map(|(k, v)| (k.clone(), n(*v))).collect())
+}
+
+impl Roll {
+    /// The rollup file's object (`Object.assign({ complete }, emptyRollup(day))` filled in): the keys in `emptyRollup`'s order.
+    pub(crate) fn to_file_value(&self, day: &str, complete: bool) -> OVal {
+        let list = |xs: &[f64]| OVal::Arr(xs.iter().map(|x| n(*x)).collect());
+        let jev: Vec<(String, OVal)> = self
+            .jev
+            .iter()
+            .map(|(k, g)| {
+                let mut j = Obj::default();
+                j.put("byMode", counts_obj(&g.by_mode))
+                    .put("n", n(g.n))
+                    .put("agree", n(g.agree))
+                    .put("followed", n(g.followed))
+                    .put("overridden", n(g.overridden))
+                    .put("progressWhenSupported", n(g.progress_supported))
+                    .put("progressWhenNotSupported", n(g.progress_not));
+                (k.clone(), j.done())
+            })
+            .collect();
+        let mut o = Obj::default();
+        o.put("complete", OVal::Bool(complete))
+            .put("v", n(1.0))
+            .put("day", s(day))
+            .put("plans", n(self.plans))
+            .put("steps", n(self.steps))
+            .put("warnings", counts_obj(&self.warnings))
+            .put("repeats", n(self.repeats))
+            .put("corrections", n(self.corrections))
+            .put("correctionsFollowed", n(self.corrections_followed))
+            .put("extras", n(self.extras))
+            .put("done", n(self.done))
+            .put("durationsMs", list(&self.durations))
+            .put("stepsDone", n(self.steps_done))
+            .put("stepsPlanned", n(self.steps_planned))
+            .put("jev", OVal::Obj(jev))
+            .put("tokenPeriods", list(&self.token_periods))
+            .put("tokensByWorkspace", counts_obj(&self.tokens_by_ws))
+            .put("doneTokens", list(&self.done_tokens))
+            .put("burnCorrections", n(self.burn_corrections))
+            .put("burnFollowed", n(self.burn_followed))
+            .put("respawns", n(self.respawns))
+            .put("respawnsParked", n(self.respawns_parked))
+            .put("respawnsAborted", n(self.respawns_aborted))
+            .put("respawnProgressMs", list(&self.respawn_progress))
+            .put("respawnsFinished", n(self.respawns_finished));
+        o.done()
+    }
 }
 
 /// The report object (`report(home, opts)`).

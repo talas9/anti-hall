@@ -101,6 +101,8 @@ struct Msg {
     /// The absolute store position when the row is a store row (the own-partition ack target).
     index: Option<f64>,
     hash: Option<String>,
+    /// Sent by the reader's own identity family: counted out of the unread and left out of the list (the ack still walks it).
+    own: bool,
 }
 
 /// A row of the store partition, in `listMessages`' key order (`origin` first in a union read).
@@ -132,6 +134,7 @@ fn store_msg(r: &Value, origin: bool) -> Msg {
         index: r["index"].as_f64(),
         hash: r["hash"].as_str().map(str::to_string),
         fields: o,
+        own: false,
     }
 }
 
@@ -166,7 +169,8 @@ fn ndjson_msg(line: &str) -> R<Msg> {
         Some(v) => js_string_of(v)?,
         None => String::new(),
     };
-    let sender = match field(defaults::text("mesh_write.ndjson_from_field")) {
+    // the line's own resolved sender (pull stamps it), else its branch (a legacy line carries no sender)
+    let sender = match field(defaults::text("mesh_write.ndjson_sender_field")).or_else(|| field(defaults::text("mesh_write.ndjson_from_field"))) {
         Some(v) => Some(js_string_of(v)?),
         None => None,
     };
@@ -178,12 +182,12 @@ fn ndjson_msg(line: &str) -> R<Msg> {
         .put("body", OVal::Str(body))
         .put("sender", common::s_or_null(sender.as_deref()))
         .put("status", status);
-    Ok(Msg { sort_ts: ts.unwrap_or(f64::INFINITY), index: None, hash, fields: o })
+    Ok(Msg { sort_ts: ts.unwrap_or(f64::INFINITY), index: None, hash, fields: o, own: false })
 }
 
 /// The per-row additions of the read, in Node's order: the forward marker, the instance digest, `from`/`text`/`kind`,
 /// `bodyLength`. Returns the finished row and its body length.
-fn finish(m: Msg) -> R<(OVal, f64)> {
+fn finish(m: Msg, legacy_from: &dyn Fn(&str) -> Option<String>) -> R<(OVal, f64)> {
     let mut o = m.fields;
     let get = |o: &Obj, k: &str| o.0.iter().find(|(x, _)| x == k).map(|(_, v)| v.clone());
     let text_of = |v: Option<OVal>| match v {
@@ -203,7 +207,8 @@ fn finish(m: Msg) -> R<(OVal, f64)> {
         let sender = text_of(get(&o, "sender")).unwrap_or_default();
         o.put("instanceNonceShort", s(&short)).put("fromLine", OVal::Str(format!("{sender}@{short}")));
     }
-    let sender = get(&o, "sender").filter(|v| !matches!(v, OVal::Null)).unwrap_or(OVal::Null);
+    // a legacy row with no sender: a `DONE: <branch> ...` notice is attributed from its branch at read time (nothing is rewritten)
+    let sender = get(&o, "sender").filter(|v| !matches!(v, OVal::Null)).or_else(|| body.as_deref().and_then(legacy_from).map(OVal::Str)).unwrap_or(OVal::Null);
     let broadcast = matches!(get(&o, "mtype"), Some(OVal::Str(t)) if t == defaults::text("mesh_write.mtype_broadcast"));
     let body_text = body.unwrap_or_default();
     let len = body_text.len() as f64;
@@ -235,17 +240,9 @@ fn text_lines(rows: &[OVal]) -> String {
         .join(defaults::text("mesh_write.text_row_sep"))
 }
 
-/// `resolveStableCliPath(home, ...)`: the stable launcher when it is a file; else Node's fallback is the path of the
-/// running script, which the engine cannot name, so that defers.
+/// The command the `ackCommand` names: the engine shim (`devswarm_role.engine_cli`).
 fn launcher_path(home: &Path) -> R<String> {
-    let p = home
-        .join(defaults::text("mesh_write.dir_anti_hall"))
-        .join(defaults::text("mesh_write.launcher_dir"))
-        .join(defaults::text("mesh_write.launcher_devswarm"));
-    if std::fs::metadata(&p).is_ok_and(|m| m.is_file()) {
-        return Ok(p.to_string_lossy().into_owned());
-    }
-    defer("no-launcher")
+    Ok(crate::checks::devswarm_role::text::engine_cli(&home.to_string_lossy()))
 }
 
 /// `writeReadReceipt` prunes receipts of the id older than the keep window as it writes: a pruning write is Node's.
@@ -669,17 +666,25 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
     let mut nd_op_target: Option<f64> = None;
     if let Some(inbox) = &inbox {
         let Some(cf) = &cursor_file else { return defer("no-cursor-path") };
-        if union::non_empty_lines(inbox).is_none() || union::cursor_position(cf)?.is_none() {
+        if union::non_empty_lines(inbox)?.is_none() || union::cursor_position(cf)?.is_none() {
             return defer("unknown-count");
         }
         let input = union::UnionIn { inbox: Some(inbox), cursor_file: Some(cf), id, store: Some(&o.reader), store_base, nd_base, now: inv.now };
-        let u = union::union_unread(&input)?;
+        let me = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref());
+        let counted = union::unread_for(&o.reader, &inv.home, id, Some(inbox), Some(cf), me.as_deref(), &tick::family_of(id, &o.rows), inv.now)?;
+        tick::note_own_excluded(&counted);
+        let u = counted.union;
         let merged_total = union::merged_total(&input)?;
+        let family = tick::family_of(id, &o.rows);
         for line in &u.nd_unread_lines {
-            msgs.push(ndjson_msg(line)?);
+            let mut m = ndjson_msg(line)?;
+            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x));
+            msgs.push(m);
         }
         for r in &u.store_only_unread {
-            msgs.push(store_msg(r, true));
+            let mut m = store_msg(r, true);
+            m.own = r.get("sender").and_then(Value::as_str).is_some_and(|x| family.contains(x));
+            msgs.push(m);
         }
         // Array#sort is stable and a non-finite `ts` sorts last (a pair of them compares equal)
         msgs.sort_by(
@@ -687,19 +692,26 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
                 if x.sort_ts == y.sort_ts { std::cmp::Ordering::Equal } else { x.sort_ts.partial_cmp(&y.sort_ts).unwrap_or(std::cmp::Ordering::Equal) }
             },
         );
-        unread_count = u.unread as f64;
+        unread_count = counted.unread as f64;
         total_out = merged_total as f64;
         let nd_cursor = floor_pos(nd_base);
         union_cursors = Some((nd_cursor, store_base));
-        nd_op_target = Some(nd_cursor + u.nd_unread_lines.len() as f64);
+        nd_op_target = Some(nd_cursor + u.nd_skipped as f64 + u.nd_unread_lines.len() as f64);
     } else {
+        let family = tick::family_of(id, &o.rows);
         o.reader
             .for_each_message(id, floor_pos(store_base) as u64, |m| {
-                msgs.push(store_msg(&m, false));
+                let mut x = store_msg(&m, false);
+                x.own = m["sender"].as_str().is_some_and(|f| family.contains(f));
+                msgs.push(x);
                 true
             })
             .map_err(|e| ident::Defer(format!("store-read:{e}")))?;
-        unread_count = (total_store as f64 - store_base).max(0.0);
+        let own_unread = msgs.iter().filter(|m| m.own).count();
+        if own_unread > 0 {
+            crate::metrics::bump("mesh_own_sends_excluded", &[]);
+        }
+        unread_count = ((total_store as f64 - store_base).max(0.0) - own_unread as f64).max(0.0);
         total_out = total_store as f64;
     }
     if msgs.len() > limit {
@@ -709,11 +721,27 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>) -> R<Planned> {
     let max_index = msgs.iter().filter_map(|m| m.index).fold(None, |acc: Option<f64>, i| Some(acc.map_or(i, |a| a.max(i))));
     let own_target = max_index.map_or(store_base, |m| store_base.max(m));
     let delivered = msgs.len();
+    // #181: the unread list leaves out the mail the reader's own family sent, as its count does (the targets above already walked it)
+    msgs.retain(|m| !m.own);
+    // the receipt names the rows the reader was shown
     let hashes: Vec<OVal> = msgs.iter().map(|m| common::s_or_null(m.hash.as_deref())).collect();
     let mut rows: Vec<OVal> = Vec::with_capacity(msgs.len());
     let mut body_bytes = 0.0;
+    let registry: std::cell::OnceCell<Vec<(String, String)>> = std::cell::OnceCell::new();
+    let legacy_from = |body: &str| -> Option<String> {
+        let reg = registry.get_or_init(|| crate::dssup::ingest::import::registry_pairs(&o.reader));
+        let named = crate::dssup::ingest::import::done_branch(body).and_then(|branch| crate::dssup::ingest::import::branch_sender(reg, &branch));
+        // #181: a stored row with no sender in a child's partition is the Primary's outbound (as ingest now stamps it)
+        named.or_else(|| {
+            let fallback = crate::dssup::ingest::import::fallback_sender(reg, id);
+            if fallback.is_some() {
+                crate::metrics::bump("mesh_sender_fallback", &[("where", defaults::text("mesh_write.sender_fallback_read"))]);
+            }
+            fallback
+        })
+    };
     for m in msgs {
-        let (row, len) = finish(m)?;
+        let (row, len) = finish(m, &legacy_from)?;
         body_bytes += len;
         rows.push(row);
     }
@@ -821,5 +849,20 @@ mod tests {
         assert_eq!(base36(35), "z");
         assert_eq!(base36(36), "10");
         assert_eq!(base36(1_795_000_000_000), "mwm0nk74");
+    }
+
+    fn sender_of(m: &Msg) -> Option<String> {
+        m.fields.0.iter().find(|(k, _)| k == "sender").and_then(|(_, v)| if let OVal::Str(t) = v { Some(t.clone()) } else { None })
+    }
+
+    #[test]
+    fn an_ndjson_line_names_its_own_sender() {
+        // #181: pull stamps the resolved sender; `fromBranch` is only a branch ("main" is not an addressable id)
+        let m = ndjson_msg(r#"{"_h":"h","fromBranch":"main","message":"poke","createdAt":1,"sender":"P"}"#).unwrap();
+        assert_eq!(sender_of(&m).as_deref(), Some("P"));
+        let legacy = ndjson_msg(r#"{"_h":"h","fromBranch":"fix/x","message":"m","createdAt":1}"#).unwrap();
+        assert_eq!(sender_of(&legacy).as_deref(), Some("fix/x"), "a line with no sender keeps its branch, as before");
+        let none = ndjson_msg(r#"{"_h":"h","message":"m","createdAt":1}"#).unwrap();
+        assert_eq!(sender_of(&none), None);
     }
 }

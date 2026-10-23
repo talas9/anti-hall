@@ -302,7 +302,7 @@ Read/Write/Edit tools, not the workflow script) maintains
   just points at that agent's id — check liveness by running `agent-watchdog.js`, don't add a
   second heartbeat mechanism. Run it inline from the coordinator: `command-guard` carves a
   narrow exception for `hooks/agent-watchdog.js` (and `statusline/phase.js`), so these two
-  coordinator-owned helpers are exempt from the `node <file>.js` heavy-command block.
+  coordinator-owned helpers are exempt from the `node` script heavy-command block.
 
 **On resume** (after `/clear`/compaction, having already read `PLAN.md` per above): also read
 `STATE.json` if present, recompute `plan_hash` from the current `PLAN.md`, and if it differs

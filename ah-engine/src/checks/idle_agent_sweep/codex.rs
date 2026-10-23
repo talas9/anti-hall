@@ -39,7 +39,7 @@ struct Agent {
     nickname: String,
 }
 
-fn id_re() -> &'static Regex {
+fn id_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("idle_sweep.re_codex_id"), true))
 }

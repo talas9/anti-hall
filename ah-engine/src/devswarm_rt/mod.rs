@@ -9,14 +9,16 @@
 //!   trait, plus the [`sources::GithubState`] trait through which the GitHub realtime feature (A) supplies PR and CI facts.
 //! * [`state`]: the per-workspace record, the pure derivation from sources, the invariants I1 to I5 and the change diff.
 //! * [`reconcile`]: the live store, start-up diff (`while_down`), periodic repair counting and persistence.
+//! * [`linefile`]: the compact snapshot copy the statusline segment reads (feature 1; never the database at render time).
 //! * [`shadow`]: the comparison against the Node witness (a non-acting Node run in a scratch HOME), appended to a log.
 pub mod detect;
+pub mod linefile;
 pub mod reconcile;
 pub mod shadow;
 pub mod sources;
 pub mod state;
 
-pub use detect::{Detection, Mode, detect};
+pub use detect::{Detection, Mode, detect, detect_with};
 pub use reconcile::{Cause, Report, Rt};
 pub use state::{Cfg, Edge, EdgeKind, Snapshot, Workspace};
 
@@ -25,6 +27,11 @@ use std::path::Path;
 
 /// Start the layer: `None` (inert, no state, no I/O beyond the detection probe) when DevSwarm is absent or the mode is off.
 pub fn start(home: &Path, env: &Env) -> Option<Rt> {
-    let d = detect(home, env);
+    start_with(home, env, Mode::configured())
+}
+
+/// [`start`] with the mode the caller resolved.
+pub fn start_with(home: &Path, env: &Env, mode: Mode) -> Option<Rt> {
+    let d = detect_with(home, env, mode);
     d.active().then(|| Rt::new(Cfg::from_defaults(), d))
 }

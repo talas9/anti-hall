@@ -17,17 +17,19 @@ use crate::dssup::recon::{Hooks, UnitEnd, apply, view};
 use crate::meshw::actverbs::{Resolved, resolve_archive_id};
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, s};
+use crate::meshw::cursors;
 use crate::meshw::ident::{self, R, defer};
 use crate::meshw::idlock::{self, is_safe_id};
 use crate::meshw::send::{Answer, Effect};
 use crate::meshw::wsverbs;
+use crate::migrate::readercur::{Cx, Handle, raise_all_loss_free};
 
 fn answer(code: i32, v: OVal) -> Answer {
     Answer { code, stdout: format!("{}\n", v.stringify()), effect: Effect::None }
 }
 
 /// `{ ok: false, error }` the way the dispatcher refuses a missing or unsafe id.
-fn bad_id() -> Answer {
+pub(crate) fn bad_id() -> Answer {
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false)).put("error", s(defaults::text("devswarm_cli.msg_bad_id")));
     answer(2, o.done())
@@ -43,7 +45,7 @@ fn store_owner_key(inv: &Inv, id: &str) -> R<String> {
 
 /// Apply a planned job's units to the real home, in order, the caller holding each unit's lock. A unit handed back (lock busy, drifted precondition) before any
 /// write defers the verb; a unit that fails after its first step landed is a committed failure.
-fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
+pub(crate) fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
     let st = inv.settings();
     let env = apply::Env { home: &inv.home, now: inv.now, st: &st, log_dir: None };
     for (i, u) in units.iter().enumerate() {
@@ -52,7 +54,11 @@ fn apply_units(inv: &Inv, units: &[crate::dssup::recon::Unit]) -> R<()> {
         match apply::unit(&env, &unlocked, &Hooks::none()) {
             UnitEnd::Applied => crate::meshw::mark_committed(),
             UnitEnd::Deferred(why) if i == 0 => return defer(&why),
-            UnitEnd::Deferred(why) | UnitEnd::Failed(why) => return defer(&format!("committed:{why}")),
+            UnitEnd::Deferred(why) | UnitEnd::Failed(why) => {
+                // a step that failed after earlier steps landed has written: Node must not repeat the verb
+                crate::meshw::mark_committed();
+                return defer(&format!("committed:{why}"));
+            }
         }
     }
     Ok(())
@@ -345,7 +351,7 @@ fn build_descriptor(inv: &Inv, id: &str, f: &RegFlags, existing: Option<&OVal>) 
 
 /// Whether Node's `retireWorktreeDuplicates` would find another registry row of the same physical worktree (it would fold it
 /// into this id: the engine leaves that to Node).
-fn has_duplicate_rows(inv: &Inv, current: &str, id: &str, worktree: Option<&str>) -> R<bool> {
+pub(crate) fn has_duplicate_rows(inv: &Inv, current: &str, id: &str, worktree: Option<&str>) -> R<bool> {
     let Some(w) = worktree else { return Ok(false) };
     let keep_mesh = ident::primary_workspace_id(w)?;
     if keep_mesh == id {
@@ -369,11 +375,17 @@ fn has_duplicate_rows(inv: &Inv, current: &str, id: &str, worktree: Option<&str>
 /// the caller's cwd. Every refusal (Node logs those to the central log), the re-home, an archived twin, a second registry row of
 /// the worktree and a project the engine cannot name are Node's, decided before the first write.
 fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
+    register_core(inv, a, require_new, None)
+}
+
+/// [`register_verb`]; `primary` is the worktree of `register-primary`, whose id is a `primary-<hash>` label by design and whose
+/// result names the worktree and the workspace instead of the action.
+fn register_core(inv: &Inv, a: &Args, require_new: bool, primary: Option<&str>) -> R<Answer> {
     let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
     if !is_safe_id(id) {
         return Ok(bad_id());
     }
-    if crate::meshw::heartbeat::is_primary_label(id) {
+    if primary.is_none() && crate::meshw::heartbeat::is_primary_label(id) {
         return defer("primary-label");
     }
     let f = reg_flags(a)?;
@@ -491,11 +503,16 @@ fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
             Some(v) => Some(v.stringify()),
         },
     };
-    if has_duplicate_rows(inv, &current, id, wt_text.as_deref())? {
-        return defer("duplicate-registry-rows");
-    }
-    let Some(reader) = crate::meshw::tick::open_reader(inv, &current)? else { return defer("no-store") };
-    if !create {
+    let reader = match crate::meshw::tick::open_reader(inv, &current)? {
+        Some(r) => Some(r),
+        // the Primary's first registration of a project creates its store, as Node's `openStore` does
+        None if primary.is_some() => {
+            common::init_new_store(inv, &current)?;
+            None
+        }
+        None => return defer("no-store"),
+    };
+    if !create && let Some(reader) = &reader {
         // the ensure's upsert keeps the collision guard: a row at another worktree is left alone (the descriptor is still written)
         let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
         if let (Some(have), Some(incoming)) = (rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone()), row.worktree_path.as_deref())
@@ -529,7 +546,11 @@ fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
             crate::meshw::log_summary_failure(defaults::text("devswarm_cli.verb_register"), &why);
         }
     }
+    // `retireWorktreeDuplicates`: another registry row of this physical worktree (a spawn's seed row, a legacy registration) is
+    // folded into this id, its unread mail forwarded first; fail-open, as Node's catch is
+    let dup = !failed && has_duplicate_rows(inv, &current, id, wt_text.as_deref()).unwrap_or(false);
     lock.release();
+    let retire = if dup { retire_duplicates(inv, id, wt_text.as_deref()) } else { None };
     if failed {
         return defer("committed:registry");
     }
@@ -538,8 +559,54 @@ fn register_verb(inv: &Inv, a: &Args, require_new: bool) -> R<Answer> {
     // home does not hold (the parity test compares them in the whole-home tree)
     wsverbs::note_summary(inv, &current);
     let mut o = Obj::default();
-    o.put("ok", OVal::Bool(true)).put("action", s(action)).put("id", s(id)).put("descriptor", out_desc);
+    match primary {
+        None => o.put("ok", OVal::Bool(true)).put("action", s(action)).put("id", s(id)).put("descriptor", out_desc),
+        Some(wt) => o
+            .put("ok", OVal::Bool(true))
+            .put("action", s(defaults::text("devswarm_cli.action_register_primary")))
+            .put("id", s(id))
+            .put("workspaceId", s(id))
+            .put("worktree", s(wt))
+            .put("descriptor", out_desc),
+    };
+    if let Some(r) = retire.as_ref().and_then(|v| OVal::parse(&v.to_string())) {
+        let keys = defaults::list("devswarm_cli.reg_retire_fields");
+        o.put(keys[0], r.get("retired").cloned().unwrap_or(OVal::Arr(Vec::new())));
+        o.put(keys[1], r.get("forwarded").cloned().unwrap_or(OVal::Num(0.0)));
+        if let Some(l) = r.get("left") {
+            o.put(keys[2], l.clone());
+        }
+        if let Some(p) = r.get("pending") {
+            o.put(keys[3], p.clone());
+        }
+    }
     Ok(answer(0, o.done()))
+}
+
+/// `retireWorktreeDuplicates(home, desc, ctx)` after a registration: fold every other registry row of the same physical worktree into
+/// `id` (forwarding its unread mail first; a row with a descriptor of its own is left). `None` is Node's `null` (nothing to report,
+/// or a step the engine could not do, which Node's catch also reports as `null`).
+fn retire_duplicates(inv: &Inv, id: &str, worktree: Option<&str>) -> Option<serde_json::Value> {
+    let wt = worktree.filter(|w| !w.is_empty())?;
+    let st = inv.settings();
+    // the plugin root of the context named Node's functions for the old witness; the native gate does not read it
+    let ctx = crate::dssup::tick::Ctx { home: &inv.home, root: &inv.home, st: &st, now: inv.now, engine_pokes: false };
+    let runner = crate::dsact::runner::System::configured();
+    let hooks = crate::dssup::recon::Hooks { at: &|_| {} };
+    let run = crate::dssup::recon::dup::retire_worktree_duplicates(&ctx, &runner, &inv.cwd, id, wt, &hooks).ok()?;
+    let mut result = run.result?;
+    // a unit the applier handed back (a busy lock, a drifted precondition) was not done: its row is pending, not retired
+    let prefix = defaults::text("devswarm_recon.fold_unit_prefix");
+    let pending: Vec<(String, String)> =
+        run.deferred.iter().filter_map(|(label, why)| label.strip_prefix(prefix).map(|i| (i.to_string(), why.clone()))).collect();
+    if !pending.is_empty() {
+        if let Some(serde_json::Value::Array(r)) = result.get_mut("retired") {
+            r.retain(|v| !pending.iter().any(|(i, _)| v.as_str() == Some(i.as_str())));
+        }
+        let list: Vec<serde_json::Value> = pending.iter().map(|(i, why)| serde_json::json!({"id": i, "reason": why})).collect();
+        result["pending"] = serde_json::Value::Array(list);
+    }
+    Some(result)
 }
 
 /// `ensure <id> [--worktree P --session S --inbox P --cursor P]`.
@@ -550,6 +617,106 @@ pub fn ensure(inv: &Inv, a: &Args) -> R<Answer> {
 /// `register <id> --worktree P --session S [--inbox P --cursor P --nudge CMD]`.
 pub fn register(inv: &Inv, a: &Args) -> R<Answer> {
     register_verb(inv, a, false)
+}
+
+// ---- register-primary ---------------------------------------------------------------------------------------------------
+
+/// `register-primary [--worktree P] [--session S] [--inbox P] [--cursor P] [--force]` (`cmdRegisterPrimary`): the Primary's own
+/// descriptor under `primary-<hash of the worktree>`, written by the same code as `register`. The refusals Node words itself
+/// (not inside a worktree, a child builder of the app, a live Primary under another session) are answered here; everything the
+/// registration defers on is Node's, decided before the first write.
+pub fn register_primary(inv: &Inv, a: &Args) -> R<Answer> {
+    let name = |k: &str| defaults::text(k);
+    for k in ["devswarm_cli.flag_worktree", "devswarm_cli.flag_session", "devswarm_cli.flag_reg_inbox", "devswarm_cli.flag_reg_cursor"] {
+        if a.flags.get(name(k)).is_some_and(|v| v.iter().any(|x| matches!(x, crate::meshw::args::FlagVal::S(t) if t.is_empty()))) {
+            return defer("empty-flag");
+        }
+    }
+    let force = a.has(name("devswarm_cli.flag_force"));
+    let wt_flag = a.one(name("devswarm_cli.flag_worktree")).map(str::to_string);
+    let worktree = match &wt_flag {
+        Some(w) => w.clone(),
+        None => match ident::resolve_caller_worktree(&inv.cwd)? {
+            Some(w) => w,
+            None => return Ok(fail_with(&[("error", s(name("devswarm_cli.msg_regprim_no_worktree")))])),
+        },
+    };
+    let id = ident::primary_workspace_id(&worktree)?;
+    if !force {
+        let real = ident::resolve_caller_worktree(&worktree)?;
+        let builder = ident::builder_for_worktree(&inv.home, &inv.env, real.as_deref().unwrap_or(&worktree))?;
+        if builder.and_then(|b| b.builder_type).is_some_and(|t| !t.is_empty() && t != name("mesh_write.builder_type_primary")) {
+            let msg = crate::meshw::extverbs::tpl("devswarm_cli.msg_regprim_child", &[("worktree", &quote(&worktree))]);
+            return Ok(fail_with(&[
+                ("reason", s(name("devswarm_cli.reason_not_primary_checkout"))),
+                ("id", s(&id)),
+                ("worktree", s(&worktree)),
+                ("error", s(&msg)),
+            ]));
+        }
+        // the child-environment corroboration (a registered descriptor of DEVSWARM_BUILDER_ID, or a cwd under the app's repos) is only asked without --worktree
+        if wt_flag.is_none() && inv.env.get(name("devswarm_cli.regprim_child_env")).is_some_and(|v| !crate::checks::guardkit::text::js_trim(v).is_empty()) {
+            return defer("child-environment");
+        }
+    }
+    let session = a
+        .one(name("devswarm_cli.flag_session"))
+        .map(str::to_string)
+        .or_else(|| inv.env.get(name("mesh_write.env_session_id")).filter(|v| !v.is_empty()).cloned())
+        .or_else(|| inv.env.get(name("devswarm_cli.regprim_builder_env")).filter(|v| !v.is_empty()).cloned())
+        .unwrap_or_else(|| id.clone());
+    let cursor = a
+        .one(name("devswarm_cli.flag_reg_cursor"))
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::meshw::cursors::primary_cursor_path(&inv.home, &id).to_string_lossy().into_owned());
+    if !force {
+        // the live-holder check reads the registry row of the worktree's project; the app database may name the caller as the holder
+        let Some(key) = ident::repo_key_for_worktree(&worktree)? else { return defer("no-project") };
+        // a project with no store has no registry row to hold the seat: the first registration creates the store below
+        let rows = match crate::meshw::tick::open_reader(inv, &key)? {
+            Some(reader) => ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?),
+            None => Vec::new(),
+        };
+        if let Some(existing) = rows.iter().find(|r| r.id == id)
+            && let Some(held) = existing.session_id.as_deref().filter(|x| !x.is_empty() && *x != session)
+            && crate::dssup::liveness::session_alive(&inv.home, held)?
+        {
+            let app_readable = ident::app_db_path(&inv.home, &inv.env).is_some_and(|f| std::fs::metadata(f).is_ok_and(|m| m.is_file()));
+            if app_readable {
+                return defer("app-session-check");
+            }
+            // Node refuses inside the Primary id's lock (which leaves its lock directory behind)
+            let Some(lock) = idlock::acquire(&inv.home, &id) else { return defer("lock-busy") };
+            lock.release();
+            let msg = crate::meshw::extverbs::tpl(
+                "devswarm_cli.msg_regprim_conflict",
+                &[("worktree", &quote(&worktree)), ("id", &quote(&id)), ("session", &quote(held))],
+            );
+            return Ok(fail_with(&[
+                ("reason", s(name("devswarm_cli.reason_live_primary_conflict"))),
+                ("error", s(&msg)),
+                ("id", s(&id)),
+                ("worktree", s(&worktree)),
+                ("existingSessionId", s(held)),
+            ]));
+        }
+    }
+    let mut reg = Args { positionals: vec![name("devswarm_cli.verb_register").to_string(), id.clone()], ..Args::default() };
+    let put = |reg: &mut Args, k: &str, v: String| {
+        reg.flags.insert(name(k).to_string(), vec![crate::meshw::args::FlagVal::S(v)]);
+    };
+    put(&mut reg, "devswarm_cli.flag_worktree", worktree.clone());
+    put(&mut reg, "devswarm_cli.flag_session", session);
+    put(&mut reg, "devswarm_cli.flag_reg_cursor", cursor);
+    if let Some(inbox) = a.one(name("devswarm_cli.flag_reg_inbox")) {
+        put(&mut reg, "devswarm_cli.flag_reg_inbox", inbox.to_string());
+    }
+    register_core(inv, &reg, false, Some(&worktree))
+}
+
+/// `JSON.stringify(text)`.
+fn quote(x: &str) -> String {
+    serde_json::to_string(x).unwrap_or_default()
 }
 
 // ---- correct ------------------------------------------------------------------------------------------------------------
@@ -842,41 +1009,213 @@ pub fn reap_orphans(inv: &Inv, a: &Args) -> R<Answer> {
     } else {
         None
     };
-    // the refusals above do not depend on the candidates; a result that lists or retires them does: any partition with unread mail
-    // and no live reader defers here
-    crate::meshw::summary::compute(&store, inv, None)?;
+    // the candidates are the summary's orphans[] (partitions with unread mail and no live reader), the very set the per-turn warning lists
+    let sum = crate::meshw::summary::compute(&store, inv, None)?;
+    let candidates = candidates_of(&store, &sum);
     let n_ = crate::meshw::common::n;
+    let reaped_dir = idlock::devswarm_root(&inv.home).join(defaults::text("devswarm_cli.reap_dir"));
+    let dir_text = reaped_dir.to_string_lossy().into_owned();
     let o = match max_n {
-        None => reap_result(
-            true,
-            &[
-                ("mode", s(defaults::text("devswarm_cli.reap_mode_dry_run"))),
-                ("repoKey", s(&repo_key)),
-                ("candidateCount", n_(0.0)),
-                ("candidates", OVal::Arr(Vec::new())),
-                ("note", s(defaults::text("devswarm_cli.msg_reap_none"))),
-            ],
-        ),
+        None => {
+            let note = if candidates.is_empty() {
+                defaults::text("devswarm_cli.msg_reap_none").to_string()
+            } else {
+                crate::meshw::extverbs::tpl("devswarm_cli.msg_reap_dry_run", &[("dir", &dir_text)])
+            };
+            reap_result(
+                true,
+                &[
+                    ("mode", s(defaults::text("devswarm_cli.reap_mode_dry_run"))),
+                    ("repoKey", s(&repo_key)),
+                    ("candidateCount", n_(candidates.len() as f64)),
+                    ("candidates", OVal::Arr(candidates.iter().map(Candidate::to_oval).collect())),
+                    ("note", s(&note)),
+                ],
+            )
+        }
         Some(max) => {
-            let reaped_dir = idlock::devswarm_root(&inv.home).join(defaults::text("devswarm_cli.reap_dir"));
+            let take = if max >= candidates.len() as f64 { candidates.len() } else { max as usize };
+            let targets = &candidates[..take];
+            let (mut reaped, mut failed) = (Vec::new(), Vec::new());
+            for c in targets {
+                match retire(&store, inv, &repo_key, &reaped_dir, c)? {
+                    Ok(r) => reaped.push(r),
+                    Err(f) => failed.push(f),
+                }
+            }
+            if !reaped.is_empty()
+                && let Some(why) = crate::meshw::summary::derive_after_write(&store, inv, &repo_key)
+            {
+                crate::meshw::log_summary_failure(defaults::text("devswarm_cli.verb_reap_orphans"), &why);
+            }
             reap_result(
                 true,
                 &[
                     ("mode", s(defaults::text("devswarm_cli.reap_mode_apply"))),
                     ("repoKey", s(&repo_key)),
                     ("max", n_(max)),
-                    ("candidateCount", n_(0.0)),
-                    ("consideredCount", n_(0.0)),
-                    ("reapedCount", n_(0.0)),
-                    ("reaped", OVal::Arr(Vec::new())),
-                    ("failedCount", n_(0.0)),
-                    ("failed", OVal::Arr(Vec::new())),
-                    ("capped", OVal::Bool(false)),
-                    ("remaining", n_(0.0)),
-                    ("note", s(&crate::meshw::extverbs::tpl("devswarm_cli.msg_reap_applied", &[("dir", &reaped_dir.to_string_lossy())]))),
+                    ("candidateCount", n_(candidates.len() as f64)),
+                    ("consideredCount", n_(targets.len() as f64)),
+                    ("reapedCount", n_(reaped.len() as f64)),
+                    ("reaped", OVal::Arr(reaped.clone())),
+                    ("failedCount", n_(failed.len() as f64)),
+                    ("failed", OVal::Arr(failed.clone())),
+                    ("capped", OVal::Bool(candidates.len() > targets.len())),
+                    ("remaining", n_((candidates.len() - targets.len()) as f64)),
+                    ("note", s(&crate::meshw::extverbs::tpl("devswarm_cli.msg_reap_applied", &[("dir", &dir_text)]))),
                 ],
             )
         }
     };
     Ok(answer(0, o.done()))
+}
+
+/// One candidate of `collectOrphanCandidates`.
+struct Candidate {
+    id: String,
+    unread: f64,
+    message_count: f64,
+    last_ts: Option<f64>,
+}
+
+impl Candidate {
+    fn to_oval(&self) -> OVal {
+        let n_ = crate::meshw::common::n;
+        let mut o = Obj::default();
+        o.put("partitionId", s(&self.id))
+            .put("unread", n_(self.unread))
+            .put("messageCount", n_(self.message_count))
+            .put("lastMessageTs", self.last_ts.map_or(OVal::Null, n_))
+            .put("reason", s(defaults::text("devswarm_cli.reap_reason_unread")));
+        o.done()
+    }
+}
+
+/// `collectOrphanCandidates`: the summary's `orphans[]` entries with a safe id, each with the newest message ts in its partition.
+fn candidates_of(store: &crate::meshw::store::MeshStore, sum: &OVal) -> Vec<Candidate> {
+    let Some(OVal::Arr(list)) = sum.get("orphans") else { return Vec::new() };
+    let num = |v: Option<&OVal>| match v {
+        Some(OVal::Num(x)) if x.is_finite() => *x,
+        _ => 0.0,
+    };
+    let mut out = Vec::new();
+    for e in list {
+        let Some(OVal::Str(id)) = e.get("id") else { continue };
+        if !is_safe_id(id) {
+            continue;
+        }
+        let mut last: Option<f64> = None;
+        // keep: a partition that cannot be read to the end reports the newest ts seen so far (Node's listMessages reads what the store gives)
+        crate::discard::harmless(store.reader().for_each_message(id, 0, |m| {
+            if let Some(t) = m["ts"].as_f64().filter(|t| t.is_finite())
+                && last.is_none_or(|l| t > l)
+            {
+                last = Some(t);
+            }
+            true
+        }));
+        out.push(Candidate { id: id.clone(), unread: num(e.get("unread")), message_count: num(e.get("messageCount")), last_ts: last });
+    }
+    out
+}
+
+/// Node's message row as `JSON.stringify` writes it (the key order of `listMessages`).
+fn row_oval(m: &serde_json::Value) -> OVal {
+    let conv = |v: &serde_json::Value| match v {
+        serde_json::Value::Null => OVal::Null,
+        serde_json::Value::Bool(b) => OVal::Bool(*b),
+        serde_json::Value::Number(x) => crate::meshw::common::n(x.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(t) => s(t),
+        _ => OVal::Null,
+    };
+    let keys = defaults::list("devswarm_cli.reap_row_keys");
+    OVal::Obj(keys.iter().map(|k| (k.to_string(), conv(&m[*k]))).collect())
+}
+
+/// Archive, verify, then retire one partition (`cmdReapOrphans`' loop body). The inner `Err` is the `failed[]` entry.
+fn retire(store: &crate::meshw::store::MeshStore, inv: &Inv, repo_key: &str, reaped_dir: &std::path::Path, c: &Candidate) -> R<Result<OVal, OVal>> {
+    let n_ = crate::meshw::common::n;
+    let fail = |reason: &str, extra: Vec<(&str, OVal)>| -> OVal {
+        let mut o = Obj::default();
+        o.put("partitionId", s(&c.id)).put("reason", s(reason));
+        for (k, v) in extra {
+            o.put(k, v);
+        }
+        o.done()
+    };
+    let pid = c.id.as_str();
+    let cursor = crate::meshw::summary::store_floor(store, &inv.home, pid);
+    let total = match store.reader().message_count(pid) {
+        Ok(t) => t as f64,
+        Err(e) => return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_error"), vec![("error", s(&e.to_string()))]))),
+    };
+    let mut unread: Vec<serde_json::Value> = Vec::new();
+    let since = if cursor.is_finite() && cursor > 0.0 { cursor.floor() as u64 } else { 0 };
+    if let Err(e) = store.reader().for_each_message(pid, since, |m| {
+        unread.push(m);
+        true
+    }) {
+        return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_error"), vec![("error", s(&e.to_string()))])));
+    }
+    if unread.is_empty() {
+        return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_no_unread"), vec![])));
+    }
+    let at = crate::checks::jsport::date::to_iso(common::now_ms() as f64).unwrap_or_default();
+    let mut payload = String::new();
+    for m in &unread {
+        let mut line = Obj::default();
+        line.put("partitionId", s(pid)).put("reapedAt", s(&at)).put("message", row_oval(m));
+        payload.push_str(&line.done().stringify());
+        payload.push('\n');
+    }
+    let archive = reaped_dir.join(format!("{pid}{}", defaults::text("devswarm_cli.reap_archive_suffix")));
+    let written = std::fs::create_dir_all(reaped_dir).and_then(|()| std::fs::write(&archive, &payload)).and_then(|()| std::fs::read_to_string(&archive));
+    let read_back = match written {
+        Ok(t) => t,
+        Err(e) => return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_error"), vec![("error", s(&e.to_string()))]))),
+    };
+    let landed: Vec<&str> = read_back.split('\n').filter(|l| !l.trim().is_empty()).collect();
+    if landed.len() != unread.len() {
+        return Ok(Err(fail(
+            defaults::text("devswarm_cli.reap_reason_verify_failed"),
+            vec![("expected", n_(unread.len() as f64)), ("got", n_(landed.len() as f64))],
+        )));
+    }
+    if landed.iter().any(|l| OVal::parse(l).is_none()) {
+        return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_unparseable"), vec![])));
+    }
+    // raiseAllLossFree: every row of the store namespace (the floor included) rises to the count, a retired row's line with it; the
+    // legacy cursors are imported first when the partition has no floor row yet
+    let ns = defaults::text("mesh_write.ns_store");
+    let handle = Handle::Rw(common::open_store(inv, repo_key)?);
+    let mut cx = Cx::new(&inv.home.to_string_lossy());
+    cx.now = inv.now;
+    let raised = raise_all_loss_free(&mut cx, &handle, pid, ns, total as i64);
+    if cx.deferred {
+        return defer("reap-cursor-import");
+    }
+    if let Err(e) = raised {
+        return Ok(Err(fail(defaults::text("devswarm_cli.reap_reason_error"), vec![("error", s(&e))])));
+    }
+    cursors::log_cursor_write(
+        &inv.home,
+        &cursors::LogRec {
+            id: pid,
+            caller_id: None,
+            ns: defaults::text("mesh_write.log_ns_store"),
+            from: Some(cursor as i64),
+            to: Some(total),
+            delivered: None,
+            nonce: None,
+            gate: defaults::text("devswarm_cli.reap_log_gate"),
+            verb: defaults::text("devswarm_cli.verb_reap_orphans"),
+            cwd: None,
+            ok: true,
+            err: None,
+            repo_key: Some(repo_key),
+        },
+    );
+    let mut o = Obj::default();
+    o.put("partitionId", s(pid)).put("unread", n_(unread.len() as f64)).put("archivePath", s(&archive.to_string_lossy())).put("cursorAdvancedTo", n_(total));
+    Ok(Ok(o.done()))
 }

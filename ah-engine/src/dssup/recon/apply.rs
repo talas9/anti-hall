@@ -106,6 +106,7 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
             | Op::UnlinkLinked { .. }
             | Op::Forward { .. }
             | Op::RaiseCursors { .. }
+            | Op::ImportCursors { .. }
             | Op::Pull { .. } => {}
         }
     }
@@ -211,6 +212,19 @@ fn forward(env: &Env, store: &str, dest: &str, rows: &[crate::meshw::store::Mesh
     }
 }
 
+/// `importLegacy` for a partition whose floor rows are missing (see [`Op::ImportCursors`]).
+fn import_cursors(env: &Env, store: &str, partition: &str) -> Result<(), String> {
+    use crate::migrate::readercur::{Cx, Handle, import_legacy};
+    let h = Handle::Rw(open_store(env, store)?);
+    let mut cx = Cx::new(&env.home.to_string_lossy());
+    cx.now = env.now;
+    import_legacy(&mut cx, &h, partition, None, false)?;
+    if cx.deferred {
+        return Err(skip(defaults::text("devswarm_recon.why_import_undecided")));
+    }
+    Ok(())
+}
+
 /// `raiseAllLossFree` (store namespace) and the legacy projection after it, with the clock the witness pinned.
 fn raise(env: &Env, store: &str, partition: &str, value: i64) -> Result<(), String> {
     let st = open_store(env, store)?;
@@ -253,6 +267,22 @@ fn raise(env: &Env, store: &str, partition: &str, value: i64) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+/// `logCursorWrite`'s rotation, loss-free: once the journal holds more than `cap` non-blank records, the newest `cap` stay and the
+/// older ones are APPENDED to the journal's older file (`.1`); what that file already holds stays. The overflow is written first, so
+/// a failure in between leaves every record in at least one of the two files (at worst in both: a repeat, never a loss).
+fn rotate_tail(path: &Path, cap: usize) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() <= cap {
+        return Ok(());
+    }
+    let (old, keep) = lines.split_at(lines.len() - cap);
+    let mut older = path.as_os_str().to_os_string();
+    older.push(defaults::text("devswarm_recon.cursor_log_older_suffix"));
+    crate::meshw::cursors::append_older(&std::path::PathBuf::from(older), &format!("{}\n", old.join("\n"))).map_err(|e| e.to_string())?;
+    crate::atomic::write(path, format!("{}\n", keep.join("\n"))).map_err(|e| e.to_string())
 }
 
 /// `removeRegistryIf`: the NULL-safe conditional delete of one registry row.
@@ -305,10 +335,14 @@ fn run_op(env: &Env, op: &Op, hook: &dyn Fn(&str)) -> Result<(), String> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
             _ => Ok(()),
         },
-        Op::Append { rel, bytes } => {
+        Op::Append { rel, bytes, keep } => {
             mkparent(&at(rel))?;
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(at(rel)).map_err(|e| e.to_string())?;
-            f.write_all(bytes).map_err(|e| e.to_string())
+            f.write_all(bytes).map_err(|e| e.to_string())?;
+            match keep {
+                Some(cap) => rotate_tail(&at(rel), *cap),
+                None => Ok(()),
+            }
         }
         Op::Rename { rel, to } => {
             if !at(rel).exists() {
@@ -319,6 +353,7 @@ fn run_op(env: &Env, op: &Op, hook: &dyn Fn(&str)) -> Result<(), String> {
         }
         Op::Upsert { store, row, pre } => upsert(env, store, row, pre),
         Op::Forward { store, dest, rows } => forward(env, store, dest, rows),
+        Op::ImportCursors { store, partition } => import_cursors(env, store, partition),
         Op::RaiseCursors { store, partition, value } => raise(env, store, partition, *value),
         Op::RemoveRegistryIf { store, id, session_id, updated_at, write_seq, .. } => remove_if(env, store, id, session_id, *updated_at, *write_seq),
         Op::Guard { .. } => Ok(()),
@@ -382,4 +417,63 @@ pub fn unit(env: &Env, u: &Unit, hooks: &Hooks) -> UnitEnd {
         h.release();
     }
     end
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn dssup_recon_cursor_log_rotation_keeps_the_newest_records_and_appends_the_older_ones_to_dot_one() {
+        crate::defaults::init().unwrap();
+        let d = crate::db::TempDir::new("cursor-rotation");
+        let p = d.0.join(defaults::text("devswarm_recon.file_samples"));
+        std::fs::write(&p, "{\"n\":1}\n{\"n\":2}\n\n{\"n\":3}\n{\"n\":4}\n").unwrap();
+        let older = d.0.join(format!("{}{}", defaults::text("devswarm_recon.file_samples"), defaults::text("devswarm_recon.cursor_log_older_suffix")));
+        std::fs::write(&older, "{\"n\":0}\n").unwrap();
+        // at or under the cap nothing moves
+        rotate_tail(&p, 4).unwrap();
+        assert_eq!(std::fs::read_to_string(&older).unwrap(), "{\"n\":0}\n");
+        // over it: the newest two stay, the older two go to the END of `.1`; what `.1` held stays (nothing is lost)
+        rotate_tail(&p, 2).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"n\":3}\n{\"n\":4}\n");
+        assert_eq!(std::fs::read_to_string(&older).unwrap(), "{\"n\":0}\n{\"n\":1}\n{\"n\":2}\n");
+        // a second rotation appends again
+        std::fs::write(&p, "{\"n\":3}\n{\"n\":4}\n{\"n\":5}\n").unwrap();
+        rotate_tail(&p, 2).unwrap();
+        assert_eq!(std::fs::read_to_string(&older).unwrap(), "{\"n\":0}\n{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n");
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn dssup_recon_import_cursors_creates_the_floors_once_so_the_raise_can_run() {
+        crate::defaults::init().unwrap();
+        let dir = crate::db::TempDir::new("import-cursors");
+        let home = dir.0.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let env = Env { home: &home, now: 1_760_000_000_000, st: &st, log_dir: None };
+        let rows = |partition: &str| crate::meshw::cursors::rows_of(&open_store(&env, "store").unwrap(), partition).unwrap();
+        // a partition nobody imported yet: the raise refuses (it would have to import first) ...
+        assert!(crate::meshw::cursors::needs_import(&rows("p1")));
+        assert!(raise(&env, "store", "p1", 5).is_err());
+        // ... the import op creates the floor of every namespace ...
+        run_op(&env, &Op::ImportCursors { store: "store".into(), partition: "p1".into() }, &|_| {}).unwrap();
+        let after = rows("p1");
+        assert!(!crate::meshw::cursors::needs_import(&after), "{after:?}");
+        let floor = defaults::text("mesh_write.floor_reader");
+        assert_eq!(after.iter().filter(|r| r.reader == floor).count(), defaults::list("mesh_write.cursor_namespaces").len());
+        // ... a second import writes nothing (the floors are the gate) ...
+        run_op(&env, &Op::ImportCursors { store: "store".into(), partition: "p1".into() }, &|_| {}).unwrap();
+        assert_eq!(rows("p1"), after);
+        // ... and the raise lifts every row of the namespace, floor included
+        run_op(&env, &Op::RaiseCursors { store: "store".into(), partition: "p1".into(), value: 5 }, &|_| {}).unwrap();
+        let ns = defaults::text("mesh_write.ns_store");
+        let raised = rows("p1");
+        assert!(raised.iter().filter(|r| r.ns == ns).all(|r| r.value == 5), "{raised:?}");
+    }
 }

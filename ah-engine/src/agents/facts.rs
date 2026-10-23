@@ -9,7 +9,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 
-fn pat(k: &str) -> Option<&'static Regex> {
+fn pat(k: &str) -> Option<Regex> {
     static C: crate::defaults::Cache<Vec<(String, Option<Regex>)>> = crate::defaults::Cache::new();
     let all = C.get_or_init(|| {
         defaults::raw("agent_tracker.patterns")
@@ -19,7 +19,7 @@ fn pat(k: &str) -> Option<&'static Regex> {
             })
             .unwrap_or_default()
     });
-    all.iter().find(|(n, _)| n == k).and_then(|(_, r)| r.as_ref())
+    all.iter().find(|(n, _)| n == k).and_then(|(_, r)| r.clone())
 }
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -129,11 +129,42 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
     } else if ty == tr("user") {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
+        if !a.bg_ids.is_empty() {
+            task_ends(a, msg.and_then(|m| m.get(tr("content"))), ts);
+        }
         for b in blocks {
             if str_of(b, tr("type_key")) == tr("tool_result") {
                 tool_result(a, b, ts);
             }
         }
+    }
+}
+
+/// Terminal task notices in a user line that name a background shell task the agent started: the task ended.
+fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
+    let text = match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(c) => result_text(c),
+        None => return,
+    };
+    let (block, id_re, st_re) = (
+        crate::checks::lit_re(defaults::text("agent_scan.re_notification_block")),
+        crate::checks::lit_re(defaults::text("agent_scan.re_task_id")),
+        crate::checks::lit_re(defaults::text("agent_scan.re_status")),
+    );
+    let terminal = defaults::words("transcript.terminal_statuses");
+    for b in block.captures_iter(&text) {
+        let body = b.get(1).map_or("", |m| m.as_str());
+        let id = id_re.captures(body).and_then(|c| c.get(1)).map_or("", |m| m.as_str());
+        let st = st_re.captures(body).and_then(|c| c.get(1)).map_or("", |m| m.as_str());
+        if a.bg_ids.contains_key(id) && terminal.iter().any(|w| w.eq_ignore_ascii_case(st)) {
+            a.bg_ids.remove(id);
+            a.exited.push((id.to_string(), ts));
+        }
+    }
+    let keep = lim("loop_window") as usize;
+    if a.exited.len() > keep {
+        a.exited.drain(..a.exited.len() - keep);
     }
 }
 
@@ -194,6 +225,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             s if s == tr("completed") => {
                 a.steps_done += 1;
                 a.progress += weight("step");
+                a.open = false;
             }
             s if s == tr("in_progress") => {
                 let t = [tr("active_form"), tr("subject"), "taskId"].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
@@ -204,7 +236,8 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     }
     wake(a, name, &input, ts);
     if !id.is_empty() {
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class });
+        let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -214,6 +247,9 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
 
 pub(crate) fn set_step(a: &mut Agent, text: &str) {
     let t = cap(text, lim("text_cap"));
+    if !t.is_empty() {
+        a.open = true;
+    }
     if !t.is_empty() && t != a.step {
         a.step = t;
         a.step_events = 0;
@@ -229,6 +265,7 @@ fn todos(a: &mut Agent, input: &Value) {
         a.steps_done += done - a.todo_done;
     }
     a.todo_done = done;
+    a.open = (list.len() as u64) > done;
     if let Some(t) = list.iter().find(|t| str_of(t, tr("task_status")) == tr("in_progress")) {
         let s = [tr("active_form"), tr("content_key")].iter().map(|k| str_of(t, k)).find(|s| !s.is_empty()).unwrap_or("");
         set_step(a, s);
@@ -255,6 +292,16 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
     let failed = b.get(tr("is_error")).and_then(Value::as_bool) == Some(true);
+    if p.bg
+        && !failed
+        && let Some(id) = pat("bg_started").and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
+    {
+        a.bg_ids.insert(id, ts);
+        while a.bg_ids.len() > lim("loop_window") as usize {
+            let Some(k) = a.bg_ids.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
+            a.bg_ids.remove(&k);
+        }
+    }
     if failed {
         a.errors += 1;
         let head: String = text.chars().filter(|c| !c.is_ascii_digit()).take(lim("text_cap") as usize).collect();

@@ -1,0 +1,35 @@
+{
+  "answer": {
+    "attempted": true,
+    "candidates": 0,
+    "detail": "re-retire-resurrected: nothing to report",
+    "errors": 0,
+    "unhealable": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/archived/": "755",
+    ".anti-hall/devswarm/archived/arch-1.json": "644 {\"id\":\"arch-1\",\"worktreePath\":\"/nonexistent/wt1\",\"archivedBy\":\"owner\",\"archivedAt\":0}",
+    ".anti-hall/update-sweep-state.json": "644 {\"reRetireResurrected\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "free",
+          "session_id": "unclaimed:free",
+          "worktree_path": "/nonexistent/wt3"
+        },
+        {
+          "id": "rz-2",
+          "session_id": "real-session-2",
+          "worktree_path": "/nonexistent/wt1"
+        }
+      ]
+    }
+  }
+}

@@ -7,7 +7,8 @@
 //! `companion/lib/reader-identity.js` `deriveReaderNonce`.
 //!
 //! Node answers some of these by running git (`rev-parse --show-superproject-working-tree` for a checkout nested in
-//! another one). The engine never runs git here: where Node would, the answer is [`Defer`] and the verb goes to Node.
+//! another one). The engine asks git the same one question, bounded and cached the same way (`git_superproject`); where git
+//! does not answer, or Node would run anything else, the answer is [`Defer`] and the verb goes to Node.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // - text that does not parse or decode is the absent value (Node Number()/JSON.parse catch parity)
@@ -32,6 +33,56 @@ pub fn defer<T>(code: &str) -> Result<T, Defer> {
 
 /// Result of a resolution that may defer.
 pub type R<T> = Result<T, Defer>;
+
+/// The bytes of a mesh file a path names (a descriptor's inbox or cursor file, a harness session record), read the way Node's
+/// `readFileSync` in a try/catch reads it where that is safe: `Ok(None)` when it is absent, a directory or cannot be opened (Node's
+/// catch), the bytes of a regular file of at most `mesh_write.file_read_max_bytes`, and a deferral for anything else: a FIFO, socket or
+/// device (a read could block a worker thread for good) or a file over the cap (an unbounded allocation). Opened non-blocking, and
+/// read no further than the cap, so a file that grows or is swapped after the check cannot do either.
+pub fn read_bounded(path: &Path) -> R<Option<Vec<u8>>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let cap = defaults::num("mesh_write.file_read_max_bytes");
+    let Ok(m) = std::fs::metadata(path) else { return Ok(None) };
+    if m.is_dir() {
+        return Ok(None);
+    }
+    if !m.is_file() {
+        return defer("not-a-regular-file");
+    }
+    if m.len() > cap {
+        return defer("file-over-cap");
+    }
+    let Ok(f) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path) else { return Ok(None) };
+    if !f.metadata().is_ok_and(|m| m.is_file()) {
+        return defer("not-a-regular-file");
+    }
+    let mut buf = Vec::new();
+    if f.take(cap.saturating_add(1)).read_to_end(&mut buf).is_err() {
+        return Ok(None);
+    }
+    if buf.len() as u64 > cap {
+        return defer("file-over-cap");
+    }
+    Ok(Some(buf))
+}
+
+/// [`read_bounded`] for a verb that carries on without the file: the bytes, or `None` when the file is absent, unreadable or one a
+/// read must not touch (a FIFO, socket, device or a file over the cap). The last two are counted (`mesh_descriptor_read_skipped`)
+/// and logged with the site and the reason, so a skipped file is seen instead of read as an empty one in silence.
+pub fn read_or_skip(path: &Path, site: &str) -> Option<Vec<u8>> {
+    match read_bounded(path) {
+        Ok(bytes) => bytes,
+        Err(Defer(reason)) => {
+            crate::metrics::bump("mesh_descriptor_read_skipped", &[("site", site), ("reason", reason.as_str())]);
+            crate::debug::violated(
+                "meshw",
+                &defaults::render("mesh_write.msg_descriptor_read_skipped", &[("site", &site), ("reason", &reason), ("path", &path.display())]),
+            );
+            None
+        }
+    }
+}
 
 /// `path.resolve(p)` for an absolute path.
 pub fn resolve_abs(p: &str) -> String {
@@ -185,9 +236,9 @@ fn nearest_dot_git(dir: &str) -> Option<String> {
     }
 }
 
-/// Whether `<gitdir>/config` names a `core.worktree` (Node then hops to that checkout; the engine defers).
-fn has_core_worktree(gitdir: &str) -> bool {
-    let Ok(cfg) = std::fs::read(format!("{gitdir}/{}", defaults::text("mesh_write.git_config_file"))) else { return false };
+/// `coreWorktreeOf(gitdir)`: the real path of `core.worktree` in `<gitdir>/config` (resolved against the gitdir), or `None`.
+fn core_worktree_of(gitdir: &str) -> Option<String> {
+    let cfg = std::fs::read(format!("{gitdir}/{}", defaults::text("mesh_write.git_config_file"))).ok()?;
     let cfg = String::from_utf8_lossy(&cfg);
     let mut in_core = false;
     for line in cfg.lines() {
@@ -198,12 +249,75 @@ fn has_core_worktree(gitdir: &str) -> bool {
         }
         if in_core
             && let Some(rest) = t.strip_prefix(defaults::text("mesh_write.git_worktree_key"))
-            && rest.trim_start().starts_with('=')
+            && let Some(v) = rest.trim_start().strip_prefix('=')
         {
-            return true;
+            let v = v.trim();
+            return if v.is_empty() { None } else { realpath(&resolve(gitdir, v)) };
         }
     }
-    false
+    None
+}
+
+/// `isGitlinkPath(P, dir)`: `dir` is a submodule path declared in P's `.gitmodules` (pure fs).
+fn is_gitlink_path(p: &str, dir: &str) -> bool {
+    let Some(rel) = dir.strip_prefix(&format!("{}/", p.trim_end_matches('/'))) else { return false };
+    if rel.is_empty() {
+        return false;
+    }
+    let Ok(txt) = std::fs::read(format!("{p}/{}", defaults::text("mesh_write.gitmodules_file"))) else { return false };
+    String::from_utf8_lossy(&txt).lines().any(|l| {
+        l.trim_start()
+            .strip_prefix(defaults::text("mesh_write.gitmodules_path_key"))
+            .and_then(|r| r.trim_start().strip_prefix('='))
+            .is_some_and(|v| v.trim().trim_end_matches('/') == rel)
+    })
+}
+
+/// The superproject answers git gave, per nested checkout (identity.js `superCache`): `(answer, when)`. Only an answer git gave
+/// is kept; a failed call is asked again next time.
+type SuperCache = HashMap<String, (Option<String>, std::time::Instant)>;
+static SUPER_CACHE: std::sync::Mutex<Option<SuperCache>> = std::sync::Mutex::new(None);
+
+/// `gitSuperproject(dir)`: the real path of the superproject checkout git names for the nested checkout `root` (a `.git`
+/// directory, or a `.git` file layout the disk does not classify, below another repository), `None` for none. A git call that
+/// fails or times out, or an answer whose path does not resolve, is [`Defer`]: Node reads both as "uncertain".
+fn git_superproject(root: &str) -> R<Option<String>> {
+    let ttl = defaults::millis("mesh_write.super_cache_ttl_ms");
+    if let Ok(g) = SUPER_CACHE.lock()
+        && let Some((ans, at)) = g.as_ref().and_then(|m| m.get(root))
+        && at.elapsed() < ttl
+    {
+        return Ok(ans.clone());
+    }
+    let argv: Vec<String> = defaults::list("codex_handover.argv_super").iter().map(|a| a.replace("{root}", root)).collect();
+    let out = crate::checks::jsport::gitrun::git_scrubbed(
+        root,
+        &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+        defaults::millis("codex_handover.identity_git_timeout_ms"),
+        &crate::reqenv::RequestEnv::default(),
+        &defaults::list("codex_handover.git_scrub_env"),
+    );
+    let Some(out) = out else { return defer("git-superproject") };
+    let s = crate::checks::guardkit::text::js_trim(&out);
+    let ans = if s.is_empty() {
+        None
+    } else {
+        match realpath(s) {
+            Some(r) => Some(r),
+            None => return defer("git-superproject"),
+        }
+    };
+    if let Ok(mut g) = SUPER_CACHE.lock() {
+        let m = g.get_or_insert_with(HashMap::new);
+        if m.len() as u64 >= defaults::num("mesh_write.super_cache_max") {
+            m.retain(|_, (_, at)| at.elapsed() < ttl);
+            if m.len() as u64 >= defaults::num("mesh_write.super_cache_max") {
+                m.clear();
+            }
+        }
+        m.insert(root.to_string(), (ans.clone(), std::time::Instant::now()));
+    }
+    Ok(ans)
 }
 
 fn under(child: &str, parent: &str) -> bool {
@@ -274,10 +388,14 @@ pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
                 return Ok(Some(p));
             }
             if ri.has_commondir {
+                // a linked worktree of a submodule checked out at a gitlink path of the enclosing checkout
+                if core_worktree_of(&ri.common).is_some() && is_gitlink_path(&p, root) {
+                    return Ok(Some(p));
+                }
                 return Ok(None);
             }
         }
-        defer("git-superproject")
+        git_superproject(root)
     };
     let mut root = t.clone();
     let t = t.clone();
@@ -285,8 +403,18 @@ pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
     let mut depth = 0u64;
     while depth < defaults::num("mesh_write.max_submodule_hops") {
         let sp = super_of(&root, &ri)?;
-        if sp.is_none() && ri.is_file && ri.has_commondir && has_core_worktree(&ri.common) {
-            return defer("core-worktree");
+        if sp.is_none() && ri.is_file && ri.has_commondir {
+            // a linked worktree of a submodule: hop to the submodule checkout its common dir names when that is itself a submodule
+            let co = core_worktree_of(&ri.common).filter(|c| *c != root);
+            if let Some((co, co_info)) = co.and_then(|c| gitdir_of(&c).map(|i| (c, i)))
+                && co_info.g == ri.common
+                && super_of(&co, &co_info)?.is_some()
+            {
+                root = co;
+                ri = co_info;
+                depth += 1;
+                continue;
+            }
         }
         let Some(sp) = sp else { break };
         let Some(spi) = gitdir_of(&sp) else { break };
@@ -627,6 +755,21 @@ pub fn sender_identity_detailed(env: &Env, cwd: &str, rows: &[Row], home: &Path)
 
 // ---- the reader nonce (companion/lib/reader-identity.js) ------------------------------------------------------------
 
+/// The parent of `pid` as the kernel reports it, with no process spawned: `ps -ax` listed every process of the machine (about 16 ms of
+/// CPU and a fork per hook call, at every Stop and prompt of a DevSwarm Primary). Where the system gives no such lookup the table of
+/// `ps` is used.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn parent_of(pid: i64, _table: &mut Option<Option<HashMap<i64, i64>>>) -> Option<i64> {
+    crate::procid::parent(u32::try_from(pid).ok()?).map(i64::from)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn parent_of(pid: i64, table: &mut Option<Option<HashMap<i64, i64>>>) -> Option<i64> {
+    let t = table.get_or_insert_with(ppid_table);
+    t.as_ref().and_then(|m| m.get(&pid)).copied()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn ppid_table() -> Option<HashMap<i64, i64>> {
     let out = std::process::Command::new(defaults::text("mesh_write.ps_bin"))
         .args(defaults::list("mesh_write.ps_ppid_args"))
@@ -651,6 +794,9 @@ fn ppid_table() -> Option<HashMap<i64, i64>> {
 
 /// `processStartMs(pid)`: `Date.parse` of `ps -o lstart= -p <pid>` (local time), or None.
 pub(crate) fn process_start_ms(pid: i64) -> Option<f64> {
+    if let Some(ms) = native_start_ms(pid) {
+        return Some(ms);
+    }
     let out = std::process::Command::new(defaults::text("mesh_write.ps_bin"))
         .args(defaults::list("mesh_write.ps_lstart_args"))
         .arg(pid.to_string())
@@ -662,6 +808,31 @@ pub(crate) fn process_start_ms(pid: i64) -> Option<f64> {
         return None;
     }
     parse_lstart(String::from_utf8_lossy(&out.stdout).trim())
+}
+
+/// The start of `pid` in whole seconds, in milliseconds, from the kernel (what `ps -o lstart=` prints, with no process spawned); `None`
+/// where the system gives no such lookup or the process is gone.
+#[cfg(target_os = "macos")]
+fn native_start_ms(pid: i64) -> Option<f64> {
+    crate::procid::start(u32::try_from(pid).ok()?).map(|us| (us / 1_000_000 * 1000) as f64)
+}
+
+#[cfg(target_os = "linux")]
+fn native_start_ms(pid: i64) -> Option<f64> {
+    static BOOT_SECS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let boot = (*BOOT_SECS.get_or_init(|| {
+        let text = std::fs::read_to_string("/proc/stat").ok()?;
+        text.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse::<u64>().ok())
+    }))?;
+    // SAFETY: `sysconf` takes a constant and reads no memory.
+    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|h| *h > 0)?;
+    let ticks = crate::procid::start(u32::try_from(pid).ok()?)?;
+    Some(((boot + ticks / hz) * 1000) as f64)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn native_start_ms(_pid: i64) -> Option<f64> {
+    None
 }
 
 /// `Date.parse("Wed Oct  8 09:12:33 2026")` in the local time zone.
@@ -710,16 +881,23 @@ fn pid_alive_raw(pid: i64) -> Option<bool> {
 /// `deriveReaderNonce({ home })`: `h:<pid>:<startMs>` of the nearest live harness ancestor (a `~/.claude/sessions/<pid>.json`
 /// record), else None. Starts at this process.
 pub fn reader_nonce(home: &Path) -> Option<String> {
+    reader_nonce_from(home, i64::from(std::process::id()))
+}
+
+/// [`reader_nonce`] starting at `start` instead of this process: the daemon starts at the hook client that sent the request
+/// (its peer on the socket), which is where the Node hook would have started, one process below the host.
+pub fn reader_nonce_from(home: &Path, start: i64) -> Option<String> {
     let sess = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
     let mut table: Option<Option<HashMap<i64, i64>>> = None;
-    let mut pid = i64::from(std::process::id());
+    let mut pid = start;
     let mut seen = std::collections::HashSet::new();
     for _ in 0..=defaults::num("mesh_write.max_ppid_hops") {
         if pid <= 1 || !seen.insert(pid) {
             return None;
         }
         let file = sess.join(format!("{pid}{}", defaults::text("mesh_write.json_suffix")));
-        let rec = std::fs::read(&file).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
+        // a record that is no regular file or is over the cap is not one this walk can read safely: it counts as unreadable
+        let rec = read_bounded(&file).ok().flatten().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
         if let Some(rec) = rec
             && matches!(rec.get("pid"), Some(OVal::Num(n)) if *n == pid as f64)
         {
@@ -740,8 +918,78 @@ pub fn reader_nonce(home: &Path) -> Option<String> {
                 return Some(format!("{}{pid}:{}", defaults::text("mesh_write.nonce_prefix"), crate::checks::jsport::num::to_js_string(start)));
             }
         }
-        let t = table.get_or_insert_with(ppid_table);
-        pid = *t.as_ref().and_then(|m| m.get(&pid))?;
+        pid = parent_of(pid, &mut table)?;
     }
     None
+}
+
+/// Test helpers for the bounded-read tests: a FIFO in a scratch directory and a run that fails when it blocks.
+#[cfg(test)]
+pub(crate) mod fifo_kit {
+    use std::path::{Path, PathBuf};
+
+    /// Runs `f` on a thread and returns its answer; fails when it takes longer than the bound (a read blocked on a FIFO).
+    pub fn within<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || crate::discard::harmless(tx.send(f())));
+        let bound = std::time::Duration::from_millis(crate::defaults::num("mesh_write.fifo_test_bound_ms"));
+        rx.recv_timeout(bound).unwrap_or_else(|_| panic!("{what}: still blocked after {bound:?}"))
+    }
+
+    /// A fresh scratch directory.
+    pub fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ah-fifo-{}-{tag}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `mkfifo(p)`.
+    pub fn fifo(p: &Path) {
+        let c = std::ffi::CString::new(p.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: `c` is a NUL-terminated path that outlives the call; mkfifo only creates the node.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fifo_kit::*;
+    use super::*;
+
+    /// The kernel lookups that replaced `ps` answer as `ps` does: the parent of this process, and its start to the second.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn the_native_parent_and_start_answer_as_ps_does() {
+        let me = i64::from(std::process::id());
+        let ps = |args: &[&str]| {
+            let out = std::process::Command::new(defaults::text("mesh_write.ps_bin")).args(args).arg(me.to_string()).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let mut table = None;
+        assert_eq!(parent_of(me, &mut table), ps(&["-o", "ppid=", "-p"]).parse::<i64>().ok());
+        let via_ps = {
+            let out = std::process::Command::new(defaults::text("mesh_write.ps_bin"))
+                .args(defaults::list("mesh_write.ps_lstart_args"))
+                .arg(me.to_string())
+                .output()
+                .unwrap();
+            parse_lstart(String::from_utf8_lossy(&out.stdout).trim())
+        };
+        assert_eq!(native_start_ms(me), via_ps);
+        assert_eq!(parent_of(i64::from(i32::MAX), &mut table), None, "a process that does not exist has no parent");
+    }
+
+    #[test]
+    fn a_fifo_is_skipped_and_counted_at_once_instead_of_blocking() {
+        let dir = scratch("skip");
+        let f = dir.join("d.json");
+        fifo(&f);
+        let g = f.clone();
+        assert_eq!(within("read_or_skip", move || read_or_skip(&g, "test")), None);
+        std::fs::write(dir.join("ok.json"), b"{}").unwrap();
+        assert_eq!(read_or_skip(&dir.join("ok.json"), "test"), Some(b"{}".to_vec()), "a regular file reads as before");
+        assert_eq!(read_or_skip(&dir.join("none.json"), "test"), None, "an absent file is Node's caught read");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }

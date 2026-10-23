@@ -78,14 +78,7 @@ fn is_primary_label(id: &str) -> bool {
         .is_some_and(|rest| rest.len() == hex && rest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
-/// Whether the child's sender alias is already on file (writing it is Node's).
-fn alias_on_file(inv: &Inv, who: &ident::Caller) -> bool {
-    if who.kind != defaults::text("mesh_write.kind_child") {
-        return true;
-    }
-    let label = who.mesh_id.clone().unwrap_or_default();
-    common::read_aliases(&inv.home).into_iter().any(|(k, v)| k == label && v == who.identity)
-}
+// Whether the child's sender alias is already on file (writing it is Node's).
 
 // ---- done ---------------------------------------------------------------------------------------------------------------
 
@@ -132,6 +125,7 @@ pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = rows_of(&st)?;
     let who = ident::sender_identity_detailed(&inv.env, cwd, &rows, &inv.home)?;
+    common::ensure_alias(inv, &who, cwd);
     let id = who.identity.clone();
     if let Some(x) = id_arg
         && x != id
@@ -145,9 +139,6 @@ pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     }
     if is_primary_label(&id) {
         return defer("primary-label");
-    }
-    if !alias_on_file(inv, &who) {
-        return defer("sender-alias");
     }
     // the gate summarizes the registered rows: an id nobody registered would be written and then refused
     if !rows.iter().any(|r| r.id == id) {
@@ -302,7 +293,7 @@ fn tokens_total(inv: &Inv, key: &str) -> OVal {
 
 /// Whether the caller is outside the project's Primary checkout (`seatVerdict(...).state === 'n/a'`): no worktree, or a child.
 /// Any other state needs the handover scan, the session transcripts or the seat holder's liveness: Node's.
-fn seat_not_applicable(inv: &Inv) -> R<bool> {
+pub(crate) fn seat_not_applicable(inv: &Inv) -> R<bool> {
     let c = ident::resolve_context(&inv.cwd, true)?;
     let Some(wt) = c.worktree_root.clone() else { return Ok(true) };
     Ok(!ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &inv.home, &inv.env)?)
@@ -359,9 +350,7 @@ pub fn relay(inv: &Inv, a: &Args) -> R<Answer> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = rows_of(&st)?;
     let from = ident::sender_identity_detailed(&inv.env, cwd, &rows, &inv.home)?;
-    if !alias_on_file(inv, &from) {
-        return defer("sender-alias");
-    }
+    common::ensure_alias(inv, &from, cwd);
     let caller = from.identity.clone();
     if is_receipt_id(seq_arg) {
         return defer("receipt");
@@ -453,7 +442,7 @@ fn lstat_exists(p: &std::path::Path) -> bool {
 
 /// `hasFreshHeartbeat(id, home, { now })`: the heartbeat record's `ts` (else the file's mtime) is positive, not in the future,
 /// and at most the freshness window old.
-fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
+pub(crate) fn has_fresh_heartbeat(inv: &Inv, id: &str) -> bool {
     let p = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let ts = match std::fs::read(&p).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
         Some(v) if matches!(v.get("ts"), Some(OVal::Num(x)) if x.is_finite()) => match v.get("ts") {
@@ -545,11 +534,13 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<R
     let root = devswarm_root(&inv.home);
     let file = format!("{raw}{}", defaults::text("mesh_write.json_suffix"));
     if lstat_exists(&root.join(defaults::text("mesh_write.dir_workspaces")).join(&file)) {
+        note_ref("mesh_write.ref_outcome_exact");
         return Ok(Resolved::Id(raw.to_string()));
     }
     let adir = root.join(defaults::text("mesh_write.dir_archived"));
     // checkedArchivedDir: a directory that is not a plain directory is an error Node reports as "not found"
     if std::fs::symlink_metadata(&adir).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) && lstat_exists(&adir.join(&file)) {
+        note_ref("mesh_write.ref_outcome_exact");
         return Ok(Resolved::Id(raw.to_string()));
     }
     let Some(worktree) = ident::resolve_caller_worktree(&inv.cwd)? else { return defer("no-worktree") };
@@ -580,14 +571,29 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<R
         hits.sort();
         match hits.len() {
             0 => {}
-            1 => return Ok(Resolved::Id(hits.remove(0))),
-            _ => return Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_archived"), hits)),
+            1 => {
+                note_ref("mesh_write.ref_outcome_prefix");
+                return Ok(Resolved::Id(hits.remove(0)));
+            }
+            _ => {
+                note_ref("mesh_write.ref_outcome_ambiguous");
+                return Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_archived"), hits));
+            }
         }
     }
+    // an exact id outranks a longer id that merely starts with it
+    if cands.iter().any(|k| k.as_str() == raw) {
+        note_ref("mesh_write.ref_outcome_exact");
+        return Ok(Resolved::Id(raw.to_string()));
+    }
     match cands.len() {
-        1 => return Ok(Resolved::Id(cands[0].clone())),
+        1 => {
+            note_ref("mesh_write.ref_outcome_prefix");
+            return Ok(Resolved::Id(cands[0].clone()));
+        }
         0 => {}
         _ => {
+            note_ref("mesh_write.ref_outcome_ambiguous");
             return Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_prefix"), cands.into_iter().cloned().collect()));
         }
     }
@@ -601,10 +607,24 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<R
     }
     mesh.sort();
     match mesh.len() {
-        0 => Ok(Resolved::Id(raw.to_string())),
-        1 => Ok(Resolved::Id(mesh.remove(0))),
-        _ => Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh)),
+        0 => {
+            note_ref("mesh_write.ref_outcome_none");
+            Ok(Resolved::Id(raw.to_string()))
+        }
+        1 => {
+            note_ref("mesh_write.ref_outcome_mesh");
+            Ok(Resolved::Id(mesh.remove(0)))
+        }
+        _ => {
+            note_ref("mesh_write.ref_outcome_ambiguous");
+            Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh))
+        }
     }
+}
+
+/// Count how a workspace reference resolved (`mesh_ref_resolved`, labelled by outcome).
+pub(crate) fn note_ref(outcome_key: &str) {
+    crate::metrics::bump("mesh_ref_resolved", &[("outcome", defaults::text(outcome_key))]);
 }
 
 fn mesh_rows(rows: &[Row], mesh_id: &str) -> R<Vec<Row>> {
@@ -657,9 +677,7 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = rows_of(&st)?;
     let who = ident::sender_identity_detailed(&inv.env, cwd, &rows, &inv.home)?;
-    if !alias_on_file(inv, &who) {
-        return defer("sender-alias");
-    }
+    common::ensure_alias(inv, &who, cwd);
     let from = who.identity;
     crate::meshw::summary::check(&st, inv, Some(&id))?;
     let Some(lock) = idlock::acquire(&inv.write_home, &id) else { return defer("lock-busy") };

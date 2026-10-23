@@ -41,7 +41,7 @@ sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
 3. Verify:
 
 ```bash
-node "$ANTI_HALL_ROOT/hooks/doctor.js"
+~/.anti-hall/ah-engine/bin/ah-engine doctor
 codex features list
 test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 ```
@@ -49,7 +49,7 @@ test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 4. Write sentinel:
 
 ```bash
-node "$ANTI_HALL_ROOT/codex/scripts/write-activation-sentinel.js"
+~/.anti-hall/ah-engine/bin/ah-engine codex-activate
 ```
 
 Codex limitations after activation:

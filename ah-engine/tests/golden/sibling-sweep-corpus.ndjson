@@ -93,3 +93,26 @@
 {"msg": "The root-cause claim is partly inferred, so I am not acting on it yet.", "cause": false}
 {"msg": "The cause is unresolved, and I would rather say so than give a plausible wrong answer.", "cause": false}
 {"msg": "The root cause attribution was inferred, not proven.", "cause": false}
+{"msg": "The cause was a 7-hour-old leftover git lock file, so every commit failed. I removed it and fixed the retry wrapper.", "cause": false}
+{"msg": "Root cause: load (25-60) from other agents starved the workers. I fixed the timeout.", "cause": false}
+{"msg": "The agent report says the root cause was the stale cache key; I patched the caller.", "cause": false}
+{"msg": "According to the lane, the root cause is that `parse_ts` treats a missing offset as UTC. I fixed it.", "cause": false}
+{"msg": "Root cause: `build_key` drops the tenant id, so two tenants share one entry. Fixed the builder.", "cause": true}
+{"msg": "I found the root cause: `retry` never resets `attempts`, so the second request starts at the cap. Patched it.", "cause": true}
+{"msg": "The root-cause messages were captured by running the hooks against a temp home, then I fixed the wording.", "cause": false}
+{"msg": "Root-cause reports were collected by running the replay; I fixed the two misfires it listed.", "cause": false}
+{"msg": "The root cause of the flake was the shared temp dir in `make_home`; I fixed it with a per-test dir.", "cause": true}
+{"msg": "The root cause here was that `split_segments` drops the last delimiter. Fixed it.", "cause": true}
+{"msg": "Any new friction becomes a fix on `dev`, with the root cause found first.", "cause": false}
+{"msg": "Each regression gets a fix with the root cause identified first, then a test.", "cause": false}
+{"msg": "Root cause found: `read_window` reads the whole file when the size is under the window, so a 16 MB transcript is held twice. Fixed by streaming.", "cause": true}
+{"msg": "The root cause was identified: `parse_ts` treats a missing offset as UTC. I changed it to reject the value.", "cause": true}
+{"msg": "- Cause: not established", "cause": false}
+{"msg": "Cause: unknown", "cause": false}
+{"msg": "Cause: not proven, my guess is the retry loop.", "cause": false}
+{"msg": "Root cause: undetermined", "cause": false}
+{"msg": "## Cause: not yet established, still reading the logs", "cause": false}
+{"msg": "Cause: still open", "cause": false}
+{"msg": "Root cause: `parse_ts` drops the offset, so every value is read as UTC. Fixed.", "cause": true}
+{"msg": "- Cause: `read_window` holds the whole file when it is under the window, so a 16 MB transcript is read twice.", "cause": true}
+{"msg": "Cause: the lockfile pins an old `serde`, so the build fails on the new derive.", "cause": true}

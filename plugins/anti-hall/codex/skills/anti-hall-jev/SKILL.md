@@ -52,7 +52,7 @@ itself.
    printf '%s' "<pasted key>" | sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
    ```
 5. `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`.
-6. `node "$ANTI_HALL_ROOT/scripts/jev-setup.js" test` — one real classification
+6. `~/.anti-hall/ah-engine/bin/ah-engine jev-setup test` — one real classification
    call; prints ok/latency/confidence or a failure reason, never the key. On
    `http-401`/`http-403`, tell the user the key was rejected and ask them to
    confirm BOTH the key and the provider choice, then re-run `set-key`.

@@ -26,6 +26,10 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
     let plug = plugin().display().to_string();
     let cfg = scratch.join("c.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let transcript = scratch.join("t.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    let findings = scratch.join("findings.json");
+    std::fs::write(&findings, "[]").unwrap();
     vec![
         ("status", s(&[])),
         ("status", s(&["--memory"])),
@@ -41,6 +45,8 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("mesh", vec!["roster".into(), "--db".into(), scratch.join("none.db").display().to_string()]),
         ("telemetry", s(&[])),
         ("telemetry", s(&["summary"])),
+        ("fallback", s(&["status"])),
+        ("shadow-compare", s(&[])),
         ("schedule", s(&["list"])),
         ("schedule", s(&["history"])),
         ("config", s(&[])),
@@ -53,6 +59,22 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
         ("gh", s(&["segment"])),
         ("jev-report", s(&[])),
         ("jev-report", s(&["--weekly", "--json"])),
+        ("codex-limit-status", s(&[])),
+        ("units", s(&["status"])),
+        ("units", s(&["status", "--json"])),
+        ("units", s(&["heal", "--dry-run"])),
+        ("coordinator-work-baseline", vec![transcript.display().to_string(), "--json".into()]),
+        ("dispatch-report", s(&["--json"])),
+        ("finding-dedup", vec!["--file".into(), findings.display().to_string()]),
+        ("diag", s(&["cpu"])),
+        ("diag", s(&["mem"])),
+        ("diag", s(&["threads"])),
+        ("diag", s(&["hooks"])),
+        ("diag", s(&["mesh"])),
+        ("diag", s(&["jev"])),
+        ("diag", s(&["fs"])),
+        ("diag", s(&["locks"])),
+        ("diag", s(&["trace"])),
     ]
 }
 

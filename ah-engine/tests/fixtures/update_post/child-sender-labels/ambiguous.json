@@ -1,0 +1,45 @@
+{
+  "answer": {
+    "aliased": 0,
+    "attempted": true,
+    "detail": "child-sender-labels: aliased 0, retired 0 (forwarded 0 unread) of 1 child label(s)",
+    "errors": 0,
+    "forwarded": 0,
+    "labels": 1,
+    "retired": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/update-sweep-state.json": "644 {\"repairChildSenderLabels\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "c1",
+          "workspace_id": "{CHILD_LABEL}"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "kid-2",
+          "session_id": null,
+          "worktree_path": "{REPO}-child"
+        },
+        {
+          "id": "kid-3",
+          "session_id": null,
+          "worktree_path": "{REPO}-child"
+        },
+        {
+          "id": "{CHILD_LABEL}",
+          "session_id": null,
+          "worktree_path": "{REPO}-child"
+        }
+      ]
+    }
+  }
+}

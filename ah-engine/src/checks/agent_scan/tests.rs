@@ -71,8 +71,16 @@ fn iso_utc_matches_to_iso_string() {
 #[test]
 fn json_that_only_javascript_reads_is_unsupported_and_real_garbage_is_not() {
     // JSON.parse accepts all of these; serde does not.
-    for s in [r#"{"a":"\ud800"}"#, r#""\udc00""#, r#"{"a":"\ud800\u0041"}"#, "1e999", &format!("{}1{}", "[".repeat(300), "]".repeat(300))] {
+    for s in ["1e999", &format!("{}1{}", "[".repeat(300), "]".repeat(300))] {
         assert_eq!(parse_json(s), Err(Unsupported), "{s:.40}");
+    }
+    // a lone surrogate escape is read as JavaScript reads it, the surrogate held as U+FFFD (#248)
+    for (s, want) in [
+        (r#"{"a":"\ud800"}"#, serde_json::json!({"a": "\u{fffd}"})),
+        (r#""\udc00""#, serde_json::json!("\u{fffd}")),
+        (r#"{"a":"\ud800\u0041"}"#, serde_json::json!({"a": "\u{fffd}A"})),
+    ] {
+        assert_eq!(parse_json(s), Ok(Some(want)), "{s:.40}");
     }
     // JSON.parse throws on these too.
     for s in ["{", "{\"a\":}", "", "tru", "{'a':1}", "[1,]", "01"] {
@@ -114,7 +122,8 @@ fn the_resume_result_is_recognised_only_as_the_harness_writes_it() {
     assert_eq!(parse_resume(&serde_json::json!({"success": false, "message": "Resuming agent a180b19"}).to_string()), Ok(None));
     assert_eq!(parse_resume(&serde_json::json!({"success": true, "message": "Message queued"}).to_string()), Ok(None));
     assert_eq!(parse_resume(&serde_json::json!({"success": true, "resumedAgentId": "zz"}).to_string()), Ok(None));
-    assert_eq!(parse_resume("{\"success\":true,\"resumedAgentId\":\"\\ud800\"}"), Err(Unsupported));
+    // a lone surrogate id is read as JavaScript reads it: not a hex id, so no resume (Node: the same) (#248)
+    assert_eq!(parse_resume("{\"success\":true,\"resumedAgentId\":\"\\ud800\"}"), Ok(None));
 }
 
 #[test]

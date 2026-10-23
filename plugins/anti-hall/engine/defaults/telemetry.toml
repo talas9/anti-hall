@@ -9,9 +9,32 @@ doc = "Upper bounds of the latency histogram buckets; a quantile is reported as 
 value = [100, 250, 500, 1000, 2500, 5000, 10000, 25000, 100000, 1000000]
 unit = "us"
 
+[telemetry.byte_buckets_bytes]
+doc = "Upper bounds of the byte histogram buckets (the per-call memory histograms `check_mem_peak_bytes` and `check_mem_alloc_bytes`); a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate."
+value = [4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864]
+unit = "bytes"
+
+[telemetry.byte_unit]
+doc = "The metric unit that makes a histogram use the byte buckets (`telemetry.byte_buckets_bytes`) instead of the latency buckets."
+value = "bytes"
+
+[telemetry.top_checks]
+doc = "How many checks `status --json` lists in `cpu.top_checks`, the ones that spent the most CPU (with calls and CPU per call)."
+value = 5
+min = 1
+
 [telemetry.max_series]
-doc = "Most distinct label combinations kept per metric; further combinations are counted under one overflow series."
+doc = "Most distinct label combinations kept per metric; further combinations keep the labels named in overflow_keep_labels (up to max_series_kept) and collapse the rest into one overflow value."
 value = 128
+
+[telemetry.overflow_keep_labels]
+doc = "Label names that keep their own value once a metric has more than max_series label combinations: the other labels of the series collapse into the overflow label, so the cost per check stays readable (the pre-fix cap folded every label into `other` and hid 1.8 GB of transcript reads). The series that keep a value are bounded by max_series_kept."
+value = ["check"]
+
+[telemetry.max_series_kept]
+doc = "Most series per metric that keep an overflow_keep_labels value past max_series; beyond it every label collapses into the overflow label."
+value = 1024
+min = 1
 
 [telemetry.recent_default]
 doc = "How many of the most recent impact events `impact` shows unless asked for more."
@@ -149,8 +172,8 @@ value = "estimate: routing saved minus routing spent up, minus the estimated cos
 # round trip on the hook path. Events hold identifiers and numbers only: never prompt text, paths or secrets.
 
 [telemetry.fields]
-doc = "The extra fields of the event kinds whose schema is data. Each entry is `name:type`, with type `num` (a whole number) or `tok` (an identifier: letters, digits and `._:/[]@+-`, at most token_max_len bytes). A reader refuses any field a kind does not list, so prose cannot be stored. node: one Node hook the dispatcher ran (h = hook id, e = hook event, o = allow|block|advise|error|timeout, ms = wall time, ib = stdout bytes; exit = exit code when it exited, fate = ran|timeout|spawn|died|incomplete, err_bytes = stderr bytes). cmd: one run of a state-writing engine command (h = command, e = its first argument or `-`, o = allow|error, ms = duration; items = what it changed, exit = exit code). daemon: a health snapshot (h and e are daemon_label and daemon_event_label, o = allow, or advise when degraded; fields are readings). model: one model call, recorded by `telemetry::emit::model(&ModelCall { backend, model, purpose, outcome, micros, tokens_in, tokens_out })` once per finished call, from any process (the daemon records at once; any other process appends to the telemetry inbox for the daemon to read); backend and model are identifiers (the model ALIAS, never a pinned version or prompt text), outcome is Allow, Error or Timeout, the token counts are None when the backend did not report them (h = backend, e = model alias, o = allow|error|timeout, ms = latency; tokens_in/tokens_out when known, purpose = what the call was for; counted by backend, alias and outcome with a latency histogram and shown in `telemetry summary` under detail.model). agent: the agent tracker (h = series|signal|reminder|outcome, e = the signal, channel or outcome kind, o = advise for a raised signal or a delivered reminder, skip for one held back by its cooldown or cap, allow otherwise; agent = the agent id, akind = main|subagent|workspace|heartbeat, tin/tout/tcr/tcw = cumulative input, output, cache-read and cache-write tokens, tools = tool calls, progress = progress units, flagged = 1 while a signal is up, state, channel = session|mesh|owner|coordinator, result = sent|suppressed|recovered|false_positive|open, evidence = the number the signal tripped on, idle_s = seconds without output, lat_s = seconds from a reminder to the agent recovering, fp = 1 for a flagged agent that proved productive, recovered = 1 when it recovered, source = transcript|claude_cli|heartbeat|devswarm; shown in `telemetry summary` under detail.agent). jev: the detail of a Jev call beside integration, mode, verdict and cost_uc (conf_pm = confidence in thousandths, backend = jev|cache|baseline-only, breaker = open|closed, error = the failure reason, absent when there was none)."
-value = { node = ["exit:num", "fate:tok", "err_bytes:num"], cmd = ["items:num", "exit:num"], daemon = ["rss_kb:num", "rss_cap_kb:num", "heap_live_kb:num", "restarts:num", "degraded:num", "queue_depth:num", "queue_cap:num", "workers:num", "busy:num", "saturated:num", "peak_in_flight:num", "max_wait_us:num"], model = ["tokens_in:num", "tokens_out:num", "purpose:tok"], jev = ["conf_pm:num", "backend:tok", "breaker:tok", "error:tok"], agent = ["agent:tok", "akind:tok", "tin:num", "tout:num", "tcr:num", "tcw:num", "tools:num", "progress:num", "flagged:num", "state:tok", "channel:tok", "result:tok", "evidence:num", "idle_s:num", "lat_s:num", "fp:num", "recovered:num", "source:tok"] }
+doc = "The extra fields of the event kinds whose schema is data. Each entry is `name:type`, with type `num` (a whole number) or `tok` (an identifier: letters, digits and `._:/[]@+-`, at most token_max_len bytes). A reader refuses any field a kind does not list, so prose cannot be stored. node: one Node hook the dispatcher ran (h = hook id, e = hook event, o = allow|block|advise|error|timeout, ms = wall time, ib = stdout bytes; exit = exit code when it exited, fate = ran|timeout|spawn|died|incomplete, err_bytes = stderr bytes). cmd: one run of a state-writing engine command (h = command, e = its first argument or `-`, o = allow|error, ms = duration; items = what it changed, exit = exit code). daemon: a health snapshot (h and e are daemon_label and daemon_event_label, o = allow, or advise when degraded; fields are readings). model: one model call, recorded by `telemetry::emit::model(&ModelCall { backend, model, purpose, outcome, micros, tokens_in, tokens_out })` once per finished call, from any process (the daemon records at once; any other process appends to the telemetry inbox for the daemon to read); backend and model are identifiers (the model ALIAS, never a pinned version or prompt text), outcome is Allow, Error or Timeout, the token counts are None when the backend did not report them (h = backend, e = model alias, o = allow|error|timeout, ms = latency; tokens_in/tokens_out when known, purpose = what the call was for; counted by backend, alias and outcome with a latency histogram and shown in `telemetry summary` under detail.model). agent: the agent tracker (h = series|signal|reminder|outcome, e = the signal, channel or outcome kind, o = advise for a raised signal or a delivered reminder, skip for one held back by its cooldown or cap, allow otherwise; agent = the agent id, akind = main|subagent|workspace|heartbeat, tin/tout/tcr/tcw = cumulative input, output, cache-read and cache-write tokens, tools = tool calls, progress = progress units, flagged = 1 while a signal is up, state, channel = session|mesh|owner|coordinator, result = sent|suppressed|recovered|false_positive|open, evidence = the number the signal tripped on, idle_s = seconds without output, lat_s = seconds from a reminder to the agent recovering, fp = 1 for a flagged agent that proved productive, recovered = 1 when it recovered, source = transcript|claude_cli|heartbeat|devswarm; shown in `telemetry summary` under detail.agent). act: one action of an acting feature, the ONE schema every feature lane emits with `telemetry::emit::act` (h = feature, e = action, o = allow when it ran|block when refused or stale|skip when not applicable|error|timeout, ms = latency_ms; target = what it acted on, inputs = a short digest of its inputs, reason = why it was refused or failed, action_id = the idempotency key). mistake: a later signal that an earlier action should not have been taken, emitted with `telemetry::emit::mistake` (h = feature, e = action, o = advise; action_id = the act event it refers to, reason = what showed it was wrong, target); `ah-engine devswarm ledger` joins the two for the per-feature mistake rate. jev: the detail of a Jev call beside integration, mode, verdict and cost_uc (conf_pm = confidence in thousandths, backend = jev|cache|baseline-only, breaker = open|closed, error = the failure reason, absent when there was none)."
+value = { node = ["exit:num", "fate:tok", "err_bytes:num"], cmd = ["items:num", "exit:num"], daemon = ["rss_kb:num", "rss_cap_kb:num", "cpu_permille:num", "budget_breach:num", "heap_live_kb:num", "restarts:num", "degraded:num", "queue_depth:num", "queue_cap:num", "workers:num", "busy:num", "saturated:num", "peak_in_flight:num", "max_wait_us:num"], model = ["tokens_in:num", "tokens_out:num", "purpose:tok"], jev = ["conf_pm:num", "backend:tok", "breaker:tok", "error:tok"], agent = ["agent:tok", "akind:tok", "tin:num", "tout:num", "tcr:num", "tcw:num", "tools:num", "progress:num", "flagged:num", "state:tok", "channel:tok", "result:tok", "evidence:num", "idle_s:num", "lat_s:num", "fp:num", "recovered:num", "source:tok"], act = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"], mistake = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"] }
 
 [telemetry.cmd_record]
 doc = "The engine commands whose runs are recorded as `cmd` events (they write state). Each entry is a command word, or `command:arg|arg` to record only runs that carry one of those arguments (`doctor:--repair|--fix` records a repair, not a read-only check; `config:heal` records the heal, not the show)."
@@ -200,6 +223,18 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Evaluations cut off by the per-request CPU budget."
 value = { kind = "counter", unit = "evaluations", labels = [] }
 
+[metric.budget_soft]
+doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.deadline_soft]
+doc = "Requests answered after the client's fail-fast wait (client.deadline_ms) but inside the hard deadline; only warned about."
+value = { kind = "counter", unit = "requests", labels = [] }
+
+[metric.script_soft]
+doc = "Script calls that used more thread CPU than their SOFT limit (script.time_limit_ms); only warned about, the call was not cut."
+value = { kind = "counter", unit = "calls", labels = [] }
+
 [metric.panics]
 doc = "Request-handler panics that were contained."
 value = { kind = "counter", unit = "panics", labels = [] }
@@ -207,6 +242,10 @@ value = { kind = "counter", unit = "panics", labels = [] }
 [metric.accept_errors]
 doc = "Accept calls that failed for a reason other than nothing pending (EMFILE, ENFILE, ENOBUFS, ENOMEM), by OS error code (os<n>); each one backs the accept loop off for daemon.accept_error_backoff_ms."
 value = { kind = "counter", unit = "errors", labels = ["code"] }
+
+[metric.client_gone_skipped]
+doc = "Checks not run because the request's client had already closed its connection (daemon.skip_when_client_gone)."
+value = { kind = "counter", unit = "checks", labels = [] }
 
 [metric.slow_replies]
 doc = "Replies finished after their client's deadline had passed: slow but healthy (the client fell back to Node), counted apart from errors."
@@ -243,6 +282,66 @@ value = { kind = "counter", unit = "runs", labels = ["check", "decision"] }
 [metric.check_latency_us]
 doc = "Wall time of a built-in check run, by check."
 value = { kind = "histogram", unit = "us", labels = ["check"] }
+
+[metric.check_latency_by_size_us]
+doc = "Wall time of a built-in check run, by check and by the size class of the transcript the request named (load.size_labels)."
+value = { kind = "histogram", unit = "us", labels = ["check", "size"] }
+
+[metric.check_bytes_read]
+doc = "Transcript bytes a built-in check read (tail windows and walks it opened), by check and transcript size class; divide by check_calls for the mean per run."
+value = { kind = "counter", unit = "bytes", labels = ["check", "size"] }
+
+[metric.agent_scan_kept]
+doc = "Kept-walk lookups of the agent scan (silent-agent-nudge and the agent gates): hit (the walk resumed from where the last scan stopped) or miss."
+value = { kind = "counter", unit = "lookups", labels = ["result"] }
+
+[metric.agent_scan_kept_miss]
+doc = "Why a kept-walk lookup missed and the window was walked afresh: none (nothing kept: first scan, daemon restart, eviction or idle expiry), gen (defaults changed), file (other file or shrunk), window (kept walk older than the slid window allows), rel_min or straddles (an event or call left the window), digest (head or back of the file changed), straddles_after (appended lines judged a call outside the window), error (an older line raised)."
+value = { kind = "counter", unit = "lookups", labels = ["reason"] }
+
+[metric.dispatch_overhead_us]
+doc = "Wall time of a dispatched hook request that no built-in check accounts for (request wall minus the sum of the checks), by hook event: parsing, plan, locks, waits and queueing inside the daemon."
+value = { kind = "histogram", unit = "us", labels = ["event"] }
+
+[metric.evidence_cache]
+doc = "Transcript evidence lookups (claim-ledger and other `ah.transcript.evidence` callers): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh)."
+value = { kind = "counter", unit = "lookups", labels = ["result"] }
+
+[metric.evidence_walk]
+doc = "Evidence walks (the claim ledger's `ah.transcript.evidenceWalk`) the memory registry refused to keep, so the check deferred."
+value = { kind = "counter", unit = "walks", labels = ["result"] }
+
+[metric.evidence_cache_rebuild]
+doc = "Why a transcript evidence lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place)."
+value = { kind = "counter", unit = "lookups", labels = ["reason"] }
+
+[metric.check_cpu_us]
+doc = "CPU time (microseconds, the worker thread's own) spent inside each built-in check, by check: the sum over its calls. Divide by `check_calls` for the mean; wall time is `check_latency_us`."
+value = { kind = "counter", unit = "us", labels = ["check"] }
+
+[metric.event_check_cpu_us]
+doc = "CPU time (microseconds, the worker thread's own) spent inside built-in checks while serving each hook event: the sum over every check call of that event (`status --json` `cpu.by_event`)."
+value = { kind = "counter", unit = "us", labels = ["event"] }
+
+[metric.check_mem_peak_bytes]
+doc = "The most one call of a built-in check (and its script) grew the heap above where the call started, in bytes, by check: a histogram whose max is the check's worst call. Counted from per-thread counters in the allocator (`diagnostics.check_mem`)."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.check_mem_alloc_bytes]
+doc = "The bytes one call of a built-in check (and its script) allocated in total, freed or not, by check: a histogram whose max is the check's worst call (`diagnostics.check_mem`)."
+value = { kind = "histogram", unit = "bytes", labels = ["check"] }
+
+[metric.check_mem_retained_bytes]
+doc = "The bytes a check's calls kept allocated when they returned (allocated minus freed, positive only), by check: the sum over its calls. A check that keeps growing here holds on to memory. Calls that freed more than they allocated add nothing."
+value = { kind = "counter", unit = "bytes", labels = ["check"] }
+
+[metric.tasks_cache]
+doc = "Task-line lookups of `ah.transcript.tasks` (task-guard, tasklist-guard, task-tracker): hit (nothing appended), extend (only the appended bytes were read) or rebuild (the window was read afresh)."
+value = { kind = "counter", unit = "lookups", labels = ["result"] }
+
+[metric.tasks_cache_rebuild]
+doc = "Why a task-line lookup read its window afresh: none (nothing kept: first call, daemon restart, eviction or idle expiry), file (another file or a shorter one), window (the window moved past the kept lines) or digest (the file was rewritten in place)."
+value = { kind = "counter", unit = "lookups", labels = ["reason"] }
 
 [metric.rule_hits]
 doc = "Regex rule matches, by action (deny, warn, context)."
@@ -372,6 +471,10 @@ value = { kind = "gauge", unit = "ms", labels = [] }
 doc = "Scheduled runs that finished, by job and status (ok, failed, timeout, planned, skipped) (D33)."
 value = { kind = "counter", unit = "runs", labels = ["job", "status"] }
 
+[metric.schedule_cpu_us]
+doc = "CPU time (microseconds) the threads that ran a scheduled job used, by job; a subprocess job's own CPU is not in it. Divide by schedule_runs for the mean per run."
+value = { kind = "counter", unit = "us", labels = ["job"] }
+
 [metric.schedule_missed]
 doc = "Runs that caught up a missed window or skipped it, by job (D33)."
 value = { kind = "counter", unit = "runs", labels = ["job"] }
@@ -443,3 +546,19 @@ value = { date = "2026-10-05", source = "fitted exactly on 480 B1 runs, 2026-10-
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."
 value = "estimate: tokens the routed agent actually used x (price of the model it asked for or inherited - price of the model selected); it assumes the original model would have used the same tokens"
+
+[metric.hook_phase_us]
+doc = "Where the time of a hook call goes, by hook event and phase: the client's connect, request-to-ACK, ACK-to-response; the daemon's queue wait, judging and delivery (reply written to ACK(res)); the launcher's startup."
+value = { kind = "histogram", unit = "us", labels = ["event", "phase"] }
+
+[metric.wire_events]
+doc = "Ack protocol events by kind: acked, delivered, ack_timeout, retry, abandoned."
+value = { kind = "counter", unit = "events", labels = ["kind"] }
+
+[metric.launcher_counter]
+doc = "Counters the launcher reports with each call (soft and hard limit hits, retries, fallbacks, ...), summed by name."
+value = { kind = "counter", unit = "events", labels = ["name"] }
+
+[metric.fail_open]
+doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
+value = { kind = "counter", unit = "events", labels = ["reason", "check"] }

@@ -1,8 +1,8 @@
 // check = "version-alert" (SessionStart). Two independent cases, as in Node. Case 2 (checked first, no network): a newer release is
 // already mirrored into the local plugin cache than the one running, so the user only needs to reload; the advice depends on whether
 // the host's plugin registry has caught up. Case 1: a fresh remote-latest cache names a newer release, so the user needs to update.
-// A stale or absent remote cache makes Node start a detached refresh process, which is Node's job, so the script defers then (before
-// writing anything). Mirrors hooks/version-alert.js. Keys and texts: session.toml (session.*).
+// A stale or absent remote cache asks the engine's refresh job (`ah-engine refresh`, probe `version`) for the remote-latest tag and
+// says nothing this session, as Node did when it started its detached refresh process. Mirrors hooks/version-alert.js. Keys and texts: session.toml (session.*).
 'use strict';
 
 function vaGreater(a, b) {
@@ -68,7 +68,7 @@ function vaHarnessVersion(home) {
 function decide(p, opts) {
   if (sess.judgeChild()) return 'allow';
   var home = spawn.osHome(), root = sess.pluginRoot(opts);
-  if (home === null || root === null) return 'defer';
+  if (home === null || root === null) { ah.unable('version-alert:no_home_or_root', 'abandoned'); return 'allow'; } // nothing to read, nothing to say
   var guard = ah.cfg('session.version_alert_guard');
   if (!ah.settings.bool('session.setting_version_alert') || ah.settings.skipped(guard)) return 'allow';
   if (p && typeof p === 'object' && (p.agent_id || p.agent_type || p.isSidechain === true || p.is_sidechain === true)) return 'allow';
@@ -97,10 +97,10 @@ function decide(p, opts) {
     if (sessionId) sess.persist(markFile, marker || { checkedAt: now }, key);
     return sess.advisory(t);
   }
-  // CASE 1: the remote-latest cache; stale or absent, Node starts the detached refresh probe, so Node runs
+  // CASE 1: the remote-latest cache; stale or absent, the refresh job fetches it and this session says nothing
   var file = ah.cfg('session.version_check_file');
   var cache = sess.readCache(file, function (c) { return typeof c.latest === 'string'; });
-  if (!sess.isFresh(cache, now, ah.cfgNum('session.version_alert_ttl_ms'))) return 'defer';
+  if (!sess.isFresh(cache, now, ah.cfgNum('session.version_alert_ttl_ms'))) { sess.requestRefresh('version'); return 'allow'; }
   if (!vaGreater(cache.latest, running)) return 'allow';
   var k1 = { 'case': ah.cfg('session.case_update'), sessionId: sessionId, latest: cache.latest, running: running };
   if (sessionId && sess.alreadyAdvised(cache, k1)) return 'allow';

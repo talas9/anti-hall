@@ -49,6 +49,10 @@ max = 1000000
 doc = "Filesystem types whose watched directories are always polled because OS change events do not arrive there (WSL2 /mnt drives report 9p or drvfs; network and FUSE filesystems report no events). A trailing or leading * matches any text."
 value = ["9p", "drvfs", "nfs", "nfs4", "smbfs", "cifs", "afpfs", "webdav", "fuse*", "*fuse", "fusefs*", "ceph", "glusterfs", "lustre"]
 
+[realtime.ignore_suffixes]
+doc = "File-name suffixes a watched directory never reports, in every backend. A SQLite shared-memory index (-shm) is rewritten or has its attributes touched whenever any process opens the database, even a read-only reader, and it never holds data (a commit lands in the database or its -wal): a consumer that watches the directory of a database it reads would otherwise wake itself on every read, in a loop."
+value = ["-shm"]
+
 [realtime.sqlite_suffixes]
 doc = "Suffixes of the files SQLite keeps beside a database (write-ahead log, shared memory, rollback journal). Watching a database name also watches the name plus each suffix, because a commit lands in the -wal file and a checkpoint can truncate it."
 value = ["-wal", "-shm", "-journal"]

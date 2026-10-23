@@ -173,7 +173,7 @@ pub struct Drained {
 fn parse(b: &[u8]) -> Result<(Record, usize), usize> {
     let skip = || b.iter().skip(1).position(|&c| c == b'\n').map(|i| i + 2).unwrap_or(b.len()).max(1);
     let Some(nl) = b.iter().position(|&c| c == b'\n') else { return Err(b.len()) };
-    let head = String::from_utf8_lossy(&b[..nl]);
+    let head = String::from_utf8_lossy(b.get(..nl).unwrap_or_default());
     let parts: Vec<&str> = head.split(' ').collect();
     let (Some(&MAGIC), Some(len), Some(crc)) = (parts.first(), parts.get(1).and_then(|l| l.parse::<usize>().ok()), parts.get(2)) else {
         return Err(skip());

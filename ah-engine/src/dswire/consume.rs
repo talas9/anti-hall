@@ -74,7 +74,12 @@ pub fn advisory(rt: &Rt, state_dir: &Path, session: &str, now: i64) -> Option<St
     if let Some(mark) = ans.get("mark").and_then(Value::as_u64) {
         write_seen(path.as_deref()?, mark, now)?;
     }
-    ans.get("advise").and_then(Value::as_str).map(str::to_string)
+    let nag = crate::dsact::nag::take_pending(state_dir);
+    let advise = ans.get("advise").and_then(Value::as_str).map(str::to_string);
+    match (advise, nag) {
+        (Some(a), Some(n)) => Some(format!("{a}\n{n}")),
+        (a, n) => a.or(n),
+    }
 }
 
 fn write_seen(path: &Path, gen_now: u64, now: i64) -> Option<()> {
@@ -105,53 +110,91 @@ pub fn line(rt: &Rt) -> String {
 
 // ---- Jev dirty flags --------------------------------------------------------------------------------------------------------
 
-fn dirty_file(state_dir: &Path) -> PathBuf {
-    state_dir.join(defaults::text("devswarm_wire.jev_dirty_file"))
+/// The per-child Jev dirty queue: held in memory, saved to `devswarm_wire.jev_dirty_file` only when it changed and a flush is due
+/// (every `devswarm_wire.jev_dirty_flush_ms`, and when the thread stops), instead of a read and a rewrite per batch.
+pub struct JevQueue {
+    path: PathBuf,
+    ids: std::sync::Mutex<Vec<String>>,
+    unsaved: std::sync::atomic::AtomicBool,
 }
 
-fn dirty_load(state_dir: &Path) -> Vec<String> {
-    std::fs::read_to_string(dirty_file(state_dir)).ok().and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default()
+impl JevQueue {
+    /// The queue saved in `state_dir` by an earlier run (empty when there is none or it is malformed).
+    pub fn load(state_dir: &Path) -> JevQueue {
+        let path = state_dir.join(defaults::text("devswarm_wire.jev_dirty_file"));
+        let ids = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default();
+        JevQueue { path, ids: std::sync::Mutex::new(ids), unsaved: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    fn ids(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        self.ids.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queue a per-child Jev sweep for each of `ids` (a workspace already queued stays once). Returns how many were newly queued.
+    pub fn queue(&self, ids: &[String]) -> usize {
+        let mut q = self.ids();
+        let before = q.len();
+        let mut pushed = false;
+        for id in ids {
+            if !q.contains(id) {
+                q.push(id.clone());
+                pushed = true;
+            }
+        }
+        let cap = defaults::num("devswarm_wire.jev_dirty_cap") as usize;
+        if q.len() > cap {
+            let over = q.len() - cap;
+            q.drain(..over);
+        }
+        let added = q.len().saturating_sub(before);
+        if pushed {
+            self.unsaved.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        added
+    }
+
+    /// Take the queue's ids (the queue is empty afterwards).
+    pub fn take_ids(&self) -> Vec<String> {
+        let mut q = self.ids();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        self.unsaved.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::mem::take(&mut *q)
+    }
+
+    /// Whether a change is waiting to be saved.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Save the queue when it changed since the last save.
+    pub fn flush(&self) {
+        if !self.unsaved.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let body = json!(*self.ids()).to_string();
+        if let Err(e) = crate::atomic::write(&self.path, body) {
+            self.unsaved.store(true, std::sync::atomic::Ordering::Relaxed); // try again at the next flush
+            crate::discard::logged("dswire_jev_dirty", Err::<(), _>(e));
+        }
+    }
 }
 
-/// Queue a per-child Jev sweep for each workspace an edge of a dirty kind touched (a workspace already queued stays once).
-/// Returns how many were newly queued.
-pub fn mark_dirty(rt: &Rt, state_dir: &Path, edges: &[Edge]) -> usize {
+/// Queue a per-child Jev sweep for each workspace an edge of a dirty kind touched. Returns how many were newly queued.
+pub fn mark_dirty(rt: &Rt, q: &JevQueue, edges: &[Edge]) -> usize {
     let kinds = list("devswarm_wire.jev_dirty_kinds");
     let ids: Vec<String> = edges
         .iter()
         .filter(|e| kinds.iter().any(|k| k == e.kind.as_str()) && rt.workspace(&e.ws).is_some_and(|w| w.lifecycle.value == Lifecycle::Active))
         .map(|e| e.ws.clone())
         .collect();
-    queue_ids(state_dir, &ids)
-}
-
-/// Queue a per-child Jev sweep for each of `ids` (a source other than a state change: a transcript or a commit).
-pub fn queue_ids(state_dir: &Path, ids: &[String]) -> usize {
-    let mut q = dirty_load(state_dir);
-    let before = q.len();
-    for id in ids {
-        if !q.contains(id) {
-            q.push(id.clone());
-        }
-    }
-    let cap = defaults::num("devswarm_wire.jev_dirty_cap") as usize;
-    if q.len() > cap {
-        q.drain(..q.len() - cap);
-    }
-    if q.len() != before {
-        crate::discard::logged("dswire_jev_dirty", crate::atomic::write(dirty_file(state_dir), json!(q).to_string()));
-    }
-    q.len().saturating_sub(before)
+    q.queue(&ids)
 }
 
 /// Take the queue: the ids and, for matching the plan files, their worktrees.
-pub fn take_dirty(rt: &Rt, state_dir: &Path) -> Vec<String> {
-    let q = dirty_load(state_dir);
-    if q.is_empty() {
-        return q;
-    }
-    crate::discard::logged("dswire_jev_dirty", crate::atomic::write(dirty_file(state_dir), "[]"));
-    q.into_iter().flat_map(|id| [Some(id.clone()), rt.workspace(&id).and_then(|w| w.worktree)]).flatten().collect()
+pub fn take_dirty(rt: &Rt, q: &JevQueue) -> Vec<String> {
+    q.take_ids().into_iter().flat_map(|id| [Some(id.clone()), rt.workspace(&id).and_then(|w| w.worktree)]).flatten().collect()
 }
 
 // ---- the hook check ---------------------------------------------------------------------------------------------------------

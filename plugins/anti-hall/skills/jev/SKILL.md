@@ -76,7 +76,7 @@ else.**
 5. Enable: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`
    (pass `--transport` again if the user picked typesafe, so it's recorded even on
    a repeat run).
-6. Test: `node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" test` — this makes
+6. Test: `~/.anti-hall/ah-engine/bin/ah-engine jev-setup test` — this makes
    **one** real classification call with a fixed harmless question and prints
    `ok`/latency/confidence, or a failure reason. It never prints the key. With a
    key stored through the plugin options it cannot run (a shell sees no plugin
@@ -380,7 +380,7 @@ above, help them decide promote (`mode <id> on`) / turn off (`mode <id> off`)
 / keep watching, and **once the owner has decided, run**:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" reviewed <integration>
+~/.anti-hall/ah-engine/bin/ah-engine jev-setup reviewed <integration>
 ```
 
 This clears the reminder (and re-arms it `reviewAfterDays` after the next
@@ -388,7 +388,7 @@ review, so a shadow integration the owner keeps deferring on keeps coming
 back). If the owner wants to defer without deciding yet, snooze it instead:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT}/scripts/jev-setup.js" snooze <integration> --days N
+~/.anti-hall/ah-engine/bin/ah-engine jev-setup snooze <integration> --days N
 ```
 
 `review-due [--json]` lists what is currently due without changing anything —

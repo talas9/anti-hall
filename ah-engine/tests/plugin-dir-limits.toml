@@ -1,0 +1,10 @@
+# Limits of the Claude plugin directory for the published plugin tree, read by plugin-dir-limits.sh. Change a limit here, never in the script.
+
+[plugin]
+dir = "plugins/anti-hall"
+doc = "The published plugin, relative to the repository root."
+
+[limits]
+max_files = 512
+max_non_image_bytes = 262144
+image_extensions = "png jpg jpeg gif svg webp ico"

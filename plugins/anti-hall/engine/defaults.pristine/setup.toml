@@ -207,25 +207,17 @@ value = "listInstalledIngestUnits"
 doc = "The program `capability-scan` asks for the managed cron markers on Linux."
 value = "crontab"
 
-[setup.cap_statusline_marker]
-doc = "The file name a status line command must contain for the statusline capability to count as active."
-value = "statusline.js"
-
 [setup.cap_legacy_files]
 doc = "The legacy root progress and history files whose copy under .anti-hall/history/legacy is the state migration."
 value = [".anti-hall-progress.md", ".anti-hall-history.md"]
 
 [setup.cap_how_companion]
 doc = "How a companion is enabled. Placeholder: file."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/companion/{file}"'
-
-[setup.cap_how_statusline]
-doc = "How the status line is enabled."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/statusline/install-statusline.js" --user'
+value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/companion/{file}"'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/scripts/migrate-state.js"'
+value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/scripts/migrate-state.js"'
 
 # ---- briefing (scripts/briefing.js) ------------------------------------------------------------------------------------
 
@@ -399,7 +391,7 @@ value = "❌ anti-hall · jev-setup: "
 
 [setup.msg_usage]
 doc = "Usage line of `ah-engine jev-setup`."
-value = "\U0001f4a1 anti-hall · jev-setup: usage: ah-engine jev-setup status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|mode <integration> on|shadow|off (test, review-due, reviewed and snooze stay in node scripts/jev-setup.js)"
+value = "\U0001f4a1 anti-hall · jev-setup: usage: ah-engine jev-setup status|enable [--transport vercel|typesafe] [--fallback T]|disable|set-key [--transport vercel|typesafe] [--role fallback]|bind-generic-key --vendor V|test|mode <integration> on|shadow|off|review-due [--json]|reviewed <integration>|snooze <integration> --days N"
 
 [setup.msg_unknown_setting]
 doc = "Why a settings write was refused: the key is not one this command writes. Placeholder: setting."
@@ -575,7 +567,7 @@ value = "Jev key file rejected ({why}): it must be a regular file under ~/.confi
 
 [setup.msg_migration_notice]
 doc = "A legacy Jev key exists on the machine but is not read."
-value = "a legacy Jev key file/env var exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin's options screen (anti-hall -> jev_api_key), or enable jev.allowLegacyKeyRead to keep using the existing key."
+value = "a legacy Jev key file exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin's options screen (anti-hall -> jev_api_key), or enable jev.allowLegacyKeyRead to keep using the existing key."
 
 [setup.diag_generic_bound]
 doc = "Why a present vendor-less key was not used. Placeholders: bound, vendor, option."
@@ -805,29 +797,9 @@ doc = "The length of the hexadecimal tail of a per-project suffix."
 value = 6
 min = 1
 
-[setup.cap_status_project_files]
-doc = "The project-scope settings files a status line may be configured in, strongest first, relative to the working directory."
-value = [".claude/settings.local.json", ".claude/settings.json"]
-
-[setup.cap_status_user_files]
-doc = "The user-scope settings files a status line may be configured in, relative to the home directory."
-value = [".claude/settings.json"]
-
-[setup.cap_status_key]
-doc = "The settings member that configures the status line."
-value = "statusLine"
-
-[setup.cap_status_command_key]
-doc = "The member of the status-line setting that holds its command."
-value = "command"
-
 [setup.cap_legacy_dir]
 doc = "Where the legacy progress and history files are copied, relative to the project root."
 value = ".anti-hall/history/legacy"
-
-[setup.cap_name_statusline]
-doc = "The capability name of the status line."
-value = "statusline"
 
 [setup.cap_name_migrations]
 doc = "The capability name of the state migrations."
@@ -871,15 +843,15 @@ value = ".claude-plugin/plugin.json"
 
 [setup.brief_store_file]
 doc = "The DevSwarm store module, relative to the plugin root."
-value = "companion/lib/devswarm-store.js"
+value = "../anti-hall-node/companion/lib/devswarm-store.js"
 
 [setup.brief_cli_file]
 doc = "The DevSwarm command-line script, relative to the plugin root."
-value = "scripts/devswarm.js"
+value = "../anti-hall-node/scripts/devswarm.js"
 
 [setup.brief_companion_dir]
 doc = "The companion directory, relative to the plugin root, as it prefixes a companion's name."
-value = "companion/"
+value = "../anti-hall-node/companion/"
 
 [setup.brief_docs_rel]
 doc = "The repository docs directory, relative to the plugin root."

@@ -139,7 +139,19 @@ fn write(path: &Path, text: &str) {
 
 fn summary(h: &Path, hash: &str, id: &str, total: f64, bcast: Option<f64>) {
     let b = bcast.map_or(String::new(), |b| format!(",\"broadcastUnreadFromOthers\":{b}"));
-    write(&read::summary_path(h, hash), &format!("{{\"workspaces\":{{\"{id}\":{{\"total\":{total}{b}}}}}}}"));
+    write(&read::summary_path(h, hash), &format!("{{\"workspaces\":{{\"{id}\":{{\"total\":{total},\"directTotalFromOthers\":{total}{b}}}}}}}"));
+}
+
+/// A row with a `total` but no `directTotalFromOthers` (a degraded or old write) is "no data this tick": falling back to the raw
+/// `total` switched series between ticks and read as "+215 new mail" (the Primary's own 215 sends).
+#[test]
+fn a_row_without_the_inbound_count_is_no_data_not_the_raw_total() {
+    let h = home("inbound");
+    let hashes = Hashes { repo_key: Some("k".into()), fallback: None };
+    write(&read::summary_path(&h, "k"), "{\"workspaces\":{\"w1\":{\"total\":5421}}}");
+    assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, None);
+    write(&read::summary_path(&h, "k"), "{\"workspaces\":{\"w1\":{\"total\":5421,\"directTotalFromOthers\":5206}}}");
+    assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, Some(5206.0));
 }
 
 #[test]
@@ -185,11 +197,14 @@ fn attaching_the_broadcast_channel_fails_closed_and_joins_the_reasons() {
 fn a_summary_with_a_lone_surrogate_escape_still_reads() {
     let h = home("surrogate");
     // a message preview cut in the middle of an emoji is written like this and JavaScript reads it
-    write(&read::summary_path(&h, "k"), "{\"recent\":[{\"body\":\"cut \\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":3}}}");
+    write(&read::summary_path(&h, "k"), "{\"recent\":[{\"body\":\"cut \\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":3,\"directTotalFromOthers\":3}}}");
     let hashes = Hashes { repo_key: Some("k".into()), fallback: None };
     assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, Some(3.0));
     // a valid pair is left alone
-    write(&read::summary_path(&h, "p"), "{\"recent\":[{\"body\":\"\\ud83d\\ude00 \\\\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":4}}}");
+    write(
+        &read::summary_path(&h, "p"),
+        "{\"recent\":[{\"body\":\"\\ud83d\\ude00 \\\\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":4,\"directTotalFromOthers\":4}}}",
+    );
     let hashes = Hashes { repo_key: Some("p".into()), fallback: None };
     assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, Some(4.0));
 }

@@ -9,8 +9,7 @@
 //! * carries `--summary` (a mesh broadcast row and the identity families), or `--step` for a workspace that has a plan file
 //!   (Node updates the plan under its lock and records supervision metrics); `--step` for a workspace WITHOUT a plan is
 //!   answered here: Node reports `no-plan` and writes nothing beyond the heartbeat;
-//! * carries no `--session` (Node then appends the caller's process line to `heartbeat-callers.log`, which names the Node
-//!   process and cannot be reproduced);
+//!   (A heartbeat without `--session` records its caller's process line in `heartbeat-callers.log`, as Node does.)
 //! * could make Node act in a way the engine does not: a child workspace addressing another id (a stderr warning), a
 //!   Primary checkout whose anchor session would be refreshed, a `primary-<hash>` label id, a partition whose `reader_cursors` floor rows are
 //!   missing (Node imports the legacy cursors first), a store the engine will not read exactly like Node.
@@ -141,7 +140,7 @@ fn pending_for(inv: &Inv, id: &str, desc: &OVal) -> R<Pending> {
 /// backlog is not known.
 pub(crate) fn known_backlog(inbox: Option<&str>, cursor_file: Option<&str>) -> R<usize> {
     let (Some(i), Some(c)) = (inbox, cursor_file) else { return Ok(0) };
-    let Some(all) = union::non_empty_lines(i) else { return Ok(0) };
+    let Some(all) = union::non_empty_lines(i)? else { return Ok(0) };
     let Some(pos) = union::cursor_position(c)? else { return Ok(0) };
     Ok(all.len().saturating_sub(if pos > 0.0 { pos.floor() as usize } else { 0 }))
 }
@@ -252,6 +251,27 @@ fn broadcast(inv: &Inv, b: &Broadcast, id: &str, text: &str) -> R<OVal> {
     Ok(o.done())
 }
 
+/// `appendHeartbeatCallerLog(home, id, now)`: one line naming the process that sent a heartbeat without `--session` (its pid, parent
+/// pid and first arguments), the file capped to its newest `mesh_write.heartbeat_callers_cap` lines. Best effort.
+fn append_caller_log(inv: &Inv, id: &str, now: f64) {
+    let p = devswarm_root(&inv.home).join(defaults::text("mesh_write.heartbeat_callers_log"));
+    let argv: Vec<String> = std::env::args().take(defaults::num("mesh_write.heartbeat_callers_argv") as usize).collect();
+    let mut o = Obj::default();
+    // SAFETY: getppid has no preconditions and cannot fail
+    let ppid = unsafe { libc::getppid() };
+    o.put("ts", n(now)).put("pid", n(f64::from(std::process::id()))).put("ppid", n(f64::from(ppid))).put("argv", s(&argv.join(" "))).put("id", s(id));
+    let mut lines: Vec<String> = std::fs::read_to_string(&p).map(|t| t.split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+    lines.push(o.done().stringify());
+    let cap = defaults::num("mesh_write.heartbeat_callers_cap") as usize;
+    if lines.len() > cap {
+        lines.drain(..lines.len() - cap);
+    }
+    if let Some(d) = p.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports nothing either way
+    }
+    crate::discard::harmless(std::fs::write(&p, format!("{}\n", lines.join("\n")))); // keep: instrumentation only (Node's catch)
+}
+
 /// Run `heartbeat`.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if a.is_help() {
@@ -263,7 +283,8 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let summary = a.one(defaults::text("mesh_write.flag_summary"));
     let step_raw = a.one(defaults::text("mesh_write.flag_step"));
-    let Some(session) = a.one(defaults::text("mesh_write.flag_session")) else { return defer("no-session") };
+    let session_flag = a.one(defaults::text("mesh_write.flag_session"));
+    let session = session_flag.unwrap_or("");
     if id_mismatch_possible(inv, id) {
         return defer("id-mismatch");
     }
@@ -317,7 +338,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
         .put("phase", text_or_null(defaults::text("mesh_write.flag_phase")))
         .put("wip", strings(defaults::text("mesh_write.flag_wip")))
         .put("blockers", strings(defaults::text("mesh_write.flag_blockers")))
-        .put("sessionId", s(session))
+        .put("sessionId", session_flag.map_or(OVal::Null, s))
         .put("version", running_version());
     let beat = beat.done();
     // ---- writes ----
@@ -325,6 +346,11 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let dir = root.join(defaults::text("mesh_write.dir_heartbeats"));
     std::fs::create_dir_all(&dir).map_err(|e| ident::Defer(format!("heartbeat-dir:{e}")))?;
     let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    if session_flag.is_none() {
+        // the caller of a session-less heartbeat is recorded (`appendHeartbeatCallerLog`, instrumentation, best effort)
+        crate::meshw::mark_committed();
+        append_caller_log(inv, id, now);
+    }
     let mut tmp = file.as_os_str().to_os_string();
     tmp.push(format!(".{}.{}{}", std::process::id(), crate::meshw::common::now_ms(), defaults::text("mesh_write.tmp_suffix")));
     write_atomic(&file, &beat.stringify(), PathBuf::from(tmp)).map_err(|e| ident::Defer(format!("heartbeat-write:{e}")))?;

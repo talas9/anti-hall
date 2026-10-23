@@ -224,8 +224,13 @@ impl MeshStore {
 
     /// `appendMessage(m)` (the native-ingest insert): `Ok(true)` when a row was inserted, `Ok(false)` for a duplicate hash.
     pub fn append_message(&self, workspace_id: &str, ts: i64, hash: Option<&str>, body: &str) -> Res<bool> {
+        self.append_message_from(workspace_id, ts, hash, body, None)
+    }
+
+    /// [`append_message`](Self::append_message) with the sender the caller resolved from the message's branch (`None` = unknown).
+    pub fn append_message_from(&self, workspace_id: &str, ts: i64, hash: Option<&str>, body: &str, sender: Option<&str>) -> Res<bool> {
         let q = if hash.is_some() { sql::MESHW_APPEND_MESSAGE_OR_IGNORE } else { sql::MESHW_APPEND_MESSAGE };
-        let changes = self.conn().prepare_cached(q)?.execute(params![workspace_id, ts, hash, body])?;
+        let changes = self.conn().prepare_cached(q)?.execute(params![workspace_id, ts, hash, body, sender])?;
         Ok(changes > 0)
     }
 

@@ -83,7 +83,7 @@ fn match_step_line(line: &str) -> Option<(u32, &str)> {
 }
 
 /// `parseSteps(text)`: the first numbered list that runs 1, 2, 3 …; fewer than two items is no plan.
-fn parse_steps(text: &str) -> R<Vec<String>> {
+pub(crate) fn parse_steps(text: &str) -> R<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     let mut expect = 1u32;
     let pieces: Vec<&str> = text.split('\n').collect();
@@ -113,7 +113,7 @@ fn parse_steps(text: &str) -> R<Vec<String>> {
 }
 
 /// `splitGlobs(raw)`.
-fn split_globs(raw: &str) -> Vec<String> {
+pub(crate) fn split_globs(raw: &str) -> Vec<String> {
     let seps = defaults::text("devswarm_cli.plan_glob_seps");
     let mut out: Vec<String> = Vec::new();
     for part in raw.split(|c: char| is_js_space(c) || seps.contains(c)) {
@@ -153,8 +153,9 @@ fn fresh_step(i: usize, text: &str) -> OVal {
     o.done()
 }
 
-/// `newPlan({ key, id, worktreePath, steps, scope, base: null, source, now })`.
-fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[String], source: &str, now: f64) -> OVal {
+/// `newPlan({ key, id, worktreePath, steps, scope, base, source, now })`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[String], base: Option<&str>, source: &str, now: f64) -> OVal {
     let mut o = Obj::default();
     o.put("v", n(1.0))
         .put("key", s(key))
@@ -162,7 +163,7 @@ fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[St
         .put("worktreePath", wt.map_or(OVal::Null, s))
         .put("source", s(source))
         .put("created_at", n(now))
-        .put("base", OVal::Null)
+        .put("base", base.map_or(OVal::Null, s))
         .put("steps", OVal::Arr(steps.iter().take(defaults::num("devswarm_cli.plan_max_steps") as usize).enumerate().map(|(i, t)| fresh_step(i, t)).collect()))
         .put("scope_globs", OVal::Arr(scope.iter().take(defaults::num("devswarm_cli.plan_max_globs") as usize).map(|g| s(g)).collect()))
         .put("extras", OVal::Arr(Vec::new()))
@@ -313,7 +314,7 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
                 ((false, changed, p.clone()), changed.then_some(p))
             }
             None => {
-                let p = new_plan(&key, id, wt.as_deref(), &steps, scope.as_deref().unwrap_or(&[]), source, now);
+                let p = new_plan(&key, id, wt.as_deref(), &steps, scope.as_deref().unwrap_or(&[]), None, source, now);
                 ((true, true, p.clone()), Some(p))
             }
         })
@@ -401,7 +402,7 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
     let source = defaults::text("devswarm_cli.plan_source_scope");
     let done = plan::update_with(inv, &key, |cur| {
         let created = cur.is_none();
-        let mut p = cur.unwrap_or_else(|| new_plan(&key, id, wt.as_deref(), &[], &[], source, now));
+        let mut p = cur.unwrap_or_else(|| new_plan(&key, id, wt.as_deref(), &[], &[], None, source, now));
         let mut changed = false;
         for g in &globs {
             if add_extra(&mut p, g, note, now)? {

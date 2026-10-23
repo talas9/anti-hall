@@ -3,7 +3,7 @@
 //! the plugin's `engine/defaults/doctor.toml`.
 //!
 //! The tests run against a throwaway home (never the real one) that is removed afterwards, like the Node doctor's. A payload the
-//! engine defers to its Node hook (the check cannot decide it exactly) is reported as such: a deferral is never a pass.
+//! engine defers (the check cannot decide it exactly) is reported as such: a deferral is never a pass. No Node is ever started.
 use super::Doc;
 use crate::checks::emit_dedupe::sha1_hex;
 use crate::checks::{self, Verdict};
@@ -21,7 +21,7 @@ pub(super) enum Got {
     Allow(String),
     /// Exit 2.
     Block(String),
-    /// The engine does not decide this payload; its Node hook does.
+    /// The engine does not decide this payload.
     Defer,
 }
 
@@ -52,77 +52,6 @@ pub(super) fn evaluate(name: &str, payload: &Value, env: BTreeMap<String, String
     };
     let opts = json!({ "payload_sha1": sha1_hex(payload.to_string().as_bytes()) });
     Some(classify(checks::run_env_guarded(check, &subject, payload, &opts, &RequestEnv::from(env))))
-}
-
-/// The Node hook the dispatcher would run when the engine defers: the payload on stdin, the test environment only. `None` when it
-/// cannot be run (no Node, no such hook, killed after the time limit); the reason is noted.
-pub(super) fn node_hook(ctx: &Ctx, plugin_root: Option<&str>, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Option<Got> {
-    use std::io::{Read, Write};
-    use std::process::{Command, Stdio};
-    let path = Path::new(plugin_root?).join(defaults::text("doctor.hooks_dir")).join(script);
-    if !path.exists() {
-        return None;
-    }
-    let node = ctx.env.get(defaults::env_name("node")).cloned().unwrap_or_else(|| defaults::text("doctor.node_default").to_string());
-    let mut child = match Command::new(&node).arg(&path).env_clear().envs(env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            ctx.io_note("spawn", Path::new(&node), &e);
-            return None;
-        }
-    };
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(e) = stdin.write_all(payload.to_string().as_bytes())
-    {
-        ctx.io_note("write", &path, &e);
-    }
-    let cap = defaults::num("doctor.max_hook_output");
-    /// Capture at most `cap` bytes of a pipe; a read error ends the capture and is returned with what was read.
-    fn reader<R: Read + Send + 'static>(pipe: Option<R>, cap: u64) -> std::thread::JoinHandle<(Vec<u8>, Option<std::io::Error>)> {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let err = pipe.and_then(|p| p.take(cap).read_to_end(&mut buf).err());
-            (buf, err)
-        })
-    }
-    let (out, err) = (reader(child.stdout.take(), cap), reader(child.stderr.take(), cap));
-    let deadline = std::time::Instant::now() + defaults::millis("doctor.node_timeout_ms");
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break Some(st),
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(defaults::millis("doctor.poll_ms")),
-            Ok(None) => {
-                if let Err(e) = child.kill() {
-                    ctx.io_note("kill", &path, &e);
-                }
-                if let Err(e) = child.wait() {
-                    ctx.io_note("wait", &path, &e);
-                }
-                ctx.note(defaults::render("doctor_msg.hook_timeout", &[("script", &script)]));
-                break None;
-            }
-            Err(e) => {
-                ctx.io_note("wait", &path, &e);
-                break None;
-            }
-        }
-    };
-    let mut text = String::new();
-    for h in [out, err] {
-        match h.join() {
-            Ok((bytes, read_err)) => {
-                if let Some(e) = read_err {
-                    ctx.io_note("read", &path, &e);
-                }
-                text.push_str(&String::from_utf8_lossy(&bytes));
-            }
-            Err(_) => ctx.note(defaults::render("doctor_msg.capture_failed", &[("script", &script)])),
-        }
-    }
-    match status?.code()? {
-        2 => Some(Got::Block(text)),
-        _ => Some(Got::Allow(text)),
-    }
 }
 
 /// A throwaway directory under the temp directory, removed when it goes out of scope. A failure to remove it is noted.
@@ -222,12 +151,17 @@ fn one(doc: &mut Doc, ctx: &Ctx, home: &Scratch<'_>, fixtures: &Scratch<'_>, plu
     {
         o.insert("hook_event_name".into(), Value::String(event.to_string()));
     }
+    // the live hook path always hands a check the working directory; without one the scripts cannot resolve a relative path or a
+    // script file and (rightly) defer, so every self-test payload carries the fixture directory unless the row names its own
+    if let Some(o) = payload.as_object_mut() {
+        o.entry(defaults::text("doctor.payload_cwd_key")).or_insert_with(|| Value::String(fixtures.dir.to_string_lossy().into_owned()));
+    }
     let extra = t.get("env").map(V::strings).unwrap_or_default();
     let env = test_env(ctx, &home.dir, plugin_root, &extra);
     let (want, ok, bad, warn) = (t.str_field("want"), t.str_field("ok"), t.str_field("bad"), t.str_field("warn"));
     let got = match evaluate(name, &payload, env.clone()) {
-        Some(Got::Defer) | None => node_hook(ctx, plugin_root, t.str_field("script"), &payload, &env).unwrap_or(Got::Defer),
         Some(g) => g,
+        None => Got::Defer,
     };
     match (want, got) {
         (_, Got::Defer) => doc.warnl(defaults::render("doctor_msg.deferred", &[("check", &name)])),
@@ -271,18 +205,20 @@ fn version_alert(doc: &mut Doc, ctx: &Ctx, plugin_root: Option<&str>, version: &
         let payload: Value = serde_json::from_str(&defaults::fill(defaults::text("doctor.version_alert_payload"), &[("SID", &format!("{sid}-{}", now_ms()))]))
             .unwrap_or(Value::Null);
         let env = test_env(ctx, &home.dir, plugin_root, &defaults::list("doctor.version_alert_env"));
-        match evaluate("version-alert", &payload, env.clone()) {
-            Some(Got::Defer) | None => node_hook(ctx, plugin_root, defaults::text("doctor.version_alert_script"), &payload, &env),
-            other => other,
-        }
+        evaluate(defaults::text("doctor.version_alert_check"), &payload, env)
     };
     let text = |g: Option<Got>| match g {
         Some(Got::Allow(t) | Got::Block(t)) => Some(t),
         _ => None,
     };
     let sessions = defaults::list("doctor.version_alert_sessions");
-    let stale = write(defaults::text("doctor.stale_version")).then(|| text(run(sessions[0]))).flatten();
-    let current = write(version).then(|| text(run(sessions[1]))).flatten();
+    let (stale_run, current_run) = (write(defaults::text("doctor.stale_version")).then(|| run(sessions[0])), write(version).then(|| run(sessions[1])));
+    // the engine deferred: not exercised, so a deferral (a warning), never a pass or a failure
+    if [&stale_run, &current_run].iter().any(|r| matches!(r, Some(None | Some(Got::Defer)))) {
+        doc.warnl(defaults::render("doctor_msg.deferred", &[("check", &defaults::text("doctor.version_alert_check"))]));
+        return;
+    }
+    let (stale, current) = (stale_run.flatten().and_then(|g| text(Some(g))), current_run.flatten().and_then(|g| text(Some(g))));
     let passed = match (stale, current) {
         (Some(s), Some(c)) => {
             let alert = crate::checks::lit_re(&defaults::fill(
@@ -309,12 +245,9 @@ pub(super) fn run(doc: &mut Doc, ctx: &Ctx, plugin_root: Option<&str>, version: 
     version_alert(doc, ctx, plugin_root, version);
 }
 
-/// A built-in check run on a payload; when the engine defers it, its Node hook `script` runs instead, as the dispatcher would.
-pub(super) fn run_check(ctx: &Ctx, plugin_root: Option<&str>, check: &str, script: &str, payload: &Value, env: &BTreeMap<String, String>) -> Got {
-    match evaluate(check, payload, env.clone()) {
-        Some(Got::Defer) | None => node_hook(ctx, plugin_root, script, payload, env).unwrap_or(Got::Defer),
-        Some(g) => g,
-    }
+/// A built-in check run on a payload; a payload the engine does not decide is a deferral.
+pub(super) fn run_check(check: &str, payload: &Value, env: &BTreeMap<String, String>) -> Got {
+    evaluate(check, payload, env.clone()).unwrap_or(Got::Defer)
 }
 
 impl Got {

@@ -7,7 +7,8 @@ area:devswarm:
   - changed-files:
       - any-glob-to-any-file:
           - 'plugins/anti-hall/scripts/devswarm*'
-          - 'plugins/anti-hall/scripts/devswarm-lib/**'
+          - 'plugins/anti-hall-node/scripts/devswarm*'
+          - 'plugins/anti-hall-node/scripts/devswarm-lib/**'
           - 'plugins/anti-hall/skills/devswarm/**'
           - 'ah-engine/src/devswarm_rt/**'
           - 'ah-engine/src/dsact/**'
@@ -16,13 +17,13 @@ area:devswarm:
           - 'ah-engine/src/meshw/**'
 area:hooks:
   - changed-files:
-      - any-glob-to-any-file: ['plugins/anti-hall/hooks/**', 'tests/hooks/**']
+      - any-glob-to-any-file: ['plugins/anti-hall/hooks/**', 'plugins/anti-hall-node/hooks/**', 'tests/hooks/**']
 area:statusline:
   - changed-files:
-      - any-glob-to-any-file: ['plugins/anti-hall/statusline/**', 'ah-engine/src/ops/statusline/**', 'tests/statusline/**']
+      - any-glob-to-any-file: ['plugins/anti-hall/statusline/**', 'plugins/anti-hall-node/statusline/**', 'ah-engine/src/ops/statusline/**', 'tests/statusline/**']
 area:codex:
   - changed-files:
-      - any-glob-to-any-file: ['plugins/anti-hall/codex/**', 'plugins/anti-hall/.codex-plugin/**', 'tests/codex/**']
+      - any-glob-to-any-file: ['plugins/anti-hall/codex/**', 'plugins/anti-hall-node/codex/**', 'plugins/anti-hall/.codex-plugin/**', 'tests/codex/**']
 area:ci:
   - changed-files:
       - any-glob-to-any-file: ['.github/**']

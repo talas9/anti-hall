@@ -25,23 +25,21 @@ struct Rule {
 
 /// The rules of `jev.scrub_rules`, compiled once per defaults snapshot (a reload applies an edit). `None` when a rule is
 /// malformed or does not compile: the scrubber then redacts the whole text.
-fn rules() -> Option<&'static [Rule]> {
+fn rules() -> std::sync::Arc<Option<Vec<Rule>>> {
     static RULES: defaults::Cache<Option<Vec<Rule>>> = defaults::Cache::new();
-    RULES
-        .get_or_init(|| {
-            defaults::raw("jev.scrub_rules")
-                .as_array()?
-                .iter()
-                .map(|r| {
-                    Some(Rule {
-                        re: Regex::new(r.get("pattern").and_then(V::as_str)?).ok()?,
-                        to: r.get("to").and_then(V::as_str)?.to_string(),
-                        no_alnum_before: r.get("no_alnum_before").and_then(V::as_bool).unwrap_or(false),
-                    })
+    RULES.get_or_init(|| {
+        defaults::raw("jev.scrub_rules")
+            .as_array()?
+            .iter()
+            .map(|r| {
+                Some(Rule {
+                    re: Regex::new(r.get("pattern").and_then(V::as_str)?).ok()?,
+                    to: r.get("to").and_then(V::as_str)?.to_string(),
+                    no_alnum_before: r.get("no_alnum_before").and_then(V::as_bool).unwrap_or(false),
                 })
-                .collect()
-        })
-        .as_deref()
+            })
+            .collect()
+    })
 }
 
 /// True when `c` is an ASCII letter or digit.
@@ -56,17 +54,17 @@ fn replace_lb(re: &Regex, hay: &str, to: &str) -> String {
     let (mut last, mut at) = (0, 0);
     while at <= hay.len() {
         let Some(m) = re.find_at(hay, at) else { break };
-        let rejected = hay[..m.start()].chars().next_back().is_some_and(alnum);
+        let rejected = hay.get(..m.start()).unwrap_or_default().chars().next_back().is_some_and(alnum);
         if rejected {
-            at = m.start() + hay[m.start()..].chars().next().map_or(1, char::len_utf8);
+            at = m.start() + hay.get(m.start()..).unwrap_or_default().chars().next().map_or(1, char::len_utf8);
             continue;
         }
-        out.push_str(&hay[last..m.start()]);
+        out.push_str(hay.get(last..m.start()).unwrap_or_default());
         out.push_str(to);
         last = m.end();
         at = if m.end() > m.start() { m.end() } else { m.end() + 1 };
     }
-    out.push_str(&hay[last..]);
+    out.push_str(hay.get(last..).unwrap_or_default());
     out
 }
 
@@ -75,7 +73,8 @@ fn replace_lb(re: &Regex, hay: &str, to: &str) -> String {
 /// Node: `secret-scrub.js` `scrubSecrets`. The rules run in the same order, because the named shapes must be scrubbed
 /// before the generic long-run catch-all so their short placeholders never re-trigger it.
 pub fn scrub_secrets(text: &str) -> String {
-    let Some(rules) = rules() else { return defaults::text("jev.scrub_failed_text").to_string() };
+    let rules = rules();
+    let Some(rules) = rules.as_deref() else { return defaults::text("jev.scrub_failed_text").to_string() };
     let mut s = text.to_string();
     for r in rules {
         s = if r.no_alnum_before { replace_lb(&r.re, &s, &r.to) } else { r.re.replace_all(&s, r.to.as_str()).into_owned() };
@@ -89,7 +88,7 @@ mod tests {
 
     #[test]
     fn every_pattern_compiles() {
-        assert_eq!(rules().map(<[Rule]>::len), Some(17), "one rule per replace() in secret-scrub.js");
+        assert_eq!(rules().as_deref().map(<[Rule]>::len), Some(17), "one rule per replace() in secret-scrub.js");
     }
 
     #[test]

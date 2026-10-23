@@ -143,6 +143,19 @@ impl Ledger {
         keys
     }
 
+    /// `(key, id, finish time)` of every key beginning with `prefix` that finished `done`.
+    pub fn done_rows(&self, prefix: &str) -> Vec<(String, String, i64)> {
+        let done = Word::Done.text();
+        lines(&self.path)
+            .iter()
+            .filter(|r| r.get("outcome").and_then(Value::as_str) == Some(done))
+            .filter_map(|r| {
+                let k = r.get("key").and_then(Value::as_str).filter(|k| k.starts_with(prefix))?;
+                Some((k.to_string(), r.get("id").and_then(Value::as_str)?.to_string(), r.get("ts").and_then(Value::as_i64).unwrap_or(0)))
+            })
+            .collect()
+    }
+
     /// Claim `key` for one attempt: under the lock, re-read the file, refuse a key that is done, in doubt, out of attempts or
     /// backing off, else append its `started` line.
     pub fn begin(&self, key: &str, kind: &str, id: &str, now_ms: i64) -> Begin {

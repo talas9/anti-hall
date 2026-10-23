@@ -195,7 +195,7 @@ value = "full"
 
 [orch_on_spawn.summary]
 doc = "One-line description of the orch-on-spawn check in the generated reference."
-value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker defers to Node, which owns the claim race (port of orch-on-spawn.js)."
+value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node (port of orch-on-spawn.js)."
 
 [orch_on_spawn.spawn_tools]
 doc = "Tool names that are a spawn: a call to any other named tool is ignored."
@@ -209,11 +209,11 @@ value = ["agent_id", "agent_type"]
 
 [verify_first_orch.summary]
 doc = "One-line description of the verify-first-orch check in the generated reference."
-value = "SessionStart orchestration text for the Claude entry: composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node (port of verify-first-orch.js --host=claude)."
+value = "SessionStart orchestration text for the Claude entry: composes the full or compact text (with the workspace-tier rule for a DevSwarm Primary) and keeps the delivery marker (port of verify-first-orch.js --host=claude)."
 
 [verify_first_orch.summary_codex]
 doc = "One-line description of the verify-first-orch-codex check in the generated reference."
-value = "SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text and keeps the delivery marker; a DevSwarm session defers to Node."
+value = "SessionStart orchestration text for the Codex entry (the same hook without --host=claude, so never Claude-confident): composes the full or compact text (with the workspace-tier rule for a DevSwarm Primary) and keeps the delivery marker."
 
 [verify_first_orch.event]
 doc = "The only event the hook answers."
@@ -265,6 +265,10 @@ value = "M/N. Workers do not re-delegate; read-only research -> a read-only sub-
 [verify_first_orch.compact_delivery]
 doc = "The phrase added to the compact first line when the full text follows on the first spawn."
 value = "; sent in full on your first spawn"
+
+[verify_first_orch.primary_rule]
+doc = "The DevSwarm Primary workspace-tier rule (W), inserted after the header line of the full orchestration text when the session is a Primary."
+value = "  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/deploy (workspace-scale: owns a branch, spans many files/commits, runs to done) = a CHILD WORKSPACE, NOT a subagent. Spawn it: `~/.anti-hall/bin/devswarm.js spawn <branch> -p \"<brief>\"`. Bounded work inside your OWN branch -> subagent (rules A-N). Handing workspace-scale work to a subagent leaves it off the parent task list and unsupervised."
 
 [verify_first_orch.full_lines]
 doc = "Lines of the full orchestration text for a Claude session, joined with a newline."

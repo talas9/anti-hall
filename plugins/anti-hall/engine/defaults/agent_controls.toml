@@ -40,6 +40,10 @@ unit = "ms"
 doc = "Largest integer JavaScript prints exactly (2^53 - 1); a tool input holding a number outside it is judged by the Node hook, whose number text differs."
 value = 9007199254740991
 
+[agent_scan.stop_gone_text]
+doc = "Lower-case text a TaskStop error carries when the task no longer exists: the agent is already gone, so the stop still ended it."
+value = "no task found"
+
 [agent_scan.launch_text]
 doc = "Text a launch tool_result begins with."
 value = "Async agent launched successfully"
@@ -137,7 +141,7 @@ doc = "Fragments of a JSON parser error that mean the text is JSON to JavaScript
 value = ["recursion limit", "out of range"]
 
 [agent_scan.re_surrogate_escape]
-doc = "Rust regex source of an escape for a UTF-16 surrogate half: JavaScript reads a lone one, serde does not, so text that holds one and fails to parse defers to the Node hook."
+doc = "Rust regex source of an escape for a UTF-16 surrogate half: JavaScript reads a lone one, serde does not, so text that holds one and fails to parse is read the way JSON.parse reads it (the lone half held as U+FFFD), and is a scan the engine cannot make only when that reading fails too."
 value = '\\u[dD][89a-fA-F][0-9a-fA-F]{2}'
 
 [agent_scan.re_notification_block]
@@ -454,6 +458,15 @@ value = "devswarm-"
 doc = "Heartbeat statuses (case-insensitive, whole text) that mean the agent finished."
 value = "done complete completed finished stopped success succeeded error failed"
 
+[silent_nudge.stale_max_ms]
+doc = "A background task or heartbeat quiet for at least this long (24 hours) is a record that outlived its agent (carried over a restart or a compaction), not a silent agent: it is expired and never nudged. 0 turns the expiry off."
+value = 86400000
+unit = "ms"
+
+[silent_nudge.daemon_re]
+doc = "JavaScript regex source (case-insensitive) of the description of a background SHELL that is a long-running daemon: quiet by design, so it is never nudged as silent (an agent is judged by silence alone)."
+value = '\b(daemon|throttle|watchdog|watcher|keep-?alive|heartbeat|server|listener|poller|supervisor)\b'
+
 [silent_nudge.ever_nudged_ttl_ms]
 doc = "How long a once-per-agent nudge record is kept (30 days)."
 value = 2592000000
@@ -499,6 +512,14 @@ min = 1
 [silent_nudge.control_re]
 doc = "Rust regex source of the control characters turned into spaces in a name the nudge shows."
 value = '[\x00-\x1f\x7f-\u{9f}]'
+
+[silent_nudge.unsure_log_kind]
+doc = "Engine log kind of a silent-agent-nudge decision taken without Node's exact reading: transcript (no transcript agents, the heartbeats are still judged), heartbeat (that file is no heartbeat), state_big, state_parse (read as no state), ack_big, ack_parse (read as no ack), relative_home (a defer to the Node twin: the directory is the hook process's), no_plugin_root (a defer to the Node twin, which judges the stale-build gate against its own install directory; only while the gate is on), plugin_versions (the stale-build gate passes: no newer build is known)."
+value = "silent_nudge_unsure"
+
+[silent_nudge.home_fallback_env]
+doc = "Variable read for the home directory when HOME is unset or empty (Node's `HOME || USERPROFILE`); with neither the check says nothing."
+value = "USERPROFILE"
 
 [silent_nudge.ellipsis]
 doc = "Text appended to a name that was cut."
@@ -618,3 +639,44 @@ min = 1
 [silent_nudge.ack_hint]
 doc = "The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file."
 value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+
+# ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
+
+[agent_scan.cache_max_paths]
+doc = "How many walks the scan keeps between calls (one per transcript and window size), so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first, so more transcripts in use at once than this are each walked afresh (the walk of a long session is its cold cost: 64 MiB read and filtered)."
+value = 24
+unit = "count"
+
+[agent_scan.window_slack_pct]
+doc = "How far, as a percent of the scan window, the kept walk of a transcript longer than the window may begin before the window start; past that it is rebuilt from the window start. The walk is used only while it provably gives the answer of a fresh scan of the exact window (nothing older than the window start touched a launch, a stop or a teammate event, and no call older than it has its answer inside it), so this only bounds what the walk holds. 0 reads every window afresh."
+value = 25
+min = 0
+max = 100
+unit = "percent"
+
+[agent_scan.window_quantum_pct]
+doc = "The scan window of a transcript longer than it starts at a multiple of this percent of the window, so it is the window up to this much longer. An exact window starts one byte later with every appended byte and the kept walk is rebuilt (the whole window read and filtered) whenever the start passes a line a launch, a notice or a stop came from, which in a busy session is nearly every Stop; a start that moves once per quantum rebuilds once per quantum. A longer window only ever sees more, never less. 0 is the exact window."
+value = 10
+unit = "percent"
+min = 0
+max = 100
+
+[agent_scan.cache_idle_ms]
+doc = "How long a kept walk may sit unused before it is dropped. A walk holds a few tens of kilobytes (the memory registry's agent_scan_walk limits bound all of them); a session that stops once an hour finds its walk and reads only what was appended, instead of walking the last 64 MiB again."
+value = 21600000
+unit = "ms"
+
+[agent_scan.cache_max_bytes]
+doc = "Largest estimated size of one kept walk; a walk that grows past it is not kept (the next scan reads the file afresh, as it did before the cache)."
+value = 16777216
+unit = "bytes"
+
+[agent_scan.cache_entry_bytes]
+doc = "Estimated bytes one entry of a kept walk (a tool use, an answered or errored call, a launch, a stop, a retained answer) holds, for the size cap above."
+value = 256
+unit = "bytes"
+
+[agent_scan.cache_fingerprint_bytes]
+doc = "Bytes at the start of a transcript, and bytes just before the kept offset, hashed to notice a rewritten or rotated file; a kept walk whose file no longer matches is rebuilt from the start."
+value = 4096
+unit = "bytes"

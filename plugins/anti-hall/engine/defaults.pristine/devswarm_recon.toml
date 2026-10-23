@@ -3,16 +3,7 @@
 # own function runs on a scratch mirror, the engine's op list runs on another, and only when the two end in the same state is the op
 # list applied to the real home (design: RECONCILE-SWEEP-DESIGN.md).
 
-[devswarm_recon.node_snippet]
-doc = "What Node runs for the witness: a dispatcher over the recorded calls, each run in order against the scratch mirror with Date.now pinned to the engine's clock and HOME, USERPROFILE and the central log directory pointed into the mirror. Arguments: the plugin root, the mirror home, the pinned clock, the calls as JSON. It prints the list of return values."
-value = 'const NOW=Number(process.argv[3]);Date.now=()=>NOW;const root=process.argv[1],home=process.argv[2],calls=JSON.parse(process.argv[4]);process.env.HOME=home;process.env.USERPROFILE=home;process.env.ANTI_HALL_LOG_DIR=home+"/.anti-hall/logs";const fs=require("fs"),path=require("path");const L=(m)=>require(root+"/"+m);const run=(c)=>{const a=c.args||{};switch(c.fn){case "sweepState":L("companion/devswarm-supervisor.js").writeReconcileSweepState(home,fs,{lastRunAt:a.lastRunAt});return null;case "resumeWrite":L("scripts/devswarm-lib/reconcile.js").writeReconcileResume(home,a.repoKey,a.ids);return null;case "nameWrite":return L("companion/lib/devswarm-names.js").writeName(home,a.id,a.name,a.now);case "repoUnknownRecord":return L("companion/lib/devswarm-repo-unknown.js").record(home,a.repoKey,a.scope,a.reason,a.now);case "repoUnknownClear":L("companion/lib/devswarm-repo-unknown.js").clear(home,a.repoKey,a.scope);return null;case "activeCache":{process.env.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT=String(a.floorPct);const r=L("companion/lib/devswarm-archived-cache.js").writeActiveCache({home,byRepoKey:a.byRepoKey,now:a.now,env:process.env});return r===null?null:path.relative(home,r)}case "sampling":{const S=L("companion/lib/devswarm-startup-sampling.js");return S.runSamplingPass(a.ids.map((id)=>({id})),{home,env:process.env,now:a.now,maxProbe:a.maxProbe,run:(id)=>a.probes[id]||{ok:false,error:"no probe"}})}case "healRegistry":return L("scripts/devswarm-lib/fold.js").healRegistry(home,a.repoKey,{});case "healRows":{const F=L("scripts/devswarm-lib/fold.js");return a.ids.map((id)=>F.rehomeMiskeyedRow(home,id,a.repoKey,{}))}case "healOrphans":return L("scripts/devswarm-lib/repair.js").healOrphanPartitions(home,{repoKey:a.repoKey});case "foldRekey":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.rekeySubdirRegistryRows(s,home,false)}finally{s.close()}}case "foldGroup":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));const r=F.foldGroupIntoSurvivor(s,home,a.survivor,a.ids.map((i)=>by.get(i)).filter(Boolean),{});return {retired:r.retired,left:r.left,forwardFailed:r.forwardFailed,forwarded:r.forwarded,skipped:r.skipped}}finally{s.close()}}case "foldDerive":{const C=L("scripts/devswarm-lib/core.js");const s=C.store.openStore({home,hash:a.repoKey});try{C.store.deriveSummary(s,{home});return null}finally{s.close()}}case "ghosts":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{const by=new Map(s.listRegistry().map((r)=>[String(r.id),r]));return F.ghostRegistryRows(s,home,a.ids.map((i)=>by.get(i)).filter(Boolean),{now:a.now,env:process.env}).map((r)=>r.id)}finally{s.close()}}case "retireDup":return L("scripts/devswarm-lib/fold.js").retireWorktreeDuplicates(home,{id:a.id,worktreePath:a.worktreePath},{cwd:a.cwd});case "retireArchived":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.retireArchivedWorktreeGroup(s,home,a.id,a.worktreePath)}finally{s.close()}}case "forwardArchived":{const C=L("scripts/devswarm-lib/core.js"),F=L("scripts/devswarm-lib/fold.js");const s=C.store.openStore({home,hash:a.repoKey});try{return F.forwardArchivedOrphanUnread(s,a.id,a.survivor,{home,now:a.now,maxAgeMs:a.maxAgeMs})}finally{s.close()}}case "archiveLeftReason":return L("scripts/devswarm-lib/fold.js").archiveLeftReason(home,a.id,a.row,a.isAnchor);case "pickArchiveForwardSurvivor":return L("scripts/devswarm-lib/fold.js").pickArchiveForwardSurvivor(null,home,a.archivedId,a.rows);case "retireFamily":return L("scripts/devswarm-lib/fold.js").retireIdentityFamilyDescriptors(home,a.archivedId,a.desc,{requireWorktreeGone:a.requireGone});case "foldArchivedFamily":return L("scripts/devswarm-lib/repair.js").foldArchivedFamilyDescriptors(home,{deadline:a.deadline===null?undefined:a.deadline});case "foldArchivedRows":return L("scripts/devswarm-lib/repair.js").foldArchivedRegistryRows(home,{deadline:a.deadline===null?undefined:a.deadline,env:process.env});case "restore":return L("scripts/devswarm-lib/fold.js").restoreArchivedDescriptor(home,a.id,{env:process.env},{keepMarker:a.keepMarker,requireOwnerKey:a.requireOwnerKey===null?undefined:a.requireOwnerKey});case "pull":{const sd=path.join(path.dirname(home),"stub-bin");fs.mkdirSync(sd,{recursive:true});fs.writeFileSync(path.join(sd,"hivecontrol"),a.stub,{mode:493});const env=Object.assign({},process.env,{HOME:home,USERPROFILE:home,PATH:sd+":"+(process.env.PATH||""),ANTIHALL_RECONCILE_SWEEP:"1",ANTIHALL_INGEST_DRY_RUN:"1"});delete env.CLAUDE_CODE_SESSION_ID;delete env.DEVSWARM_BUILDER_ID;delete env.ANTIHALL_DEVSWARM_HIVECONTROL;process.chdir(a.cwd);const r=L("scripts/devswarm.js").run(["inbox","pull",a.id],{home,env,cwd:a.cwd,now:NOW});return r&&r.result?{ok:!!r.result.ok}:null}default:throw new Error("unknown call "+c.fn)}};const out=[];for(const c of calls){try{const r=run(c);out.push(r===undefined?null:r)}catch(e){out.push({threw:String(e&&e.message||e)})}}console.log(JSON.stringify(out))'
 
-[devswarm_recon.node_timeout_ms]
-doc = "How long the Node witness may run for one job."
-value = 120000
-min = 1000
-max = 3600000
-unit = "ms"
 
 [devswarm_recon.mirror_max_files]
 doc = "Most files a job's directory mirrors may hold; a larger input makes the job defer to Node (never a partial comparison)."
@@ -20,27 +11,13 @@ value = 20000
 min = 1
 max = 10000000
 
-[devswarm_recon.mirror_node]
-doc = "The name of the mirror Node works on, inside a job's scratch directory."
-value = "node"
 
-[devswarm_recon.mirror_eng]
-doc = "The name of the mirror the engine's op list is applied to, inside a job's scratch directory."
-value = "engine"
 
-[devswarm_recon.scratch_prefix]
-doc = "The start of a job's scratch directory name (under devswarm_sup.witness_dir)."
-value = "recon-"
 
 [devswarm_recon.witness_file]
 doc = "The reconcile-port witness log, one JSON line per gated job (match: true / false, or null when Node could not run), relative to the home directory."
 value = ".anti-hall/logs/devswarm-recon-witness.ndjson"
 
-[devswarm_recon.witness_diffs]
-doc = "Most differences one witness log line lists."
-value = 20
-min = 1
-max = 1000
 
 [devswarm_recon.job_heal]
 doc = "The label of the registry-heal job in the witness log and the scratch directory name."
@@ -96,13 +73,7 @@ value = "{path}: node `{node}` vs engine `{engine}`"
 doc = "A path whose lines agree but whose lengths differ. Placeholders: {path}, {node}, {engine}."
 value = "{path}: length {node} vs {engine}"
 
-[devswarm_recon.msg_call_differs]
-doc = "A Node call returned a value other than the engine's. Placeholders: {i}, {got}, {want}."
-value = "call {i} returned {got} (engine says {want})"
 
-[devswarm_recon.msg_nothing]
-doc = "What a missing return value is called in a difference text."
-value = "nothing"
 
 # ---- why a unit was handed back to Node ------------------------------------------------------------------------------------------
 
@@ -114,29 +85,21 @@ value = "drift:"
 doc = "Why a unit was handed back: its workspace lock is held by a live writer."
 value = "lock-busy"
 
-[devswarm_recon.why_mismatch]
-doc = "Why a unit was handed back: Node and the engine ended in different states on the scratch mirrors."
-value = "witness-mismatch"
 
-[devswarm_recon.why_node_unavailable]
-doc = "Why a unit was handed back: Node could not be run, so the decision is unwitnessed."
-value = "node-unavailable"
 
-[devswarm_recon.why_node_answer]
-doc = "Why the witness failed: Node's answer was not the list of return values."
-value = "node-answer-unparsable"
 
-[devswarm_recon.why_mirror]
-doc = "Why a unit was handed back: a scratch mirror could not be built or the engine's pass over it failed."
-value = "mirror-failed"
 
 [devswarm_recon.why_mirror_cap]
 doc = "Why a mirror could not be built: a directory held more files than devswarm_recon.mirror_max_files."
 value = "mirror-too-large"
 
-[devswarm_recon.why_rehome_across]
-doc = "Why a row was handed back: it is mis-keyed and moving it between stores (rehomeAcrossStores) is still Node's."
-value = "rehome-across-stores"
+[devswarm_recon.app_primary_type]
+doc = "The app database's builder type of the Primary workspace."
+value = "primary"
+
+[devswarm_recon.primary_id_prefix]
+doc = "The prefix of a Primary workspace's mesh id (a row with it is never a root-mapped child row)."
+value = "primary-"
 
 [devswarm_recon.why_surrogate]
 doc = "Why a decision was handed back: cutting the text at Node's length would split a surrogate pair."
@@ -440,10 +403,6 @@ value = "live-or-unprovable-worktree"
 doc = "Why a twin descriptor stayed active: archived/ already holds a different file under its name."
 value = "archived-tombstone-differs"
 
-[devswarm_recon.why_survivor_pick]
-doc = "Why a decision was handed back: two or more drainable siblings need the cursor and heartbeat ranking of pickSurvivor."
-value = "survivor-pick"
-
 [devswarm_recon.why_group_fold]
 doc = "Why the archived rows pass was handed back: a sibling row would be folded into a survivor (foldGroupIntoSurvivor)."
 value = "fold-group-into-survivor"
@@ -519,8 +478,8 @@ exit 97
 """
 
 [devswarm_recon.env_strip]
-doc = "Environment variables a sweep drain removes: it speaks for no session, so it must not carry the identity of the session that started it."
-value = ["CLAUDE_CODE_SESSION_ID", "DEVSWARM_BUILDER_ID"]
+doc = "Environment variables a sweep drain removes: it speaks for no session, so it must not carry the identity of the session that started it (the builder id AND the AI pane id: hivecontrol checks the pane belongs to the targeted workspace and refuses a drain of a child run with the Primary's pane)."
+value = ["CLAUDE_CODE_SESSION_ID", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_TERMINAL_ID", "DEVSWARM_BUILDER_TERMINAL_GENERATION"]
 
 [devswarm_recon.env_sweep_flag]
 doc = "The environment variable that marks a process as a reconcile sweep drain (the pull then never promotes an unclaimed session)."
@@ -553,12 +512,6 @@ unit = "ms"
 doc = "The environment variable that overrides the reconcile budget."
 value = "ANTIHALL_RECONCILE_BUDGET_MS"
 
-[devswarm_recon.timeout_retry_backoff_ms]
-doc = "Pause before the one retry of a drain whose native message count timed out (Node: RECONCILE_TIMEOUT_RETRY_BACKOFF_MS)."
-value = 1500
-min = 0
-max = 600000
-unit = "ms"
 
 [devswarm_recon.git_bin]
 doc = "The git executable that resolves a worktree's root."
@@ -571,9 +524,6 @@ min = 100
 max = 600000
 unit = "ms"
 
-[devswarm_recon.code_timeout]
-doc = "The spawn error code of a child killed at its timeout."
-value = "ETIMEDOUT"
 
 [devswarm_recon.scope_pull_prefix]
 doc = "The start of a drain's scope key in the repository-unknown marker (followed by the workspace id)."
@@ -599,9 +549,6 @@ value = "resume"
 doc = "The label of the sweep cool-down job in the witness log."
 value = "sweep-state"
 
-[devswarm_recon.pre_file_prefix]
-doc = "The start of the scratch file that hands the engine's reconcile results to Node's sweep (under devswarm_sup.witness_dir)."
-value = "recon-pre-"
 
 [devswarm_recon.re_locked]
 doc = "The error text of a drain refused because another pull holds the lock."
@@ -639,21 +586,9 @@ value = "worktree not found on disk: {path}"
 doc = "The error of a row whose worktree git cannot resolve to a root. Placeholder: {path}."
 value = "worktree is not a resolvable git root (git rev-parse --show-toplevel failed): {path}"
 
-[devswarm_recon.msg_err_exited]
-doc = "The start of the error of a drain subprocess that exited without a parseable answer."
-value = "inbox-pull subprocess exited"
 
-[devswarm_recon.msg_err_code]
-doc = "The exit code part of that error. Placeholder: {code}."
-value = " with code {code}"
 
-[devswarm_recon.msg_err_signal]
-doc = "The signal part of that error. Placeholder: {signal}."
-value = " (signal {signal})"
 
-[devswarm_recon.msg_err_stderr]
-doc = "The stderr part of that error. Placeholder: {stderr}."
-value = ": {stderr}"
 
 [devswarm_recon.msg_err_unparseable]
 doc = "The error of a drain whose subprocess printed nothing parseable."
@@ -675,31 +610,10 @@ value = "info"
 doc = "The log line when suppression of an archived or held row's pull begins. Placeholder: {n}."
 value = "hivecontrol does not know this archived/held row's repository ({n} sweeps in a row) — its native pull is suppressed until a periodic recheck"
 
-[devswarm_recon.node_pull_snippet]
-doc = "What Node runs for a workspace the engine does not drain itself: reconcile's own spawn of `inbox pull <id>` in that worktree. Arguments: the plugin root, the home, the workspace id, the worktree. It prints what the spawn returned."
-value = 'process.env.HOME=process.argv[2];const R=require(process.argv[1]+"/scripts/devswarm-lib/reconcile.js");const r=R.defaultSpawnReconcile({id:process.argv[3],worktreePath:process.argv[4]},{home:process.argv[2],env:process.env});console.log(JSON.stringify({stdout:typeof r.stdout==="string"?r.stdout:null,stderr:typeof r.stderr==="string"?r.stderr:"",status:r.status===undefined?null:r.status,signal:r.signal||null,error:r.error?{code:r.error.code||null,message:String(r.error.message||r.error)}:null,worktreeMissing:!!r.worktreeMissing}))'
 
-[devswarm_recon.node_pull_timeout_ms]
-doc = "How long Node's drain of one workspace may take (its own spawn is bounded at 30 s)."
-value = 60000
-min = 1000
-max = 3600000
-unit = "ms"
 
-[devswarm_recon.node_names_snippet]
-doc = "What Node runs to give a project's workspaces without a cached name the title hivecontrol's workspace list has for them. Arguments: the plugin root, the home, the project's worktree, the ids as JSON, the clock. It prints how many names it wrote."
-value = 'process.env.HOME=process.argv[2];const root=process.argv[1],home=process.argv[2],cwd=process.argv[3],ids=JSON.parse(process.argv[4]),NOW=Number(process.argv[5]);const core=require(root+"/scripts/devswarm-lib/core.js"),RD=require(root+"/scripts/devswarm-lib/roster-diag.js");let n=0;try{const missing=ids.filter((id)=>!core.names.readName(home,id));if(missing.length>0){const lr=core.hcRun({args:["workspace","list","all"],env:process.env,cwd,timeout:RD.LIST_CHILDREN_TIMEOUT_MS});if(lr&&lr.ok){const m=new Map(RD.parseChildrenList(lr.raw).filter((e)=>e.id).map((e)=>[e.id,e.label]));for(const id of missing){const l=m.get(id);if(l&&core.names.writeName(home,id,l,NOW))n++}}}}catch(e){}console.log(JSON.stringify({backfilled:n}))'
 
-[devswarm_recon.node_names_timeout_ms]
-doc = "How long Node's name backfill for one project may take."
-value = 30000
-min = 1000
-max = 3600000
-unit = "ms"
 
-[devswarm_recon.node_tail_snippet]
-doc = "What Node runs for the rest of the reconcile sweep once the engine has reconciled the projects: Node's own reconcileSweepIfDue (the mesh fold, the active-workspace probe and its cache, the start-up sampling, the log line) with the cool-down already honoured and the engine's results answering the reconcile step; a project the engine did not answer is reconciled by Node inside the same call. Arguments: the plugin root, the home, the file that holds the engine's results keyed by worktree."
-value = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";const S=require(process.argv[1]+"/companion/devswarm-supervisor.js");const home=process.argv[2];const pre=JSON.parse(require("fs").readFileSync(process.argv[3],"utf8"));const r=S.reconcileSweepIfDue({home,cooldownMs:0,deps:{runReconcile:(wt)=>{if(Object.prototype.hasOwnProperty.call(pre,wt))return pre[wt];const D=require(process.argv[1]+"/scripts/devswarm.js");return D.run(["reconcile"],{home,env:process.env,cwd:wt}).result}}});console.log(JSON.stringify(S.compactReconcileForLog(r,null).line))'
 
 [devswarm_recon.why_wal_blocked]
 doc = "Why a drain was handed back: the delivery log cannot be appended and fsynced right now."
@@ -724,6 +638,22 @@ unit = "ms"
 doc = "The fields of a reconcile row any one of which makes the row count as fine for the project's ok: it drained, or it was refused for a reason that is no failure (another pull holds the lock, hivecontrol is absent, the worktree is gone or not a git root, it was skipped, the native app timed out)."
 value = ["ok", "locked", "hivecontrolMissing", "worktreeMissing", "notGitRoot", "skipped", "nativeTimeout"]
 
+[devswarm_recon.pull_skip_reasons]
+doc = "The reasons a workspace's pull is SKIPPED by construction, not held: the workspace has no native hivecontrol queue to read (`primary-label`: a Primary checkout's own label, which no DevSwarm workspace answers to), so there is nothing to abandon. Any other reason is a held decision, counted and logged."
+value = ["primary-label"]
+
+[devswarm_recon.msg_skip_no_queue]
+doc = "Why a reconcile row was skipped: the workspace has no native queue to pull (a Primary checkout's label)."
+value = "skipped: a Primary checkout has no native queue to pull"
+
+[devswarm_recon.job_pull_skip]
+doc = "The label of the witness-log line for a workspace whose pull was skipped by construction (the line names the workspace and why)."
+value = "pull-skip"
+
+[devswarm_recon.msg_pull_held_why]
+doc = "The reason logged for a held pull. {id} is the workspace, {why} the engine's reason for not draining it."
+value = "workspace {id} not drained: {why}"
+
 [devswarm_recon.job_handback]
 doc = "The label of the witness-log line for a workspace the engine did not drain itself (the line names the workspace and why)."
 value = "pull-handback"
@@ -746,9 +676,6 @@ value = "fold-archived-rows"
 doc = "The word an item record carries when the engine did the item itself (witnessed against Node)."
 value = "engine"
 
-[devswarm_recon.by_node]
-doc = "The word an item record carries when the item was handed to Node's own function."
-value = "node"
 
 [devswarm_recon.why_witness_mismatch]
 doc = "Why an item went to Node: the witness did not agree with the engine."
@@ -943,9 +870,6 @@ value = ", "
 doc = "One not-stamped note. Placeholders in braces."
 value = "{label}: {why}"
 
-[devswarm_recon.node_item_snippet]
-doc = "What Node runs for ONE item of a deferred stage the engine handed back (a store key, or rows / family for the archived stage): the very function the stage calls for that item, with the supervisor gate open. Arguments: root, home, stage, item, absolute deadline in ms. It prints the function's result as JSON."
-value = 'process.env.HOME=process.argv[2];process.env.ANTIHALL_CALLER="supervisor";process.env.ANTIHALL_DEVSWARM_SUPERVISOR="on";const D=require(process.argv[1]+"/scripts/devswarm.js");const home=process.argv[2],stage=process.argv[3],item=process.argv[4],deadline=Number(process.argv[5]),env=process.env,cwd=process.cwd();let r;try{if(stage==="fold-all-stores")r=D.foldMeshDuplicates(home,{cwd,env,repoKey:item,deadline});else if(stage==="heal-orphan-partitions")r=D.healOrphanPartitions(home,{cwd,env,repoKey:item,deadline});else if(stage==="heal-registry-rows")r=D.healRegistry(home,item,{cwd,env});else if(stage==="fold-archived-rows")r=item==="family"?D.foldArchivedFamilyDescriptors(home,{cwd,env,deadline}):D.foldArchivedRegistryRows(home,{cwd,env,deadline});else throw new Error("unknown stage")}catch(e){r={ok:false,error:String(e&&e.message||e),threw:true}}console.log(JSON.stringify(r===undefined?null:r))'
 
 [devswarm_recon.d_raised]
 doc = "The detail of a stage whose own function raised. Placeholders: {stage}, {error}."
@@ -955,4 +879,345 @@ value = "{stage} raised: {error}"
 doc = "How many of the sampled unhealable orphans a stage detail names (Node: slice(0, 5))."
 value = 5
 min = 0
+max = 1000
+
+[devswarm_recon.marker_archived_rows]
+doc = "The key in update-sweep-state.json that stamps the archived registry-row half of fold-archived-rows done for a version."
+value = "foldArchivedRows"
+
+[devswarm_recon.marker_archived_family]
+doc = "The key in update-sweep-state.json that stamps the twin-descriptor half of fold-archived-rows done for a version."
+value = "foldArchivedFamilyDescriptors"
+
+[devswarm_recon.reason_no_project]
+doc = "The reason `reconcile` gives (and logs) for a working directory that is not inside a project."
+value = "no-project"
+
+[devswarm_recon.by_held]
+doc = "The word an item record carries when the engine did not take the item (held: counted, nothing written, tried again on the next pass)."
+value = "held"
+
+[devswarm_recon.msg_skip_held]
+doc = "Why a reconcile row was skipped: the engine did not answer this workspace's pull, so it is held (nothing imported, tried again on the next sweep)."
+value = "held: no native pull for this workspace; retried on the next sweep"
+
+[devswarm_recon.why_pull_held]
+doc = "Why a workspace's pull is held (event count `native_unable` at dssup:recon:pull)."
+value = "the engine's staged pull did not answer this workspace"
+
+[devswarm_recon.why_state_held]
+doc = "Why the reconcile duty holds its tick: the cool-down state could not be persisted first."
+value = "the sweep cool-down state could not be written; the sweep is held"
+
+[devswarm_recon.list_all_args]
+doc = "The hivecontrol arguments of the one workspace listing the name backfill reads (every workspace's current label)."
+value = ["workspace", "list", "all"]
+
+[devswarm_recon.list_timeout_ms]
+doc = "How long the name backfill and the active-workspace probe wait for hivecontrol's workspace listing."
+value = 5000
+min = 500
+max = 120000
+unit = "ms"
+
+[devswarm_recon.scope_list]
+doc = "The scope key of the workspace listing in the repository-unknown marker (the pull's scope is `pull:<id>`)."
+value = "list"
+
+[devswarm_recon.log_component_supervisor]
+doc = "The component of the supervisor sweep's central-log lines."
+value = "devswarm-supervisor"
+
+[devswarm_recon.log_op_active_probe]
+doc = "The operation of the log line for an active-workspace probe that returned no usable records."
+value = "active-probe"
+
+[devswarm_recon.log_op_active_drop]
+doc = "The operation of the log line for an active record no repository claims."
+value = "active-scope-drop"
+
+[devswarm_recon.log_op_reconcile_sweep]
+doc = "The operation of the log line that summarizes one reconcile sweep."
+value = "reconcile-sweep"
+
+[devswarm_recon.log_level_warn_word]
+doc = "The level of the reconcile-sweep log line when some project reported a real loss."
+value = "warn"
+
+[devswarm_recon.msg_active_probe]
+doc = "The log line for a probe that returned no usable records."
+value = "hivecontrol workspace list returned no usable records — app-side archive detection is OFF this cycle (nothing written, nothing suppressed)"
+
+[devswarm_recon.msg_active_drop]
+doc = "The log line for an active record that no repository claims and no same-repository sibling rule applied to."
+value = "an active hivecontrol record could not be attributed to any repoKey (and no same-repositoryId sibling fallback applied) — dropped from this sweep"
+
+[devswarm_recon.msg_repo_unknown_list]
+doc = "The log line when suppression of a project's active-workspace probe begins. Placeholder: {n}."
+value = "hivecontrol does not know this project's repository ({n} sweeps in a row, no live row) — the active-workspace probe is suppressed until a periodic recheck"
+
+[devswarm_recon.reason_unavailable]
+doc = "The probe's reason when hivecontrol could not be run or exited non-zero."
+value = "hivecontrol-unavailable"
+
+[devswarm_recon.reason_shape]
+doc = "The probe's reason when the listing is neither a list nor `{children: [...]}`."
+value = "hivecontrol-shape-unrecognized"
+
+[devswarm_recon.reason_empty]
+doc = "The probe's reason when the listing holds no record (never cached: it would read as nothing being live)."
+value = "hivecontrol-empty-list"
+
+[devswarm_recon.reason_repo_unknown]
+doc = "The probe's reason when the repository-unknown streak suppresses it."
+value = "repo-unknown"
+
+[devswarm_recon.reason_unattributable]
+doc = "The reason of an active record dropped because no repository claims its worktree."
+value = "unattributable-worktree"
+
+[devswarm_recon.word_no_output]
+doc = "The probe's error text when hivecontrol failed without saying why."
+value = "no output"
+
+[devswarm_recon.probe_stderr_max]
+doc = "Most characters of a failed probe's stderr kept in its diagnostics."
+value = 200
+min = 0
+max = 100000
+
+[devswarm_recon.drop_log_max]
+doc = "Most distinct unattributable active records logged per sweep (the count itself is never capped)."
+value = 20
+min = 0
+max = 10000
+
+[devswarm_recon.job_active_cache]
+doc = "The accounting name of the active-workspace snapshot write."
+value = "active-cache"
+
+[devswarm_recon.job_sampling]
+doc = "The accounting name of the start-up sampling write."
+value = "sampling"
+
+[devswarm_recon.set_startup_sampling]
+doc = "Whether the reconcile sweep probes `workspace info` of stale or not-draining workspaces and logs a non-null start-up field or a terminal id change (data capture only). Node: devswarm.startupSampling."
+value = { type = "bool", section = "devswarm", key = "startupSampling", env = "ANTIHALL_DEVSWARM_STARTUP_SAMPLING", default = true }
+
+[devswarm_recon.set_paused_probe_max]
+doc = "Most `workspace info` probes of the start-up sampling per sweep. Node: devswarm.pausedProbeMax."
+value = { type = "number", section = "devswarm", key = "pausedProbeMax", env = "ANTIHALL_DEVSWARM_PAUSED_PROBE_MAX", min = 1, max = 20, default = 8 }
+
+[devswarm_recon.reason_no_descriptors]
+doc = "The reconcile duty's reason when no workspace descriptor exists."
+value = "no-descriptors"
+
+[devswarm_recon.reason_no_projects]
+doc = "The reconcile duty's reason when no descriptor resolves to a project."
+value = "no-resolvable-projects"
+
+[devswarm_recon.failure_text_max]
+doc = "Most characters of one failure's text in the reconcile duty's record."
+value = 200
+min = 20
+max = 100000
+
+[devswarm_recon.word_unknown_error]
+doc = "The failure text of a row that failed without an error."
+value = "unknown error"
+
+[devswarm_recon.word_reconcile_failed]
+doc = "The failure text of a project whose reconcile failed without a row or an error."
+value = "reconcile failed"
+
+[devswarm_recon.word_failed]
+doc = "The failure text of a step that failed without saying why."
+value = "failed"
+
+[devswarm_recon.prefix_fold]
+doc = "The start of a failure that comes from the fold of a project's duplicate mesh rows."
+value = "fold: "
+
+[devswarm_recon.prefix_held]
+doc = "The start of a failure for a project whose reconcile the engine could not decide."
+value = "held: "
+
+[devswarm_recon.prefix_active_probe]
+doc = "The start of a failure that comes from the active-workspace probe."
+value = "active-probe: "
+
+[devswarm_recon.msg_sweep_summary]
+doc = "The log line of one reconcile pass. Placeholder: {n}, the projects attempted."
+value = "reconcile-sweep: {n} project(s) attempted"
+
+[devswarm_recon.msg_sweep_deferred]
+doc = "Added to the reconcile-pass log line when projects were left for a later tick. Placeholder: {n}."
+value = ", {n} deferred to a later tick"
+
+[devswarm_recon.msg_failures_unchanged]
+doc = "The note that replaces a failure list identical to the last pass's. Placeholder: {n}."
+value = "{n} unchanged failures (same as last run)"
+
+[devswarm_recon.file_log_sig]
+doc = "The file, under the DevSwarm state directory, holding the signature of the last logged failure list."
+value = "reconcile-log-sig.json"
+
+[devswarm_recon.msg_capability_dormant]
+doc = "The failure text of a hivecontrol call the capability cache already records as unsupported by this build. Placeholders: {name}, {reason}."
+value = "capability dormant: {name} — {reason}"
+
+[devswarm_recon.cursor_log_rotation]
+doc = "Whether the fold may rotate a cursor-write journal that is past `mesh_write.cursor_log_cap` records: the newest records stay and the older ones are APPENDED to the end of the journal's `.1` file, which keeps whatever it already held (nothing is lost or replaced). On (the default). Off: a fold that would need it waits (counted, nothing written for that group) until you switch it on or trim the journal yourself."
+value = true
+
+[devswarm_recon.cursor_log_older_suffix]
+doc = "The suffix of the file a rotated cursor journal's older records move to."
+value = ".1"
+
+[devswarm_recon.cp_version_args]
+doc = "The arguments that print the hivecontrol build's version (the capability probe)."
+value = ["--version"]
+
+[devswarm_recon.cp_help_args]
+doc = "The arguments that print the build's workspace commands (the capability probe)."
+value = ["workspace", "--help"]
+
+[devswarm_recon.cp_verb_help_args]
+doc = "The arguments that print one workspace verb's usage and options. {verb} is the verb."
+value = ["workspace", "{verb}", "--help"]
+
+[devswarm_recon.cp_verb_help_verbs]
+doc = "The workspace verbs whose own help the probe reads (callers build their arguments from what the binary documents)."
+value = ["archive", "delete"]
+
+[devswarm_recon.cp_timeout_ms]
+doc = "The longest one probe command (--version, --help) may take."
+value = 8000
+min = 100
+max = 120000
+
+[devswarm_recon.cp_sentry_rel]
+doc = "Where the DevSwarm app records its release, below the home (the version when the binary does not print one)."
+value = ["Library", "Application Support", "DevSwarm", "sentry", "session.json"]
+
+[devswarm_recon.cp_sentry_field]
+doc = "The field of the app's session record that holds its release (`DevSwarm@2.5.2`)."
+value = "release"
+
+[devswarm_recon.cp_src_binary]
+doc = "The probe's `versionSource` when the binary printed the version."
+value = "hivecontrol"
+
+[devswarm_recon.cp_src_app]
+doc = "The probe's `versionSource` when the version came from the app's session record."
+value = "sentry"
+
+[devswarm_recon.cp_re_cmds_header]
+doc = "The line that starts the `Commands:` block of a help page."
+value = "^Commands:\\s*$"
+
+[devswarm_recon.cp_re_section]
+doc = "A line that starts a new section of a help page (it is not indented)."
+value = "^\\S"
+
+[devswarm_recon.cp_re_cmd_row]
+doc = "One command row of the `Commands:` block: the name, its argument words and its description."
+value = "^ {2}([a-z][\\w-]*)((?: \\S+)*?)(?: {2,}(.*))?$"
+
+[devswarm_recon.cp_re_usage]
+doc = "The `Usage:` line of a verb's help page (matched line by line)."
+value = "^Usage:\\s*(.*)$"
+
+[devswarm_recon.cp_re_options_header]
+doc = "The line that starts the `Options:` block of a verb's help page."
+value = "^Options:\\s*$"
+
+[devswarm_recon.cp_re_arg]
+doc = "A positional argument in a usage line: `<name>` (required) or `[name]`."
+value = "([<\\[])([\\w-]+)[>\\]]"
+
+[devswarm_recon.cp_re_flag]
+doc = "A flag in the first column of an options row."
+value = "(?:^|[\\s,])(--?[A-Za-z][\\w-]*)"
+
+[devswarm_recon.cp_re_columns]
+doc = "The gap between the columns of an options row."
+value = " {2,}"
+
+[devswarm_recon.cp_options_word]
+doc = "The usage word that stands for the options, not for an argument."
+value = "[options]"
+
+[devswarm_recon.cp_required_open]
+doc = "The bracket that opens a required argument in a usage line."
+value = "<"
+
+[devswarm_recon.why_import_undecided]
+doc = "Why a unit was handed back: the legacy cursor import met a session the engine could not place, so nothing of the unit was written."
+value = "cursor-import-undecided"
+
+[devswarm_recon.reason_legacy_store]
+doc = "Why a store move was not made: one of the stores is on the legacy journal backend (Node older than 22.5), which the engine does not read."
+value = "legacy-journal-store"
+
+[devswarm_recon.reason_cursors_unreadable]
+doc = "Why a store move was not made: the source's reader-cursor table could not be read, so the copy base is unknown (nothing moved, the source stays authoritative)."
+value = "reader-cursors-unreadable"
+
+[devswarm_recon.reason_source_unreadable]
+doc = "Why a store move was not made: the source's messages could not be read completely."
+value = "source-messages-unreadable"
+
+[devswarm_recon.reason_dest_gone]
+doc = "Why a store move was not made: the destination partition is no longer registered."
+value = "destination-gone"
+
+[devswarm_recon.reason_rehome_not_applied]
+doc = "The reason of a heal row whose move was neither done nor refused by the destination's id-collision guard."
+value = "rehome-not-applied"
+
+[devswarm_recon.msg_rehome_conflict]
+doc = "The log line when a store move finds the destination already maps the id to another worktree: the source row is kept. {id} is the workspace."
+value = "{id}: the destination already has a conflicting registry row; the source was kept"
+
+[devswarm_recon.reason_store_backend]
+doc = "The reason code of a store the engine does not read: it is on the legacy journal backend (Node older than 22.5). Such a store is `disabled`, not held: nothing waits for a later try, and the doctor names it."
+value = "store-backend"
+
+[devswarm_recon.by_legacy]
+doc = "The `by` word of a stage item that is a legacy journal store: the engine does not read it."
+value = "legacy"
+
+[devswarm_recon.legacy_site]
+doc = "The accounting name under which a legacy journal store skipped by a reconcile pass or a recon stage is counted as disabled."
+value = "recon:legacy-store"
+
+[devswarm_recon.reason_store_unpinned]
+doc = "The reason code of a store with no backend marker (or one naming neither backend): the engine does not open it as it cannot tell which backend it is on. The update's store stages pin a store that holds a database; until then the item is held and tried again."
+value = "store-unpinned"
+
+[devswarm_recon.fold_unit_prefix]
+doc = "The label prefix of one candidate's fold unit (the candidate id follows); a registration reads it back to report a unit the applier handed back as pending."
+value = "fold:"
+
+[devswarm_recon.why_count_failed]
+doc = "The reason a sweep drain was handed back because the non-destructive native count failed. {detail} is what the call said (`failure_detail`), so the abandoned-decision log line explains itself; the line is rate-limited per reason by diagnostics.abandoned_log_interval_ms."
+value = "count-failed ({detail})"
+
+[devswarm_recon.failure_detail]
+doc = "How a failed hivecontrol call is described: {how} (the exit or signal) and {said} (the first line it printed, stderr before stdout)."
+value = "{how}: {said}"
+
+[devswarm_recon.failure_how_exit]
+doc = "The exit part of a failed hivecontrol call's description, with {code} the exit code."
+value = "exit {code}"
+
+[devswarm_recon.failure_how_signal]
+doc = "The signal part of a failed hivecontrol call's description, with {signal} the signal name."
+value = "killed by {signal}"
+
+[devswarm_recon.failure_detail_max_chars]
+doc = "Most characters of the first output line a failed hivecontrol call's description keeps (bounds the log line and the limiter key)."
+value = 160
+min = 20
 max = 1000

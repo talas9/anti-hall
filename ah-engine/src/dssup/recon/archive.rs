@@ -184,8 +184,9 @@ pub fn left_reason_job(home: &Path, id: &str, row_session: Option<Option<&str>>,
 /// `pickArchiveForwardSurvivor(s, home, archivedId, rows)`: the row that will actually drain the forwarded unread, by liveness.
 /// A sibling is drainable only with a descriptor file and a live session. No drainable sibling: the archived id itself. One:
 /// that sibling (`pickSurvivor` returns the only row it is given). Two or more: `pickSurvivor` ranks them by cursor and
-/// heartbeat evidence, which this slice does not reproduce, so it is a deferral.
-pub fn pick_archive_forward_survivor(home: &Path, archived_id: &str, rows: &[RegRow]) -> R<String> {
+/// heartbeat evidence ([`super::survivor`]); a winner that is not provably drainable leaves the unread with the archived id.
+pub fn pick_archive_forward_survivor(ctx: &Ctx, store: &str, archived_id: &str, rows: &[RegRow]) -> R<String> {
+    let home = ctx.home;
     let mut drainable = Vec::new();
     for r in rows {
         if r.row.id == archived_id || read_descriptor(home, &r.row.id).is_none() {
@@ -193,13 +194,22 @@ pub fn pick_archive_forward_survivor(home: &Path, archived_id: &str, rows: &[Reg
         }
         let sid = view::descriptor_of(r).session_id;
         if is_live_session(sid.as_deref()) {
-            drainable.push(r.row.id.clone());
+            drainable.push(r.clone());
         }
     }
     match drainable.len() {
         0 => Ok(archived_id.to_string()),
-        1 => Ok(drainable.remove(0)),
-        _ => defer(defaults::text("devswarm_recon.why_survivor_pick")),
+        1 => Ok(drainable.remove(0).row.id),
+        _ => {
+            let rd = crate::mesh::MeshReader::open(&view::store_db(home, store)).map_err(|e| crate::meshw::ident::Defer(format!("store-open:{e}")))?;
+            let inv = super::survivor::inv_of(ctx);
+            let pick = super::survivor::pick_in(&inv, store, &rd, &drainable)?;
+            // post-check (defence in depth): a destination that cannot be proven drainable is never used
+            Ok(match pick.and_then(|id| drainable.iter().find(|d| d.row.id == id).cloned()) {
+                Some(d) if read_descriptor(home, &d.row.id).is_some() && is_live_session(view::descriptor_of(&d).session_id.as_deref()) => d.row.id,
+                _ => archived_id.to_string(),
+            })
+        }
     }
 }
 
@@ -514,7 +524,8 @@ fn guard_matches(row: &RegRow) -> bool {
 }
 
 /// Plan `foldArchivedRegistryRows(home, {deadline})`.
-pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Plan> {
+pub fn fold_archived_rows(ctx: &Ctx, deadline: Option<i64>) -> R<Plan> {
+    let (home, now) = (ctx.home, ctx.now);
     let call = json!({"fn": "foldArchivedRows", "args": {"deadline": deadline}});
     let mut out = json!({"ok": true, "action": "fold-archived-rows", "dryRun": false, "scanned": 0, "pending": 0, "retired": [], "forwarded": 0, "left": [], "errors": 0});
     let buckets = store_buckets(home);
@@ -608,7 +619,7 @@ pub fn fold_archived_rows(home: &Path, now: i64, deadline: Option<i64>) -> R<Pla
             if own.is_none() && same.is_empty() {
                 continue;
             }
-            let survivor = pick_archive_forward_survivor(home, aid, &same)?;
+            let survivor = pick_archive_forward_survivor(ctx, bucket, aid, &same)?;
             if same.iter().any(|r| r.row.id != survivor) {
                 return defer(defaults::text("devswarm_recon.why_group_fold"));
             }
@@ -812,4 +823,49 @@ pub fn restore_archived_descriptor(home: &Path, id: &str, opts: &RestoreOpts) ->
 /// function to Node's scheduled sweep.
 pub fn engine_mode(st: &crate::checks::git::util::Settings) -> bool {
     crate::dssup::setting(st, "devswarm_sup.sweep_tail_mode").as_str() == Some(defaults::text("devswarm_recon.mode_engine"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::checks::git::util::Settings;
+    use crate::meshw::store::{MeshStore, RegistryRow};
+
+    fn reg(id: &str, session: &str, updated_at: i64) -> RegRow {
+        RegRow {
+            row: RegistryRow { id: id.into(), worktree_path: Some("/wt".into()), session_id: Some(session.into()), ..RegistryRow::default() },
+            updated_at: Some(updated_at),
+            write_seq: Some(1),
+        }
+    }
+
+    fn descriptor(home: &Path, id: &str, session: &str) {
+        let dir = home.join(".anti-hall/devswarm/workspaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), json!({"id": id, "worktreePath": "/wt", "sessionId": session}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn dssup_recon_archive_survivor_ranks_two_drainable_siblings() {
+        crate::defaults::init().unwrap();
+        let dir = crate::db::TempDir::new("archive-survivor");
+        let home = dir.0.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        // the store the rows live in (the ranking reads its cursors)
+        MeshStore::open(&view::store_db(&home, "store")).unwrap();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let ctx = Ctx { home: &home, root: &home, st: &st, now: 1_760_000_000_000, engine_pokes: true };
+        for (id, sid) in [("older", "sess-a"), ("newer", "sess-b"), ("dead", "unclaimed:x")] {
+            descriptor(&home, id, sid);
+        }
+        let rows = vec![reg("older", "sess-a", 100), reg("newer", "sess-b", 200), reg("dead", "unclaimed:x", 300)];
+        // two drainable siblings: the evidence ranking picks one of them (the freshest row here); the dead one is never a candidate
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows).unwrap(), "newer");
+        // order does not matter
+        let rev: Vec<RegRow> = rows.iter().rev().cloned().collect();
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rev).unwrap(), "newer");
+        // one drainable sibling: that one; none: the archived id
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows[..1]).unwrap(), "older");
+        assert_eq!(pick_archive_forward_survivor(&ctx, "store", "arch", &rows[2..]).unwrap(), "arch");
+    }
 }

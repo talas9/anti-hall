@@ -5,7 +5,9 @@
 //! test if the process is still alive afterwards, so a leak is a test failure, never silent.
 #![allow(dead_code)] // each test binary uses a subset
 
-pub mod goldens;
+pub mod scale;
+#[allow(unused_imports)] // each test binary uses a subset
+pub use scale::{scaled, scaled_ms, time_scale};
 
 /// A scratch directory that is removed when it drops (also on a panic), so a test leaves nothing in the temp dir: leaked
 /// scratch dirs once piled up by the hundred thousand there and made anything that lists it (a Python probe) take seconds.

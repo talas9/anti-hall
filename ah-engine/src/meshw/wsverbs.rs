@@ -236,7 +236,15 @@ pub fn run_workspaces(inv: &Inv, a: &Args) -> R<Answer> {
     if let Some(k) = &sweep_key {
         rehome_sweep_is_noop(inv, k)?;
     }
-    let Some(repo_key) = repo_key else { return defer("no-project") };
+    // outside a project, Node reads the default bucket (`hashFromWorkspaceId(undefined)`), creating its store where it is absent
+    let repo_key = match repo_key {
+        Some(k) => k,
+        None => {
+            let k = crate::meshw::send::hash_from_workspace_id("");
+            common::init_new_store(inv, &k)?;
+            k
+        }
+    };
     let st = common::open_store(inv, &repo_key)?;
     let sum = summary::compute(&st, inv, None)?;
     let Some(OVal::Obj(all)) = sum.get("workspaces") else { return defer("summary-shape") };

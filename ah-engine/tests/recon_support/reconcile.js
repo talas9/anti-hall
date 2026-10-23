@@ -5,7 +5,7 @@
 const path = require('path');
 const [root, home, cwd, budget, step] = process.argv.slice(2);
 process.env.HOME = home;
-const D = require(path.join(root, 'scripts', 'devswarm.js'));
+const D = require(path.join(root, '..', 'anti-hall-node', 'scripts', 'devswarm.js'));
 const ctx = { home, env: process.env, cwd };
 if (budget !== undefined) {
   let t = 0;

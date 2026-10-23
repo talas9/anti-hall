@@ -27,3 +27,37 @@ with open(dest, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw,
 PY
 (cd "$out" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 echo "$out/$name.tar.gz"
+
+# The separate debug symbols of this exact binary (Cargo.toml: split-debuginfo = "packed"; macOS ah-engine.dSYM, Linux
+# ah-engine.dwp), packed the same deterministic way into <out>/symbols/ so they never mix with the release assets that
+# ah-engine.lock pins. `sample`, `atos` and backtraces of the shipped (stripped) binary read them: see docs/AH-ENGINE.md,
+# "CPU and memory profiling".
+syms=()
+[ -d "$bin.dSYM" ] && syms+=("$bin.dSYM")
+[ -f "$bin.dwp" ] && syms+=("$bin.dwp")
+if [ ${#syms[@]} -gt 0 ]; then
+  mkdir -p "$out/symbols"
+  python3 - "$name" "$out/symbols/$name.symbols.tar.gz" "${syms[@]}" <<'PY'
+import gzip, os, sys, tarfile
+name, dest, *srcs = sys.argv[1:]
+files = []
+for src in srcs:
+    base = os.path.basename(src)
+    if os.path.isdir(src):
+        for d, _, fs in os.walk(os.path.realpath(src)):
+            for f in fs:
+                full = os.path.join(d, f)
+                files.append((f"{name}/{base}/{os.path.relpath(full, os.path.realpath(src))}", full))
+    else:
+        files.append((f"{name}/{base}", src))
+with open(dest, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as gz, \
+     tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
+    for arc, src in sorted(files):
+        ti = tar.gettarinfo(src, arcname=arc)
+        ti.uid = ti.gid = 0; ti.uname = ti.gname = ""; ti.mtime = 0; ti.mode = 0o644; ti.pax_headers = {}
+        with open(src, "rb") as fh:
+            tar.addfile(ti, fh)
+PY
+  (cd "$out/symbols" && shasum -a 256 "$name.symbols.tar.gz" > "$name.symbols.tar.gz.sha256")
+  echo "$out/symbols/$name.symbols.tar.gz"
+fi

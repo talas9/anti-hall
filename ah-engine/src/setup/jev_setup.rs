@@ -7,8 +7,11 @@
 //! `~/.anti-hall/jev.json` is a read-modify-write that keeps the fields this command does not know about, in their order.
 //!
 //! The engine's Jev resolver (`jev::settings`, `jev::credentials`) answers every "what would the hooks use" question, so
-//! `status` cannot show a value the hooks are not using. Left on Node: `test` (a real gateway call) and the shadow-review
-//! verbs `review-due`, `reviewed` and `snooze`.
+//! `status` cannot show a value the hooks are not using. `test` (a real gateway call per transport) lives in `jev_setup/test.rs`
+//! and the shadow-review verbs `review-due`, `reviewed` and `snooze` in `jev_setup/review.rs`; every verb is answered here.
+pub(crate) mod review;
+mod test;
+
 use super::jsfmt::{keys, pretty, to_fixed2};
 use super::{SetupError, home_dir, io_err, out, read_capped, read_prefix, text_of, warn, what};
 use crate::checks::guardkit::nodelock;
@@ -219,6 +222,17 @@ fn write_json_atomic(file: &Path, value: J) -> Result<(), SetupError> {
     crate::atomic::write(file, body).map_err(|e| SetupError::Io { what: what("setup.what_write", &file.display()), source: e })
 }
 
+/// [`write_json_atomic`], except that a file which already holds exactly the bytes to write is left alone (no temporary file, no
+/// disk sync, same inode and modification time).
+fn write_json_atomic_if_changed(file: &Path, value: J) -> Result<(), SetupError> {
+    let mut body = pretty(&normalised(value));
+    body.push('\n');
+    if std::fs::read(file).is_ok_and(|on_disk| on_disk == body.as_bytes()) {
+        return Ok(());
+    }
+    crate::atomic::write(file, body).map_err(|e| SetupError::Io { what: what("setup.what_write", &file.display()), source: e })
+}
+
 /// `writeJevJsonMerged`: read-modify-write of the legacy `jev.json`, atomic, keeping every field the mutator leaves.
 fn write_jev_json(home: &Path, mutate: impl FnOnce(&mut Vec<(String, J)>)) -> Result<(), SetupError> {
     let path = jev_json_path(home);
@@ -292,7 +306,7 @@ fn lookup_with_notes(s: &JevSettings, vendor: Vendor) -> (bool, Option<String>, 
         }
     }
     let mut rejected = None;
-    if s.allow_legacy_key_read && s.env().get(legacy_var(vendor)).is_none_or(|v| js_trim(v).is_empty()) {
+    if s.allow_legacy_key_read {
         let file = key_file_path(s, vendor);
         if let Err(why) = read_key_file(&file, s.home()) {
             rejected = Some(node_reason(&why));
@@ -305,13 +319,6 @@ fn own_var(v: Vendor) -> &'static str {
     match v {
         Vendor::Vercel => defaults::text("env.jev_key_vercel"),
         Vendor::Typesafe => defaults::text("env.jev_key_typesafe"),
-    }
-}
-
-fn legacy_var(v: Vendor) -> &'static str {
-    match v {
-        Vendor::Vercel => defaults::text("env.jev_legacy_key_vercel"),
-        Vendor::Typesafe => defaults::text("env.jev_legacy_key_typesafe"),
     }
 }
 
@@ -704,9 +711,8 @@ fn cmd_status(cx: &mut Ctx) -> Result<(), SetupError> {
     }
     // a legacy key that exists but is not read
     if !s.allow_legacy_key_read {
-        let env_present = cx.env.get(legacy_var(transport)).is_some_and(|v| !v.is_empty());
         let file_present = std::fs::metadata(key_file_path(&s, transport)).is_ok_and(|m| m.is_file() && m.len() > 0);
-        if env_present || file_present {
+        if file_present {
             out(&defaults::render("setup.fmt_status_notice", &[("text", &defaults::text("setup.msg_migration_notice"))]))?;
         }
     }
@@ -739,12 +745,13 @@ struct Opts {
     fallback: Option<String>,
     role: Option<String>,
     vendor: Option<String>,
+    days: Option<String>,
     positional: Vec<String>,
 }
 
 /// `parseArgs`: an option takes the word after it (missing is `undefined`, kept as `None`); `--days` is consumed too.
 fn parse_args(argv: &[String]) -> Opts {
-    let mut o = Opts { transport: None, fallback: None, role: None, vendor: None, positional: Vec::new() };
+    let mut o = Opts { transport: None, fallback: None, role: None, vendor: None, days: None, positional: Vec::new() };
     let mut i = 0;
     while i < argv.len() {
         let a = argv[i].as_str();
@@ -766,7 +773,10 @@ fn parse_args(argv: &[String]) -> Opts {
                     _ => o.vendor = v,
                 }
             }
-            None if a == "--days" => i += 1,
+            None if a == "--days" => {
+                i += 1;
+                o.days = argv.get(i).cloned();
+            }
             None => o.positional.push(a.to_string()),
         }
         i += 1;
@@ -980,13 +990,17 @@ pub fn run(args: &[String]) -> Result<i32, SetupError> {
         "set-key" => cmd_set_key(&mut cx, &o)?,
         "bind-generic-key" => cmd_bind_generic_key(&mut cx, &o)?,
         "mode" => cmd_mode(&mut cx, &o)?,
+        "test" => test::cmd_test(&mut cx)?,
+        "review-due" => review::cmd_review_due(&mut cx, &o.positional)?,
+        "reviewed" => review::cmd_reviewed(&mut cx, &o.positional)?,
+        "snooze" => review::cmd_snooze(&mut cx, &o.positional, o.days.as_deref())?,
         _ => {
             warn(defaults::text("setup.msg_usage"));
             cx.code = 1;
         }
     }
     // a verb that changes the Jev settings or keys counts as one change when it succeeded
-    if cx.code == 0 && !matches!(verb, "status" | "") {
+    if cx.code == 0 && !defaults::list("opcli.no_change_verbs").contains(&verb) {
         crate::telemetry::emit::add_items(1);
     }
     Ok(cx.code)

@@ -469,7 +469,7 @@ pub fn plan_sampling(home: &Path, ids: &[String], max_probe: usize, probes: &[(S
                 size = 0;
             }
             size += line.len() as u64;
-            ops.push(Op::Append { rel: samples.clone(), bytes: line.into_bytes() });
+            ops.push(Op::Append { rel: samples.clone(), bytes: line.into_bytes(), keep: None });
             captured += 1;
         }
         let entry = OVal::Obj(vec![("terminalId".into(), new_tid.as_deref().map_or(OVal::Null, s)), ("lastProbedAt".into(), n(now))]);
@@ -530,6 +530,7 @@ pub fn touched(u: &Unit) -> Vec<String> {
             | Op::Remove { .. }
             | Op::Forward { .. }
             | Op::RaiseCursors { .. }
+            | Op::ImportCursors { .. }
             | Op::RemoveRegistryIf { .. }
             | Op::Guard { .. }
             | Op::Pull { .. } => {}

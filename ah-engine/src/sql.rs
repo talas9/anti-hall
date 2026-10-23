@@ -308,6 +308,9 @@ pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipie
 pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE sender = ?1 ORDER BY id DESC LIMIT ?2";
 /// How many messages one workspace holds.
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
+/// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
+/// message with no sender counts.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s))";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -371,9 +374,9 @@ pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (worksp
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
-pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// `appendMessage` without a hash.
-pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// One registry row (the columns `upsertRegistry` writes), for the merge-preserving self-registration.
 pub const MESHW_REGISTRY_ROW: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command FROM registry WHERE id = ?;";
 /// The ids of the registry (`listRegistry`), for the partition door's "still registered here" recheck.
@@ -414,6 +417,8 @@ pub const MESHW_ALTER_REGISTRY_WRITE_SEQ: &str = "ALTER TABLE registry ADD COLUM
 pub const MESHW_JOURNAL_WAL: &str = "PRAGMA journal_mode = WAL;";
 /// Node's foreign-keys pragma.
 pub const MESHW_FOREIGN_KEYS: &str = "PRAGMA foreign_keys = ON;";
+/// SQLite's change counter as seen by one connection: it differs between two reads exactly when another connection committed in between.
+pub const DATA_VERSION: &str = "PRAGMA data_version;";
 /// The DevSwarm app's `builders` columns (`devswarm-app-db.js` `tableColumns`), read-only.
 pub const MESHW_APP_BUILDER_COLUMNS: &str = "PRAGMA table_info(builders)";
 /// Start of the `builders` read `builderForWorktree` needs: id and active flag, then the worktree and type columns.
@@ -533,5 +538,7 @@ pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipien
 pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMIT 1;";
 /// The reconcile port: the number of message rows in a partition.
 pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
+/// The unguarded removal of one registry row (the re-home's tombstone of its source row, after the copy was verified).
+pub const RECON_REGISTRY_DELETE: &str = "DELETE FROM registry WHERE id = ?;";
 /// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
 pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

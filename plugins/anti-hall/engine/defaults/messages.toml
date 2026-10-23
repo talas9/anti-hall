@@ -46,6 +46,19 @@ value = "--- anti-hall ah-engine diagnostics ---\nversion: {version}\nos: {os} {
 doc = "Recorded reason when the daemon keeps dying. Placeholders: {n}, {secs}."
 value = "daemon died {n} times in {secs} s"
 
+[msg.log_rollback_request]
+doc = "Log detail when the crash-loop rule asks for a roll-back. Placeholder: {sha}."
+value = "binary {sha} never ran healthy; asked the integrity script to restore the known-good binary"
+
+[msg.log_crashloop_rollback]
+doc = "Log detail added when a crash-loop trip also requested a roll-back."
+value = "roll-back to the known-good binary requested"
+
+[msg.log_crashloop_new_binary]
+doc = "Log detail when a crash-loop cooldown ends because the binary was replaced. Placeholder: {sha}."
+value = "binary replaced ({sha}); respawning allowed again"
+
+
 [msg.reason_breaker]
 doc = "Recorded reason when the client breaker opens. Placeholders: {n}, {secs}, {why}."
 value = "{n} engine failures in {secs} s (last: {why})"
@@ -64,45 +77,93 @@ value = "stopped ({secs} s left)"
 doc = "Log detail when the daemon was killed by a signal while starting."
 value = "daemon killed while starting"
 
-[msg.log_fallback_timeout]
-doc = "Log detail when the Node fallback did not finish in time."
-value = "node fallback did not finish"
+[msg.log_client_panic]
+doc = "Log detail when the hook client hit an internal error (a panic) and failed open."
+value = "hook client internal error; failing open"
 
 [msg.log_fallback_read_timeout]
 doc = "Log detail when the Node fallback finished but its stdout or stderr was still open at the deadline."
 value = "node fallback output not read to the end"
 
-[msg.log_fallback_read_error]
-doc = "Log detail when reading the Node fallback's stdout or stderr failed part-way."
-value = "node fallback output could not be read to the end (read error)"
-
-[msg.fallback_read_error]
-doc = "Printed on stderr when reading the Node fallback's output failed part-way, so the output is incomplete and no decision exists (exit 1)."
-value = "anti-hall: the Node hook's output could not be read to the end; no decision was made for this call"
-
 [msg.fallback_read_timeout]
 doc = "Printed on stderr when the Node fallback finished but its output could not be read to the end in time, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1."
 value = "anti-hall: the Node hook finished but its output was not complete before the deadline; no decision was made for this call"
-
-[msg.log_fallback_signal]
-doc = "Log detail when the Node fallback was killed by a signal (out of memory, a crash)."
-value = "node fallback was killed by signal {signal}"
-
-[msg.fallback_signal]
-doc = "Printed on stderr when the Node fallback was killed by a signal, so no decision exists. In the legacy direct forced-fallback path this exits 2 for guard events and 0 for non-guard events; otherwise it exits 1. Placeholder: {signal}."
-value = "anti-hall: the Node hook was killed by signal {signal}; no decision was made for this call"
 
 [msg.log_operator_reset]
 doc = "Log detail for `reset`."
 value = "operator reset"
 
-[msg.log_crash]
-doc = "Log detail when a daemon is found dead without a clean exit. Placeholder: {pid}."
-value = "daemon pid {pid} died without a clean exit"
+[msg.log_system_restart]
+doc = "Log detail when a daemon is found gone without a clean exit AND the operating system booted after its last sign of life (a reboot, an OS update, a power loss): the machine stopped it, it did not crash. Placeholders: {pid}, {last_alive_ms}, {boot_ms}."
+value = "daemon pid {pid} was ended by the system stopping (its last sign of life {last_alive_ms} ms, the system booted at {boot_ms} ms): not a crash"
+
+[msg.log_crash_context]
+doc = "Log detail when a daemon is found dead without a clean exit, with the last breadcrumb. Placeholders: {pid}, {context}."
+value = "daemon pid {pid} died without a clean exit; last context {context}"
+
+[msg.panic_payload_unknown]
+doc = "Panic payload text when Rust did not carry a string."
+value = "non-string panic payload"
+
+[msg.thread_unknown]
+doc = "Thread name used in panic reports for unnamed threads."
+value = "unnamed"
+
+[msg.thread_panic]
+doc = "Log detail when a daemon service thread panics. Placeholders: {thread}, {n}, {max}."
+value = "daemon service thread {thread} panicked ({n}/{max})"
+
+[msg.thread_panic_restart]
+doc = "Clean restart reason when a daemon service thread exceeds its panic restart cap. Placeholder: {thread}."
+value = "daemon service thread {thread} exceeded panic restart cap"
 
 [msg.log_budget]
 doc = "Log detail when a rule evaluation exceeded its CPU budget."
 value = "rule evaluation exceeded its cpu budget"
+
+[msg.log_budget_crossed]
+doc = "Log detail when a check ran and the request's CPU budget was crossed while it did: the check's own thread CPU and wall time."
+value = "cpu budget crossed by {check}: it used {cpu_us} us of cpu and {wall_us} us of wall time"
+
+[msg.log_budget_skipped]
+doc = "Log detail when a check was not started because the request's CPU budget was already spent; `by` names the check that crossed it (empty when it was crossed before the first check)."
+value = "{check} deferred, cpu budget already spent (crossed by {by})"
+
+[msg.script_limit_cpu]
+doc = "Name of the script CPU-time limit in the line that says which limit interrupted a script call."
+value = "cpu limit"
+
+[msg.script_limit_wall]
+doc = "Name of the script wall-clock backstop in the line that says which limit interrupted a script call."
+value = "wall-clock backstop"
+
+[msg.script_limit_request]
+doc = "Name of the request's client deadline in the line that says which limit interrupted a script call."
+value = "request deadline"
+
+[msg.script_interrupted]
+doc = "Failure detail of a script call that was interrupted: the interpreter's error, the limit that fired and the limits' sizes."
+value = "{error} (interrupted by the {limit}; cpu limit {cpu_ms} ms, wall backstop {wall_ms} ms)"
+
+[msg.log_budget_soft]
+doc = "Log detail when a request used more thread CPU than its SOFT budget (a warning; nothing was cut)."
+value = "request used {used_us} us of thread cpu, over the soft budget of {soft_us} us (hard budget {hard_us} us)"
+
+[msg.log_deadline_soft]
+doc = "Log detail when the client's fail-fast wait (the request's SOFT deadline) ended while a check was running: the request is {elapsed_ms} ms old and that check ran {ran_ms} ms. Nothing is cut: the checks keep running up to the hard deadline and the client uses the late reply."
+value = "{check} ({event}): ran {ran_ms} ms, the client's fail-fast wait ended {elapsed_ms} ms after the request arrived; the request keeps running to its hard deadline"
+
+[msg.log_deadline_soft_queued]
+doc = "Log detail when the client's fail-fast wait (the request's SOFT deadline) had already ended before the first check of the request started, so the request waited {elapsed_ms} ms (queue, connection) before any check ran. {check} is the first check of the request. Nothing is cut."
+value = "{check} ({event}): the client's fail-fast wait had ended {elapsed_ms} ms after the request arrived, before the first check started; the request keeps running to its hard deadline"
+
+[msg.script_soft_overrun]
+doc = "Log detail (code script_soft, rate-limited) of a script call that used more thread CPU than its SOFT limit; it was not cut."
+value = "{check} ({event}) used {used_us} us of cpu, over its soft limit of {soft_ms} ms (hard limit {hard_ms} ms)"
+
+[msg.jev_slow]
+doc = "Log detail (code jev_slow, rate-limited) of a Jev call slower than its SOFT limit; its answer was still used."
+value = "{id}: Jev took {ms} ms, over the soft limit of {soft_ms} ms"
 
 [msg.log_panic]
 doc = "Log and failure detail when a request handler panicked."
@@ -165,8 +226,16 @@ doc = "Event-log detail (rate-limited, code proc_unread) when a helper exited bu
 value = "{what} exited but its output was not complete; its process group was killed"
 
 [msg.log_lock_no_daemon]
-doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty)."
-value = "lock {path} held (pid {pid}) but no daemon answers; this start gives up and the call falls back to Node"
+doc = "Log detail when a starting daemon gives up on the singleton lock while no daemon answers on the socket. Placeholders: {path}, {pid} (the pid the lock file names, may be empty), {live_engine}."
+value = "lock {path} held (pid {pid}, live_engine={live_engine}) but no daemon answers; this start gives up and the call falls back to Node"
+
+[msg.daemon_already_running]
+doc = "Printed on stderr when a second daemon start finds an existing daemon/lock holder for the socket. Placeholders: {path}, {pid}, {live_engine}, {answers}."
+value = "ah-engine daemon already running for socket {path}; exiting (holder pid {pid}, live_engine={live_engine}, answers={answers})"
+
+[msg.log_cpu_sustained]
+doc = "Event-log detail when the daemon CPU self-check observes sustained CPU and backs off scheduled jobs. Placeholders: {pct}, {ms}, {backoff_ms}."
+value = "daemon CPU {pct}% over {ms} ms; backing off scheduled jobs for {backoff_ms} ms"
 
 [msg.exit_reason_handoff]
 doc = "Drain reason for a handoff to a newer build or a stop request."
@@ -230,6 +299,10 @@ value = "request too large"
 doc = "ERR body for a socket read error."
 value = "read error"
 
+[msg.reply_write_deadline]
+doc = "Log reason when the client did not read the reply in time."
+value = "write deadline"
+
 [msg.reply_test_panic]
 doc = "Panic text of the test-only `panic` verb."
 value = "test panic"
@@ -239,6 +312,70 @@ value = "test panic"
 [msg.client_bad_socket]
 doc = "Exchange failure when the socket path is not a socket owned by this user."
 value = "socket is not a socket owned by this user"
+
+[msg.run_engine_missing]
+doc = "Printed on stderr by the plugin's launcher script (scripts/ah-run.sh) when no engine can run the command, which exits 127: nothing else runs in its place. Placeholder: {what} (the verb or command words)."
+value = "anti-hall: the engine is not installed or not runnable, so `{what}` did not run. Start a new session to reinstall it, or run `ah-hook.sh --doctor`."
+
+[msg.engine_unreachable_notice]
+doc = "Printed once per session on stderr by the hook wrapper when the engine is unreachable (not installed, crashed, did not answer in time, marked down): the call passes through unchecked because no fallback hooks exist. Placeholders: {event}, {why}."
+value = "anti-hall: the engine did not answer this {event} call ({why}); it went through unchecked. Run `ah-engine doctor` if it keeps happening."
+
+[msg.launcher_unreachable_why_missing]
+doc = "The {why} of the engine-unreachable notice when no engine is installed."
+value = "the engine is not installed"
+
+[msg.launcher_unreachable_why_down]
+doc = "The {why} of the engine-unreachable notice when the daemon-down marker is fresh."
+value = "the engine is marked down"
+
+[msg.launcher_unreachable_why_handed_back]
+doc = "The {why} of the engine-unreachable notice when the engine handed the call back."
+value = "the engine handed the call back"
+
+[msg.launcher_unreachable_why_silent]
+doc = "The {why} of the engine-unreachable notice when the engine exited without an answer."
+value = "the engine exited without an answer"
+
+[msg.launcher_unreachable_why_timed_out]
+doc = "The {why} of the engine-unreachable notice when the engine did not answer in time."
+value = "the engine did not answer in time"
+
+[msg.launcher_unreachable_why_unfinished]
+doc = "The {why} of the engine-unreachable notice when the engine did not finish."
+value = "the engine did not finish"
+
+[msg.launcher_unreachable_why_not_started]
+doc = "The {why} of the engine-unreachable notice when the engine could not be started."
+value = "the engine could not be started"
+
+[msg.engine_unreachable_why_daemon]
+doc = "The {why} of the engine-unreachable notice when the client could not reach the engine's daemon (down, breaker open, crash-loop stop)."
+value = "the engine daemon could not be reached"
+
+[msg.cold_guard_notice]
+doc = "Printed once per session on stderr when a guard event gave up waiting for a cold-starting daemon and was let through unchecked; {event} is the event name."
+value = "anti-hall: the engine was still starting, so this {event} was not checked; the guards apply again once it is up"
+
+[msg.client_skip]
+doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
+value = "skipped"
+
+[msg.client_hung]
+doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat is stale, seen for the first time (a suspicion, nothing is signalled). {pid} = the daemon, {age} = the heartbeat's age in ms."
+value = "daemon {pid} heartbeat stale ({age} ms): suspected stopped or wedged"
+
+[msg.client_hung_confirmed]
+doc = "Log detail for a hook call that stopped waiting because the daemon's heartbeat stayed stale and unchanged past client.heartbeat_confirm_ms (a confirmed hang). {pid} = the daemon, {age} = the heartbeat's age in ms, {held} = how long the same heartbeat was seen unchanged in ms."
+value = "daemon {pid} heartbeat stale ({age} ms) and unchanged for {held} ms: stopped or wedged"
+
+[msg.log_hung_spared]
+doc = "Log detail when a client declines to end a daemon it found hung, because the heartbeat moved, or the process generation (pid, start time, executable, state dir) could not be confirmed. {pid} = the pid the heartbeat names, {why} = the stale-heartbeat detail."
+value = "did not end daemon {pid}: its heartbeat moved or its process generation could not be confirmed ({why})"
+
+[msg.log_hung_kill]
+doc = "Log detail when a client ends a hung daemon (verified pid) so a new one can start. {pid} = the ended daemon, {why} = the stale-heartbeat detail."
+value = "ended hung daemon {pid} with SIGKILL: {why}"
 
 [msg.client_timeout]
 doc = "Exchange failure when the hard deadline passed."
@@ -260,17 +397,29 @@ value = "bad reply frame: {err}"
 doc = "The step named in msg.client_io when the socket path cannot be examined (a permission or path error, not a missing socket)."
 value = "stat"
 
-[msg.client_no_fallback_guard]
-doc = "Printed on stderr (exit dispatch.defer_exit) when the legacy `hook` command gets a guard event, the engine cannot answer and no Node fallback was given: the caller must run the Node hook, never take silence as an allow."
-value = "anti-hall: the engine could not answer this guard event and no Node fallback was given; run the Node hook"
+[msg.client_no_verdict]
+doc = "Event-log detail and stderr reason when the engine answered a hook call with no verdict (BUSY, ERR or a damaged reply) on a guard event: the event's configured failure mode (dispatch.failure_mode, path infra) answers."
+value = "anti-hall: the engine gave no verdict for this guard event"
+
+[msg.log_malloc_decay_applied]
+doc = "Event-log detail (kind malloc_decay) when the daemon, started without the allocator tuning in its environment, applied the decay settings of daemon.malloc_conf at runtime. Placeholder: {settings} (key=value list)."
+value = "allocator decay applied at start: {settings}"
+
+[msg.log_malloc_decay_skipped]
+doc = "Event-log detail (kind malloc_decay) when the allocator decay settings could not be applied at start; the daemon runs with the allocator's own defaults. Placeholder: {reason}."
+value = "allocator decay not applied: {reason}"
+
+[msg.log_allocator_invalid]
+doc = "Event-log detail (kind alloc_invalid) when diagnostics.allocator holds a value that is not an accepted allocator; the daemon starts with jemalloc. Placeholder: {value}."
+value = "diagnostics.allocator={value} is not an accepted allocator; using jemalloc"
 
 [msg.log_daemon_spawn_failed]
 doc = "Event-log detail (kind spawn_fail, code os<n>) when the client could not start the daemon (fork or exec failed: EAGAIN, ENOMEM, a missing executable). Placeholder: {err}."
 value = "could not start the daemon: {err}"
 
-[msg.client_fallback_unavailable]
-doc = "Printed on stderr when stdin cannot safely be sent to the engine and the Node fallback cannot answer. Guard events exit 2; non-guard events exit 0 with this note."
-value = "hook fallback unavailable for undecodable or oversized stdin\n"
+[msg.client_unavailable]
+doc = "Printed on stderr when stdin cannot safely be sent to the engine (undecodable or oversized). Guard events exit 2; non-guard events exit 0 with this note."
+value = "hook input unavailable for the engine (undecodable or oversized stdin)\\n"
 
 [msg.dispatch_stdin_utf8]
 doc = "Reason in dispatch.msg_fail_closed when a guard event's stdin payload is not valid UTF-8."
@@ -426,9 +575,49 @@ value = "delivery to a session's mailbox is planned (D45); the run is recorded, 
 doc = "Detail of a run that passed its timeout."
 value = "the run passed its timeout and was stopped"
 
+[msg.schedule_panic]
+doc = "Detail of a scheduled run panic caught at the job boundary."
+value = "the run panicked and was stopped"
+
 [msg.schedule_failed]
 doc = "Event-log detail of a failed run. Placeholders: {job}, {detail}."
 value = "job {job} failed: {detail}"
+
+[msg.schedule_failed_no_detail]
+doc = "Detail of a failed run that gave no reason at all (never left empty in the history or the log)."
+value = "the run failed without giving a reason"
+
+[msg.schedule_no_command]
+doc = "Detail of a subprocess job with no command line to run."
+value = "the job has no command line"
+
+[msg.schedule_spawn_failed]
+doc = "Detail of a subprocess job that could not be started or read. Placeholders: {program}, {err}."
+value = "could not run {program}: {err}"
+
+[msg.schedule_exit_code]
+doc = "How a subprocess job's exit is named in its failure detail. Placeholder: {code}."
+value = "exit status {code}"
+
+[msg.schedule_exit_signal]
+doc = "How a subprocess job killed by a signal is named in its failure detail. Placeholder: {signal}."
+value = "killed by signal {signal}"
+
+[msg.schedule_exit_output]
+doc = "Failure detail of a subprocess job: its exit and the end of what it wrote (stderr, else stdout, where a --json command reports its error). Placeholders: {status}, {output}."
+value = "{status}: {output}"
+
+[msg.schedule_exit_silent]
+doc = "Failure detail of a subprocess job that wrote nothing on stderr or stdout. Placeholder: {status}."
+value = "{status}, nothing written on stderr or stdout"
+
+[msg.schedule_skipped]
+doc = "Event-log detail when a scheduled job skipped itself because there was no work. Placeholders: {job}, {detail}."
+value = "job {job} skipped: {detail}"
+
+[msg.schedule_no_work]
+doc = "Reason text when a scheduled job has no recent sessions or pending requests to handle."
+value = "no recent sessions or pending work"
 
 [msg.schedule_daemon_gone]
 doc = "An in-process job found the daemon gone (it was exiting)."
@@ -464,7 +653,7 @@ value = "{command} is planned ({decision}) and is not implemented yet"
 
 [msg.cli_unknown]
 doc = "Printed to stderr for an unknown command. Placeholder: {command}."
-value = "unknown command {command}"
+value = "ah-engine: unknown command '{command}'"
 
 [msg.cli_not_running]
 doc = "Printed in place of a report when no daemon is running (`--json` output carries running=false)."
@@ -529,3 +718,228 @@ value = "usage: ah-engine mesh <roster|unread|read|dump> --db <devswarm.db> [--i
 [msg.err_mesh_range]
 doc = "A store value is an integer JavaScript cannot represent exactly, which Node's reader rejects too. Placeholder: {value}."
 value = "integer {value} is out of range for a JavaScript number"
+
+[msg.docs_flags_intro]
+doc = "Introduction of the Flags section of the generated reference."
+value = "Every flag in a command's arguments, with the commands that take it. A flag shared by several commands is described once; the command's own entry says how it uses it."
+
+[msg.docs_env_intro]
+doc = "Introduction of the Environment variables section of the generated reference."
+value = "Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that overrides a setting names that setting."
+
+[msg.log_debug_on]
+doc = "Event-log detail when debug mode turns on (the setting, the environment variable or the flag)."
+value = "debug mode on: verbose module logs, invariant checks, per-thread CPU and memory samples go to the debug log"
+
+[msg.log_debug_off]
+doc = "Event-log detail when debug mode turns off (the setting was switched off and neither the environment variable nor the flag holds it on)."
+value = "debug mode off"
+
+[msg.log_budget_cpu]
+doc = "Event-log detail when the daemon CPU budget is breached or back within budget. Placeholders: {state}, {value} (percent of one core over the last window), {limit} (the budget, percent)."
+value = "daemon CPU budget {state}: {value}% of one core (budget {limit}%)"
+
+[msg.log_budget_mem]
+doc = "Event-log detail when the daemon memory budget is breached or back within budget. Placeholders: {state}, {value} (MB), {limit} (the budget, MB)."
+value = "daemon memory budget {state}: {value} MB (budget {limit} MB)"
+
+[msg.state_budget_over]
+doc = "The word for a resource budget that has just been breached."
+value = "breached"
+
+[msg.state_budget_within]
+doc = "The word for a resource budget that is back within its limit."
+value = "back within budget"
+
+[msg.dbg_request]
+doc = "Debug-log line for a served daemon request. Placeholders: {request}, {event}, {depth} (queued connections), {busy} (busy workers)."
+value = "{request} {event} served, queue {depth} busy {busy}"
+
+[msg.dbg_hook]
+doc = "Debug-log line for one finished hook invocation of the client. Placeholders: {code} (exit code), {out} and {err} (bytes written), {us} (microseconds spent)."
+value = "exit {code} out {out} B err {err} B in {us} us"
+
+[msg.dbg_cpu_window]
+doc = "Debug-log line for one CPU self-check window of the daemon. Placeholders: {ms} (window length), {pct} (percent of one core)."
+value = "window {ms} ms: {pct}% of one core"
+
+[msg.inv_queue_pop]
+doc = "Invariant violation: after a worker took a connection, the queue-depth counter and the queue length differ. Placeholders: {depth}, {len}."
+value = "depth counter {depth} != queue length {len} after a pop"
+
+[msg.inv_queue_push]
+doc = "Invariant violation: after the accept loop queued a connection, the queue-depth counter and the queue length differ. Placeholders: {depth}, {len}."
+value = "depth counter {depth} != queue length {len} after a push"
+
+[msg.inv_busy_workers]
+doc = "Invariant violation: more workers are marked busy than there are workers. Placeholder: {workers}."
+value = "more workers busy than the {workers} there are"
+
+[msg.inv_violated]
+doc = "Debug-log line for a violated runtime invariant (checked only in debug mode). Placeholder: {what}, the specific check that failed."
+value = "INVARIANT VIOLATED: {what}"
+
+[msg.launcher_ignored_knobs]
+doc = "Printed when test-only variables are set without the test flag; {vars} lists them."
+value = "anti-hall: ignoring test-only variables (need AH_WRAPPER_TEST=1): {vars}"
+
+[msg.launcher_bad_host]
+doc = "Printed when --host names a host the launcher does not serve; the default host is used."
+value = "anti-hall: ignoring unknown --host value"
+
+[msg.launcher_fallback_exec_failed]
+doc = "Written when the launcher cannot hand the call to the shell wrapper while the Node fallback switch is on; the engine answers instead. Placeholder: {err}."
+value = "anti-hall: cannot run the Node fallback wrapper: {err}; the engine answers"
+
+[msg.launcher_no_doctor]
+doc = "Printed by --doctor when the doctor script is missing."
+value = "anti-hall: ah-doctor.sh is missing next to ah-hook.sh; reinstall the plugin"
+
+[msg.launcher_doctor_failed]
+doc = "Printed by --doctor when the doctor script cannot be started; {err} is the reason."
+value = "anti-hall: cannot run ah-doctor.sh: {err}"
+
+[msg.launcher_fail_closed]
+doc = "Printed when a guard event is blocked because the launcher cannot run it safely; {event} is the event, {why} the reason."
+value = "anti-hall: fail closed for {event}: {why}"
+
+[msg.launcher_fail_open_stop]
+doc = "Printed instead of blocking when the event is a stop hook that is already active; {event} and {why} as above."
+value = "anti-hall: fail open for {event} because stop_hook_active is true: {why}"
+
+[msg.launcher_why_timeout_s]
+doc = "Reason: the seconds budget knob is not a positive integer."
+value = "AH_HOOK_TIMEOUT_S must be a positive integer"
+
+[msg.launcher_why_timeout_ms]
+doc = "Reason: the milliseconds budget knob is not a positive integer."
+value = "AH_HOOK_TIMEOUT_MS must be a positive integer"
+
+[msg.launcher_internal]
+doc = "Printed (once) when the launcher itself failed and let the hook through; {what} is the failure."
+value = "anti-hall: launcher internal failure, hook let through: {what}"
+
+[msg.launcher_mem_hard]
+doc = "Printed when the launcher passed its hard heap limit and let the hook through."
+value = "anti-hall: launcher memory limit reached, hook let through"
+
+[msg.launcher_cpu_hard]
+doc = "Printed when the launcher passed its hard CPU limit and let the hook through."
+value = "anti-hall: launcher CPU limit reached, hook let through"
+
+[msg.launcher_wall_hard]
+doc = "Printed when the launcher passed its wall-clock backstop and let the hook through."
+value = "anti-hall: launcher time limit reached, hook let through"
+
+[msg.launcher_config_invalid]
+doc = "Log line when a defaults file is missing or invalid and the built-in copy is used; {file} names it."
+value = "defaults file unusable, built-in values used: {file}"
+
+[msg.launcher_selftest_ok]
+doc = "Selftest line for a passing check; {check} names it."
+value = "ok {check}"
+
+[msg.launcher_selftest_fail]
+doc = "Selftest line for a failing check; {check} names it, {why} the reason."
+value = "FAIL {check}: {why}"
+
+[msg.launcher_st_unusable]
+doc = "Selftest reason: a defaults file is missing or invalid; {files} names them."
+value = "unusable: {files}"
+
+[msg.launcher_st_missing]
+doc = "Selftest reason: shipped settings the launcher needs are missing or of the wrong type; {keys} names them."
+value = "missing or wrong type: {keys}"
+
+[msg.launcher_st_incoherent]
+doc = "Selftest reason: settings contradict each other; {rules} names the broken rules."
+value = "incoherent: {rules}"
+
+[msg.launcher_st_no_state]
+doc = "Selftest reason: there is no state directory."
+value = "no state directory (home directory unset or not absolute)"
+
+[msg.launcher_st_socket_len]
+doc = "Selftest reason: the socket path is longer than the operating system allows."
+value = "socket path is {len} bytes, limit {max}"
+
+[msg.launcher_st_no_engine]
+doc = "Selftest reason: no engine binary is installed."
+value = "no executable engine binary"
+
+[msg.launcher_st_not_exec]
+doc = "Selftest reason: the named engine binary is not an executable file."
+value = "not an executable file: {path}"
+
+[msg.launcher_st_ver_empty]
+doc = "Selftest reason: the engine's version check printed nothing."
+value = "the version check printed nothing"
+
+[msg.launcher_st_ver_exit]
+doc = "Selftest reason: the engine's version check failed with exit code {code}."
+value = "the version check exited {code}"
+
+[msg.launcher_st_ver_timeout]
+doc = "Selftest reason: the engine's version check did not finish in {ms} ms."
+value = "the version check did not finish in {ms} ms"
+
+[msg.launcher_st_cannot_start]
+doc = "Selftest reason: the engine binary could not be started; {errno} is the system error number."
+value = "cannot start (errno {errno})"
+
+[msg.launcher_st_mem_below]
+doc = "Selftest reason: the hard heap limit is below the heap already in use."
+value = "hard heap limit is below the current heap"
+
+[msg.launcher_st_no_wall]
+doc = "Selftest reason: the wall-clock backstop could not be armed."
+value = "cannot arm the wall-clock backstop"
+
+[msg.client_ack_timeout]
+doc = "Health-log and exchange text: the daemon did not acknowledge a request within wire.ack_timeout_ms."
+value = "no ACK(req) from the daemon"
+
+[msg.reply_busy_detail]
+doc = "Fail-open detail of a request that was shed (queue full or rate limited) and answered BUSY."
+value = "request shed under load"
+
+[msg.client_closed_before_ack]
+doc = "Exchange text: the daemon closed the connection before it acknowledged the request."
+value = "closed before ACK(req)"
+
+
+[msg.obs_diag_usage]
+doc = "Usage of `ah-engine diag`; {topics} is the list in diagnostics.diag_topics."
+value = "usage: ah-engine diag <{topics}>"
+
+[msg.obs_diag_unknown]
+doc = "Printed when `diag` is given a topic that is not in diagnostics.diag_topics."
+value = "unknown diag topic: {topic}"
+
+[msg.obs_profile_usage]
+doc = "Usage of `ah-engine ctl profile`."
+value = "usage: ah-engine ctl profile <on [sample|full] [--for <duration>]|off|status>"
+
+[msg.obs_profile_bad_duration]
+doc = "Reply to a `--for` value that is not a number with an optional unit suffix."
+value = "bad duration: {value}"
+
+[msg.obs_profile_on]
+doc = "Log line when a runtime profiling window starts."
+value = "profiling on: mode {mode} for {ms} ms"
+
+[msg.obs_profile_off]
+doc = "Log line when a runtime profiling window ends or is switched off; {why} is off, expired or full-file."
+value = "profiling back to {mode} ({why})"
+
+[msg.obs_trace_dumped]
+doc = "Log line when the trace ring is written because a hard limit tripped."
+value = "trace ring dumped ({reason}, {entries} entries) to {path}"
+
+[msg.obs_trace_dump_failed]
+doc = "Log line when the trace ring could not be written."
+value = "trace ring dump failed ({reason}): {err}"
+
+[msg.obs_counter_write_failed]
+doc = "Log line when a counter could not be appended to the journal (the count is lost; nothing else changes)."
+value = "counter journal write failed: {err}"

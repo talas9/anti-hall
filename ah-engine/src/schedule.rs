@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -101,7 +102,7 @@ impl FileSource {
             },
         };
         let action = s("action");
-        let known = defaults::list("schedule.actions").contains(&action.as_str()) || (test_hooks && action == "test_sleep");
+        let known = defaults::list("schedule.actions").contains(&action.as_str()) || (test_hooks && matches!(action.as_str(), "test_sleep" | "test_panic"));
         if !known || (every_ms == 0 && every_key.is_empty()) {
             if !known {
                 crate::health::log_event(
@@ -251,6 +252,8 @@ pub enum Outcome {
     Timeout,
     /// The job's delivery does not exist yet (agent jobs, D45); not a failure.
     Planned(String),
+    /// There is no relevant session/request work for this tick.
+    Skipped(String),
 }
 
 impl Outcome {
@@ -260,11 +263,14 @@ impl Outcome {
             Outcome::Failed(_) => "failed",
             Outcome::Timeout => "timeout",
             Outcome::Planned(_) => "planned",
+            Outcome::Skipped(_) => "skipped",
         }
     }
     fn detail(&self) -> String {
         let d = match self {
-            Outcome::Ok(d) | Outcome::Failed(d) | Outcome::Planned(d) => d.clone(),
+            // a failure always says something: an empty reason left the history and the log with "job X failed: "
+            Outcome::Failed(d) if d.trim().is_empty() => defaults::text("msg.schedule_failed_no_detail").to_string(),
+            Outcome::Ok(d) | Outcome::Failed(d) | Outcome::Planned(d) | Outcome::Skipped(d) => d.clone(),
             Outcome::Timeout => defaults::text("msg.schedule_timeout").to_string(),
         };
         d.chars().take(defaults::num("schedule.detail_max") as usize).collect()
@@ -280,6 +286,10 @@ pub type InProc = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 pub type Observer = Box<dyn Fn(&str, &str, bool) + Send + Sync>;
 /// Reads a numeric setting through the live (layered, hot-swapped) config, for intervals named by `every_key` (D18).
 pub type Setting = Box<dyn Fn(&str) -> u64 + Send + Sync>;
+/// Told the CPU time a finished run used: (job, microseconds on the threads that ran it; a subprocess's own CPU is not in it).
+pub type CpuObserver = Box<dyn Fn(&str, u64) + Send + Sync>;
+/// Whether an action has anything to do now (the cheap check an idle-gated action is run behind).
+pub type WorkProbe = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 #[derive(Default)]
 struct Last {
@@ -298,6 +308,11 @@ pub struct Scheduler {
     agents: Box<dyn AgentDelivery>,
     observe: Observer,
     setting: Setting,
+    backoff_until_ms: AtomicU64,
+    cpu: std::sync::OnceLock<CpuObserver>,
+    work: std::sync::OnceLock<WorkProbe>,
+    /// Jobs `schedule run` asked for: their next window runs even when the idle gate finds no work.
+    forced: Mutex<std::collections::HashSet<String>>,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -362,12 +377,40 @@ impl Scheduler {
             agents,
             observe,
             setting,
+            backoff_until_ms: AtomicU64::new(0),
+            cpu: std::sync::OnceLock::new(),
+            work: std::sync::OnceLock::new(),
+            forced: Mutex::new(Default::default()),
         };
         for j in &fresh_ones {
             let st = lk(&s.state).get(&j.name).cloned().unwrap_or_default();
             s.save(j, &st); // a new schedule is kept at once, so a window missed before its first run is still known
         }
         s
+    }
+
+    /// Report the CPU time of every finished run to `f` (the daemon feeds it into the metrics). Set once.
+    pub fn set_cpu_observer(&self, f: CpuObserver) {
+        crate::discard::harmless(self.cpu.set(f)); // keep: the first observer stays
+    }
+
+    /// Decide with `f` whether an idle-gated action has work (tests; the default is [`has_work`]). Set once.
+    pub fn set_work_probe(&self, f: WorkProbe) {
+        crate::discard::harmless(self.work.set(f)); // keep: the first probe stays
+    }
+
+    /// Whether `spec` is gated on having work and has none now: the ticker then skips the window without starting a thread.
+    fn idle(&self, spec: &JobSpec) -> bool {
+        if !defaults::list("schedule.idle_gate_actions").contains(&spec.action.as_str()) {
+            return false;
+        }
+        if lk(&self.forced).remove(&spec.name) {
+            return false; // asked for by name (`schedule run`): it runs whatever the gate would say
+        }
+        match self.work.get() {
+            Some(probe) => !probe(&spec.action),
+            None => !has_work(&spec.action),
+        }
     }
 
     /// The configured jobs.
@@ -401,11 +444,30 @@ impl Scheduler {
         self.wake.1.notify_all();
     }
 
+    /// Hold scheduled jobs until at least this far in the future (used by the daemon CPU self-check).
+    pub fn backoff_for(&self, ms: u64) {
+        if ms == 0 {
+            return;
+        }
+        self.backoff_until_ms.fetch_max(now_ms().saturating_add(ms), SeqCst);
+        self.poke();
+    }
+
     /// The ticker: until `stop` says so, start every due job, then sleep until the next one is due (at most
     /// `schedule.tick_ms`, and less when `run` asks).
     pub fn run_ticker(self: &Arc<Self>, stop: &dyn Fn() -> bool) {
         while !stop() {
             let now = now_ms();
+            let backed_off_until = self.backoff_until_ms.load(SeqCst);
+            if now < backed_off_until {
+                let wait = Duration::from_millis(backed_off_until.saturating_sub(now).min(defaults::num("schedule.tick_ms")).max(1));
+                let mut woke = lk(&self.wake.0);
+                if !*woke {
+                    woke = self.wake.1.wait_timeout(woke, wait).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+                }
+                *woke = false;
+                continue;
+            }
             let mut soonest = now + defaults::num("schedule.tick_ms");
             for spec in &self.jobs {
                 let spec = &self.effective(spec);
@@ -425,6 +487,15 @@ impl Scheduler {
                         (self.observe)(&spec.name, "skipped", true);
                         continue;
                     }
+                    Due::Run { .. } if self.idle(spec) => {
+                        // nothing to do (the check is a stat): the window passes without a thread, a record or a metric
+                        st.next_ms = next_after(spec, now);
+                        soonest = soonest.min(st.next_ms);
+                        let snapshot = st.clone();
+                        drop(state);
+                        self.save(spec, &snapshot);
+                        continue;
+                    }
                     Due::Run { due_ms, catch_up } => {
                         st.next_ms = next_after(spec, now);
                         st.running = true;
@@ -432,7 +503,21 @@ impl Scheduler {
                         drop(state);
                         self.save(spec, &snapshot); // committed before the run: a restart cannot run it again
                         let (me, spec) = (self.clone(), spec.clone());
-                        std::thread::spawn(move || me.execute(&spec, due_ms, attempt, catch_up));
+                        let run_spec = spec.clone();
+                        if let Err(e) =
+                            crate::threads::spawn_named(format!("ah-schedule-{}", spec.name), move || me.execute(&run_spec, due_ms, attempt, catch_up))
+                        {
+                            crate::discard::note("schedule_spawn", &e.to_string());
+                            let snapshot = {
+                                let mut state = lk(&self.state);
+                                let st = state.entry(spec.name.clone()).or_default();
+                                st.running = false;
+                                st.clone()
+                            };
+                            self.save(&spec, &snapshot);
+                            (self.observe)(&spec.name, "failed", catch_up);
+                            self.poke();
+                        }
                         continue;
                     }
                 }
@@ -453,6 +538,8 @@ impl Scheduler {
     /// One run of `spec`, on its own thread: record it, run it within its timeout, then reschedule.
     fn execute(&self, spec: &JobSpec, due_ms: u64, attempt: u32, catch_up: bool) {
         let started = now_ms();
+        let _boundary = crate::crash::enter("job", "", "", "", &spec.name);
+        crate::health::write_crash_breadcrumb("job", "", "", 0, json!({"job": spec.name, "action": spec.action}));
         let id = match (&self.db, spec.persist) {
             (Some(db), true) => db
                 .write(Op::Sched(SchedOp::Start { job: spec.name.clone(), due_ms, started_ms: started, attempt }))
@@ -460,7 +547,16 @@ impl Scheduler {
                 .and_then(|s| s.parse::<i64>().ok()),
             _ => None,
         };
-        let outcome = self.perform(spec);
+        let cpu0 = crate::limits::thread_cpu_us();
+        let helper_cpu = AtomicU64::new(0);
+        let outcome = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.perform(spec, &helper_cpu))) {
+            Ok(outcome) => outcome,
+            Err(_) => Outcome::Failed(defaults::text("msg.schedule_panic").to_string()),
+        };
+        let cpu_us = crate::limits::thread_cpu_us().saturating_sub(cpu0).saturating_add(helper_cpu.load(SeqCst));
+        if let Some(f) = self.cpu.get() {
+            f(&spec.name, cpu_us);
+        }
         let ended = now_ms();
         let st = {
             let mut state = lk(&self.state);
@@ -496,18 +592,21 @@ impl Scheduler {
         }
         if outcome.failed() {
             crate::health::log_event("schedule", status, &defaults::render("msg.schedule_failed", &[("job", &spec.name), ("detail", &detail)]));
+        } else if matches!(outcome, Outcome::Skipped(_)) {
+            crate::health::log_event("schedule", status, &defaults::render("msg.schedule_skipped", &[("job", &spec.name), ("detail", &detail)]));
         }
         (self.observe)(&spec.name, status, catch_up);
         let mut last = lk(&self.last);
         let l = last.entry(spec.name.clone()).or_default();
         l.finished += 1;
-        l.result = json!({"job": spec.name, "status": status, "detail": detail, "due_ms": due_ms, "started_ms": started, "ended_ms": ended, "attempt": attempt, "catch_up": catch_up});
+        l.result = json!({"job": spec.name, "status": status, "detail": detail, "due_ms": due_ms, "started_ms": started, "ended_ms": ended, "attempt": attempt, "catch_up": catch_up,
+            "cpu_us": cpu_us, "cpu_ms": cpu_us / 1000});
         drop(last);
         self.poke(); // the ticker re-plans with the new schedule
     }
 
-    /// Do the job's work within its timeout.
-    fn perform(&self, spec: &JobSpec) -> Outcome {
+    /// Do the job's work within its timeout. `helper_cpu` receives the microseconds of CPU the in-process helper thread used.
+    fn perform(&self, spec: &JobSpec, helper_cpu: &AtomicU64) -> Outcome {
         let timeout = Duration::from_millis(spec.timeout_ms);
         if spec.kind == "agent" {
             return match self.agents.deliver(spec) {
@@ -521,6 +620,9 @@ impl Scheduler {
             return subprocess(&argv, timeout);
         }
         if defaults::list("schedule.subprocess_actions").contains(&spec.action.as_str()) {
+            if defaults::list("schedule.skip_without_work").contains(&spec.action.as_str()) && !has_work(&spec.action) {
+                return Outcome::Skipped(defaults::text("msg.schedule_no_work").to_string());
+            }
             let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).or_default_logged("current_exe");
             let mut argv = vec![exe];
             match defaults::raw("schedule.action_args").get(&spec.action) {
@@ -537,7 +639,12 @@ impl Scheduler {
         let work: &InProc = &self.inproc;
         std::thread::scope(|s| {
             s.spawn(move || {
-                crate::discard::harmless(tx.send(work(&action))); // keep: the receiver is gone; nobody is waiting for the result
+                let _boundary = crate::crash::enter("job-action", "", "", "", &action);
+                let cpu0 = crate::limits::thread_cpu_us();
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&action)))
+                    .unwrap_or_else(|_| Err(defaults::text("msg.schedule_panic").to_string()));
+                helper_cpu.store(crate::limits::thread_cpu_us().saturating_sub(cpu0), SeqCst);
+                crate::discard::harmless(tx.send(r)); // keep: the receiver is gone; nobody is waiting for the result
             });
             match rx.recv_timeout(timeout) {
                 Ok(Ok(d)) => Outcome::Ok(d),
@@ -561,6 +668,7 @@ impl Scheduler {
             st.next_ms = now_ms();
             st.cooldown_until_ms = 0;
         }
+        lk(&self.forced).insert(spec.name.clone());
         let before = lk(&self.last).get(job).map(|l| l.finished).unwrap_or(0);
         self.poke();
         let t = Instant::now();
@@ -597,15 +705,63 @@ impl Scheduler {
 
 /// Run `argv` in its own process group; past `timeout` the whole group is killed. Both pipes are drained while it runs
 /// (review finding 12: reading them only after exit deadlocked a job that wrote more than a pipe buffer).
-fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
-    let Some((prog, args)) = argv.split_first() else { return Outcome::Failed(String::new()) };
+/// The command of a subprocess job. A job is the engine's own work, not the session's whose hook happened to start the daemon,
+/// so the variables the role detection reads are removed: a daemon inherits its spawner's environment, and from a workspace child
+/// or a subagent every main-only job was refused by the role gate (exit 77, live 2026-10-16).
+fn job_command(argv: &[String]) -> Option<Command> {
+    let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
     cmd.args(args);
+    for key in ["roles.declared_env", "roles.branch_env"] {
+        cmd.env_remove(defaults::text(key));
+    }
+    Some(cmd)
+}
+
+fn subprocess(argv: &[String], timeout: Duration) -> Outcome {
+    let (Some(cmd), Some(prog)) = (job_command(argv), argv.first()) else {
+        return Outcome::Failed(defaults::text("msg.schedule_no_command").to_string());
+    };
     match crate::proc::run(cmd, prog, timeout, Duration::from_millis(defaults::num("client.fallback_poll_ms"))) {
         Ok(o) if o.status.success() => Outcome::Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
-        Ok(o) => Outcome::Failed(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Ok(o) => Outcome::Failed(exit_detail(&o)),
         Err(crate::proc::Error::Timeout) => Outcome::Timeout,
-        Err(e) => Outcome::Failed(e.into_io().to_string()),
+        Err(e) => Outcome::Failed(defaults::render("msg.schedule_spawn_failed", &[("program", prog), ("err", &e.into_io())])),
+    }
+}
+
+/// Why a subprocess job failed: its exit status (or signal) and the tail of what it said, stderr first, else stdout (a `--json`
+/// command reports its error there).
+fn exit_detail(o: &crate::proc::Output) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    let status = match (o.status.code(), o.status.signal()) {
+        (Some(code), _) => defaults::render("msg.schedule_exit_code", &[("code", &code)]),
+        (None, Some(signal)) => defaults::render("msg.schedule_exit_signal", &[("signal", &signal)]),
+        (None, None) => o.status.to_string(),
+    };
+    let (stderr, stdout) = (String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&o.stdout));
+    match [stderr.trim(), stdout.trim()].into_iter().find(|s| !s.is_empty()) {
+        Some(said) => {
+            // keep the end (where the error is), so the whole detail still fits `schedule.detail_max` after the status
+            let frame = defaults::render("msg.schedule_exit_output", &[("status", &status), ("output", &"")]).chars().count();
+            let room = (defaults::num("schedule.detail_max") as usize).saturating_sub(frame);
+            let tail: String = said.chars().rev().take(room).collect::<Vec<_>>().into_iter().rev().collect();
+            defaults::render("msg.schedule_exit_output", &[("status", &status), ("output", &tail)])
+        }
+        None => defaults::render("msg.schedule_exit_silent", &[("status", &status)]),
+    }
+}
+
+fn has_work(action: &str) -> bool {
+    match action {
+        "gh_poll" => {
+            let cfg = crate::ghrt::cfg::Cfg::load();
+            crate::ghrt::tick_needed(&cfg, crate::health::now_ms())
+        }
+        "refresh" => defaults::env_var("home").is_some_and(|h| crate::refresh::has_pending(std::path::Path::new(&h))),
+        // the spool file: absent or empty means no client spooled a write (clients append under the lock and fsync)
+        "spool_drain" => std::fs::metadata(crate::spool::path()).map(|m| m.len() > 0).unwrap_or(false),
+        _ => true,
     }
 }
 
@@ -631,6 +787,55 @@ mod tests {
         match super::subprocess(&argv, std::time::Duration::from_secs(10)) {
             super::Outcome::Ok(out) => assert_eq!(out.len(), 300_000),
             other => panic!("{other:?}"),
+        }
+    }
+
+    fn sh(script: &str) -> Vec<String> {
+        ["/bin/sh", "-c", script].iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_failed_run_that_wrote_nothing_to_stderr_still_says_why() {
+        // live 2026-10-16: the role gate refused every main-only job with exit 77 and its reason on stdout (--json), so the
+        // history and the log said only "job mcp_reaper failed: "
+        match super::subprocess(&sh(r#"echo '{"error":"refused for this role"}'; exit 77"#), std::time::Duration::from_secs(10)) {
+            super::Outcome::Failed(d) => {
+                assert!(d.contains("77"), "exit status in the detail: {d}");
+                assert!(d.contains("refused for this role"), "stdout tail in the detail: {d}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match super::subprocess(&sh("echo out; echo 'the real cause' >&2; exit 3"), std::time::Duration::from_secs(10)) {
+            super::Outcome::Failed(d) => assert!(d.contains('3') && d.contains("the real cause"), "{d}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_run_killed_by_a_signal_names_the_signal() {
+        match super::subprocess(&sh("kill -9 $$"), std::time::Duration::from_secs(10)) {
+            super::Outcome::Failed(d) => assert!(d.contains('9') && !d.trim().is_empty(), "{d}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failure_detail_is_never_empty() {
+        for o in [super::Outcome::Failed(String::new()), super::Outcome::Failed("  \n".into())] {
+            assert!(!o.detail().trim().is_empty(), "{o:?}");
+        }
+        assert!(!super::subprocess(&[], std::time::Duration::from_secs(1)).detail().trim().is_empty());
+    }
+
+    #[test]
+    fn a_job_subprocess_does_not_inherit_the_spawning_sessions_role() {
+        // the daemon inherits the environment of whichever hook started it; a job is the engine's own work, so the variables
+        // the role detection reads are removed from its command (else a workspace child or subagent start refuses them all)
+        let cmd = super::job_command(&sh("true")).unwrap();
+        let removed: Vec<String> = cmd.get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_string_lossy().to_string()).collect();
+        for key in ["roles.declared_env", "roles.branch_env"] {
+            let name = defaults::text(key);
+            assert!(removed.iter().any(|r| r == name), "{name} removed: {removed:?}");
         }
     }
 
@@ -735,7 +940,41 @@ mod tests {
         let src = FileSource { override_path: p, test_hooks: false };
         let s = Scheduler::new(&src, None, Box::new(|_| Ok(String::new())), Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num));
         let spec = s.jobs().iter().find(|j| j.name == "remind").unwrap().clone();
-        assert!(matches!(s.perform(&spec), Outcome::Planned(_)));
+        assert!(matches!(s.perform(&spec, &AtomicU64::new(0)), Outcome::Planned(_)));
+    }
+
+    #[test]
+    fn a_panicking_job_clears_running_and_records_failure() {
+        let d = crate::db::TempDir::new("sched-panic");
+        let p = d.0.join("schedules.json");
+        std::fs::write(&p, r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 1000, "timeout_ms": 2000, "retries": 1, "backoff_ms": 10, "backoff_max_ms": 10, "persist": false}}}"#).unwrap();
+        let src = FileSource { override_path: p, test_hooks: false };
+        let s = Scheduler::new(
+            &src,
+            None,
+            Box::new(|_| std::panic::resume_unwind(Box::new("job panic"))),
+            Box::new(PlannedDelivery),
+            Box::new(|_, _, _| {}),
+            Box::new(defaults::num),
+        );
+        let spec = s.jobs().iter().find(|j| j.name == "probe").unwrap().clone();
+        lk(&s.state).insert(spec.name.clone(), JobState { next_ms: now_ms(), running: true, ..Default::default() });
+        s.execute(&spec, now_ms(), 1, false);
+        let st = lk(&s.state).get("probe").cloned().unwrap();
+        assert!(!st.running, "panic boundary clears running");
+        assert_eq!(st.failures, 1, "panic is recorded as a failed run with backoff");
+        let last = lk(&s.last).get("probe").unwrap().result.clone();
+        assert_eq!(last["status"], "failed");
+        assert_eq!(last["detail"], defaults::text("msg.schedule_panic"));
+    }
+
+    #[test]
+    fn cpu_backoff_holds_the_ticker_until_the_future() {
+        let src = FileSource { override_path: crate::db::TempDir::new("sched-backoff").0.join("missing.json"), test_hooks: false };
+        let s = Scheduler::new(&src, None, Box::new(|_| Ok(String::new())), Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num));
+        let before = now_ms();
+        s.backoff_for(1000);
+        assert!(s.backoff_until_ms.load(SeqCst) >= before + 1000);
     }
 
     #[test]
@@ -766,5 +1005,116 @@ mod tests {
         s.poke();
         h.join().unwrap();
         assert!(runs.load(std::sync::atomic::Ordering::SeqCst) > 0, "the job ran again after the skipped window, well inside the tick");
+    }
+
+    fn probe_scheduler(tag: &str, jobs: &str, inproc: InProc) -> Arc<Scheduler> {
+        let d = crate::db::TempDir::new(tag);
+        let p = d.0.join("schedules.json");
+        std::fs::write(&p, jobs).unwrap();
+        let src = FileSource { override_path: p, test_hooks: false };
+        Arc::new(Scheduler::new(&src, None, inproc, Box::new(PlannedDelivery), Box::new(|_, _, _| {}), Box::new(defaults::num)))
+    }
+
+    #[test]
+    fn a_run_records_the_cpu_it_used() {
+        let s = probe_scheduler(
+            "sched-cpu",
+            r#"{"jobs": {"spool_drain": {"every_ms": 0}, "metrics_snapshot": {"every_ms": 0}, "probe": {"kind": "engine", "action": "noop", "every_ms": 1000, "timeout_ms": 5000, "persist": false}}}"#,
+            Box::new(|_| {
+                let t = crate::limits::thread_cpu_us();
+                let mut x = 1u64;
+                while crate::limits::thread_cpu_us() - t < 30_000 {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                }
+                std::hint::black_box(x);
+                Ok(String::new())
+            }),
+        );
+        let told = Arc::new(AtomicU64::new(0));
+        let t2 = told.clone();
+        s.set_cpu_observer(Box::new(move |job, us| {
+            assert_eq!(job, "probe");
+            t2.store(us, SeqCst);
+        }));
+        let spec = s.jobs().iter().find(|j| j.name == "probe").unwrap().clone();
+        lk(&s.state).insert(spec.name.clone(), JobState { next_ms: now_ms(), running: true, ..Default::default() });
+        s.execute(&spec, now_ms(), 1, false);
+        let last = lk(&s.last).get("probe").unwrap().result.clone();
+        let us = last["cpu_us"].as_u64().expect("the run record carries cpu_us");
+        assert!(us >= 30_000, "the helper thread's CPU is counted: {us}");
+        assert_eq!(last["cpu_ms"].as_u64(), Some(us / 1000));
+        assert_eq!(told.load(SeqCst), us, "the observer is told the same figure");
+    }
+
+    #[test]
+    fn an_idle_gated_job_starts_no_thread_until_it_has_work() {
+        let runs = Arc::new(AtomicU64::new(0));
+        let r = runs.clone();
+        let s = probe_scheduler(
+            "sched-idle",
+            r#"{"jobs": {"metrics_snapshot": {"every_ms": 0}, "spool_drain": {"every_ms": 20, "timeout_ms": 2000, "catch_up": "skip", "persist": false}}}"#,
+            Box::new(move |action| {
+                if action == "spool_drain" {
+                    r.fetch_add(1, SeqCst);
+                }
+                Ok(String::new())
+            }),
+        );
+        let has_work = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w = has_work.clone();
+        s.set_work_probe(Box::new(move |_| w.load(SeqCst)));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (s2, stop2) = (s.clone(), stop.clone());
+        let h = std::thread::spawn(move || s2.run_ticker(&|| stop2.load(SeqCst)));
+        std::thread::sleep(Duration::from_millis(400)); // twenty windows pass with the spool empty
+        assert_eq!(runs.load(SeqCst), 0, "no work: the job is never started");
+        assert!(lk(&s.last).get("spool_drain").is_none(), "and leaves no run record");
+        has_work.store(true, SeqCst);
+        let t = Instant::now();
+        while runs.load(SeqCst) == 0 && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, SeqCst);
+        s.poke();
+        h.join().unwrap();
+        assert!(runs.load(SeqCst) > 0, "work appeared: the next window runs the drain");
+    }
+
+    #[test]
+    fn a_job_outside_the_idle_gate_list_is_never_idle() {
+        let s = probe_scheduler(
+            "sched-gate",
+            r#"{"jobs": {"probe": {"kind": "engine", "action": "noop", "every_ms": 1000, "persist": false}}}"#,
+            Box::new(|_| Ok(String::new())),
+        );
+        let spec = s.jobs().iter().find(|j| j.name == "probe").unwrap().clone();
+        assert!(!s.idle(&spec), "noop is not in schedule.idle_gate_actions");
+    }
+
+    #[test]
+    fn schedule_run_runs_an_idle_gated_job_once_even_without_work() {
+        let runs = Arc::new(AtomicU64::new(0));
+        let r = runs.clone();
+        let s = probe_scheduler(
+            "sched-forced",
+            r#"{"jobs": {"metrics_snapshot": {"every_ms": 0}, "spool_drain": {"every_ms": 3600000, "timeout_ms": 2000, "catch_up": "skip", "persist": false}}}"#,
+            Box::new(move |action| {
+                if action == "spool_drain" {
+                    r.fetch_add(1, SeqCst);
+                }
+                Ok(String::new())
+            }),
+        );
+        s.set_work_probe(Box::new(|_| false));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (s2, stop2) = (s.clone(), stop.clone());
+        let h = std::thread::spawn(move || s2.run_ticker(&|| stop2.load(SeqCst)));
+        let res = s.run_now("spool_drain");
+        assert_eq!(res["status"], "ok", "the asked-for run happened and reported: {res}");
+        assert_eq!(runs.load(SeqCst), 1);
+        assert!(res["cpu_us"].is_u64(), "and carries its CPU: {res}");
+        stop.store(true, SeqCst);
+        s.poke();
+        h.join().unwrap();
     }
 }

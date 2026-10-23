@@ -18,10 +18,6 @@ value = "ANTIHALL_JUDGE_CHILD"
 doc = "The value of the judge child variable that turns the hooks into no-ops."
 value = "1"
 
-[ctxbudget.home_env]
-doc = "Environment variable that holds the home directory (Node's os.homedir() reads it first on POSIX)."
-value = "HOME"
-
 [ctxbudget.ups_empty]
 doc = "The exact stdout line of a UserPromptSubmit hook that injects nothing (an empty additionalContext), newline included."
 value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n"
@@ -576,6 +572,14 @@ value = { section = "guards", key = "compactAdviceMarginPct", kind = "num", env 
 [ctxbudget.set_ca_recent]
 doc = "The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off)."
 value = { section = "guards", key = "compactAdviceRecentTurns", kind = "num", env = "", aliases = [], option = "guards_compact_advice_recent_turns", manifest_default = "10", default = 10, min = 0, max = 100 }
+
+[ctxbudget.ah_unsure_log_kind]
+doc = "Engine log kind of an auto-handover, auto-handover-pause-nag or limit-conserve-inject case the engine cannot reproduce exactly, so it is decided on the stated stand-in (logged and counted as native_unable): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript, relative_cwd (a relative path with no absolute payload cwd: Node resolves it against its own directory), local_date (a request time zone other than UTC), repo_root (a checkout the resolver cannot classify exactly), fresh_line, fresh_timestamp, fresh_path (a transcript line or work timestamp only V8 reads, a relative written path with no cwd), handover_big, spawn_log_big, usage_big, claude_json_big, account_big (a file over script.read_max_bytes), task_line (a task line only V8 parses), resets_object (a reset time that is an object: V8's legacy date parser reads its text), dedupe_unsure (an emit-dedupe transcript timestamp only V8 reads)."
+value = "ctxbudget_unsure"
+
+[ctxbudget.ca_unsure_log_kind]
+doc = "Engine log kind of a compact-advice-guard Stop decided without Node's exact reading. Deferred (the justified failure paths of a blocking guard, never weaker than Node): home_relative (a HOME that is set but relative or empty: libuv takes it as it is and Node resolves every state path against its own process directory), relative_transcript (a relative transcript path with no absolute payload cwd), transcript_line (a transcript line the interpreter cannot parse as V8 does), compact_timestamp (the latch comparison needs a compact boundary time that neither jx.isoMs nor jx.dateParse reads). Allowed, as the Node hook ends with an error that never blocks: home_none (neither HOME nor the passwd entry gives a home), home_test_guard (the real home under a spawn_ctx.test_markers variable, refused as companion/lib/test-home-guard.js does)."
+value = "compact_advice_unsure"
 
 [ctxbudget.ca_guard]
 doc = "The guard name of the compact-advice block."

@@ -4,9 +4,9 @@
 //! number, a TodoWrite replaces the list), so it has its own pass. The work counting of the same hook pass is a rule and lives in
 //! the plugin's script, not here.
 use super::backfill::backfill;
-use super::parse::{Facts, collect_tool_uses, is_not_found, maybe_valid_for_js};
+use super::parse::{Facts, Line, NON_STRING_ID, collect_tool_uses, is_not_found, parse_line};
 use super::tail::{lines_of, read_tail};
-use super::{Task, TaskMap, Unknown, norm_priority, number_of_digits, priority_field, truthy_status};
+use super::{Task, TaskMap, Unknown, is_non_string_status, kept_status, norm_priority, number_of_digits, priority_field};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::taskkit::jsval::{R, Unsure, first_truthy, get, scalar_string, truthy};
@@ -31,7 +31,7 @@ pub struct ScanTasks {
     pub open_task_ids: Vec<String>,
 }
 
-fn created_re() -> &'static Regex {
+pub(crate) fn created_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
     R.get_or_init(|| jsre::compile(defaults::text("taskstate.re_created"), true))
 }
@@ -47,9 +47,55 @@ fn actionable_priority(p: &Option<String>) -> bool {
     }
 }
 
+/// What one line says about task activity when the widened scan reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decisive {
+    /// A tool use named by `tasklist_guard.task_tool_names`: the search ends with a yes.
+    Hit,
+    /// A line only JavaScript's parser could read: the search ends unsure.
+    Unsure,
+}
+
+/// One SIMD substring finder per tool name: the widened window is read on every Stop whose tail holds no task activity, and a
+/// byte-by-byte comparison of every name at every offset made that read cost 180 ms of CPU on a 33 MB transcript (#22).
+pub(crate) fn wide_finders<'a>(names: &[&'a str]) -> Vec<memchr::memmem::Finder<'a>> {
+    names.iter().map(|n| memchr::memmem::Finder::new(n.as_bytes())).collect()
+}
+
+/// What the widened scan makes of one line (its bytes without the newline): `None` when the line cannot decide the search.
+pub(crate) fn judge_wide_line(buf: &[u8], names: &[&str], finders: &[memchr::memmem::Finder<'_>]) -> Option<Decisive> {
+    // only a line that names a task tool can matter; the rest is skipped without decoding
+    if !finders.iter().any(|f| f.find(buf).is_some()) {
+        return None;
+    }
+    let line = String::from_utf8_lossy(buf).into_owned();
+    let line = line.strip_suffix('\r').unwrap_or(&line);
+    let t = js_trim(line);
+    if t.is_empty() {
+        return None;
+    }
+    let entry = match parse_line(t) {
+        Line::Parsed(e) => e,
+        Line::Unsure => return Some(Decisive::Unsure),
+        Line::Skip => return None,
+    };
+    let mut uses = Vec::new();
+    collect_tool_uses(&entry, &mut uses);
+    uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))).then_some(Decisive::Hit)
+}
+
 /// `hasTaskActivityInText` over the last `window` bytes of a file, read one line at a time: the widened scan covers 16 MB and
-/// holding that as one string was the biggest transient the daemon had. `None` when the file cannot be read.
+/// holding that as one string was the biggest transient the daemon had. `None` when the file cannot be read. The decisive lines
+/// are kept between calls ([`crate::script::tasks_cache::wide_activity`]); [`has_task_activity_in_file_uncached`] reads it all.
 fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
+    match crate::script::tasks_cache::wide_activity(path, window) {
+        Some(answer) => Some(answer),
+        None => has_task_activity_in_file_uncached(path, window),
+    }
+}
+
+/// [`has_task_activity_in_file`] reading the whole window: the reference the kept lines are tested against.
+pub(crate) fn has_task_activity_in_file_uncached(path: &str, window: u64) -> Option<R<bool>> {
     use std::io::{BufRead, Seek, SeekFrom};
     let size = std::fs::metadata(path).ok()?.len();
     let mut f = std::fs::File::open(path).ok()?;
@@ -59,6 +105,7 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
     }
     let mut rd = std::io::BufReader::new(f);
     let names = defaults::list("tasklist_guard.task_tool_names");
+    let finders = wide_finders(&names);
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
@@ -69,25 +116,10 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
         if buf.last() == Some(&b'\n') {
             buf.pop();
         }
-        // only a line that names a task tool can matter; the rest is skipped without decoding
-        if !names.iter().any(|n| buf.windows(n.len()).any(|w| w == n.as_bytes())) {
-            continue;
-        }
-        let line = String::from_utf8_lossy(&buf).into_owned();
-        let line = line.strip_suffix('\r').unwrap_or(&line);
-        let t = js_trim(line);
-        if t.is_empty() {
-            continue;
-        }
-        let entry = match serde_json::from_str::<Value>(t) {
-            Ok(e) => e,
-            Err(_) if maybe_valid_for_js(t) => return Some(Err(Unsure)),
-            Err(_) => continue,
-        };
-        let mut uses = Vec::new();
-        collect_tool_uses(&entry, &mut uses);
-        if uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))) {
-            return Some(Ok(true));
+        match judge_wide_line(&buf, &names, &finders) {
+            Some(Decisive::Hit) => return Some(Ok(true)),
+            Some(Decisive::Unsure) => return Some(Err(Unsure)),
+            None => {}
         }
     }
 }
@@ -95,8 +127,40 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
 /// The pass. `Ok(None)` is the quiet end (a JSON `null` entry makes the Node hook throw, so it decides nothing). `window` is
 /// the tail read, `wide` the widened window searched for task activity when a cut tail holds none.
 pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
+    // the task lines kept since the last call when there are any, else the window read afresh
+    if let Some((kept, truncated)) = crate::script::tasks_cache::lines(path, window) {
+        let lines: Vec<&str> = kept.iter().map(String::as_str).collect();
+        return scan_lines(&lines, truncated, path, window, wide);
+    }
+    scan_tasks_uncached(path, window, wide)
+}
+
+/// [`scan_tasks`] reading the whole window: the reference the kept lines are tested against.
+pub fn scan_tasks_uncached(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
     let Some((data, truncated)) = read_tail(path, window) else { return Ok(Some(ScanTasks::default())) };
     let lines = lines_of(&data, truncated);
+    scan_lines(&lines, truncated, path, window, wide)
+}
+
+/// The text of one tool result as the scan reads it: the string content, else the text blocks of an array content joined by
+/// newlines.
+pub(crate) fn result_text(it: &Value) -> String {
+    let mut text = get(it, "content").and_then(Value::as_str).unwrap_or("").to_string();
+    if text.is_empty()
+        && let Some(arr) = get(it, "content").and_then(Value::as_array)
+    {
+        text = arr
+            .iter()
+            .filter(|b| get(b, "type").and_then(Value::as_str) == Some("text") && get(b, "text").is_some_and(Value::is_string))
+            .filter_map(|b| get(b, "text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    text
+}
+
+/// The pass over the lines of the window (the first, partial, line already taken off when the file was cut).
+fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
     let empty = Value::Object(serde_json::Map::new());
     let mut s = ScanTasks::default();
     let mut lookup_ids: HashSet<String> = HashSet::new();
@@ -112,10 +176,10 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
         if t.is_empty() {
             continue;
         }
-        let entry: Value = match serde_json::from_str(t) {
-            Ok(v) => v,
-            Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
-            Err(_) => continue,
+        let entry: Value = match parse_line(t) {
+            Line::Parsed(v) => v,
+            Line::Unsure => return Err(Unsure),
+            Line::Skip => continue,
         };
         if entry.is_null() {
             return Ok(None);
@@ -127,17 +191,7 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
                     continue;
                 }
                 let Some(use_id) = get(it, "tool_use_id").and_then(Value::as_str) else { continue };
-                let mut text = get(it, "content").and_then(Value::as_str).unwrap_or("").to_string();
-                if text.is_empty()
-                    && let Some(arr) = get(it, "content").and_then(Value::as_array)
-                {
-                    text = arr
-                        .iter()
-                        .filter(|b| get(b, "type").and_then(Value::as_str) == Some("text") && get(b, "text").is_some_and(Value::is_string))
-                        .filter_map(|b| get(b, "text").and_then(Value::as_str))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                }
+                let text = result_text(it);
                 if let Some(m) = created_re().captures(&text) {
                     let digits = m.get(1).map_or("", |g| g.as_str()).to_string();
                     let n = number_of_digits(&digits);
@@ -181,23 +235,24 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
                             let id = scalar_string(first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v))?;
                             let id_v = Value::String(id.clone());
                             let content = scalar_string(first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_v)]).unwrap_or(&id_v))?;
-                            tasks.set(&id, task(&id, content, Some(truthy_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
+                            tasks.set(&id, task(&id, content, Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
                         }
                     }
                 }
                 "TaskCreate" => {
                     s.saw_task_activity = true;
-                    let Some(Value::String(tid)) = get(tu, "id").filter(|v| truthy(v)) else {
-                        if get(tu, "id").is_some_and(truthy) {
-                            return Err(Unsure);
-                        }
-                        continue;
+                    let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) else { continue };
+                    let (tid, tid_v) = match id_v {
+                        Value::String(s) => (s.clone(), id_v.clone()),
+                        // a number or boolean id is its own Map key, never equal to a string id: the task lives under `String(id)`
+                        Value::Number(_) | Value::Bool(_) => (format!("{NON_STRING_ID}{}", scalar_string(id_v)?), id_v.clone()),
+                        _ => return Err(Unsure),
                     };
-                    let tid_v = Value::String(tid.clone());
+                    let tid = &tid;
                     let content = scalar_string(
                         first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v),
                     )?;
-                    let status = truthy_status(get(inp, "status"))?.unwrap_or_else(|| "pending".into());
+                    let status = kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".into());
                     let rec = (content, status, norm_priority(priority_field(inp))?);
                     match prov.iter_mut().find(|(k, _)| k == tid) {
                         Some(slot) => slot.1 = rec,
@@ -216,12 +271,15 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
                         let has_pri =
                             get(inp, "priority").is_some() || get(inp, "metadata").filter(|m| !m.is_null()).and_then(|m| get(m, "priority")).is_some();
                         let priority = if has_pri { norm_priority(priority_field(inp))? } else { existing.priority.clone() };
-                        let status = match truthy_status(get(inp, "status"))? {
+                        let status = match kept_status(get(inp, "status"))? {
                             Some(st) => Some(st),
                             None => existing.status.clone(),
                         };
                         let unknown = gaps(existing.unknown, inp);
-                        let mut t = task(&existing.id, existing.content.clone(), status, priority, unknown);
+                        // a rename counts: a task is listed by its current subject, not the one it was created with
+                        let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
+                        let mut t = task(&existing.id, subject.map_or_else(|| existing.content.clone(), str::to_string), status, priority, unknown);
+                        t.subject_updated = subject.is_some() || existing.subject_updated;
                         t.unknown = unknown;
                         tasks.set(&id, t);
                     }
@@ -237,7 +295,8 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
     }
     // end of scan: every TaskCreate gets the number its result named
     for (tid, (content, status, priority)) in &prov {
-        let key = result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).unwrap_or_else(|| tid.clone());
+        let key =
+            result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
         let mut ex = tasks.get(&key).cloned();
         if let Some(e) = &ex
             && e.unknown.is_some()
@@ -264,12 +323,14 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
         match ex {
             None => tasks.set(&key, task(&key, content.clone(), Some(status.clone()), priority.clone(), None)),
             Some(e) => {
-                if e.content.is_empty() || e.content == key {
+                if e.content.is_empty() || e.content == key || e.subject_updated {
                     let st = match &e.status {
                         Some(s) if !s.is_empty() => Some(s.clone()),
                         _ => Some(status.clone()),
                     };
-                    tasks.set(&key, task(&key, content.clone(), st, e.priority.clone().or_else(|| priority.clone()), None));
+                    // a subject an update set is newer than the create's
+                    let shown = if e.subject_updated { e.content.clone() } else { content.clone() };
+                    tasks.set(&key, task(&key, shown, st, e.priority.clone().or_else(|| priority.clone()), None));
                 }
             }
         }
@@ -277,6 +338,10 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
     let mut facts = Facts { tasks, window_reset, first_created };
     if truncated {
         backfill(&mut facts, path, window)?;
+    }
+    // a task that ends the pass with a non-string status: Node's `isOpenTask` lowercases it and throws
+    if facts.tasks.values().any(|t| is_non_string_status(t.status.as_deref())) {
+        return Err(Unsure);
     }
     for t in facts.tasks.values() {
         if !t.is_open() {

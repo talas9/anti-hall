@@ -90,6 +90,17 @@ fn inside_state_dir(home: &Path, p: &str) -> Option<String> {
     None
 }
 
+/// Whether `p` lies inside the DevSwarm state directory or inside the workspace's own worktree `wt` (both compared canonically, so a
+/// `..` or a symlink cannot leave them).
+fn own_path(home: &Path, wt: &str, p: &str) -> bool {
+    let canon = |x: &Path| -> Option<std::path::PathBuf> {
+        // the file may not exist yet: canonicalize its parent
+        std::fs::canonicalize(x).ok().or_else(|| Some(std::fs::canonicalize(x.parent()?).ok()?.join(x.file_name()?)))
+    };
+    let Some(path) = canon(Path::new(p)) else { return false };
+    [devswarm_root(home), std::path::PathBuf::from(wt)].iter().filter_map(|r| canon(r)).any(|r| path.starts_with(r))
+}
+
 fn rel_of(home: &Path, p: &Path) -> Option<String> {
     inside_state_dir(home, &p.to_string_lossy())
 }
@@ -100,20 +111,22 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
     let node = |why: &str| Stage::Node(why.to_string());
     let inv = inv_for(ctx.home, &ctx.st.env, ctx.now, cwd);
     let Some(desc) = read_descriptor(ctx.home, id) else { return node("no-descriptor") };
-    let mut plan = match pull::prepare(&inv, id, Some(&desc)) {
+    let mut plan = match pull::prepare_swept(&inv, id, Some(&desc)) {
         Ok(p) => p,
         Err(d) => return Stage::Node(d.0),
     };
-    // a mirror can stand in only for paths inside the state directory
+    // the descriptor's inbox and cursor stand where the workspace keeps them: inside the DevSwarm state directory, or inside the
+    // workspace's own worktree (a child's `.devswarm-temp`); any other path is not drained
     let ensured = plan.ensured().clone();
     let field = |k: &str| match ensured.get(defaults::text(k)) {
         Some(OVal::Str(t)) => Some(t.clone()),
         _ => None,
     };
     let (Some(inbox), Some(cursor)) = (field("mesh_write.field_inbox_path"), field("mesh_write.field_cursor_path")) else { return node("descriptor-paths") };
-    let (Some(inbox_rel), Some(cursor_rel)) = (inside_state_dir(ctx.home, &inbox), inside_state_dir(ctx.home, &cursor)) else {
-        return node("path-outside-state-dir");
-    };
+    let wt_path = cwd.to_string();
+    if !(own_path(ctx.home, &wt_path, &inbox) && own_path(ctx.home, &wt_path, &cursor)) {
+        return node("path-outside-allowed-dirs");
+    }
     let Some(wal_rel) = rel_of(ctx.home, plan.wal_path()) else { return node("path-outside-state-dir") };
     let Some(lock) = nodelock::acquire_stale_unless_live(&plan.lock_file().to_string_lossy(), pull::lock_params()) else { return node("pull-lock-held") };
     let held = Some(lock);
@@ -128,16 +141,19 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
     }
     let worktree = field("mesh_write.field_worktree_path").unwrap_or_else(|| cwd.to_string());
     let result = |native: f64, imported: usize, duplicate: usize| json!({"ok": true, "imported": imported, "duplicate": duplicate, "nativeCount": native as i64, "locked": true, "lost": 0});
-    let (outcome, files) = (pull::capture_fresh(&inv, &plan, &worktree, at), vec![descriptor_rel(id), wal_rel, inbox_rel, cursor_rel]);
+    let (outcome, files) = (
+        pull::capture_fresh(&inv, &plan, &worktree, at),
+        [descriptor_rel(id), wal_rel].into_iter().chain([&inbox, &cursor].into_iter().filter_map(|p| rel_of(ctx.home, Path::new(p)))).collect::<Vec<_>>(),
+    );
     let ready = |held: Option<nodelock::Held>, result: Value| Stage::Ready(Box::new(Staged { id: id.to_string(), cwd: cwd.to_string(), result, held, files }));
     match outcome {
         pull::Fresh::Blocked => {
             release(held);
             node("wal-blocked")
         }
-        pull::Fresh::CountFailed => {
+        pull::Fresh::CountFailed(detail) => {
             release(held);
-            node("count-failed")
+            Stage::Node(defaults::render("devswarm_recon.why_count_failed", &[("detail", &detail)]))
         }
         pull::Fresh::Empty => ready(held, result(0.0, 0, 0)),
         pull::Fresh::Read { native, ok, entry, wal_error, raw } => {
@@ -148,8 +164,6 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
                 Some("wal-write-failed")
             } else if entry.is_none() {
                 Some("empty-read")
-            } else if pull::store_feed_left(&inv, &plan, &raw) {
-                Some("fresh-date")
             } else {
                 None
             };
@@ -183,7 +197,7 @@ pub fn apply_pull(env: &Env, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Result<(
         store_override: None,
     };
     let desc = read_descriptor(env.home, id).ok_or_else(|| "no-descriptor".to_string())?;
-    let mut plan = pull::prepare(&inv, id, Some(&desc)).map_err(|d| d.0)?;
+    let mut plan = pull::prepare_swept(&inv, id, Some(&desc)).map_err(|d| d.0)?;
     plan.check_wal(&inv).map_err(|d| d.0)?;
     // the ensure runs under the workspace lock, released before the replay (the store feed takes the partition's lock itself)
     let Some(id_lock) = crate::meshw::idlock::acquire(env.home, id) else { return Err(defaults::text("devswarm_recon.why_lock_busy").to_string()) };
@@ -201,9 +215,16 @@ pub fn apply_pull(env: &Env, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Result<(
     Ok(())
 }
 
+/// Whether the reason a workspace was not drained names a pull with nothing to read by construction (`devswarm_recon.pull_skip_reasons`):
+/// a skip, not a held decision.
+pub fn skipped_by_construction(why: &str) -> bool {
+    defaults::list("devswarm_recon.pull_skip_reasons").contains(&why)
+}
+
 /// One line in the witness log for a workspace the engine did not drain itself, so the proof window can see how often and why.
 pub fn note_handback(ctx: &Ctx, id: &str, why: &str) {
-    let rec = json!({"ts": ctx.now, "job": defaults::text("devswarm_recon.job_handback"), "id": id, "why": why});
+    let job = if skipped_by_construction(why) { "devswarm_recon.job_pull_skip" } else { "devswarm_recon.job_handback" };
+    let rec = json!({"ts": ctx.now, "job": defaults::text(job), "id": id, "why": why});
     crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_recon.witness_file")), &rec);
 }
 
@@ -252,4 +273,34 @@ pub fn drain(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, staged: Vec<Staged>
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// hivecontrol refuses a drain of workspace X run with another workspace's AI pane ("Current AI pane ... was not found in this
+    /// Workspace"), so a sweep drain carries neither the builder id nor the pane id of the session that started it.
+    /// A Primary checkout's label has no hivecontrol workspace (`workspace message-count` answers "Workspace not found"), so its pull is a
+    /// skip; every reason that is a real engine gap stays a held decision.
+    #[test]
+    fn only_a_workspace_with_no_native_queue_is_skipped_rather_than_held() {
+        assert!(skipped_by_construction("primary-label"));
+        for held in ["path-outside-state-dir", "duplicate-registry-rows", "shortfall", "count-failed", ""] {
+            assert!(!skipped_by_construction(held), "{held} is a held decision");
+        }
+    }
+
+    #[test]
+    fn a_sweep_drain_carries_no_session_or_pane_identity() {
+        let mut base = ident::Env::new();
+        for k in ["CLAUDE_CODE_SESSION_ID", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_TERMINAL_ID", "DEVSWARM_BUILDER_TERMINAL_GENERATION", "PATH"] {
+            base.insert(k.to_string(), "x".to_string());
+        }
+        let env = sweep_env(&base, Path::new("/h"));
+        for gone in ["CLAUDE_CODE_SESSION_ID", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_TERMINAL_ID", "DEVSWARM_BUILDER_TERMINAL_GENERATION"] {
+            assert!(!env.contains_key(gone), "{gone} must not reach a sweep drain");
+        }
+        assert!(env.contains_key("PATH"));
+    }
 }

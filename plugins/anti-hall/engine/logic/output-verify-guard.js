@@ -1,9 +1,11 @@
 // check = "output-verify-guard" (PostToolUse on Bash; advisory only). After a Bash call that ran a test runner, the output is
 // scanned for a passing signal AND a failing signal (or a non-zero exit code) in the same run, and a reminder to read the real
 // counts is added, at most once per turn per distinct signal set. For every test-runner output the Jev shadow question is asked
-// without waiting (the answer only reaches the Jev decision log). The payload reaches a script with its object keys sorted, so a
-// tool output whose answer could depend on the order of its keys, or a truncation that would depend on it, defers to Node.
-// A request without HOME defers. Mirrors hooks/output-verify-guard.js. Keys, patterns and texts: response_guards.toml (output_verify.*).
+// without waiting (the answer only reaches the Jev decision log). The payload reaches a script with its object keys sorted, so
+// where the order of a tool output's keys could change the answer, they are put back in the host's own order
+// (output_verify_v1.key_order; keys it does not list follow, sorted) before the scanned text is built (unlisted keys are logged). A cut
+// through a surrogate pair keeps the lone half, as Node's slice does. Mirrors hooks/output-verify-guard.js. Keys, patterns and
+// texts: response_guards.toml (output_verify.*) and guards_v1.toml (output_verify_v1.*).
 'use strict';
 
 function ovIsObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -21,10 +23,13 @@ function ovSignals(key) {
 // The text of the first genuine hit of one signal, or null. A count pattern only counts a non-zero count (every occurrence is
 // looked at); a pattern anchored to the start of a line is scanned by the interpreter (it is cheap), the others by the host's
 // linear-time engine so a large output cannot spend the time limit.
-function ovHit(s, text) {
+// `safe` is `hookProc.usv(text)`, made once by a caller that scans the same text with many patterns (a regex pass over a large output
+// per pattern was most of this check's time); without it the text is cleaned here.
+function ovHit(s, text, safe) {
   if (s.lineStart) { var h = text.match(s.re); return h ? h[0] : null; }
-  if (!s.count) { var r = ah.re.find(s.src, s.flags, text); return r ? text.slice(r[0], r[1]) : null; }
-  var all = ah.re.findAll(s.src, s.flags, text);
+  var clean = safe === undefined ? hookProc.usv(text) : safe;
+  if (!s.count) { var r = ah.re.find(s.src, s.flags, clean); return r ? text.slice(r[0], r[1]) : null; }
+  var all = ah.re.findAll(s.src, s.flags, clean);
   for (var i = 0; i < all.length; i++) {
     var t = text.slice(all[i][0], all[i][1]), g = new RegExp(s.src, s.flags).exec(t);
     if (g && parseInt(g[1], 10) !== 0) return t;
@@ -32,18 +37,19 @@ function ovHit(s, text) {
   return null;
 }
 
-function ovFirstMatch(list, text) {
+function ovFirstMatch(list, text, safe) {
   for (var i = 0; i < list.length; i++) {
-    var t = ovHit(list[i], text);
+    var t = ovHit(list[i], text, safe);
     if (t !== null) return t;
   }
   return null;
 }
 
 // The exit codes (null for a non-finite one) the exit-code text scan sees, in order.
-function ovExitCodes(text, firstOnly) {
+function ovExitCodes(text, firstOnly, safeText) {
   var src = ah.cfg('output_verify.exit_code_re'), out = [];
-  var all = firstOnly ? (function () { var r = ah.re.find(src, 'i', text); return r ? [r] : []; })() : ah.re.findAll(src, 'i', text);
+  var safe = safeText === undefined ? hookProc.usv(text) : safeText;
+  var all = firstOnly ? (function () { var r = ah.re.find(src, 'i', safe); return r ? [r] : []; })() : ah.re.findAll(src, 'i', safe);
   for (var i = 0; i < all.length; i++) {
     var g = new RegExp(src, 'i').exec(text.slice(all[i][0], all[i][1])), n = g ? parseInt(g[1], 10) : NaN;
     out.push(isFinite(n) ? n : null);
@@ -71,11 +77,29 @@ function ovIsTestRunner(cmd) {
   return false;
 }
 
-// Objects with two or more keys anywhere in a value: their key order is Node's, not ours.
+// Objects with two or more keys anywhere in a value: their key order is the host's, not the sorted one the script sees.
 function ovHasOrdered(v) {
   if (Array.isArray(v)) return v.some(ovHasOrdered);
   if (ovIsObj(v)) { var ks = Object.keys(v); return ks.length >= 2 || ks.some(function (k) { return ovHasOrdered(v[k]); }); }
   return false;
+}
+
+// v with every object's keys in the host's order: the listed keys first, in list order, then the others (sorted, as they came).
+function ovReorder(v, order) {
+  if (Array.isArray(v)) return v.map(function (x) { return ovReorder(x, order); });
+  if (!ovIsObj(v)) return v;
+  var ks = Object.keys(v), out = {};
+  order.forEach(function (k) { if (Object.prototype.hasOwnProperty.call(v, k)) out[k] = ovReorder(v[k], order); });
+  ks.forEach(function (k) { if (order.indexOf(k) < 0) out[k] = ovReorder(v[k], order); });
+  return out;
+}
+
+// Objects anywhere in a value with two or more keys the host order does not list: their order is not known here.
+function ovHasUnlisted(v, order) {
+  if (Array.isArray(v)) return v.some(function (x) { return ovHasUnlisted(x, order); });
+  if (!ovIsObj(v)) return false;
+  var ks = Object.keys(v);
+  return ks.filter(function (k) { return order.indexOf(k) < 0; }).length >= 2 || ks.some(function (k) { return ovHasUnlisted(v[k], order); });
 }
 
 // The escaped text of every key and string value (what each contributes to JSON.stringify(v)).
@@ -110,46 +134,45 @@ function ovOrderMatters(v, structuredExit, fail, pass) {
 }
 
 function ovDecide(p, pend) {
-  var home = ah.env.get(ah.cfg('env.home'));
-  if (home === null || home === '') return 'defer';
   if (!ah.settings.bool('output_verify.setting') || ah.settings.skipped(ah.cfg('output_verify.guard_name'))) return 'allow';
   if (!p || p.tool_name !== ah.cfg('output_verify.tool')) return 'allow';
   var ti = p.tool_input, cmd = ti && typeof ti.command === 'string' ? ti.command : '';
   if (!ovIsTestRunner(cmd)) return 'allow';
-  // the blob: the stringified output values, in field order
-  var parts = [], ordered = [], fields = ah.cfg('output_verify.blob_fields');
-  for (var i = 0; i < fields.length; i++) {
-    var v = p[fields[i]];
-    if (v === undefined || v === null) continue;
-    parts.push(typeof v === 'string' ? v : JSON.stringify(v));
-    if (ovHasOrdered(v)) ordered.push(v);
-  }
-  var blob = parts.join('\n'), cap = ah.cfgNum('output_verify.scan_cap');
-  if (blob.length > cap) {
-    if (ordered.length) return 'defer';
-    var half = Math.floor(cap / 2), hi = blob.charCodeAt(half - 1), lo = blob.charCodeAt(blob.length - half);
-    if ((hi >= 0xd800 && hi <= 0xdbff) || (lo >= 0xdc00 && lo <= 0xdfff)) return 'defer'; // a cut through a surrogate pair stays on Node
-    blob = blob.slice(0, half) + ah.cfg('output_verify.truncation_marker') + blob.slice(-half);
-  }
-  if (!blob) return 'allow';
+  // the blob: the stringified output values, in field order. The payload arrives with sorted keys; where the order of an object's
+  // keys could change what the scan finds (or what a cut keeps), the host's own order is restored first.
+  var vals = [], fields = ah.cfg('output_verify.blob_fields'), order = ah.cfg('output_verify_v1.key_order');
+  for (var i = 0; i < fields.length; i++) { var v = p[fields[i]]; if (v !== undefined && v !== null) vals.push(v); }
+  var build = function (host) {
+    return vals.map(function (x) { return typeof x === 'string' ? x : JSON.stringify(host ? ovReorder(x, order) : x); }).join('\n');
+  };
   var fail = ovSignals('output_verify.fail_patterns'), pass = ovSignals('output_verify.pass_patterns');
   var tr = p.tool_response, structured = null;
   if (ovIsObj(tr)) {
     var ef = ah.cfg('output_verify.exit_fields');
     for (var e = 0; e < ef.length; e++) { var c = tr[ef[e]]; if (typeof c === 'number' && isFinite(c)) { structured = c; break; } }
   }
-  for (var o = 0; o < ordered.length; o++) if (ovOrderMatters(ordered[o], structured !== null, fail, pass)) return 'defer';
+  var blob = build(false), cap = ah.cfgNum('output_verify.scan_cap'), multi = vals.filter(ovHasOrdered);
+  if (multi.length && (blob.length > cap || multi.some(function (x) { return ovOrderMatters(x, structured !== null, fail, pass); }))) {
+    blob = build(true);
+    if (multi.some(function (x) { return ovHasUnlisted(x, order); })) ah.unable('output-verify-guard:key_order_unknown'); // keys outside the configured order keep the order given
+  }
+  if (blob.length > cap) {
+    var half = Math.floor(cap / 2);
+    blob = blob.slice(0, half) + ah.cfg('output_verify.truncation_marker') + blob.slice(-half);
+  }
+  if (!blob) return 'allow';
+  var safeBlob = hookProc.usv(blob); // once for the exit-code scan and every signal pattern
   var exitCode = structured;
   if (exitCode === null) {
-    var xs = ovExitCodes(blob, true);
+    var xs = ovExitCodes(blob, true, safeBlob);
     if (xs.length && xs[0] !== null) exitCode = xs[0];
   }
-  var failHit = ovFirstMatch(fail, blob), passHit = ovFirstMatch(pass, blob);
+  var failHit = ovFirstMatch(fail, blob, safeBlob), passHit = ovFirstMatch(pass, blob, safeBlob);
   var nonZero = typeof exitCode === 'number' && exitCode !== 0;
   var mismatch = Boolean(passHit) && (Boolean(failHit) || nonZero);
-  // the Jev shadow question: a window that would cut a surrogate pair is Node's lone surrogate, which stays on Node
+  // the Jev shadow question (never the decision): a window that would end in a lone high surrogate ends one unit earlier
   var win = ah.cfgNum('output_verify.jev_state_chars');
-  if (blob.length > win && blob.charCodeAt(win - 1) >= 0xd800 && blob.charCodeAt(win - 1) <= 0xdbff && blob.charCodeAt(win) >= 0xdc00 && blob.charCodeAt(win) <= 0xdfff) return 'defer';
+  if (blob.length > win && blob.charCodeAt(win - 1) >= 0xd800 && blob.charCodeAt(win - 1) <= 0xdbff && blob.charCodeAt(win) >= 0xdc00 && blob.charCodeAt(win) <= 0xdfff) win--;
   pend.ask = {
     id: ah.cfg('output_verify.jev_id'),
     question: { type: 'noul', instructions: ah.cfg('output_verify.jev_instructions'), criteria: [['true', ah.cfg('output_verify.jev_true')], ['false', ah.cfg('output_verify.jev_false')]] },
@@ -177,6 +200,6 @@ function ovDecide(p, pend) {
 function decide(p) {
   var pend = { ask: null };
   var v = ovDecide(p, pend);
-  if (v !== 'defer' && pend.ask !== null) ah.jev.ask(pend.ask);
+  if (pend.ask !== null) ah.jev.ask(pend.ask);
   return v;
 }

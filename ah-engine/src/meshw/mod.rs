@@ -1,28 +1,23 @@
 //! D45 stage 2: the mesh CLI verbs that WRITE the per-repo DevSwarm store, behind `mesh.engine_writes`.
 //!
-//! `ah-engine mesh <devswarm.js argv...>` takes exactly the arguments `node scripts/devswarm.js <argv...>` takes and,
-//! when it answers itself, prints the same stdout and exits with the same code. Which process acts is the switch:
+//! `ah-engine mesh <devswarm.js argv...>` takes exactly the arguments `node scripts/devswarm.js <argv...>` took and prints the
+//! same stdout and exits with the same code. The engine is the only process that acts; there is no Node to hand a verb to:
 //!
-//! * `off` (shipped default): Node runs the verb (the engine `exec`s it, nothing else happens);
-//! * `shadow`: Node runs the verb and its output is passed through unchanged; the engine then runs the same verb against
-//!   a scratch COPY of the store (taken before Node ran) and a scratch home, with Node's timestamp, and appends one JSON
-//!   line to `<state dir>/mesh_write.shadow_log` saying whether stdout, the exit code and the store row it wrote match.
-//!   (In `on` mode the same log gets one line per call saying whether the engine answered or handed it to Node, so the
-//!   native coverage is measured in both modes.)
-//!   A panic or an error in the engine path is caught and logged; it never touches Node's result;
-//! * `on`: the engine runs the verb; wherever it cannot reproduce Node exactly (an [`ident::Defer`]) Node runs it.
+//! * `on` (shipped default; `shadow`, a position of earlier versions, reads as `on`): the engine runs the verb. One it cannot
+//!   answer (an [`ident::Defer`], an unported verb, no plugin context) is UNABLE: nothing was written, it is counted
+//!   (`abandoned`), one line says so on stderr and the exit code is `mesh_write.exit_unable`;
+//! * `off`: the diagnostic switch. Nothing is done; it is counted, said on stderr, and the exit code is `mesh_write.exit_unable`.
+//!   Never a silent success.
 //!
 //! Ported verbs: `send` (direct, `--to-primary`, `--broadcast`), `mesh read` (consuming and `--peek`), `mesh history`,
-//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>`, the single-partition `inbox read-primary` and the plain `roster`; and the store-free verbs of [`simple`] (`help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`). Every other verb runs in Node whatever the switch says.
+//! `roster --ack`, `inbox ack-primary`, the plain `heartbeat`, `inbox tick <id>`, the single-partition `inbox read-primary` and the plain `roster`; and the store-free verbs of [`simple`] (`help`, the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`, `gate-intent`, `notice --list`), plus the plan, scope, gate, workspace and extension verbs.
 //!
-//! The exit-code contract (`mesh_write.exit_defer`, `mesh_write.exit_committed_failure`):
+//! The exit-code contract (`mesh_write.exit_unable`, `mesh_write.exit_committed_failure`):
 //!
-//! * a verb the engine does not answer is DEFERRED, always before its first write; `ah-engine mesh` then runs Node
-//!   itself and exits with Node's code. Exit 75 (`exit_defer`, sysexits EX_TEMPFAIL) is reserved for "deferred, nothing
-//!   written, and the engine could not run Node itself": the caller runs Node. It is never used after a write.
+//! * exit 69 (`exit_unable`, sysexits EX_UNAVAILABLE) is "unable or switched off, nothing written", with a stderr line naming the site.
+//!   It is a visible error, never the silent 75 of a deferral, and is never used after a write.
 //! * a failure AFTER the first store write (a panic, or a deferral decided late by a bug) exits `exit_committed_failure`
-//!   (70) and never runs Node: running the verb again would write twice. It is deliberately not 75, the one code a
-//!   caller may answer by running Node.
+//!   (70): running the verb again would write twice.
 //! * every other code is the verb's own result and passes through.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - the shadow is advisory: a failure to copy, compare or log never changes what Node did (it is logged when it can be)
@@ -31,10 +26,13 @@
 pub mod actverbs;
 pub mod appdb;
 pub mod appverbs;
+pub mod archiveverb;
 pub mod args;
 pub mod clog;
 pub mod common;
 pub mod cursors;
+pub mod diagverbs;
+pub mod dsbverbs;
 pub mod extverbs;
 pub mod gitverbs;
 pub mod heartbeat;
@@ -43,6 +41,8 @@ pub mod ident;
 pub mod idlock;
 pub mod inbox;
 pub mod lifeverbs;
+pub mod mboxtool;
+pub mod orphan;
 pub mod plan;
 pub mod planverbs;
 pub mod pull;
@@ -54,22 +54,20 @@ pub mod rosterrows;
 pub mod rostertail;
 pub mod send;
 pub mod simple;
+pub mod spawnverb;
 pub mod store;
 pub mod summary;
 pub mod tick;
 pub mod union;
-pub mod verify;
+pub mod watcher;
 pub mod wsverbs;
 
-use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use common::Inv;
 use ident::{Defer, R};
 use send::Answer;
 use std::io::{Read, Write};
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 
 /// Set at a verb's commit point (its first store write succeeded): from then on Node must never run the same verb in
 /// this process, since that would write twice.
@@ -78,6 +76,10 @@ pub static COMMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// Mark the commit point (see [`COMMITTED`]).
 pub fn mark_committed() {
     COMMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // the launcher that may stop this process at its time limit learns from this file that the verb already acted
+    if let Some(mark) = std::env::var_os(defaults::text("mesh_write.env_commit_mark")).filter(|m| !m.is_empty()) {
+        crate::discard::harmless(std::fs::OpenOptions::new().create(true).append(true).open(mark)); // keep: the mark is advisory; a failed create only leaves today's behaviour
+    }
 }
 
 fn committed() -> bool {
@@ -135,14 +137,12 @@ pub fn verify_log(rec: &serde_json::Value) {
     }
 }
 
-/// The three positions of `mesh.engine_writes`.
+/// The two positions of `mesh.engine_writes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Node acts.
+    /// Switched off: the mesh write verbs do nothing (counted, with a message, exit `mesh_write.exit_unable`).
     Off,
-    /// Node acts; the engine runs on a copy and logs differences.
-    Shadow,
-    /// The engine acts where it can, Node elsewhere.
+    /// The engine acts (`shadow`, a position of earlier versions, reads as `on`).
     On,
 }
 
@@ -153,8 +153,7 @@ pub fn mode() -> Mode {
     let v = crate::cfgstore::Effective::resolve_process(&layers).text("mesh.engine_writes").trim().to_ascii_lowercase();
     let modes = defaults::list("mesh.engine_writes_modes");
     match modes.iter().position(|m| *m == v) {
-        Some(1) => Mode::Shadow,
-        Some(2) => Mode::On,
+        Some(1) | Some(2) => Mode::On,
         _ => Mode::Off,
     }
 }
@@ -289,46 +288,19 @@ pub fn inv_from_process(stdin: Option<String>) -> Option<Inv> {
     Some(Inv { write_home: home.clone(), home, env, cwd, now, stdin, store_override: None })
 }
 
-fn node_cli() -> Option<PathBuf> {
-    let root = defaults::root()?;
-    Some(root.join(defaults::text("mesh_write.node_cli")))
+/// The engine cannot answer this call and there is no Node to hand it to: count it, say so on stderr with the site, and exit with
+/// the visible error code `mesh_write.exit_unable` (nothing was done; never the 75 of a deferral).
+fn unable(site: &str) -> i32 {
+    crate::obs::counters::handback(crate::obs::counters::Handback::Abandoned, site);
+    eprintln!("{}", defaults::render("mesh_write.msg_unable", &[("site", &site)]));
+    defaults::num("mesh_write.exit_unable") as i32
 }
 
-fn node_cmd(argv: &[String]) -> Option<Command> {
-    let cli = node_cli()?;
-    let mut c = Command::new(defaults::text("mesh_write.node_bin"));
-    c.arg(cli).args(argv);
-    Some(c)
-}
-
-/// Hand the whole invocation to Node (replaces this process; never returns on success).
-fn exec_node(argv: &[String]) -> i32 {
-    let Some(mut c) = node_cmd(argv) else {
-        eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-        return defaults::num("mesh_write.exit_defer") as i32;
-    };
-    let e = c.exec();
-    eprintln!("{}", defaults::render("mesh_write.msg_node_exec_failed", &[("err", &e)]));
-    defaults::num("mesh_write.exit_defer") as i32
-}
-
-/// Run Node as a child, feeding `stdin` when given, passing its stderr through; returns (exit code, stdout bytes).
-fn spawn_node(argv: &[String], stdin: Option<&str>) -> Option<(i32, Vec<u8>)> {
-    let mut c = node_cmd(argv)?;
-    c.stdout(Stdio::piped()).stderr(Stdio::inherit());
-    c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::inherit() });
-    let mut child = c.spawn().ok()?;
-    if let Some(body) = stdin
-        && let Some(mut w) = child.stdin.take()
-    {
-        crate::discard::harmless(w.write_all(body.as_bytes())); // keep: a child that exits early closes the pipe; its own output says why
-    }
-    let out = child.wait_with_output().ok()?;
-    let code = out.status.code().unwrap_or_else(|| {
-        use std::os::unix::process::ExitStatusExt;
-        out.status.signal().map_or(1, |s| defaults::num("mesh_write.exit_signal_base") as i32 + s)
-    });
-    Some((code, out.stdout))
+/// The switch is off: nothing is done, and it is counted and said, never a silent success.
+fn disabled(site: &str) -> i32 {
+    crate::obs::counters::handback(crate::obs::counters::Handback::Abandoned, site);
+    eprintln!("{}", defaults::render("mesh_write.msg_disabled", &[("site", &site)]));
+    defaults::num("mesh_write.exit_unable") as i32
 }
 
 fn emit(stdout: &[u8]) {
@@ -347,107 +319,40 @@ fn read_stdin() -> String {
 /// `ah-engine mesh <devswarm.js argv...>`: see the module header.
 pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     let Some(argv) = raw.iter().map(|a| a.to_str().map(str::to_string)).collect::<Option<Vec<String>>>() else {
-        // a non-UTF-8 argument: Node reads it its own way
-        let lossy: Vec<String> = raw.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-        return exec_node(&lossy);
+        return unable("meshw:non_utf8_argument");
     };
-    if argv.first().map(String::as_str) == Some(defaults::text("mesh_write.verify_flag")) {
-        return verify::run_verifier(&argv[1..]);
-    }
-    if argv.first().map(String::as_str) == Some(defaults::text("devswarm_cli.witness_flag")) {
-        return simple::run_witness(&argv[1..]);
-    }
     let a = args::parse(&argv);
-    let m = mode();
-    if m == Mode::Off || verb_of(&a).is_none() {
-        return exec_node(&argv);
+    if mode() == Mode::Off {
+        return disabled("meshw:native_off");
+    }
+    if verb_of(&a).is_none() {
+        return unable("meshw:unhandled_verb");
     }
     // a help request (or any verb of `simple`) never reads fd 0
     let wants_stdin = a.has(defaults::text("mesh_write.flag_message_stdin")) && !cli_witnessed(verb_of(&a));
     let stdin = wants_stdin.then(read_stdin);
-    match m {
-        Mode::On => {
-            let t0 = common::now_ms();
-            let verb = verb_label(&a);
-            let w = |k: &str| defaults::text(k).to_string();
-            let Some(inv) = inv_from_process(stdin.clone()) else {
-                shadow_log(
-                    &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}),
-                );
-                return node_with(&argv, stdin.as_deref());
-            };
-            // a writing verb keeps Node as a background check on a scratch copy (never a second write on the real home)
-            let scratch = match verb_of(&a) {
-                Some(Verb::Heartbeat) => verify::prepare(&inv, a.one(defaults::text("mesh_write.flag_summary")).is_some()),
-                // a `--child` tick drains the native queue DESTRUCTIVELY: its Node witness would meet the real hivecontrol, so
-                // it is not run until it can be given a recording stub (see `pull`)
-                Some(Verb::InboxTick) if a.has(defaults::text("mesh_write.flag_child")) => None,
-                Some(Verb::InboxTick) => verify::prepare_tick(&inv),
-                Some(Verb::InboxReadPrimary) => verify::prepare_read_primary(&inv),
-                Some(Verb::Roster) => verify::prepare_roster(&inv),
-                v if cli_witnessed(v) => {
-                    simple::prepare(&inv, matches!(v, Some(Verb::Gate | Verb::Workspaces)) || matches!(v, Some(Verb::Ext(e)) if extverbs::needs_store(e)))
-                }
-                _ => None,
-            };
-            let r = std::panic::catch_unwind(|| run_native(&inv, &a));
-            let (step, result, reason) = next_step(r, committed());
-            shadow_log(
-                &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}),
-            );
-            match step {
-                Next::Print(ans) => {
-                    if let Some(sc) = &scratch {
-                        if cli_witnessed(verb_of(&a)) {
-                            simple::launch(sc, &inv, &argv, &ans);
-                        } else {
-                            verify::launch(sc, &inv, &argv, &ans.stdout);
-                        }
-                    }
-                    emit(ans.stdout.as_bytes());
-                    ans.code
-                }
-                Next::CommittedFailure => {
-                    if let Some(sc) = &scratch {
-                        verify::discard_tree(sc);
-                    }
-                    eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
-                    defaults::num("mesh_write.exit_committed_failure") as i32
-                }
-                Next::RunNode => {
-                    if let Some(sc) = &scratch {
-                        verify::discard_tree(sc);
-                    }
-                    node_with(&argv, stdin.as_deref())
-                }
-            }
+    let t0 = common::now_ms();
+    let verb = verb_label(&a);
+    let w = |k: &str| defaults::text(k).to_string();
+    let Some(inv) = inv_from_process(stdin) else {
+        shadow_log(
+            &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}),
+        );
+        return unable("meshw:no_context");
+    };
+    let r = std::panic::catch_unwind(|| run_native(&inv, &a));
+    let (step, result, reason) = next_step(r, committed());
+    shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": result, "reason": reason, "ms": common::now_ms() - t0}));
+    match step {
+        Next::Print(ans) => {
+            emit(ans.stdout.as_bytes());
+            ans.code
         }
-        // the write verbs replay on a copy of the store; a verb whose inputs are files outside it (a read receipt that
-        // Node consumes while it runs) cannot be replayed, so it only runs in Node and is counted
-        _ if matches!(
-            verb_of(&a),
-            Some(
-                Verb::InboxAckPrimary
-                    | Verb::Heartbeat
-                    | Verb::InboxTick
-                    | Verb::InboxReadPrimary
-                    | Verb::Roster
-                    | Verb::Simple(_)
-                    | Verb::Plan
-                    | Verb::Scope
-                    | Verb::Gate
-                    | Verb::Workspaces
-                    | Verb::Ext(_)
-            )
-        ) =>
-        {
-            // logged BEFORE Node runs: with no stdin to forward the engine replaces itself with Node and never returns
-            shadow_log(
-                &serde_json::json!({"ts": common::now_ms(), "verb": verb_label(&a), "mode": defaults::text("mesh_write.mode_shadow"), "result": defaults::text("mesh_write.shadow_skipped"), "reason": "", "ms": 0}),
-            );
-            node_with(&argv, stdin.as_deref())
+        Next::CommittedFailure => {
+            eprintln!("{}", defaults::text("mesh_write.msg_committed_failure"));
+            defaults::num("mesh_write.exit_committed_failure") as i32
         }
-        _ => shadow(&argv, &a, stdin),
+        Next::Unable => unable("meshw:deferred"),
     }
 }
 
@@ -455,119 +360,28 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
 pub enum Next {
     /// The engine answered: print this and exit with its code.
     Print(Answer),
-    /// It did not act and wrote nothing: run the verb in Node.
-    RunNode,
-    /// It wrote and then failed: report, never run Node (that would write twice).
+    /// It did not act and wrote nothing: nothing more can be done (there is no Node to run the verb).
+    Unable,
+    /// It wrote and then failed: report, and never run the verb again (that would write twice).
     CommittedFailure,
 }
 
 /// The one decision that keeps a write from happening twice: an answer is printed; a deferral or a panic BEFORE the
-/// first write runs Node; ANY failure after it is a committed failure. Returns the step plus the log result and reason.
+/// first write is "unable"; ANY failure after it is a committed failure. Returns the step plus the log result and reason.
 pub fn next_step(r: std::thread::Result<R<Answer>>, committed: bool) -> (Next, String, String) {
     let w = |k: &str| defaults::text(k).to_string();
     match r {
         Ok(Ok(ans)) => (Next::Print(ans), w("mesh_write.on_native"), String::new()),
         Ok(Err(Defer(d))) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d),
-        Ok(Err(Defer(d))) => (Next::RunNode, w("mesh_write.shadow_defer"), d),
+        Ok(Err(Defer(d))) => (Next::Unable, w("mesh_write.shadow_defer"), d),
         Err(_) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), String::new()),
-        Err(_) => (Next::RunNode, w("mesh_write.shadow_panic"), String::new()),
+        Err(_) => (Next::Unable, w("mesh_write.shadow_panic"), String::new()),
     }
 }
 
-fn node_with(argv: &[String], stdin: Option<&str>) -> i32 {
-    match stdin {
-        None => exec_node(argv),
-        Some(body) => match spawn_node(argv, Some(body)) {
-            Some((code, out)) => {
-                emit(&out);
-                code
-            }
-            None => {
-                eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-                defaults::num("mesh_write.exit_defer") as i32
-            }
-        },
-    }
-}
+// ---- the call log ------------------------------------------------------------------------------------------------------
 
-// ---- shadow -----------------------------------------------------------------------------------------------------------
-
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: our own scratch directory; leftovers are only disk
-    }
-}
-
-/// The real store file of the caller's project, when the engine can name it.
-fn real_store(inv: &Inv) -> R<PathBuf> {
-    let cwd = ident::project_cwd_for(&inv.home, &inv.env, &inv.cwd)?;
-    let Some(rk) = ident::repo_key_for_worktree(&cwd)? else { return ident::defer("no-project") };
-    Ok(idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(rk).join(defaults::text("mesh_write.store_file")))
-}
-
-/// Copy a live store with SQLite's online backup (a consistent snapshot whatever writers do meanwhile).
-fn snapshot(src: &Path, dst: &Path) -> Result<i64, String> {
-    let from = rusqlite::Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|e| e.to_string())?;
-    from.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).map_err(|e| e.to_string())?;
-    let mut to = rusqlite::Connection::open(dst).map_err(|e| e.to_string())?;
-    {
-        let b = rusqlite::backup::Backup::new(&from, &mut to).map_err(|e| e.to_string())?;
-        b.run_to_completion(defaults::num("mesh_write.shadow_backup_pages") as i32, defaults::millis("mesh_write.shadow_backup_pause_ms"), None)
-            .map_err(|e| e.to_string())?;
-    }
-    let max_id: i64 = to.query_row(crate::sql::MESHW_MAX_MESSAGE_ID, [], |r| r.get::<_, Option<i64>>(0)).map_err(|e| e.to_string())?.unwrap_or(0);
-    Ok(max_id)
-}
-
-/// The physical row a send wrote, by hash: every column but the rowid.
-fn row_by_hash(db: &Path, hash: &str) -> Option<String> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
-    c.query_row(crate::sql::MESHW_ROW_BY_HASH, [hash], |r| {
-        let mut parts = Vec::new();
-        for i in 0..13 {
-            parts.push(match r.get_ref(i)? {
-                rusqlite::types::ValueRef::Null => "null".to_string(),
-                rusqlite::types::ValueRef::Integer(x) => x.to_string(),
-                rusqlite::types::ValueRef::Real(x) => x.to_string(),
-                rusqlite::types::ValueRef::Text(t) => serde_json::to_string(&String::from_utf8_lossy(t)).unwrap_or_default(),
-                rusqlite::types::ValueRef::Blob(b) => format!("blob:{}", b.len()),
-            });
-        }
-        Ok(parts.join("|"))
-    })
-    .ok()
-}
-
-fn count_after(db: &Path, id: i64) -> i64 {
-    let Ok(c) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX) else {
-        return -1;
-    };
-    c.query_row(crate::sql::MESHW_COUNT_AFTER_ID, [id], |r| r.get(0)).unwrap_or(-1)
-}
-
-fn broadcast_cursor_of(db: &Path, id: &str) -> Option<i64> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    c.query_row(crate::sql::MESH_BROADCAST_CURSOR, [id], |r| r.get::<_, i64>(0)).ok()
-}
-
-fn cap(s: &str) -> String {
-    let n = defaults::num("mesh_write.shadow_log_cap") as usize;
-    if s.len() <= n {
-        return s.to_string();
-    }
-    let mut end = n;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
-}
-
+/// One JSON line per call: whether the engine answered or could not.
 fn shadow_log(rec: &serde_json::Value) {
     let p = crate::paths::dir().join(defaults::text("mesh_write.shadow_log"));
     if let Some(d) = p.parent() {
@@ -577,98 +391,6 @@ fn shadow_log(rec: &serde_json::Value) {
         // one write of the whole line: concurrent `ah-engine mesh` processes append to the same file, and `writeln!`
         // issues one write per formatting piece, which interleaves lines between processes (O_APPEND keeps one write whole)
         crate::discard::harmless(f.write_all(format!("{rec}\n").as_bytes())); // keep: the shadow log is advisory
-    }
-}
-
-/// Shadow mode: Node acts; the engine replays on a copy and logs the comparison.
-fn shadow(argv: &[String], a: &args::Args, stdin: Option<String>) -> i32 {
-    let t0 = common::now_ms();
-    let inv0 = inv_from_process(stdin.clone());
-    let verb = verb_label(a);
-    // 1. snapshot the store before Node writes
-    let scratch_dir = crate::paths::dir().join(defaults::text("mesh_write.shadow_dir")).join(format!("{}-{}", std::process::id(), t0));
-    let scratch = Scratch { dir: scratch_dir.clone() };
-    let mut pre: Result<(PathBuf, i64), String> = Err(String::new());
-    if let Some(inv) = &inv0 {
-        pre = match real_store(inv) {
-            Ok(real) if real.is_file() => {
-                crate::discard::harmless(std::fs::create_dir_all(&scratch_dir)); // keep: the snapshot below reports the failure
-                let copy = scratch_dir.join(defaults::text("mesh_write.store_file"));
-                snapshot(&real, &copy).map(|max| (real, max))
-            }
-            Ok(_) => Err(defaults::text("mesh_write.shadow_no_store").to_string()),
-            Err(Defer(d)) => Err(d),
-        };
-    }
-    // 2. Node acts, its output passes through unchanged
-    let Some((node_code, node_out)) = spawn_node(argv, stdin.as_deref()) else {
-        eprintln!("{}", defaults::text("mesh_write.msg_no_node_cli"));
-        return defaults::num("mesh_write.exit_defer") as i32;
-    };
-    emit(&node_out);
-    // 3. the engine replays on the copy; nothing below can change what Node did
-    let rec = std::panic::catch_unwind(|| compare(inv0, a, pre, &scratch_dir, node_code, &node_out))
-        .unwrap_or_else(|_| serde_json::json!({"result": defaults::text("mesh_write.shadow_panic")}));
-    let mut rec = rec;
-    rec["ts"] = serde_json::json!(t0);
-    rec["verb"] = serde_json::json!(verb);
-    rec["ms"] = serde_json::json!(common::now_ms() - t0);
-    rec["mode"] = serde_json::json!(defaults::text("mesh_write.mode_shadow"));
-    shadow_log(&rec);
-    drop(scratch);
-    node_code
-}
-
-fn compare(inv0: Option<Inv>, a: &args::Args, pre: Result<(PathBuf, i64), String>, scratch: &Path, node_code: i32, node_out: &[u8]) -> serde_json::Value {
-    let w = |k: &str| defaults::text(k).to_string();
-    let Some(mut inv) = inv0 else { return serde_json::json!({"result": w("mesh_write.shadow_defer"), "reason": "no-context"}) };
-    let (real, max_id) = match pre {
-        Ok(x) => x,
-        Err(reason) => return serde_json::json!({"result": w("mesh_write.shadow_defer"), "reason": reason}),
-    };
-    let node_text = String::from_utf8_lossy(node_out).into_owned();
-    let node_json = OVal::parse(node_text.trim_end());
-    // replay Node's clock: a send's row carries it (the hash covers it); otherwise "now"
-    let node_hash = node_json.as_ref().and_then(|j| match j.get("hash") {
-        Some(OVal::Str(h)) => Some(h.clone()),
-        _ => None,
-    });
-    if let Some(h) = &node_hash
-        && let Ok(c) = rusqlite::Connection::open_with_flags(&real, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        && let Ok(ts) = c.query_row(crate::sql::MESHW_TS_BY_HASH, [h], |r| r.get::<_, i64>(0))
-    {
-        inv.now = ts;
-    }
-    inv.store_override = Some(scratch.join(defaults::text("mesh_write.store_file")));
-    inv.write_home = scratch.join(defaults::text("mesh_write.shadow_home"));
-    let eng = run_native(&inv, a);
-    let concurrent = count_after(&real, max_id) > i64::from(node_hash.is_some());
-    match eng {
-        Err(Defer(reason)) => serde_json::json!({"result": w("mesh_write.shadow_defer"), "reason": reason, "nodeCode": node_code}),
-        Ok(ans) => {
-            let same_out = ans.stdout == node_text;
-            let same_code = ans.code == node_code;
-            let copy = scratch.join(defaults::text("mesh_write.store_file"));
-            let same_row = match &ans.effect {
-                send::Effect::Row(h) => row_by_hash(&real, h) == row_by_hash(&copy, h),
-                send::Effect::BroadcastCursor(k) => broadcast_cursor_of(&real, k) == broadcast_cursor_of(&copy, k),
-                send::Effect::None => true,
-            };
-            let ok = same_out && same_code && same_row;
-            let result = if ok {
-                w("mesh_write.shadow_match")
-            } else if concurrent {
-                w("mesh_write.shadow_concurrent")
-            } else {
-                w("mesh_write.shadow_mismatch")
-            };
-            let mut rec = serde_json::json!({"result": result, "sameStdout": same_out, "sameCode": same_code, "sameRow": same_row, "nodeCode": node_code, "engineCode": ans.code});
-            if !ok {
-                rec["node"] = serde_json::json!(cap(&node_text));
-                rec["engine"] = serde_json::json!(cap(&ans.stdout));
-            }
-            rec
-        }
     }
 }
 
@@ -684,33 +406,34 @@ mod tests {
         Err(Box::new("boom"))
     }
 
-    fn is_node(n: &Next) -> bool {
-        matches!(n, Next::RunNode)
+    fn is_unable(n: &Next) -> bool {
+        matches!(n, Next::Unable)
     }
 
     #[test]
-    fn exit_75_and_the_committed_failure_code_are_different_codes() {
-        assert_eq!(defaults::num("mesh_write.exit_defer"), 75, "75 is sysexits EX_TEMPFAIL, the engine-wide 'deferred, nothing written'");
-        assert_ne!(defaults::num("mesh_write.exit_committed_failure"), defaults::num("mesh_write.exit_defer"));
+    fn the_unable_code_and_the_committed_failure_code_are_different_visible_errors() {
+        assert_ne!(defaults::num("mesh_write.exit_unable"), 75, "an unable or switched-off verb is a visible error, never the silent 75 of a deferral");
+        assert_ne!(defaults::num("mesh_write.exit_unable"), 0);
+        assert_ne!(defaults::num("mesh_write.exit_committed_failure"), defaults::num("mesh_write.exit_unable"));
         assert_ne!(defaults::num("mesh_write.exit_committed_failure"), 0);
     }
 
     #[test]
-    fn a_deferral_or_panic_before_any_write_runs_node() {
+    fn a_deferral_or_panic_before_any_write_is_unable() {
         let (n, result, reason) = next_step(Ok(ident::defer("some-case")), false);
-        assert!(is_node(&n));
+        assert!(is_unable(&n));
         assert_eq!((result.as_str(), reason.as_str()), (defaults::text("mesh_write.shadow_defer"), "some-case"));
         let (n, result, _) = next_step(panicked(), false);
-        assert!(is_node(&n));
+        assert!(is_unable(&n));
         assert_eq!(result, defaults::text("mesh_write.shadow_panic"));
     }
 
     #[test]
-    fn nothing_that_follows_a_write_ever_runs_node() {
+    fn nothing_that_follows_a_write_is_ever_repeated() {
         // a panic after the first write, and a deferral decided after it (a bug): both are committed failures
         for r in [panicked(), Ok(ident::defer("late"))] {
             let (n, result, _) = next_step(r, true);
-            assert!(matches!(n, Next::CommittedFailure), "running Node after a write would write twice");
+            assert!(matches!(n, Next::CommittedFailure), "running the verb again after a write would write twice");
             assert_eq!(result, defaults::text("mesh_write.result_committed"));
         }
     }

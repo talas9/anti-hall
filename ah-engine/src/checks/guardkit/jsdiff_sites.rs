@@ -34,7 +34,11 @@ fn compact_declaration_turn_scan_defers_on_every_class() {
 fn the_message_classified_parsers_defer_on_every_class() {
     for (name, line) in hazards() {
         assert!(crate::checks::replykit::transcript::parse_line(&line).is_err(), "replykit: {name}");
-        assert!(crate::checks::agent_scan::parse_json(&line).is_err(), "agent_scan: {name}");
+        // the agent scan reads a lone surrogate escape as JavaScript does (U+FFFD in its place, #248); every other class is unsure
+        match name {
+            "lone surrogate" => assert!(matches!(crate::checks::agent_scan::parse_json(&line), Ok(Some(_))), "agent_scan: {name}"),
+            _ => assert!(crate::checks::agent_scan::parse_json(&line).is_err(), "agent_scan: {name}"),
+        }
         assert!(crate::checks::jsport::text::parse_line(&line).is_err(), "jsport::text: {name}");
         assert!(matches!(crate::checks::session::jval::parse(&line), crate::checks::session::jval::Parsed::Unsure), "session::jval: {name}");
     }

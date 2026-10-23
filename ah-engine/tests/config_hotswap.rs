@@ -3,6 +3,7 @@
 //! One real daemon, an isolated HOME and state directory (never the user's real `~/.anti-hall`). Environment variables
 //! are process-global, so this file holds a single test that walks the scenarios in order.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 mod common;
 use ah_engine::client;
 use serde_json::{Value, json};

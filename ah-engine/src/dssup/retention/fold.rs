@@ -70,6 +70,29 @@ pub fn files_json(items: &[Item]) -> Vec<Value> {
     items.iter().map(|i| json!({"file": i.file, "bytes": i.bytes, "dest": i.dest_rel})).collect()
 }
 
+/// Why a store's journal may not be folded yet, or `None` when its merge is proven complete (`foldLegacyJournal`): sqlite is the chosen
+/// backend with a non-empty database, the merge was recorded (`MERGE-STATE.json`), and a dry run of the merge finds nothing the
+/// journal side holds that sqlite lacks. A check that cannot run holds the fold.
+pub fn ineligible(home: &Path, hash: &str) -> Option<&'static str> {
+    let dir = super::plan::store_dir(home, hash);
+    let sqlite = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker")))
+        .is_ok_and(|m| m.trim().to_lowercase() == defaults::text("mesh.backend_sqlite"));
+    let db_bytes = std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).map_or(0, |m| m.len());
+    if !sqlite || db_bytes == 0 {
+        return Some(defaults::text("devswarm_sup.rt_fold_not_sqlite"));
+    }
+    let recorded = std::fs::read_to_string(dir.join(defaults::text("update_post.merge_marker")))
+        .is_ok_and(|t| serde_json::from_str::<Value>(&t).is_ok_and(|v| !v.is_null() && v != json!(false) && v != json!(0) && v != json!("")));
+    if !recorded {
+        return Some(defaults::text("devswarm_sup.rt_fold_merge_not_recorded"));
+    }
+    match crate::migrate::splitmerge::merge_pending_at(home, hash) {
+        None => Some(defaults::text("devswarm_sup.rt_fold_merge_check_failed")),
+        Some(true) => Some(defaults::text("devswarm_sup.rt_fold_merge_pending")),
+        Some(false) => None,
+    }
+}
+
 /// The eligibility word of Node's answer and whether the engine's list is the one Node names.
 pub fn agrees(mine: &[Item], node: &Value) -> bool {
     node["eligible"] == true && node["files"].as_array().is_some_and(|f| *f == files_json(mine))

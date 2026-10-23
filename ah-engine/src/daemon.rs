@@ -13,6 +13,7 @@
 //! (overflow = BUSY), and a watchdog (heartbeats + RSS check) that turns a stall into a clean drain+exit.
 use crate::config::Config;
 use crate::defaults;
+use crate::discard::Logged;
 use crate::frame::{self, Kind};
 use crate::health;
 use crate::limits::{self, Buckets};
@@ -86,6 +87,9 @@ pub struct Stats {
     pub panics: AtomicU64,
     /// Connections dropped because the peer uid was not ours.
     pub rejected: AtomicU64,
+    /// Connections that closed without sending a byte: the launcher's liveness probe (connect only). Not requests: nothing is
+    /// dispatched, answered or logged for them (a reply would only hit a closed pipe).
+    pub probes: AtomicU64,
 }
 
 /// Everything the request handler and the threads share.
@@ -125,13 +129,21 @@ pub struct Shared {
     forced_timer: AtomicBool,
     /// ms since `started` at the last accept-loop iteration
     loop_beat: AtomicU64,
-    /// per worker: 0 = idle, else (ms since `started`) + 1 when it picked up the current request
-    busy_since: Vec<AtomicU64>,
+    /// The accept loop has returned (a clean drain); the watchdog no longer judges it.
+    loop_ended: AtomicBool,
+    /// per worker: 0 = idle, else (ms since `started`) + 1 at its last progress on the current request (picked up, a check
+    /// started or finished, the interpreter ran: [`crate::deadline::beat`]); the watchdog's stuck rule measures from it
+    busy_since: Vec<Arc<AtomicU64>>,
     stall_ms: AtomicU64,
+    test_thread_panics: AtomicU64,
+    /// CPU and memory against their budgets (`diagnostics.budget_*`), updated by the watchdog.
+    budget: Mutex<crate::budget::State>,
     /// Last sampled resident set, KB.
     pub rss_kb: AtomicU64,
     /// Highest sampled resident set since start, KB.
     pub rss_peak_kb: AtomicU64,
+    /// The RSS watchdog already started a drain for this process.
+    rss_tripped: AtomicBool,
     /// ms since `started` when the last request was handled (idle exit, D7, compares against it).
     last_request: AtomicU64,
     /// Metrics and the impact ledger (D51, D52).
@@ -143,11 +155,28 @@ pub struct Shared {
     pub storage: String,
     /// The scheduler, once `serve` started it (D33).
     pub sched: std::sync::OnceLock<Arc<crate::schedule::Scheduler>>,
+    /// Test-only resident allocation held so the RSS watchdog can be exercised deterministically.
+    test_alloc: Mutex<Vec<Vec<u8>>>,
 }
 
 /// The value of `name=<value>` in a space-separated argument string (empty when absent).
 fn kv(args: &str, name: &str) -> String {
     args.split_whitespace().find_map(|w| w.strip_prefix(name).and_then(|r| r.strip_prefix('='))).unwrap_or("").to_string()
+}
+
+fn request_context(req: &[u8]) -> (String, String) {
+    let text = String::from_utf8_lossy(req);
+    let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
+    let request = head.split_whitespace().next().unwrap_or("").to_string();
+    let event = if head.starts_with("V ") {
+        serde_json::from_str::<serde_json::Value>(crate::reqenv::split_request(body).1)
+            .ok()
+            .and_then(|v| v.get("hook_event_name").or_else(|| v.get("hookEventName")).and_then(serde_json::Value::as_str).map(str::to_string))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    (request, event)
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -181,16 +210,21 @@ impl Shared {
             db_closed: AtomicBool::new(false),
             forced_timer: AtomicBool::new(false),
             loop_beat: AtomicU64::new(0),
-            busy_since: (0..workers).map(|_| AtomicU64::new(0)).collect(),
+            loop_ended: AtomicBool::new(false),
+            busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             stall_ms: AtomicU64::new(0),
+            test_thread_panics: AtomicU64::new(0),
+            budget: Mutex::new(crate::budget::State::default()),
             rss_kb: AtomicU64::new(0),
             rss_peak_kb: AtomicU64::new(0),
+            rss_tripped: AtomicBool::new(false),
             last_request: AtomicU64::new(0),
             telemetry: Telemetry::new(),
             starts: 0,
             db: None,
             storage: defaults::text("msg.storage_off").to_string(),
             sched: std::sync::OnceLock::new(),
+            test_alloc: Mutex::new(Vec::new()),
         }
     }
 
@@ -202,6 +236,12 @@ impl Shared {
     /// Re-read the config files (`ctl reload`, or the watcher once a change has settled) and apply new rate limits.
     fn reload_config(&self) -> crate::cfgstore::Reload {
         let r = self.config.reload();
+        crate::memstat::configure_measure_from_defaults(); // the per-call memory knobs follow the reloaded defaults
+        if let crate::cfgstore::Reload::Invalid(code) = &r {
+            // the shipped defaults were rejected (a missing key among the reasons): the previous snapshot keeps serving, checks that
+            // need the new settings cannot run
+            crate::failopen::note(defaults::text("fail_open.reason_missing_key"), defaults::text("fail_open.check_none"), code);
+        }
         self.sync_limits();
         r
     }
@@ -212,6 +252,7 @@ impl Shared {
         lk(&self.sessions).set_rate(c.session_rps, c.session_burst);
         lk(&self.projects).set_rate(c.project_rps, c.project_burst);
         self.telemetry.set_enabled(c.effective.boolean("telemetry.enabled"));
+        crate::obs::profile::apply_config(&c.effective.text("diagnostics.profile"));
     }
 
     /// Keep impact events (and, through later layers, project state) in `db` instead of memory.
@@ -277,6 +318,44 @@ impl Shared {
         self.telemetry.metrics_json(&check, &gauges)
     }
 
+    /// The `diag` control verb: one read-only report over state the daemon already keeps (the topics are `diagnostics.diag_topics`).
+    fn diag_json(&self, topic: &str) -> serde_json::Value {
+        let cfg = self.cfg();
+        match topic {
+            "cpu" => serde_json::json!({
+                "cpu_s": (limits::process_cpu_secs() * 1000.0).round() / 1000.0,
+                "cpu": cpu_json(&self.telemetry),
+                "budget": lk(&self.budget).report(cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_mem_mb")),
+                "profile": crate::obs::profile::status(),
+            }),
+            "mem" => self.memory_with_ledger(),
+            "threads" => crate::threads::snapshot_json(),
+            "hooks" => {
+                serde_json::json!({"summary": self.telemetry.headline(), "phases": phases_json(&self.telemetry), "handback": crate::obs::counters::snapshot()})
+            }
+            "mesh" => {
+                let reply = crate::dswire::cli::ctl("");
+                serde_json::from_str(&reply).unwrap_or_else(|_| serde_json::json!({"status": reply}))
+            }
+            "jev" => self.telemetry.with_metrics(|m| {
+                let snap = m.snapshot("");
+                let keep = |k: &str| {
+                    snap.get(k)
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|r| r.get("name").and_then(serde_json::Value::as_str).is_some_and(|n| n.starts_with("jev")))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                serde_json::json!({"counters": keep("counters"), "histograms": keep("histograms")})
+            }),
+            "trace" => serde_json::json!({"running": true, "entries": crate::obs::trace::snapshot()}),
+            other => crate::obs::diagverbs::local(other)
+                .unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
+        }
+    }
+
     /// The `impact` control verb: `kind=<kind>`, `project=<hash>`, `recent=<n>`.
     fn impact_json(&self, args: &str) -> serde_json::Value {
         let filter = crate::storage::ImpactFilter { kind: kv(args, "kind"), project: kv(args, "project") };
@@ -308,9 +387,16 @@ impl Shared {
         crate::memstat::reset_peak();
         serde_json::json!({
             "rss_kb": limits::rss_kb(),
+            "footprint_kb": limits::footprint_kb(),
+            "mem_metric": defaults::text("daemon.mem_metric"),
+            "mem_kb": limits::mem_kb(),
+            "allocator": crate::memstat::active_allocator().as_str(),
+            "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
+            "allocator_stats": crate::memdiag::allocator_stats(),
             "heap_live_kb": heap.live / 1024,
             "heap_peak_kb": heap.peak / 1024,
             "allocs": heap.allocs,
+            "budgets": crate::mem::global().snapshot(),
             "components": {
                 "guard_state_entries": crate::checks::guardkit::state::entries(),
                 "hookcfg_session_counters": crate::hookcfg::session::global().len(),
@@ -320,8 +406,23 @@ impl Shared {
                 "jev_lanes": crate::jev::shared::lane_count(),
                 "queued_connections": self.depth.load(SeqCst),
                 "workers": self.busy_since.len(),
+                "dswire_workspaces": crate::dswire::global().map_or(0, |w| w.rt.current().workspaces.len()),
+                "dswire_edge_log": crate::dswire::global().map_or(0, |w| w.rt.edge_log_len()),
+                "threads": crate::threads::snapshot().len(),
             },
         })
+    }
+
+    /// [`memory`](Self::memory) plus the live ledger (`status --memory`): the footprint, the C-library zones and the Rust heap
+    /// against the named holders. Kept out of `memory()` itself, which the crash breadcrumb and the debug sampler also call.
+    fn memory_with_ledger(&self) -> serde_json::Value {
+        let mut m = self.memory();
+        let ledger = crate::memdiag::live_ledger(m.get("budgets").unwrap_or(&serde_json::Value::Null));
+        if let Some(o) = m.as_object_mut() {
+            o.insert("ledger".into(), ledger);
+            o.insert("regex".into(), crate::script::regex_diag());
+        }
+        m
     }
 
     /// The memory breakdown as one short `key=value` line for the event log (which cuts a line at `health.event_text_max`).
@@ -331,6 +432,14 @@ impl Shared {
         if let Some(c) = m["components"].as_object() {
             parts.extend(c.iter().map(|(k, v)| format!("{k}={v}")));
         }
+        // registered holders that hold anything now (a transient scan included), so the line names more than the components
+        if let Some(h) = m["budgets"]["holders"].as_array() {
+            parts.extend(
+                h.iter()
+                    .filter(|h| h["bytes"].as_u64().is_some_and(|b| b > 0))
+                    .map(|h| format!("mem_{}={}", h["name"].as_str().unwrap_or_default(), h["bytes"])),
+            );
+        }
         parts.join(" ")
     }
 
@@ -339,13 +448,20 @@ impl Shared {
     pub fn health_event(&self) -> crate::telemetry::event::Event {
         let cfg = self.cfg();
         let load = self.load.report(health::now_ms());
-        let degraded = health::summary()["degraded"].as_bool().unwrap_or(false);
+        let degraded =
+            health::overall_degraded(&health::summary(), crate::failopen::state(crate::failopen::window().0) != defaults::text("fail_open.state_ok"));
         let busy = self.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
+        let (cpu_permille, budget_mask) = {
+            let b = lk(&self.budget);
+            (b.cpu_permille(), b.mask())
+        };
         crate::telemetry::emit::daemon_snapshot(
             degraded,
             &[
                 ("rss_kb", limits::rss_kb()),
                 ("rss_cap_kb", cfg.rss_cap_kb),
+                ("cpu_permille", cpu_permille),
+                ("budget_breach", budget_mask),
                 ("heap_live_kb", crate::memstat::heap().live / 1024),
                 ("restarts", self.starts.saturating_sub(1)),
                 ("queue_depth", self.depth.load(SeqCst) as u64),
@@ -366,22 +482,35 @@ impl Shared {
         let b = health::breaker_remaining();
         let c = health::crashloop_remaining();
         let gs = crate::gate::global().stats();
-        serde_json::json!({
+        // one flag for `degraded` and `health.degraded`: the health summary's own reasons or an unhealthy fail-open window
+        let mut health_summary = health::summary();
+        let (fo_n, fo_top) = crate::failopen::window();
+        let fo_unhealthy = crate::failopen::state(fo_n) != defaults::text("fail_open.state_ok");
+        health::add_fail_open_reason(&mut health_summary, fo_unhealthy.then_some((fo_n, fo_top)));
+        let degraded = health::overall_degraded(&health_summary, fo_unhealthy);
+        health_summary["degraded"] = serde_json::Value::Bool(degraded);
+        let mut v = serde_json::json!({
             "running": true,
             "pid": std::process::id(),
             "version": self.own,
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
+            "footprint_kb": limits::footprint_kb(),
+            "mem_metric": defaults::text("daemon.mem_metric"),
+            "mem_kb": limits::mem_kb(),
+            "allocator": crate::memstat::active_allocator().as_str(),
+            "allocator_config": self.cfg().effective.text("diagnostics.allocator"),
             "rss_peak_kb": self.rss_peak_kb.fetch_max(rss_now, SeqCst).max(rss_now),
-            "memory": self.memory(),
+            "memory": self.memory_with_ledger(),
             "load": self.load.report(health::now_ms()),
-            "health": health::summary(),
+            "health": health_summary,
             "cpu_s": (limits::process_cpu_secs() * 1000.0).round() / 1000.0,
             "queue_depth": self.depth.load(SeqCst),
             "queue_cap": cfg.queue,
             "workers": cfg.workers,
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
+            "bucket_untracked": crate::limits::bucket_untracked(),
             "errors": self.stats.errors.load(SeqCst),
             "budget_trips": self.stats.budget_trips.load(SeqCst),
             "panics": self.stats.panics.load(SeqCst),
@@ -389,21 +518,134 @@ impl Shared {
             "accept_errors": ACCEPT_ERRORS.load(SeqCst),
             "slow_replies": SLOW_REPLIES.load(SeqCst),
             "rejected_peers": self.stats.rejected.load(SeqCst),
+            "probes": self.stats.probes.load(SeqCst),
             "starts": self.starts,
             "restarts": self.starts.saturating_sub(1),
             "breaker": b.map_or("closed".to_string(), |d| defaults::render("msg.state_open", &[("secs", &(d.as_secs() + 1))])),
             "crashloop": c.map_or("clear".to_string(), |d| defaults::render("msg.state_stopped", &[("secs", &(d.as_secs() + 1))])),
             "rules": {"version": rules.version, "count": rules.rules.len(), "fingerprint": format!("{:016x}", rules.fingerprint())},
             "summary": self.telemetry.headline(),
+            "phases": phases_json(&self.telemetry),
+            "cpu": cpu_json(&self.telemetry),
+            "wire": self.telemetry.with_metrics(|m| {
+                let c = |k: &str| m.counter("wire_events", &[("kind", defaults::text(k))]);
+                serde_json::json!({
+                    "acked": c("wire.kind_acked"), "delivered": c("wire.kind_delivered"), "retries": c("wire.kind_retry"),
+                    "abandoned": c("wire.kind_abandoned"), "ack_timeouts": c("wire.kind_ack_timeout"),
+                })
+            }),
+            "fail_open": crate::failopen::status(&self.telemetry),
+            "degraded": degraded,
             "mem_limit": self.rlimit,
+            "malloc_stack_logging": cfg.malloc_stack_logging,
             "storage": self.storage,
             "rss_cap_kb": cfg.rss_cap_kb,
+            "budget": lk(&self.budget).report(cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_mem_mb")),
+            "debug": crate::debug::stats(),
             "inject_gate": {"sessions": gs.sessions, "slots": gs.slots, "bytes": gs.bytes, "evictions": gs.evictions,
                 "max_sessions": defaults::num("inject_gate.max_sessions"), "max_slots": defaults::num("inject_gate.max_slots")},
             "config": {"version": cfg.version, "pending_restart": cfg.pending_restart, "last_error": cfg.last_error},
-        })
-        .to_string()
+            "profile": crate::obs::profile::status(),
+        });
+        // the hand-back and accounting counters (the daemon's own plus every other process's journal)
+        if let (Some(m), Some(o)) = (v.as_object_mut(), crate::obs::counters::snapshot().as_object()) {
+            m.extend(o.clone());
+        }
+        v.to_string()
     }
+}
+
+/// The latency of each phase of a hook call by event: `{event: {phase: {count, p50_us, p95_us, max_us}}}` (the client's connect,
+/// request-to-ACK and ACK-to-response, the daemon's queue wait, judging and delivery, the launcher's startup), and the time of each
+/// check apart under `checks`. Quantiles are upper bucket bounds, as everywhere in the metrics.
+pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
+    let snap = t.with_metrics(|m| m.snapshot(""));
+    let mut out = serde_json::Map::new();
+    let mut checks = serde_json::Map::new();
+    let field = |h: &serde_json::Value, k: &str| h.get(k).cloned().unwrap_or(serde_json::Value::Null);
+    let label = |h: &serde_json::Value, k: &str| h.get("labels").and_then(|l| l.get(k)).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    for h in snap.get("histograms").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let row = serde_json::json!({"count": field(h, "count"), "p50_us": field(h, "p50_us"), "p95_us": field(h, "p95_us"), "max_us": field(h, "max_us")});
+        match h.get("name").and_then(serde_json::Value::as_str) {
+            Some("hook_phase_us") => {
+                let (event, phase) = (label(h, "event"), label(h, "phase"));
+                out.entry(event).or_insert_with(|| serde_json::json!({})).as_object_mut().map(|o| o.insert(phase, row));
+            }
+            Some("check_latency_us") => {
+                let c = checks.entry(label(h, "check")).or_insert_with(|| serde_json::json!({}));
+                if let (Some(o), Some(r)) = (c.as_object_mut(), row.as_object()) {
+                    o.extend(r.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+            // the bytes one call of the check allocated / grew the heap by (`diagnostics.check_mem`), next to its latency
+            Some(n @ ("check_mem_peak_bytes" | "check_mem_alloc_bytes")) => {
+                let key = n.trim_start_matches("check_").trim_end_matches("_bytes");
+                let row =
+                    serde_json::json!({"count": field(h, "count"), "p50": field(h, "p50_bytes"), "p95": field(h, "p95_bytes"), "max": field(h, "max_bytes")});
+                let c = checks.entry(label(h, "check")).or_insert_with(|| serde_json::json!({}));
+                if let Some(o) = c.as_object_mut() {
+                    o.insert(key.to_string(), row);
+                }
+            }
+            _ => {}
+        }
+    }
+    for c in snap.get("counters").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let key = match c.get("name").and_then(serde_json::Value::as_str) {
+            Some("check_mem_retained_bytes") => "mem_retained_bytes",
+            Some("check_cpu_us") => "cpu_us_total",
+            _ => continue,
+        };
+        if let Some(o) = checks.entry(label(c, "check")).or_insert_with(|| serde_json::json!({})).as_object_mut() {
+            o.insert(key.to_string(), field(c, "value"));
+        }
+    }
+    // CPU per call = total / calls (the latency histogram's count is the number of calls)
+    for row in checks.values_mut().filter_map(serde_json::Value::as_object_mut) {
+        if let (Some(total), Some(calls)) = (row.get("cpu_us_total").and_then(serde_json::Value::as_u64), row.get("count").and_then(serde_json::Value::as_u64))
+        {
+            row.insert("cpu_us_per_call".to_string(), serde_json::json!(total.checked_div(calls).unwrap_or(0)));
+        }
+    }
+    out.insert("checks".to_string(), serde_json::Value::Object(checks));
+    serde_json::Value::Object(out)
+}
+
+thread_local! {
+    /// The socket peer of the request this thread is serving ([`serve_conn`] sets it, the request parse takes it).
+    static REQUEST_PEER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where the engine's CPU goes, for `status --json`: `by_event` (hook calls and the checks' CPU per hook event) and `top_checks`
+/// (the `telemetry.top_checks` checks that spent the most CPU, with calls and CPU per call).
+pub fn cpu_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
+    let snap = t.with_metrics(|m| m.snapshot(""));
+    let label = |c: &serde_json::Value, k: &str| c.get("labels").and_then(|l| l.get(k)).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let value = |c: &serde_json::Value| c.get("value").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let mut by_event = std::collections::BTreeMap::<String, (u64, u64)>::new();
+    let (mut cpu, mut calls) = (std::collections::BTreeMap::<String, u64>::new(), std::collections::BTreeMap::<String, u64>::new());
+    for c in snap.get("counters").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        match c.get("name").and_then(serde_json::Value::as_str) {
+            Some("hook_calls") => by_event.entry(label(c, "event")).or_default().0 += value(c),
+            Some("event_check_cpu_us") => by_event.entry(label(c, "event")).or_default().1 += value(c),
+            Some("check_cpu_us") => *cpu.entry(label(c, "check")).or_default() += value(c),
+            Some("check_calls") => *calls.entry(label(c, "check")).or_default() += value(c),
+            _ => {}
+        }
+    }
+    let mut top: Vec<(String, u64)> = cpu.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let top: Vec<serde_json::Value> = top
+        .into_iter()
+        .take(defaults::num("telemetry.top_checks") as usize)
+        .map(|(check, total)| {
+            let n = calls.get(&check).copied().unwrap_or(0);
+            serde_json::json!({"check": check, "calls": n, "cpu_us_total": total, "cpu_us_per_call": total.checked_div(n).unwrap_or(0)})
+        })
+        .collect();
+    let by_event: serde_json::Map<String, serde_json::Value> =
+        by_event.into_iter().map(|(e, (n, us))| (e, serde_json::json!({"calls": n, "cpu_us_total": us}))).collect();
+    serde_json::json!({"by_event": by_event, "top_checks": top})
 }
 
 /// Pure-ish request handler (no socket I/O) so it is unit-testable.
@@ -420,6 +662,8 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     let (head, body) = text.split_once('\n').unwrap_or((&text, ""));
     if let Some(v) = head.strip_prefix("V ") {
         let (env, payload) = crate::reqenv::split_request(body);
+        // 0 = a daemon request whose sender the socket did not name: ancestry walks must not start at the daemon itself
+        let env = env.with_peer_pid(Some(REQUEST_PEER.with(|c| c.take()).unwrap_or(0)));
         if let Some(root) = crate::bootstrap::ROOT_ENVS.iter().find_map(|n| env.get(n)) {
             sh.config.offer_root(root);
         }
@@ -428,7 +672,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("D ") {
-        let reply = dispatch(body, sh);
+        let reply = dispatch(body, sh, cfg);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
@@ -449,6 +693,8 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
+        Some("profile") => (Reply::Ok(crate::obs::profile::ctl(args)), After::Continue),
+        Some("diag") => (Reply::Ok(sh.diag_json(args.trim()).to_string()), After::Continue),
         Some("ping") => (Reply::Ok(format!("pong {} {}", sh.own, std::process::id())), After::Continue),
         Some("reload") => {
             sh.reload();
@@ -458,6 +704,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("config") => (Reply::Ok(sh.config.report().to_string()), After::Continue),
         Some("stop") => (Reply::Ok("ok".into()), After::Exit),
         Some("status") => (Reply::Ok(sh.status()), After::Continue),
+        Some(v) if v == defaults::text("diagnostics.threads_ctl") => (Reply::Ok(crate::threads::snapshot_json().to_string()), After::Continue),
         Some(_) if cfg.test_hooks => test_verb(ctl.unwrap_or(""), sh),
         _ => (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
@@ -470,7 +717,9 @@ fn test_verb(t: &str, sh: &Shared) -> (Reply, After) {
     match verb {
         "sleep" => std::thread::sleep(Duration::from_millis(ms)), // ms comes from the test caller, not a tunable
         "stall" => sh.stall_ms.store(ms, SeqCst),
-        "panic" => panic!("{}", defaults::text("msg.reply_test_panic")),
+        "alloc" => lk(&sh.test_alloc).push(vec![0xA5; ms.saturating_mul(1024) as usize]),
+        "thread_panic" => sh.test_thread_panics.store(ms, SeqCst),
+        "panic" => std::panic::resume_unwind(Box::new(defaults::text("msg.reply_test_panic").to_string())),
         _ => return (Reply::Err(defaults::text("msg.reply_unknown_request").into()), After::Continue),
     }
     (Reply::Ok("ok".into()), After::Continue)
@@ -488,8 +737,51 @@ struct DaemonObserver<'a> {
     event: &'a str,
 }
 
+/// What a check that just finished read and noted (task #66 step 0): its transcript bytes and latency by transcript size class,
+/// and the counted events it noted (a kept-walk hit or the reason it missed).
+pub fn observe_check_cost_in(t: &Telemetry, event: &str, check: &str, micros: u64) {
+    let bytes = crate::load::take_check_scan();
+    let cpu = crate::load::take_check_cpu();
+    let mem = crate::load::take_check_mem();
+    let notes = crate::load::take_counts();
+    let size = crate::load::size_bucket(crate::load::transcript_size());
+    if crate::obs::profile::active() {
+        crate::obs::profile::span(&crate::obs::profile::Span {
+            event,
+            check,
+            wall_us: micros,
+            cpu_us: cpu,
+            alloc_bytes: mem.map_or(0, |d| d.alloc),
+            peak_bytes: mem.map_or(0, |d| d.peak),
+        });
+    }
+    t.with_metrics(|m| {
+        let l = [("check", check), ("size", size.as_str())];
+        m.add("check_bytes_read", &l, bytes);
+        m.add("check_cpu_us", &[("check", check)], cpu);
+        m.add("event_check_cpu_us", &[("event", event)], cpu);
+        if let Some(d) = mem {
+            m.observe_bytes("check_mem_peak_bytes", &[("check", check)], d.peak);
+            m.observe_bytes("check_mem_alloc_bytes", &[("check", check)], d.alloc);
+            if d.retained > 0 {
+                m.add("check_mem_retained_bytes", &[("check", check)], d.retained as u64);
+            }
+        }
+        m.observe("check_latency_by_size_us", &l, micros);
+        for (metric, label, value) in notes {
+            m.inc(metric, &[(label, value)]);
+        }
+    });
+}
+
 impl crate::hookio::Observer for DaemonObserver<'_> {
     fn check(&self, check: &str, rule_id: &str, verdict: &crate::checks::Verdict, micros: u64) {
+        crate::memdiag::note_check(check);
+        observe_check_cost_in(self.t, self.event, check, micros);
+        crate::obs::trace::push("check", check, telemetry::decision_name(verdict), micros);
+        if matches!(verdict, crate::checks::Verdict::Defer) {
+            crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
+        }
         self.t.observe_check_in(self.event, check, rule_id, verdict, micros, self.project);
     }
 
@@ -563,6 +855,33 @@ fn reply_outcome(r: &Reply) -> (crate::telemetry::event::Outcome, u64) {
     }
 }
 
+fn cpu_budget(cfg: &Config) -> (u64, u64) {
+    (limits::thread_cpu_us(), cfg.eval_budget_us)
+}
+
+fn over_cpu_budget(start: u64, budget: u64) -> bool {
+    budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget
+}
+
+/// The SOFT cpu budget: the request used more thread CPU than `daemon.eval_soft_us`. Only logged and counted; the checks that ran
+/// keep their answers.
+fn note_cpu_soft(sh: &Shared, start: u64, cfg: &Config) {
+    let used = limits::thread_cpu_us().saturating_sub(start);
+    if cfg.eval_soft_us > 0 && used > cfg.eval_soft_us {
+        sh.telemetry.with_metrics(|m| m.inc("budget_soft", &[]));
+        let detail = defaults::render("msg.log_budget_soft", &[("used_us", &used), ("soft_us", &cfg.eval_soft_us), ("hard_us", &cfg.eval_budget_us)]);
+        health::log_event("budget_soft", "-", &detail);
+    }
+}
+
+fn record_budget_trip(sh: &Shared, project: &str, detail: &str) {
+    sh.stats.budget_trips.fetch_add(1, SeqCst);
+    sh.telemetry.with_metrics(|m| m.inc("budget_trips", &[]));
+    sh.telemetry.fallback("budget", project);
+    health::log_event("budget", "-", detail);
+    crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_cpu"));
+}
+
 fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) -> Reply {
     let started = Instant::now();
     let Ok(p) = serde_json::from_str::<serde_json::Value>(body) else {
@@ -574,6 +893,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
     };
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(crate::hookio::event_of(&p).unwrap_or(""), p.get("session_id").and_then(|v| v.as_str()));
+    crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
@@ -590,21 +910,19 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let (start, budget) = (limits::thread_cpu_us(), cfg.eval_budget_us);
-    let over = move || budget > 0 && limits::thread_cpu_us().saturating_sub(start) > budget;
+    let (start, budget) = cpu_budget(cfg);
+    let over = move || over_cpu_budget(start, budget);
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
     let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event };
     let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs, env) {
         Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
         Err(_) => {
-            sh.stats.budget_trips.fetch_add(1, SeqCst);
-            sh.telemetry.with_metrics(|m| m.inc("budget_trips", &[]));
-            sh.telemetry.fallback("budget", &phash);
-            health::log_event("budget", "-", defaults::text("msg.log_budget"));
+            record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
             Reply::Err(defaults::text("msg.reply_budget").into())
         }
     };
+    note_cpu_soft(sh, start, cfg);
     let micros = started.elapsed().as_micros() as u64;
     sh.telemetry.observe_hook(crate::hookio::event_of(&p).unwrap_or(""), micros);
     let (outcome, injected) = reply_outcome(&reply);
@@ -614,7 +932,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
 
 /// `D <client-version>\n<meta JSON>\n<payload>`: the built-in checks of one event's dispatch table (D58), under the
 /// same rate limits and telemetry as a hook request. The reply lists each check's answer; the client runs the rest.
-fn dispatch(body: &str, sh: &Shared) -> Reply {
+fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     let started = Instant::now();
     let (meta, raw) = body.split_once('\n').unwrap_or((body, ""));
     let (Ok(meta), Ok(p)) = (serde_json::from_str::<crate::dispatch::native::Meta>(meta), serde_json::from_str::<serde_json::Value>(raw)) else {
@@ -627,10 +945,12 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         sh.config.offer_root(root);
     }
     if let Some(ms) = meta.deadline_ms {
-        crate::deadline::client_deadline(ms);
+        crate::deadline::client_window(ms);
     }
+    crate::deadline::set_event(&meta.event);
     let session = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
     crate::load::note_request(&meta.event, p.get("session_id").and_then(|v| v.as_str()));
+    crate::memdiag::note_payload(&p);
     let pkey = project_key(sh, p.get("cwd").and_then(|v| v.as_str()).unwrap_or("/"));
     let phash = telemetry::project_hash(&pkey);
     crate::ghrt::note_cwd(&sh.config.snapshot().effective, p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""));
@@ -647,6 +967,10 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
             m.inc("dispatch_entries", &[("event", meta.event.as_str()), ("entry", id.as_str()), ("outcome", outcome.as_str()), ("cfg", cfg)]);
         }
     });
+    let checks_us = std::cell::Cell::new(0u64);
+    crate::load::set_transcript_size(
+        p.get("transcript_path").and_then(|v| v.as_str()).filter(|t| !t.is_empty()).and_then(|t| std::fs::metadata(t).ok()).map(|m| m.len()),
+    );
     let observe = |e: &crate::dispatch::table::Entry, a: &crate::dispatch::native::Answer, micros: u64| {
         use crate::checks::Verdict;
         use crate::dispatch::native::Answer;
@@ -668,10 +992,21 @@ fn dispatch(body: &str, sh: &Shared) -> Reply {
         }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
+        crate::memdiag::note_check(check);
+        observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
+        checks_us.set(checks_us.get().saturating_add(micros));
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
-    let answers = crate::dispatch::native::evaluate(&meta, &p, &observe);
-    sh.telemetry.observe_hook(&meta.event, started.elapsed().as_micros() as u64);
+    let (start_cpu, budget) = cpu_budget(cfg);
+    let over = || over_cpu_budget(start_cpu, budget);
+    let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
+    if over() {
+        record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
+    }
+    note_cpu_soft(sh, start_cpu, cfg);
+    let wall = started.elapsed().as_micros() as u64;
+    sh.telemetry.with_metrics(|m| m.observe("dispatch_overhead_us", &[("event", meta.event.as_str())], wall.saturating_sub(checks_us.get())));
+    sh.telemetry.observe_hook(&meta.event, wall);
     Reply::Ok(crate::dispatch::native::encode(&answers))
 }
 
@@ -774,24 +1109,47 @@ pub fn drain_spool(sh: &Shared) -> crate::spool::Drained {
     r
 }
 
-/// Read a whole request within `read_deadline` and `max` bytes.
-fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static str> {
-    s.set_read_timeout(Some(defaults::millis("daemon.read_poll_ms"))).ok();
-    let start = Instant::now();
+/// Read a whole request within `read_deadline` and `max` bytes. An ack-mode request (its head line announces its body length, see
+/// `crate::wire`) is complete at that length, with the connection left open for the client's ACK(res); any other runs to end-of-stream.
+/// The flag says which kind it was.
+fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<(Vec<u8>, bool), &'static str> {
+    if s.set_nonblocking(true).is_err() {
+        return Err(defaults::text("msg.reply_read_error"));
+    }
+    let deadline = Instant::now() + cfg.read_deadline;
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
+    // (offset of the first body byte, total request length) once an ack-mode head line has been read
+    let mut announced: Option<usize> = None;
+    let mut head_checked = false;
     loop {
-        if start.elapsed() > cfg.read_deadline {
-            return Err(defaults::text("msg.reply_read_deadline"));
+        if !head_checked && let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+            head_checked = true;
+            announced = crate::wire::announced_len(&String::from_utf8_lossy(buf.get(..nl).unwrap_or_default())).and_then(|n| (nl + 1).checked_add(n));
+            if announced.is_some_and(|total| total as u64 > cfg.max_request) {
+                return Err(defaults::text("msg.reply_too_large"));
+            }
+        }
+        if let Some(total) = announced
+            && buf.len() >= total
+        {
+            buf.truncate(total);
+            return Ok((buf, true));
         }
         match s.read(&mut chunk) {
-            Ok(0) => return Ok(buf),
+            Ok(0) if announced.is_some() => return Err(defaults::text("msg.reply_read_error")), // the client closed before its announced length arrived
+            Ok(0) => return Ok((buf, false)),
             Ok(n) => {
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.len() as u64 > cfg.max_request {
+                buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                if buf.len() as u64 > cfg.max_request && announced.is_none() {
                     return Err(defaults::text("msg.reply_too_large"));
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLIN, deadline) {
+                    return Err(defaults::text("msg.reply_read_deadline"));
+                }
+            }
             Err(_) => return Err(defaults::text("msg.reply_read_error")),
         }
     }
@@ -799,17 +1157,170 @@ fn read_request(s: &mut UnixStream, cfg: &Config) -> Result<Vec<u8>, &'static st
 
 /// Write the reply; false when it could not be written (the client is gone or stopped reading).
 fn write_reply(s: &mut UnixStream, r: &Reply, cfg: &Config) -> bool {
-    if let Err(e) = s.set_write_timeout(Some(cfg.write_deadline)) {
-        health::log_event("reply", "set_timeout", &e.to_string());
-    }
-    // A failed write means the client sees a cut frame and falls back to Node (it never mistakes it for an answer); the
-    // cause is logged here so a pattern of them is visible, and `reply_write_errors` counts them.
-    if let Err(e) = s.write_all(&r.frame()) {
+    write_reply_after(s, &[], r, cfg)
+}
+
+/// [`write_reply`] with `prefix` (an ack-mode client's fail-open line) written first, in the same stream.
+fn write_reply_after(s: &mut UnixStream, prefix: &[u8], r: &Reply, cfg: &Config) -> bool {
+    let mut frame = prefix.to_vec();
+    frame.extend_from_slice(&r.frame());
+    let mut written = 0;
+    let deadline = Instant::now() + cfg.write_deadline;
+    if let Err(e) = s.set_nonblocking(true) {
         REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
         health::log_event("reply", "write_failed", &e.to_string());
         return false;
     }
+    // A failed write means the client sees a cut frame and falls back to Node (it never mistakes it for an answer); the
+    // cause is logged here so a pattern of them is visible, and `reply_write_errors` counts them.
+    while written < frame.len() {
+        match s.write(&frame[written..]) {
+            Ok(0) => {
+                REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                health::log_event("reply", "write_failed", defaults::text("msg.reply_write_deadline"));
+                return false;
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLOUT, deadline) {
+                    REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    health::log_event("reply", "write_failed", defaults::text("msg.reply_write_deadline"));
+                    return false;
+                }
+            }
+            Err(e) => {
+                REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                health::log_event("reply", "write_failed", &e.to_string());
+                return false;
+            }
+        }
+    }
     true
+}
+
+/// True when the peer has closed its end: an ack-mode client keeps the connection open until it has the verdict, so an end-of-stream
+/// after the whole request means the client gave up on it (a write to a closed unix socket can still succeed, so the ack alone does not tell).
+fn peer_gone(s: &UnixStream) -> bool {
+    let mut byte = 0u8;
+    // SAFETY: `recv` reads at most one byte into `byte`, a live local, from the socket's own descriptor; MSG_PEEK leaves the stream untouched.
+    let n = unsafe { libc::recv(s.as_raw_fd(), (&mut byte as *mut u8).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    n == 0
+}
+
+/// Write a short control line (an ack) within the write deadline; the error is why the client is unreachable.
+fn write_line(s: &mut UnixStream, bytes: &[u8], cfg: &Config) -> Result<(), String> {
+    let deadline = Instant::now() + cfg.write_deadline;
+    let mut written = 0;
+    while written < bytes.len() {
+        match s.write(bytes.get(written..).unwrap_or_default()) {
+            Ok(0) => return Err(defaults::text("msg.reply_write_deadline").into()),
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLOUT, deadline) {
+                    return Err(defaults::text("msg.reply_write_deadline").into());
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
+/// What the client said after the reply.
+enum ResWait {
+    /// ACK(res) arrived, `after` the reply was written.
+    Got(crate::wire::ClientPhases, Duration),
+    /// No usable ACK(res), and why.
+    Missing(&'static str),
+}
+
+/// Wait for the client's ACK(res) after the reply was written (`wire.res_wait_ms`). A client that went away closes its end, which
+/// answers at once; only a live client that never confirms costs the whole wait.
+fn wait_res(s: &mut UnixStream) -> ResWait {
+    let began = Instant::now();
+    let deadline = began + defaults::millis("wire.res_wait_ms");
+    let (max, mut buf, mut chunk) = (defaults::num("wire.res_max_bytes") as usize, Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
+    loop {
+        match s.read(&mut chunk) {
+            Ok(0) => return ResWait::Missing(defaults::text("wire.why_closed")),
+            Ok(n) => {
+                buf.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                    return match crate::wire::parse_ack_res(&String::from_utf8_lossy(buf.get(..nl).unwrap_or_default())) {
+                        Some(p) => ResWait::Got(p, began.elapsed()),
+                        None => ResWait::Missing(defaults::text("wire.why_garbled")),
+                    };
+                }
+                if buf.len() > max {
+                    return ResWait::Missing(defaults::text("wire.why_garbled"));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if !wait_stream(s, libc::POLLIN, deadline) {
+                    return ResWait::Missing(defaults::text("wire.why_timeout"));
+                }
+            }
+            Err(_) => return ResWait::Missing(defaults::text("wire.why_closed")),
+        }
+    }
+}
+
+/// Record the phases of an ack-mode call: the daemon's own (queue wait, judging), the client's (connect, request to ACK, ACK to
+/// response, which ride in ACK(res)), the delivery time measured here, and the launcher's counters; or the undelivered verdict.
+fn record_wire(sh: &Shared, event: &str, queue_wait: Duration, judge: Duration, res: ResWait) {
+    let ev = if event.is_empty() { defaults::text("wire.event_none") } else { event };
+    let us = |d: Duration| d.as_micros() as u64;
+    sh.telemetry.with_metrics(|m| {
+        m.inc("wire_events", &[("kind", defaults::text("wire.kind_acked"))]);
+        m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_queue_wait"))], us(queue_wait));
+        m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_judge"))], us(judge));
+        if let ResWait::Got(p, delivery) = &res {
+            m.inc("wire_events", &[("kind", defaults::text("wire.kind_delivered"))]);
+            m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_connect"))], p.connect_us);
+            m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_req_ack"))], p.req_ack_us);
+            m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_ack_response"))], p.ack_response_us);
+            m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_delivery"))], us(*delivery));
+            m.add("wire_events", &[("kind", defaults::text("wire.kind_retry"))], p.retries);
+            let (startup, counters) = crate::wire::launcher_counters(&p.launcher);
+            if let Some(n) = startup {
+                m.observe("hook_phase_us", &[("event", ev), ("phase", defaults::text("wire.phase_launcher_startup"))], n);
+            }
+            for (name, n) in counters {
+                m.add("launcher_counter", &[("name", name.as_str())], n);
+            }
+        }
+    });
+    if let ResWait::Missing(why) = res {
+        crate::failopen::note(defaults::text("wire.reason_undelivered"), ev, &defaults::render("wire.msg_undelivered", &[("why", &why), ("event", &ev)]));
+    }
+}
+
+fn wait_stream(s: &UnixStream, events: libc::c_short, deadline: Instant) -> bool {
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        let mut timeout = remaining.as_millis().min(i32::MAX as u128) as i32;
+        if timeout == 0 && !remaining.is_zero() {
+            timeout = 1;
+        }
+        let mut pfd = libc::pollfd { fd: s.as_raw_fd(), events, revents: 0 };
+        // SAFETY: `pfd` is a live, writable `pollfd` and the count passed is 1.
+        let n = unsafe { libc::poll(&mut pfd, 1, timeout) };
+        if n > 0 {
+            return true;
+        }
+        if n == 0 {
+            return false;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
 }
 
 /// Replies finished after their client's deadline had passed (slow but healthy; counted apart from failures).
@@ -819,14 +1330,14 @@ pub static SLOW_REPLIES: AtomicU64 = AtomicU64::new(0);
 pub static REPLY_WRITE_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) -> After {
-    s.set_nonblocking(false).ok();
+    s.set_nonblocking(false).ok_logged("daemon_socket_blocking");
     let started = Instant::now();
     crate::load::take_scan();
     crate::load::take_request();
     let cfg = sh.cfg();
     // the client stops waiting `client.deadline_ms` after it sent the request, which is about when it was accepted
     crate::deadline::begin(started.checked_sub(wait).unwrap_or(started));
-    let req = match read_request(&mut s, &cfg) {
+    let (req, wire) = match read_request(&mut s, &cfg) {
         Ok(r) => r,
         Err(why) => {
             sh.stats.errors.fetch_add(1, SeqCst);
@@ -836,7 +1347,36 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             return After::Continue;
         }
     };
+    if req.is_empty() {
+        // a connect-only liveness probe (the launcher's gate): the peer is already gone, so there is nothing to dispatch and no
+        // reply to write (it used to cost a worker 6-40 ms and log `reply write_failed: Broken pipe`)
+        sh.stats.probes.fetch_add(1, SeqCst);
+        crate::deadline::end();
+        return After::Continue;
+    }
+    if wire {
+        // ACK(req): the request is read and will be judged. A client that already gave up (it closed after its ack timeout and
+        // resent) refuses the write, and then nothing is judged: the resend is the only judging of that request.
+        let gone = if peer_gone(&s) { Err(defaults::text("wire.why_closed").to_string()) } else { Ok(()) };
+        if let Err(why) = gone.and_then(|()| write_line(&mut s, &crate::wire::ack_req(wait.as_micros() as u64), &cfg)) {
+            sh.telemetry.with_metrics(|m| m.inc("wire_events", &[("kind", defaults::text("wire.kind_abandoned"))]));
+            health::log_event("wire", defaults::text("wire.kind_abandoned"), &defaults::render("wire.msg_abandoned", &[("why", &why)]));
+            crate::deadline::end();
+            return After::Continue;
+        }
+    }
+    if wire {
+        // an ack-mode client keeps its connection open until it has the verdict: from here an end-of-stream means it gave up
+        crate::deadline::watch_peer(s.as_raw_fd());
+    }
+    let acked_at = Instant::now();
+    REQUEST_PEER.with(|c| c.set(crate::limits::peer_pid(&s)));
+    let (request, event) = request_context(&req);
+    let _breadcrumb = crate::crash::enter("request", &request, &event, "", "");
+    health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
     telemetry::stage_begin();
+    crate::failopen::begin_request();
+    let mem_before = crate::memdiag::begin(cfg.effective.boolean("diagnostics.mem_log"));
     let (reply, after) = match catch_unwind(AssertUnwindSafe(|| handle_request_with(&req, sh, &cfg))) {
         Ok(r) => r,
         Err(_) => {
@@ -844,11 +1384,48 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             sh.telemetry.with_metrics(|m| m.inc("panics", &[]));
             health::log_event("panic", "panic", defaults::text("msg.log_panic"));
             health::record_failure("panic", "panic", defaults::text("msg.log_panic"));
+            crate::failopen::note(defaults::text("fail_open.reason_internal"), &event, defaults::text("msg.log_panic"));
             (Reply::Err(defaults::text("msg.reply_internal").into()), After::Continue)
         }
     };
-    let late = crate::deadline::remaining() == Some(Duration::ZERO);
-    let delivered = write_reply(&mut s, &reply, &cfg);
+    let soft_scripts = crate::script::take_soft_overruns();
+    if soft_scripts > 0 {
+        sh.telemetry.with_metrics(|m| m.add("script_soft", &[], soft_scripts));
+    }
+    let gone_skips = crate::deadline::take_client_gone_skips();
+    if gone_skips > 0 {
+        sh.telemetry.with_metrics(|m| m.add("client_gone_skipped", &[], gone_skips));
+    }
+    let mem_after = mem_before.is_some().then(crate::memdiag::measure_after);
+    crate::debug_log!(
+        "daemon/request",
+        defaults::render(
+            "msg.dbg_request",
+            &[
+                ("request", &request),
+                ("event", &event),
+                ("depth", &sh.depth.load(SeqCst)),
+                ("busy", &sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count())
+            ]
+        )
+    );
+    let judge = acked_at.elapsed();
+    match &reply {
+        Reply::Busy => crate::failopen::note(
+            defaults::text("fail_open.reason_busy"),
+            if event.is_empty() { defaults::text("fail_open.check_none") } else { &event },
+            defaults::text("msg.reply_busy_detail"),
+        ),
+        Reply::Err(why) if !why.is_empty() => crate::failopen::note(
+            defaults::text("fail_open.reason_internal"),
+            if event.is_empty() { defaults::text("fail_open.check_none") } else { &event },
+            why,
+        ),
+        _ => {}
+    }
+    let fo_line = wire.then(|| crate::failopen::take_request().map(|(r, c)| crate::wire::fail_open_line(&r, &c))).flatten().unwrap_or_default();
+    let late = crate::deadline::soft_remaining() == Some(Duration::ZERO);
+    let delivered = write_reply_after(&mut s, &fo_line, &reply, &cfg);
     if delivered {
         sh.telemetry.stage_commit();
     } else {
@@ -856,13 +1433,34 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         telemetry::stage_discard();
     }
     crate::deadline::settle_staged(delivered);
+    let res = wire.then(|| if delivered { wait_res(&mut s) } else { ResWait::Missing(defaults::text("wire.why_closed")) });
     if late {
         // answered after the client's deadline: slow but healthy, which is not a failure of the engine
         SLOW_REPLIES.fetch_add(1, SeqCst);
         sh.telemetry.with_metrics(|m| m.inc("slow_replies", &[]));
+        sh.telemetry.with_metrics(|m| m.inc("deadline_soft", &[]));
     }
     crate::deadline::end();
     let (event, session) = crate::load::take_request();
+    crate::failopen::drain_into(&sh.telemetry);
+    crate::failopen::sync_notice(false);
+    if let Some(res) = res {
+        record_wire(sh, &event, wait, judge, res);
+    }
+    if let (Some(before), Some(after_m)) = (mem_before, mem_after) {
+        let kind = req.split(|b| *b == b' ' || *b == b'\n').next().map(|k| String::from_utf8_lossy(k).into_owned()).unwrap_or_default();
+        crate::memdiag::finish(
+            before,
+            &crate::memdiag::Done {
+                kind,
+                event: event.clone(),
+                in_flight,
+                busy: sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64,
+                proc_ms: started.elapsed().as_millis() as u64,
+                after: after_m,
+            },
+        );
+    }
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,
@@ -875,13 +1473,31 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
     after
 }
 
+fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send + Sync>) {
+    let s = sh.clone();
+    let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
+    let s = sh.clone();
+    let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
+        let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
+        health::record_failure("panic", "thread_panic", &why);
+        begin_drain(&s, &why, false);
+    });
+    crate::crash::spawn_supervised(name, stop, restart, run);
+}
+
 fn worker(sh: Arc<Shared>, idx: usize) {
+    crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
     loop {
         let conn = {
             let mut q = lk(&sh.queue);
             loop {
                 if let Some((c, queued_at, in_flight)) = q.pop_front() {
                     sh.depth.fetch_sub(1, SeqCst);
+                    crate::invariant!(
+                        "daemon/queue",
+                        sh.depth.load(SeqCst) == q.len(),
+                        defaults::render("msg.inv_queue_pop", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
+                    );
                     break Some((c, queued_at.elapsed(), in_flight));
                 }
                 let (g, _) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
@@ -891,10 +1507,16 @@ fn worker(sh: Arc<Shared>, idx: usize) {
                 }
             }
         };
-        let Some((conn, wait, in_flight)) = conn else { continue };
+        let Some((conn, wait, in_flight)) = conn else {
+            crate::script::maintain(true);
+            crate::memdiag::worker_tick(idx);
+            continue;
+        };
         sh.busy_since[idx].store(sh.ms() + 1, SeqCst);
         let after = serve_conn(conn, &sh, wait, in_flight);
         sh.busy_since[idx].store(0, SeqCst);
+        crate::script::maintain(false);
+        crate::memdiag::worker_tick(idx);
         if after == After::Exit {
             begin_drain(&sh, defaults::text("msg.exit_reason_handoff"), false);
         }
@@ -910,6 +1532,7 @@ fn begin_drain(sh: &Arc<Shared>, why: &str, forced_exit: bool) {
     let first = !sh.draining.swap(true, SeqCst);
     if first {
         crate::discard::harmless(std::fs::remove_file(paths::socket())); // keep: cleanup that raced; an absent file is the goal state
+        crate::wire::withdraw();
     }
     let armed = if forced_exit { &sh.forced_timer } else { &sh.drain_timer };
     if armed.swap(true, SeqCst) {
@@ -939,11 +1562,30 @@ fn await_close(closing: &AtomicBool, closed: &AtomicBool, max: Duration, poll: D
     closed.load(SeqCst)
 }
 
+/// True when the accept loop counts as stalled at `now` (ms since the daemon's start) given its last beat. A beat of 0 = the
+/// loop has not run its first round: the daemon is still starting (database open, spool drain, scheduler and wiring start),
+/// judged by the longer `start_stall_ms`. `ended` = the loop returned (a clean drain): what follows is the shutdown tail
+/// (telemetry flush, database close), bounded by the drain timer; a loop that has ended is not a loop that stalled.
+fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms: u64) -> bool {
+    if ended {
+        return false;
+    }
+    if beat == 0 {
+        return now > start_stall_ms;
+    }
+    now.saturating_sub(beat) > stall_ms
+}
+
 fn watchdog(sh: Arc<Shared>) {
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
+    let mut last_cpu_check = Instant::now();
+    let mut last_cpu_secs = limits::process_cpu_secs();
+    let mut debug_sampler = crate::debug::Sampler::new();
+    health::heartbeat_init();
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
+        health::heartbeat();
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
@@ -951,10 +1593,24 @@ fn watchdog(sh: Arc<Shared>) {
         if sh.forced_timer.load(SeqCst) {
             continue;
         }
+        if sh.cfg().test_hooks && sh.test_thread_panics.load(SeqCst) > 0 {
+            sh.test_thread_panics.fetch_sub(1, SeqCst);
+            std::panic::resume_unwind(Box::new(defaults::text("msg.reply_test_panic").to_string()));
+        }
         let draining = sh.draining.load(SeqCst);
         let cfg = sh.cfg();
         let now = sh.ms();
-        if now.saturating_sub(sh.loop_beat.load(SeqCst)) > cfg.stall.as_millis() as u64 {
+        // debug mode follows the setting without a restart; while on, the samplers log per-thread CPU and memory
+        if let Some(on) = crate::debug::apply_config(cfg.effective.boolean("diagnostics.debug_mode")) {
+            health::log_event("debug", if on { "on" } else { "off" }, defaults::text(if on { "msg.log_debug_on" } else { "msg.log_debug_off" }));
+        }
+        debug_sampler.tick(|| sh.memory());
+        crate::invariant!(
+            "daemon/watchdog",
+            sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() <= cfg.workers,
+            defaults::render("msg.inv_busy_workers", &[("workers", &cfg.workers)])
+        );
+        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, cfg.stall.as_millis() as u64, cfg.start_stall.as_millis() as u64) {
             health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
             health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
             begin_drain(&sh, defaults::text("msg.exit_reason_stall"), true);
@@ -972,6 +1628,33 @@ fn watchdog(sh: Arc<Shared>) {
         if draining {
             continue;
         }
+        let cpu_check = defaults::millis("daemon.cpu_check_ms");
+        if !cpu_check.is_zero() && last_cpu_check.elapsed() >= cpu_check {
+            let wall = last_cpu_check.elapsed().as_secs_f64();
+            let cpu_now = limits::process_cpu_secs();
+            let cpu_delta = (cpu_now - last_cpu_secs).max(0.0);
+            last_cpu_check = Instant::now();
+            last_cpu_secs = cpu_now;
+            let warn_pct = cfg.effective.num("daemon.cpu_warn_pct") as f64;
+            let pct = if wall > 0.0 { cpu_delta * 100.0 / wall } else { 0.0 };
+            crate::debug_log!("daemon/cpu", defaults::render("msg.dbg_cpu_window", &[("ms", &format!("{:.0}", wall * 1000.0)), ("pct", &format!("{pct:.2}"))]));
+            let edge = lk(&sh.budget).cpu_window(pct, cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_cpu_windows"));
+            report_budget_edge(edge, &format!("{pct:.1}"), cfg.effective.num("diagnostics.budget_cpu_pct"), "msg.log_budget_cpu");
+            crate::nodeback::shadow::hold(lk(&sh.budget).mask() & 1 == 1); // the Node shadow starts nothing while the CPU budget is breached
+            if warn_pct > 0.0 && pct >= warn_pct {
+                let backoff_ms = cfg.effective.num("schedule.cpu_backoff_ms");
+                if let Some(sched) = sh.sched.get() {
+                    sched.backoff_for(backoff_ms);
+                }
+                let pct_s = format!("{pct:.1}");
+                health::log_event(
+                    "cpu",
+                    "sustained",
+                    &defaults::render("msg.log_cpu_sustained", &[("pct", &pct_s), ("ms", &cpu_check.as_millis()), ("backoff_ms", &backoff_ms)]),
+                );
+            }
+        }
+        crate::binguard::note_uptime(sh.started.elapsed());
         // Idle exit is off unless configured (D7): the engine stays resident so the scheduler and mailbox keep running.
         if let Some(idle) = cfg.idle_exit
             && last_idle_check.elapsed() >= defaults::millis("daemon.idle_check_ms")
@@ -986,63 +1669,154 @@ fn watchdog(sh: Arc<Shared>) {
         if last_rss.elapsed() >= cfg.rss_check {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
+            let mem = limits::mem_kb();
             sh.rss_kb.store(rss, SeqCst);
             sh.rss_peak_kb.fetch_max(rss, SeqCst);
-            if cfg.rss_cap_kb > 0 && rss > cfg.rss_cap_kb {
-                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &rss), ("cap", &cfg.rss_cap_kb)]));
+            let mem_limit = cfg.effective.num("diagnostics.budget_mem_mb");
+            let edge = lk(&sh.budget).mem_sample(mem, mem_limit);
+            report_budget_edge(edge, &(mem / 1024).to_string(), mem_limit, "msg.log_budget_mem");
+            // the memory registry's process-wide check: shrink at the global soft limit, recycle at the hard one, and a clean
+            // restart (the same drain as the cap below, with the reason recorded) when it stays over the hard limit
+            if let Some(r) = crate::mem::global().tick(mem.saturating_mul(1024), now) {
+                crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_mem"));
+                health::log_event("memory", "breakdown", &sh.memory_line());
+                begin_drain(&sh, &crate::mem::restart_reason(&r), true);
+                continue;
+            }
+            if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
+                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
+                crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_rss"));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());
-                begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                if cfg_snapshot_on(&sh) {
+                    // the snapshot first (workers report between requests), then the drain; later ticks leave the drain to that thread
+                    if crate::memdiag::claim_snapshot() {
+                        let s = sh.clone();
+                        let workers = cfg.workers;
+                        std::thread::spawn(move || {
+                            crate::memdiag::capture(s.memory(), workers, s.cfg().rss_cap_kb, s.started.elapsed().as_secs());
+                            begin_drain(&s, defaults::text("msg.exit_reason_rss"), true);
+                        });
+                    }
+                } else {
+                    begin_drain(&sh, defaults::text("msg.exit_reason_rss"), true);
+                }
             }
         }
     }
 }
 
+/// Log the start or the end of a budget breach (one line per change, never one per sample).
+fn report_budget_edge(edge: crate::budget::Edge, value: &str, limit: u64, msg: &str) {
+    if let Some((bit, began)) = edge {
+        let which = bit.name();
+        let state = defaults::text(if began { "msg.state_budget_over" } else { "msg.state_budget_within" });
+        health::log_event("budget", which, &defaults::render(msg, &[("state", &state), ("value", &value), ("limit", &limit)]));
+    }
+}
+
+/// Whether a cap trip writes the memory snapshot before it drains.
+fn cfg_snapshot_on(sh: &Shared) -> bool {
+    sh.cfg().effective.boolean("diagnostics.mem_snapshot")
+}
+
+struct LockHolder {
+    pid: String,
+    live_engine: bool,
+    answers: bool,
+}
+
 /// Take the singleton lock. Waits briefly for an outgoing (version-handoff) daemon to release it, but
 /// gives up at once if a live daemon is already answering on the socket.
-fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Option<std::fs::File>, std::io::Error> {
+fn acquire_lock(lock_path: &Path, sock: &Path) -> Result<Result<std::fs::File, LockHolder>, std::io::Error> {
     let f = std::fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(lock_path)?;
     let start = Instant::now();
     loop {
         // SAFETY: `f` is an open file owned by this scope, so its descriptor is valid; `flock` takes only the descriptor and a flag.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(Some(f));
+            return Ok(Ok(f));
         }
-        if crate::client::ping(sock).is_some() {
-            return Ok(None);
+        let holder = lock_holder(lock_path, sock);
+        if holder.answers {
+            return Ok(Err(holder));
         }
         if start.elapsed() > defaults::millis("daemon.lock_wait_ms") {
             // the lock is held but nothing answers on the socket: a daemon that is draining, wedged, or gone without
             // releasing it; this start gives up (the client falls back to Node), and the line says why
-            let holder = std::fs::read_to_string(lock_path).unwrap_or_default();
             health::log_event(
                 "lock_wait",
                 "no_daemon",
-                &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.trim())]),
+                &defaults::render("msg.log_lock_no_daemon", &[("path", &lock_path.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine)]),
             );
-            return Ok(None);
+            return Ok(Err(holder));
         }
         std::thread::sleep(defaults::millis("daemon.lock_poll_ms"));
     }
 }
 
-/// What a running daemon stands on: its state directory, the lock file it holds (by inode) and its executable.
+fn lock_holder(lock_path: &Path, sock: &Path) -> LockHolder {
+    let pid = std::fs::read_to_string(lock_path).unwrap_or_default().trim().to_string();
+    let live_engine = pid.parse::<u32>().is_ok_and(health::pid_is_engine);
+    LockHolder { pid, live_engine, answers: crate::client::ping(sock).is_some() }
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
+
+fn real_home() -> Option<std::path::PathBuf> {
+    // SAFETY: getpwuid reads the system passwd entry for this uid; a null result is handled below.
+    let pwd = unsafe { libc::getpwuid(libc::getuid()) };
+    if pwd.is_null() {
+        return None;
+    }
+    // SAFETY: `pwd` is non-null and `pw_dir` is a NUL-terminated C string owned by libc for the life of this call.
+    let dir = unsafe { std::ffi::CStr::from_ptr((*pwd).pw_dir) }.to_string_lossy();
+    (!dir.is_empty()).then(|| std::path::PathBuf::from(dir.as_ref()))
+}
+
+fn live_state_dir(dir: &Path) -> bool {
+    let Some(home) = real_home() else { return false };
+    [
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.state_dir")),
+        home.join(defaults::text("paths.base_dir")).join(defaults::text("paths.live_state_dir")),
+    ]
+    .iter()
+    .any(|p| same_path(dir, p))
+}
+
+/// What a running daemon stands on: its state directory, the lock file it holds (by inode), its socket, parent and executable.
+#[derive(Clone)]
 struct Footing {
     dir: std::path::PathBuf,
     lock: std::path::PathBuf,
     lock_ino: u64,
+    sock: Option<(std::path::PathBuf, u64)>,
+    parent: Option<libc::pid_t>,
     exe: Option<std::path::PathBuf>,
 }
 
 impl Footing {
     /// Why the daemon has lost its footing, if it has: the state directory or the executable is gone, or the lock file is
-    /// gone or replaced (a new daemon could then start beside this one).
+    /// gone or replaced (a new daemon could then start beside this one), or for non-live daemons the parent or socket is gone.
     fn lost(&self) -> Option<&'static str> {
         if !self.dir.is_dir() {
             return Some("state_dir_gone");
         }
         if std::fs::metadata(&self.lock).map(|m| m.ino()).ok() != Some(self.lock_ino) {
             return Some("lock_gone");
+        }
+        if let Some((sock, ino)) = &self.sock
+            && std::fs::symlink_metadata(sock).map(|m| m.ino()).ok() != Some(*ino)
+        {
+            return Some("socket_gone");
+        }
+        if let Some(parent) = self.parent {
+            // SAFETY: getppid takes no arguments and cannot fail.
+            if unsafe { libc::getppid() } != parent {
+                return Some("parent_gone");
+            }
         }
         if self.exe.as_ref().is_some_and(|e| !e.exists()) {
             return Some("binary_gone");
@@ -1052,7 +1826,7 @@ impl Footing {
 }
 
 /// Every `daemon.orphan_check_ms`, check the daemon's [`Footing`]; once lost, log why and drain (a clean exit). The idle exit
-/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files were removed under it.
+/// (`daemon.idle_exit_s`) covers a daemon nobody talks to; this covers one whose files, parent, or socket were removed under it.
 fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     while !sh.draining.load(SeqCst) {
         std::thread::sleep(defaults::millis("daemon.orphan_check_ms"));
@@ -1080,6 +1854,10 @@ fn io_code(e: &std::io::Error) -> String {
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
 pub fn serve() {
+    crate::crash::mark_daemon(true);
+    // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
+    // launcher dies during config/defaults loading still knows which parent it was started by.
+    let initial_parent = unsafe { libc::getppid() };
     let sock = paths::socket();
     let lock_path = paths::lock_for(&sock);
     // state dir + socket dir: private (0700), ours, not a symlink
@@ -1091,8 +1869,17 @@ pub fn serve() {
         }
     }
     let lock = match acquire_lock(&lock_path, &sock) {
-        Ok(Some(l)) => l,
-        Ok(None) => return, // a live daemon owns the socket (or the handoff is not done): not an error
+        Ok(Ok(l)) => l,
+        Ok(Err(holder)) => {
+            eprintln!(
+                "{}",
+                defaults::render(
+                    "msg.daemon_already_running",
+                    &[("path", &sock.display()), ("pid", &holder.pid), ("live_engine", &holder.live_engine), ("answers", &holder.answers)]
+                )
+            );
+            return;
+        }
         Err(e) => start_fail(&io_code(&e), &defaults::render("msg.log_lock_fail", &[("path", &lock_path.display()), ("err", &e)])),
     };
     // We hold the flock, so no other daemon owns this socket. Verify before touching anything: if the
@@ -1101,6 +1888,7 @@ pub fn serve() {
     if prev != 0 && prev != std::process::id() && health::pid_is_engine(prev) && crate::client::ping(&sock).is_some() {
         return;
     }
+    crate::memdiag::apply_decay_if_untuned();
     crate::jev::shared::set_resident();
     health::reap_marker();
     crate::discard::harmless(lock.set_len(0)); // keep: best effort, fail-open
@@ -1121,7 +1909,7 @@ pub fn serve() {
         }
     };
     crate::discard::harmless(std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))); // keep: best effort, fail-open
-    listener.set_nonblocking(true).ok();
+    listener.set_nonblocking(true).ok_logged("daemon_listener_nonblocking");
     // SAFETY: both handlers are `extern "C"` fns that only store to an atomic, which is async-signal-safe.
     unsafe {
         libc::signal(libc::SIGHUP, on_hup as extern "C" fn(libc::c_int) as libc::sighandler_t);
@@ -1136,8 +1924,10 @@ pub fn serve() {
     health::clear_env_failure();
     let starts = next_start_count();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
+    crate::client::release_spawn_lock();
     crate::dispatch::sweep_stale_spool();
 
+    crate::mem::register_defaults_leak();
     let rules_path = paths::rules_file();
     let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
     sh.config = store;
@@ -1153,7 +1943,15 @@ pub fn serve() {
         }
     }
     drain_spool(&sh); // writes spooled while the engine was down, before any new one
+    crate::memstat::configure_measure_from_defaults(); // the per-call memory knobs, from the defaults the owner's files overlay
     let sh = Arc::new(sh);
+    {
+        let s = sh.clone();
+        crate::db::set_panic_restart(Some(Arc::new(move |thread| {
+            let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
+            begin_drain(&s, &why, false);
+        })));
+    }
     // events from other processes (the hook dispatcher, one-shot commands) arrive through the inbox; events from inside
     // this process (Jev, health snapshots) go straight to the recorder
     sh.telemetry.set_inbox(crate::telemetry::emit::inbox_path());
@@ -1165,29 +1963,44 @@ pub fn serve() {
             }
         }));
     }
+    crate::wire::announce();
     for i in 0..sh.cfg().workers {
         let s = sh.clone();
-        std::thread::spawn(move || worker(s, i));
+        let name: &'static str = "worker";
+        spawn_service(&sh, name, Arc::new(move || worker(s.clone(), i)));
     }
     {
         let s = sh.clone();
-        std::thread::spawn(move || watchdog(s));
+        spawn_service(&sh, "watchdog", Arc::new(move || watchdog(s.clone())));
     }
     {
         // the daemon's footing, as it is now: a test (or an uninstall) that removes the state dir or the binary under a
         // running daemon must not leave it running for hours with nothing that can reach or stop it
-        let footing =
-            Footing { dir: paths::dir(), lock: lock_path.clone(), lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0), exe: std::env::current_exe().ok() };
+        let non_live = !live_state_dir(&paths::dir());
+        let sock_footing = non_live.then(|| std::fs::symlink_metadata(&sock).ok().map(|m| (sock.clone(), m.ino()))).flatten();
+        let parent = non_live.then_some(initial_parent);
+        let footing = Footing {
+            dir: paths::dir(),
+            lock: lock_path.clone(),
+            lock_ino: lock.metadata().map(|m| m.ino()).unwrap_or(0),
+            sock: sock_footing,
+            parent,
+            exe: std::env::current_exe().ok(),
+        };
         let s = sh.clone();
-        std::thread::spawn(move || footing_watch(s, footing));
+        spawn_service(&sh, "footing_watch", Arc::new(move || footing_watch(s.clone(), footing.clone())));
     }
     start_scheduler(&sh);
     start_devswarm(&sh);
+    // the guards' first interpreter probes, warmed in the background: the first guard call after the start finds them kept
+    crate::discard::logged("probe_prewarm_thread", std::thread::Builder::new().name("ah-probe-prewarm".into()).spawn(crate::script::host_spawn::prewarm));
     {
         let s = sh.clone();
-        std::thread::spawn(move || telemetry_flusher(s));
+        spawn_service(&sh, "telemetry_flusher", Arc::new(move || telemetry_flusher(s.clone())));
     }
     accept_loop(&sh, &listener);
+    sh.loop_ended.store(true, SeqCst); // the shutdown tail below is bounded by the drain timer, not judged as a stalled loop
+    crate::wire::withdraw();
     crate::dssup::ingest::join_all(); // a monitor call in flight has already taken its messages off the native queue
     if let Some(db) = &sh.db {
         sh.telemetry.flush(); // telemetry recorded since the last flush (D78)
@@ -1214,9 +2027,19 @@ fn start_devswarm(sh: &Arc<Shared>) {
     });
     let s = sh.clone();
     let stop: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || s.draining.load(SeqCst));
-    crate::dswire::Wire::start(&home, &paths::dir(), sh.db.clone(), sink, stop.clone()); // None is the inert case: nothing was started
+    // `devswarm_rt.mode` is read from the daemon's live configuration, so an edit (on, observe, off) takes effect without a restart
+    let weak = Arc::downgrade(sh);
+    let mode: crate::dswire::ModeSource = Box::new(move || {
+        weak.upgrade().map_or(crate::devswarm_rt::Mode::Off, |sh| crate::devswarm_rt::Mode::parse(&sh.cfg().effective.text("devswarm_rt.mode")))
+    });
+    crate::dswire::Wire::start_with(&home, &paths::dir(), sh.db.clone(), sink, stop.clone(), mode); // None is the inert case: nothing was started
     // the native ingest drain: nothing at all unless devswarm_ingest.mode is `engine` (the Node ingest daemons drain otherwise)
-    crate::dssup::ingest::start(&home, &paths::dir(), stop);
+    let s = sh.clone();
+    let restart: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |thread| {
+        let why = defaults::render("msg.thread_panic_restart", &[("thread", &thread)]);
+        begin_drain(&s, &why, false);
+    });
+    crate::dssup::ingest::start(&home, &paths::dir(), stop, restart);
 }
 
 /// Start the scheduler's ticker (D33). Its engine-side jobs (maintain, backup, the metrics snapshot, the spool drain)
@@ -1243,6 +2066,8 @@ fn start_scheduler(sh: &Arc<Shared>) {
                 };
                 crate::procwatch::run_job(&crate::paths::dir(), &home, &rec)
             }
+            "test_panic" if sh.cfg().test_hooks => std::panic::resume_unwind(Box::new(defaults::text("msg.reply_test_panic").to_string())),
+            "shadow_report" => crate::nodeback::report::scheduled(),
             "devswarm_reconcile" => Ok(crate::dswire::scheduled()),
             "devswarm_supervisor" => Ok(crate::dssup::cli::scheduled()),
             "noop" => Ok(String::new()),
@@ -1263,9 +2088,15 @@ fn start_scheduler(sh: &Arc<Shared>) {
     let weak = Arc::downgrade(sh);
     let setting: Setting = Box::new(move |key| weak.upgrade().map(|sh| sh.cfg().effective.num(key)).unwrap_or_else(|| defaults::num(key)));
     let sched = Arc::new(Scheduler::new(&FileSource::standard(sh.cfg().test_hooks), sh.db.clone(), inproc, Box::new(PlannedDelivery), observe, setting));
+    let weak = Arc::downgrade(sh);
+    sched.set_cpu_observer(Box::new(move |job, us| {
+        if let Some(sh) = weak.upgrade() {
+            sh.telemetry.with_metrics(|m| m.add("schedule_cpu_us", &[("job", job)], us));
+        }
+    }));
     crate::discard::harmless(sh.sched.set(sched.clone())); // keep: best effort, fail-open
     let s = sh.clone();
-    std::thread::spawn(move || sched.run_ticker(&|| s.draining.load(SeqCst)));
+    spawn_service(sh, "scheduler", Arc::new(move || sched.run_ticker(&|| s.draining.load(SeqCst))));
 }
 
 /// The `schedule` control verb: `list`, `run job=<name>`, `history [job=<name>] [limit=<n>]`.
@@ -1275,7 +2106,11 @@ fn schedule_ctl(sh: &Shared, args: &str) -> serde_json::Value {
         "run" => sched.run_now(&kv(args, "job")),
         "history" => {
             let limit = kv(args, "limit").parse().unwrap_or(defaults::num("schedule.history_default") as usize);
-            let runs = sh.db.as_ref().and_then(|db| db.read(|c| crate::schedule::history(c, &kv(args, "job"), limit)).ok()).unwrap_or_default();
+            let runs = sh
+                .db
+                .as_ref()
+                .and_then(|db| db.read(|c| crate::schedule::history(c, &kv(args, "job"), limit)).ok_logged("schedule_history_read"))
+                .unwrap_or_default();
             serde_json::json!({"running": true, "runs": runs})
         }
         _ => sched.list(),
@@ -1337,7 +2172,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
     // a connection was accepted after the last accept error (the recovery line is then due)
     let mut accepted_since_error = false;
     loop {
-        sh.loop_beat.store(sh.ms(), SeqCst);
+        sh.loop_beat.store(sh.ms().max(1), SeqCst); // never the not-started value
         let st = sh.stall_ms.swap(0, SeqCst);
         if st > 0 {
             std::thread::sleep(Duration::from_millis(st)); // test hook: simulate a wedged loop
@@ -1352,6 +2187,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         unsafe { libc::poll(&mut pfd, 1, timeout) };
         let mut got_any = false;
         loop {
+            sh.loop_beat.store(sh.ms().max(1), SeqCst);
             let s = match listener.accept() {
                 Ok((s, _)) => s,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break, // nothing pending: back to poll
@@ -1377,15 +2213,33 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 drop(q);
                 sh.stats.busy.fetch_add(1, SeqCst);
                 sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
+                crate::failopen::note(defaults::text("fail_open.reason_busy"), defaults::text("fail_open.check_none"), defaults::text("msg.reply_busy_detail"));
+                crate::failopen::drain_into(&sh.telemetry);
                 let mut s = s;
-                s.set_nonblocking(false).ok();
-                s.set_write_timeout(Some(defaults::millis("daemon.busy_write_ms"))).ok();
-                crate::discard::harmless(s.write_all(&Reply::Busy.frame())); // keep: best effort, fail-open
+                s.set_nonblocking(true).ok_logged("daemon_busy_nonblocking");
+                let frame = Reply::Busy.frame();
+                match s.write(&frame) {
+                    Ok(n) if n == frame.len() => {}
+                    Ok(_) => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                    Err(_) => {
+                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    }
+                };
             } else {
                 // requests ahead of this one: the queued ones and those a worker is serving now
                 let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
                 q.push_back((s, Instant::now(), in_flight));
                 sh.depth.fetch_add(1, SeqCst);
+                crate::invariant!(
+                    "daemon/queue",
+                    sh.depth.load(SeqCst) == q.len(),
+                    defaults::render("msg.inv_queue_push", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
+                );
                 drop(q);
                 sh.cv.notify_one();
             }
@@ -1428,6 +2282,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_watchdog_judges_startup_and_shutdown_by_their_own_clocks_not_the_loops() {
+        // 18:45Z deploy: a clean shutdown whose tail (flush + db close) outlasted stall_ms was killed as "accept loop stalled";
+        // the same applied to a start whose pre-loop work outlasted it
+        assert!(!loop_stalled(10_000, true, 600_000, 5_000, 60_000), "a loop that returned is draining, not stalled");
+        assert!(!loop_stalled(0, false, 30_000, 5_000, 60_000), "startup work longer than stall_ms is not a stall");
+        assert!(loop_stalled(0, false, 61_000, 5_000, 60_000), "a start that never reaches the loop is still caught");
+        assert!(loop_stalled(10_000, false, 15_001, 5_000, 60_000), "a running loop silent past stall_ms is a stall");
+        assert!(!loop_stalled(10_000, false, 15_000, 5_000, 60_000));
+    }
+
+    #[test]
     fn the_exit_timer_waits_for_a_close_in_progress_and_gives_up_on_a_wedged_one() {
         // P2-6: the drain timer used to process::exit mid db.close, losing queued commits
         let (closing, closed) = (AtomicBool::new(true), AtomicBool::new(false));
@@ -1454,6 +2319,14 @@ mod tests {
     fn shared() -> Shared {
         let rs = RuleSet::parse(r#"{"version":1,"rules":[{"pattern":"BAD","action":"deny","message":"no"}]}"#).unwrap();
         Shared::new(Config::from_env(), "0.1.0", rs, "/nonexistent/rules.json".into())
+    }
+    /// `diagnostics.check_mem` follows a config reload: a knob switched off by hand comes back from the defaults.
+    #[test]
+    fn a_config_reload_re_applies_the_per_call_memory_knob() {
+        let sh = shared();
+        crate::memstat::configure_measure(false, 1);
+        sh.reload_config();
+        assert!(crate::memstat::measure_enabled(), "diagnostics.check_mem is true in the shipped defaults");
     }
     fn call(req: &str, own: &str) -> (Reply, After) {
         let mut sh = shared();
@@ -1695,5 +2568,25 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(ok(&handle_request(b"CTL telemetry summary window=1d\n", &sh).0)).unwrap();
         assert_eq!(v["detail"]["daemon"]["snapshots"], 1);
         assert_eq!(v["detail"]["daemon"]["latest"]["rss_cap_kb"], sh.cfg().rss_cap_kb);
+    }
+    #[test]
+    fn a_budget_breach_shows_in_the_health_event_and_in_status() {
+        let sh = shared();
+        let fields = |ev: &crate::telemetry::event::Event| {
+            let crate::telemetry::event::Extras::Fields(f) = &ev.extras else { panic!("fields") };
+            (f.get_num("cpu_permille"), f.get_num("budget_breach"))
+        };
+        assert_eq!(fields(&sh.health_event()), (Some(0), Some(0)), "within budget at the start");
+        {
+            let mut b = lk(&sh.budget);
+            b.cpu_window(7.5, 2, 1);
+            b.mem_sample(300 * 1024, 100);
+        }
+        assert_eq!(fields(&sh.health_event()), (Some(75), Some(3)));
+        let st: serde_json::Value = serde_json::from_str(&sh.status()).unwrap();
+        assert_eq!(st["budget"]["breached"], serde_json::json!(["cpu", "mem"]));
+        assert_eq!(st["budget"]["cpu_budget_pct"], sh.cfg().effective.num("diagnostics.budget_cpu_pct"));
+        assert_eq!(st["budget"]["mem_budget_mb"], sh.cfg().effective.num("diagnostics.budget_mem_mb"));
+        assert!(st["debug"]["enabled"].is_boolean());
     }
 }

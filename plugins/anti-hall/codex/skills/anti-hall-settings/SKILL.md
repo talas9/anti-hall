@@ -160,6 +160,8 @@ have no switch on purpose, and why.
    sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings show        # or: show --section <key> [--all]
    ```
    Present the output as-is. Advanced/tuning knobs are hidden unless `--all`.
+   The engine's own keys (cadences, limits, deadlines, widgets) are in the plugin's `engine/defaults/*.toml`: list them with
+   `sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" settings tunables [<category|key prefix>] [--all]` (read-only; edit the file to change one).
 
 2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
    tool, so use **numbered lists** in prose:
@@ -231,7 +233,7 @@ plain (non-decisive) fire/pause-nag wording.
 "Turn off auto-handover" = `set autoHandover.enabled false`; "set auto-handover to
 80%" = `set autoHandover.pct 80`. The older one-purpose CLI still works as an alias
 over the same keys:
-`node "$ANTI_HALL_ROOT/scripts/auto-handover-config.js" get [--json] | set <1-99> | off | on | max-tokens <n> | nag on|off | nag-step <n> | nag-quiet <n>`.
+`~/.anti-hall/ah-engine/bin/ah-engine auto-handover-config get [--json] | set <1-99> | off | on | max-tokens <n> | nag on|off | nag-step <n> | nag-quiet <n>`.
 
 Context % comes from the best source available: the statusline's real
 `context_window` figure (Claude), the rollout's `model_context_window` (Codex), else
@@ -250,7 +252,32 @@ The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honou
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
 to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. Skipping the engine
-download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting.
+download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting. The crash-loop and roll-back switches are engine tunables too: `client.spawn_n` / `client.spawn_window_s` (daemon starts that stop respawning), `daemon.healthy_after_s` (uptime that makes a binary "known good") and `rollback.*` (`rollback.on_mismatch=0` turns the checksum roll-back off; `rollback.fail_n` / `rollback.fail_window_s` set how many wrapper failures count; the install lock has four more: `rollback.install_lock` (the directory of the one lock every writer of the engine binary shares), `rollback.lock_wait_s` (how long an install, ah-update roll-back or sha recording waits for it), `rollback.lock_hook_wait_s` (how long the hook wrapper's integrity check waits before skipping; a held lock never holds a session) and `rollback.lock_stale_s` (a lock held longer is broken; one whose holder is gone is broken at once); list them with `settings tunables rollback`. The start-up probe warm-up is `host_spawn.prewarm` (on by default), `host_spawn.prewarm_programs` (the interpreters whose version probe it runs) and `host_spawn.prewarm_timeout_ms`.
+
+## Allow or block remote commands
+
+Two plain lists in the engine config decide which remote commands (any binary: `gh`, `kubectl`, `firebase`, ...) the main thread may run:
+
+- `command.remote_allow`: always runs in the main thread (shipped: gh issue/label/pr create, comment, edit, close, reopen).
+- `command.remote_block`: always blocked, with an "irreversible or sensitive" reason (shipped: gh pr merge, release, repo edit/delete, secret, `gh api -X POST|PUT|PATCH|DELETE`).
+- Block wins over allow. A command in neither list keeps the default rule (reads pass, mutations block).
+- An entry is a command prefix: binary, then leading subcommand words (global flags like `-R owner/repo` are skipped), then optionally an option and its value (`gh api -X POST`).
+
+Ask the user first: **this project or the whole machine?** The lists live in the engine's `config.toml` in the engine state directory (`ah-engine config --json` shows the effective value of every key and which file set it), which is machine-wide (user level); there is no per-project layer for these keys, so say so if they ask for project scope. Do not edit the plugin's `engine/defaults/` files.
+
+Add and remove with four more lists in `config.toml`; the effective list is the shipped one, minus `*_remove`, plus `*_add`:
+
+```toml
+[command]
+remote_allow_add = ["firebase hosting:channel:deploy"]
+remote_allow_remove = ["gh pr create"]
+remote_block_add = ["kubectl delete"]
+remote_block_remove = ["gh secret"]
+```
+
+(Setting `remote_allow` / `remote_block` themselves replaces the shipped list outright; prefer add/remove.)
+
+Check the result with `ah-engine config --json` and `ah-engine config validate <file>`.
 
 ## Resetting a setting
 

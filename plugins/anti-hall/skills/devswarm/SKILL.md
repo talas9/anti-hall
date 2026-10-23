@@ -21,7 +21,7 @@ project is running DevSwarm, not to this plugin.
 | Addon | Status | Where |
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` in the anti-hall source repository — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the async message-passing coordination model. Repo-clone-only (like all `docs/`, it does not ship with `/plugin install`). |
-| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live; mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now told, proactively and at every dispatch point, that a **child workspace** is its top fan-out tier (above subagent/Explore/Workflow) and given the choice rule: `hooks/verify-first-orch.js` (rule W, SessionStart), `hooks/verify-first.js` + `hooks/task-tracker.js` (per turn), and the two guard redirects — `hooks/edit-guard.js` / `hooks/command-guard.js` now name `node scripts/devswarm.js spawn <branch> -p "<brief>"` as the Primary's exit instead of "spawn a subagent". Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session see byte-identical output to before. NOT BUILT — there is **no mechanical classifier**: nothing detects "this Agent spawn is workspace-scale" and blocks it (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (a `devswarm-guard.js` / `devswarm-children.js` enforcement layer) does not exist. Enforcement today = the existing guard BLOCK + a corrected redirect; the tier choice itself is the model's. |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live; mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now told, proactively and at every dispatch point, that a **child workspace** is its top fan-out tier (above subagent/Explore/Workflow) and given the choice rule: `hooks/verify-first-orch.js` (rule W, SessionStart), `hooks/verify-first.js` + `hooks/task-tracker.js` (per turn), and the two guard redirects — `hooks/edit-guard.js` / `hooks/command-guard.js` now name `~/.anti-hall/ah-engine/bin/ah-engine devswarm spawn <branch> -p "<brief>"` as the Primary's exit instead of "spawn a subagent". Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session see byte-identical output to before. NOT BUILT — there is **no mechanical classifier**: nothing detects "this Agent spawn is workspace-scale" and blocks it (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/archive/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/archive/superpowers/plans/2026-07-06-devswarm-orchestration.md` (a `devswarm-guard.js` / `devswarm-children.js` enforcement layer) does not exist. Enforcement today = the existing guard BLOCK + a corrected redirect; the tier choice itself is the model's. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped** | `companion/devswarm-supervisor.js`, `companion/install-devswarm-supervisor.js`, `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`, `hooks/lib/devswarm-detect.js`, `hooks/lib/devswarm-role.js`, `hooks/devswarm-child-role.js`. The automatic background sweep. See "The layered recovery model" below. |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped** | `companion/devswarm-recover.js`. Invoked explicitly, per workspace id, by an operator (or a parent orchestrator acting on an escalation). See "On-demand recovery" below. |
 
@@ -57,9 +57,8 @@ this collapses to one. Lifecycle verbs (`create`/`list`/`check-merge`/`merge`) a
 read-only `message-count` counter are explicitly OUT of scope and stay default-allow —
 breaking those would break DevSwarm spawn/merge. Own skip name `devswarm-send-guard`
 (independent of `devswarm-read-guard` and command-guard's own skip), honors
-`DISABLE_ANTIHALL_DEVSWARM=1`. The block's reason redirects to the mesh CLI: `node
-scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to
-direct-message, `node scripts/devswarm.js heartbeat <id> --summary "<text>"` to report
+`DISABLE_ANTIHALL_DEVSWARM=1`. The block's reason redirects to the mesh CLI: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to
+direct-message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary "<text>"` to report
 status. Fires on both platforms — `command-guard.js` is the single shared hook file, so a
 Codex Bash tool call is blocked identically — but the PROACTIVE per-turn reminder that
 keeps the mesh top-of-mind (below) is Claude-only; a Codex session only learns this
@@ -82,7 +81,7 @@ single-native-consumer invariant): `docs/KB-devswarm-hivecontrol.md` §8.5/§8.7
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
 Because the native reads (`monitor`/`read-messages`) are guard-redirected, a child needs a
-**safe** way to actually RECEIVE parent messages. That is `node scripts/devswarm.js inbox
+**safe** way to actually RECEIVE parent messages. That is `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox
 pull <DEVSWARM_BUILDER_ID>` — a bounded, guard-safe one-shot drain (`command-guard`'s
 root-anchored `LIGHT_EXCEPTION` for `scripts/devswarm.js` allows it inline). It auto-ensures
 the child's descriptor, then runs ONE pull: a **non-destructive `message-count` gate first**
@@ -209,7 +208,7 @@ handoff:
   anti-hall does not and cannot check this (it stays pure fs, no git/test/gh spawn). Once
   satisfied, run:
   ```bash
-  node scripts/devswarm.js archive-request <childId> [--reason "TEXT"]
+  ~/.anti-hall/ah-engine/bin/ah-engine devswarm archive-request <childId> [--reason "TEXT"]
   ```
   **As of v0.58 this is a direct STORE WRITE, not a `hivecontrol` call.** Pre-v0.58 this
   resolved the child's branch and posted through `hivecontrol workspace message-child
@@ -232,7 +231,7 @@ handoff:
   (detected by both `devswarm-child-turn.js`'s per-turn scan and the Stop-gate's own check), the
   child must **confirm with its own user first**, then run:
   ```bash
-  node scripts/devswarm.js archive <id>
+  ~/.anti-hall/ah-engine/bin/ah-engine mesh archive <id>
   ```
   **(v0.70.1)** `<id>` also accepts an unambiguous shortId/prefix — the same short form shown
   in the roster/injection table — so the id displayed there is directly archivable; an
@@ -337,7 +336,7 @@ worktree. Settings live in `~/.anti-hall/settings.json`:
 | `devswarm.autoArchive.maxPerSweep` | 1..20 | `3` |
 | `devswarm.autoArchive.ignorePings` | `true` / `false` | `true` (`false` = any activity, pings included, resets the idle timer) |
 
-`node scripts/devswarm.js auto-archive` prints the current plan (read-only), with the proof
+`~/.anti-hall/ah-engine/bin/ah-engine devswarm auto-archive` prints the current plan (read-only), with the proof
 or the blockers for each workspace. Each archive (default `mode: "on"`) sends the Primary one line
 with an undo hint (unarchive it from the DevSwarm app's archived list) and is logged to
 `~/.anti-hall/logs/devswarm-auto-archive.ndjson` with the HEAD it archived at (`doneHead`).
@@ -349,13 +348,13 @@ skipped for the workspaces the sweep owns. Archive is recoverable: the worktree 
 
 **Prune old archived workspaces (owner-approved only).** Deletion is permanent. The flow is
 fixed, and every step is required:
-1. Dry run: `node scripts/devswarm.js prune-archived --older-than <days>`. It lists every
+1. Dry run: `~/.anti-hall/ah-engine/bin/ah-engine mesh prune-archived --older-than <days>`. It lists every
    archived workspace with its evidence (archived since, merged?, uncommitted?, unread?,
    worktree size) and blockers, and returns `eligibleIds` plus a plan `nonce` (valid 15 min).
 2. Show the owner a table of the eligible rows.
 3. Ask the owner with the EXACT id list, as one question (AskUserQuestion, or the host's
    ask-the-user tool) with approve / cancel options. Never infer approval.
-4. Only on approval, run `node scripts/devswarm.js prune-archived --confirm-ids <id,id,...> --plan <nonce>`.
+4. Only on approval, run `~/.anti-hall/ah-engine/bin/ah-engine mesh prune-archived --confirm-ids <id,id,...> --plan <nonce>`.
    The ids must equal the plan's `eligibleIds` exactly. Each row is re-checked right before its
    delete (still archived, not the Primary, clean worktree). Every attempt is logged to
    `~/.anti-hall/logs/devswarm-prune.ndjson`, and anti-hall tombstones its own records for that
@@ -384,7 +383,7 @@ a child mid-task that hit a decision point and still has other work it could be 
    sub-task inside your workspace, not the whole workspace.
 2. **Send the question to the parent, not the terminal:**
    ```bash
-   node scripts/devswarm.js send --to-primary --question --urgency high --message-file <path>
+   ~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --question --urgency high --message-file <path>
    ```
    (a multi-part structured question has newlines — `--message-file <path>` or
    `--message-stdin` avoid the shell-quoting mangling a `--message "..."` body with
@@ -414,7 +413,7 @@ a child mid-task that hit a decision point and still has other work it could be 
 
 ### PARENT rules
 
-1. **Keep a mailbox-wake running.** Poll `node scripts/devswarm.js inbox tick <id>`
+1. **Keep a mailbox-wake running.** Poll `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick <id>`
    on a schedule (30 minutes by default as of v0.97.0/D13, was 5 minutes — Monitor,
    when armed, is the PRIMARY low-latency wake path; this cron is the fallback,
    never disarmed) then `inbox read-primary <id>` only when the tick actually found
@@ -433,7 +432,7 @@ a child mid-task that hit a decision point and still has other work it could be 
    genuinely human ones.
 5. **Reply on the mesh, to that child specifically:**
    ```bash
-   node scripts/devswarm.js send --to <meshId> --message-file <path>
+   ~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId> --message-file <path>
    ```
    not a broadcast — a parked question is addressed to one child, and the answer
    should be too.
@@ -516,8 +515,8 @@ source-line citations + a worked lifecycle example: `docs/KB-devswarm-hivecontro
 
 | Daemon | Purpose | Health signal | Install |
 |---|---|---|---|
-| **Ingest daemon** (`companion/devswarm-ingest.js`) | The ONE native consumer — wraps `hivecontrol workspace monitor` under an O_EXCL single-consumer lock and folds every drained message into the shared per-project store (content-hash deduped, replay-safe). Never run manually; it's a supervised background job. | Two-signal health (`companion/lib/ingest-health.js`'s `daemonHealth`): `healthy` requires BOTH a fresh heartbeat AND a live-pid lock holder; otherwise `stale`; `unsupported` on win32 (no daemon possible there — mesh store + CLI still work fine). | `node companion/install-devswarm-ingest.js` (`--uninstall` / `--dry-run`). macOS LaunchAgent (`KeepAlive` relaunch, label `com.anti-hall.devswarm-ingest`); Linux `systemd --user` service (`Restart=always`, cron fallback if no systemd, ~60s worst-case revive gap); Windows documented no-op. Log: `~/.anti-hall/devswarm-ingest.log`. **PER-PROJECT** — install once per repo you want covered, not once per machine. |
-| **Liveness supervisor** (`companion/devswarm-supervisor.js`) | Opt-in periodic sweep (default 90s, 60–120s tunable): computes liveness per published workspace descriptor, pokes a stale workspace (Layer 2) then escalates (Layer 3) — **never kills**. Workaround for `claude-code#39755`. Never run manually. | Verdict file `~/.anti-hall/devswarm/liveness/<id>.json` (`alive`/`stale`/`nudged`/`ambiguous`/`escalated`); `node hooks/doctor.js` runs a live self-test (fresh workspace → `alive`, a wedged fixture → `stale`). | `node companion/install-devswarm-supervisor.js` (`--uninstall` / `--dry-run`, `ANTIHALL_DEVSWARM_INTERVAL=<sec>` tunes cadence). macOS LaunchAgent, Linux systemd timer + cron fallback, Windows detection-only no-op. Log: `~/.anti-hall/devswarm-supervisor.log`. |
+| **Ingest daemon** (`companion/devswarm-ingest.js`) | The ONE native consumer — wraps `hivecontrol workspace monitor` under an O_EXCL single-consumer lock and folds every drained message into the shared per-project store (content-hash deduped, replay-safe). Never run manually; it's a supervised background job. | Two-signal health (`companion/lib/ingest-health.js`'s `daemonHealth`): `healthy` requires BOTH a fresh heartbeat AND a live-pid lock holder; otherwise `stale`; `unsupported` on win32 (no daemon possible there — mesh store + CLI still work fine). | `~/.anti-hall/ah-engine/bin/ah-engine units install` (`--uninstall` / `--dry-run`). macOS LaunchAgent (`KeepAlive` relaunch, label `com.anti-hall.devswarm-ingest`); Linux `systemd --user` service (`Restart=always`, cron fallback if no systemd, ~60s worst-case revive gap); Windows documented no-op. Log: `~/.anti-hall/devswarm-ingest.log`. **PER-PROJECT** — install once per repo you want covered, not once per machine. |
+| **Liveness supervisor** (`companion/devswarm-supervisor.js`) | Opt-in periodic sweep (default 90s, 60–120s tunable): computes liveness per published workspace descriptor, pokes a stale workspace (Layer 2) then escalates (Layer 3) — **never kills**. Workaround for `claude-code#39755`. Never run manually. | Verdict file `~/.anti-hall/devswarm/liveness/<id>.json` (`alive`/`stale`/`nudged`/`ambiguous`/`escalated`); `~/.anti-hall/ah-engine/bin/ah-engine doctor` runs a live self-test (fresh workspace → `alive`, a wedged fixture → `stale`). | `~/.anti-hall/ah-engine/bin/ah-engine units install` (`uninstall` / `--dry-run`, `ANTIHALL_DEVSWARM_INTERVAL=<sec>` tunes cadence). macOS LaunchAgent, Linux systemd timer + cron fallback, Windows detection-only no-op. Log: `~/.anti-hall/devswarm-supervisor.log`. |
 
 Both installers are re-run automatically by the `update` skill whenever it detects an
 active DevSwarm session (idempotent refresh, not just first-install) — an agent normally
@@ -609,7 +608,7 @@ current worktree's Primary, no roster lookup needed.
   it under (derived from the current worktree, not chosen freely). This is the Primary
   reading + acking ITS OWN inbox, never a child's.
 - **A CHILD must self-register before its first ack.** This happens automatically, every
-  time, as a side effect of `node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>`
+  time, as a side effect of `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <DEVSWARM_BUILDER_ID>`
   (it auto-ensures the child's own descriptor before draining) — `DEVSWARM_BUILDER_ID` is
   the child's own hivecontrol-assigned identity env var, always available in a spawned
   workspace. A child never needs to call `register`/`ensure` by hand first; `inbox pull`
@@ -632,8 +631,8 @@ current worktree's Primary, no roster lookup needed.
 |---|---|---|
 | **Unregistered recipient** | `send --to X` returns `{ok:false, reason:'unregistered-recipient'}` | `X` isn't a real `id`/`meshId` in this project's registry. Run `roster --json`, copy an actual `id` or `meshId` from a live row, and re-send. |
 | **Ownership mismatch** | `inbox messages --ack` / `read-primary` (or its `ack-primary`) returns `ack refused: caller "<X>" does not own workspace "<id>" (pass --ack-as-owner to override)` | You're acking a workspace's inbox from a cwd that doesn't provably own it. If this genuinely is a legitimate cross-workspace ack (supervisor/Primary clearing another workspace's backlog), add `--ack-as-owner`; otherwise pass the CORRECT `<id>` — your own cwd-derived one. |
-| **Mis-keyed / stray registry row** | A workspace looks missing or duplicated across `roster`/`diagnose`, or `reconcile`'s output shows non-zero `healed`/`rehomed` counts | Self-heals automatically — never hand-edit the store. `reconcile` runs a heal pre-pass on every call; `node hooks/doctor.js --fix` and the `update` skill also sweep EVERY per-project store for this on every run. Trigger one on demand if you don't want to wait for the next `update`/`doctor` pass. |
-| **Stale ingest daemon** | New native messages from a sender aren't showing up in `roster`/`diagnose`, even though the sender confirms it sent them | `roster`/`diagnose`/`healthcheck` always read the shared store LIVE (a pure on-demand query, never a stale cache) — they faithfully show whatever has ALREADY landed; a stale/dead ingest daemon only stops NEW native messages from landing. Restart it: `node companion/install-devswarm-ingest.js` (or let the DevSwarm-gated auto-heal in `node hooks/doctor.js --fix` / the `update` skill do it — both re-run this installer automatically inside an active session). |
+| **Mis-keyed / stray registry row** | A workspace looks missing or duplicated across `roster`/`diagnose`, or `reconcile`'s output shows non-zero `healed`/`rehomed` counts | Self-heals automatically — never hand-edit the store. `reconcile` runs a heal pre-pass on every call; `~/.anti-hall/ah-engine/bin/ah-engine doctor --fix` and the `update` skill also sweep EVERY per-project store for this on every run. Trigger one on demand if you don't want to wait for the next `update`/`doctor` pass. |
+| **Stale ingest daemon** | New native messages from a sender aren't showing up in `roster`/`diagnose`, even though the sender confirms it sent them | `roster`/`diagnose`/`healthcheck` always read the shared store LIVE (a pure on-demand query, never a stale cache) — they faithfully show whatever has ALREADY landed; a stale/dead ingest daemon only stops NEW native messages from landing. Restart it: `~/.anti-hall/ah-engine/bin/ah-engine units install` (or let the DevSwarm-gated auto-heal in `~/.anti-hall/ah-engine/bin/ah-engine doctor --fix` / the `update` skill do it — both re-run this installer automatically inside an active session). |
 | **Idle child, no task** | A child workspace has nothing to do and is sitting unattended | Layer 1 self-report: the child runs `heartbeat <id> --summary "idle — reassign me or archive me"` (see "The layered recovery model" below). The Primary then either assigns new work via `send --to <id>` or, once merged/tested/deployed per its own policy, requests archive via `archive-request <childId>`. |
 
 ### How to READ mesh health — never hand-read the store
@@ -702,7 +701,7 @@ registration, a stuck daemon, or a stale row:
   to a different, current project. `reconcile` runs a heal pre-pass
   (`healRegistry`/`rehomeMiskeyedRow`) on EVERY call, before computing its drain targets,
   so a correctly-owned-but-stale row is healed in place and a genuinely mis-keyed row is
-  rehomed OUT — message-preserving, zero loss, never deleted. `node hooks/doctor.js --fix`
+  rehomed OUT — message-preserving, zero loss, never deleted. `~/.anti-hall/ah-engine/bin/ah-engine doctor --fix`
   and the `update` skill ALSO sweep every per-project store for this directly (not just
   as a side effect of running `reconcile`), on every run — AUTO-SAFE (pure store
   read+write, no DevSwarm-active gate needed in `doctor`; `update`'s own wrapper is gated
@@ -740,23 +739,23 @@ per-worktree identity uses). Every worktree of a project now shares ONE store
 other directly, not just its own parent/child pair.
 
 **New CLI verbs (daemon-independent — write the shared store directly, no `hivecontrol` call):**
-- `node scripts/devswarm.js send --to <meshId>|--broadcast --message-file <path> [--urgency low|normal|high|urgent]`
+- `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId>|--broadcast --message-file <path> [--urgency low|normal|high|urgent]`
   (or `--message TEXT` / `--message-stdin` — `--message-file`/`--message-stdin` avoid shell
   quoting entirely, the safer default for a body with newlines/quotes/shell metacharacters)
   — a non-git cwd fails closed (`{ok:false, reason:'no-project'}`) BEFORE any identity is
   derived; `--from` is always the hardened cwd-derived identity (spoofing a mismatched
   `--from` is rejected); `--to` is fail-closed against the shared registry (an unregistered
   meshId is rejected, never silently dropped).
-- `node scripts/devswarm.js roster [--ack]` — this project's shared registry + `working_on` +
+- `~/.anti-hall/ah-engine/bin/ah-engine mesh roster [--ack]` — this project's shared registry + `working_on` +
   a `recent[]` broadcast digest (plain output: a compact live-workspace table; `--json` for the data). `--ack` clears your own `broadcastUnread` (alias of `mesh read`).
-- `node scripts/devswarm.js mesh read` — same as `roster --ack`.
-- `node scripts/devswarm.js done [<id>] [--summary "TEXT"]` — **(0.108.3) CHILD verb**, run once
+- `~/.anti-hall/ah-engine/bin/ah-engine mesh mesh read` — same as `roster --ack`.
+- `~/.anti-hall/ah-engine/bin/ah-engine devswarm done [<id>] [--summary "TEXT"]` — **(0.108.3) CHILD verb**, run once
   when your work is merged/finished: sets the `done` gate on your OWN workspace id (resolved from
   cwd; an explicit `<id>` must match) and sends the Primary ONE `[[ANTIHALL_DONE]]` direct message
   (`kind:'done'` in the result). Idempotent: a re-run on the same HEAD adds nothing. It never sets
   `merged`/`tests_passed` — auto-archive proves the merge itself — and it is refused from the
   Primary checkout. The roster shows the child with the `done` + `archive-pending` hints.
-- `node scripts/devswarm.js heartbeat <id> --summary "TEXT" [--urgency ...]` — the existing
+- `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary "TEXT" [--urgency ...]` — the existing
   heartbeat verb now ALSO broadcasts a mesh status ping (default urgency `low`) that feeds
   `roster`'s `working_on` field.
 
@@ -924,16 +923,16 @@ table/worked example.
 
 ## Migrating historical backlog without a false unread wall — `migrate-state.js --mark-read`
 
-`scripts/migrate-state.js` (a separate script from `devswarm.js`, run once per repo checkout)
+`ah-engine migrate` (a separate verb from the mesh verbs, run once per repo checkout)
 also auto-migrates the DevSwarm store as part of its normal legacy-state fold. By default an
 imported legacy source with no consumed-cursor of its own (e.g. a pre-0.54 shell-loop NDJSON)
 lands at cursor `0` — its ENTIRE backlog reads as unread, which can trip the parent neglect-gate
-on a machine that's simply catching up on old history, not a genuinely neglected child. Pass
-`--mark-read` (or set env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1`) to advance the JUST-imported
+on a machine that's simply catching up on old history, not a genuinely neglected child. The
+`--mark-read` option (or env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1`; not yet carried by `ah-engine migrate`) advances the JUST-imported
 backlog's cursor to its post-import message count, so historical migration reads as already-seen:
 
 ```bash
-node plugins/anti-hall/scripts/migrate-state.js --mark-read [dir]
+~/.anti-hall/ah-engine/bin/ah-engine migrate [--dry-run]
 ```
 
 Only affects the migration's own DevSwarm-store fold (not the legacy `.anti-hall-progress.md`/
@@ -956,7 +955,7 @@ the queue (each drains what the other doesn't see) with no error and no way to r
 outside any hook's reach. Detection + retirement is a manual, PARENT-role action:
 `docs/KB-devswarm-hivecontrol.md` §8.7.2 has the full identify → stop → verify recipe
 (`ps aux | grep 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
-`node hooks/doctor.js`). Do this BEFORE relying on `archive-request` or any reception flow above
+`~/.anti-hall/ah-engine/bin/ah-engine doctor`). Do this BEFORE relying on `archive-request` or any reception flow above
 if you suspect a second consumer — the guard-redirect and the ingest daemon only protect against
 anti-hall's OWN tooling calling `monitor`/`read-messages` twice; they cannot see a process outside
 anti-hall's control.
@@ -989,12 +988,12 @@ kills a process.** Only the separate on-demand CLI (below) ever does that.
 
 **Layer 1 — child self-report.** A child workspace's own `SessionStart` hook
 (`hooks/devswarm-child-role.js`) injects a reminder: if the session has been idle with no
-active task, proactively run `node scripts/devswarm.js heartbeat <id> --summary "idle —
+active task, proactively run `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary "idle —
 reassign me or archive me"` (as of v0.58 — the mesh CLI; the native `hivecontrol workspace
 message-parent` this used to name is now guard-blocked, see "command-guard's native-SEND
 block" above), so the parent's task list stays honest instead of the child sitting
 unnoticed. **(0.108.3)** It also tells the child: when its work is merged/finished, run
-`node <plugin>/scripts/devswarm.js done --summary "<what shipped>"` once (the absolute CLI
+`~/.anti-hall/ah-engine/bin/ah-engine devswarm done --summary "<what shipped>"` once (the absolute CLI
 path is injected) — the structured done-report auto-archive reads, so the user never has to
 archive a finished workspace. This is **cooperative** — it only works if the child is still capable of
 executing a turn at all. A truly wedged child (the failure mode this whole feature exists
@@ -1060,7 +1059,7 @@ session.
 ## On-demand recovery — devswarm-recover CLI
 
 ```bash
-node plugins/anti-hall/companion/devswarm-recover.js <workspace-id>
+~/.anti-hall/ah-engine/bin/ah-engine devswarm recover --id <workspace-id> --request <request-id>
 ```
 
 This is **the only place in DevSwarm that ever kills a process.** It reads the named
@@ -1110,9 +1109,9 @@ This is the part a DevSwarm-consuming project needs, in order:
 **1. Install the automatic supervisor (opt-in — never self-installs):**
 
 ```bash
-node plugins/anti-hall/companion/install-devswarm-supervisor.js
-node plugins/anti-hall/companion/install-devswarm-supervisor.js --dry-run   # preview
-node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall
+~/.anti-hall/ah-engine/bin/ah-engine units install
+~/.anti-hall/ah-engine/bin/ah-engine units install --dry-run   # preview
+~/.anti-hall/ah-engine/bin/ah-engine units uninstall
 ```
 
 - **macOS** → LaunchAgent (`launchd`, `StartInterval`).
@@ -1128,9 +1127,9 @@ node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall
 **1b. Install the ingest daemon (new in 0.54.1 — same autonomous-refresh posture):**
 
 ```bash
-node plugins/anti-hall/companion/install-devswarm-ingest.js
-node plugins/anti-hall/companion/install-devswarm-ingest.js --dry-run   # preview
-node plugins/anti-hall/companion/install-devswarm-ingest.js --uninstall
+~/.anti-hall/ah-engine/bin/ah-engine units install
+~/.anti-hall/ah-engine/bin/ah-engine units install --dry-run   # preview
+~/.anti-hall/ah-engine/bin/ah-engine units uninstall
 ```
 
 `devswarm-ingest.js` is the one supervised daemon wrapping `hivecontrol workspace
@@ -1157,7 +1156,7 @@ second install for the SAME repo is a no-op," not "one daemon covers every repo.
 process's OWN cwd — there is no way to point it at a different repo's queue by id — so
 each daemon can only ever drain the ONE worktree baked into its `WorkingDirectory` at
 install time. **If you use DevSwarm across multiple repos on one machine, run this
-installer once per repo** (`cd <repo A> && node .../install-devswarm-ingest.js`, then
+installer once per repo** (`cd <repo A> && ~/.anti-hall/ah-engine/bin/ah-engine units install`, then
 the same from repo B, …); a repo with no install of its own has zero ingest coverage,
 silently. Do not describe "the ingest daemon is running" as proof that ingest is
 covered machine-wide or for other repos — it proves only that its OWN worktree drains.
@@ -1283,7 +1282,7 @@ sweep's env — the automatic path no longer carries them at all since it never 
   timestamps.
 - `~/.anti-hall/devswarm/recovery.log` — append-only NDJSON, one line per poke, escalate,
   recovery attempt, or abstain, with a reason.
-- `node hooks/doctor.js` — silent unless DevSwarm is active; otherwise runs a live
+- `~/.anti-hall/ah-engine/bin/ah-engine doctor` — silent unless DevSwarm is active; otherwise runs a live
   behavioral self-test (fresh workspace → `alive`, a constructed wedged fixture →
   `stale`) plus a PASS/WARN/FAIL readout per real workspace descriptor. `nudged` maps to
   WARN (a poke is outstanding, not yet a failure); there is no `recovering`/stuck-timer

@@ -8,9 +8,8 @@
 > LLM judge), task-list discipline, and a TTL'd user-override escape hatch
 > (`~/.anti-hall/skip.json`). Optional parts: a two-line statusline, an MCP-orphan reaper,
 > the Jev classifier, and DevSwarm multi-workspace coordination (dormant unless DevSwarm is
-> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. Node >= 22 on PATH
-> is needed only for the temporary compatibility hooks, which are removed in v1.0 (the engine is then the
-> only runtime). Windows is not supported yet.
+> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. Since v0.301 the engine is
+> the only runtime: the plugin ships no Node code and needs no Node.js. Windows is not supported yet.
 
 anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and
@@ -28,14 +27,14 @@ Prerequisite: Node.js >= 22 on PATH (hooks silently no-op without it; Windows is
 /plugin install anti-hall@anti-hall
 ```
 
-Verify: ask Claude "is anti-hall working" (the `doctor` skill), or run `node plugins/anti-hall/hooks/doctor.js --check` from a clone.
+Verify: ask Claude "is anti-hall working" (the `doctor` skill), or run `~/.anti-hall/ah-engine/bin/ah-engine doctor --check` from a clone.
 
 Codex (from a clone; project-local, or add `--global`):
 
 ```
 git clone https://github.com/talas9/anti-hall.git
 cd anti-hall
-node plugins/anti-hall/codex/install-codex.js
+~/.anti-hall/ah-engine/bin/ah-engine install-codex
 ```
 
 Update with `/anti-hall:update` (Claude) or the `anti-hall-update` skill (Codex), then `/reload-plugins` (Claude Code; restart only if a hook or skill path still shows the old version).

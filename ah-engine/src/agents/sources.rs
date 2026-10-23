@@ -5,6 +5,7 @@
 //! is probed once per Claude Code version and cached, and a failed or unverified probe falls back to the transcripts. Only the
 //! `--json` form is read; no human-formatted output is ever parsed.
 use super::facts;
+use super::live::{self, Session};
 use super::{Agent, Env, State, Ws, fmtn, kind_name, lim, pth};
 use crate::checks::agent_scan::mtime_ms;
 use crate::defaults::{self, V};
@@ -21,32 +22,63 @@ pub struct Listing {
     pub cli_used: bool,
 }
 
-struct Found {
-    id: String,
-    kind: &'static str,
-    parent: String,
-    name: String,
-    path: String,
-    mtime: u64,
+pub(super) struct Found {
+    pub(super) id: String,
+    pub(super) kind: &'static str,
+    pub(super) parent: String,
+    pub(super) name: String,
+    pub(super) path: String,
+    pub(super) mtime: u64,
+    pub(super) team: String,
+    pub(super) finished: bool,
 }
 
-fn read_dir(p: &Path) -> Vec<PathBuf> {
+pub(super) fn read_dir(p: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(p).map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
 }
 
-fn json_of(p: &Path) -> Option<Value> {
+pub(super) fn json_of(p: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
 }
 
-fn discover(env: &Env) -> Vec<Found> {
+/// Whether a transcript is a headless one-shot run: its start names a headless entrypoint (`agent_tracker.headless`).
+fn headless_head(path: &Path) -> bool {
+    let h = defaults::raw("agent_tracker.headless");
+    let mut buf = Vec::new();
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    if std::io::Read::read_to_end(&mut std::io::Read::take(f, lim("headless_head_bytes")), &mut buf).is_err() {
+        return false;
+    }
+    let head = String::from_utf8_lossy(&buf);
+    let key = h.str_field("key");
+    h.get("values").map(V::strings).unwrap_or_default().iter().any(|v| head.contains(&format!("\"{key}\":\"{v}\"")))
+}
+
+/// Discover the transcripts in the active window. Headless runs are left out and returned by id.
+fn discover(
+    env: &Env,
+    sessions: &[Session],
+    tracked: &std::collections::BTreeMap<String, Agent>,
+    known: &std::collections::BTreeSet<String>,
+) -> (Vec<Found>, std::collections::BTreeSet<String>) {
     let cutoff = env.now_ms.saturating_sub(lim("active_window_ms"));
     let ext = pth("transcript_ext");
+    let dirs = defaults::raw("agent_tracker.headless").get("dir_contains").map(V::strings).unwrap_or_default();
     let mut out = Vec::new();
+    let mut headless = std::collections::BTreeSet::new();
     for proj in read_dir(&env.home.join(pth("projects"))) {
+        let dir_headless = proj.file_name().is_some_and(|n| dirs.iter().any(|d| n.to_string_lossy().contains(d)));
         for f in read_dir(&proj) {
             let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             if let Some(stem) = name.strip_suffix(ext) {
                 if let Some(m) = mtime_ms(&f).map(|m| m as u64).filter(|m| *m >= cutoff) {
+                    if dir_headless
+                        || known.contains(stem)
+                        || (!tracked.get(stem).is_some_and(|a| a.interactive) && !sessions.iter().any(|s| s.id == stem) && headless_head(&f))
+                    {
+                        headless.insert(stem.to_string());
+                        continue;
+                    }
                     out.push(Found {
                         id: stem.to_string(),
                         kind: kind_name("main"),
@@ -54,24 +86,29 @@ fn discover(env: &Env) -> Vec<Found> {
                         name: String::new(),
                         path: f.to_string_lossy().to_string(),
                         mtime: m,
+                        team: String::new(),
+                        finished: false,
                     });
                 }
-            } else if f.is_dir() {
+            } else if f.is_dir() && !dir_headless && !known.contains(&name) {
                 for s in read_dir(&f.join(pth("subagents"))) {
                     let n = s.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                     let Some(stem) = n.strip_suffix(ext) else { continue };
                     let Some(m) = mtime_ms(&s).map(|m| m as u64).filter(|m| *m >= cutoff) else { continue };
                     let path = s.to_string_lossy().to_string();
-                    let label = json_of(Path::new(&facts::meta_path(&path)))
-                        .and_then(|v| v.get(super::tr("description")).and_then(Value::as_str).map(str::to_string))
-                        .unwrap_or_default();
+                    let meta = json_of(Path::new(&facts::meta_path(&path))).unwrap_or(Value::Null);
+                    let mf = defaults::raw("agent_tracker.meta");
+                    let text = |k: &str| meta.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                    let mate = text(mf.str_field("task_kind")) == mf.str_field("teammate");
                     out.push(Found {
                         id: stem.strip_prefix(pth("agent_prefix")).unwrap_or(stem).to_string(),
-                        kind: kind_name("subagent"),
+                        kind: if mate { kind_name("teammate") } else { kind_name("subagent") },
                         parent: name.clone(),
-                        name: label,
+                        name: if mate { text(mf.str_field("name")) } else { text(super::tr("description")) },
                         path,
                         mtime: m,
+                        team: text(mf.str_field("team")),
+                        finished: meta.get(mf.str_field("finished")).and_then(Value::as_bool).unwrap_or(false),
                     });
                 }
             }
@@ -79,7 +116,10 @@ fn discover(env: &Env) -> Vec<Found> {
     }
     out.sort_by_key(|f| std::cmp::Reverse(f.mtime));
     out.truncate(lim("max_agents") as usize);
-    out
+    // a session with a live process is followed however long its transcript has been quiet (and whatever the cap says)
+    out.extend(live::quiet_sessions(env, sessions, &out));
+    out.extend(live::codex_found(env));
+    (out, headless)
 }
 
 /// Heartbeat files (`<base>/agents/<id>.json`): the agents only a heartbeat shows.
@@ -155,17 +195,20 @@ fn devswarm(env: &Env, st: &mut State) {
         if !step.is_empty() {
             facts::set_step(a, &step);
         }
-        a.ws = Some(Ws { id: id.clone(), armed: Some(watcher_armed(env, &root, &id)), step, done });
+        // a Primary's DevSwarm watcher arms only while it has a live child (its idle-skip), so "unarmed" says nothing about it
+        let armed = (!id.starts_with(defaults::text("agent_tracker.primary_prefix"))).then(|| watcher_armed(env, &id));
+        a.ws = Some(Ws { id: id.clone(), armed, step, done });
     }
 }
 
-fn watcher_armed(env: &Env, root: &Path, id: &str) -> bool {
-    let lock = root.join(pth("locks")).join(format!("{}{id}{}", pth("lock_prefix"), pth("lock_ext")));
-    let f = defaults::raw("agent_tracker.devswarm_fields");
-    let Some(v) = json_of(&lock) else { return false };
-    let ts = v.get(f.str_field("lock_ts")).and_then(Value::as_u64).unwrap_or(0);
-    let alive = v.get(f.str_field("lock_pid")).and_then(Value::as_u64).is_none_or(|p| crate::health::pid_alive(p as u32));
-    ts != 0 && env.now_ms.saturating_sub(ts) <= lim("stale_lock_ms") && alive
+/// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
+/// row on its checkout). A lock the check cannot read decides nothing, so it reads as not armed.
+fn watcher_armed(env: &Env, id: &str) -> bool {
+    let found = crate::meshw::watcher::live_for_workspace(&env.home, id, env.now_ms as i64);
+    if found.as_ref().is_ok_and(|f| f.by_checkout) {
+        crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
+    }
+    found.is_ok_and(|f| f.armed)
 }
 
 // ---- the Claude Code CLI --------------------------------------------------------------------------------
@@ -189,7 +232,17 @@ fn cli_rows(out: &str) -> Option<Vec<Value>> {
     rows.iter().all(|r| r.get(id).is_some()).then(|| rows.clone())
 }
 
-fn cli(env: &Env, st: &mut State) -> Listing {
+/// Whether the host's listing is due by age (or has never been taken). Without the CLI nothing is cached, so it is always due.
+fn listing_due(env: &Env, st: &State) -> bool {
+    !env.use_cli || st.cli_ok == Some(false) || st.cli_listed == 0 || env.now_ms.saturating_sub(st.cli_listed) >= lim("cli_list_ttl_ms")
+}
+
+/// Whether the host's session listing must be taken now: it is due by age, or an agent the last listing did not cover has appeared.
+fn relist(env: &Env, st: &State, due: bool) -> bool {
+    due || st.agents.values().any(|a| (a.kind == kind_name("main") || a.kind == kind_name("workspace")) && !st.cli_seen.contains(&a.id)) && env.use_cli
+}
+
+fn cli(env: &Env, st: &mut State, relist: bool) -> Listing {
     let mut l = Listing { cli_version: st.cli_version.clone(), cli_used: false };
     if !env.use_cli {
         return l;
@@ -207,6 +260,13 @@ fn cli(env: &Env, st: &mut State) -> Listing {
     if st.cli_ok != Some(true) {
         return l;
     }
+    if !relist {
+        l.cli_used = true; // the listing of a moment ago still stands
+        return l;
+    }
+    // stamped on the attempt, so a listing that fails is not retried at every tick either
+    st.cli_listed = env.now_ms;
+    st.cli_seen = st.agents.values().filter(|a| a.kind == kind_name("main") || a.kind == kind_name("workspace")).map(|a| a.id.clone()).collect();
     let Some(rows) = cli_run(&cli_cfg("agents_args").strings()).and_then(|o| cli_rows(&o)) else { return l };
     l.cli_used = true;
     let field = |r: &Value, k: &str| r.get(cli_cfg(k).as_str().unwrap_or("")).and_then(Value::as_str).unwrap_or("").to_string();
@@ -224,10 +284,76 @@ fn cli(env: &Env, st: &mut State) -> Listing {
     l
 }
 
+/// A subagent whose launching session records it as ended (a terminal task notice: completed, failed, stopped, killed; or a
+/// `TaskStop` that was answered) is done, whatever its own transcript last said: a stopped agent writes no closing line, so
+/// reading only its transcript would call it running (and silent) for as long as the transcript is tracked.
+fn stopped_subagents(env: &Env, st: &mut State) {
+    let opts = crate::checks::agent_scan::Opts { now_ms: env.now_ms as f64, ignore_unanswered_stops: true };
+    let tail = defaults::num("agent_scan.tail_bytes");
+    let mut ended: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    let live: Vec<(String, String)> = st.agents.values().filter(|a| super::is_child(a) && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
+    for (id, path) in live {
+        // <projects>/<dir>/<parent session>/subagents/agent-<id>.jsonl: the launching session's transcript is <dir>/<parent session>.jsonl
+        let Some(session_dir) = Path::new(&path).parent().and_then(Path::parent) else { continue };
+        let parent = format!("{}{}", session_dir.to_string_lossy(), pth("transcript_ext"));
+        let set = ended.entry(parent.clone()).or_insert_with(|| {
+            crate::checks::agent_scan::scan_transcript(&parent, tail, &opts)
+                .ok()
+                .flatten()
+                .map(|s| s.terminal.into_iter().chain(s.stopped_agents).collect())
+                .unwrap_or_default()
+        });
+        if set.contains(&id)
+            && let Some(a) = st.agents.get_mut(&id)
+        {
+            a.running = false;
+        }
+    }
+}
+
+/// A teammate the host's team roster (`agent_tracker.roster`) no longer lists - or lists as joined after this agent started, so the name
+/// belongs to a newer spawn - was stopped or finished. The host writes nothing into such a teammate's own transcript, and the scan of
+/// the launching session's transcript only sees a stop still inside its window, so the roster is the one record that stays true. A
+/// roster that is missing or unreadable decides nothing. Runs over every tracked teammate, not only the ones read this tick: an agent
+/// the tick's cap left out would otherwise keep its last "running" for as long as it is tracked.
+fn off_roster(env: &Env, st: &mut State) {
+    let r = defaults::raw("agent_tracker.roster");
+    let num = |k: &str| r.get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    let mut rosters: std::collections::HashMap<String, Option<std::collections::BTreeMap<String, u64>>> = std::collections::HashMap::new();
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.team.is_empty() && !a.name.is_empty()) {
+        // a tick may read the roster between the host's two writes at spawn: an agent just followed decides nothing
+        if env.now_ms.saturating_sub(a.first_seen) < num("grace_ms") {
+            continue;
+        }
+        let roster = rosters.entry(a.team.clone()).or_insert_with(|| {
+            let v = json_of(&env.home.join(r.str_field("dir")).join(&a.team).join(r.str_field("file")))?;
+            let members = v.get(r.str_field("members"))?.as_array()?;
+            Some(
+                members
+                    .iter()
+                    .filter_map(|m| {
+                        Some((m.get(r.str_field("name"))?.as_str()?.to_string(), m.get(r.str_field("joined")).and_then(Value::as_u64).unwrap_or(0)))
+                    })
+                    .collect(),
+            )
+        });
+        let Some(roster) = roster else { continue };
+        let started = mtime_ms(Path::new(&facts::meta_path(&a.path))).map_or(0, |m| m as u64);
+        if roster.get(&a.name).is_none_or(|joined| *joined > started.saturating_add(num("rejoin_slack_ms"))) {
+            a.finished = true;
+        }
+    }
+}
+
 /// Discover and ingest every source; drop agents that disappeared.
 pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     let now = env.now_ms;
-    for f in discover(env) {
+    let due = listing_due(env, st);
+    let sessions = live::registry(env);
+    let (found, headless) = discover(env, sessions.as_deref().unwrap_or(&[]), &st.agents, &st.headless);
+    st.agents.retain(|id, a| !headless.contains(id) && !headless.contains(&a.parent));
+    st.headless = headless;
+    for f in found {
         let a = st.agents.entry(f.id.clone()).or_insert_with(|| Agent {
             id: f.id.clone(),
             kind: f.kind.into(),
@@ -239,19 +365,35 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
         });
         a.seen = now;
         a.path = f.path;
-        a.host.clear();
-        a.gone = false;
+        a.interactive |= a.kind == kind_name("main") || a.kind == kind_name("workspace");
+        a.team = f.team;
+        a.finished = f.finished;
+        if super::is_child(a) && (f.kind == kind_name("subagent") || f.kind == kind_name("teammate")) {
+            a.kind = f.kind.into(); // a teammate seen before its meta named it one is re-kinded
+        }
+        if due {
+            a.host.clear();
+            a.gone = false;
+        }
         if !f.name.is_empty() {
             a.name = f.name;
         }
+        if a.kind == kind_name("codex") {
+            live::codex_state(env, a, f.mtime);
+            continue;
+        }
         facts::ingest(a, now);
-        if a.kind != kind_name("subagent") && a.kind != kind_name("workspace") {
+        if !super::is_child(a) && a.kind != kind_name("workspace") {
             a.kind = kind_name("main").into();
         }
     }
+    stopped_subagents(env, st);
+    off_roster(env, st);
     heartbeats(env, st);
     devswarm(env, st);
-    let l = cli(env, st);
+    let again = relist(env, st, due);
+    let l = cli(env, st, again);
+    live::apply(st, sessions.as_deref(), l.cli_used);
     let keep = lim("active_window_ms");
     st.agents.retain(|_, a| now.saturating_sub(a.seen) <= keep);
     l

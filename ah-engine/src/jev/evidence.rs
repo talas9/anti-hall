@@ -510,7 +510,11 @@ fn ask_jev(home: &Path, env: &Env, cfg: &Cfg, q: Question, pack: &str, blocking:
     let mut req = AskRequest::new(&cfg.id, q, pack, Trust::Advisory, Value::Null);
     req.env = Some(env.clone());
     req.wait_for_escalation = !blocking;
-    let d = super::shared::lane(home, env).ask(&req);
+    let Some(lane) = super::shared::lane(home, env) else {
+        o.reason = Some(word("reason_no_answer").to_string());
+        return;
+    };
+    let d = lane.ask(&req);
     o.ms = d.ms;
     let answer = match &d.jev {
         Value::Bool(b) => Some(Answer::Bool(*b)),

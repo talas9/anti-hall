@@ -26,13 +26,11 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim, js_trim_end, slice_utf16};
 use crate::defaults;
 use crate::meshw::args::Args;
-use crate::meshw::common::{Inv, Obj, n, now_ms, s};
+use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::ident::{R, defer};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::{Answer, Effect};
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 
 /// Which verb of this module an argv names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +77,8 @@ pub fn classify(a: &Args) -> Option<Simple> {
         Some(Simple::Logs)
     } else if is("devswarm_cli.verb_wake_directive") {
         Some(Simple::WakeDirective)
-    } else if cmd.is_some_and(|c| defaults::list("devswarm_cli.verbs").contains(&c)) {
+    } else if cmd.is_some_and(|c| defaults::list("devswarm_cli.verbs").contains(&c)) || is("devswarm_cli.verb_create") {
+        // `create` is the engine's other name of `spawn` (not one of devswarm.js's verbs)
         None
     } else {
         Some(Simple::Unknown)
@@ -712,17 +711,8 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
     let home = home_str(inv)?;
     let env = crate::reqenv::RequestEnv::capture();
     let Some(st) = crate::checks::devswarm_role::usable_settings(&env) else { return defer("settings") };
-    let Some(root) = defaults::root().and_then(|r| r.to_str().map(str::to_string)).and_then(|r| crate::checks::devswarm_role::node_root(&r)) else {
-        return defer("plugin-root");
-    };
-    // the stable launcher when it is a file, else the script where this plugin keeps it
-    let path_of = |key: &str| {
-        let l = defaults::raw(key);
-        let raw = posix_normalize(&format!("{root}/{}", l.str_field("target")));
-        let stable = posix_normalize(&format!("{home}/{}/{}", defaults::text("devswarm_role.bin_dir"), l.str_field("name")));
-        if std::fs::metadata(&stable).is_ok_and(|m| m.is_file()) { stable } else { raw }
-    };
-    let (cli, watcher) = (path_of("devswarm_role.launcher_cli"), path_of("devswarm_role.launcher_watcher"));
+    // the engine shims agents run (devswarm_role.engine_cli / engine_watcher)
+    let (cli, watcher) = (crate::checks::devswarm_role::text::engine_cli(&home), crate::checks::devswarm_role::text::engine_watcher(&home));
     let agent_raw = inv.env.get(defaults::text("devswarm_role.agent_env")).map(String::as_str).unwrap_or("");
     if !agent_raw.is_ascii() {
         return defer("agent-name"); // JavaScript and Rust lower-case some non-ASCII letters differently
@@ -743,227 +733,4 @@ fn wake_directive(inv: &Inv, a: &Args) -> R<Answer> {
         .put("agent", if agent == defaults::text("devswarm_role.claude_agent") { s(&agent) } else { OVal::Null })
         .put("directive", s(js_trim(&directive)));
     Ok(answer(0, o.done()))
-}
-
-// ---- the Node witness ---------------------------------------------------------------------------------------------------
-
-/// Every row of one query as text, oldest first (`None` when the store cannot be read).
-fn rows_dump(c: &rusqlite::Connection, query: &str, cols: usize, out: &mut String) -> Option<()> {
-    let mut st = c.prepare(query).ok()?;
-    let mut rows = st.query([]).ok()?;
-    while let Some(r) = rows.next().ok()? {
-        for i in 0..cols {
-            out.push_str(&match r.get_ref(i).ok()? {
-                rusqlite::types::ValueRef::Null => "null".to_string(),
-                rusqlite::types::ValueRef::Integer(x) => x.to_string(),
-                rusqlite::types::ValueRef::Real(x) => x.to_string(),
-                rusqlite::types::ValueRef::Text(t) => serde_json::to_string(&String::from_utf8_lossy(t)).unwrap_or_default(),
-                rusqlite::types::ValueRef::Blob(b) => format!("blob:{}", b.len()),
-            });
-            out.push('|');
-        }
-        out.push('\n');
-    }
-    Some(())
-}
-
-/// Every gate row of a store as text, oldest first (`None` when the store cannot be read).
-fn gates_dump(db: &Path) -> Option<String> {
-    let c = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
-    c.busy_timeout(defaults::millis("mesh.busy_timeout_ms")).ok()?;
-    let mut out = String::new();
-    rows_dump(&c, crate::sql::MESHW_GATES_DUMP, 5, &mut out)?;
-    Some(out)
-}
-
-/// Copy what Node reads or rewrites for these verbs into a scratch home (the project's store as a consistent copy when
-/// `with_store`); `None` when that fails (the call is then not verified).
-pub fn prepare(inv: &Inv, with_store: bool) -> Option<PathBuf> {
-    let scratch = crate::paths::dir().join(defaults::text("devswarm_cli.witness_dir")).join(format!("{}-{}", std::process::id(), now_ms()));
-    let built = prepare_into(inv, with_store, &scratch);
-    if built.is_none() {
-        crate::meshw::verify::discard_tree(&scratch);
-    }
-    built
-}
-
-fn prepare_into(inv: &Inv, with_store: bool, scratch: &Path) -> Option<PathBuf> {
-    let home = scratch.join(defaults::text("mesh_write.shadow_home"));
-    std::fs::create_dir_all(&home).ok()?;
-    let mut linked = std::collections::HashMap::new();
-    for rel in defaults::list("devswarm_cli.witness_copy_paths") {
-        let src = inv.home.join(rel);
-        let dst = home.join(rel);
-        if src.is_dir() {
-            crate::meshw::verify::copy_tree_linked(&src, &dst, &mut linked).ok()?;
-        } else if src.is_file() {
-            std::fs::create_dir_all(dst.parent()?).ok()?;
-            std::fs::copy(&src, &dst).ok()?;
-        }
-    }
-    // read-only inputs that are too big to copy (session transcripts) are linked
-    for rel in defaults::list("devswarm_cli.witness_link_paths") {
-        let src = inv.home.join(rel);
-        // the store verbs copy their own project's store; the link is for the verbs that only read the stores
-        if src.exists() && !with_store {
-            let dst = home.join(rel);
-            std::fs::create_dir_all(dst.parent()?).ok()?;
-            std::os::unix::fs::symlink(&src, dst).ok()?;
-        }
-    }
-    // a caller whose ANTI_HALL_LOG_DIR moves the central log: Node's witness reads a copy of THAT log (its writes still go to the
-    // scratch home), and its printed paths are mapped back to the caller's directory
-    if let Some(d) = inv.env.get(defaults::text("devswarm_cli.env_log_dir")).filter(|d| !d.is_empty()) {
-        let wdir = crate::meshw::clog::witness_dir(&home);
-        std::fs::create_dir_all(&wdir).ok()?;
-        for f in [defaults::text("devswarm_cli.log_file"), defaults::text("devswarm_cli.log_rotated_file")] {
-            let (src, dst) = (Path::new(d).join(f), wdir.join(f));
-            crate::discard::harmless(std::fs::remove_file(&dst)); // keep: absent is the wanted state
-            if src.is_file() {
-                std::fs::copy(&src, &dst).ok()?;
-            }
-        }
-        std::fs::write(scratch.join("log-dir"), d).ok()?;
-    }
-    // a caller outside any project has no store to copy: the verb answers without one (a refusal), and Node meets none either
-    if with_store && let Some(real) = super::real_store(inv).ok().filter(|r| r.is_file()) {
-        let key = real.parent()?.file_name()?.to_string_lossy().to_string();
-        let dir = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(&key);
-        std::fs::create_dir_all(&dir).ok()?;
-        if let Ok(marker) = std::fs::read(real.parent()?.join(defaults::text("mesh.backend_marker"))) {
-            std::fs::write(dir.join(defaults::text("mesh.backend_marker")), marker).ok()?;
-        }
-        super::snapshot(&real, &dir.join(defaults::text("mesh_write.store_file"))).ok()?;
-        std::fs::write(scratch.join("snap-key"), &key).ok()?;
-    }
-    Some(scratch.to_path_buf())
-}
-
-/// After the engine answered: save what it printed and wrote, and start the detached witness.
-pub fn launch(scratch: &Path, inv: &Inv, argv: &[String], ans: &Answer) {
-    let (written, _) = crate::meshw::take_written();
-    let save = || -> std::io::Result<()> {
-        std::fs::write(scratch.join("expect-stdout"), &ans.stdout)?;
-        std::fs::write(scratch.join("expect-code"), ans.code.to_string())?;
-        let mut manifest = Vec::new();
-        for (i, (rel, bytes)) in written.iter().enumerate() {
-            std::fs::write(scratch.join(format!("expect-w{i}")), bytes)?;
-            manifest.push(serde_json::json!([rel, format!("expect-w{i}")]));
-        }
-        if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
-            let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
-            std::fs::write(scratch.join("expect-gates"), gates_dump(&db).unwrap_or_default())?;
-        }
-        if let (crate::meshw::send::Effect::Row(hash), Ok(key)) = (&ans.effect, std::fs::read_to_string(scratch.join("snap-key"))) {
-            let db = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
-            std::fs::write(scratch.join("expect-row-hash"), hash)?;
-            std::fs::write(scratch.join("expect-row"), super::row_by_hash(&db, hash).unwrap_or_default())?;
-        }
-        std::fs::write(scratch.join("expect-manifest"), serde_json::Value::Array(manifest).to_string())
-    };
-    if save().is_err() {
-        crate::meshw::verify::discard_tree(scratch);
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else { return };
-    let mut c = Command::new(exe);
-    c.arg(defaults::text("mesh_write.verb_mesh")).arg(defaults::text("devswarm_cli.witness_flag")).arg(scratch).arg(inv.now.to_string()).args(argv);
-    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
-    crate::discard::harmless(c.spawn()); // keep: a witness that does not start only leaves this call unverified
-}
-
-/// The witness process: `args` = scratch dir, clock, the verb's argv. Runs the real `devswarm.js` in the scratch home and
-/// logs whether its stdout, exit code and written files equal the engine's.
-pub fn run_witness(args: &[String]) -> i32 {
-    let t0 = now_ms();
-    let (Some(scratch), Some(now)) = (args.first().map(PathBuf::from), args.get(1)) else { return 1 };
-    let argv = &args[2..];
-    let verb = argv.first().cloned().unwrap_or_default();
-    let log = |result: &str, extra: serde_json::Value| {
-        let mut rec = serde_json::json!({"ts": t0, "verb": verb, "result": result, "ms": now_ms() - t0, "kind": "cli"});
-        if let (Some(r), Some(e)) = (rec.as_object_mut(), extra.as_object()) {
-            r.extend(e.clone());
-        }
-        crate::meshw::verify_log(&rec);
-    };
-    let home = scratch.join(defaults::text("mesh_write.shadow_home"));
-    let Some(root) = defaults::root() else {
-        log(defaults::text("mesh_write.verify_error"), serde_json::json!({"reason": "no-plugin-root"}));
-        return 0;
-    };
-    let real_home = std::env::var_os(defaults::text("mesh_write.env_home")).map(PathBuf::from).unwrap_or_default();
-    // Node under the scratch home would look for the app database there: it is given the real one's path (it only reads it)
-    let env_now: crate::meshw::ident::Env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
-    let real_app_db = crate::meshw::ident::app_db_path(&real_home, &env_now).unwrap_or_else(|| defaults::text("mesh_write.app_db_off").to_string());
-    let mut node = Command::new(defaults::text("mesh_write.node_bin"));
-    node.arg("-e")
-        .arg(defaults::text("devswarm_cli.witness_node_snippet"))
-        .arg(root.join(defaults::text("mesh_write.node_cli")))
-        .arg(now)
-        .args(argv)
-        .env(defaults::text("mesh_write.env_home"), &home)
-        .env(defaults::text("mesh_write.env_app_db"), real_app_db.as_str())
-        // Node's central log goes to the scratch home whatever the caller's environment says
-        .env(defaults::text("devswarm_cli.env_log_dir"), crate::meshw::clog::witness_dir(&home))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    let log_before = crate::meshw::clog::size_of(&home);
-    match crate::meshw::verify::bounded_output(&mut node) {
-        Ok(o) => {
-            let read = |p: &Path| std::fs::read(p).unwrap_or_default();
-            // a measured duration is never the same twice: blanked on both sides
-            let mask = |t: String| match regex::Regex::new(defaults::text("devswarm_cli.witness_mask")) {
-                Ok(re) => re.replace_all(&t, defaults::text("devswarm_cli.witness_mask_to")).into_owned(),
-                Err(_) => t,
-            };
-            let mut node_raw = String::from_utf8_lossy(&o.stdout).into_owned();
-            if let Ok(d) = std::fs::read_to_string(scratch.join("log-dir")) {
-                node_raw = node_raw.replace(&crate::meshw::clog::witness_dir(&home).to_string_lossy().into_owned(), &d);
-            }
-            let node_stdout = mask(node_raw.replace(&home.to_string_lossy().into_owned(), &real_home.to_string_lossy()));
-            let node_code = o.status.code().unwrap_or(-1);
-            let want_stdout = mask(String::from_utf8_lossy(&read(&scratch.join("expect-stdout"))).into_owned());
-            let want_code: i32 = String::from_utf8_lossy(&read(&scratch.join("expect-code"))).trim().parse().unwrap_or(-1);
-            let manifest: Vec<(String, String)> = serde_json::from_slice(&read(&scratch.join("expect-manifest"))).unwrap_or_default();
-            let mut diff: Vec<String> = Vec::new();
-            for (rel, file) in &manifest {
-                // the central log: what Node appended, with the timestamp and the writer's pid blanked on both sides
-                let same = if crate::meshw::clog::is_log_rel(rel) {
-                    crate::meshw::clog::delta_equal(&read(&home.join(rel)), log_before, &read(&scratch.join(file)))
-                } else {
-                    // a path Node wrote into a descriptor names the scratch home: the engine's names the real one
-                    let theirs = String::from_utf8_lossy(&read(&home.join(rel))).replace(home.to_string_lossy().as_ref(), &real_home.to_string_lossy());
-                    read(&scratch.join(file)) == theirs.as_bytes()
-                };
-                if !same {
-                    diff.push(rel.clone());
-                }
-            }
-            if let Ok(key) = std::fs::read_to_string(scratch.join("snap-key")) {
-                let db = devswarm_root(&home).join(defaults::text("mesh_write.dir_store")).join(key).join(defaults::text("mesh_write.store_file"));
-                if gates_dump(&db).unwrap_or_default().as_bytes() != read(&scratch.join("expect-gates")).as_slice() {
-                    diff.push(defaults::text("devswarm_cli.gates_dump_table").to_string());
-                }
-                // the one message row the engine appended: Node's copy must hold the same row
-                if let Ok(hash) = std::fs::read_to_string(scratch.join("expect-row-hash")) {
-                    let theirs = super::row_by_hash(&db, &hash).unwrap_or_default();
-                    if theirs.as_bytes() != read(&scratch.join("expect-row")).as_slice() {
-                        diff.push(defaults::text("devswarm_cli.message_row_name").to_string());
-                    }
-                }
-            }
-            if node_stdout == want_stdout && node_code == want_code && diff.is_empty() {
-                log(defaults::text("mesh_write.verify_match"), serde_json::json!({}));
-            } else {
-                let cap = |t: &str| t.chars().take(defaults::num("mesh_write.verify_cap") as usize).collect::<String>();
-                log(
-                    defaults::text("mesh_write.verify_mismatch"),
-                    serde_json::json!({"engine": cap(&want_stdout), "node": cap(&node_stdout), "engineCode": want_code, "nodeCode": node_code, "diff": diff}),
-                );
-            }
-        }
-        Err(_) => log(defaults::text("mesh_write.verify_error"), serde_json::json!({"reason": "node"})),
-    }
-    crate::meshw::verify::discard_tree(&scratch);
-    0
 }

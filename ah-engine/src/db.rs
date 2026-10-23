@@ -18,6 +18,7 @@
 use crate::defaults;
 use crate::error::DbError;
 use crate::error::StoreError;
+use crate::mem::{Admit, Budget, Owner, Spec};
 use crate::sql;
 use crate::storage::ImpactEvent;
 use crate::tier::{Bus, Tiered};
@@ -191,6 +192,7 @@ pub enum ProjVerb {
 pub struct Mem {
     /// Active key-value items, keyed by (project, key).
     pub kv: Mutex<Tiered<(String, String), String>>,
+    budget: Mutex<Option<Budget>>,
     /// Pub/sub channels; a committed mailbox put or key set is announced on `project:<hash>`.
     pub bus: Bus,
     /// Bumped by every write that touches `kv`, so a read that raced a write does not promote a stale value.
@@ -205,10 +207,28 @@ impl Mem {
     fn new() -> Mem {
         Mem {
             kv: Mutex::new(Tiered::new(defaults::num("tier.budget_kb") as usize * 1024)),
+            budget: Mutex::new(None),
             bus: Bus::new(defaults::num("tier.bus_queue") as usize, defaults::num("tier.bus_channels") as usize),
             seq: std::sync::atomic::AtomicU64::new(0),
             commits: std::sync::atomic::AtomicU64::new(0),
             writes: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn install_budget(self: &Arc<Self>) {
+        let owner: Arc<dyn Owner> = self.clone();
+        let budget = crate::mem::global()
+            .register(Spec::new("db_kv", "mem.db_kv_soft_bytes", "mem.db_kv_hard_bytes", "mem.db_kv_low_water_pct"), Arc::downgrade(&owner));
+        *lk(&self.budget) = Some(budget);
+    }
+
+    fn admit(&self, size: usize) -> bool {
+        lk(&self.budget).as_ref().is_none_or(|b| b.admit(size) == Admit::Ok)
+    }
+
+    fn observe_budget(&self) {
+        if let Some(b) = lk(&self.budget).as_ref() {
+            b.observe();
         }
     }
 
@@ -220,11 +240,35 @@ impl Mem {
     /// Make a value read from SQLite active, unless a write happened since `seq` was taken (then the next read
     /// promotes the newer value instead).
     pub fn promote(&self, seq: u64, k: (String, String), v: String, expires_ms: Option<u64>) {
-        let mut kv = lk(&self.kv);
-        if self.seq() == seq && !kv.contains(&k) {
-            let size = item_size(&k, &v);
+        self.promote_with(seq, k, v, expires_ms, || {});
+    }
+
+    /// [`Mem::promote`], running `between` after the first checks and before the insert (a test pause point).
+    fn promote_with(&self, seq: u64, k: (String, String), v: String, expires_ms: Option<u64>, between: impl FnOnce()) {
+        if self.seq() != seq {
+            return;
+        }
+        {
+            let kv = lk(&self.kv);
+            if kv.contains(&k) {
+                return;
+            }
+        }
+        between();
+        let size = item_size(&k, &v);
+        if !self.admit(size) {
+            return; // admission reads the cache size, so it runs before the final lock
+        }
+        {
+            // A write that committed since the checks above bumped the sequence (before caching its value):
+            // recheck both under the lock that inserts, so a stale read never replaces an acknowledged write.
+            let mut kv = lk(&self.kv);
+            if self.seq() != seq || kv.contains(&k) {
+                return;
+            }
             kv.insert(k, v, size, expires_ms);
         }
+        self.observe_budget();
     }
 
     /// After a commit: make written items active and announce them.
@@ -236,12 +280,28 @@ impl Mem {
                 self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let k = (project.clone(), key.clone());
                 let size = item_size(&k, value);
-                lk(&self.kv).insert(k, value.clone(), size, *expires_ms);
+                lk(&self.kv).remove(&k);
+                if self.admit(size) {
+                    lk(&self.kv).insert(k, value.clone(), size, *expires_ms);
+                    self.observe_budget();
+                }
                 self.bus.publish(&channel, &serde_json::json!({"kind": "kv", "key": key}).to_string());
             }
             ProjVerb::Put(_) => self.bus.publish(&channel, &serde_json::json!({"kind": "mail"}).to_string()),
             ProjVerb::Take => {}
         }
+    }
+}
+
+impl Owner for Mem {
+    fn bytes(&self) -> usize {
+        lk(&self.kv).retained_bytes()
+    }
+    fn shrink(&self, target: usize) {
+        lk(&self.kv).evict_retained_to(target);
+    }
+    fn recycle(&self) {
+        lk(&self.kv).clear();
     }
 }
 
@@ -257,6 +317,15 @@ struct Job {
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+type PanicRestart = Arc<dyn Fn(&str) + Send + Sync>;
+
+static PANIC_RESTART: Mutex<Option<PanicRestart>> = Mutex::new(None);
+
+/// Install the daemon's clean-restart callback for capped DB-writer panics.
+pub fn set_panic_restart(callback: Option<PanicRestart>) {
+    *lk(&PANIC_RESTART) = callback;
 }
 
 /// The open databases and the writer thread.
@@ -326,8 +395,12 @@ impl Db {
         let read = open_file(&hot, "storage.hot_synchronous", sql::HOT_MIGRATIONS)?;
         let (tx, rx) = mpsc::sync_channel(defaults::num("storage.write_queue") as usize);
         let mem = Arc::new(Mem::new());
+        mem.install_budget();
         let m = mem.clone();
-        let handle = std::thread::spawn(move || writer(write, rx, &m, window));
+        let handle = std::thread::Builder::new().name("ah-db-writer".into()).spawn(move || writer_supervised(write, rx, m, window)).map_err(|e| {
+            crate::discard::note("db_writer_spawn", &e.to_string());
+            DbError::Unavailable
+        })?;
         Ok(Arc::new(Db {
             tx: Mutex::new(Some(tx)),
             read: Mutex::new(read),
@@ -405,7 +478,36 @@ impl Drop for Db {
 /// only what is already queued), at most `storage.batch_max`; commit them as one transaction, then answer each. A
 /// longer window trades the first write's latency for fewer syncs under load. Ends when every sender is gone and the
 /// queue is empty.
-fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem, window: Duration) {
+fn writer_supervised(mut conn: Connection, rx: Receiver<Job>, mem: Arc<Mem>, window: Duration) {
+    let mut panics = 0_u64;
+    loop {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut conn, &rx, &mem, window)));
+        if r.is_ok() {
+            return;
+        }
+        panics += 1;
+        let max = defaults::num("daemon.thread_restart_max");
+        crate::health::log_event(
+            "thread_panic",
+            "db_writer",
+            &defaults::render("msg.thread_panic", &[("thread", &"db_writer"), ("n", &panics), ("max", &max)]),
+        );
+        crate::health::record_failure(
+            "panic",
+            "thread_panic",
+            &defaults::render("msg.thread_panic", &[("thread", &"db_writer"), ("n", &panics), ("max", &max)]),
+        );
+        if panics > max {
+            if let Some(cb) = lk(&PANIC_RESTART).clone() {
+                cb("db_writer");
+            }
+            return;
+        }
+        std::thread::sleep(defaults::millis("daemon.thread_restart_backoff_ms"));
+    }
+}
+
+fn writer(conn: &mut Connection, rx: &Receiver<Job>, mem: &Mem, window: Duration) {
     let max = defaults::num("storage.batch_max") as usize;
     while let Ok(first) = rx.recv() {
         let mut batch = vec![first];
@@ -418,7 +520,7 @@ fn writer(mut conn: Connection, rx: Receiver<Job>, mem: &Mem, window: Duration) 
                 None => break,
             }
         }
-        commit_batch(&mut conn, batch, mem);
+        commit_batch(conn, batch, mem);
     }
 }
 
@@ -709,5 +811,46 @@ mod tests {
         let c = Connection::open(d.0.join("hot.db")).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM impact", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 500);
+    }
+
+    #[test]
+    fn refused_kv_replacement_drops_the_old_active_value() {
+        let mem = Arc::new(Mem::new());
+        let key = ("/p".to_string(), "k".to_string());
+        lk(&mem.kv).insert(key.clone(), "old".to_string(), item_size(&key, "old"), None);
+        let reg = crate::mem::Registry::new(
+            Box::new(|k| match k {
+                "mem.db_kv_soft_bytes" => 8,
+                "mem.db_kv_hard_bytes" => 16,
+                "mem.db_kv_low_water_pct" => 50,
+                _ => 0,
+            }),
+            Box::new(|_| {}),
+        );
+        let owner: Arc<dyn Owner> = mem.clone();
+        *lk(&mem.budget) =
+            Some(reg.register(Spec::new("db_kv", "mem.db_kv_soft_bytes", "mem.db_kv_hard_bytes", "mem.db_kv_low_water_pct"), Arc::downgrade(&owner)));
+        mem.committed(&Op::Proj {
+            project: "/p".to_string(),
+            write_id: String::new(),
+            verb: ProjVerb::Set { key: "k".to_string(), value: "new-value-too-large".to_string(), expires_ms: None },
+        });
+        assert!(lk(&mem.kv).get(&key, crate::health::now_ms()).is_none(), "refused replacement must not leave stale memory");
+    }
+
+    #[test]
+    fn stale_promoter_never_overwrites_an_acknowledged_write() {
+        let mem = Arc::new(Mem::new());
+        let key = ("/p".to_string(), "k".to_string());
+        let seq = mem.seq(); // the reader takes its sequence, then reads the old row from SQLite
+        mem.promote_with(seq, key.clone(), "old".to_string(), None, || {
+            // a write commits and is cached after the promoter's first checks
+            mem.committed(&Op::Proj {
+                project: "/p".to_string(),
+                write_id: String::new(),
+                verb: ProjVerb::Set { key: "k".to_string(), value: "new".to_string(), expires_ms: None },
+            });
+        });
+        assert_eq!(lk(&mem.kv).get(&key, crate::health::now_ms()).as_deref(), Some("new"), "the acknowledged value stays active");
     }
 }

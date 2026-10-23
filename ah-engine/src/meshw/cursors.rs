@@ -13,6 +13,7 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::meshw::common::{self, Obj, n, s, s_or_null};
+use crate::meshw::ident;
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::store::{CursorPut, CursorRow, MeshStore};
 use std::collections::HashMap;
@@ -123,7 +124,7 @@ fn parse_reader(reader: &str) -> Option<(i64, f64)> {
 }
 
 /// `provablyEnded(reader, procTable)`: true only on proof (see the module header); everything uncertain is live.
-fn provably_ended(reader: &str, table: &ProcTable) -> bool {
+pub(crate) fn provably_ended(reader: &str, table: &ProcTable) -> bool {
     let Some((pid, start_ms)) = parse_reader(reader) else { return false };
     match table.get(&pid) {
         None => {
@@ -149,7 +150,7 @@ pub(crate) fn is_retired(r: &CursorRow) -> bool {
 }
 
 /// `liveMinRow(rows, ns)`: the declared, non-retired row with the lowest value (the first on a tie).
-fn live_min<'a>(rows: &'a [CursorRow], ns: &str) -> Option<&'a CursorRow> {
+pub(crate) fn live_min<'a>(rows: &'a [CursorRow], ns: &str) -> Option<&'a CursorRow> {
     let mut best: Option<&CursorRow> = None;
     for r in rows {
         if r.ns != ns || r.reader == defaults::text("mesh_write.floor_reader") || is_retired(r) {
@@ -162,7 +163,7 @@ fn live_min<'a>(rows: &'a [CursorRow], ns: &str) -> Option<&'a CursorRow> {
     best
 }
 
-fn row_of<'a>(rows: &'a [CursorRow], ns: &str, reader: &str) -> Option<&'a CursorRow> {
+pub(crate) fn row_of<'a>(rows: &'a [CursorRow], ns: &str, reader: &str) -> Option<&'a CursorRow> {
     rows.iter().find(|r| r.ns == ns && r.reader == reader)
 }
 
@@ -298,7 +299,7 @@ pub fn primary_cursor_path(home: &Path, id: &str) -> PathBuf {
 
 /// `devswarm-inbox-cursor.js` `readCursor(path)`: a bare integer or `{line: n}`; anything else is 0.
 pub fn read_cursor(p: &Path) -> f64 {
-    let Ok(bytes) = std::fs::read(p) else { return 0.0 };
+    let Some(bytes) = ident::read_or_skip(p, defaults::text("mesh_write.site_read_cursor")) else { return 0.0 };
     let raw = String::from_utf8_lossy(&bytes);
     let raw = raw.trim();
     let c = if !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()) {
@@ -331,7 +332,7 @@ pub(crate) fn ack_to(p: &Path, target: f64) -> std::io::Result<()> {
 
 /// `dualWrite` for the store namespace: one release of legacy projection after the commit, best effort and upward only
 /// (the shared cursor file, then the `cursors` table).
-fn dual_write(st: &MeshStore, home: &Path, partition: &str, ns: &str, floor: i64) {
+pub(crate) fn dual_write(st: &MeshStore, home: &Path, partition: &str, ns: &str, floor: i64) {
     if floor <= 0 || ns != defaults::text("mesh_write.ns_store") {
         return;
     }
@@ -351,8 +352,8 @@ fn dual_write(st: &MeshStore, home: &Path, partition: &str, ns: &str, floor: i64
 pub struct LogRec<'a> {
     /// The partition.
     pub id: &'a str,
-    /// Who asked.
-    pub caller_id: &'a str,
+    /// Who asked (`None`: the record carries no caller).
+    pub caller_id: Option<&'a str>,
     /// The journal namespace.
     pub ns: &'a str,
     /// The floor before.
@@ -393,6 +394,38 @@ pub(crate) fn log_path(home: &Path, repo_key: Option<&str>) -> PathBuf {
     devswarm_root(home).join(defaults::text("mesh_write.dir_cursor_log")).join(format!("{key}{}", defaults::text("mesh_write.ndjson_suffix")))
 }
 
+/// Append `text` to a cursor journal's older file (`<journal>.1`), keeping everything it already holds: a rotation moves the records
+/// that no longer fit into the journal to the end of the older file, it never replaces it. A missing final newline is completed
+/// first so the records stay one per line. The older file past `mesh_write.cursor_log_older_soft_bytes` is noted (nothing is ever
+/// deleted for it).
+pub(crate) fn append_older(older: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    if let Some(d) = older.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).read(true).append(true).open(older)?;
+    let len = f.metadata()?.len();
+    let mut out = String::new();
+    if len > 0 {
+        f.seek(SeekFrom::End(-1))?;
+        let mut last = 0u8;
+        f.read_exact(std::slice::from_mut(&mut last))?;
+        if last != b'\n' {
+            out.push('\n');
+        }
+    }
+    out.push_str(text);
+    f.write_all(out.as_bytes())?;
+    let size = len + out.len() as u64;
+    if size > defaults::num("mesh_write.cursor_log_older_soft_bytes") {
+        crate::discard::note(
+            "cursor_log_older_soft",
+            &defaults::render("mesh_write.msg_cursor_log_older_soft", &[("path", &older.display()), ("bytes", &size)]),
+        );
+    }
+    Ok(())
+}
+
 /// `logCursorWrite(home, rec)`: one JSON line, then tail-preserving rotation at `mesh_write.cursor_log_cap`. Never fails
 /// the ack: a journal that cannot be written is only a missing line.
 pub fn log_cursor_write(home: &Path, r: &LogRec<'_>) {
@@ -401,7 +434,7 @@ pub fn log_cursor_write(home: &Path, r: &LogRec<'_>) {
     o.put("ts", n(common::now_ms() as f64))
         .put("id", s(r.id))
         .put("partition", s(r.id))
-        .put("callerId", s(r.caller_id))
+        .put("callerId", s_or_null(r.caller_id))
         .put("ns", s(r.ns))
         .put("from", num_or_null(r.from.map(|x| x as f64)))
         .put("to", num_or_null(r.to))
@@ -431,10 +464,42 @@ pub fn log_cursor_write(home: &Path, r: &LogRec<'_>) {
             let cut = lines.len() - cap;
             let mut old = p.as_os_str().to_os_string();
             old.push(defaults::text("mesh_write.cursor_log_old_suffix"));
-            crate::discard::harmless(std::fs::write(PathBuf::from(old), format!("{}\n", lines[..cut].join("\n")))); // keep: Node's inner try/catch
+            // loss-free: the overflow is appended to the older file first; when that fails the journal keeps every record
+            append_older(&PathBuf::from(old), &format!("{}\n", lines[..cut].join("\n")))?;
             std::fs::write(&p, format!("{}\n", lines[cut..].join("\n")))?;
         }
         Ok(())
     };
     crate::discard::harmless(write()); // keep: instrumentation never breaks an ack (Node returns false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::ident::fifo_kit::*;
+
+    #[test]
+    fn mesh_cursor_log_older_file_is_appended_to_never_replaced() {
+        crate::defaults::init().unwrap();
+        let dir = scratch("older");
+        let older = dir.join("log.ndjson.1");
+        std::fs::write(&older, "{\"n\":0}").unwrap(); // no final newline
+        append_older(&older, "{\"n\":1}\n{\"n\":2}\n").unwrap();
+        append_older(&older, "{\"n\":3}\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&older).unwrap(), "{\"n\":0}\n{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    #[test]
+    fn a_fifo_cursor_file_reads_as_no_position_at_once_instead_of_blocking() {
+        let dir = scratch("cursor");
+        let f = dir.join("c.json");
+        fifo(&f);
+        let g = f.clone();
+        assert_eq!(within("read_cursor", move || read_cursor(&g)), 0.0);
+        let g = f.clone();
+        assert!(within("ack_to", move || ack_to(&g, 5.0).is_ok()), "the raise replaces the FIFO with the position, as it replaces any file");
+        assert_eq!(read_cursor(&f), 5.0);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
 }

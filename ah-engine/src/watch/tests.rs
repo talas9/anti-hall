@@ -20,6 +20,7 @@ fn cfg(poll_ms: u64) -> Config {
         sqlite_suffixes: vec!["-wal".into(), "-shm".into(), "-journal".into()],
         latency_target: ms(1000),
         cpu_budget_permille: 5,
+        ignore_suffixes: vec!["-shm".into()],
     }
 }
 
@@ -158,6 +159,22 @@ both!(only_the_named_files_are_watched, |b| {
     fs::write(t.0.join("other.json"), "x").unwrap();
     fs::write(t.0.join("want.json"), "x").unwrap();
     assert_eq!(paths(&drain(&w, ms(300))), vec![t.0.join("want.json")]);
+});
+
+both!(ignored_suffixes_are_never_reported, |b| {
+    // a SQLite shared-memory index changes whenever any process opens the database: watching it made a reader wake itself
+    let t = Tmp::new("ignore");
+    let (shm, wal) = (t.0.join("devswarm.db-shm"), t.0.join("devswarm.db-wal"));
+    fs::write(&shm, "0").unwrap();
+    let c = bk(b, 20);
+    let w = Watcher::start(c.clone());
+    w.add(&t.0, c.all_filter());
+    settle(&w);
+    fs::write(&shm, "11").unwrap();
+    assert!(w.next(ms(300)).is_none(), "a change of an ignored name is not reported");
+    fs::write(&wal, "1").unwrap();
+    assert_eq!(paths(&drain(&w, ms(300))), vec![wal], "the other names still are");
+    assert!(!c.sqlite_filter("devswarm.db").matches(std::ffi::OsStr::new("devswarm.db-shm")), "nor in a database's side files");
 });
 
 both!(an_editors_atomic_rename_save_is_one_modify_of_the_target, |b| {

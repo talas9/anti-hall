@@ -1,0 +1,18 @@
+{
+  "exit": 0,
+  "files": {
+    ".claude/": "755",
+    ".claude/plugins/": "755",
+    ".claude/plugins/cache/": "755",
+    ".claude/plugins/cache/anti-hall/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/0.1.0/": "755",
+    ".claude/plugins/cache/anti-hall/anti-hall/0.1.0/marker.txt": "644 v1",
+    ".claude/plugins/installed_plugins.json": "644 {\"version\":2,\"plugins\":{\"anti-hall@anti-hall\":[{\"scope\":\"user\",\"installPath\":\"x\",\"version\":\"0.0.9\"}]}}",
+    ".claude/plugins/marketplaces/": "755",
+    ".claude/plugins/marketplaces/anti-hall/": "755",
+    ".claude/plugins/marketplaces/anti-hall/CHANGELOG.md": "644 # Changelog\n\npreamble\n\n## 0.1.0 - first\n\n- the first thing\n"
+  },
+  "stderr": "",
+  "stdout": "{\"installed\":\"0.1.0\",\"latest\":\"0.1.0\",\"updated\":false,\"cacheSynced\":false,\"action\":\"already up to date [installed_plugins.json reports 0.0.9, cache shows 0.1.0 — run claude plugin update anti-hall@anti-hall, then /reload-plugins]\"}\n✅ anti-hall · update: already up to date\n  installed: 0.1.0\n  latest:    0.1.0\n  updated:   false\n  action:    already up to date [installed_plugins.json reports 0.0.9, cache shows 0.1.0 — run claude plugin update anti-hall@anti-hall, then /reload-plugins]\n"
+}

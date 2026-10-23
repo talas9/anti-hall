@@ -19,6 +19,7 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("ahd-hc-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
         // the verify-first SessionStart texts (a native check of their own) would push the joined context of a `compact`
         // start past the 10000 inline cap; these tests are about the handover and Codex checks only
         std::fs::write(dir.join("home/.anti-hall/settings.json"), r#"{"context":{"verifyFirstSession":false,"verifyFirstOrchestration":false}}"#).unwrap();
@@ -63,17 +64,31 @@ impl Env {
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
     }
 
-    /// Run through the daemon until it answers (the first call starts it and is answered by Node, D5).
+    /// Run through the daemon until it gives a real answer. A cold absent daemon now fails open as `(0, "", "")`
+    /// while it starts, so an empty allow is not readiness.
     fn run_daemon(&self, event: &str, id: &str, payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
         let mut last = (0, String::new(), String::new());
         for _ in 0..80 {
             last = self.run(event, id, false, payload, extra);
-            if !last.1.contains("NODE-RAN") {
+            // a cold daemon passes the call through with a one-line notice on stderr: that is not readiness either
+            if !last.1.contains("NODE-RAN")
+                && !last.2.starts_with("anti-hall: the engine did not answer")
+                && (last.0 != 0 || !last.1.is_empty() || !last.2.is_empty())
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         last
+    }
+
+    fn warm_daemon(&self) {
+        self.write("bin/codex", "#!/bin/sh\n");
+        std::fs::set_permissions(self.dir.join("bin/codex"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let path = format!("{}:/usr/bin:/bin", self.dir.join("bin").display());
+        let payload = serde_json::json!({"session_id": "warm", "cwd": self.dir, "hook_event_name": "SessionStart", "source": "startup"}).to_string();
+        let (_, out, _) = self.run_daemon("SessionStart", "codex-availability", &payload, &[("PATH", &path)]);
+        assert!(out.contains("Codex binary detected on PATH"), "{out}");
     }
 
     fn stop(&self) {
@@ -199,9 +214,10 @@ fn precompact_snapshot_writes_its_file_and_prints_nothing() {
     assert_eq!(files.len(), 1, "{files:?}");
     let text = std::fs::read_to_string(&files[0]).unwrap();
     assert!(text.contains("(trigger: manual)") && text.contains("keep this rule"), "{text}");
-    let (_, out, _) = e.run_daemon("PreCompact", "precompact-snapshot", &p, &[]);
+    e.warm_daemon();
+    let (code, out, err) = e.run("PreCompact", "precompact-snapshot", false, &p, &[]);
     e.stop();
-    assert!(!out.contains("NODE-RAN"), "{out}");
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(
         walk(&r.join(".anti-hall/handovers")).into_iter().filter(|f| f.to_string_lossy().contains("PRECOMPACT-")).count(),
         2,

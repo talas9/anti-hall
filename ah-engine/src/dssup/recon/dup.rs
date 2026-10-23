@@ -63,7 +63,8 @@ pub fn retire_worktree_duplicates(ctx: &Ctx, runner: &dyn Runner, cwd: &str, kee
         }
         cands.push(d.clone());
     }
-    let cx = Cx { home: ctx.home, store: &repo_key, rd: &rd, now: ctx.now, rows: &rows };
+    let inv = super::survivor::inv_of(ctx);
+    let cx = Cx { home: ctx.home, store: &repo_key, rd: &rd, now: ctx.now, rows: &rows, inv: &inv };
     let mut sim = Sim::default();
     let (mut units, out) = plan_group(&cx, &mut sim, keep_id, &cands, false)?;
     let calls = vec![json!({"fn": "retireDup", "args": {"cwd": cwd, "id": keep_id, "worktreePath": keep_wt}})];

@@ -111,9 +111,13 @@ value = { section = "guards", key = "mergeSidePickAdvisory", env = "ANTIHALL_MER
 doc = "Namespace of this check's per-session state in the guard state store."
 value = "merge-side-pick"
 
+[merge_side_pick.heredoc_open]
+doc = "JavaScript regex source for the opener of a heredoc (<<TAG, <<-TAG, <<'TAG'; capture 1 = the optional quote, capture 2 = the tag). The lines up to the tag line are text, blanked before a command is split into segments."
+value = '''<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1'''
+
 [merge_side_pick.quote_masks]
-doc = "Regexes whose matches (quoted spans) are blanked before a command is split into segments, so quoted text is never mistaken for a command (maskShellQuotes)."
-value = ['\x27[^\x27\n]*\x27', '"(?:[^"\\\n]|\\.)*"']
+doc = "Regexes whose matches (quoted spans, which may span lines such as a multi-line commit message) are blanked before a command is split into segments, so quoted text is never mistaken for a command (maskShellQuotes). One alternation, so the quote that opens first wins."
+value = ['\x27[^\x27]*\x27|"(?:[^"\\]|\\.)*"']
 
 [merge_side_pick.segment_split]
 doc = "Regex that splits a masked command into segments (semicolon, ampersand, pipe, newline)."
@@ -171,6 +175,54 @@ value = "taking --ours/--theirs (or -X ours/theirs) silently drops the other sid
 doc = "Advisory advice."
 value = "run the tests first, review the discarded side in `git diff`, then push."
 
+[merge_side_pick.scope_unknown_re]
+doc = "Regex source: a segment after which the checkout a git command runs in cannot be told (cd, pushd, GIT_DIR, GIT_WORK_TREE, --git-dir, --work-tree). A push then keeps the advisory."
+value = '(?:^|\s)(?:cd|pushd|GIT_DIR=|GIT_WORK_TREE=|--git-dir|--work-tree)(?:\s|=|$)'
+
+[merge_side_pick.git_dir_levels]
+doc = "How many directory levels up from the working directory the search for the checkout's .git climbs at most."
+value = 64
+min = 1
+max = 256
+
+[merge_side_pick.git_file_max]
+doc = "Most bytes read from a .git file or a HEAD file."
+value = 4096
+min = 64
+max = 65536
+
+[merge_side_pick.gitdir_line_re]
+doc = "Regex source (multi-line): the gitdir line of a .git file (a linked worktree)."
+value = '^gitdir:[^\n]+'
+
+[merge_side_pick.gitdir_prefix]
+doc = "Regex source: the prefix cut from the gitdir line to leave the path."
+value = '^gitdir:\s*'
+
+[merge_side_pick.head_ref_re]
+doc = "Regex source: the ref line of a HEAD file (a detached HEAD has none, and the branch is then unknown)."
+value = '^ref:\s*refs/heads/[^\s]+'
+
+[merge_side_pick.head_ref_prefix]
+doc = "Regex source: the prefix cut from the HEAD ref line to leave the branch name."
+value = '^ref:\s*refs/heads/'
+
+[merge_side_pick.push_unscoped_opts_re]
+doc = "Regex source: a push argument that pushes more than the named refs or takes its value as the next word (--all, --mirror, --tags, --follow-tags, --prune, --branches, -o, --push-option, --repo, --receive-pack, --exec). The advisory stays for such a push."
+value = '^(?:--(?:all|mirror|tags|follow-tags|prune|branches|push-option|repo|receive-pack|exec)|-o)$'
+
+[merge_side_pick.head_word]
+doc = "The refspec word that means the current branch."
+value = "HEAD"
+
+[merge_side_pick.heads_prefix]
+doc = "The prefix of a full local branch ref in a refspec."
+value = "refs/heads/"
+
+[merge_side_pick.plain_branch_re]
+doc = "Regex source: a plain local branch name in a refspec (anything else, such as a tag, a sha or a revision, keeps the advisory)."
+value = '^[A-Za-z0-9][A-Za-z0-9._/@-]*$'
+
 [merge_side_pick.fallback_cmd]
 doc = "Text used for the side-pick command when none was recorded."
 value = "a side-pick"
@@ -188,10 +240,6 @@ value = "ship-it-guard"
 [ship_it.setting]
 doc = "Where the opt-in switch is read from (guards.shipitGate, default off)."
 value = { section = "guards", key = "shipitGate", env = "ANTIHALL_SHIPIT_GATE", aliases = [], option = "guards_shipit_gate", default = false }
-
-[ship_it.deferred_tools]
-doc = "Tool names whose targets the engine cannot derive exactly (shell writes need the command-guard parser, apply_patch needs the Codex patch parser): with the gate on they defer to the Node guard."
-value = ["Bash", "apply_patch"]
 
 [ship_it.plan_file]
 doc = "Name of the plan file looked for in the working directory."
@@ -576,8 +624,52 @@ doc = "Instruction-position ambiguous write/execute regex that suppresses the ro
 value = '(?:^|[\n\r\u2028\u2029]|[.;:!?]\s+|\b(?:then|and|also|please|to)\s+)(?:tag|release|bump|apply|patch|build|deploy|install|fix)\b'
 
 [model_routing.write_phrase_re]
-doc = "Explicit write phrase regex that suppresses the row-6 Explore advisory even when read-only override words are present."
-value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
+doc = "Explicit write phrase regex (a save-to, clone, git clone/format-patch/mv/rm, opening a PR, running the generators or tests) that suppresses the row-6 Explore advisory even when read-only override words are present."
+value = '\bsave\s+(?:[\w-]+\s+){0,4}?(?:to|into)\s+\S|\bclone\s+(?:\S+\s+){0,3}?(?:into|to)\s+\S|\bgit\s+(?:clone|format-patch|mv|rm)\b|\bopen(?:s|ing)?\s+(?:an?\s+|the\s+)?(?:pr|pull\s+request)\b|(?:^|[\n\r\u2028\u2029]|[.;:]\s+|\b(?:then|and)\s+)run\s+(?:the\s+)?(?:generators?|tests?|test\s+suite|build)\b'
+
+[model_routing.commit_phrase_re]
+doc = "Regex (case-insensitive) of a brief that tells the agent to commit or open a git worktree: a writing brief however many read-only words it quotes, so it suppresses the row-6 Explore advisory and cannot be overridden by an explicit read-only statement. A negated commit is removed first (negated_commit_re)."
+value = '\bgit\s+(?:commit|push|worktree\s+add|checkout\s+-b)\b|\bcommit(?:s|ting)?\s+(?:per|each|every|it\b|them\b|your\b|after|before|the\s+(?:fix|fixes|change|changes|work)|with\s+a)\b|\bcommit\s+(?:and|&)\s+push\b'
+
+[model_routing.quoted_text_re]
+doc = "Regex (global) of quoted text in a brief: a single-quoted span that opens after a non-word character (so an apostrophe in a contraction never opens one) or a double-quoted span, at most 1000 characters (a quoted issue comment or log excerpt can span lines). The deploy floor reads the brief with these spans blanked (group 1 is kept): a word that is only quoted ('deploy' in a question about the word) is not a deploy task."
+value = '''(^|[^\w'])'[^']{1,1000}'|"[^"]{1,1000}"'''
+
+[model_routing.negated_commit_re]
+doc = "Regex (case-insensitive, global) of a negated commit, push or worktree instruction ('never commit', 'do not push'); removed from the brief before commit_phrase_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0,3}?(?:git\s+)?(?:commit|push|worktree)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+)?(?:commit|push|worktree)\w*)*'''
+
+[model_routing.strong_write_re]
+doc = "Regex (case-insensitive) of a brief that clearly writes: commits files or changes, pushes, creates issues, labels, branches, PRs or files, labels issues, edits or writes files or code, or runs a state-changing gh command (gh issue/label/pr/release/secret create|edit|comment|close|merge|delete|set, gh api -X POST|PATCH|PUT|DELETE). A writing brief whatever read-only words it quotes, so it suppresses the row-6 Explore advisory. Negated forms are removed first (negated_write_re)."
+value = '''\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|edit|comment|close|merge|delete|set|reopen)\b|\bgh\s+api\b[^\n]{0,200}?(?:-X|--method)[\s=]*(?:POST|PATCH|PUT|DELETE)\b|\bcommit(?:s|ting)?\s+(?:(?:the|all|its|your|each|every|those|these|any)\s+)?(?:files?|changes?|fix(?:es)?|work|results?|edits?|patch(?:es)?)\b|\bpush(?:es|ing)?\s+(?:it|them|the\s+\w+|to\s+\S+|your\s+\w+|its\s+\w+|branch\w*)\b|\b(?:and|then)\s+push(?:es)?\b|\bcreat(?:e|es|ing)\s+(?:(?:a|an|the|new|any|its|missing|all|\d+)\s+)?(?:gh\s+|github\s+)?(?:issues?|labels?|milestones?|pull\s+requests?|prs?|branch(?:es)?|commits?|files?|tests?)\b|\blabel(?:s|ling)?\s+(?:(?:the|each|all|every|its)\s+)?(?:issues?|prs?|pull\s+requests?)\b|\b(?:edit|write|modify|update)s?\s+(?:(?:the|a|its|your|this|that|these|those)\s+)?(?:files?|code|tests?|source|config)\b|\b(?:edit|write|modify)s?\s+\S+\.(?:js|ts|rs|toml|md|json|py|sh|ya?ml)\b'''
+
+[model_routing.negated_write_re]
+doc = "Regex (case-insensitive, global) of a negated write instruction ('never commit', 'do not push', 'don't create files', 'no edits or commits'); removed from the brief before strong_write_re is tested."
+value = '''\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*'''
+
+[model_routing.session_model_families]
+doc = "Model families an omitted model can inherit, matched in order as a substring of the session's model id (the payload's parent model, else the newest transcript assistant entry); each must be a model_rank key. An omitted model whose inherited family ranks at or above the deploy floor gets no deploy-floor advisory."
+value = ["fable", "opus", "sonnet", "haiku"]
+
+[model_routing.session_model_window_bytes]
+doc = "Bytes of the transcript tail read to find the session's model for an omitted-model spawn."
+value = 262144
+unit = "bytes"
+min = 4096
+max = 8388608
+
+[model_routing.session_model_line_max_bytes]
+doc = "The longest transcript line parsed when looking for the session's model (longer lines are skipped)."
+value = 1048576
+unit = "bytes"
+min = 1024
+max = 16777216
+
+[model_routing.session_model_max_lines]
+doc = "The newest transcript lines examined when looking for the session's model."
+value = 400
+min = 1
+max = 100000
 
 [model_routing.readonly_override_re]
 doc = "Explicit read-only statement regex that overrides ambiguous write words for row 6."
@@ -1234,6 +1326,30 @@ value = '&&|\|\||;|\||\n'
 doc = "Longest command, in UTF-16 units, that is tested for being provably not work."
 value = 4096
 
+[coordinator_work.bookkeeping_verbs]
+doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose"]
+
+[coordinator_work.bookkeeping_filters]
+doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
+value = ["tail", "head", "wc"]
+
+[coordinator_work.bookkeeping_cli]
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall devswarm.js launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
+value = '^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'
+
+[coordinator_work.bookkeeping_filter]
+doc = "Regex source of one output-filter segment ({filters} are the allowed filter words)."
+value = '^\s*(?:{filters})(?:\s+-?[0-9A-Za-z]+)*\s*$'
+
+[coordinator_work.bookkeeping_reject]
+doc = "Regex source of what disqualifies a command from the bookkeeping shortcut: command substitution, a backtick, a heredoc, a carriage return."
+value = '\$\(|`|<<|\r'
+
+[coordinator_work.bookkeeping_stderr_merge]
+doc = "The one redirect a bookkeeping command may carry; any other `>` disqualifies it."
+value = "2>&1"
+
 [coordinator_work.readonly_verbs]
 doc = "Verbs that only read; a command built from these is not work."
 value = ["ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg", "which", "whoami", "stat", "du", "df", "basename", "dirname", "realpath", "readlink", "id", "uname", "hostname", "true", "false"]
@@ -1468,10 +1584,6 @@ value = '\.(?:py|pyi|js|mjs|cjs|ts|tsx|jsx)'
 doc = "Regex source (case-sensitive) of the Node pre-filter that says a Bash command could write a file (a redirect, tee, an in-place editor, cp or mv, an inline-code write); a command it does not match yields no code chunk, so the guard allows it."
 value = '[>]|\btee\b|\bsed\b|\bperl\b|\bcp\b|\bmv\b|\bopen\b|createWriteStream|File(?:Sync)?\s*\(|\.write\('
 
-[api_guard.noise_pattern]
-doc = "Regex source (global) of the characters dropped from a Bash command before the verifiable-reference test: every character that is not an ASCII letter, digit, underscore or dot. The code a shell write puts in a file is built from the command text by quote removal and escape decoding, so its words are contiguous runs of what remains."
-value = '[^A-Za-z0-9_.]'
-
 [api_guard.python_stdlib]
 doc = "Python standard-library modules whose attributes the Node guard verifies by default."
 value = ["os", "sys", "math", "cmath", "random", "json", "re", "collections", "itertools", "functools", "pathlib", "asyncio", "datetime", "time", "statistics", "heapq", "bisect", "string", "textwrap", "shutil", "glob", "csv", "sqlite3", "decimal", "fractions", "secrets", "uuid", "contextlib", "operator", "inspect", "abc", "numbers", "array", "enum", "dataclasses", "typing", "io", "struct", "hashlib", "base64", "binascii", "copy", "pprint", "queue", "threading", "socket"]
@@ -1484,19 +1596,11 @@ value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "ur
 doc = "JavaScript global builtins whose members the Node guard verifies by default."
 value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
 
-[api_guard.python_import_word]
-doc = "The word a Python module reference needs before the guard can resolve an attribute against it."
-value = "import"
-
-[api_guard.js_require_word]
-doc = "The text a JavaScript module reference needs before the guard can resolve an attribute against it."
-value = "require"
-
 # ---- edit-guard (hooks/edit-guard.js) ---------------------------------------------------------------------
 
 [edit_guard.summary]
 doc = "One-line description of the edit-guard check in the generated reference."
-value = "Coordinator delegation gate for Edit, Write, MultiEdit and NotebookEdit: answers the launcher-directory block and every call that is not the main thread (subagent or no recognised entry point) exactly as the Node edit-guard does, and defers every main-thread call and every apply_patch to the Node hook, which owns the allowlists, the symlink honesty checks, plan mode, the trusted per-project allowlist and the DevSwarm wording (port of edit-guard.js)."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js)."
 
 [edit_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1515,7 +1619,7 @@ doc = "The tool whose target is `tool_input.notebook_path` instead of `tool_inpu
 value = "NotebookEdit"
 
 [edit_guard.patch_tool]
-doc = "The Codex tool whose targets are the files of a patch; the engine has no patch parser, so it defers."
+doc = "The Codex tool whose targets are the files of a patch (parsed with the shared apply_patch parser)."
 value = "apply_patch"
 
 [edit_guard.launcher_dir]
@@ -1555,11 +1659,11 @@ value = "apply_patch"
 
 [devswarm_prompt.parent_summary]
 doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
-value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) in the engine; an active Primary defers to the Node hook, which owns the roster, mailbox and dedupe state (port of the gate of devswarm-parent-inbox.js)."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer (port of devswarm-parent-inbox.js)."
 
 [devswarm_prompt.child_summary]
 doc = "One-line description of the devswarm-child-turn check in the generated reference."
-value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) in the engine; an active child defers to the Node hook, which writes the heartbeat and descriptor and renders the mailbox (port of the gate of devswarm-child-turn.js)."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook (port of devswarm-child-turn.js)."
 
 [devswarm_prompt.parent_setting]
 doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
@@ -1593,9 +1697,328 @@ value = "DEVSWARM_REPO_ID"
 doc = "Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js)."
 value = "DEVSWARM_SOURCE_BRANCH"
 
+[devswarm_prompt.event]
+doc = "The hook event name of the prompt hooks' answer."
+value = "UserPromptSubmit"
+
+[devswarm_prompt.override_key]
+doc = "The emit-dedupe key of the Primary's communication-override reminder."
+value = "parent-inbox-comms-override"
+
+[devswarm_prompt.override_reassert]
+doc = "The Primary's per-turn communication-override reminder (hooks/devswarm-parent-inbox.js OVERRIDE_REASSERT), byte for byte."
+value = "\U0001F4A1 anti-hall \u00B7 devswarm-comms: mesh only \u2014 native hivecontrol messaging blocked. Check: `roster` / `mesh read`. Direct: `send --to <meshId>`."
+
+[devswarm_prompt.seat_dir]
+doc = "The directory, under the anti-hall directory, of the per-session seat-conflict markers the SessionStart hook writes."
+value = "devswarm/primary-seat"
+
+[devswarm_prompt.seat_shown_max]
+doc = "A seat-conflict marker is owed a repeat while the number of times it was shown is below this."
+value = 2
+min = 1
+max = 1000
+
+[devswarm_prompt.child_override]
+doc = "The child workspace's communication-override reminder of every turn (hooks/devswarm-child-turn.js OVERRIDE_REASSERT), byte for byte."
+value = '''
+💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. Report: `heartbeat <id> --summary`. Direct: `send --to-primary`.'''
+
+[devswarm_prompt.child_autonomy]
+doc = "The child's self-continue reminder (hooks/devswarm-child-turn.js SELF_CONTINUE), byte for byte."
+value = '''
+💡 anti-hall · devswarm-autonomy: if you are running a multi-round autonomous task (deadly-loop, iterative fix waves, a long staged build), do NOT end your turn to wait between rounds — keep issuing tool calls and proceed to the next round within the SAME turn. End your turn (Stop) ONLY at: (a) a genuine BLOCK needing a parent decision, (b) your final completion / merge-gate report, or (c) an unrecoverable error. Ending your turn just to 'check in' between rounds costs a full wake-cycle of latency and is the main cause of slow workspace work.'''
+
+[devswarm_prompt.child_reminder]
+doc = "The child's per-turn report reminder (hooks/devswarm-child-turn.js REMINDER); {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+value = '''
+💡 anti-hall · devswarm-child-workspace: (per turn) keep the parent orchestrator updated — run `{cli} heartbeat <DEVSWARM_BUILDER_ID> --summary "<status>"` to report progress/blockers as you make them — this is what satisfies your Stop-gate report (`send --to-primary --message-file <path>` is a SEPARATE direct message, not a substitute) — and check for + act on any parent messages before continuing, so you stay visible on the parent's task list instead of drifting off it.'''
+
+[devswarm_prompt.child_receive]
+doc = "The child's reception reminder (hooks/devswarm-child-turn.js RECEIVE_NUDGE); {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+value = '''
+💡 anti-hall · devswarm-child-reception: to RECEIVE parent messages, run `{cli} inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm CLI) — a SAFE, bounded drain that folds the native parent->child queue into your durable inbox (non-destructive count gate, one bounded read, never `monitor`). Then read them via `{cli} inbox read-primary <DEVSWARM_BUILDER_ID>` (read-only; after handling, run the `ackCommand` it returns). Substitute your own DEVSWARM_BUILDER_ID for <...>.'''
+
+[devswarm_prompt.id_token]
+doc = "The placeholder of the builder id in the child's reminders."
+value = "<DEVSWARM_BUILDER_ID>"
+
+[devswarm_prompt.child_block_joiner]
+doc = "Between the segments of the child's answer."
+value = "\n\n"
+
+[devswarm_prompt.child_static_key]
+doc = "The emit-dedupe key of the child's fixed per-turn block."
+value = "child-turn-static"
+
+[devswarm_prompt.child_plan_key]
+doc = "The emit-dedupe key of the child's plan segment."
+value = "child-turn-plan"
+
+[devswarm_prompt.child_plan_keepalive]
+doc = "Delivered turns after which an unchanged plan segment is sent again."
+value = 10
+min = 0
+max = 100000
+
+[devswarm_prompt.heartbeat_dir]
+doc = "The directory, under the anti-hall directory, of the per-builder heartbeat files."
+value = "devswarm/heartbeats"
+
+[devswarm_prompt.heartbeat_source]
+doc = "The `source` of a heartbeat the child's prompt hook writes."
+value = "child-turn"
+
+[devswarm_prompt.heartbeat_branch_unsafe]
+doc = "The characters of a branch name that become a dash in a heartbeat file name when the branch is not a safe id."
+value = "[^A-Za-z0-9._-]"
+
+[devswarm_prompt.heartbeat_name_max]
+doc = "The longest sanitized branch name of a heartbeat file name."
+value = 80
+min = 1
+max = 255
+
+[devswarm_prompt.heartbeat_name_fallback]
+doc = "The heartbeat file name for a branch that sanitizes to nothing."
+value = "branch"
+
+[devswarm_prompt.heartbeat_hash_len]
+doc = "Characters of the branch's SHA-1 appended to a sanitized heartbeat file name."
+value = 8
+min = 1
+max = 40
+
+[devswarm_prompt.descriptor_dir]
+doc = "The directory, under the anti-hall directory, of the workspace descriptors."
+value = "devswarm/workspaces"
+
+[devswarm_prompt.plan_dir]
+doc = "The directory, under the anti-hall directory, of the step-plan files of the workspaces."
+value = "devswarm/plans"
+
+[devswarm_prompt.uuid_full_re]
+doc = "A full UUID (a builder id of this shape is a real id)."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+
+[devswarm_prompt.uuid_truncated_re]
+doc = "A UUID cut short in its last group (a builder id of this shape was truncated; Node recovers or skips it and says so on stderr)."
+value = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1,11}$"
+
+[devswarm_prompt.plan_tracking_setting]
+doc = "The setting devswarm.planTracking (on by default): the child is shown its step plan each turn."
+value = { section = "devswarm", key = "planTracking", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_TRACKING", option = "devswarm_plan_tracking", default = true }
+
+[devswarm_prompt.plan_required_setting]
+doc = "The setting devswarm.planRequired (off by default): a child without a step plan is asked to write one every turn."
+value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
+
+[devswarm_prompt.plan_none]
+doc = "The plan segment of a child with no step plan when one is required (hooks/devswarm-child-turn.js buildPlanSegment). Placeholders: {cli}, {id}."
+value = '''
+💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps "1. …\n2. …"` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
+
+[devswarm_prompt.plan_head]
+doc = "The first sentence of the plan segment. Placeholders: {done}, {total}, {n}, {blocked}, {text}."
+value = '''
+💡 anti-hall · devswarm-plan: {done}/{total} steps done; latest touched step {n}{blocked} — "{text}".'''
+
+[devswarm_prompt.plan_blocked]
+doc = "Added to the plan head when the latest touched step is blocked."
+value = " (blocked)"
+
+[devswarm_prompt.plan_all_done]
+doc = "The first sentence of the plan segment when every step is done. Placeholders: {total}, {cli}."
+value = '''
+💡 anti-hall · devswarm-plan: all {total} steps are done — report it with `{cli} done`.'''
+
+[devswarm_prompt.plan_tail]
+doc = "The rest of the plan segment. Placeholders: {cli}, {id}."
+value = '''
+ Report step progress as it happens: `{cli} heartbeat {id} --step N --status doing|done|blocked` (it is what the Primary's roster shows). If a user prompt asks you for work outside this plan, record it first: `{cli} scope add {id} --glob '<paths>' --note '<what the user asked>'` — the Primary sees the note and may challenge it.'''
+
+[devswarm_prompt.builder_env]
+doc = "Environment variable that holds a child workspace's builder id."
+value = "DEVSWARM_BUILDER_ID"
+
+[devswarm_prompt.builder_name_env]
+doc = "Environment variable that holds a child workspace's builder name."
+value = "DEVSWARM_BUILDER_NAME"
+
 [devswarm_prompt.mode_setting]
 doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
 value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }
+
+[devswarm_prompt.summary_dir]
+doc = "The directory, under the anti-hall directory, of the per-project mailbox summaries the registration refreshes and the hook reads."
+value = "devswarm/summaries"
+
+[devswarm_prompt.archived_stop_setting]
+doc = "The setting devswarm.archivedChildStop (on by default): an archived child workspace is told to save a handover and stop, and its descriptor is not rewritten. The engine leaves an archived workspace to the Node hook."
+value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env = "ANTIHALL_DEVSWARM_ARCHIVED_CHILD_STOP", option = "devswarm_archived_child_stop", default = true }
+
+[devswarm_prompt.git_push_args]
+doc = "The git arguments, after `-C <worktree>`, of the push-state probe the heartbeat carries (companion/lib/devswarm-git-truth.js gitPushState): the commits ahead of the upstream."
+value = ["rev-list", "--count", "@{u}..HEAD"]
+
+[devswarm_prompt.git_env]
+doc = "The environment the push-state probe adds to the request's: the read-only git environment (hooks/lib/git-env.js), so the probe never takes a repository lock."
+value = { GIT_OPTIONAL_LOCKS = "0" }
+
+[devswarm_prompt.git_timeout_ms]
+doc = "How long the push-state probe may run (companion/lib/devswarm-git-truth.js GIT_TIMEOUT_MS); a probe that does not finish leaves the push keys out of the heartbeat."
+value = 4000
+min = 10
+unit = "ms"
+
+[devswarm_prompt.not_repo_re]
+doc = "What git says on stderr when the directory is no repository: the probe then has no answer, which is not the same as 'no upstream'."
+value = "not a git repository"
+
+[devswarm_prompt.stale_key]
+doc = "The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it (companion/lib/ingest-health.js STALE_DEDUPE_KEY)."
+value = "devswarm-ingest-stale"
+
+[devswarm_prompt.fault_key]
+doc = "The emit-dedupe key of the ingest monitor-fault banner; a healthy daemon forgets it (companion/lib/ingest-health.js MONITOR_FAULT_DEDUPE_KEY)."
+value = "devswarm-ingest-monitor-fault"
+
+[devswarm_prompt.archive_marker]
+doc = "The token a parent embeds in a message to ask the child to archive its own workspace (companion/lib/devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
+
+[devswarm_prompt.unread_segment]
+doc = "The child's unread-parent-mail segment (hooks/devswarm-child-turn.js buildUnreadSegment). Placeholders: {count}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread parent message(s). STOP and address these parent message(s) FIRST before continuing. Read them the SAFE way via the durable inbox cursor — `{cli} inbox read-primary {id}` (anti-hall devswarm CLI) (read-only; after handling, run the `ackCommand` it returns). Do NOT run `hivecontrol workspace read-messages` or `monitor` — those DESTRUCTIVELY drain the native queue.'''
+
+[devswarm_prompt.archive_request]
+doc = "The segment that relays a parent's request to archive the workspace (hooks/devswarm-child-turn.js buildArchiveRequestSegment). Placeholders: {cli}, {id}."
+value = '''
+💡 anti-hall · devswarm-archive-request: your parent asks you to archive this workspace. Confirm with YOUR user, then run `{cli} archive {id}`. NEVER auto-archive.'''
+
+[devswarm_prompt.proto_key]
+doc = "A descriptor key the engine does not merge (JavaScript would set the prototype); a descriptor that holds it is left to the Node hook."
+value = "__proto__"
+
+[devswarm_prompt.escape_marker]
+doc = "The text that marks a JSON escape sequence; a descriptor the engine's parser rejects and that holds one is left to the Node hook (JavaScript may parse it)."
+value = "\\u"
+
+[devswarm_prompt.log_verb]
+doc = "The verb name the registration's summary-refresh failures are logged under."
+value = "child-turn"
+
+[devswarm_prompt.defer_log_kind]
+doc = "The event-log kind of the line the child-turn check writes when it hands a turn to the Node hook; the line's text is the cause."
+value = "child-turn-defer"
+
+[devswarm_prompt.mesh_direct]
+doc = "The child's nudge for mesh mail addressed to it (hooks/devswarm-child-turn.js buildMeshDirectSegment). Placeholders: {count}, {age}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-mesh-direct: you have {count} unread mesh direct message(s){age} addressed to you. Read them via `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns).'''
+
+[devswarm_prompt.mesh_direct_urgent]
+doc = "The loudest form of the mesh-direct nudge, for urgent or high-urgency mail. Placeholders: {count}, {age}, {cli}, {id}."
+value = '''
+⚠️ anti-hall · devswarm-mesh-direct: urgent — you have {count} unread mesh direct message(s){age} addressed to you. STOP and read them FIRST via `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns), before continuing.'''
+
+[devswarm_prompt.mesh_direct_age]
+doc = "The age of the oldest unread mesh mail, appended to the nudge. Placeholder: {minutes}."
+value = " (oldest {minutes}m)"
+
+[devswarm_prompt.urgent_levels]
+doc = "The urgency values (the summary's urgencyMax) that make the mesh-direct nudge loud."
+value = ["urgent", "high"]
+
+[devswarm_prompt.ms_per_minute]
+doc = "Milliseconds in the minute the age of unread mail is counted in."
+value = 60000
+min = 1
+unit = "ms"
+
+[devswarm_prompt.relative_none]
+doc = "How an unknown or unset time reads in a banner (companion/lib/ingest-health.js formatRelative)."
+value = "—"
+
+[devswarm_prompt.launchd_platform]
+doc = "The platform name (as the host reports it) on which the ingest job is a launchd job whose disabled state the stale banner looks up."
+value = "macos"
+
+[devswarm_prompt.test_markers]
+doc = "Environment variables that mark a test run; under one the service manager is never asked (companion/lib/test-home-guard.js TEST_MARKERS)."
+value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST_ISOLATION"]
+
+[devswarm_prompt.launchctl_args]
+doc = "The arguments of the launchd query that lists the disabled jobs of the user's domain. Placeholder: {uid}."
+value = ["print-disabled", "gui/{uid}"]
+
+[devswarm_prompt.launchctl_timeout_ms]
+doc = "How long the launchd query may run (companion/lib/ingest-health.js launchdDisabledLabel)."
+value = 3000
+min = 10
+unit = "ms"
+
+[devswarm_prompt.launchd_label_prefix]
+doc = "The prefix of a project's ingest job label; the project key follows."
+value = "com.anti-hall.devswarm-ingest."
+
+[devswarm_prompt.banner_keepalive]
+doc = "Delivered turns after which an unchanged ingest banner is sent again (companion/lib/ingest-health.js STALE_KEEPALIVE_TURNS)."
+value = 50
+min = 0
+max = 100000
+
+[devswarm_prompt.banner_grace_ms]
+doc = "A stale ingest heartbeat younger than this, with the daemon's lock held by a live process, is a hand-over in progress and gets no banner (companion/lib/ingest-health.js BANNER_GRACE_MS)."
+value = 300000
+min = 0
+unit = "ms"
+
+[devswarm_prompt.stale_banner]
+doc = "The ingest-daemon stale banner (companion/lib/ingest-health.js buildStaleBanner). Placeholders: {age}, {tail}."
+value = '''
+⚠️ anti-hall · devswarm-stale-data: ingest daemon last alive {age} ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for this worktree). Mesh sends are written directly to the store and are NOT affected. {tail}Shown once per stale episode.'''
+
+[devswarm_prompt.stale_doctor]
+doc = "The stale banner's advice when the daemon's launchd job is not disabled."
+value = "Run /anti-hall:doctor to check the DevSwarm ingest daemon. "
+
+[devswarm_prompt.stale_disabled]
+doc = "The stale banner's advice when launchd lists the daemon's job disabled. Placeholders: {label}, {uid}."
+value = "The launchd job {label} is DISABLED, so it cannot auto-start and self-heal is skipped; if that was not intentional, re-enable with: launchctl enable gui/{uid}/{label} (anti-hall never does this for you). "
+
+[devswarm_prompt.fault_banner]
+doc = "The banner for a live ingest daemon whose app monitor is not answering and that is not a configuration fault (buildMonitorFaultBanner). Placeholders: {beat}, {what}, {err}."
+value = '''
+⚠️ anti-hall · devswarm-ingest-failing: the ingest daemon is healthy (heartbeat {beat} ago) but the DevSwarm app's `hivecontrol workspace monitor` is not answering ({what}{err}). Native-queue ingestion is paused until it answers; anti-hall mesh messages sent through the shared store are not affected. /anti-hall:doctor cannot repair this — check or restart the DevSwarm app.'''
+
+[devswarm_prompt.fault_config]
+doc = "The banner for a live ingest daemon whose monitor fails with a configuration error code. Placeholders: {beat}, {what}, {code}, {err}."
+value = '''
+⚠️ anti-hall · devswarm-ingest-failing: the daemon is alive (heartbeat {beat} ago) but {what} ({code}){err} — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'''
+
+[devswarm_prompt.fault_no_ok]
+doc = "What a monitor fault says when no poll has succeeded since the daemon started. Placeholder: {rel}."
+value = "no monitor poll has succeeded since the daemon started {rel} ago"
+
+[devswarm_prompt.fault_ok_stale]
+doc = "What a monitor fault says when the last successful poll is too old. Placeholder: {rel}."
+value = "the last successful monitor poll was {rel} ago"
+
+[devswarm_prompt.fault_failing]
+doc = "What a monitor fault says otherwise. Placeholder: {n}."
+value = "`hivecontrol workspace monitor` has failed {n}x in a row"
+
+[devswarm_prompt.fault_error]
+doc = "The last monitor error, appended to a fault banner. Placeholder: {error}."
+value = "; last error: {error}"
+
+[devswarm_prompt.fault_error_max]
+doc = "The most characters of the last monitor error a fault banner quotes."
+value = 160
+min = 1
+max = 4096
 
 [guardkit.render_reserve]
 doc = "Extra bytes reserved beyond a message template's length when its placeholders are filled (a capacity hint, not a limit)."
@@ -1603,11 +2026,3 @@ value = 32
 unit = "bytes"
 min = 0
 max = 65536
-
-[scan_throttle.pattern_literal_chars]
-doc = "ASCII characters a user pattern may contain as plain literals for the engine to match it itself; a pattern with any other construct defers to the Node guard, whose regex engine is the authority."
-value = " !#%&',-/:;<=>@_\"~`ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-
-[scan_throttle.pattern_escapes]
-doc = "Characters that may follow a backslash in a user pattern the engine matches itself (escaped punctuation, class escapes, newline, tab)."
-value = ".-/\\()[]*+?|^$sSdDwWbBnt{}"

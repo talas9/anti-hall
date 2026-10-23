@@ -4,19 +4,15 @@
 //! messages (never deleting a row: positions, counts and dedupe depend on every row staying), archive first. Because a wrong
 //! write loses a user's message text, this port holds a stricter bar than "same as Node":
 //!
-//! 1. the engine plans natively ([`plan`]) and Node's own `planStore` + dry-run `pruneStore` plan the SAME store read only
-//!    (the non-acting witness); the engine writes only when the two agree on the exact candidate rows, every partition's
-//!    statistics and the counts it chose, and only if a second native plan, taken after Node's, is identical to the first
-//!    (so the store did not move under the comparison);
-//! 2. any disagreement, or a witness that cannot run while `retention_require_witness` is on, does NOTHING that run and logs it;
-//!    the store is tried again after `witness_every_ms` (never a weaker or riskier action than Node's);
-//! 3. what it writes ([`apply`]) is a subset of what Node's transaction would: each row is re-checked against the live database
+//! 1. the engine plans natively ([`plan`]) twice, and writes only when the second plan, taken after the first, is identical to it
+//!    (so the store did not move under the plan); the plan is logged (`devswarm_sup.witness_file`) next to what was done;
+//! 2. what it writes ([`apply`]) is a subset of what Node's transaction would: each row is re-checked against the live database
 //!    inside the transaction, and the archive (verified gzip, fsynced) always comes first;
-//! 4. whatever it cannot read exactly like Node (an unexpected column type, a missing `gzip`, the dry-run report phase of a
-//!    machine's first run, an unreadable table) hands the whole sweep to Node's own function, as before this port.
-//!
-//! Left to Node, by design: the one-time dry-run report phase, `foldLegacyJournal` (it needs the store merge) and the archive
-//! size cap eviction; the engine calls Node's functions for them only when there is something for them to do.
+//! 3. whatever it cannot read exactly like Node (an unexpected column type, a missing `gzip`, an unreadable table) holds the sweep
+//!    (counted `native_unable`, nothing written, tried again);
+//! 4. the two operations that remove data for good, the journal fold (the raw journal file is removed) and the archive-cap
+//!    eviction (archived bodies are removed), are owner-gated: `devswarm_sup.rt_fold_alone` and `devswarm_sup.rt_cap_alone` are
+//!    OFF by default and while off the step is `held` (counted as `held`, nothing removed, named in the record).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable or unparsable state file is the empty state (Node: `readJson(p, null)`)
 pub mod apply;
@@ -27,7 +23,7 @@ pub mod fold;
 pub mod gz;
 pub mod plan;
 
-use super::tick::{Ctx, node};
+use super::tick::Ctx;
 use crate::checks::guardkit::nodelock;
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
@@ -185,55 +181,6 @@ fn choose(p: &Plan, s: &Settings, bytes_before: u64) -> (Chosen, Choice) {
     (chosen, Choice { age, size, bytes, over })
 }
 
-/// What Node's planner says about the same store, or why the witness could not run.
-enum Witness {
-    Said(Value),
-    Unavailable(String),
-}
-
-fn ask_node(ctx: &Ctx, runner: &dyn Runner, hash: &str, s: &Settings, st: &OVal) -> Witness {
-    let d = defaults::raw("devswarm_sup.duty.retention");
-    let holds = st.get(defaults::text("devswarm_sup.rt_state_holds")).map_or(Value::Null, |h| serde_json::from_str(&h.stringify()).unwrap_or(Value::Null));
-    let spec = json!({"hash": hash, "now": ctx.now, "holds": holds, "settings": {
-        "days": s.days, "maxStoreMB": s.max_store_mb, "keepPerPartition": s.keep, "archive": s.archive, "archiveMaxMB": s.archive_max_mb, "enabled": s.enabled()}});
-    let timeout = d.get("witness_timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let r = node(runner, ctx, d.str_field("witness_snippet"), &[&spec.to_string()], timeout);
-    if !r.ok {
-        return Witness::Unavailable(
-            r.error.clone().unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { super::tick::cut(&r.stderr) }),
-        );
-    }
-    match serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()) {
-        Ok(v) => Witness::Said(v),
-        Err(e) => Witness::Unavailable(format!("{}: {e}", defaults::text("devswarm_sup.rt_msg_witness_output"))),
-    }
-}
-
-/// The first difference between the engine's plan and Node's, or `None` when they agree on everything.
-fn disagreement(p: &Plan, c: &Choice, node: &Value) -> Option<String> {
-    let dry = &node["dry"];
-    if dry["ok"] != true || !dry["skipped"].is_null() {
-        return Some(format!("{}: {}", defaults::text("devswarm_sup.rt_msg_node_plan"), dry));
-    }
-    let mine = cand_rows(p);
-    let theirs = node["cands"].as_array().cloned().unwrap_or_default();
-    if mine != theirs {
-        let first = mine.iter().zip(theirs.iter()).position(|(a, b)| a != b).unwrap_or(mine.len().min(theirs.len()));
-        return Some(format!("{} {first} ({} vs {})", defaults::text("devswarm_sup.rt_msg_cand_differ"), mine.len(), theirs.len()));
-    }
-    let mine_parts = parts_json(p);
-    if mine_parts != node["parts"] {
-        let first = mine_parts.as_object().into_iter().flatten().find(|(k, v)| node["parts"].get(k.as_str()) != Some(*v));
-        let detail = first.map_or(String::new(), |(k, v)| format!(" ({k}: engine {v} node {})", node["parts"].get(k.as_str()).unwrap_or(&Value::Null)));
-        return Some(format!("{}{detail}", defaults::text("devswarm_sup.rt_msg_parts_differ")));
-    }
-    let n = |k: &str| dry[k].as_i64().unwrap_or(-1);
-    if (n("ageCandidates"), n("sizeCandidates"), n("candidateBytes"), dry["overLimit"].as_bool()) != (c.age as i64, c.size as i64, c.bytes, Some(c.over)) {
-        return Some(defaults::render("devswarm_sup.rt_msg_choice_differ", &[("engine", &format!("{c:?}")), ("node", dry)]));
-    }
-    None
-}
-
 /// How one store ended.
 pub(super) enum Ended {
     Pruned(Box<Pruned>),
@@ -246,8 +193,8 @@ fn witness_log(ctx: &Ctx, rec: &Value) {
     crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_sup.witness_file")), rec);
 }
 
-/// The engine's sweep of one store: plan, agree with Node, plan again, then (not in a dry run) archive and tombstone.
-pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, hash: &str, dry: bool, mark: bool) -> Ended {
+/// The engine's sweep of one store: plan, plan again, then (not in a dry run) archive and tombstone.
+pub(super) fn one_store(ctx: &Ctx, _runner: &dyn Runner, st: &mut OVal, s: &Settings, hash: &str, dry: bool, mark: bool) -> Ended {
     let now = ctx.now as f64;
     let holds = plan::holds_of(st, hash, now);
     let bytes_before = apply::store_bytes(ctx.home, hash);
@@ -256,25 +203,10 @@ pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Setti
         Err(d) => return Ended::Fallback(d),
     };
     let (chosen, choice) = choose(&first, s, bytes_before);
-    let require = super::setting(ctx.st, "devswarm_sup.set_rt_require_witness").as_bool().unwrap_or(true);
-    match ask_node(ctx, runner, hash, s, st) {
-        Witness::Said(v) => {
-            if let Some(why) = disagreement(&first, &choice, &v) {
-                witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": false, "detail": why}));
-                return Ended::Held(why);
-            }
-            witness_log(
-                ctx,
-                &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": true, "candidates": first.cands.len(), "chosen": choice.age + choice.size}),
-            );
-        }
-        Witness::Unavailable(why) => {
-            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": Value::Null, "error": why}));
-            if require {
-                return Ended::Held(format!("{}: {why}", defaults::text("devswarm_sup.rt_msg_no_witness")));
-            }
-        }
-    }
+    witness_log(
+        ctx,
+        &json!({"ts": ctx.now, "duty": "retention", "store": hash, "native": true, "candidates": first.cands.len(), "chosen": choice.age + choice.size}),
+    );
     // the store must not have moved under the comparison
     let second = match plan::plan_store(ctx.home, hash, s.rules(), now, &holds) {
         Ok(p) => p,
@@ -307,12 +239,14 @@ pub(super) fn one_store(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Setti
 
 /// `recordStore(st, hash, r, now)`.
 pub(super) fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
-    let prev_total = match obj_mut(obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")), hash).get(defaults::text("devswarm_sup.rt_state_tombstoned")) {
+    let Some(e) = obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")).and_then(|stores| obj_mut(stores, hash)) else {
+        return;
+    };
+    let prev_total = match e.get(defaults::text("devswarm_sup.rt_state_tombstoned")) {
         Some(OVal::Num(n)) if n.is_finite() => *n,
         Some(OVal::Str(t)) => crate::checks::guardkit::text::js_number_of_str(t),
         _ => 0.0,
     };
-    let e = obj_mut(obj_mut(st, defaults::text("devswarm_sup.rt_state_stores")), hash);
     let n = |x: f64| OVal::Num(x);
     for (k, v) in [
         ("lastRunAt", n(now as f64)),
@@ -329,34 +263,41 @@ pub(super) fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
     }
 }
 
-/// The journal fold of a store, only when there is a journal to fold. Whether the journal is safe to fold is Node's own merge
-/// check (a read-only dry run); the engine folds only the exact files Node's dry run names.
-fn legacy_fold(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Value {
+/// Whether an owner-gated removal (`rt_fold_alone`, `rt_cap_alone`) is switched on; OFF by default.
+fn alone(ctx: &Ctx, key: &str) -> bool {
+    super::setting(ctx.st, key).as_bool().unwrap_or(false)
+}
+
+/// An owner-gated removal that is off: nothing is removed, the step is counted as `held` and named in the record.
+fn held_alone(ctx: &Ctx, step: &str, hash: Option<&str>, key: &str) -> Value {
+    crate::obs::counters::account("duty", step, crate::obs::counters::Outcome::Held, 0, 0);
+    let why = defaults::text(key);
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": step, "store": hash, "native": true, "held": why}));
+    json!({"held": why})
+}
+
+/// The journal fold of a store, only when there is a journal to fold. The raw journal file is removed after its verified compressed
+/// copy exists, which is owner-gated (`rt_fold_alone`): off, the fold is `held`.
+fn legacy_fold(ctx: &Ctx, hash: &str) -> Value {
     let mine = fold::items(ctx.home, hash);
     if mine.is_empty() {
         return Value::Null;
     }
-    let node = match dry::node_fold_dry(ctx, runner, hash) {
-        Ok(v) => v,
-        Err(why) => {
-            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": Value::Null, "error": why}));
-            return json!({"held": why});
-        }
-    };
-    if node["eligible"] != true {
-        return node;
+    if !alone(ctx, "devswarm_sup.set_rt_fold_alone") {
+        return held_alone(ctx, defaults::text("devswarm_sup.rt_step_fold"), Some(hash), "devswarm_sup.rt_why_fold_off");
     }
-    if !fold::agrees(&mine, &node) {
-        let why = defaults::text("devswarm_sup.rt_msg_fold_differ");
-        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": false, "detail": why}));
-        return json!({"held": why});
+    // Node's `foldLegacyJournal` eligibility, now the engine's own: only a store whose merge into sqlite is PROVEN complete has its raw
+    // journal removed; the archive copy being byte-equal says nothing about the messages having reached the database
+    if let Some(reason) = fold::ineligible(ctx.home, hash) {
+        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "native": true, "held": reason}));
+        return json!({"hash": hash, "eligible": false, "reason": reason, "files": [], "dryRun": false});
     }
-    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "match": true, "files": mine.len()}));
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-fold", "store": hash, "native": true, "files": mine.len()}));
     fold::run(ctx.home, hash, &mine)
 }
 
-/// The archive cap: nothing to evict needs no comparison; an eviction list must be Node's exact dry-run list.
-pub(super) fn archive_cap(ctx: &Ctx, runner: &dyn Runner, s: &Settings) -> Value {
+/// The archive cap: nothing to evict needs no gate; removing archived bodies is owner-gated (`rt_cap_alone`): off, it is `held`.
+pub(super) fn archive_cap(ctx: &Ctx, _runner: &dyn Runner, s: &Settings) -> Value {
     if s.archive_max_mb <= 0.0 {
         return Value::Null;
     }
@@ -364,29 +305,17 @@ pub(super) fn archive_cap(ctx: &Ctx, runner: &dyn Runner, s: &Settings) -> Value
     if p.removed.is_empty() {
         return p.json(false);
     }
-    let d = defaults::raw("devswarm_sup.duty.retention");
-    let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let spec = json!({"days": s.days, "maxStoreMB": s.max_store_mb, "keepPerPartition": s.keep, "archive": s.archive, "archiveMaxMB": s.archive_max_mb, "enabled": s.enabled()});
-    let r = node(runner, ctx, d.str_field("cap_dry_snippet"), &[&spec.to_string()], timeout);
-    let said = if r.ok { serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).ok() } else { None };
-    let Some(node_plan) = said else {
-        let why = r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr));
-        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": Value::Null, "error": why}));
-        return json!({"held": why});
-    };
-    if !cap::same(&p, &node_plan) {
-        let why = defaults::text("devswarm_sup.rt_msg_cap_differ");
-        witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": false, "detail": why}));
-        return json!({"held": why});
+    if !alone(ctx, "devswarm_sup.set_rt_cap_alone") {
+        return held_alone(ctx, defaults::text("devswarm_sup.rt_step_cap"), None, "devswarm_sup.rt_why_cap_off");
     }
-    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "match": true, "files": p.removed.len()}));
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention-cap", "native": true, "files": p.removed.len()}));
     let done = cap::evict(ctx.home, &p);
     let mut v = p.json(false);
     v["removed"] = Value::Array(done.iter().map(|(f, b)| json!({"file": f, "bytes": b})).collect());
     v
 }
 
-/// The native sweep. `Err` hands the whole sweep to Node's function (nothing of Node's is half done by then).
+/// The native sweep. `Err` holds the whole sweep (nothing is half done by then).
 fn sweep(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Value, Defer> {
     let s = read_settings(ctx);
     if !s.enabled() {
@@ -420,14 +349,29 @@ fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Res
     let mut due: Vec<&Store> = stores.iter().filter(|x| !ran_recently(&x.hash, &st)).collect();
     due.sort_by_key(|x| std::cmp::Reverse(x.bytes));
     // a store whose last comparison disagreed is not tried again before the witness interval has passed
-    let backoff = defaults::num("devswarm_sup.witness_every_ms") as i64;
+    let backoff = defaults::num("devswarm_sup.rt_held_backoff_ms") as i64;
     due.retain(|x| !held_back(ctx, &x.hash, backoff));
     let mut result = Value::Null;
     if let Some(target) = due.first() {
+        let started = std::time::Instant::now();
         match one_store(ctx, runner, &mut st, s, &target.hash, dry, false) {
             Ended::Pruned(r) => {
-                let fold = legacy_fold(ctx, runner, &target.hash);
+                let fold = legacy_fold(ctx, &target.hash);
                 record_store(&mut st, &target.hash, &r, ctx.now);
+                if r.tombstoned > 0 || !r.ok {
+                    super::tick::record_action(
+                        ctx.home,
+                        &super::tick::Action {
+                            action: defaults::text("devswarm_sup.rt_action"),
+                            target: &target.hash,
+                            inputs: json!({"ageCandidates": r.age_candidates, "sizeCandidates": r.size_candidates, "overLimit": r.over_limit}),
+                            outcome: if r.ok { defaults::text("devswarm_sup.rt_action_pruned") } else { defaults::text("devswarm_sup.as_action_failed") },
+                            reason: "",
+                            latency_ms: started.elapsed().as_millis() as u64,
+                            now: ctx.now,
+                        },
+                    );
+                }
                 result = json!({"ok": r.ok, "hash": r.hash, "tombstoned": r.tombstoned, "ageCandidates": r.age_candidates, "sizeCandidates": r.size_candidates,
                     "overLimit": r.over_limit, "overLimitProtected": r.over_limit_protected, "budgetExhausted": r.budget_exhausted, "batches": r.batches, "legacy": fold});
             }
@@ -470,7 +414,7 @@ fn stamp_held(ctx: &Ctx, hash: &str) {
     crate::discard::harmless(crate::atomic::write(&p, Value::Object(m).to_string())); // keep: same
 }
 
-/// The duty: native in the armed state, Node's own function otherwise (or whenever the port declines).
+/// The duty: native. A sweep the port declines is `held` (counted, nothing written, tried again at the next tick).
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     let dry = super::setting(ctx.st, "devswarm_sup.set_dry_run_retention").as_bool().unwrap_or(false);
     match sweep(ctx, runner, dry) {
@@ -479,15 +423,7 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
             if dry {
                 return json!({"duty": "retention", "outcome": "dry-run", "detail": {"ran": false, "reason": why}});
             }
-            let d = defaults::raw("devswarm_sup.duty.retention");
-            let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
-            let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-            let r = node(runner, ctx, d.str_field("snippet"), &[owner], timeout);
-            if r.ok {
-                json!({"duty": "retention", "outcome": "ran", "detail": super::tick::parse(&r.stdout), "node": why})
-            } else {
-                json!({"duty": "retention", "outcome": "failed", "error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out, "node": why})
-            }
+            json!({"duty": "retention", "outcome": "held", "detail": super::tick::held("dssup:retention:sweep", &why)})
         }
     }
 }

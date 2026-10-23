@@ -7,7 +7,7 @@
 //! while the agent made progress). A reminded flag still up after the outcome window is recorded as not recovered. Nothing here
 //! ever stops an agent.
 use super::facts::words;
-use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, age};
+use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, WakeFeed, age};
 use super::{Agent, Env, Flag, Sample, State, cap, chan, defaults_signals, fmtn, kind_name, lim, pth, state_name};
 use crate::defaults::{self, V};
 use crate::telemetry::emit::{self, AgentRec};
@@ -19,11 +19,15 @@ pub(crate) type Raised = (u64, String);
 
 /// The state of an agent as the tracker reads it.
 pub(crate) fn state_of(a: &Agent) -> &'static str {
-    let host = |k: &str| defaults::raw("agent_tracker.claude_cli").get(k).map(V::strings).unwrap_or_default().contains(&a.host.as_str());
+    let host = |k: &str| {
+        ["agent_tracker.claude_cli", "agent_tracker.registry"]
+            .iter()
+            .any(|t| defaults::raw(t).get(k).map(V::strings).unwrap_or_default().contains(&a.host.as_str()))
+    };
     if a.kind == kind_name("heartbeat") {
         return if a.flags.contains_key("heartbeat_stale") { state_name("stale") } else { state_name("running") };
     }
-    if a.gone {
+    if a.gone || a.finished {
         return state_name("done");
     }
     if !a.host.is_empty() {
@@ -34,7 +38,7 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
             return state_name("running");
         }
     }
-    match (a.running, a.kind == kind_name("subagent")) {
+    match (a.running, super::is_child(a)) {
         (true, _) => state_name("running"),
         (false, true) => state_name("done"),
         (false, false) => state_name("waiting"),
@@ -143,14 +147,34 @@ fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
     (old >= lim("heartbeat_stale_ms")).then(|| (old / fmtn("ms_per_s"), a.hb_step.clone()))
 }
 
-fn monitor_unarmed(a: &Agent, st: &State, now: u64) -> Option<Raised> {
+/// A subagent or workspace that finished its turn with a task still open and has said nothing for `idle_open_ms`: nobody is told, so it
+/// sits. Raised once per idle spell; it clears the moment the agent works again.
+fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
+    if (!super::is_child(a) && a.kind != kind_name("workspace")) || a.gone || !a.open || a.running || a.last_output_ms == 0 {
+        return None;
+    }
+    let idle = now.saturating_sub(a.last_output_ms);
+    (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms")).then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
+}
+
+/// A background shell task the agent started has ended (a test run, a soak, a build): the session that waits for it is told once.
+fn watched_exit(a: &Agent, now: u64) -> Option<Raised> {
+    let fresh: Vec<&(String, u64)> = a.exited.iter().filter(|(_, t)| now.saturating_sub(*t) <= lim("exit_keep_ms")).collect();
+    let last = fresh.last()?;
+    Some((fresh.len() as u64, last.0.clone()))
+}
+
+fn monitor_unarmed(env: &Env, a: &Agent, st: &State, now: u64) -> Option<Raised> {
     if (a.kind != kind_name("main") && a.kind != kind_name("workspace")) || a.gone {
         return None;
     }
     if let Some(Some(armed)) = a.ws.as_ref().map(|w| w.armed) {
         return (!armed && !a.gone).then(|| (0, a.ws.as_ref().map(|w| w.id.clone()).unwrap_or_default()));
     }
-    let subs = st.agents.values().filter(|s| s.kind == kind_name("subagent") && s.parent == a.id && running(s)).count() as u64;
+    if (a.kind == kind_name("main") || a.ws.is_some()) && sinks::wake_armed(env, &a.id) {
+        return None;
+    }
+    let subs = st.agents.values().filter(|s| super::is_child(s) && s.parent == a.id && running(s)).count() as u64;
     let shells = a.bg_bash.iter().filter(|t| now.saturating_sub(**t) <= lim("bg_bash_ms")).count() as u64;
     let bg = subs + shells;
     (bg >= lim("monitor_min_bg") && now > a.armed_until).then(|| {
@@ -163,7 +187,7 @@ fn monitor_unarmed(a: &Agent, st: &State, now: u64) -> Option<Raised> {
     })
 }
 
-fn raise(a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
+fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
     let mut out = BTreeMap::new();
     for s in defaults_signals() {
         let r = match s {
@@ -172,7 +196,9 @@ fn raise(a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, Raised> {
             "token_waste" => token_waste(a, now),
             "drift" => drift(a),
             "heartbeat_stale" => heartbeat_stale(a, now),
-            "monitor_unarmed" => monitor_unarmed(a, st, now),
+            "monitor_unarmed" => monitor_unarmed(env, a, st, now),
+            "idle_open_task" => idle_open_task(a, now),
+            "watched_exit" => watched_exit(a, now),
             _ => None,
         };
         if let Some(r) = r {
@@ -240,6 +266,7 @@ fn trim_series(env: &Env) {
 
 enum Target {
     Session(String),
+    Wake(String),
     Mesh { ws: String, to_parent: bool },
     Owner,
 }
@@ -255,36 +282,61 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         }
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
         "heartbeat_stale" => defaults::render("msg.agent_heartbeat_stale", &[("agent", &who), ("age", &age(f.evidence * fmtn("ms_per_s"))), ("step", &f.text)]),
+        "idle_open_task" => {
+            defaults::render("msg.agent_idle_open_task", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("task", &f.text)])
+        }
+        "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            let root = env.plugin_root.as_ref().map(|r| r.join(pth("watcher")).to_string_lossy().to_string()).unwrap_or_else(|| pth("watcher").to_string());
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &format!("node {root}"))])
+            let root =
+                env.plugin_root.as_ref().map_or_else(|| defaults::text("agent_tracker.wake_root_fallback").to_string(), |r| r.to_string_lossy().to_string());
+            let command = defaults::render("agent_tracker.wake_command", &[("root", &root)]);
+            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &command)])
         }
         _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
     };
     cap(&t, defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap_or(0).max(0) as u64)
 }
 
+/// The configured route targets: name -> (whose queue it addresses, which sink delivers). A new target is a row in
+/// `agent_tracker.targets`; only a new kind of sink needs code.
 fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
     let routes = defaults::raw("agent_tracker.routes").get(sig).map(V::strings).unwrap_or_default();
+    let table = defaults::raw("agent_tracker.targets");
     let mut out = Vec::new();
     for r in routes {
-        if r == chan("self") {
-            out.push(match &a.ws {
-                Some(w) => Target::Mesh { ws: w.id.clone(), to_parent: false },
-                None => Target::Session(a.id.clone()),
-            });
-        } else if r == chan("coordinator") {
-            let t = match (&a.ws, a.kind.as_str()) {
-                (Some(w), _) => Some(Target::Mesh { ws: w.id.clone(), to_parent: true }),
-                (None, k) if k == kind_name("subagent") => Some(Target::Session(a.parent.clone())),
-                (None, k) if k == kind_name("heartbeat") => {
-                    st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| Target::Session(m.id.clone()))
+        let Some(row) = table.get(r) else { continue };
+        let (to, via) = (row.str_field("to"), row.str_field("via"));
+        if via == chan("owner_file") {
+            if env.switch("agent_tracker.owner_setting") {
+                out.push(Target::Owner);
+            }
+            continue;
+        }
+        let wake = via == chan("wake");
+        if to == chan("self") {
+            match &a.ws {
+                Some(w) if !wake => {
+                    // a workspace is also a session: its own hook delivers the queue, the mesh row is for the action layer
+                    out.push(Target::Session(a.id.clone()));
+                    out.push(Target::Mesh { ws: w.id.clone(), to_parent: false });
                 }
-                _ => Some(Target::Session(a.id.clone())),
+                _ => out.push(if wake { Target::Wake(a.id.clone()) } else { Target::Session(a.id.clone()) }),
+            }
+        } else if to == chan("coordinator") {
+            let session = match (&a.ws, a.kind.as_str()) {
+                (Some(_), _) => None,
+                (None, _) if super::is_child(a) => Some(a.parent.clone()),
+                (None, k) if k == kind_name("heartbeat") => {
+                    st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone())
+                }
+                _ => Some(a.id.clone()),
             };
-            out.extend(t);
-        } else if r == chan("owner") && env.switch("agent_tracker.owner_setting") {
-            out.push(Target::Owner);
+            match (session, &a.ws) {
+                (Some(k), _) if wake => out.push(Target::Wake(k)),
+                (Some(k), _) => out.push(Target::Session(k)),
+                (None, Some(w)) if !wake => out.push(Target::Mesh { ws: w.id.clone(), to_parent: true }),
+                _ => {}
+            }
         }
     }
     out
@@ -301,7 +353,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     let spam = |k: &str| defaults::raw("agent_tracker.spam").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let day = fmtn("day_ms");
     a.sent_log.retain(|(_, t)| now.saturating_sub(*t) < day);
-    let why = if a.last_sent.get(sig).is_some_and(|t| now.saturating_sub(*t) < cool) {
+    let once = cd.and_then(|c| c.get("once")).and_then(V::as_bool).unwrap_or(false);
+    let why = if once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0) {
+        Some("once")
+    } else if a.last_sent.get(sig).is_some_and(|t| now.saturating_sub(*t) < cool) {
         Some("cooldown")
     } else if per_day > 0 && a.sent_log.iter().filter(|(s, _)| s == sig).count() as u64 >= per_day {
         Some("cap")
@@ -317,6 +372,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     for t in &tg {
         let (sink, key): (Box<dyn Sink>, String) = match t {
             Target::Session(k) => (Box::new(SessionQueue), k.clone()),
+            Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
             Target::Mesh { ws, to_parent } => (Box::new(MeshOutbox { to_parent: *to_parent }), ws.clone()),
             Target::Owner => (Box::new(OwnerNotices), String::new()),
         };
@@ -343,13 +399,13 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         match sink.deliver(env, &key, &r) {
             Ok(()) => {
                 rec(env, "reminder", sig, Outcome::Advise, f);
-                st.day(env).queued += 1;
                 sent += 1;
             }
             Err(e) => crate::health::log_event("agents", "queue_write", &e),
         }
     }
     if sent > 0 {
+        st.day(env).queued += 1;
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
@@ -412,7 +468,8 @@ fn apply(env: &Env, st: &mut State, a: &mut Agent, raised: BTreeMap<&'static str
             (None, false) => continue,
         }
         let Some(f) = a.flags.get(sig).cloned() else { continue };
-        if f.ticks >= lim("confirm_ticks") {
+        let confirm = defaults::raw("agent_tracker.cooldowns").get(sig).and_then(|c| c.get("confirm_ticks")).and_then(V::as_integer);
+        if f.ticks >= confirm.map_or(lim("confirm_ticks"), |c| c.max(0) as u64) {
             remind(env, st, a, sig, queued);
         }
         if let Some(f) = a.flags.get_mut(sig)
@@ -464,7 +521,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         sample(&mut a, now);
-        let raised = raise(&a, st, now);
+        let raised = raise(env, &a, st, now);
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {
             st.day(env).burned += (a.tin + a.tout).saturating_sub(prev);

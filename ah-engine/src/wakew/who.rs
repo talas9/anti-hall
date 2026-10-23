@@ -61,6 +61,16 @@ pub fn is_child_workspace(p: &Proc) -> bool {
 /// The registered descriptors (`readDescriptors`): the `*.json` files of `workspaces/` that parse and carry a worktree path, a
 /// session id and a safe id, in file-name order.
 pub fn read_descriptors(home: &Path) -> Vec<J> {
+    read_rows(home, true)
+}
+
+/// Every descriptor with a worktree path and a safe id, session or not: the DevSwarm app's own row for a Primary's checkout has
+/// `sessionId: null`, and a watcher armed under either row covers the checkout.
+pub fn read_checkout_rows(home: &Path) -> Vec<J> {
+    read_rows(home, false)
+}
+
+fn read_rows(home: &Path, need_session: bool) -> Vec<J> {
     let dir = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces"));
     let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
     let mut names: Vec<String> =
@@ -70,7 +80,7 @@ pub fn read_descriptors(home: &Path) -> Vec<J> {
     for n in names {
         let Some(d) = super::read::read_text(&dir.join(&n)).and_then(|t| super::read::parse_json(&t)) else { continue };
         let safe_id = matches!(d.get("id"), Some(J::Str(s)) if is_safe_id(s));
-        if matches!(d, J::Obj(_)) && j_truthy(d.get("worktreePath")) && j_truthy(d.get("sessionId")) && safe_id {
+        if matches!(d, J::Obj(_)) && j_truthy(d.get("worktreePath")) && (!need_session || j_truthy(d.get("sessionId"))) && safe_id {
             out.push(d);
         }
     }

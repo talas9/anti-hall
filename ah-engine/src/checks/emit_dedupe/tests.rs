@@ -198,11 +198,21 @@ fn the_sweep_removes_idle_session_files_once_per_throttle_and_never_the_callers_
 }
 
 #[test]
-fn a_transcript_line_with_the_marker_that_no_parser_reads_defers() {
+fn a_transcript_line_with_the_marker_that_json_parse_rejects_is_skipped() {
     let h = home("marker");
     let s = st(&h, &[]);
     let now = now_ms();
     let tp = transcript(&h, &[filler(now - 1000.0), "{\"attachment\":{\"type\":\"hook_additional_context\" BROKEN".to_string()]);
+    assert_eq!(should_emit(&s, &opts("s", "B", Some(&tp), 0.0)), Ok(true));
+    assert!(should_emit(&s, &opts("s", "B", Some(&tp), 0.0)).is_ok(), "plain broken JSON is skipped, as JSON.parse in a try/catch skips it");
+}
+
+#[test]
+fn a_transcript_line_with_the_marker_that_only_javascript_may_read_defers() {
+    let h = home("marker2");
+    let s = st(&h, &[]);
+    let now = now_ms();
+    let tp = transcript(&h, &[filler(now - 1000.0), "{\"attachment\":{\"type\":\"hook_additional_context\"},\"n\":1e999}".to_string()]);
     assert_eq!(should_emit(&s, &opts("s", "B", Some(&tp), 0.0)), Ok(true));
     assert_eq!(should_emit(&s, &opts("s", "B", Some(&tp), 0.0)), Err(Defer));
 }
