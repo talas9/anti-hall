@@ -580,7 +580,7 @@ pub fn Graph(
                 let _ = (&active, now_ms);
             }
         });
-        bus.attach(cfg.fx.queue_max, wake);
+        bus.attach(wake);
     }
     let fx_style = crate::fx::colour_rules(&cfg.fx);
     let svg_wires = move || !full || backend.get() == "svg";

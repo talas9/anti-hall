@@ -68,8 +68,8 @@ struct Inner {
 pub struct FxBus(SendWrapper<Rc<RefCell<Inner>>>);
 
 impl FxBus {
-    pub fn new() -> FxBus {
-        FxBus(SendWrapper::new(Rc::new(RefCell::new(Inner { q: VecDeque::new(), cap: usize::MAX, wake: None }))))
+    pub fn new(cap: usize) -> FxBus {
+        FxBus(SendWrapper::new(Rc::new(RefCell::new(Inner { q: VecDeque::new(), cap: cap.max(1), wake: None }))))
     }
 
     /// Queue one effect; the graph picks it up at once. Beyond `fx.queue_max` the oldest waiting ones are dropped.
@@ -87,10 +87,8 @@ impl FxBus {
         }
     }
 
-    pub(crate) fn attach(&self, cap: usize, wake: Rc<dyn Fn()>) {
-        let mut i = self.0.borrow_mut();
-        i.cap = cap.max(1);
-        i.wake = Some(wake);
+    pub(crate) fn attach(&self, wake: Rc<dyn Fn()>) {
+        self.0.borrow_mut().wake = Some(wake);
     }
 
 }
@@ -107,12 +105,6 @@ impl FxWeak {
 impl FxBus {
     pub(crate) fn weak(&self) -> FxWeak {
         FxWeak(Rc::downgrade(&self.0))
-    }
-}
-
-impl Default for FxBus {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

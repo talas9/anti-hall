@@ -554,3 +554,35 @@ value = 30
 min = 1
 max = 120
 unit = "fps"
+
+[web.graph.theme.kinds.allow.color]
+doc = "Colour of the 'allow' decision node on the Live screen."
+value = "oklch(0.84 0.14 160)"
+
+[web.graph.theme.kinds.allow.shape]
+doc = "Marker shape of the 'allow' decision node: circle, square or diamond."
+value = "circle"
+
+[web.graph.theme.kinds.advise.color]
+doc = "Colour of the 'advise' decision node on the Live screen."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.theme.kinds.advise.shape]
+doc = "Marker shape of the 'advise' decision node: circle, square or diamond."
+value = "diamond"
+
+[web.graph.theme.kinds.inject.color]
+doc = "Colour of the 'inject' decision node on the Live screen."
+value = "oklch(0.76 0.13 245)"
+
+[web.graph.theme.kinds.inject.shape]
+doc = "Marker shape of the 'inject' decision node: circle, square or diamond."
+value = "square"
+
+[web.graph.theme.kinds.block.color]
+doc = "Colour of the 'block' decision node on the Live screen."
+value = "oklch(0.69 0.19 12)"
+
+[web.graph.theme.kinds.block.shape]
+doc = "Marker shape of the 'block' decision node: circle, square or diamond."
+value = "diamond"

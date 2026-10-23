@@ -3,6 +3,7 @@
 //! with its action menu, the selected-agent panel with details and the activity feed; the graph is a styled placeholder.
 //! Data arrives as one snapshot and then only changes (server-sent events); the tier (full or lite) picks the push rate and
 //! whether anything moves.
+mod live;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -178,6 +179,7 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     let Ok(es) = EventSource::new(&format!("{STREAM_PATH}?mode={tier}")) else { return };
     let on_snapshot = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         if let Some(s) = e.data().as_string().and_then(|t| serde_json::from_str::<Snapshot>(&t).ok()) {
+            live::on_snapshot(&s);
             ctx.snap.set(s);
             ctx.conn.set(Conn::Live);
         }
@@ -186,6 +188,7 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     on_snapshot.forget();
     let on_delta = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         if let Some(d) = e.data().as_string().and_then(|t| serde_json::from_str::<Delta>(&t).ok()) {
+            live::on_delta(&d);
             ctx.snap.update(|s| apply(s, d, feed_max));
             ctx.conn.set(Conn::Live);
         }
@@ -341,6 +344,7 @@ fn choose(ctx: Ctx, boot: &Boot, id: String, action: &str) {
 
 #[component]
 fn App(boot: Boot) -> impl IntoView {
+    live::init(&boot);
     let boot = Arc::new(boot);
     provide_context(boot.clone());
     let ctx = Ctx {
@@ -356,6 +360,7 @@ fn App(boot: Boot) -> impl IntoView {
     let conn = ctx.conn;
     let selected = ctx.selected;
     let graph = RwSignal::new(false);
+    let live_on = RwSignal::new(false);
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);
@@ -437,13 +442,14 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <a class="nav-item on" href="/" aria-current="page"><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></a>
+                    <button type="button" class=move || if live_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| live_on.set(false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| live_on.set(true)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
                     <span class="nav-item soft"><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></span>
                 </nav>
-                <main class="main">
+                <main class="main" hidden=move || live_on.get()>
                     <div class="main-head">
                         <h1>{tx("title_agents")}</h1>
                         <span class="counts">
@@ -481,7 +487,10 @@ fn App(boot: Boot) -> impl IntoView {
                         <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
                     </section>
                 </main>
-                <aside class="detail" aria-label=tx("selected_label")>
+                <main class="main live-main" hidden=move || !live_on.get()>
+                    <live::LiveScreen mode=mode active=live_on.into() />
+                </main>
+                <aside class="detail" aria-label=tx("selected_label") hidden=move || live_on.get()>
                     {move || match current.get() {
                         None => view! { <p class="empty">{tx("pick_prompt")}</p> }.into_any(),
                         Some(a) => {

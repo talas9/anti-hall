@@ -1,0 +1,28 @@
+/* The Live screen (ah-web/ui live.rs). Tokens come from app.css; the graph component's chrome is mapped onto them here. */
+button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
+.live-main { gap: 10px; }
+.live { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
+.live-stats { display: grid; grid-template-columns: minmax(120px, 160px) minmax(120px, 160px) minmax(0, 1fr); gap: 8px; }
+.live-block { color: var(--red); }
+.live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
+.live-top li { display: flex; gap: 6px; }
+.live-top li b { color: var(--cyan); font-weight: 600; }
+.live-cols { display: grid; grid-template-columns: repeat(4, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+.live-graph { flex: 1 1 auto; min-height: 420px; height: calc(100vh - 430px); }
+.live .ahg {
+  --ah-line: var(--line); --ah-panel: var(--panel); --ah-text: var(--text); --ah-muted: var(--muted);
+  --ah-bad: var(--red); --ah-ok: var(--green); --ah-warn: var(--amber);
+  --ah-mono: var(--font-mono); --ah-sans: var(--font-ui);
+}
+.live-timeline { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 8px 12px; }
+.live-timeline ol, .live-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 148px; overflow: auto; }
+.tl { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); min-width: 0; }
+.tl i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--tl, var(--idle)); box-shadow: 0 0 8px var(--tl, transparent); }
+.tl-check { color: var(--text-hi); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-ev, .tl-rule { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-age { margin-left: auto; color: var(--dim); white-space: nowrap; }
+.tl-allow { --tl: var(--green); } .tl-advise { --tl: var(--amber); } .tl-block { --tl: var(--red); }
+.tl-inject { --tl: oklch(0.76 0.13 245); } .tl-travel { --tl: var(--cyan); } .tl-action { --tl: var(--violet); }
+.live-panel { display: flex; flex-direction: column; gap: 6px; }
+.live-panel .live-rows { max-height: none; }
+@media (max-width: 720px) { .live-stats { grid-template-columns: 1fr 1fr; } .live-top { grid-column: 1 / -1; } .live-cols { display: none; } }
