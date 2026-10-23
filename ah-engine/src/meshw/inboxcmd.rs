@@ -8,7 +8,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::is_safe_id;
 use crate::meshw::send::{Answer, Effect, resolve_mesh_target, retired_redirect_exists};
 use crate::meshw::{cursors, ident};

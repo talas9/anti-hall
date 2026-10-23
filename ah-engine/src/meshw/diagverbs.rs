@@ -163,7 +163,7 @@ fn diagnose_store(inv: &Inv, repo_key: &str) -> R<Diagnosis> {
     let roster = match reader.roster() {
         Ok(r) => r,
         Err(e) => {
-            crate::debug::violated("meshw", &defaults::render("mesh_write.msg_registry_unreadable", &[("error", &e)]));
+            crate::debug::violated("meshw", &defaults::render("mesh_write.msg_registry_unreadable_log", &[("error", &e)]));
             return Ok(Diagnosis {
                 rows: Vec::new(),
                 mesh_targets: Vec::new(),

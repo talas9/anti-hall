@@ -37,7 +37,7 @@ use crate::dssup::ingest::{import, wal};
 use crate::meshw::appdb::{self, CacheWrite};
 use crate::meshw::common::{Inv, Obj, s};
 use crate::meshw::hivecontrol;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{self, devswarm_root};
 use crate::meshw::store::{CursorPut, MeshStore, RegistryRow};
 use crate::meshw::{summary, tick, union};

@@ -129,7 +129,7 @@ value = "heartbeat step degraded: site={site}, reason={reason}"
 doc = "The log line of a store the engine does not read (the journal backend): the unread count then comes from the NDJSON inbox alone. {dir} and {backend}."
 value = "mesh store not read: dir={dir}, backend={backend}"
 
-[mesh_write.msg_registry_unreadable]
+[mesh_write.msg_registry_unreadable_log]
 doc = "The log line of a registry read that failed (diagnose and healthcheck then report the store unavailable); {error}."
 value = "mesh registry unreadable: {error}"
 
