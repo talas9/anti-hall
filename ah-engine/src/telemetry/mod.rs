@@ -19,6 +19,7 @@ pub mod persist;
 pub mod recorder;
 pub mod report;
 pub mod rollup;
+pub mod spawn_result;
 pub mod route;
 
 use crate::checks::Verdict;

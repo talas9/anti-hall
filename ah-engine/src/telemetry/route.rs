@@ -215,6 +215,16 @@ pub fn net(i: &NetInput<'_>) -> Value {
     let routing_net = saved - spent_up;
     let priced_any = !chains.is_empty() && unpriced < chains.len() as u64;
     let net_numer = routing_net - injection.unwrap_or(0) - jev_uc as i128 * 1_000_000;
+    // a spender with no data is not measured, which is not the same as costing nothing
+    let not_measured = |name: &str, measured: bool| (!measured).then(|| defaults::render("msg.net_not_measured", &[("name", &name)]));
+    let gaps: Vec<String> = [
+        not_measured(defaults::text("telemetry.net_name_injection"), i.injected_bytes > 0),
+        not_measured(defaults::text("telemetry.net_name_jev"), !jev.is_empty()),
+        not_measured(defaults::text("telemetry.net_name_routing"), !chains.is_empty()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let have_prices = priced_any || injection.is_some() || jev_uc > 0;
     json!({
         "label": "estimate",
@@ -240,13 +250,14 @@ pub fn net(i: &NetInput<'_>) -> Value {
         "spenders": {
             "injected_bytes": i.injected_bytes,
             "injected_tokens_estimate": inj_tokens,
-            "injection_usd": injection.map(usd),
+            "injection_usd": if i.injected_bytes > 0 { injection.map(usd) } else { None },
             "injection_priced_as": parent,
             "jev_calls": jev.len(),
-            "jev_usd": jev_uc as f64 / 1e6,
+            "jev_usd": if jev.is_empty() { None } else { Some(jev_uc as f64 / 1e6) },
         },
         "net_usd": if have_prices { json!(usd(net_numer)) } else { Value::Null },
-        "complete": unpriced == 0 && (i.injected_bytes == 0 || injection.is_some()),
+        "not_measured": gaps,
+        "complete": gaps.is_empty() && unpriced == 0 && (i.injected_bytes == 0 || injection.is_some()),
     })
 }
 

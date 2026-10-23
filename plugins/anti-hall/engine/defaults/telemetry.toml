@@ -177,6 +177,26 @@ value = "-"
 doc = "The reason stored with a no-answer impact row when the check was dropped outside the dispatcher (which names its own: shed, client_gone, hard_deadline, check_deferred, cpu_budget)."
 value = "no_answer"
 
+[telemetry.spawn_result]
+doc = "The spawn-result event the engine records itself when an agent launch finishes (PostToolUse of the agent tool), linked to the route event by the same spawn key: the key is rebuilt from the same payload fields the routing check hashes (session, calling agent, subagent type, prompt prefix of model_routing.key_prefix_chars characters; joined with sep). event / tool: which call; session, agent, input, prompt, subagent_type: payload fields; response, usage, model: fields of the tool response (model = the model the agent ran on); in, out, cache_read, cache_write: usage fields; check: the h label of the recorded event; key_prefix: the key's text prefix."
+value = { event = "PostToolUse", tool = "Agent", session = "session_id", agent = "agent_id", input = "tool_input", prompt = "prompt", subagent_type = "subagent_type", response = "tool_response", usage = "usage", model = "resolvedModel", in = "input_tokens", out = "output_tokens", cache_read = "cache_read_input_tokens", cache_write = "cache_creation_input_tokens", check = "model-routing", key_prefix = "spawn-", sep = "\u001f" }
+
+[telemetry.injection_kinds]
+doc = "The telemetry row kinds whose injected bytes count as context the engine put in front of the model: check (what each check's advisory or context reply injected) and spill (a reply spilled to a file). The old whole-hook kind is left out: nothing records it any more."
+value = ["check", "spill"]
+
+[telemetry.net_name_injection]
+doc = "Name of the injected-context spender in the NET figure's not-measured list."
+value = "injected context"
+
+[telemetry.net_name_jev]
+doc = "Name of the Jev spender in the NET figure's not-measured list."
+value = "Jev cost"
+
+[telemetry.net_name_routing]
+doc = "Name of the routing saving in the NET figure's not-measured list (no routing decision is linked to a spawn result yet)."
+value = "model routing"
+
 [telemetry.net_method]
 doc = "How the NET figure of `impact` is computed, shown next to it."
 value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"
@@ -560,8 +580,10 @@ value = { counted = "exact" }
 
 [impact.price_table]
 doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. A model with no entry is reported as `no price for model X` and left out of every figure, never guessed."
-# list prices for Opus 5.5 in USD per million tokens: $4 input, $20 output, $0.20 cache read, $8 cache write
-value = { date = "2026-10-05", source = "fitted exactly on 480 B1 runs, 2026-10-05", models = { opus-5-5 = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 8000000 } } }
+# keyed by FAMILY word so both the aliases route events carry (opus, sonnet, haiku, fable) and full ids (claude-opus-5-5) match.
+# list prices in USD per million tokens (cached 2026-10-06): opus $4 in / $20 out / $0.20 cache read; sonnet $2 / $10 / $0.20; haiku $0.10 / $0.50 (prompts up to 100K);
+# fable $10 / $50 / $0.25. Cache write is 2x input for every family (the ratio the opus figure was fitted at); haiku cache read is 0.1x input. Those two are derived, not quoted.
+value = { date = "2026-10-23", source = "list prices of the current generation (opus fitted exactly on 480 B1 runs, 2026-10-05); haiku cache read and every cache write derived from input price", models = { opus = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 8000000 }, sonnet = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 200000, cache_write_uc = 4000000 }, haiku = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 200000 }, fable = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 20000000 } } }
 
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."

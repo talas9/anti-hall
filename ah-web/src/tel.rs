@@ -749,12 +749,16 @@ fn waterfall(raw: &Raw, c: &TelCfg) -> Vec<Step> {
     if net.is_null() {
         return Vec::new();
     }
+    // a spender with no data is shown as not measured, not as a zero
     let step = |label: &str, kind: &str, usd: f64| Step { label: c.text(label), kind: kind.into(), usd };
+    let step_if = |label: &str, kind: &str, v: &Value| {
+        if v.is_null() { Step { label: format!("{} ({})", c.text(label), c.text("impact_not_measured")), kind: kind.into(), usd: 0.0 } } else { step(label, kind, num(v)) }
+    };
     let sp = &net["spenders"];
     let measured: f64 = raw.impact["savings"]["measured_benchmarks"].as_array().map_or(0.0, |a| a.iter().map(|b| num(&b["usd"])).sum());
     vec![
-        step("impact_jev_cost", "spent", num(&sp["jev_usd"])),
-        step("impact_injection", "spent", num(&sp["injection_usd"])),
+        step_if("impact_jev_cost", "spent", &sp["jev_usd"]),
+        step_if("impact_injection", "spent", &sp["injection_usd"]),
         step("impact_routing_up", "spent", num(&net["routing"]["spent_up_usd"])),
         step("impact_routing_saved", "prevented", num(&net["routing"]["saved_usd"])),
         step("impact_measured_savings", "prevented", measured),

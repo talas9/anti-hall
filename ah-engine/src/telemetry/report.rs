@@ -75,9 +75,10 @@ fn window_rows(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u
     rows
 }
 
-/// Bytes injected into model context by hooks in `rows` (the whole-hook rows; per-check `ib` is attribution, not an addition).
+/// Bytes injected into model context in `rows`: the kinds `telemetry.injection_kinds` lists (checks and spills).
 fn hook_injected(rows: &[DayRow]) -> u64 {
-    rows.iter().filter(|r| r.delta.k == "hook").map(|r| r.delta.ib_sum).sum()
+    let kinds = defaults::list("telemetry.injection_kinds");
+    rows.iter().filter(|r| kinds.contains(&r.delta.k.as_str())).map(|r| r.delta.ib_sum).sum()
 }
 
 fn add(m: &mut Map<String, Value>, key: &str, by: u64) {

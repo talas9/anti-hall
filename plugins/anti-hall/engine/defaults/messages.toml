@@ -667,6 +667,10 @@ value = "{command} is planned ({decision}) and is not implemented yet"
 doc = "Printed when a --window / --since value is not a whole number of days (the telemetry data is kept in per-day buckets, so hours and minutes cannot be honoured). Placeholder: {window}."
 value = "unsupported window '{window}': telemetry is kept per day, so use a number of days like 7d (or just 7)"
 
+[msg.net_not_measured]
+doc = "Listed in net.not_measured for a part of the NET figure that has no data in the window. Placeholder: {name}."
+value = "{name}: not measured"
+
 [msg.cli_unknown]
 doc = "Printed to stderr for an unknown command. Placeholder: {command}."
 value = "ah-engine: unknown command '{command}'"
