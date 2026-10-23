@@ -7,6 +7,7 @@ mod health;
 mod live;
 mod manage;
 mod ops;
+mod route;
 mod tel;
 #[cfg(feature = "full")]
 mod apex;
@@ -426,7 +427,7 @@ fn App(boot: Boot) -> impl IntoView {
     let live_on = RwSignal::new(false);
     let health_on = RwSignal::new(false);
     let topo_on = RwSignal::new(false);
-    let manage_on = RwSignal::new(manage::hash().is_some());
+    let manage_on = RwSignal::new(false);
     // 0 = no ops screen, 1 accounts, 2 updates, 3 logs, 4 telemetry, 5 impact
     let ops_screen = RwSignal::new(0u8);
     // the agents view is shown unless another screen is chosen
@@ -438,6 +439,30 @@ fn App(boot: Boot) -> impl IntoView {
         manage_on.set(manage);
         ops_screen.set(ops);
     };
+    // the screen is part of the address: a reload, a pasted link and back/forward land on the same one
+    let screens: [(&str, [bool; 4], u8); 10] = [
+        ("route_agents", [false; 4], 0),
+        ("route_live", [true, false, false, false], 0),
+        ("route_telemetry", [false; 4], 4),
+        ("route_impact", [false; 4], 5),
+        ("route_health", [false, true, false, false], 0),
+        ("route_topology", [false, false, true, false], 0),
+        ("route_logs", [false; 4], 3),
+        ("route_settings", [false, false, false, true], 0),
+        ("route_accounts", [false; 4], 1),
+        ("route_updates", [false; 4], 2),
+    ];
+    let screen_now = move || {
+        let state = ([live_on.get(), health_on.get(), topo_on.get(), manage_on.get()], ops_screen.get());
+        screens.iter().find(|(_, f, o)| *f == state.0 && *o == state.1).map(|(k, _, _)| tx(k)).unwrap_or_default()
+    };
+    let apply_route = move |r: route::Route| {
+        let (_, f, o) = screens.iter().find(|(k, _, _)| tx(k) == r.screen).copied().unwrap_or(screens[0]);
+        go(f[0], f[1], f[2], f[3], o);
+    };
+    apply_route(route::current());
+    route::on_change(apply_route);
+    Effect::new(move |_| route::enter(&screen_now(), manage_on.get()));
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);

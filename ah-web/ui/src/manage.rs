@@ -356,11 +356,10 @@ fn load(store: Store) {
     });
 }
 
-/// `#settings` or `#settings/<tab>` in the address opens this screen (and the tab, by its number in the tab row).
+/// The tab the address names (`#settings/<tab>`, by its number in the tab row), when it is on this screen.
 pub fn hash() -> Option<Option<usize>> {
-    let h = web_sys::window()?.location().hash().ok()?;
-    let rest = h.strip_prefix("#settings")?;
-    Some(rest.strip_prefix('/').and_then(|n| n.parse().ok()))
+    let r = crate::route::current();
+    (r.screen == crate::tx("route_settings")).then(|| r.seg.parse().ok())
 }
 
 /// The screen. Nothing is fetched or drawn while it is not the chosen one.
@@ -389,6 +388,7 @@ fn ManageLoader() -> impl IntoView {
 fn ManageBody() -> impl IntoView {
     let store = Store { data: RwSignal::new(None), hist: RwSignal::new(None) };
     let tab = RwSignal::new(hash().flatten().unwrap_or(0));
+    Effect::new(move |_| crate::route::set_seg(&tab.get().to_string()));
     load(store);
     let reload = Callback::new(move |()| load(store));
     let tabs = ["tab_settings", "tab_config", "tab_checks", "tab_jev", "tab_history"];

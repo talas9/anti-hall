@@ -476,6 +476,7 @@ fn TelBody() -> impl IntoView {
     let failed = RwSignal::new(false);
     poll(TELEMETRY_PATH, doc, |d: &TelDoc| d.ui.refresh_s, failed);
     let sel = RwSignal::new(String::new());
+    crate::route::bind_text(sel, "telemetry.kpi");
     view! {
         <div class="main-head">
             <h1>{tx("title_telemetry")}</h1>
@@ -697,6 +698,8 @@ fn cell_has(c: &Cell, q: &str) -> bool {
 fn Tables(doc: RwSignal<Option<TelDoc>>) -> impl IntoView {
     let tab = RwSignal::new(String::new());
     let filter = RwSignal::new(String::new());
+    crate::route::bind_text(tab, "telemetry.table");
+    crate::route::bind_text(filter, "telemetry.filter");
     let sort: RwSignal<(usize, bool)> = RwSignal::new((usize::MAX, false));
     let shown = RwSignal::new(0usize);
     view! {
@@ -797,6 +800,7 @@ fn ImpactBody() -> impl IntoView {
     let failed = RwSignal::new(false);
     poll(IMPACT_PATH, doc, |d: &ImpactDoc| d.ui.refresh_s, failed);
     let period = RwSignal::new(0usize);
+    crate::route::bind_num(period, "impact.period");
     view! {
         <div class="main-head">
             <h1>{tx("title_impact")}</h1>

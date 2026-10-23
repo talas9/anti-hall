@@ -400,6 +400,10 @@ fn LogsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl IntoV
     let min_level = RwSignal::new(0usize);
     let comp = RwSignal::new(String::new());
     let query = RwSignal::new(String::new());
+    crate::route::bind_num(min_level, "logs.level");
+    crate::route::bind_text(comp, "logs.component");
+    crate::route::bind_text(query, "logs.search");
+    crate::route::bind_text(st.src, "logs.source");
     let list = NodeRef::<leptos::html::Div>::new();
     // the first source and the line cap, once the numbers are here
     Effect::new(move |_| {
