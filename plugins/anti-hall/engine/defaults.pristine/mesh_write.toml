@@ -2946,3 +2946,11 @@ value = "meshw:refused"
 [mesh_write.site_committed_failure]
 doc = "Error code (site) for a mesh write that was committed and then failed before printing."
 value = "meshw:committed_failure"
+
+[mesh_write.msg_store_unopened_code]
+doc = "The text of a mesh partition's store that could not be opened. Placeholders: {id} (JSON-quoted) and {code} (the error code)."
+value = "store for workspace {id} could not be opened: {code}"
+
+[mesh_write.msg_store_unreadable_code]
+doc = "The text of a mesh partition's store that could not be read. Placeholders: {id} (JSON-quoted) and {code} (the reason)."
+value = "store for workspace {id} could not be fully read ({code})"

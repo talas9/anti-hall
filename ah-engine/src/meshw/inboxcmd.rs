@@ -62,7 +62,7 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
             o.put("ok", OVal::Bool(false))
                 .put("id", s(&id))
                 .put("reason", s(defaults::text("mesh_write.reason_store_unavailable")))
-                .put("error", s(&defaults::render("mesh_write.msg_store_unopened", &[("id", &q), ("code", &code)])))
+                .put("error", s(&defaults::render("mesh_write.msg_store_unopened_code", &[("id", &q), ("code", &code)])))
                 .put("repoKey", caller_key.as_deref().map_or(OVal::Null, s))
                 .put("storePath", OVal::Str(union::store_dir(&inv.home, &repo_key).to_string_lossy().into_owned()))
                 .put("cwd", s(&inv.cwd))

@@ -288,7 +288,7 @@ pub(crate) fn open_partition_ex(inv: &Inv, id: &str, desc: &OVal) -> R<Partition
     // the re-home of a workspace stranded in the legacy bucket moves rows: when it is due, the store side cannot be read as it stands
     if let Err(Defer(why)) = rehome_is_noop(inv, id) {
         let q = OVal::Str(id.to_string()).stringify();
-        let error = defaults::render("mesh_write.msg_store_unreadable", &[("id", &q), ("code", &why)]);
+        let error = defaults::render("mesh_write.msg_store_unreadable_code", &[("id", &q), ("code", &why)]);
         return Ok(PartitionOpen::Unavailable {
             why: Unavail::of(defaults::text("mesh_write.reason_store_unavailable"), error, Some(why)),
             store_key,
@@ -300,7 +300,7 @@ pub(crate) fn open_partition_ex(inv: &Inv, id: &str, desc: &OVal) -> R<Partition
             Ok(roster) => Ok(PartitionOpen::Open(Opened { repo_key: store_key, caller, reader, rows: ident::rows_of(&roster) })),
             Err(e) => {
                 let q = OVal::Str(id.to_string()).stringify();
-                let error = defaults::render("mesh_write.msg_store_unreadable", &[("id", &q), ("code", &e.to_string())]);
+                let error = defaults::render("mesh_write.msg_store_unreadable_code", &[("id", &q), ("code", &e.to_string())]);
                 Ok(PartitionOpen::Unavailable {
                     why: Unavail::of(
                         defaults::text("mesh_write.reason_store_unavailable"),
@@ -318,7 +318,7 @@ pub(crate) fn open_partition_ex(inv: &Inv, id: &str, desc: &OVal) -> R<Partition
                 _ => defaults::text("mesh_write.store_unknown_code").to_string(),
             };
             let q = OVal::Str(id.to_string()).stringify();
-            let error = defaults::render("mesh_write.msg_store_unopened", &[("id", &q), ("code", &code)]);
+            let error = defaults::render("mesh_write.msg_store_unopened_code", &[("id", &q), ("code", &code)]);
             Ok(PartitionOpen::Unavailable {
                 why: Unavail::of(defaults::text("mesh_write.reason_store_unavailable"), error, Some(code)),
                 store_key,
