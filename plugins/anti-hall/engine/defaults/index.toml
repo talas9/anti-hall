@@ -43,6 +43,7 @@ files = [
     "roles.toml",
     "broad_kill.toml",
     "burn.toml",
+    "uncommitted_guard.toml",
     "devswarm_gates.toml",
     "migrate.toml",
     "migrate_settings.toml",

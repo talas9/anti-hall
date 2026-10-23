@@ -1997,3 +1997,64 @@ fn the_parent_gate_and_the_child_role_decide_natively_when_no_launcher_can_be_na
         assert_eq!(handbacks("abandoned", &full), before + 1, "{check}: the dropped decision is counted abandoned at {site}");
     }
 }
+
+/// GH #270 burn breaker: a subagent with a fresh hard-flag marker is blocked on every tool except SendMessage and a plain git commit,
+/// push or status; the main session, a subagent without a marker and a stale marker are never blocked.
+#[test]
+fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_report() {
+    let h = home("burn-breaker");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    std::fs::write(format!("{dir}/a1.json"), json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+    std::fs::write(format!("{dir}/old.json"), json!({"ts": 1u64, "tokens": 3_500_000u64, "agent": "old"}).to_string()).unwrap();
+    let blocked = |p: Value| matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2);
+    let bash = |c: &str| json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+    assert!(blocked(json!({"tool_name": "Read", "agent_id": "a1", "tool_input": {"file_path": "/x"}})));
+    assert!(blocked(bash("cargo test")));
+    assert!(blocked(bash("git commit -m x; rm -rf y")));
+    assert!(blocked(bash("git status | tee out")));
+    assert!(blocked(bash("git commit -m \"$(rm -rf y)\"")));
+    for ok in ["git commit -m \"a; b & c\"", "git -C /w push origin v301/x", "git status --short", "git add -A"] {
+        assert!(!blocked(bash(ok)), "{ok}");
+    }
+    assert!(!blocked(json!({"tool_name": "SendMessage", "agent_id": "a1", "tool_input": {"to": "main"}})), "the report goes through");
+    assert!(!blocked(json!({"tool_name": "Read", "tool_input": {}})), "the main session is never blocked");
+    assert!(!blocked(json!({"tool_name": "Read", "agent_id": "other", "tool_input": {}})), "no marker, no block");
+    assert!(!blocked(json!({"tool_name": "Read", "agent_id": "old", "tool_input": {}})), "a stale marker is ignored");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// GH #270 uncommitted-work guard: a subagent's edit is blocked once its worktree holds 300 uncommitted lines, and allowed again after a commit.
+#[test]
+fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it() {
+    let h = home("uncommitted");
+    let e = env(&h);
+    let repo = format!("{h}/repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git").args(["-C", &repo, "-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(format!("{repo}/a.txt"), "x\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    let edit = |agent: Option<&str>| {
+        let mut p = json!({"tool_name": "Edit", "cwd": repo, "tool_input": {"file_path": "a.txt"}});
+        if let Some(a) = agent {
+            p["agent_id"] = json!(a);
+        }
+        run_forced("uncommitted-guard", &p, &e)
+    };
+    let blocked = |v: Option<Option<Verdict>>| matches!(v, Some(Some(Verdict::Exact(x))) if x.code == 2);
+    assert!(!blocked(edit(Some("s1"))), "a clean worktree");
+    std::fs::write(format!("{repo}/big.txt"), "line\n".repeat(400)).unwrap();
+    assert!(blocked(edit(Some("s1"))), "400 untracked lines");
+    assert!(!blocked(edit(None)), "the main session is never judged");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "work"]);
+    assert!(!blocked(edit(Some("s1"))), "a commit lifts the block at once");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}

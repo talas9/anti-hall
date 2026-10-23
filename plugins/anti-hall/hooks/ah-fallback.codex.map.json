@@ -22,7 +22,8 @@
     "merge-side-pick": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
     "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\""
+    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
+    "uncommitted-guard": "sh \"${PLUGIN_ROOT}/hooks/uncommitted-guard\""
   },
   "SessionStart": {
     "claude-cli-version": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/claude-cli-version.js\"",
