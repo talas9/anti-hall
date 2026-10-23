@@ -59,3 +59,6 @@
 
 /* agents tree: finished turn, a shell still running */
 .badge-idle { margin-left: 8px; padding: 1px 8px; border-radius: 999px; font: normal 10px var(--font-mono); letter-spacing: .02em; color: var(--idle); border: 1px solid color-mix(in oklch, var(--idle) 45%, transparent); background: color-mix(in oklch, var(--idle) 10%, transparent); }
+
+/* a button never wraps its label */
+.ops-btn { white-space: nowrap; flex: 0 0 auto; }

@@ -281,7 +281,7 @@ fn UpdatesScreen() -> impl IntoView {
             busy.set(false);
         });
     };
-    let (n1, n2, n3, n4) = (none.clone(), none.clone(), none.clone(), none.clone());
+    let (n1, n2, n3) = (none.clone(), none.clone(), none.clone());
     view! {
         <div class="main-head"><h1>{tx("ops_updates_title")}</h1></div>
         <p class="soft-note">{tx("ops_updates_hint")}</p>
@@ -290,9 +290,8 @@ fn UpdatesScreen() -> impl IntoView {
                 <dt>{tx("ops_ver_plugin")}</dt><dd>{if plugin.is_empty() { n1 } else { format!("v{plugin}") }}</dd>
                 <dt>{tx("ops_ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).unwrap_or_else(|| n2.clone())}</dd>
                 <dt>{tx("ops_ver_build")}</dt><dd>{move || pulse(|p| p.build_sha.clone()).unwrap_or_else(|| n3.clone())}</dd>
-                <dt>{tx("ops_ver_engine_plugin")}</dt><dd>{move || pulse(|p| p.plugin_version.clone()).map(|v| format!("v{v}")).unwrap_or_else(|| n4.clone())}</dd>
+                {move || pulse(|p| p.plugin_version.clone()).map(|v| view! { <dt>{tx("ops_ver_engine_plugin")}</dt><dd>{format!("v{v}")}</dd> })}
                 <dt>{tx("ops_ver_web")}</dt><dd>{format!("v{web}")}</dd>
-                <dt>{tx("ops_ver_hook")}</dt><dd>{none.clone()}</dd>
             </dl>
             <Show when=skew><p class="fb fb-bad" role="status">{tx("ops_skew")}</p></Show>
         </section>
