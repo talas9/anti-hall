@@ -23,7 +23,7 @@
 #           started from the old binary in the window), re-sync, release the hold, start the new binary, then verify: sha
 #           matches, the RUNNING daemon is a new process whose executable is the new binary, force-push probe blocked through
 #           the plugin root Claude runs, `status --json` running with no new defaults fallback since the start, defaults.error not
-#           rewritten, roots identical. A failed step prints the exact --rollback command; nothing is rolled back on its own.
+#           stamped after the new binary started (an error the old binary wrote in the commit window is not counted), roots identical. A failed step prints the exact --rollback command; nothing is rolled back on its own.
 #           Maintenance hold: the launcher's own "daemon down" marker (files.daemon_down_marker in the state dir) is set to a time
 #           in the future, so hooks pass through and start nothing while the engine is stopped and the binary is swapped. It
 #           carries a TTL (AH_DEPLOY_HOLD_TTL_S, refreshed at every step) so a crashed deploy can never leave the guards off.
@@ -404,6 +404,8 @@ daemon_pid() { # the pid in the run marker, if any
   case $p in ''|*[!0-9]*) return 0 ;; esac
   printf '%s' "$p"
 }
+# hook_client ROOT: the command that runs a hook the way the host does (hooks.json): the installed thin client, else the plugin's installer
+hook_client() { if [ -x "$ENGINE_DIR/bin/ah-hook" ]; then printf '%s' "$ENGINE_DIR/bin/ah-hook"; else printf 'sh %s' "$1/hooks/install.sh"; fi; }
 SEEN=
 note_pid() { p=$(daemon_pid); [ -n "$p" ] && SEEN="$SEEN $p"; return 0; }
 engine_stop() { ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$(printf '%s\n' "$ROOTS" | head -n 1); export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim "$BIN" stop >/dev/null 2>&1 ); }
@@ -498,8 +500,8 @@ verify_live() { # returns 0 when every check passes; prints each
   # lim reads stdin from /dev/null, so the probe feeds the payload through a file
   printf '%s' "$pl" >"$SCRATCH/probe.json"
   probe() { ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR CLAUDE_PLUGIN_ROOT=$PROBE_ROOT; export HOME AH_ENGINE_DIR CLAUDE_PLUGIN_ROOT
-      if [ -n "$TB" ]; then "$TB" -k 5 "$CALL_T" sh "$PROBE_ROOT/hooks/ah-hook.sh" PreToolUse <"$SCRATCH/probe.json" >/dev/null 2>&1
-      else sh "$PROBE_ROOT/hooks/ah-hook.sh" PreToolUse <"$SCRATCH/probe.json" >/dev/null 2>&1; fi ); }
+      if [ -n "$TB" ]; then "$TB" -k 5 "$CALL_T" $(hook_client "$PROBE_ROOT") PreToolUse <"$SCRATCH/probe.json" >/dev/null 2>&1
+      else $(hook_client "$PROBE_ROOT") PreToolUse <"$SCRATCH/probe.json" >/dev/null 2>&1; fi ); }
   probe; warm=$?
   blocked=0; n=0
   while [ "$n" -lt "$PROBE_N" ]; do probe && rcp=0 || rcp=$?; [ "$rcp" -eq 2 ] && blocked=$((blocked + 1)); n=$((n + 1)); done
@@ -525,9 +527,19 @@ verify_live() { # returns 0 when every check passes; prints each
       step "verify FAILED: launcher $lf cannot reach its script: $(head -c 200 "$lo" | tr '\n' ' ')"; ok=1
     else step "verify: launcher $lf reaches its script (rc $lrc)"; fi
   done
+  # defaults.error is one line "<epoch seconds> <text>" that every failed start overwrites. The OLD binary can write it in the commit
+  # window (new defaults, old binary: a key it does not know is missing), so only a line stamped from NEW_FROM on, a time taken
+  # after the last old process was stopped and before the new binary started, is the new binary's.
   de=$ENGINE_DIR/defaults.error
-  if [ "$(sha "$de")" = "$DE_BEFORE" ]; then step "verify: defaults.error not rewritten"
-  else step "verify FAILED: $de was written during the deploy: $(head -c 200 "$de" 2>/dev/null)"; ok=1; fi
+  det=$(awk 'NR == 1 {print $1; exit}' "$de" 2>/dev/null)
+  if [ ! -s "$de" ]; then step "verify: no defaults.error"
+  else
+    case $det in
+      ''|*[!0-9]*) step "verify FAILED: $de has no readable time stamp, so it cannot be told from the new binary's: $(head -c 200 "$de" 2>/dev/null)"; ok=1 ;;
+      *) if [ -n "${NEW_FROM:-}" ] && [ "$det" -lt "$NEW_FROM" ]; then step "verify: defaults.error is stamped $det, before the new binary started ($NEW_FROM): the old binary's, not counted"
+         else step "verify FAILED: $de was written by the new binary (stamped $det, started $NEW_FROM): $(head -c 200 "$de" 2>/dev/null)"; ok=1; fi ;;
+    esac
+  fi
   return $ok
 }
 
@@ -544,7 +556,7 @@ do_deploy() {
   note "3 binary: $BIN -> keep as $BIN.prev; install $NEW"
   note "4 integrity record (accept) with $ENGINE_DIR/bin/ah-hook integrity accept"
   note "5 stop AGAIN, re-sync every root, release the hold, start the new binary"
-  note "6 verify: sha, integrity record, roots identical after the re-sync, running daemon = new process on the new sha, force-push probe x$PROBE_N via $PROBE_ROOT, status running, no defaults fallback since the start, defaults.error unchanged"
+  note "6 verify: sha, integrity record, roots identical after the re-sync, running daemon = new process on the new sha, force-push probe x$PROBE_N via $PROBE_ROOT, status running, no defaults fallback since the start, no defaults.error stamped after the new binary started"
   if [ "$YES" != 1 ]; then note ""; note "dry run: nothing was changed. Add --yes to deploy."; exit 0; fi
   [ "$NEWSHA" = "$(sha "$BIN")" ] && note "(the new binary is identical to the live one: only the defaults change)"
 
@@ -553,7 +565,6 @@ do_deploy() {
   mkdir -p "$BK" || die "cannot create the backup dir $BK"
   DLOG=$BK/deploy.log; MAN=$BK/manifest.tsv; : >"$MAN"
   printf '%s\n' "$ts" >"$BK_ROOT/latest" 2>/dev/null
-  DE_BEFORE=$(sha "$ENGINE_DIR/defaults.error")
   step "deploy start: new sha $NEWSHA, backup $BK, scope $SCOPE"
   mkscratch
   note_pid
@@ -619,13 +630,17 @@ do_deploy() {
   engine_stop || step "second stop returned non-zero; continuing"
   wait_gone || fail_deploy "a daemon from before the swap is still running after the second stop (pid(s) $SEEN)"
   sync_all "re-sync defaults" "resync/" ""
+  # every process of the old binary is gone and the hold still keeps hooks from starting an engine: a defaults.error stamped from
+  # the next second on can only be the new binary's (verify_live)
+  sleep 1
+  NEW_FROM=$(now_s)
   hold_release
   step "maintenance hold released"
   step "start the new binary (warm-up hook call through $PROBE_ROOT)"
   ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR CLAUDE_PLUGIN_ROOT=$PROBE_ROOT; export HOME AH_ENGINE_DIR CLAUDE_PLUGIN_ROOT
     printf '%s' '{"session_id":"deploy-warm","cwd":"'"$SCRATCH"'","hook_event_name":"SessionStart"}' >"$SCRATCH/warm.json"
-    if [ -n "$TB" ]; then "$TB" -k 5 "$CALL_T" sh "$PROBE_ROOT/hooks/ah-hook.sh" SessionStart <"$SCRATCH/warm.json" >/dev/null 2>&1
-    else sh "$PROBE_ROOT/hooks/ah-hook.sh" SessionStart <"$SCRATCH/warm.json" >/dev/null 2>&1; fi ) || true
+    if [ -n "$TB" ]; then "$TB" -k 5 "$CALL_T" $(hook_client "$PROBE_ROOT") SessionStart <"$SCRATCH/warm.json" >/dev/null 2>&1
+    else $(hook_client "$PROBE_ROOT") SessionStart <"$SCRATCH/warm.json" >/dev/null 2>&1; fi ) || true
   w=0; while [ "$w" -lt "$CALL_T" ] && { dp=$(daemon_pid); [ -z "$dp" ] || ! kill -0 "$dp" 2>/dev/null; }; do sleep 1; w=$((w + 1)); done
   DT_START=$(num_in_section "$( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$(printf '%s\n' "$ROOTS" | head -n 1); export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim "$BIN" status --json 2>/dev/null )" defaults total)
 
