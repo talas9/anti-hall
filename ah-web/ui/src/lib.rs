@@ -1,14 +1,17 @@
 //! The Command Center page. Client-side rendered; every label comes from the boot data the server injects from the plugin's
-//! `web.toml`, so this file carries no text of its own. Slice 1: the header, the live agent tree and the selected-agent
-//! panel; the graph, the activity feed and the message controls are styled placeholders.
-use ah_web_proto::{Agent, Boot, Snapshot, BOOT_ELEMENT_ID, SNAPSHOT_EVENT, STREAM_PATH};
+//! `web.toml`, so this file carries no text of its own. Slice 2: the header (engine vitals, tier switch), the live agent tree
+//! with its action menu, the selected-agent panel with details and the activity feed; the graph is a styled placeholder.
+//! Data arrives as one snapshot and then only changes (server-sent events); the tier (full or lite) picks the push rate and
+//! whether anything moves.
+use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{EventSource, MessageEvent};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{EventSource, MessageEvent, RequestInit, Response};
 
 /// Connection state of the event stream.
 #[derive(Clone, Copy, PartialEq)]
@@ -108,19 +111,91 @@ fn flatten(boot: &Boot, agents: &[Agent]) -> Vec<(String, usize)> {
     out
 }
 
-fn connect(snap: RwSignal<Snapshot>, conn: RwSignal<Conn>) {
-    let Ok(es) = EventSource::new(STREAM_PATH) else { return };
+/// What the person last did with an action: the agent, the action name and how it went.
+#[derive(Clone, PartialEq)]
+struct Feedback {
+    id: String,
+    action: String,
+    phase: Phase,
+    message: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Running,
+    Done,
+    Failed,
+}
+
+/// The signals every part of the page shares.
+#[derive(Clone, Copy)]
+struct Ctx {
+    snap: RwSignal<Snapshot>,
+    conn: RwSignal<Conn>,
+    selected: RwSignal<Option<String>>,
+    feedback: RwSignal<Option<Feedback>>,
+    /// An action waiting for the person's yes: (agent id, action name).
+    confirm: RwSignal<Option<(String, String)>>,
+    /// The agent whose details are open and what the tracker said (None while loading).
+    detail: RwSignal<Option<(String, Option<Detail>)>>,
+}
+
+/// Fold a delta into the snapshot. The server merges everything the stream missed into one delta, so a higher sequence is complete.
+fn apply(s: &mut Snapshot, d: Delta, feed_max: usize) {
+    if d.seq <= s.seq {
+        return;
+    }
+    s.seq = d.seq;
+    if let Some(ok) = d.engine_ok {
+        s.engine_ok = ok;
+    }
+    if let Some(g) = d.generated_ms {
+        s.generated_ms = g;
+    }
+    if d.pulse.is_some() {
+        s.pulse = d.pulse;
+    }
+    if !d.removed.is_empty() {
+        s.agents.retain(|a| !d.removed.contains(&a.id));
+    }
+    for a in d.upsert {
+        match s.agents.iter_mut().find(|x| x.id == a.id) {
+            Some(x) => *x = a,
+            None => s.agents.push(a),
+        }
+    }
+    s.feed.extend(d.feed);
+    let over = s.feed.len().saturating_sub(feed_max);
+    s.feed.drain(..over);
+}
+
+/// Open the event stream for `tier` (`full` or `lite`) and keep `snap` current; the previous stream, if any, is closed first.
+fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<EventSource>, LocalStorage>) {
+    if let Some(old) = current.get_value() {
+        old.close();
+    }
+    ctx.conn.set(Conn::Connecting);
+    let Ok(es) = EventSource::new(&format!("{STREAM_PATH}?mode={tier}")) else { return };
     let on_snapshot = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         if let Some(s) = e.data().as_string().and_then(|t| serde_json::from_str::<Snapshot>(&t).ok()) {
-            snap.set(s);
-            conn.set(Conn::Live);
+            ctx.snap.set(s);
+            ctx.conn.set(Conn::Live);
         }
     });
     let _ = es.add_event_listener_with_callback(SNAPSHOT_EVENT, on_snapshot.as_ref().unchecked_ref());
     on_snapshot.forget();
-    let on_error = Closure::<dyn FnMut()>::new(move || conn.set(Conn::Reconnecting));
+    let on_delta = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+        if let Some(d) = e.data().as_string().and_then(|t| serde_json::from_str::<Delta>(&t).ok()) {
+            ctx.snap.update(|s| apply(s, d, feed_max));
+            ctx.conn.set(Conn::Live);
+        }
+    });
+    let _ = es.add_event_listener_with_callback(DELTA_EVENT, on_delta.as_ref().unchecked_ref());
+    on_delta.forget();
+    let on_error = Closure::<dyn FnMut()>::new(move || ctx.conn.set(Conn::Reconnecting));
     es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
     on_error.forget();
+    current.set_value(Some(es));
 }
 
 fn set_theme(dark: bool) {
@@ -141,19 +216,159 @@ fn stored_dark() -> Option<bool> {
     }
 }
 
+fn stored_mode() -> Option<String> {
+    let st = web_sys::window()?.local_storage().ok().flatten()?;
+    st.get_item("ah-mode").ok().flatten().filter(|m| ["auto", "full", "lite"].contains(&m.as_str()))
+}
+
+fn store_mode(mode: &str) {
+    if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = st.set_item("ah-mode", mode);
+    }
+}
+
+/// The tier a mode setting means now: `auto` is lite when the browser asks for reduced motion, else full.
+fn tier_of(mode: &str) -> &'static str {
+    match mode {
+        "lite" => "lite",
+        "full" => "full",
+        _ => {
+            let reduced = web_sys::window().and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten()).is_some_and(|m| m.matches());
+            if reduced { "lite" } else { "full" }
+        }
+    }
+}
+
+fn set_tier_attr(tier: &str) {
+    if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
+        let _ = root.set_attribute("data-mode", tier);
+    }
+}
+
+/// Milliseconds since the epoch, from the browser's clock.
+fn now_ms() -> u64 {
+    web_sys::window().and_then(|w| w.performance()).map_or(0, |p| (p.time_origin() + p.now()) as u64)
+}
+
+/// "12s", "3m" ... since `ts_ms`, followed by the "ago" label.
+fn since(ts_ms: u64) -> String {
+    let s = now_ms().saturating_sub(ts_ms) / 1000;
+    if s < 5 {
+        return tx("just_now");
+    }
+    let age = if s < 60 { format!("{s}s") } else if s < 3600 { format!("{}m", s / 60) } else { format!("{}h", s / 3600) };
+    format!("{age} {}", tx("ago"))
+}
+
+/// The pill colour class for `v` against its warn and bad limits.
+fn level(v: u64, warn: u64, bad: u64) -> &'static str {
+    if v >= bad {
+        "pill pill-bad"
+    } else if v >= warn {
+        "pill pill-warn"
+    } else {
+        "pill pill-ok"
+    }
+}
+
+fn compact(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else if n >= 10_000 {
+        format!("{}k", n / 1000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// POST `req` to the server and read its answer.
+async fn post_action(req: &ActionReq) -> Result<ActionRes, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&JsValue::from_str(&serde_json::to_string(req).map_err(|e| e.to_string())?));
+    let headers = web_sys::Headers::new().map_err(|_| "headers")?;
+    headers.set("Content-Type", "application/json").map_err(|_| "headers")?;
+    init.set_headers(&headers);
+    let resp = JsFuture::from(window.fetch_with_str_and_init(ACTION_PATH, &init)).await.map_err(|_| "network")?;
+    let resp: Response = resp.dyn_into().map_err(|_| "response")?;
+    let text = JsFuture::from(resp.text().map_err(|_| "body")?).await.map_err(|_| "body")?.as_string().unwrap_or_default();
+    serde_json::from_str(&text).map_err(|_| text.chars().take(120).collect())
+}
+
+async fn get_detail(id: &str) -> Result<Detail, String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let resp = JsFuture::from(window.fetch_with_str(&format!("{DETAIL_PATH}{id}"))).await.map_err(|_| "network")?;
+    let resp: Response = resp.dyn_into().map_err(|_| "response")?;
+    let text = JsFuture::from(resp.text().map_err(|_| "body")?).await.map_err(|_| "body")?.as_string().unwrap_or_default();
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+fn open_detail(ctx: Ctx, id: String) {
+    ctx.selected.set(Some(id.clone()));
+    ctx.detail.set(Some((id.clone(), None)));
+    leptos::task::spawn_local(async move {
+        let d = get_detail(&id).await.unwrap_or_default();
+        ctx.detail.set(Some((id, Some(d))));
+    });
+}
+
+/// Run `action` on `id` now and show how it went next to the menu.
+fn run_action(ctx: Ctx, id: String, action: String, confirmed: bool) {
+    ctx.feedback.set(Some(Feedback { id: id.clone(), action: action.clone(), phase: Phase::Running, message: String::new() }));
+    leptos::task::spawn_local(async move {
+        let req = ActionReq { id: id.clone(), action: action.clone(), confirmed };
+        let (phase, message) = match post_action(&req).await {
+            Ok(r) if r.ok => (Phase::Done, r.message),
+            Ok(r) => (Phase::Failed, r.message),
+            Err(e) => (Phase::Failed, e),
+        };
+        ctx.feedback.set(Some(Feedback { id, action, phase, message }));
+    });
+}
+
+/// The click on a menu entry: details open locally, an action that asks first opens the confirmation, the rest run.
+fn choose(ctx: Ctx, boot: &Boot, id: String, action: &str) {
+    let Some(def) = boot.actions.iter().find(|a| a.name == action) else { return };
+    if def.local {
+        open_detail(ctx, id);
+    } else if def.confirm {
+        ctx.confirm.set(Some((id, action.to_string())));
+    } else {
+        run_action(ctx, id, action.to_string(), false);
+    }
+}
+
 #[component]
 fn App(boot: Boot) -> impl IntoView {
     let boot = Arc::new(boot);
     provide_context(boot.clone());
-    let snap = RwSignal::new(Snapshot::default());
-    let conn = RwSignal::new(Conn::Connecting);
-    let selected: RwSignal<Option<String>> = RwSignal::new(None);
+    let ctx = Ctx {
+        snap: RwSignal::new(Snapshot::default()),
+        conn: RwSignal::new(Conn::Connecting),
+        selected: RwSignal::new(None),
+        feedback: RwSignal::new(None),
+        confirm: RwSignal::new(None),
+        detail: RwSignal::new(None),
+    };
+    provide_context(ctx);
+    let snap = ctx.snap;
+    let conn = ctx.conn;
+    let selected = ctx.selected;
     let graph = RwSignal::new(false);
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);
     }
-    connect(snap, conn);
+    // the tier: the person's choice (kept in the browser), else the configured start; the stream follows it live
+    let mode = RwSignal::new(stored_mode().unwrap_or_else(|| boot.mode.clone()));
+    let stream: StoredValue<Option<EventSource>, LocalStorage> = StoredValue::new_local(None);
+    let feed_max = boot.feed_max;
+    Effect::new(move |_| {
+        let tier = tier_of(&mode.get());
+        set_tier_attr(tier);
+        connect(ctx, tier, feed_max, stream);
+    });
 
     let by_id = Memo::new(move |_| snap.with(|s| s.agents.iter().map(|a| (a.id.clone(), a.clone())).collect::<HashMap<_, _>>()));
     let b2 = boot.clone();
@@ -171,6 +386,20 @@ fn App(boot: Boot) -> impl IntoView {
         let id = selected.get().or_else(|| rows.with(|r| r.first().map(|(i, _)| i.clone())));
         id.and_then(|i| by_id.with(|m| m.get(&i).cloned()))
     });
+    let lim = boot.limits.clone();
+    let pill = move |pick: fn(&Pulse) -> u64, warn: u64, bad: u64, label: &'static str, fmt: fn(u64) -> String| {
+        view! {
+            <span class=move || snap.with(|s| s.pulse.as_ref().map_or("pill", |p| level(pick(p), warn, bad)))>
+                {tx(label)} " " {move || snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| fmt(pick(p))))}
+            </span>
+        }
+    };
+    let PulseLimits { cpu_warn_permille, cpu_bad_permille, mem_warn_mb, mem_bad_mb, err_warn, err_bad } = lim;
+    let cpu_pill = pill(|p| p.cpu_permille.unwrap_or(0), cpu_warn_permille, cpu_bad_permille, "pill_cpu", |v| format!("{:.1}%", v as f64 / 10.0));
+    let mem_pill = pill(|p| p.rss_kb / 1024, mem_warn_mb, mem_bad_mb, "pill_mem", |v| format!("{v} MB"));
+    let req_pill = pill(|p| p.requests, u64::MAX, u64::MAX, "pill_req", compact);
+    let err_pill = pill(|p| p.errors, err_warn, err_bad, "pill_err", compact);
+    let b3 = boot.clone();
 
     view! {
         <div class="shell">
@@ -181,14 +410,21 @@ fn App(boot: Boot) -> impl IntoView {
                     <span class="brand-product">{tx("product")}</span>
                 </div>
                 <div class="pills">
-                    <span class=move || if snap.with(|s| s.engine_ok) { "pill pill-ok" } else { "pill pill-warn" }>
+                    <span class=move || if snap.with(|s| s.engine_ok) { "pill pill-ok" } else { "pill pill-bad" }>
                         {tx("engine")} " "
                         {move || if snap.with(|s| s.engine_ok) { tx("running") } else { tx("stopped") }}
                     </span>
-                    <span class="pill">"CPU \u{2014}"</span>
-                    <span class="pill">"MEM \u{2014}"</span>
+                    {cpu_pill}
+                    {mem_pill}
+                    {req_pill}
+                    {err_pill}
                 </div>
                 <div class="grow"></div>
+                <div class="seg" role="group" aria-label=tx("mode_label")>
+                    {["auto", "full", "lite"].into_iter().map(|m| view! {
+                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); }>{tx(&format!("mode_{m}"))}</button>
+                    }).collect_view()}
+                </div>
                 <button type="button" class="theme" aria-label=tx("theme_label") on:click=move |_| {
                     let d = !dark.get_untracked();
                     dark.set(d);
@@ -242,7 +478,7 @@ fn App(boot: Boot) -> impl IntoView {
                         <Show when=move || rows.with(|r| r.is_empty())>
                             <p class="empty">{tx("empty")}</p>
                         </Show>
-                        <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id selected=selected current=current /> } />
+                        <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
                     </section>
                 </main>
                 <aside class="detail" aria-label=tx("selected_label")>
@@ -257,30 +493,129 @@ fn App(boot: Boot) -> impl IntoView {
                                 <div class="who">
                                     <div class=format!("avatar {rc}")><span class="avatar-dot"></span></div>
                                     <div class="who-text"><span class="who-name">{a.label.clone()}</span><span class="who-kind">{kind_label(&a)} " \u{b7} " {a.project.rsplit('/').find(|s| !s.is_empty()).unwrap_or_default().to_string()}</span></div>
+                                    <div class="grow"></div>
+                                    <ActionMenu id=a.id.clone() uid="panel".to_string() />
                                 </div>
+                                <Feedback_ id=a.id.clone() />
                                 <div class="stats">
                                     <div class="stat"><div class="stat-k">{tx("heartbeat")}</div><div class=format!("stat-v {hbc}")>{hb}</div></div>
                                     <div class="stat"><div class="stat-k">{tx("running_for")}</div><div class="stat-v">{a.tokens_out}</div></div>
                                     <div class="stat"><div class="stat-k">{tx("model")}</div><div class="stat-v small">{a.state.clone()}</div></div>
                                 </div>
                                 <div><div class="sect">{tx("doing_now")}</div><p class="brief">{a.step.clone()}</p></div>
+                                <Details id=a.id.clone() />
                             }.into_any()
                         }
                     }}
-                    <div><div class="sect">{tx("recent")}</div><p class="soft-note">{tx("recent_placeholder")}</p></div>
+                    <div class="feed-wrap">
+                        <div class="sect">{tx("feed_title")}</div>
+                        <ol class="feed" aria-live="polite">
+                            <For each=move || snap.with(|s| s.feed.iter().rev().cloned().collect::<Vec<FeedItem>>()) key=|f| f.n children=move |f| view! {
+                                <li class=format!("feed-item tone-{}", f.tone)><span class="feed-text">{f.text.clone()}</span><span class="feed-age">{since(f.ts_ms)}</span></li>
+                            } />
+                        </ol>
+                        <Show when=move || snap.with(|s| s.feed.is_empty())>
+                            <p class="soft-note">{tx("feed_empty")}</p>
+                        </Show>
+                    </div>
                     <div class="compose">
                         <label for="cmd" class="sect">{tx("send_label")}</label>
                         <textarea id="cmd" rows="3" placeholder=tx("send_placeholder") disabled></textarea>
                         <div class="actions">
                             <button type="button" class="btn primary" disabled>{tx("send")}</button>
-                            <button type="button" class="btn" disabled>{tx("nudge")}</button>
-                            <button type="button" class="btn danger" disabled>{tx("stop")}</button>
                         </div>
                         <p class="soft-note">{tx("controls_note")}</p>
                     </div>
                 </aside>
             </div>
+            <ConfirmBox boot=b3 />
         </div>
+    }
+}
+
+/// The inline outcome of the last action on `id` ("working", "done", the reason it failed).
+#[component]
+#[allow(non_snake_case)]
+fn Feedback_(id: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    view! {
+        {move || ctx.feedback.get().filter(|f| f.id == id).map(|f| {
+            let (class, label) = match f.phase {
+                Phase::Running => ("fb fb-run", tx("act_running")),
+                Phase::Done => ("fb fb-ok", tx("act_done")),
+                Phase::Failed => ("fb fb-bad", tx("act_failed")),
+            };
+            let name = expect_context::<Arc<Boot>>().actions.iter().find(|a| a.name == f.action).map(|a| tx(&a.label)).unwrap_or_default();
+            view! { <p class=class role="status">{name} ": " {label} " " <span class="fb-note">{f.message}</span></p> }
+        })}
+    }
+}
+
+/// The details the tracker has for the selected agent, once "show details" was chosen.
+#[component]
+fn Details(id: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    view! {
+        {move || ctx.detail.get().filter(|(i, _)| *i == id).map(|(_, d)| match d {
+            None => view! { <div><div class="sect">{tx("details_title")}</div><p class="soft-note">{tx("details_loading")}</p></div> }.into_any(),
+            Some(d) if d.rows.is_empty() => view! { <div><div class="sect">{tx("details_title")}</div><p class="soft-note">{tx("details_failed")}</p></div> }.into_any(),
+            Some(d) => view! {
+                <div>
+                    <div class="sect">{tx("details_title")}</div>
+                    <dl class="kv">
+                        {d.rows.into_iter().map(|(k, v)| view! { <dt>{k}</dt><dd>{v}</dd> }).collect_view()}
+                    </dl>
+                </div>
+            }.into_any(),
+        })}
+    }
+}
+
+/// The action menu of one agent: a button that opens a popover anchored to it, with the entries from `web.actions`.
+#[component]
+fn ActionMenu(id: String, uid: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let boot = expect_context::<Arc<Boot>>();
+    let menu_id = format!("menu-{uid}");
+    let anchor = format!("--anchor-{uid}");
+    let items = boot.actions.clone();
+    view! {
+        <button type="button" class="kebab" aria-label=tx("act_menu") popovertarget=menu_id.clone() style=format!("anchor-name:{anchor}")>"\u{22EF}"</button>
+        <div id=menu_id popover="auto" class="menu" role="menu" style=format!("position-anchor:{anchor}")>
+            {items.into_iter().map(|a| {
+                let (id, boot, name) = (id.clone(), boot.clone(), a.name.clone());
+                view! {
+                    <button type="button" role="menuitem" class=if a.confirm { "menu-item danger" } else { "menu-item" } popovertarget=format!("menu-{uid}") popovertargetaction="hide"
+                        on:click=move |_| choose(ctx, &boot, id.clone(), &name)>{tx(&a.label)}</button>
+                }
+            }).collect_view()}
+        </div>
+    }
+}
+
+/// The yes/no before an action that asks first.
+#[component]
+fn ConfirmBox(boot: Arc<Boot>) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let _ = boot;
+    view! {
+        <Show when=move || ctx.confirm.get().is_some()>
+            <div class="scrim">
+                <div class="confirm" role="alertdialog" aria-modal="true" aria-label=tx("act_confirm_title")>
+                    <strong>{tx("act_confirm_title")}</strong>
+                    <p>{tx("act_confirm_stop")}</p>
+                    <div class="actions">
+                        <button type="button" class="btn" on:click=move |_| ctx.confirm.set(None)>{tx("act_confirm_no")}</button>
+                        <button type="button" class="btn danger" on:click=move |_| {
+                            if let Some((id, action)) = ctx.confirm.get_untracked() {
+                                ctx.confirm.set(None);
+                                run_action(ctx, id, action, true);
+                            }
+                        }>{tx("act_confirm_yes")}</button>
+                    </div>
+                </div>
+            </div>
+        </Show>
     }
 }
 
@@ -289,9 +624,9 @@ fn Row(
     id: String,
     depth: usize,
     by_id: Memo<HashMap<String, Agent>>,
-    selected: RwSignal<Option<String>>,
     current: Memo<Option<Agent>>,
 ) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
     let a = {
         let id = id.clone();
         Memo::new(move |_| by_id.with(|m| m.get(&id).cloned()))
@@ -302,19 +637,24 @@ fn Row(
     };
     let pick = {
         let id = id.clone();
-        move |_| selected.set(Some(id.clone()))
+        move |_| ctx.selected.set(Some(id.clone()))
     };
+    let uid: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
     view! {
-        <button type="button" class=move || if is_sel() { "row sel" } else { "row" } on:click=pick>
-            <span class="indent" style=format!("flex-basis:{}px", depth * 24)></span>
-            <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>
-            <span class="c-name">{move || a.get().map(|a| a.label).unwrap_or_default()}</span>
-            <span class="c-kind">{move || a.get().map(|a| kind_label(&a)).unwrap_or_default()}</span>
-            <span class=move || {
-                let b = expect_context::<Arc<Boot>>();
-                a.get().map(|a| format!("c-hb {}", hb_class(&b, &a))).unwrap_or_default()
-            }>{move || a.get().and_then(|a| a.last_output_s).map(fmt_age).unwrap_or_else(|| "\u{2014}".into())}</span>
-            <span class="c-brief">{move || a.get().map(|a| a.step).unwrap_or_default()}</span>
-        </button>
+        <div class="row-wrap">
+            <button type="button" class=move || if is_sel() { "row sel" } else { "row" } on:click=pick>
+                <span class="indent" style=format!("flex-basis:{}px", depth * 24)></span>
+                <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>
+                <span class="c-name">{move || a.get().map(|a| a.label).unwrap_or_default()}</span>
+                <span class="c-kind">{move || a.get().map(|a| kind_label(&a)).unwrap_or_default()}</span>
+                <span class=move || {
+                    let b = expect_context::<Arc<Boot>>();
+                    a.get().map(|a| format!("c-hb {}", hb_class(&b, &a))).unwrap_or_default()
+                }>{move || a.get().and_then(|a| a.last_output_s).map(fmt_age).unwrap_or_else(|| "\u{2014}".into())}</span>
+                <span class="c-brief">{move || a.get().map(|a| a.step).unwrap_or_default()}</span>
+            </button>
+            <ActionMenu id=id.clone() uid=uid />
+            <Feedback_ id=id />
+        </div>
     }
 }
