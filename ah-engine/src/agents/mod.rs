@@ -41,6 +41,22 @@ pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, tra
 pub use status::run_cmd;
 pub(crate) use status::document as status_document;
 
+/// Hand a notice from outside the tracker (the leak sentinel) to the owner notices file and, when a wake-watch covers it, to the
+/// wake feed of the most recently active main session. The caller rate-limits.
+pub(crate) fn notify_coordinator(signal: &str, text: &str) {
+    let Some(env) = Env::current() else { return };
+    let r = sinks::Reminder { id: format!("{signal}-{}", env.now_ms), ts: env.now_ms, signal: signal.to_string(), agent: String::new(), text: text.to_string() };
+    use sinks::Sink;
+    crate::discard::harmless(sinks::OwnerNotices.deliver(&env, "", &r)); // keep: the wake feed below is the second route
+    let st = load_state(&env);
+    let main = st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone());
+    if let Some(id) = main
+        && sinks::wake_armed(&env, &id)
+    {
+        crate::discard::harmless(sinks::WakeFeed.deliver(&env, &id, &r)); // keep: the owner notice already landed
+    }
+}
+
 pub(crate) fn lim(k: &str) -> u64 {
     defaults::raw("agent_tracker.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }

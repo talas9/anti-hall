@@ -372,8 +372,11 @@ pub fn Graph(
     let first = shared(true);
     // the camera the last automatic fit set: while the person has not moved it, a change of the node set fits again
     let auto_cam: Shared<Option<Cam>> = shared(None);
+    // how far fit has spread the columns sideways (1 = not at all): new nodes are placed with the same spread
+    let xspread: Shared<f32> = shared(1.0);
     let fit = {
         let cfg = cfg.clone();
+        let xspread = xspread.clone();
         let auto_cam = auto_cam.clone();
         Callback::new(move |_: ()| {
             let d = data.get_untracked();
@@ -393,7 +396,24 @@ pub fn Graph(
             }
             let (vw, vh) = vp.get_untracked();
             let pad = cfg.geometry.fit_pad;
-            let k = ((vw - 2.0 * pad) / (x1 - x0)).min((vh - 2.0 * pad) / (y1 - y0)).clamp(cfg.geometry.zoom_min, 1.0);
+            let (kw, kh) = ((vw - 2.0 * pad) / (x1 - x0), (vh - 2.0 * pad) / (y1 - y0));
+            let mut x1 = x1;
+            // height-limited: spread the columns sideways so the graph fills the canvas width instead of leaving its right side empty
+            if kh < kw && kh > 0.0 {
+                let right = p.values().map(|(x, _)| *x).fold(f32::MIN, f32::max);
+                let (span_l, last_w) = (right - x0, x1 - right);
+                let s = ((vw - 2.0 * pad) / kh.clamp(cfg.geometry.zoom_min, 1.0) - last_w) / span_l.max(1.0);
+                if s > 1.0 && span_l > 1.0 {
+                    let mut cur = pos.get_untracked();
+                    for v in cur.values_mut() {
+                        v.0 = x0 + (v.0 - x0) * s;
+                    }
+                    *xspread.borrow_mut() *= s;
+                    pos.set(cur);
+                    x1 = x0 + span_l * s + last_w;
+                }
+            }
+            let k = ((vw - 2.0 * pad) / (x1 - x0)).min(kh).clamp(cfg.geometry.zoom_min, 1.0);
             let c = Cam { k, x: (vw - (x1 - x0) * k) / 2.0 - x0 * k, y: (vh - (y1 - y0) * k) / 2.0 - y0 * k };
             *auto_cam.borrow_mut() = Some(c);
             cam.set(c);
@@ -402,6 +422,7 @@ pub fn Graph(
     {
         let cfg = cfg.clone();
         let (first, dragged) = (first.clone(), dragged.clone());
+        let xspread = xspread.clone();
         Effect::new(move |_| {
             skey.track();
             let d = data.get_untracked();
@@ -412,7 +433,7 @@ pub fn Graph(
             let keep = dragged.borrow();
             for (id, p) in fresh {
                 if is_first || (!cur.contains_key(&id) && !keep.contains(&id)) {
-                    cur.insert(id, p);
+                    cur.insert(id, if is_first { p } else { (p.0 * *xspread.borrow(), p.1) });
                 }
             }
             drop(keep);

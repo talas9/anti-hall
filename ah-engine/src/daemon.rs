@@ -1015,7 +1015,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::memdiag::note_check(check);
         observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
         checks_us.set(checks_us.get().saturating_add(micros));
-        crate::web::decisions::push(&meta.event, check, &e.id, session, &v, micros);
+        // an entry whose id is its check name names no rule of its own: record none, so the dashboard has no duplicate rule hop
+        let rule = if e.id == check { "" } else { e.id.as_str() };
+        crate::web::decisions::push(&meta.event, check, rule, session, &v, micros);
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
     let (start_cpu, budget) = cpu_budget(cfg);
@@ -1765,6 +1767,7 @@ fn leak_sentinel(sh: &Arc<Shared>) {
         Err(e) => format!("{} [evidence not written: {e}]", n.text),
     };
     health::log_event("memory", "leak", &line);
+    crate::agents::notify_coordinator(defaults::text("mem.leak_impact_kind"), &line);
     let kind = defaults::text("mem.leak_impact_kind");
     sh.telemetry.impact(kind, &n.top, crate::mem::leak::Level::Suspected.name(), "");
     sh.telemetry.with_metrics(|m| m.inc("memory_leak_notices", &[("top", &n.top)]));

@@ -75,6 +75,12 @@ struct Inner {
     checks: Slots,
     rules: Slots,
     agents: Slots,
+    /// Group keys (label and kind) whose repeated rows the person opened.
+    expanded: HashSet<String>,
+    /// Agent id to the node standing for it, for agents folded into a counted group node.
+    alias: HashMap<String, String>,
+    /// Agent id to its group key, for every agent that has a same-named, same-kind sibling.
+    group_of: HashMap<String, String>,
     jev: VecDeque<JevEvt>,
     last: HashMap<String, u64>,
     rule_of: HashMap<String, String>,
@@ -130,6 +136,9 @@ pub fn init(boot: &Boot) {
         rules: Slots::default(),
         jev: VecDeque::new(),
         agents: Slots::default(),
+        expanded: HashSet::new(),
+        alias: HashMap::new(),
+        group_of: HashMap::new(),
         last: HashMap::new(),
         rule_of: HashMap::new(),
         recent: HashMap::new(),
@@ -251,10 +260,10 @@ impl Inner {
         }
         self.rule_of.insert(ck.clone(), d.rule.clone());
         // the agent that ran the hook starts the path, when the engine recorded it and the agent is drawn; else the engine does
-        let origin = Some(format!("a:{}", d.session)).filter(|a| !d.session.is_empty() && self.agents.ids.iter().flatten().any(|x| x == a)).unwrap_or_else(|| "engine".to_string());
+        let origin = Some(format!("a:{}", self.alias.get(&d.session).unwrap_or(&d.session))).filter(|a| !d.session.is_empty() && self.agents.ids.iter().flatten().any(|x| x == a)).unwrap_or_else(|| "engine".to_string());
         let e1 = edge_oc(&origin, &d.check);
         // the rule that named the check sits between the check and the decision; a row without one goes straight to the decision
-        let (via, tail): (Option<String>, Vec<String>) = if d.rule.is_empty() {
+        let (via, tail): (Option<String>, Vec<String>) = if d.rule.is_empty() || d.rule == d.check {
             (None, vec![edge_cd(&d.check, &fx)])
         } else {
             let ru = node_ru(&d.rule);
@@ -328,7 +337,7 @@ impl Inner {
 
     /// The node an action's target names: an agent, else the engine.
     fn node_of(&self, target: &str) -> String {
-        let a = format!("a:{target}");
+        let a = format!("a:{}", self.alias.get(target).map_or(target, String::as_str));
         if self.agents.ids.iter().flatten().any(|x| *x == a) {
             return a;
         }
@@ -357,6 +366,66 @@ impl Inner {
         let kind = if outcome == "refused" { FxKind::Shake } else { FxKind::parse(&name).unwrap_or(FxKind::Ripple) };
         let color = self.cfg.outcome_fx.get(outcome).cloned().unwrap_or_default();
         bus.push(FxEvent { kind, path: vec![node.to_string()], color: color.clone(), travel_color: color });
+    }
+
+    /// Fold repeated same-name, same-kind rows into one node carrying a count, unless the person opened that group. The node is the
+    /// most recently active member; `alias` maps every folded member to it so decisions and actions still find their node.
+    fn collapse(&mut self, agents: &[Agent]) -> Vec<Agent> {
+        let key = |a: &Agent| format!("{}|{}", a.label, a.kind);
+        let mut sizes: HashMap<String, usize> = HashMap::new();
+        for a in agents.iter().filter(|a| a.kind != "main") {
+            *sizes.entry(key(a)).or_default() += 1;
+        }
+        self.alias.clear();
+        self.group_of.clear();
+        let mut reps: HashMap<String, usize> = HashMap::new();
+        for (i, a) in agents.iter().enumerate() {
+            let k = key(a);
+            if a.kind == "main" || sizes.get(&k).copied().unwrap_or(0) < 2 {
+                continue;
+            }
+            self.group_of.insert(a.id.clone(), k.clone());
+            let best = reps.entry(k).or_insert(i);
+            if agents[i].last_output_s.unwrap_or(u64::MAX) < agents[*best].last_output_s.unwrap_or(u64::MAX) {
+                *best = i;
+            }
+        }
+        let mut out = Vec::new();
+        for (i, a) in agents.iter().enumerate() {
+            let Some(k) = self.group_of.get(&a.id).cloned() else {
+                out.push(a.clone());
+                continue;
+            };
+            if self.expanded.contains(&k) {
+                out.push(a.clone());
+            } else if reps.get(&k) == Some(&i) {
+                let members: Vec<&Agent> = agents.iter().filter(|m| self.group_of.get(&m.id) == Some(&k)).collect();
+                let mut r = a.clone();
+                r.label = format!("{} \u{d7}{}", a.label, members.len());
+                if members.iter().any(|m| m.state == "running") {
+                    r.state = "running".to_string();
+                }
+                for m in members {
+                    self.alias.insert(m.id.clone(), a.id.clone());
+                }
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    /// The person chose `node`: open the group it stands for and fold every other group again.
+    fn select(&mut self, node: Option<&str>) {
+        let id = node.and_then(|n| n.strip_prefix("a:"));
+        let key = id.and_then(|id| self.group_of.get(id).or_else(|| self.alias.iter().find(|(_, rep)| rep.as_str() == id).and_then(|(m, _)| self.group_of.get(m)))).cloned();
+        let before = self.expanded.clone();
+        self.expanded.clear();
+        if let Some(k) = key {
+            self.expanded.insert(k);
+        }
+        if before != self.expanded {
+            self.dirty = true;
+        }
     }
 
     fn sync_agents(&mut self, agents: &[Agent]) {
@@ -471,7 +540,7 @@ impl Inner {
         for (row, id) in self.checks.ids.iter().enumerate() {
             let Some(id) = id else { continue };
             let name = id.trim_start_matches("ck:");
-            let rule = self.rule_of.get(id).filter(|r| !r.is_empty()).map(|r| format!(" · {r}")).unwrap_or_default();
+            let rule = self.rule_of.get(id).filter(|r| !r.is_empty() && r.as_str() != name).map(|r| format!(" · {r}")).unwrap_or_default();
             node(id.clone(), name.to_string(), format!("{}{per_s}{rule}", self.rate_text(rate_of("e|", name, 2))), "check", 1.0, row, "ok");
         }
         for (row, id) in self.rules.ids.iter().enumerate() {
@@ -561,6 +630,7 @@ impl Hub {
         let agents = sink.snap.with_untracked(|s| s.agents.clone());
         let (data, counters, timeline, more, rev) = {
             let mut i = self.inner.borrow_mut();
+            let agents = i.collapse(&agents);
             i.sync_agents(&agents);
             let data = i.graph(now, &agents);
             let counters = i.counters(now);
@@ -661,6 +731,13 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
     watch_visibility();
 
     let selected = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let sel = selected.get();
+        if let Some(h) = hub() {
+            h.inner.borrow_mut().select(sel.as_deref());
+            h.ensure_ticking();
+        }
+    });
     let lc = boot.live.clone();
     let actions = {
         let boot = boot.clone();
@@ -751,7 +828,7 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
             <div class="live-stats">
                 <div class="stat"><div class="stat-k">{tx("live_rate")}</div><div class="stat-v">{move || format!("{:.1}", counters.with(|c| c.rate_x10) as f32 / 10.0)}</div></div>
                 <div class="stat"><div class="stat-k">{tx("pill_cpu")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().and_then(|p| p.cpu_permille).map_or_else(|| "\u{2014}".to_string(), |v| format!("{:.1}%", v as f64 / 10.0)))}</div></div>
-                <div class="stat"><div class="stat-k">{tx("pill_mem")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| format!("{} MB", p.rss_kb / 1024)))}</div></div>
+                <div class="stat" title=move || ctx.snap.with(|s| s.pulse.as_ref().map(|p| match p.footprint_kb { Some(fp) => tx("pill_mem_tip").replace("{fp}", &format!("{} MB", fp / 1024)).replace("{rss}", &format!("{} MB", p.rss_kb / 1024)), None => tx("pill_mem_rss_only").replace("{rss}", &format!("{} MB", p.rss_kb / 1024)) }).unwrap_or_default())><div class="stat-k">{tx("pill_mem")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| format!("{} MB", p.footprint_kb.unwrap_or(p.rss_kb) / 1024)))}</div></div>
                 <div class="stat"><div class="stat-k">"Jev"</div><div class="stat-v">{move || counters.with(|c| c.jev_calls)}</div></div>
                 <div class="stat"><div class="stat-k">{tx("live_blocks")}</div><div class="stat-v live-block">{move || counters.with(|c| c.blocks)}</div></div>
                 <div class="stat live-top"><div class="stat-k">{tx("live_top")}</div>

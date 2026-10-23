@@ -31,7 +31,7 @@ fn row(a: &super::Agent, now: u64, all: &std::collections::BTreeMap<&str, &super
         "errors": a.errors, "step": a.step, "waste": {"score": a.waste.score.round(), "verdict": a.waste.verdict, "confidence": a.waste.confidence, "source": a.waste.source, "action": a.waste.action, "judge_calls": a.waste.judge_calls, "cell": super::waste::cell(a)}, "last_output_s": last, "partial": a.partial,
         "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at})).collect::<Vec<_>>(),
         "workspace": a.ws.as_ref().map(|w| json!({"id": w.id, "watcher_armed": w.armed, "step": w.step})),
-        "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
+        "turn_ended": !a.running, "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
         "role": session.then(|| if mine.is_empty() { roles.str_field("solo") } else { roles.str_field("primary") }),
     })
 }
