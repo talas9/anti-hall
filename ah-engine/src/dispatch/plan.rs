@@ -213,10 +213,8 @@ pub fn load_config(cwd: &str) -> HookCfg {
             Default::default()
         }
     };
-    let project = crate::hookcfg::load_project(cwd).unwrap_or_else(|e| {
-        crate::health::log_event("config_invalid", e.code(), &e.to_string());
-        None
-    });
+    // the project layer is found from the project root (not the raw cwd) and cached per project, tighten-only (layers.rs)
+    let project = crate::layers::project(cwd).map(|p| p.hooks.clone());
     HookCfg::new(project, user)
 }
 

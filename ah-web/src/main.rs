@@ -67,6 +67,10 @@ async fn bind(s: &cfg::Settings) -> Result<tokio::net::TcpListener, String> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("{}", env!("AH_BUILD_VERSION"));
+        return;
+    }
     if args.first().map(String::as_str) != Some("serve") {
         eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket>");
         std::process::exit(64);

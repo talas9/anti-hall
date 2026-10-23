@@ -201,7 +201,7 @@ value = "the child has not registered its workspace id yet"
 
 [devswarm_cli.msg_log_test_guard]
 doc = "The stderr line of a log entry dropped because a test context gave no log directory (the real home is never logged into); {home}."
-value = "[anti-hall-log] anti-hall-log: refusing to fall back to the real home ({home}) while running under `node --test` (NODE_TEST_CONTEXT is set). This test never set ANTI_HALL_LOG_DIR, which would leak a log entry into the real ~/.anti-hall/logs/devswarm.jsonl (defect class be2c6c9e81a1/f3c1bc827d89). Set process.env.ANTI_HALL_LOG_DIR to an isolated tmp dir before requiring anything that may log (see tests/scripts/devswarm-v064.test.js for the established pattern)."
+value = "[anti-hall-log] anti-hall-log: refusing to fall back to the real home ({home}) while running under `node --test` (NODE_TEST_CONTEXT is set). This test never set ANTI_HALL_LOG_DIR, which would leak a log entry into the real ~/.anti-hall/logs/devswarm.jsonl (defect class be2c6c9e81a1/f3c1bc827d89). Set process.env.ANTI_HALL_LOG_DIR to an isolated tmp dir before requiring anything that may log."
 
 [devswarm_cli.diag_unavailable_reason]
 doc = "The reason diagnose and healthcheck give for a registry that could not be read (Node's code of an unnamed failure)."

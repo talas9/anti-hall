@@ -496,6 +496,9 @@ impl L {
             envs.push((self.key("env.plugin_root"), root.display().to_string()));
         }
         envs.push((self.key("launcher.stats_env"), self.stats_value()));
+        if let Some(name) = Some(self.key("env.hook_version")).filter(|n| !n.is_empty()) {
+            envs.push((name, env!("AH_BUILD_VERSION").to_string()));
+        }
         let argv = [
             engine.to_string(),
             "hook".into(),
@@ -775,6 +778,11 @@ pub fn run() -> i32 {
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    // a build fact: answered before any settings are read, so it works with no plugin root
+    if args.first().is_some_and(|a| a == "--version") {
+        println!("{}", env!("AH_BUILD_VERSION"));
+        return 0;
+    }
     // a shim may name the plugin root first (`ah-hook --plugin-root <dir> <event|verb> ...`): the same as naming it last
     if args.first().is_some_and(|a| a == "--plugin-root") && args.len() >= 2 {
         args.rotate_left(2);

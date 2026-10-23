@@ -30,7 +30,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
@@ -98,10 +98,14 @@ pub struct Shared {
     pub config: crate::cfgstore::ConfigStore,
     /// This build's version string, compared with each client's for handoff.
     pub own: String,
+    /// The build version the hook client (ah-hook) last reported with a request.
+    hook_version: RwLock<String>,
+    /// The plugin version read from the manifest of the loaded root, with the config version it was read at.
+    plugin_version: Mutex<(u64, String)>,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
     rules_path: Mutex<std::path::PathBuf>,
-    seen: Mutex<Option<(SystemTime, u64)>>,
+    seen: Mutex<u64>,
     sessions: Mutex<Buckets>,
     projects: Mutex<Buckets>,
     store: Store,
@@ -192,8 +196,10 @@ impl Shared {
             projects: Mutex::new(Buckets::new(cfg.project_rps, cfg.project_burst)),
             config: crate::cfgstore::ConfigStore::fixed(cfg),
             own: own.to_string(),
+            hook_version: RwLock::new(String::new()),
+            plugin_version: Mutex::new((0, String::new())),
             rules: RwLock::new(Arc::new(rules)),
-            seen: Mutex::new(mtime(&rules_path)),
+            seen: Mutex::new(crate::layers::host_fingerprint(&rules_path, defaults::env_var("rules").is_some())),
             rules_path: Mutex::new(rules_path),
             store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
@@ -364,10 +370,12 @@ impl Shared {
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
     fn reload(&self) {
         let path = lk(&self.rules_path).clone();
-        if let Ok(r) = RuleSet::load(&path) {
+        let explicit = defaults::env_var("rules").is_some();
+        // the shipped file and the user's layers over it (layers.rs); a bad user file is ignored with a notice, the shipped rules stay
+        if let Ok((r, _)) = crate::layers::load_host_rules(&path, explicit) {
             *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(r);
         }
-        *lk(&self.seen) = mtime(&path);
+        *lk(&self.seen) = crate::layers::host_fingerprint(&path, explicit);
     }
 
     /// The memory breakdown: the live heap against RSS, and the size of every long-lived in-memory structure, so a growing
@@ -467,10 +475,32 @@ impl Shared {
         )
     }
 
+    /// Remember the build version the hook client reported in the request environment.
+    fn note_hook_version(&self, env: &crate::reqenv::RequestEnv) {
+        let Some(v) = env.get(defaults::text("env.hook_version")).filter(|v| !v.is_empty()) else { return };
+        if self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str() != v {
+            *self.hook_version.write().unwrap_or_else(|e| e.into_inner()) = v.to_string();
+        }
+    }
+
+    /// The version in the manifest of the plugin root the daemon loaded its files from, re-read only when the config changed.
+    fn plugin_version(&self) -> String {
+        let at = self.config.snapshot().version;
+        let mut c = lk(&self.plugin_version);
+        if c.0 != at || c.1.is_empty() {
+            let text = defaults::root().and_then(|r| std::fs::read_to_string(r.join(defaults::text("migrate.plugin_manifest"))).ok());
+            let v = text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|j| j.get("version").and_then(serde_json::Value::as_str).map(str::to_string));
+            *c = (at, v.unwrap_or_default());
+        }
+        c.1.clone()
+    }
+
     /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
     pub fn pulse_json(&self) -> serde_json::Value {
         let mut pulse = crate::web::pulse::build(&crate::web::pulse::Inputs {
             version: &self.own,
+            plugin_version: &self.plugin_version(),
+            hook_version: &self.hook_version.read().unwrap_or_else(|e| e.into_inner()),
             uptime_s: self.started.elapsed().as_secs(),
             rss_kb: limits::rss_kb(),
             footprint_kb: limits::footprint_kb(),
@@ -509,6 +539,8 @@ impl Shared {
             "running": true,
             "pid": std::process::id(),
             "version": self.own,
+            "plugin_version": self.plugin_version(),
+            "hook_version": self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str(),
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
             "footprint_kb": limits::footprint_kb(),
@@ -690,6 +722,7 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         if let Some(root) = crate::bootstrap::ROOT_ENVS.iter().find_map(|n| env.get(n)) {
             sh.config.offer_root(root);
         }
+        sh.note_hook_version(&env);
         let reply = hook(payload, &env, sh, cfg);
         let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
@@ -940,6 +973,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let rules = crate::layers::rules_for(p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""), &rules); // the project's rules, tighten-only
     let (start, budget) = cpu_budget(cfg);
     let over = move || over_cpu_budget(start, budget);
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
@@ -1780,7 +1814,7 @@ fn leak_sentinel(sh: &Arc<Shared>) {
     let Some(n) = crate::mem::leak::observe(crate::mem::leak::collect(now_s)) else { return };
     let line = match crate::mem::leak::write_evidence(sh.memory_with_ledger(), health::now_ms()) {
         Ok(p) => format!("{} [{}]", n.text, p.display()),
-        Err(e) => format!("{} [evidence not written: {e}]", n.text),
+        Err(e) => defaults::render("mem.leak_msg_evidence_failed", &[("text", &n.text), ("err", &e)]),
     };
     health::log_event("memory", "leak", &line);
     crate::agents::notify_coordinator(defaults::text("mem.leak_impact_kind"), &line);
@@ -1921,10 +1955,6 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     }
 }
 
-fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
-    std::fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
-}
-
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     health::record_failure("start_fail", code, detail);
@@ -2013,7 +2043,8 @@ pub fn serve() {
 
     crate::mem::register_defaults_leak();
     let rules_path = paths::rules_file();
-    let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
+    let host_rules = crate::layers::load_host_rules(&rules_path, defaults::env_var("rules").is_some()).map(|(r, _)| r).unwrap_or_default();
+    let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);
     sh.config = store;
     sh.rlimit = rlimit;
     sh.starts = starts;
@@ -2349,7 +2380,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             if moved {
                 *lk(&sh.rules_path) = wanted.clone();
             }
-            let now = mtime(&wanted);
+            let now = crate::layers::host_fingerprint(&wanted, defaults::env_var("rules").is_some());
             if moved || HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
                 sh.reload();
                 sh.reload_config();

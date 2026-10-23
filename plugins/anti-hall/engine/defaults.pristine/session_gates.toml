@@ -317,7 +317,7 @@ min = 1000
 max = 31536000000
 
 [repair_reload.migration_keys]
-doc = "The keys of the data migrations a reload repairs (the non-opt-in migrations of companion/lib/migrations.js); a test compares this list with the Node one, so a migration added there fails the build until it is added here."
+doc = "The keys of the data migrations a reload repairs (the non-opt-in migrations); a test compares this list with the Node one, so a migration added there fails the build until it is added here."
 value = [
   "mergeSplitBackendStores", "foldAllStores", "healOrphanPartitions", "foldArchivedRows", "foldArchivedFamilyDescriptors",
   "repairReaderFloors", "reconcileDualPartitionAcks", "markAppArchived", "retireStaleArchivedMarkers",

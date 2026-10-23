@@ -15,6 +15,7 @@ files = [
     "telemetry.toml",
     "storage.toml",
     "config.toml",
+    "layers.toml",
     "transcript.toml",
     "gitcache.toml",
     "schedules.toml",

@@ -856,7 +856,7 @@ A separate question from the recovery model above: how does an idle DevSwarm
 orchestrator (typically the Primary) notice a new mailbox message in the first place,
 without a human nudging it? On Claude, this is layered: **`Monitor`** (a Claude Code
 CLI built-in background listener that fires a wake event when its watched command emits
-output — here, a pure-reader watcher process, `devswarm-wake-watch.js`, polling a derived
+output — here, a pure-reader watcher process (`ah-engine devswarm wake-watch`), polling a derived
 projection file every 2s by default) is the primary path, with a **`CronCreate`
 mailbox-poll job retained permanently as the fallback** for every case where Monitor is
 unavailable (Bedrock/Vertex/Foundry, telemetry disabled, project-scope plugin installs,

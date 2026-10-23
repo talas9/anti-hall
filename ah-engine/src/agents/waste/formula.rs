@@ -78,7 +78,7 @@ impl Params {
             fail: mult("fail"),
             fail_cap: lim("fail_cap").max(1) as f64,
             relief: div,
-            readonly: lim("readonly_pct").clamp(0, 100) as f64 / 100.0,
+            readonly: (lim("readonly_pct").max(0) as f64 / 100.0).min(1.0),
             min_tokens: lim("min_tokens").max(0) as u64,
             soft: t("soft"),
             hard: t("hard"),

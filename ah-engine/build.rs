@@ -5,9 +5,12 @@
 //! no value, table, message or default is compiled in (the defaults are read from the plugin's files at run time, D17).
 #[path = "build_support/keyscan.rs"]
 mod keyscan;
+#[path = "build_support/buildver.rs"]
+mod buildver;
 use std::path::Path;
 
 fn main() {
+    buildver::emit();
     let manifest = match std::env::var("CARGO_MANIFEST_DIR") {
         Ok(v) => v,
         Err(e) => {

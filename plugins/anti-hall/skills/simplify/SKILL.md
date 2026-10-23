@@ -70,13 +70,13 @@ the honest score is `net: 0 lines` and that's a fine outcome.
 ```
 simplify: <target>   (baseline: <L0> lines, tests: green)
 
-delete:  path/x.js:42      removed unused `tmp` + dead else-branch        (-6)
-stdlib:  path/y.js:13      replaced manual dedupe with [...new Set()]      (-4)
-yagni:   path/z.js:88      inlined single-caller `makeOpts()` wrapper      (-9)
-slop:    path/x.js:7       dropped comment restating the next line         (-1)
+delete:  path/x.rs:42      removed unused `tmp` + dead else-branch        (-6)
+stdlib:  path/y.rs:13      replaced manual dedupe with [...new Set()]      (-4)
+yagni:   path/z.rs:88      inlined single-caller `makeOpts()` wrapper      (-9)
+slop:    path/x.rs:7       dropped comment restating the next line         (-1)
 
 declined:
-  shrink: path/y.js:60 — one-liner would hurt readability; kept
+  shrink: path/y.rs:60 — one-liner would hurt readability; kept
 
 net: -20 lines   ·   tests: green (re-run, 0 fail)   ·   behavior: unchanged
 ```

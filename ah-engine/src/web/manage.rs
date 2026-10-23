@@ -184,7 +184,7 @@ fn finish(ctx: &crate::migrate::Ctx, op: &'static str, kind: &'static str, key: 
     let row = json!({"id": id, "ts": now_ms(), "verb": op, "key": key, "kind": kind, "who": actor(), "old": prev, "new": value, "result": if ok { "ok" } else { "error" }, "error": error, "undoes": undoes});
     let mut note = error;
     if let Err(e) = append(&row) {
-        note = Some(note.map_or(format!("audit not written: {e}"), |n| format!("{n}; audit not written: {e}")));
+        note = Some(note.map_or(defaults::render("webapi.msg_audit_not_written", &[("err", &e)]), |n| defaults::render("webapi.msg_audit_not_written_after", &[("note", &n), ("err", &e)])));
     } else if ok && kind == "engine" && crate::cfgstore::restart_only(key) {
         note = Some(defaults::text("webapi.msg_restart_only").to_string());
     }

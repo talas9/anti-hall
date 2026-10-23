@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 pub struct Inputs<'a> {
     /// This build's version.
     pub version: &'a str,
+    /// The version of the plugin the daemon serves (its manifest at the loaded root); empty when unreadable.
+    pub plugin_version: &'a str,
+    /// The build version the hook client last reported with a request; empty before the first one.
+    pub hook_version: &'a str,
     /// Seconds since the daemon started.
     pub uptime_s: u64,
     /// Resident set, KB.
@@ -42,7 +46,7 @@ fn build_sha() -> &'static str {
     static SHA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SHA.get_or_init(|| {
         let Some(bytes) = std::env::current_exe().ok().and_then(|p| std::fs::read(p).ok()) else { return String::new() };
-        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().take(4).map(|b| format!("{b:02x}")).collect()
+        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().take(crate::defaults::num("web.build_sha_bytes") as usize).map(|b| format!("{b:02x}")).collect()
     })
 }
 
@@ -58,7 +62,7 @@ pub fn build(i: &Inputs<'_>) -> Value {
     // SAFETY: getloadavg fills at most the number of doubles asked for, and the array holds that many.
     let got = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-    json!({"version": i.version, "build_sha": build_sha(), "pid": std::process::id(), "uptime_s": i.uptime_s, "rss_kb": i.rss_kb, "footprint_kb": i.footprint_kb, "cpu_s": i.cpu_s, "cpu_permille": cpu_permille,
+    json!({"version": i.version, "plugin_version": i.plugin_version, "hook_version": i.hook_version, "build_sha": build_sha(), "pid": std::process::id(), "uptime_s": i.uptime_s, "rss_kb": i.rss_kb, "footprint_kb": i.footprint_kb, "cpu_s": i.cpu_s, "cpu_permille": cpu_permille,
         "requests": i.requests, "busy_replies": i.busy_replies, "slow_replies": i.slow_replies, "errors": i.errors, "panics": i.panics,
         "queue_depth": i.queue_depth, "workers": i.workers, "budget_mask": i.budget_mask, "restarts": i.restarts, "config_version": i.config_version,
         "load_per_core": (got >= 1).then(|| load[0] / cores), "at_ms": now})

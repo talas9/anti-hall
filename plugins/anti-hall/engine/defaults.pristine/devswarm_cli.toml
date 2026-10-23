@@ -3442,7 +3442,7 @@ doc = "The stage a respawn abort names when the spawn fails."
 value = "spawn"
 
 [devswarm_cli.rr_mb_node]
-doc = "The interpreter word a mailbox-class command starts with (companion/lib/devswarm-idle.js: a ping turn is made only of such calls)."
+doc = "The interpreter word a mailbox-class command starts with (a ping turn is made only of such calls)."
 value = "node"
 
 [devswarm_cli.rr_mb_verbs]

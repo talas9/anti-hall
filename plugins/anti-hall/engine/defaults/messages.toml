@@ -105,6 +105,10 @@ value = "daemon pid {pid} died without a clean exit; last context {context}"
 doc = "Panic payload text when Rust did not carry a string."
 value = "non-string panic payload"
 
+[msg.panic_row]
+doc = "Event-log detail for a panic: message and source location first so the row's length cap never cuts them; the backtrace lives only in the crash file. Placeholders: {message}, {location}, {thread}, {context}."
+value = "{message} @ {location} (thread {thread}, context {context})"
+
 [msg.thread_unknown]
 doc = "Thread name used in panic reports for unnamed threads."
 value = "unnamed"
@@ -1172,7 +1176,7 @@ value = "already current: the live kit bundle holds this exact engine{plugin} (s
 
 [msg.updater_live_golive]
 doc = "Placeholders: {bundle}, {failed}, {log}, {kit}, {select}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
-value = "the live kit could not apply the new bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the new one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run again; to re-apply the current bundle by hand: sh {kit}/go-live.sh {select}"
+value = "the live kit could not apply the new bundle (the go-live step exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the new one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run again; to re-apply the current bundle by hand, run the kit's go-live step again ({kit}, {select})"
 
 [msg.updater_live_updated]
 doc = "Placeholders: {version}, {plugin_note}, {aside}."
@@ -1260,7 +1264,7 @@ value = "cannot restore {prev} as the live bundle\nrolled back: the bundle that 
 
 [msg.updater_rb_live_golive]
 doc = "Placeholders: {bundle}, {failed}, {log}, {kit}, {select}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
-value = "the live kit could not re-apply the previous bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the previous one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run ah-hook update --rollback again; to re-apply the current bundle by hand: sh {kit}/go-live.sh {select}"
+value = "the live kit could not re-apply the previous bundle (go-live.sh exited with an error; its last lines are above)\nrolled back: the bundle that was current is back in place at {bundle}; the previous one is kept as {failed}\nread the log (tail -n 30 {log}), fix what go-live reports, then run ah-hook update --rollback again; to re-apply the current bundle by hand, run the kit's go-live step again ({kit}, {select})"
 
 [msg.updater_rb_live_none]
 doc = "Placeholder: {kit}. Three lines: what failed, what is installed now, the one next step. Placeholder {unchanged} stands for the installed engine's state line."
@@ -1477,3 +1481,11 @@ value = "mesh read needs a workspace id: `ah-engine mesh read <id>` (or --id <id
 [msg.err_mesh_ambiguous_store]
 doc = "The workspace id is in more than one project store. Placeholders: {id}, {stores} (comma separated repo keys)."
 value = "workspace {id} is in several project stores ({stores}): run this from that project's checkout, or pass --db <devswarm.db>"
+
+[msg.docs_empty]
+doc = "Printed to stderr when `docs` generated no text (the defaults it reads could not be used), so nothing is written. Placeholders: what (the format asked for), out (the --out file, left as it was; empty when printing)."
+value = "ah-engine docs: nothing was generated for format '{what}' (is the plugin's engine/defaults readable? set AH_ENGINE_PLUGIN_ROOT); the --out file '{out}' was left as it was"
+
+[msg.docs_write_failed]
+doc = "Printed to stderr when `docs --out` could not write its file. Placeholders: out, err."
+value = "ah-engine docs: could not write '{out}': {err}"

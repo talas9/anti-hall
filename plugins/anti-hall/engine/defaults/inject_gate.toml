@@ -80,7 +80,7 @@ doc = "What an unchanged limit-conservation directive becomes on its keepalive t
 value = "⚠️ anti-hall · limit-conserve: still active (directive unchanged since it was injected earlier this session). Route heavy work to Codex or cheaper Claude models; defer non-urgent heavy work until the usage reset."
 
 [inject_gate.task_short]
-doc = "The exact short task-tracker reminder hooks/task-tracker.js prints on a turn that is not the long form (a test keeps it equal to the Node text)."
+doc = "The exact short task-tracker reminder the task-tracker hook prints on a turn that is not the long form (a test keeps it equal to the Node text)."
 value = "💡 anti-hall · task-tracker: capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing."
 
 [inject_gate.task_long_prefix]

@@ -11,10 +11,12 @@ use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-/// Exit code when the server binary is missing or did not come up (the usual "unavailable" code of this CLI).
-const UNAVAILABLE: i32 = 69;
+/// Exit code when the server binary is missing or did not come up (`web.exit_unavailable`).
+fn unavailable() -> i32 {
+    defaults::num("web.exit_unavailable") as i32
+}
 
 /// What the server published in its state file.
 struct Running {
@@ -46,7 +48,7 @@ fn running() -> Option<Running> {
         return None;
     }
     let host = defaults::text("web.bind_host").parse().ok()?;
-    TcpStream::connect_timeout(&SocketAddr::new(host, port), Duration::from_millis(500)).ok()?;
+    TcpStream::connect_timeout(&SocketAddr::new(host, port), defaults::millis("web.probe_connect_ms")).ok()?;
     Some(Running { pid, url })
 }
 
@@ -127,7 +129,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
                 }
                 Err(msg) => {
                     say(p, msg, json!({ "running": false }));
-                    UNAVAILABLE
+                    unavailable()
                 }
             }
         }

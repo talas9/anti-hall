@@ -352,7 +352,7 @@ updating their heartbeat:
 Default threshold: **1 200 000 ms (20 min)**. Override by passing a number.
 
 Run this inline from the coordinator — `command-guard` carves a narrow exception
-for `agent-watchdog` (and `statusline/phase.js`) so these coordinator-owned
+for `agent-watchdog` (and `ah-engine phase`) so these coordinator-owned
 helpers are not forced through subagent delegation. See "Statusline wiring" below.
 
 Output: one `STALE <id> last=<iso> age=<ms>ms status=<status> step=<step>` line
@@ -409,7 +409,7 @@ This prevents a single agent from holding the swarm hostage.
 
 ## Statusline wiring
 
-The orchestrator updates the phase statusline via `statusline/phase.js` so the
+The orchestrator updates the phase statusline via `ah-engine phase` so the
 terminal bar reflects the real run state. Call it from the main thread as phases
 progress (not from inside subagents — subagents report back, the coordinator
 writes state):
@@ -431,16 +431,13 @@ writes state):
 ~/.anti-hall/ah-engine/bin/ah-engine phase clear
 ```
 
-Path is relative to the plugin root (`CLAUDE_PLUGIN_ROOT`). Use an absolute
-path in practice: `path.join(pluginRoot, 'statusline', 'phase.js')`.
-
 The statusline reads `~/.anti-hall/phase-state.json`. Write from the main
 coordinator only; the file path is consistent across all runners because it
 uses the home directory (not os.tmpdir()).
 
-`command-guard` normally blocks a `node` script run in the coordinator context (to
+`command-guard` normally blocks a heavy script run in the coordinator context (to
 push heavy work to subagents), but it carves a narrow LIGHT_EXCEPTION for exactly
-`statusline/phase.js` and `agent-watchdog` — these two helpers are
+`ah-engine phase` and `agent-watchdog` — these two helpers are
 coordinator-owned by design, so running them inline is allowed and does not need
 to be delegated.
 

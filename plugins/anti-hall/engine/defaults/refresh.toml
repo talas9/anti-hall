@@ -176,7 +176,7 @@ doc = "The git arguments that list a remote's tags; the remote is appended."
 value = ["ls-remote", "--tags"]
 
 [refresh.tag_remote]
-doc = "The remote the version probe asks first (live network), as hooks/version-alert-refresh.js."
+doc = "The remote the version probe asks first (live network)."
 value = "https://github.com/talas9/anti-hall"
 
 [refresh.tag_fallback_remote]
@@ -204,7 +204,7 @@ doc = "The programs the Claude Code probe asks, in order."
 value = ["claude"]
 
 [refresh.devswarm_bins]
-doc = "The programs the DevSwarm probe asks, in order (hooks/devswarm-version-refresh.js: the CLI, then the hivecontrol shim)."
+doc = "The programs the DevSwarm probe asks, in order (the CLI, then the hivecontrol shim)."
 value = ["devswarm", "hivecontrol"]
 
 # ---- the reload repair ------------------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ min = 1000
 unit = "ms"
 
 [refresh.repair_lock_file]
-doc = "The repair lock of hooks/repair-on-reload.js (Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together."
+doc = "The repair lock of the reload repair (the Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together."
 value = "repair-on-reload.lock"
 
 [refresh.repair_lock_stale_ms]

@@ -38,7 +38,7 @@ pub fn events(args: &str) -> Value {
     let latest = arg(args, "latest=").and_then(|v| v.parse::<i64>().ok()).map(|n| n.clamp(1, defaults::num("mesh_events.limit") as i64));
     let (order, limit) = if latest.is_some() { ("DESC", latest.unwrap_or(limit)) } else { ("ASC", limit) };
     let rows = conn
-        .prepare(&format!("SELECT id, workspace_id, ts, sender, recipient, mtype, urgency, needs_reply, seq, length(body) FROM messages WHERE id > ?1 AND COALESCE(is_heartbeat, 0) = 0 ORDER BY id {order} LIMIT ?2"))
+        .prepare(&defaults::render("mesh_events.sql_messages", &[("order", &order)]))
         .and_then(|mut s| {
             s.query_map(params![after, limit], |r| {
                 Ok(json!({"id": r.get::<_, i64>(0)?, "partition": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?, "sender": r.get::<_, Option<String>>(3)?,
@@ -48,7 +48,7 @@ pub fn events(args: &str) -> Value {
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
         });
     let reads = conn
-        .prepare("SELECT partition, ns, reader, value, updated_at FROM reader_cursors WHERE updated_at > ?1 ORDER BY updated_at")
+        .prepare(defaults::text("mesh_events.sql_reads"))
         .and_then(|mut s| {
             s.query_map(params![reads_after], |r| {
                 Ok(json!({"partition": r.get::<_, String>(0)?, "ns": r.get::<_, String>(1)?, "reader": r.get::<_, String>(2)?, "value": r.get::<_, i64>(3)?, "updated_at": r.get::<_, i64>(4)?}))
@@ -77,7 +77,7 @@ pub fn message(args: &str) -> Value {
         return json!({"error": defaults::text("mesh_events.msg_no_id")});
     };
     let max = max.unwrap_or(usize::MAX).min(defaults::num("mesh_events.body_max") as usize);
-    match conn.query_row("SELECT body FROM messages WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0)) {
+    match conn.query_row(defaults::text("mesh_events.sql_body"), params![id], |r| r.get::<_, Option<String>>(0)) {
         Ok(body) => {
             let body = health::scrub(&body.unwrap_or_default());
             let cut = body.chars().count() > max;

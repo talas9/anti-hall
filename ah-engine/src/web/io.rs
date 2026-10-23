@@ -18,8 +18,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-const BUCKETS: usize = 16;
-
 /// How a served call ended, as far as its client is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Served {
@@ -31,12 +29,18 @@ pub enum Served {
     FailOpen,
 }
 
-#[derive(Default)]
-struct Hist([AtomicU64; BUCKETS]);
+/// The served-call latency histogram: `web.io_buckets` power-of-two buckets, the last taking everything slower.
+struct Hist(Vec<AtomicU64>);
+
+impl Default for Hist {
+    fn default() -> Self {
+        Hist((0..defaults::num("web.io_buckets")).map(|_| AtomicU64::new(0)).collect())
+    }
+}
 
 impl Hist {
     fn add(&self, us: u64) {
-        let b = (63 - us.max(1).leading_zeros() as usize).min(BUCKETS - 1);
+        let b = ((u64::BITS - 1 - us.max(1).leading_zeros()) as usize).min(self.0.len() - 1);
         self.0[b].fetch_add(1, Relaxed);
     }
     fn counts(&self) -> Vec<u64> {
@@ -47,7 +51,7 @@ impl Hist {
 /// The bucket's upper bound in microseconds (bucket `b` holds `2^b ..< 2^(b+1)`).
 fn quantile_us(counts: &[u64], pct: u64) -> u64 {
     let total: u64 = counts.iter().sum();
-    let want = (total * pct).div_ceil(100).max(1);
+    let want = ((total * pct) as f64 / 100.0).ceil().max(1.0) as u64;
     let mut seen = 0;
     for (b, n) in counts.iter().enumerate() {
         seen += n;

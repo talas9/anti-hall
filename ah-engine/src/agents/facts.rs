@@ -274,7 +274,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let id = str_of(b, "id").to_string();
     a.tools += 1;
     let arg = [tr("command"), tr("file_path"), tr("pattern"), tr("path")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
-    let label = cap(arg, lim("text_cap"));
+    let label = if tools("task_create").contains(&name) { cap(str_of(&input, tr("subject")), lim("text_cap")) } else { cap(arg, lim("text_cap")) };
     let is_edit = tools("edit").contains(&name);
     push_ring(&mut a.recent, (format!("{name}:{:x}", crate::health::fnv(&input.to_string())), format!("{name} {label}"), is_edit, ts), lim("loop_window"));
     let mut class = String::new();
@@ -313,15 +313,32 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     } else if tools("todo").contains(&name) {
         todos(a, &input);
     } else if tools("task_update").contains(&name) {
+        let task = str_of(&input, tr("task_id")).to_string();
+        let text = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
+        let subject = str_of(&input, tr("subject"));
+        if !task.is_empty() && !subject.is_empty() {
+            remember_task(a, &task, subject);
+        }
         match str_of(&input, tr("task_status")) {
             s if s == tr("completed") => {
                 a.steps_done += 1;
                 a.progress += weight("step");
                 a.open = false;
+                // the finished task was the declared step: nothing is being done now until another starts
+                if !task.is_empty() && a.step_task == task {
+                    a.step.clear();
+                    a.step_task.clear();
+                    a.step_events = 0;
+                    a.work.clear();
+                }
             }
             s if s == tr("in_progress") => {
-                let t = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
-                set_step(a, t);
+                // a start that names nothing is the task the id was created or last renamed with
+                let named = if text.is_empty() { a.task_names.get(&task).cloned().unwrap_or_default() } else { text.to_string() };
+                set_step(a, &named);
+                if !named.is_empty() {
+                    a.step_task = task;
+                }
             }
             _ => {}
         }
@@ -334,6 +351,14 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
         }
+    }
+}
+
+fn remember_task(a: &mut Agent, id: &str, subject: &str) {
+    a.task_names.insert(id.to_string(), cap(subject, lim("text_cap")));
+    while a.task_names.len() > lim("task_names_max") as usize {
+        let Some(k) = a.task_names.keys().next().cloned() else { break };
+        a.task_names.remove(&k);
     }
 }
 
@@ -361,6 +386,12 @@ fn todos(a: &mut Agent, input: &Value) {
     if let Some(t) = list.iter().find(|t| str_of(t, tr("task_status")) == tr("in_progress")) {
         let s = [tr("active_form"), tr("content_key")].iter().map(|k| str_of(t, k)).find(|s| !s.is_empty()).unwrap_or("");
         set_step(a, s);
+        a.step_task.clear();
+    } else if !a.step.is_empty() && list.iter().any(|t| [tr("active_form"), tr("content_key")].iter().any(|k| cap(str_of(t, k), lim("text_cap")) == a.step)) {
+        // the list no longer has the declared step in progress (it was completed or put back): nothing is being done now
+        a.step.clear();
+        a.step_events = 0;
+        a.work.clear();
     }
 }
 
@@ -384,6 +415,12 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
     let failed = b.get(tr("is_error")).and_then(Value::as_bool) == Some(true);
+    if !failed
+        && tools("task_create").contains(&p.name.as_str())
+        && let Some(id) = pat("task_created").and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
+    {
+        remember_task(a, &id, &p.label);
+    }
     if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
         a.guard_fires += 1;
     }

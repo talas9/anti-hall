@@ -65,9 +65,9 @@ Invoke:
 ```
 anti-hall debt register   (3 markers · 1 rot-risk)
 
-  src/router.js:12    ceiling: 30 lines   when: a 3rd backend needs it      ok
-  src/cache.js:88     ceiling: O(n^2)     when: n>1000                      ok
-  src/legacy.js:5     ceiling: 2 deps     when: —                  ⚠ rot: no trigger
+  src/router.rs:12    ceiling: 30 lines   when: a 3rd backend needs it      ok
+  src/cache.rs:88     ceiling: O(n^2)     when: n>1000                      ok
+  src/legacy.rs:5     ceiling: 2 deps     when: —                  ⚠ rot: no trigger
 ```
 
 - **ok** — budgeted debt with a live trigger; nothing to do until the trigger fires.

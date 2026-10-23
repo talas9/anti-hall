@@ -585,7 +585,8 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     // how the store side and the mesh group read (`readSideKnown`, `storeUnavailableOut`), without the fields a count adds around them
     let mut known = Obj::default();
     tick::put_known_block(&mut known, &c);
-    for (k, v) in known.0.into_iter().filter(|(k, _)| !matches!(k.as_str(), "meshGroupUnresolved" | "meshGroupError" | "totalsPartial")) {
+    let skip = defaults::list("mesh_write.known_block_skip");
+    for (k, v) in known.0.into_iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
         out.put(&k, v);
     }
     if let Some(f) = &resolved_from {

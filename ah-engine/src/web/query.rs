@@ -83,7 +83,7 @@ fn guard_blocks(rest: &[String], need: usize) -> Value {
         window = flag(rest, "since");
     }
     let days = crate::telemetry::report::window_days(&window);
-    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(86_400_000));
+    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
     let rows: Vec<Value> = crate::telemetry::cli::open_existing()
         .map(|t| t.blocks(since, need))
         .unwrap_or_default()
@@ -109,7 +109,7 @@ fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
         "nudges" => agents::nudge_document(),
         "status" => crate::client::status_value(),
         "history" => super::manage::history_doc(),
-        other => json!({"error": format!("no source '{other}'")}),
+        other => json!({"error": defaults::render("web.msg_query_no_source", &[("what", &other)])}),
     }
 }
 

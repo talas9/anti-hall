@@ -32,8 +32,8 @@ doc = "Telemetry (D78): `summary` (invocations, outcomes, latency and injected b
 value = { args = "[summary|events|rollup|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]", read_only = false, read_only_args = ["", "summary", "events", "rollup", "actions"], status = "implemented" }
 
 [cmd.docs]
-doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code."
-value = { args = "[--format md]", read_only = true, status = "implemented" }
+doc = "Print the generated reference: every command, setting, metric, impact kind, check and error code. `--out <file>` writes it atomically and only when something was generated (a failed run never leaves an empty file); with no text it exits 70 and prints why."
+value = { args = "[--format md|skill|skill-list] [--host <host>] [--name <path>] [--out <file>]", read_only = true, status = "implemented" }
 
 [cmd.gen-hooks]
 doc = "Print a file generated from the dispatch table (D87): the thin hooks.json (one trigger per event), the per-hook registry, the wrapper's fallback list or its fallback map, for one host."
@@ -146,7 +146,7 @@ doc = "File, list, show and rule anti-hall defect reports and query the bug hist
 value = { args = "<report|list|show|rule|archive|backfill|recurring|similar> [flags] [--json]", read_only = false, status = "implemented" }
 
 [cmd.statusline]
-doc = "The two-line status line the host runs after each turn (L9a, the port of statusline/statusline.js and its renderers): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open."
+doc = "The two-line status line the host runs after each turn (L9a): reads the session JSON on stdin; line 1 is the configured base command or the rich line, line 2 the phase bar, swarm activity or context gauge. Fails open."
 value = { args = "(session JSON on stdin)", read_only = false, status = "implemented" }
 
 [cmd.phase]
@@ -202,7 +202,7 @@ doc = "Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only`
 value = { args = "[--check] [--post-pull-only]", read_only = false, status = "implemented" }
 
 [cmd.install-codex]
-doc = "Install the anti-hall hooks for Codex (D81, lane L9b, the port of codex/install-codex.js): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing."
+doc = "Install the anti-hall hooks for Codex (D81, lane L9b): merge the generated hook registration into .codex/hooks.json (project, or --global for the home directory), replacing only anti-hall's own groups, and enable the hooks feature in config.toml. A changed file is copied to <file>.bak-<time> first; --dry-run writes nothing."
 value = { args = "[--global] [--dry-run] [--root <plugin dir>]", read_only = false, status = "implemented" }
 
 [cmd.handovers]

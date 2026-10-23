@@ -3038,7 +3038,7 @@ doc = "stderr line of `inbox messages <id> --ack-as-owner` without --ack (a read
 value = "[devswarm] inbox messages {idq} --ack-as-owner did NOT ack — `messages` is read-only. To ack on the owner's behalf run `inbox read-primary {id} --ack-as-owner`, then the `ackCommand` it returns (`inbox ack-primary {id} --receipt <rid> --ack-as-owner`)."
 
 [mesh_write.msg_unknown_inbox_sub]
-doc = "The error of an `inbox` subcommand devswarm.js does not know. Placeholder: {sub} (JSON-quoted)."
+doc = "The error of an `inbox` subcommand the engine does not know. Placeholder: {sub} (JSON-quoted)."
 value = "unknown inbox subcommand: {sub} (read|ack|count|pull|messages|read-primary|ack-primary|peek-primary|drain-primary-legacy)"
 
 [mesh_write.reason_no_plugin_root]
@@ -3074,7 +3074,7 @@ doc = "The `reason` of that refusal."
 value = "unsupported-verb"
 
 [mesh_write.exit_unsupported]
-doc = "Exit code of a retired or unsupported verb form (a refusal, like devswarm.js's unknown-command answer): nothing was done."
+doc = "Exit code of a retired or unsupported verb form (a refusal, like the old CLI's unknown-command answer): nothing was done."
 value = 2
 min = 1
 max = 125
