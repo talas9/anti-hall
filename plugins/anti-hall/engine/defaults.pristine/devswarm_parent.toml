@@ -507,21 +507,13 @@ value = "anti-hall@anti-hall"
 doc = "Largest registry or manifest file the version lookup reads."
 value = 4194304
 
-[devswarm_parent.cli_rel]
-doc = "The DevSwarm CLI of a cached version, relative to the version directory."
-value = "../anti-hall-node/scripts/devswarm.js"
-
 [devswarm_parent.stale_build_message]
 doc = "The text for a child that runs an older anti-hall build than the machine's newest. Placeholders: {version}, {cmd}."
 value = "stale anti-hall {version}: run /reload-plugins (restart only if it persists) (or drain with `{cmd}`)"
 
 [devswarm_parent.stale_build_cmd]
-doc = "What the stale-build text names as the command: the newest CLI by path. Placeholder: {path}."
-value = "node {path}"
-
-[devswarm_parent.stale_build_cmd_unknown]
-doc = "What the stale-build text names when the newest CLI cannot be found."
-value = "the newest anti-hall CLI"
+doc = "What the stale-build text names as the command: the native thin client's drain."
+value = "~/.anti-hall/ah-engine/bin/ah-hook mesh inbox tick <id>"
 
 
 

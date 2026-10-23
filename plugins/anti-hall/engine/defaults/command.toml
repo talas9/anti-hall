@@ -382,6 +382,22 @@ value = " (category: {label})"
 doc = "Why a heavy command is blocked."
 value = "Raw output floods the main thread."
 
+[command.msg_heavy_remote_why]
+doc = "Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread."
+value = "A push, pull, fetch or gh call talks to a shared remote: it can stall on the network or credentials, and what it changes is shared state. The main thread hands it to a worker; a DevSwarm child workspace pushes its own branch inline."
+
+[command.pytest_interpreter_re]
+doc = "Regex source of the interpreter word of the single-file pytest check that stays allowed inline (`python3 -m pytest ...`)."
+value = '^python[0-9.]*$'
+
+[command.pytest_value_flags]
+doc = "pytest flags that take the next word as their value (`-p no:cacheprovider`, `-k expr`); allowed in the single-file pytest check in any order."
+value = ["-p", "-k", "-m", "-o", "-W", "--tb", "--maxfail", "--durations", "--rootdir", "--import-mode", "--color"]
+
+[command.pytest_flag_re]
+doc = "Regex source of a pytest flag allowed in the single-file check besides pytest_value_flags: output and failure-mode switches that do not widen what runs (not -n, --cov or a collect-all option)."
+value = '^(?:-[qvxsl]+|-r[a-zA-Z]*|--(?:quiet|verbose|exitfirst|no-header|disable-warnings|lf|ff|nf|strict-markers|strict-config|showlocals|full-trace|capture=\w+|tb=\w+|maxfail=\d+|durations=\d+|color=\w+|import-mode=\w+|rootdir=\S+))$'
+
 [command.msg_heavy_delegate]
 doc = "What to do instead ({to} names the worker)."
 value = "delegate to {to} (it returns a short summary)"
@@ -443,16 +459,12 @@ doc = "What stays allowed (Codex)."
 value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/edit-allow.json"
 
 [command.msg_edit_skip_cmd]
-doc = "The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path)."
-value = "{cli} skip edit-guard"
+doc = "The command that records consent to skip edit-guard (the native thin client)."
+value = "~/.anti-hall/ah-engine/bin/ah-hook mesh skip edit-guard"
 
 [command.msg_edit_override]
 doc = "The override line ({skip} is the command above)."
 value = "{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
-
-[command.devswarm_cli_rel]
-doc = "The devswarm CLI, relative to the plugin root."
-value = "../anti-hall-node/scripts/devswarm.js"
 
 [command.cd_delims]
 doc = "The delimiters after which a leading cd carries into the next segment."

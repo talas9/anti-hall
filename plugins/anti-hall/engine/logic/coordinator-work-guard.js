@@ -222,21 +222,23 @@ function cwProvablyNotWork(command) {
 // (mirrors hooks/lib/coordinator-work.js `isDevswarmBookkeeping`; verbs, filters and patterns: coordinator_work.bookkeeping_*).
 function cwBookkeeping(command) {
   if (typeof command !== 'string' || !command.trim() || command.length > ah.cfg('coordinator_work.safe_max_len')) return false;
-  if (new RegExp(ah.cfg('coordinator_work.bookkeeping_reject')).test(command)) return false;
-  if (command.split(ah.cfg('coordinator_work.bookkeeping_stderr_merge')).join('').indexOf('>') >= 0) return false;
+  // the body of a QUOTED heredoc is inert data (a mesh message): dropped with its opener before anything is judged
+  var cmd = command.replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_heredoc'), 'g'), ' ');
+  // quoted text that expands nothing is data too: blanked (same length) before the safety checks and before cutting segments, so a `|`
+  // or a `>` inside a message is not a pipe or a redirect; a double-quoted string with `$` or a backtick stays visible and is rejected
+  var masked = cmd.replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_quoted'), 'g'), function (q) { return new Array(q.length + 1).join('x'); });
+  if (new RegExp(ah.cfg('coordinator_work.bookkeeping_reject')).test(masked)) return false;
+  if (masked.split(ah.cfg('coordinator_work.bookkeeping_stderr_merge')).join('').replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_devnull'), 'g'), '').indexOf('>') >= 0) return false;
   var cli = new RegExp(ah.cfg('coordinator_work.bookkeeping_cli').replace('{verbs}', ah.cfg('coordinator_work.bookkeeping_verbs').join('|')));
   var filt = new RegExp(ah.cfg('coordinator_work.bookkeeping_filter').replace('{filters}', ah.cfg('coordinator_work.bookkeeping_filters').join('|')));
   var inert = new RegExp(ah.cfg('coordinator_work.bookkeeping_inert')), lead = new RegExp(ah.cfg('coordinator_work.bookkeeping_loop_lead'));
-  // quoted text is data: blank it (same length) before cutting segments, so a `|` inside a grep pattern is not a pipe; each segment
-  // is then tested as written
-  var masked = command.replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_quoted'), 'g'), function (q) { return new Array(q.length + 1).join('x'); });
   var splitter = new RegExp(ah.cfg('coordinator_work.segment_split'), 'g'), segs = [], at = 0, m;
   while ((m = splitter.exec(masked)) !== null) {
-    segs.push(command.slice(at, m.index));
+    segs.push(cmd.slice(at, m.index));
     at = m.index + m[0].length;
     if (m[0].length === 0) splitter.lastIndex++;
   }
-  segs.push(command.slice(at));
+  segs.push(cmd.slice(at));
   var sawCli = false;
   for (var i = 0; i < segs.length; i++) {
     var seg = segs[i].replace(lead, '');
@@ -246,6 +248,15 @@ function cwBookkeeping(command) {
     return false;
   }
   return sawCli;
+}
+
+// A mesh send (`send` and the other verbs of coordinator_work.never_block_verbs) is never counted or blocked, whatever else the line holds
+// (a message may carry a backtick or `$(`): escalating to the parent must always get through. Only the first line is read, and the call
+// must open the command.
+function cwMeshSend(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  var first = command.split('\n')[0];
+  return new RegExp(ah.cfg('coordinator_work.bookkeeping_cli').replace('{verbs}', ah.cfg('coordinator_work.never_block_verbs').join('|'))).test(first);
 }
 
 // ---- the texts
@@ -289,7 +300,7 @@ function cwMain(payload, post) {
   var st = cwNormalize(cwReadJson(cwSessionRel(sid)));
   var id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
   var classify = function () {
-    return cwProvablyNotWork(command) || cwBookkeeping(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
+    return cwProvablyNotWork(command) || cwBookkeeping(command) || cwMeshSend(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
   };
   var skipped = function () { return ah.settings.skipped(ah.cfg('coordinator_work.guard_name')); };
 

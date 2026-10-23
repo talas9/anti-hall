@@ -1330,6 +1330,10 @@ value = 4096
 doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
 value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read"]
 
+[coordinator_work.never_block_verbs]
+doc = "DevSwarm CLI verbs whose call is never counted as work and never blocked by the coordinator-work window, whatever the rest of the line holds (escalation to the parent must always get through)."
+value = ["send"]
+
 [coordinator_work.bookkeeping_filters]
 doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
 value = ["tail", "head", "wc", "grep", "egrep", "rg", "sort", "uniq", "cut", "nl"]
@@ -1343,8 +1347,16 @@ doc = "Regex source of one output-filter segment ({filters} are the allowed filt
 value = '^\s*(?:{filters})(?:\s+(?:-{1,2}[0-9A-Za-z][0-9A-Za-z-]*(?:=\S+)?|[0-9A-Za-z_.:\/,@=-]+|"[^"$`]*"|\x27[^\x27]*\x27))*\s*$'
 
 [coordinator_work.bookkeeping_quoted]
-doc = "Regex source of a quoted string; it is blanked before a bookkeeping candidate is cut into segments, so a pipe inside a pattern is not a pipe."
-value = '"[^"]*"|\x27[^\x27]*\x27'
+doc = "Regex source of a quoted string that expands nothing (single-quoted, or double-quoted without `$` or a backtick); it is blanked before a bookkeeping candidate is checked and cut into segments, so a pipe or `>` inside a message is not a pipe or redirect."
+value = '\x27[^\x27]*\x27|"[^"$`]*"'
+
+[coordinator_work.bookkeeping_heredoc]
+doc = "Regex source of a heredoc with a QUOTED delimiter, opener to closing line; its body is inert data (a mesh message) and is dropped before a bookkeeping candidate is judged."
+value = '''<<-?\s*(["\x27])([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\2[ \t]*(?:\n|$)'''
+
+[coordinator_work.bookkeeping_devnull]
+doc = "Regex source of a redirect into /dev/null, which a bookkeeping call may carry besides the stderr merge."
+value = '[0-9]?>\s*/dev/null'
 
 [coordinator_work.bookkeeping_loop_lead]
 doc = "Regex source of the shell keyword that may open a segment of a polling loop (`do`, `then`, `else`); it is stripped before the segment is tested."

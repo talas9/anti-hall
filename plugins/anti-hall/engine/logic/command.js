@@ -672,11 +672,8 @@ LIB['./lib/jev-assist.js'] = { scrubSecrets: function (t) { return ah.scrub(t); 
 
 LIB['./lib/skip-cmd.js'] = {
   skipCommand: function (key) {
-    // the plugin's own devswarm CLI, quoted; the plugin root must be known to name it
-    var real = S.pluginRoot ? ah.fs.realpath(S.pluginRoot) : null;
-    if (real === null) { ah.unable('command:skip_cmd_root'); real = S.pluginRoot || ''; } // the CLI is named from the plugin root as given
-    var cli = path.join(real, ah.cfg('command.devswarm_cli_rel'));
-    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), { cli: "'" + cli.replace(/'/g, "'\\''") + "'" });
+    // the native thin client records the consent; no plugin path is involved
+    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), {});
   },
 };
 
@@ -2862,9 +2859,21 @@ function isSyntaxOnlyCompileCheck(segment) {
 // shape only: no globs, no directory target, no extra args past the one
 // target token.
 function isSinglePytestFileCheck(segment) {
-  const m = segment.trim().match(RX60);
-  if (!m) return false;
-  const target = m[1];
+  const tokens = segment.trim().split(RX28).filter(Boolean);
+  if (tokens.length < 4 || !cmdRe(ah.cfg('command.pytest_interpreter_re')).test(basename(tokens[0])) || tokens[1] !== '-m' || tokens[2] !== 'pytest') return false;
+  const valueFlags = ah.cfg('command.pytest_value_flags'), flagRe = cmdRe(ah.cfg('command.pytest_flag_re'));
+  let target = null;
+  for (let i = 3; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('-')) {
+      if (valueFlags.includes(t)) { if (i + 1 >= tokens.length || tokens[i + 1].startsWith('-')) return false; i++; continue; }
+      if (!flagRe.test(t)) return false;
+      continue;
+    }
+    if (target !== null) return false; // one target only
+    target = t;
+  }
+  if (target === null) return false;
   if (RX61.test(target)) return false;
   if (target.endsWith('/')) return false;
   return true;
@@ -5045,7 +5054,7 @@ function mainFlow(payload) {
   const reason = bm.blockMessage({
     guard: ah.cfg('command.guard_name'),
     what: heavyWhat,
-    why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : 'command.msg_heavy_why'),
+    why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
       : delegateTo + '.') + cdJoinHint,

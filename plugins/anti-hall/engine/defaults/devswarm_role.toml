@@ -158,8 +158,8 @@ value = '''
  + re-arm on its final/expired event'''
 
 [devswarm_role.engine_cli]
-doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the stable POSIX-sh shim that execs the engine's `mesh` verb. Placeholder: {home}, the absolute home directory. A one-value edit points it at the thin-client form."
-value = "{home}/.anti-hall/bin/devswarm.js"
+doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the native thin client's `mesh` verb (the old `bin/devswarm.js` shim stays installed for old sessions but is never advised). Placeholder: {home}, the absolute home directory."
+value = "{home}/.anti-hall/ah-engine/bin/ah-hook mesh"
 
 [devswarm_role.engine_watcher]
 doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the stable POSIX-sh shim that execs the engine's wake-watch verb. Placeholder: {home}."
