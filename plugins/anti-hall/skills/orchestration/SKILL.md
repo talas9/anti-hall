@@ -81,6 +81,11 @@ Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
 > `model` explicitly per spawn** (especially on flagship orchestrators); never rely on
 > inheritance to land a child in the right tier.
 
+> **Cheap seats: set `effort` too.** The Agent tool also takes an `effort` parameter
+> (`low` / `medium` / `high` / `xhigh` / `max`). For a mechanical or read-only child pair the
+> cheap `model` with `effort: "low"`; reserve `high` and above for the work that needs deep
+> reasoning.
+
 ## Swarm topology for larger work
 
 For a big, multi-stream effort, use a tiered hierarchy so no single context holds

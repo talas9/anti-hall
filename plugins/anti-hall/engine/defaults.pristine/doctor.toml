@@ -605,6 +605,14 @@ value = "hooks/hooks.json"
 doc = "The registry key prefix of anti-hall plugin installs."
 value = "anti-hall@"
 
+[doctor.plugin_name]
+doc = "The plugin name anti-hall declares in its manifest; another enabled plugin with this name makes Claude Code (2.1.296+) skip hooks."
+value = "anti-hall"
+
+[doctor.plugin_manifest_file]
+doc = "A plugin's manifest, relative to its install path."
+value = ".claude-plugin/plugin.json"
+
 [doctor.registry_file]
 doc = "The host's plugin registry, relative to the home directory."
 value = ".claude/plugins/installed_plugins.json"
@@ -1023,6 +1031,10 @@ value = "{key} is registered at {path}, which does not exist (moved or pruned) -
 [doctor_msg.plugin_double]
 doc = "PL-04. Placeholders: {n}, {keys}."
 value = "{n} anti-hall plugins are enabled ({keys}); every hook runs twice - Fix: disable all but one: /plugin disable <key>"
+
+[doctor_msg.plugin_name_clash]
+doc = "PL-10. Placeholders: {key}, {name}, {path}."
+value = "enabled plugin {key} ({path}) shares the plugin name '{name}'; Claude Code 2.1.296+ skips the hooks of plugins that share a name - Fix: disable one: /plugin disable {key}"
 
 [doctor_msg.plugin_old_node]
 doc = "PL-05. Placeholders: {key}, {version}."
