@@ -71,8 +71,8 @@ fn emit(line: &str) {
     crate::discard::harmless(out.flush()); // keep: same
 }
 
-/// New complete rows of the feed since `offset`; returns the lines to print and the new offset.
-fn drain(feed: &Path, offset: u64) -> (Vec<String>, u64) {
+/// New complete rows of the feed since `offset`; returns the rows with the line to print for each, and the new offset.
+fn drain(feed: &Path, offset: u64) -> (Vec<(Value, String)>, u64) {
     let Ok(t) = std::fs::read(feed) else { return (Vec::new(), offset) };
     let len = t.len() as u64;
     if len < offset {
@@ -83,9 +83,19 @@ fn drain(feed: &Path, offset: u64) -> (Vec<String>, u64) {
     let lines = String::from_utf8_lossy(&tail[..end])
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter_map(|v| v["text"].as_str().map(|t| defaults::render("msg.agent_wake_line", &[("text", &t)])))
+        .filter_map(|v| {
+            let line = v["text"].as_str().map(|t| defaults::render("msg.agent_wake_line", &[("text", &t)]))?;
+            Some((v, line))
+        })
         .collect();
     (lines, offset + end as u64)
+}
+
+/// Record a printed wake row as delivered, in the same file and shape the `agent-reminders` check writes, so the tick stamps the
+/// flag's `delivered_at` for a wake delivery too (it read only the hook's deliveries before, and a woken idle session never showed one).
+fn record(env: &Env, sid: &str, v: &Value, now: u64) {
+    let row = serde_json::json!({"id": v["id"], "key": super::sinks::key_of(sid), "signal": v["signal"], "agent": v["agent"], "ts": now, "channel": super::chan("wake")});
+    crate::discard::harmless(super::sinks::append(&env.dir().join(pth("delivered")), &row)); // keep: a lost row only leaves delivered_at at 0
 }
 
 /// Run the watcher until the process that started it is gone. Returns the exit code.
@@ -128,7 +138,10 @@ pub(crate) fn pump(env: &Env, sid: &str, poll: Duration, out: &mut dyn FnMut(&st
             last_stamp = now;
         }
         let (lines, next) = drain(&feed, offset);
-        lines.iter().for_each(|l| out(l));
+        for (v, l) in &lines {
+            out(l);
+            record(env, sid, v, now);
+        }
         if next != offset {
             offset = next;
             let mut cur = feed.clone().into_os_string();

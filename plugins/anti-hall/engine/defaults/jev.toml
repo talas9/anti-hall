@@ -219,7 +219,7 @@ unit = "bytes"
 
 [jev.default_modes]
 doc = "Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36)."
-value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on", agentWaste = "on" }
+value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on", agentWaste = "on", agentHealth = "on", nudgeReason = "on", nudgeReply = "on" }
 
 [jev.unlisted_mode]
 doc = "Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones)."

@@ -63,6 +63,14 @@ struct Cfg {
     rules: Vec<Rule>,
     ask_when: Vec<String>,
     default_label: String,
+    /// The model alias of a direct Claude call (`model`; empty: the judge's global model).
+    model: String,
+    /// The judge ladder: the model alias a weak first answer escalates to (`escalate_model`; empty: no ladder).
+    escalate_model: String,
+    /// A first answer under this confidence escalates (`escalate_below`).
+    escalate_below: f64,
+    /// A pack longer than this many characters escalates a first Claude answer (`escalate_pack_chars`; 0: never on size).
+    escalate_pack: usize,
 }
 
 fn int_of(t: &defaults::V, k: &str) -> u64 {
@@ -119,6 +127,10 @@ impl Cfg {
             rules,
             ask_when: strings_of(&t, "ask_when"),
             default_label: s("default_label"),
+            model: s("model"),
+            escalate_model: s("escalate_model"),
+            escalate_below: t.str_field("escalate_below").parse().unwrap_or(0.0),
+            escalate_pack: int_of(&t, "escalate_pack_chars") as usize,
         })
     }
 }
@@ -360,6 +372,10 @@ pub struct Outcome {
     pub missing: Vec<String>,
     /// Milliseconds the model call took (0 when none was made).
     pub ms: u64,
+    /// The rung of the judge ladder that gave the answer: `jev`, or the model alias of a Claude call (empty when none answered).
+    pub tier: String,
+    /// The first rung's answer was weak (failed, low confidence or a long pack) and the next rung was asked.
+    pub escalated: bool,
 }
 
 impl Outcome {
@@ -376,6 +392,8 @@ impl Outcome {
             present: Vec::new(),
             missing: Vec::new(),
             ms: 0,
+            tier: String::new(),
+            escalated: false,
         }
     }
 
@@ -384,7 +402,7 @@ impl Outcome {
         json!({
             "integration": id, "phase": self.phase, "source": self.source, "reason": self.reason, "rule": self.rule, "label": self.label,
             "confidence": self.confidence, "actionable": self.actionable, "evidenceRef": self.evidence_ref,
-            "present": self.present, "missing": self.missing, "ms": self.ms,
+            "present": self.present, "missing": self.missing, "ms": self.ms, "tier": self.tier, "escalated": self.escalated,
         })
     }
 }
@@ -465,10 +483,11 @@ fn parse_haiku(q: &Question, text: &str) -> Option<(Answer, f64, String)> {
 }
 
 /// Ask Haiku directly with the labelled pack; the answer must cite a line that is in the pack.
-fn ask_haiku(home: &Path, cfg: &Cfg, q: &Question, pack: &str, ids: &[String], o: &mut Outcome, env: &Env) {
+fn ask_haiku(home: &Path, cfg: &Cfg, q: &Question, pack: &str, ids: &[String], o: &mut Outcome, env: &Env, alias: &str) {
     let w = word("reason_no_answer");
     let st = Settings { home: home.to_string_lossy().into_owned(), env: cli::process_env() };
-    let model = settings::model(&st);
+    let model = if alias.is_empty() { settings::model(&st) } else { alias.to_string() };
+    o.tier.clone_from(&model);
     let mut input = String::from(defaults::text("evidence.heading_question"));
     input.push_str(&q.instructions);
     input.push_str(defaults::text("evidence.heading_options"));
@@ -625,17 +644,30 @@ fn ask(home: &Path, env: &Env, cfg: &Cfg, req: &Value, _facts: &Facts, sections:
     let q = question_of(cfg, dur, &step_labels);
     let (pack, ids) = render(cfg, _facts, sections);
     let haiku = cfg.backend == word("tag_haiku");
+    // a daily cap of 0 is no cap
+    if haiku && cfg.daily_cap > 0 && haiku_calls_today(home, &cfg.id) >= cfg.daily_cap {
+        o.phase = word("phase_skipped").into();
+        o.reason = Some(word("reason_daily_cap").into());
+        return o;
+    }
     if haiku {
-        if haiku_calls_today(home, &cfg.id) >= cfg.daily_cap {
-            o.phase = word("phase_skipped").into();
-            o.reason = Some(word("reason_daily_cap").into());
-            return o;
-        }
         o.source = word("source_haiku").into();
-        ask_haiku(home, cfg, &q, &pack, &ids, &mut o, env);
+        ask_haiku(home, cfg, &q, &pack, &ids, &mut o, env, &cfg.model);
     } else {
         o.source = word("source_jev").into();
-        ask_jev(home, env, cfg, q, &pack, req.get("blocking").and_then(Value::as_bool).unwrap_or(false), &mut o);
+        o.tier = word("source_jev").into();
+        ask_jev(home, env, cfg, q.clone(), &pack, req.get("blocking").and_then(Value::as_bool).unwrap_or(false), &mut o);
+    }
+    // the judge ladder: a failed, unsure or (for a Claude rung) long-evidence answer goes one rung up
+    let weak = o.label.is_none() || o.confidence.is_none_or(|c| c < cfg.escalate_below) || (haiku && cfg.escalate_pack > 0 && pack.len() > cfg.escalate_pack);
+    if !cfg.escalate_model.is_empty() && weak {
+        let mut up = Outcome::new(word("phase_asked"), word("source_haiku"));
+        ask_haiku(home, cfg, &q, &pack, &ids, &mut up, env, &cfg.escalate_model);
+        if up.label.is_some() {
+            (o.source, o.label, o.confidence, o.evidence_ref, o.reason, o.tier) = (up.source, up.label, up.confidence, up.evidence_ref, None, up.tier);
+        }
+        o.ms += up.ms;
+        o.escalated = true;
     }
     if let (Some(c), Some(l)) = (o.confidence, o.label.as_deref()) {
         let usable = !cfg.steps || l != cfg.unknown_label;

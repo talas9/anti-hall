@@ -328,6 +328,7 @@ pub(crate) fn update(env: &Env, a: &mut Agent, budget: &mut u64) {
     if found.is_none() && stall == Level::Ok {
         return idle(a);
     }
+    let measured = found.is_some();
     let i = found.unwrap_or_default();
     let p = Params::load();
     let s = formula::score(&i, &p, formula::read_heavy(&a.name));
@@ -345,14 +346,17 @@ pub(crate) fn update(env: &Env, a: &mut Agent, budget: &mut u64) {
         *budget -= 1;
     }
     let fresh = !a.waste.verdict.is_empty() && env.now_ms.saturating_sub(a.waste.judged_at) < cooldown * 2;
+    // a time-based stall with (nearly) no tokens spent is a silent agent, which the hung signal covers: it is not waste, and never
+    // hard without a spend to show for it
+    let spent = measured && i.tokens >= lim("evidence_min_tokens");
     let waste = if fresh {
         pol("waste_verdicts").contains(&a.waste.verdict.as_str())
     } else {
         a.waste.source = word("formula").into();
         a.waste.verdict.clear();
-        lvl == Level::Hard
+        lvl == Level::Hard && spent
     };
-    a.waste.action = match (waste, lvl == Level::Hard && pol("hard_kinds").contains(&a.kind.as_str())) {
+    a.waste.action = match (waste, spent && lvl == Level::Hard && pol("hard_kinds").contains(&a.kind.as_str())) {
         (false, _) => String::new(),
         (true, true) => word("hard").into(),
         (true, false) => word("warn").into(),

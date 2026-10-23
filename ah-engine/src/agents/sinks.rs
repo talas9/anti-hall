@@ -37,7 +37,7 @@ pub trait Sink {
     }
 }
 
-fn append(path: &PathBuf, row: &Value) -> Result<(), String> {
+pub(super) fn append(path: &PathBuf, row: &Value) -> Result<(), String> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }

@@ -73,6 +73,7 @@ files = [
     "disk_watch.toml",
     "agent_tracker.toml",
     "agent_waste.toml",
+    "agent_nudge.toml",
     "devswarm_act.toml",
     "devswarm_wire.toml",
     "actions.toml",

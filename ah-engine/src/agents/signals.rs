@@ -5,7 +5,7 @@
 //! ticks, subject to a per-signal cooldown, a daily cap, a per-tick cap and the size of the agent's undelivered queue. When a flag
 //! clears, its outcome is recorded: recovered after a reminder (with how long it took), or a false positive (it cleared on its own
 //! while the agent made progress). A reminded flag still up after the outcome window is recorded as not recovered. Nothing here
-//! ever stops an agent.
+//! stops an agent: escalation to the owner and the stop actions are in `escalate`.
 use super::facts::words;
 use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, WakeFeed, age};
 use super::{Agent, Env, Flag, Sample, State, cap, chan, defaults_signals, fmtn, kind_name, lim, pth, state_name};
@@ -25,6 +25,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
     if a.kind == kind_name("heartbeat") {
         return if a.flags.contains_key("heartbeat_stale") { state_name("stale") } else { state_name("running") };
     }
+    if a.dead {
+        return state_name("dead");
+    }
     if a.gone || a.finished {
         return state_name("done");
     }
@@ -32,7 +35,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
         if host("waiting") || host("blocked") {
             return state_name("waiting");
         }
-        if host("busy") {
+        // the host says busy while any shell of the session runs (a wake-watch Monitor runs for the whole session), so a session whose
+        // transcript ended its turn with no tool call open is idle, whatever the host's word
+        if host("busy") && (a.running || !a.pending.is_empty()) {
             return state_name("running");
         }
     }
@@ -424,7 +429,8 @@ fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
 }
 
 fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64) {
-    if !env.act || !env.switch("agent_tracker.remind_setting") {
+    // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast
+    if !env.act || !env.switch("agent_tracker.remind_setting") || super::nudge::owns(env, a, sig) {
         return;
     }
     let now = env.now_ms;
@@ -449,8 +455,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     let Some(flag) = a.flags.get(sig).cloned() else { return };
     let tg = targets(env, st, a, sig);
     let mut sent = 0;
-    let mut held = why;
     for t in &tg {
+        // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
+        let mut held = why;
         let (sink, key): (Box<dyn Sink>, String) = match t {
             Target::Session(k) => (Box::new(SessionQueue), k.clone()),
             Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
@@ -576,8 +583,10 @@ fn take_deliveries(env: &Env, st: &mut State) {
         st.delivered_lines += 1;
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (agent, sig, ts) = (v["agent"].as_str().unwrap_or(""), v["signal"].as_str().unwrap_or(""), v["ts"].as_u64().unwrap_or(env.now_ms));
+        super::nudge::delivered(st, &v, ts);
         let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(sig)).map(|f| {
             f.delivered_at = ts;
+            f.delivered_to = v["key"].as_str().unwrap_or("").to_string();
             ts.saturating_sub(f.reminded_at) / fmtn("ms_per_s")
         });
         if env.act {
@@ -586,7 +595,7 @@ fn take_deliveries(env: &Env, st: &mut State) {
                 class: "delivery",
                 name: sig,
                 outcome: Outcome::Advise,
-                fields: Fields::new().tok("agent", agent).tok("channel", chan("session")).num("lat_s", lat.unwrap_or(0)),
+                fields: Fields::new().tok("agent", agent).tok("channel", v["channel"].as_str().unwrap_or(chan("session"))).num("lat_s", lat.unwrap_or(0)),
             }));
         }
     }
@@ -614,6 +623,7 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         series(env, &mut a);
         st.agents.insert(id, a);
     }
+    super::nudge::tick(env, st);
     super::lockwatch::tick(env, st);
     let keep = lim("day_retention");
     let today = now / fmtn("day_ms");

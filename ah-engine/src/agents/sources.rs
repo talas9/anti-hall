@@ -327,6 +327,35 @@ fn off_roster(env: &Env, st: &mut State) {
     }
 }
 
+/// Whether a session agent (main or workspace) has a live process: the registry gave it a pid that is alive.
+pub(super) fn proc_live(a: &Agent) -> bool {
+    a.pid != 0 && !a.gone && crate::health::pid_alive(a.pid)
+}
+
+/// Mark the agents nothing can bring back as dead (decided afresh each tick, so new output revives one; nothing is deleted). A Claude
+/// subagent or teammate has no process of its own: it is dead when its transcript or working directory is gone, or when it has been
+/// silent past `dead_idle_ms` while its launching session has no live process either (nobody is left to deliver to or to stop it). A
+/// session is dead on the same terms with its own process in place of the parent's, once the host calls it gone. Codex rows and heartbeats keep their own rules.
+fn mark_dead(env: &Env, st: &mut State) {
+    let limit = lim("dead_idle_ms");
+    let live: std::collections::BTreeSet<String> = st.agents.values().filter(|a| proc_live(a)).map(|a| a.id.clone()).collect();
+    let missing = |p: &str| !p.is_empty() && !Path::new(p).exists();
+    for a in st.agents.values_mut() {
+        let session = a.kind == kind_name("main") || a.kind == kind_name("workspace");
+        if !(session || super::is_child(a)) {
+            continue;
+        }
+        let owner_live = if session { live.contains(&a.id) } else { live.contains(&a.parent) };
+        let silent = limit > 0 && env.now_ms.saturating_sub(a.last_output_ms) > limit;
+        let was = a.dead;
+        // a session also needs the host to call it gone, so a host without a registry never reads an idle session as dead
+        a.dead = !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
+        if a.dead && !was {
+            super::signals::rec(env, "state", super::state_name("dead"), crate::telemetry::event::Outcome::Allow, super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")));
+        }
+    }
+}
+
 /// Discover and ingest every source; drop agents that disappeared.
 pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     let now = env.now_ms;
@@ -380,6 +409,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     let again = relist(env, st, due);
     let l = cli(env, st, again);
     live::apply(st, sessions.as_deref(), l.cli_used);
+    mark_dead(env, st);
     let keep = lim("active_window_ms");
     st.agents.retain(|_, a| now.saturating_sub(a.seen) <= keep);
     l
