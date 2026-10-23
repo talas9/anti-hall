@@ -29,9 +29,9 @@ value = 40
 min = 1
 
 [web.idle_exit_s]
-doc = "The server exits after this many seconds with no request and no open stream."
+doc = "The server exits after this many seconds with no request and no open stream; 0 = never (a dashboard kept running as a service)."
 value = 300
-min = 30
+min = 0
 max = 3600
 
 [web.idle_check_s]
@@ -47,6 +47,15 @@ min = 8
 [web.cookie_name]
 doc = "Name of the session cookie the browser receives after it presents the token."
 value = "ah_web_session"
+
+[web.log_file]
+doc = "File (in the state directory the server was started with) it appends one line to for its start, every signal it receives and its exit with the reason, so a server that disappears says why. Rotated to `<name>.1` at web.log_max_bytes."
+value = "ah-web.log"
+
+[web.log_max_bytes]
+doc = "Size at which the server's log file is rotated (one old copy is kept)."
+value = 262144
+min = 4096
 
 [web.state_file]
 doc = "File (in the engine state directory) the server writes while it runs: pid, port, token and URL. Mode 0600."

@@ -34,6 +34,19 @@ fn random_bytes(n: usize) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// One line in the server's own log (`web.log_file` in the state directory): when, pid, what. A failed write is ignored: logging never stops the server.
+fn log(path: &std::path::Path, max: u64, msg: &str) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= max) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, old); // keep: a failed rotation only lets the file grow a little
+    }
+    let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{ts} pid={} {msg}", std::process::id()); // keep: see above
+    }
+}
+
 /// Write the state file atomically with mode 0600.
 fn write_state(path: &std::path::Path, body: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
@@ -72,7 +85,7 @@ async fn main() {
         return;
     }
     if args.first().map(String::as_str) != Some("serve") {
-        eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket>");
+        eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket> [--idle-exit-s <n>]");
         std::process::exit(64);
     }
     let (Some(config), Some(root), Some(state), Some(engine), Some(socket)) =
@@ -88,6 +101,8 @@ async fn main() {
     if !settings.enabled {
         return;
     }
+    // `--idle-exit-s <n>` overrides web.idle_exit_s for this run (0 = never exit when idle: a dashboard kept as a service)
+    let idle_override: Option<u64> = args.iter().position(|a| a == "--idle-exit-s").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok());
     let listener = bind(&settings).await.unwrap_or_else(|e| {
         eprintln!("ah-web: {e}");
         std::process::exit(75);
@@ -103,12 +118,16 @@ async fn main() {
     }
 
     println!("ah-web: {url}"); // for a run by hand; under `ah-engine web` stdout is closed
+    let log_path = state.join(&settings.log_file);
+    let log_max = settings.log_max_bytes;
+    log(&log_path, log_max, &format!("start version={} url_port={port} ppid={} args={}", env!("AH_BUILD_VERSION"), unsafe { libc::getppid() }, args.join(" ")));
     let app = Arc::new(App::new(settings, config.clone(), root, engine, socket, token, port));
 
     // idle exit and settings reload share one timer
     let watcher = {
         let app = app.clone();
         let state_path = state_path.clone();
+        let (log_path, log_max) = (log_path.clone(), log_max);
         async move {
             let mut seen = mtime(&app.config_path);
             loop {
@@ -121,7 +140,9 @@ async fn main() {
                     }
                 }
                 let idle = app.started.elapsed().as_secs().saturating_sub(app.last_active_s.load(Ordering::Relaxed));
-                if app.streams() == 0 && idle >= app.settings().idle_exit_s {
+                let limit = idle_override.unwrap_or(app.settings().idle_exit_s);
+                if limit > 0 && app.streams() == 0 && idle >= limit {
+                    log(&log_path, log_max, &format!("exit: idle {idle}s with no request and no open stream (web.idle_exit_s={limit})"));
                     break;
                 }
             }
@@ -137,11 +158,33 @@ async fn main() {
             None => std::future::pending::<()>().await,
         }
     };
+    // a hang-up (the terminal or agent shell that started the server ended) must not end a dashboard kept as a service: it is logged and ignored
+    let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
+    let hangups = {
+        let (log_path, log_max) = (log_path.clone(), log_max);
+        async move {
+            loop {
+                match hup.as_mut() {
+                    Some(h) => {
+                        h.recv().await;
+                        log(&log_path, log_max, "signal: SIGHUP ignored");
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            }
+        }
+    };
     tokio::select! {
-        r = axum::serve(listener, server::router(app.clone())) => { if let Err(e) = r { eprintln!("ah-web: {e}"); } }
+        r = axum::serve(listener, server::router(app.clone())) => {
+            match r {
+                Err(e) => { eprintln!("ah-web: {e}"); log(&log_path, log_max, &format!("exit: server error: {e}")); }
+                Ok(()) => log(&log_path, log_max, "exit: server stopped"),
+            }
+        }
         () = watcher => {}
-        () = terminated => {}
-        _ = tokio::signal::ctrl_c() => {}
+        () = terminated => log(&log_path, log_max, "exit: SIGTERM"),
+        () = hangups => {}
+        _ = tokio::signal::ctrl_c() => log(&log_path, log_max, "exit: SIGINT"),
     }
     let _ = std::fs::remove_file(&state_path);
 }
