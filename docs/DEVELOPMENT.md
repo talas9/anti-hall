@@ -176,15 +176,9 @@ cd ah-engine
 cargo bench --locked --bench parsers
 ```
 
-**Plugin.** From the repo root, with no install step. The suite includes the `evals/` unit tests and the docs and link checks.
-
-<!-- doc-check: long -->
-```sh
-node --test
-```
+**Plugin.** From the repo root, with no install step. The Node test suite is retired; these generated-file checks remain.
 
 ```sh
-node --test tests/hygiene/docs-links.test.js
 node tools/gen-protocol.js --check
 node tools/gen-agents-catalog.js --check
 node tools/gen-kb-counts.js --check
@@ -204,28 +198,7 @@ A green local run is not a green CI run. CI runs on ubuntu and macOS, slower, wi
 node evals/anti-hall/run.js --arm anti-hall --max-cost-usd 3 --label smoke
 ```
 
-**Parity harnesses.** A ported guard must give the same exit code, stdout and stderr as its Node original ([D31](../ah-engine/DECISIONS.md)). Build the release binary first. `--mode both` runs the check in-process and through a real daemon, which the harness starts and waits for.
-
-```sh
-cd ah-engine/parity
-node run-git.js --engine ../target/release/ah-engine --hooks ../../plugins/anti-hall/hooks --corpus corpus.jsonl --mode both --out /tmp/ah-git-mismatches.json
-```
-
-`corpus.jsonl` is the committed git corpus; the number to reach is 100 percent, with every command the engine cannot decide exactly deferred to Node. The harnesses for the other ports (`run-merge-side-pick.js`, `run-ship-it-guard.js`, `run-scan-throttle.js`, `run-coordinator-work-guard.js`, `run-compact-declaration-guard.js`) also need a file of recorded commands, which is not in the repository, so a clone cannot run them as they are:
-
-<!-- doc-check: skip (needs a recorded-commands file that is not in the repository) -->
-```sh
-cd ah-engine/parity
-node run-merge-side-pick.js --engine ../target/release/ah-engine --hooks ../../plugins/anti-hall/hooks --cmds <recorded-commands.jsonl>
-```
-
-The ported hook checks (the six session-maintenance hooks, the context-budget, handover and Codex, task, guard and verify-first checks) are compared with their Node hooks by the `node_parity` module of the `it` Rust test binary, `ah-engine/tests/it/node_parity/`. Every scenario runs the real Node hook (the reference) and the engine on the same inputs, in isolated homes, and compares exit code, stdout, stderr and the files each side leaves behind; nothing but Node as the reference is needed, and a lane is skipped where Node or the plugin hooks are missing. The session-maintenance lane spawns the Node hook with a spy that records and suppresses any process it would start. It takes some minutes and needs `git`, `node` and, for the API guard, `python3` on the `PATH`.
-
-<!-- doc-check: skip (several thousand scenarios; run on demand) -->
-```sh
-cd ah-engine
-cargo test --release --test it -- node_parity:: --nocapture
-```
+**Parity.** The Node parity harnesses and the `node_parity` test module are retired with the Node tests (owner order 2026-10-23); the engine's own tests are the reference.
 
 Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there, `AH_PARITY_ONLY=<text>` to run only the scenarios whose id contains it (the sandbox lanes), and `AH_PARITY_REAL_CMDS`, `AH_PARITY_REAL_EDITS` or `AH_PARITY_REAL_TRANSCRIPTS=1` to add real commands, edits or transcripts from local data to the lanes that took them (never committed).
 

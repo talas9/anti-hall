@@ -40,8 +40,6 @@ never a submodule (D69).
 | `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `tests/it/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
-| `parity/` | the parity harnesses of the older lanes (git, command, Jev, dispatcher, merge-side-pick, scan-throttle, ship-it, compact declaration), and `transcript-facts.js` / `run-transcript.js` for the transcript index |
 | `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
 
