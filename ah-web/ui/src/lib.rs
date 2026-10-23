@@ -700,7 +700,7 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
         <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
             <dl class="kv">
                 <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
-                <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| format!("{v} \u{b7} {}", sha().unwrap_or_default())).unwrap_or_else(|| n3.clone())}</dd>
+                <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| sha().map_or_else(|| v.clone(), |h| format!("{v} \u{b7} {h}"))).unwrap_or_else(|| n3.clone())}</dd>
                 <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
                 <dt>{tx("ver_hook")}</dt><dd>{none.clone()}</dd>
                 <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
