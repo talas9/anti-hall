@@ -668,7 +668,8 @@ fn pair(series: &[f64], p: &PeriodDef, frac: f64, c: &TelCfg) -> Pair {
     let (prev, prev_days) = span(series, p.prev, frac);
     // a percentage needs a baseline worth measuring against, and is never larger than the configured cap
     let delta = (prev_days > 0.0 && cur_days > 0.0 && prev / prev_days >= c.pct_min_baseline).then(|| (((cur / cur_days) / (prev / prev_days) - 1.0) * 100.0).clamp(-c.pct_cap, c.pct_cap));
-    Pair { cur, prev, delta_pct: delta }
+    let rate = |total: f64, days: f64| if days > 0.0 { total / days } else { 0.0 };
+    Pair { cur, prev, cur_rate: rate(cur, cur_days), prev_rate: rate(prev, prev_days), delta_pct: delta }
 }
 
 fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {

@@ -162,6 +162,11 @@ pub struct TelDoc {
 pub struct Pair {
     pub cur: f64,
     pub prev: f64,
+    /// `cur` and `prev` per day (today counts as the part of it gone): what the change is judged on, so the bars use it too.
+    #[serde(default)]
+    pub cur_rate: f64,
+    #[serde(default)]
+    pub prev_rate: f64,
     /// The change per day against the period before, percent; `None` when the period before is empty.
     pub delta_pct: Option<f64>,
 }

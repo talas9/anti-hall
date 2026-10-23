@@ -105,6 +105,11 @@ fn fmt_val(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, v: f64) -> 
     }
 }
 
+/// A per-day figure: a fraction while it is small, so a quiet check does not read as zero.
+fn fmt_rate(ui: &TelUi, texts: &BTreeMap<String, String>, v: f64) -> String {
+    if v > 0.0 && v < 10.0 { format!("{v:.1}") } else { fmt_val(ui, texts, "count", v) }
+}
+
 fn fmt_cell(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, c: &Cell) -> String {
     match c {
         Cell::Text(t) => t.clone(),
@@ -864,14 +869,15 @@ fn pair_rows(rows: &[ImpactRow], period: usize, texts: &BTreeMap<String, String>
         .iter()
         .map(|r| {
             let p: Pair = r.pairs.get(period).copied().unwrap_or_default();
-            let max = p.cur.max(p.prev).max(1.0);
+            // the bars use the same per-day rates as the change beside them (a part-day period is not set against a whole one)
+            let max = p.cur_rate.max(p.prev_rate).max(f64::MIN_POSITIVE);
             let tone = delta_tone(p.delta_pct, &r.good, 0.5);
             view! {
                 <div class="pair" title=r.hint.clone()>
                     <span class="pair-label">{r.label.clone()}</span>
                     <div class="pair-bars">
-                        <div class="bar cur"><span style=format!("width:{:.1}%", p.cur / max * 100.0)></span><em>{fmt_val(ui, texts, "count", p.cur)}</em></div>
-                        <div class="bar prev"><span style=format!("width:{:.1}%", p.prev / max * 100.0)></span><em>{fmt_val(ui, texts, "count", p.prev)}</em></div>
+                        <div class="bar cur"><span style=format!("width:{:.1}%", p.cur_rate / max * 100.0)></span><em>{fmt_rate(ui, texts, p.cur_rate)}{tt(texts, "per_day_so_far")}</em></div>
+                        <div class="bar prev"><span style=format!("width:{:.1}%", p.prev_rate / max * 100.0)></span><em>{fmt_rate(ui, texts, p.prev_rate)}{tt(texts, "per_day")}</em></div>
                     </div>
                     <span class=format!("pair-delta tone-{tone}")>{delta_text(p.delta_pct)}</span>
                 </div>
