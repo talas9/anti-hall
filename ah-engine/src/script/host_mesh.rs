@@ -267,7 +267,7 @@ fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
-    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread, "age": age}))
+    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age}))
 }
 
 /// This hook's own reader on partition `id` (`ownReaderDelta` / `ownReaderLiveUnread`): `{reader: false}` when the hook has no

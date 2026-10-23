@@ -569,6 +569,8 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
     let own_total = u.store_only_unread.len();
     let pre_cap = own_total + added_unread;
     let (store_unread, truncated) = if pre_cap > limit { (limit, pre_cap - limit) } else { (pre_cap, 0) };
+    // the engine's own wake rows are acked with the rest but are not mail to report
+    let store_unread = store_unread.saturating_sub(u.store_only_unread.iter().filter(|r| union::is_wake_row(r)).count());
     let mut remaining = limit;
     let own_kept = own_total.min(remaining);
     if truncated > 0 {
@@ -600,7 +602,7 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         store_key,
         known,
         unread: unread + added_unread,
-        nd_unread: u.nd_unread_lines.len(),
+        nd_unread: u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l)).count(),
         store_unread,
         nd_cursor,
         store_cursor: store_base,

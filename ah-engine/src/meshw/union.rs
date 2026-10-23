@@ -39,6 +39,20 @@ pub struct Union {
     pub store_only_unread: Vec<Value>,
     /// Age in ms of the oldest unread row that carries a timestamp, `None` when none does (or the age is negative).
     pub oldest_unread_age_ms: Option<f64>,
+    /// How many of the unread lines and rows are the engine's own wake prompts (see [`is_wake_line`]); they are in the lists above
+    /// (an ack walks them) but not in `unread`, and never set the oldest age.
+    pub wake_unread: usize,
+}
+
+/// Whether an NDJSON line is a wake prompt the engine had DevSwarm queue (`agent_tracker.wake_prefix`): DevSwarm stores it as a direct
+/// mail row, but it only points at mail, so it is never counted, shown or aged as mail.
+pub fn is_wake_line(line: &str) -> bool {
+    line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
+}
+
+/// [`is_wake_line`] for a store row.
+pub fn is_wake_row(row: &Value) -> bool {
+    row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
 }
 
 /// The inputs of [`union_unread`] (Node's `unionUnread` opts).
@@ -236,11 +250,20 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
         nd_lines.drain(..nd_skipped);
     }
     let mut oldest: Option<f64> = None;
-    for ts in nd_lines.iter().filter_map(|l| line_ts(l)).chain(store_only.iter().filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
+    let nd_ts = nd_lines.iter().filter(|l| !is_wake_line(l)).filter_map(|l| line_ts(l));
+    for ts in nd_ts.chain(store_only.iter().filter(|r| !is_wake_row(r)).filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
         oldest = Some(oldest.map_or(ts, |o| o.min(ts)));
     }
     let age = oldest.map(|o| i.now as f64 - o).filter(|a| *a >= 0.0);
-    Ok(Union { unread: nd_lines.len() + store_only.len(), nd_unread_lines: nd_lines, nd_skipped, store_only_unread: store_only, oldest_unread_age_ms: age })
+    let wake_unread = nd_lines.iter().filter(|l| is_wake_line(l)).count() + store_only.iter().filter(|r| is_wake_row(r)).count();
+    Ok(Union {
+        unread: nd_lines.len() + store_only.len() - wake_unread,
+        nd_unread_lines: nd_lines,
+        nd_skipped,
+        store_only_unread: store_only,
+        oldest_unread_age_ms: age,
+        wake_unread,
+    })
 }
 
 /// `unionUnread`'s merged `total` over the whole history: the NDJSON lines plus the store rows no line covers (by hash,
@@ -338,17 +361,12 @@ pub fn unread_at(
     now: i64,
 ) -> R<Unread> {
     let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now })?;
-    // the engine's own wake prompts (stored by DevSwarm as direct mail) are not mail: never unread, like the family's own sends
-    let wake = defaults::text("agent_tracker.wake_prefix");
-    let own_nd = union
-        .nd_unread_lines
-        .iter()
-        .filter(|l| line_sender(l).is_some_and(|s| family.contains(&s)) || line_body(l).is_some_and(|b| b.starts_with(wake)))
-        .count();
+    // wake rows are already out of `union.unread`; a row counts once, so the family's own wake-free sends are what is taken off here
+    let own_nd = union.nd_unread_lines.iter().filter(|l| !is_wake_line(l) && line_sender(l).is_some_and(|s| family.contains(&s))).count();
     let own_store = union
         .store_only_unread
         .iter()
-        .filter(|r| r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s)) || r.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(wake)))
+        .filter(|r| !is_wake_row(r) && r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s)))
         .count();
     let own_excluded = own_nd + own_store;
     Ok(Unread { unread: union.unread - own_excluded, own_excluded, union, store_base, nd_base })

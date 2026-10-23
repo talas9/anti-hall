@@ -287,12 +287,13 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
         .put("storePath", OVal::Str(union::store_dir(&inv.home, &c.store_key).to_string_lossy().into_owned()))
         .put("cwd", s(&inv.cwd))
         .put("meshPartitionIds", OVal::Arr(c.mesh_ids.iter().map(|x| s(x)).collect()))
-        .put("lines", OVal::Arr(c.nd_lines.iter().map(|l| s(l)).collect()))
+        .put("lines", OVal::Arr(c.nd_lines.iter().filter(|l| !union::is_wake_line(l)).map(|l| s(l)).collect()))
         .put(
             "meshMessages",
             OVal::Arr(
                 c.store_rows
                     .iter()
+                    .filter(|r| !union::is_wake_row(r))
                     .map(crate::meshw::readprimary::store_row)
                     .chain(c.siblings.iter().flat_map(|sib| sib.delivered.iter().take(sib.kept).map(|r| sibling_row(&sib.id, r))))
                     .collect(),

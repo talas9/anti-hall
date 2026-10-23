@@ -1523,13 +1523,13 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         let family = tick::family_of(id, &o.rows);
         for (i, line) in u.nd_unread_lines.iter().enumerate() {
             let mut m = ndjson_msg(line)?;
-            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x));
+            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x)) || union::is_wake_line(line);
             m.src_idx = i;
             msgs.push(m);
         }
         for (i, r) in u.store_only_unread.iter().enumerate() {
             let mut m = store_msg(r, true);
-            m.own = r.get("sender").and_then(Value::as_str).is_some_and(|x| family.contains(x));
+            m.own = r.get("sender").and_then(Value::as_str).is_some_and(|x| family.contains(x)) || union::is_wake_row(r);
             m.src_idx = i;
             msgs.push(m);
         }
