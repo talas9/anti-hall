@@ -13,7 +13,7 @@ use crate::defaults;
 use crate::meshw::actverbs::note_ref;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s, s_or_null};
-use crate::meshw::ident::{self, Defer, R, Row, defer};
+use crate::meshw::ident::{self, Defer, R, Row};
 use crate::meshw::store::{self, MeshStore};
 
 /// What a verb wrote to the store, for the shadow comparison.
@@ -147,7 +147,8 @@ pub(crate) fn resolve_read_arg(inv: &Inv, reader: &crate::mesh::MeshReader, rows
         Resolved::Unregistered => ReadArg::Same,
         Resolved::Row(t) if t.id == arg => ReadArg::Same,
         Resolved::Row(t) | Resolved::Rerouted(t, ..) => ReadArg::To(t.id),
-        Resolved::AmbiguousPrefix(ids) => ReadArg::Ambiguous(ids),
+        Resolved::Redirected(t, _) => ReadArg::To(t.id),
+        Resolved::AmbiguousPrefix(ids) | Resolved::AmbiguousRows(ids) => ReadArg::Ambiguous(ids),
     })
 }
 
@@ -157,8 +158,12 @@ pub(crate) enum Resolved {
     Row(Row),
     /// The addressed row is stale and a live row of the same session took its place: the row to deliver to, the id addressed and why.
     Rerouted(Row, String, &'static str),
+    /// The address was retired by a fold and a registry row of the survivor took its place: the row and the id addressed.
+    Redirected(Row, String),
     /// No row by mesh id, id or id prefix.
     Unregistered,
+    /// The exact id and the mesh label name different rows, or several rows share the id: the ids (Node's non-prefix `ambiguous`).
+    AmbiguousRows(Vec<String>),
     /// Several rows share the id prefix: the full ids, sorted.
     AmbiguousPrefix(Vec<String>),
 }
@@ -188,7 +193,7 @@ pub(crate) fn resolve_send_target(inv: &Inv, reader: Option<&crate::mesh::MeshRe
             let same_group = own.as_deref() == Some(arg);
             if let Some(b) = &by_mesh {
                 if !same_row && !same_group {
-                    return defer("ambiguous-recipient");
+                    return Ok(Resolved::AmbiguousRows(vec![row.id.clone(), b.id.clone()]));
                 }
                 if same_group && !same_row {
                     note_ref("mesh_write.ref_outcome_mesh");
@@ -245,8 +250,11 @@ pub(crate) fn resolve_send_target(inv: &Inv, reader: Option<&crate::mesh::MeshRe
                 note_ref("mesh_write.ref_outcome_mesh");
                 return Ok(Resolved::Row(row));
             }
-            if retired_redirect_exists(inv, arg) {
-                return defer("retired-redirect"); // one hop through a fold-time redirect is Node's
+            // one hop through a fold-time redirect, looked up in the registry directly (never by recursing: a cyclic file cannot loop)
+            if let Some(to) = crate::meshw::readprimary::read_retired_redirect(inv, arg)
+                && let Some(survivor) = rows.iter().find(|d| d.id == to)
+            {
+                return Ok(Resolved::Redirected(survivor.clone(), arg.to_string()));
             }
             // GH #203: the roster shows only a short id, so a unique id prefix is the recipient. The pool is the registry
             // ids AND the live descriptor ids (Node's union), sorted and deduplicated.
@@ -274,7 +282,7 @@ pub(crate) fn resolve_send_target(inv: &Inv, reader: Option<&crate::mesh::MeshRe
                 }
             }
         }
-        _ => defer("ambiguous-recipient"),
+        _ => Ok(Resolved::AmbiguousRows(id_matches.iter().map(|d| d.id.clone()).collect())),
     }
 }
 
@@ -293,7 +301,7 @@ fn descriptor_prefix_ids(home: &std::path::Path, prefix: &str) -> Vec<String> {
 }
 
 /// `descriptorMeshId(home, id)` (Node `send.js`): the mesh label the worktree of the descriptor `id` (live, else archived) derives
-/// to; `None` for an unsafe id, no descriptor, or none with a worktree. A truthy non-string `worktreePath` is Node's throw: deferred.
+/// to; `None` for an unsafe id, no descriptor, or none with a worktree. A truthy non-string `worktreePath` is coerced as `String(x)` (Node's canonicalMeshId/rawPathMeshId both do).
 fn descriptor_mesh_id(home: &std::path::Path, id: &str) -> R<Option<String>> {
     if !crate::meshw::idlock::is_safe_id(id) {
         return Ok(None);
@@ -310,7 +318,8 @@ fn descriptor_mesh_id(home: &std::path::Path, id: &str) -> R<Option<String>> {
             Some(OVal::Str(w)) if !w.is_empty() => w.clone(),
             None | Some(OVal::Null | OVal::Str(_) | OVal::Bool(false)) => continue,
             Some(OVal::Num(x)) if *x == 0.0 || x.is_nan() => continue,
-            Some(_) => return defer("descriptor-worktree-shape"),
+            // a truthy non-string path is coerced the way Node's `String(worktreePath)` does
+            Some(other) => ident::js_to_string(other),
         };
         return Ok(match ident::canonical_mesh_id(&wt)? {
             Some(c) if !c.is_empty() => Some(c),
@@ -377,9 +386,7 @@ fn apply_heal(out: &mut Obj, heal: &[(String, OVal)]) {
 
 /// Run `send` with `a` (argv already parsed; `a.positionals[0] == "send"`).
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
-    if a.is_help() {
-        return defer("help");
-    }
+    // a help request never reaches here: `simple::classify` takes it first (`is_help` is its test), so `send --help` is `simple`'s
     common::seat_check(inv)?;
     // several recipients (devswarm.sendMultiRecipient, on unless set false): `--to a,b` or a repeated `--to`, deduped
     let to_key = defaults::text("mesh_write.flag_to");
@@ -487,16 +494,18 @@ fn run_multi(inv: &Inv, a: &Args, recipients: &[String]) -> R<Answer> {
         let body = if let Some(f) = m_file {
             match read_message_file(f) {
                 Ok(b) => b,
-                Err(Some(why)) => {
+                Err(why) => {
                     let msg = defaults::render("devswarm_cli.msg_send_file_unreadable", &[("file", &quote(f)), ("why", &why)]);
                     return refused_multi_text(a, &msg);
                 }
-                Err(None) => return defer("message-file"),
             }
         } else {
             match &inv.stdin {
                 Some(sv) => sv.clone(),
-                None => return defer("message-stdin"),
+                None => {
+                    let msg = defaults::render("devswarm_cli.msg_send_multi_stdin_unreadable", &[("why", &defaults::text("devswarm_cli.send_stdin_unavailable_why"))]);
+                    return refused_multi_text(a, &msg);
+                }
             }
         };
         inv2.stdin = Some(body);
@@ -560,18 +569,23 @@ fn refused_multi_text(a: &Args, msg: &str) -> R<Answer> {
     Ok(answer_of(a, refused(&[("action", s(defaults::text("mesh_write.action_send"))), ("error", s(msg))])))
 }
 
-/// `fs.readFileSync(path, 'utf8')`: the text, or `Err(Some(message))` with JavaScript's message for an error the engine
-/// reproduces, `Err(None)` for any other (Node's).
-fn read_message_file(path: &str) -> Result<String, Option<String>> {
+/// `fs.readFileSync(path, 'utf8')`: the text, or `Err(message)` with JavaScript's message for the failure (an error number the
+/// table lists is worded as libuv words it, any other by the operating system's own text).
+fn read_message_file(path: &str) -> Result<String, String> {
     match std::fs::read(path) {
         Ok(b) => Ok(String::from_utf8_lossy(&b).into_owned()),
         Err(e) => {
             let table = defaults::raw("devswarm_cli.send_fs_errors");
             let tpl = e.raw_os_error().and_then(|c| table.get(&c.to_string())).and_then(|v| v.as_str());
-            match tpl {
-                Some(t) => Err(Some(t.replace("{path}", &format!("'{path}'")))),
-                None => Err(None),
-            }
+            let quoted = format!("'{path}'");
+            Err(match tpl {
+                Some(t) => t.replace("{path}", &quoted),
+                None => {
+                    let text = e.to_string();
+                    let message = text.split(" (os error").next().unwrap_or(&text).to_string();
+                    defaults::render("devswarm_cli.send_fs_error_other", &[("message", &message), ("path", &quoted)])
+                }
+            })
         }
     }
 }
@@ -692,11 +706,12 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         let key = if modes > 1 { "devswarm_cli.msg_send_target_many" } else { "devswarm_cli.msg_send_target_none" };
         return Ok(refused(&[("error", s(defaults::text(key)))]));
     }
-    if !broadcast
+    // JEV outcome tracking (best-effort, direct sends only): a plan pass writes nothing, the real pass records it
+    if !plan
+        && !broadcast
         && let Some(t) = to_flag
-        && common::jev_pending_answer(inv, &from, t)
     {
-        return defer("jev-answer");
+        common::jev_record_answered(inv, &from, t);
     }
     let question = a.has(defaults::text("mesh_write.flag_question"));
     let answers = a.has(defaults::text("mesh_write.flag_answers"));
@@ -717,16 +732,18 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let message = if let Some(f) = m_file {
         match read_message_file(f) {
             Ok(b) => b,
-            Err(Some(why)) => {
+            Err(why) => {
                 let msg = defaults::render("devswarm_cli.msg_send_file_unreadable", &[("file", &quote(f)), ("why", &why)]);
                 return Ok(refused(&[("error", s(&msg))]));
             }
-            Err(None) => return defer("message-file"),
         }
     } else if m_stdin {
         match &inv.stdin {
             Some(sv) => sv.clone(),
-            None => return defer("message-stdin"),
+            None => {
+                let msg = defaults::render("devswarm_cli.msg_send_stdin_unreadable", &[("why", &defaults::text("devswarm_cli.send_stdin_unavailable_why"))]);
+                return Ok(refused(&[("error", s(&msg))]));
+            }
         }
     } else {
         m_flag.unwrap_or_default().to_string()
@@ -743,7 +760,12 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let mut primary_mesh: Option<String> = None;
     if to_primary {
         let c = ident::resolve_context(&cwd, false)?;
-        let Some(common_dir) = c.common_dir else { return defer("no-primary-worktree") };
+        let Some(common_dir) = c.common_dir else {
+            return Ok(refused(&[
+                ("reason", s(defaults::text("devswarm_cli.reason_send_no_primary_worktree"))),
+                ("error", s(defaults::text("devswarm_cli.msg_send_no_primary_worktree"))),
+            ]));
+        };
         primary_mesh = Some(ident::primary_workspace_id(&ident::dirname(&common_dir))?);
     }
     if !broadcast {
@@ -754,11 +776,19 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         }
     }
     let now = inv.now;
+    // P1-1/P1-2 RE-HOME (send path): a Primary stranded in the legacy hash bucket is migrated before it is resolved
+    let mut rehomed = false;
     if let Some(pm) = &primary_mesh {
-        rehome_is_noop(inv, pm)?;
+        rehomed = maybe_rehome_to_cwd_project(inv, pm)?;
+        if plan {
+            REHOMED_IN_PLAN.store(rehomed, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            rehomed |= REHOMED_IN_PLAN.swap(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
     // target resolution (direct)
     let mut reroute: Option<(String, &'static str)> = None;
+    let mut redirect: Option<String> = None;
     let target: Option<Row> = if broadcast {
         None
     } else if let Some(pm) = &primary_mesh {
@@ -777,6 +807,15 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
             Resolved::Rerouted(t, from, why) => {
                 reroute = Some((from, why));
                 Some(t)
+            }
+            Resolved::Redirected(t, from) => {
+                redirect = Some(from);
+                Some(t)
+            }
+            Resolved::AmbiguousRows(ids) => {
+                let list = ids.join(defaults::text("devswarm_cli.send_prefix_candidates_sep"));
+                let msg = defaults::render("devswarm_cli.msg_send_rows_ambiguous", &[("to", &quote(to_flag.unwrap_or_default())), ("candidates", &list)]);
+                return Ok(refused(&[("reason", s(defaults::text("devswarm_cli.reason_ambiguous_recipient"))), ("error", s(&msg))]));
             }
             Resolved::AmbiguousPrefix(ids) => {
                 let list = ids.join(defaults::text("devswarm_cli.send_prefix_candidates_sep"));
@@ -802,12 +841,6 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         }
         None => None,
     };
-    if !broadcast && !question && common::jev_maybe_enabled(inv) {
-        return defer("jev-triage");
-    }
-    if common::sender_has_plan(inv, &from)? {
-        return defer("plan-activity");
-    }
     let partition = target.as_ref().map(|t| t.id.clone());
     let no_reader = !broadcast
         && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
@@ -842,6 +875,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         candidates,
         no_reader,
         reroute: reroute.as_ref().map(|(f, w)| (f.as_str(), *w)),
+        redirect: redirect.as_deref(),
+        rehomed,
         repo_key: &repo_key,
         cwd: &cwd,
     };
@@ -879,21 +914,45 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     Ok(o)
 }
 
-/// `maybeRehomeToCwdProject(home, primaryMeshId, ctx)` does nothing (else defer).
-pub(crate) fn rehome_is_noop(inv: &Inv, id: &str) -> R<()> {
-    let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return Ok(()) };
+/// Set by a plan pass that re-homed the Primary, taken by the real pass that reports it (`rehomedFromHashBucket`): a send with
+/// `--cc-primary` settles the copy in a plan pass before the first write, and the re-home is done there, once.
+static REHOMED_IN_PLAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `maybeRehomeToCwdProject(home, id, ctx)`: when the current checkout resolves a project key AND the descriptor's persisted owner key
+/// is the legacy hash bucket (the split-brain marker), and the id is not registered to another project (the foreign-strand
+/// guard), re-home the id into the caller's project under the id's lock. `true` when a re-home moved the registry row.
+pub(crate) fn maybe_rehome_to_cwd_project(inv: &Inv, id: &str) -> R<bool> {
+    let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return Ok(false) };
     let hash_key = hash_from_workspace_id(id);
-    if hash_key == repo_key {
-        return Ok(());
+    if hash_key.is_empty() || hash_key == repo_key {
+        return Ok(false);
     }
-    let owner = ident::read_descriptor(&inv.home, id).and_then(|d| match d.get(defaults::text("mesh_write.field_owner_key")) {
-        Some(OVal::Str(sv)) if !sv.is_empty() => Some(sv.clone()),
+    let Some(desc) = ident::read_descriptor(&inv.home, id) else { return Ok(false) };
+    let owner = match desc.get(defaults::text("mesh_write.field_owner_key")) {
+        Some(OVal::Str(sv)) if !sv.is_empty() => Some(sv.as_str()),
         _ => None,
-    });
-    if owner.as_deref() != Some(hash_key.as_str()) {
-        return Ok(());
+    };
+    if owner != Some(hash_key.as_str()) {
+        return Ok(false);
     }
-    defer("rehome")
+    if let Some(registered) = crate::meshw::inbox::registered_repo_key(&desc, id)?
+        && registered != repo_key
+    {
+        return Ok(false);
+    }
+    let st = inv.settings();
+    let ctx = crate::dssup::tick::Ctx { home: &inv.home, root: std::path::Path::new(""), st: &st, now: inv.now, engine_pokes: false };
+    let moved = crate::dssup::recon::rehome::core(&ctx, id, &repo_key);
+    if moved.rehomed {
+        crate::meshw::mark_committed();
+    }
+    Ok(moved.rehomed)
+}
+
+/// The re-home the read, gate and tick verbs run before they open the store (see [`maybe_rehome_to_cwd_project`]); what happened is
+/// not reported by them.
+pub(crate) fn rehome_is_noop(inv: &Inv, id: &str) -> R<()> {
+    maybe_rehome_to_cwd_project(inv, id).map(|_| ())
 }
 
 /// `hashFromWorkspaceId(id)`.
@@ -928,6 +987,10 @@ struct AppendCtx<'a> {
     no_reader: bool,
     /// The row addressed and why delivery went to its live twin (`reroutedFrom`, `rerouteReason`).
     reroute: Option<(&'a str, &'static str)>,
+    /// The id addressed when a fold-time retired-redirect led to the row (`redirected`, `redirectedFrom`).
+    redirect: Option<&'a str>,
+    /// The Primary was re-homed out of the hash bucket by this send (`rehomedFromHashBucket`).
+    rehomed: bool,
     repo_key: &'a str,
     cwd: &'a str,
 }
@@ -981,12 +1044,18 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         .put("urgency", s(c.urgency))
         .put("sent", OVal::Bool(inserted))
         .put("seq", seq.map_or(OVal::Null, |x| n(x as f64)));
+    if let Some(from) = c.redirect {
+        out.put("redirected", OVal::Bool(true)).put("redirectedFrom", s(from));
+    }
     if let Some((from, why)) = c.reroute {
         out.put("rerouted", OVal::Bool(true)).put("reroutedFrom", s(from)).put("rerouteReason", s(why));
     }
     out.put("bytes", n(bytes))
-        .put("hash", s(&hash))
-        .put("needsReply", OVal::Bool(c.question))
+        .put("hash", s(&hash));
+    if c.rehomed {
+        out.put("rehomedFromHashBucket", OVal::Bool(true));
+    }
+    out.put("needsReply", OVal::Bool(c.question))
         .put("answers", OVal::Bool(c.answers))
         .put("toId", s_or_null(if c.broadcast { None } else { c.partition }));
     if let Some(k) = c.candidates {
@@ -1016,6 +1085,14 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     ])
     .done();
     common::write_send_receipt(&c.inv.write_home, c.now, &hash, &receipt);
+    // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage in Node (see `jev_arrival_skipped`)
+    if inserted && !c.broadcast && !c.question && common::jev_maybe_enabled(c.inv) {
+        common::jev_arrival_skipped();
+    }
+    // a sent message is child activity: refresh the sender's plan progress clock (fresh text only), best effort
+    if inserted {
+        common::note_sender_activity(c.inv, c.from, c.message, c.now as f64);
+    }
     if let Some(e) = verify_error {
         out.put("verifyError", s(&e));
     }
@@ -1142,5 +1219,67 @@ mod label_tests {
         // the session runs in the addressed row's own checkout: delivered as addressed
         std::fs::write(sessions.join("s.json"), record(&w1)).unwrap();
         assert!(matches!(resolve_send_target(&inv, None, &rows, "a-old").unwrap(), Resolved::Row(t) if t.id == "a-old"));
+    }
+    // ---- the cases that used to hand the send to Node (2026-10-23, #171): each is answered here, as Node answers it ----
+
+    /// Two rows of one id, or an exact id that is another row's mesh label: Node refuses as ambiguous and names the candidates.
+    #[test]
+    fn rows_sharing_an_id_are_an_ambiguous_recipient_not_a_deferral() {
+        let inv = scratch_inv("ambig");
+        let rows = vec![crow("dup", Some("s-1"), 1.0), crow("dup", Some("s-2"), 2.0)];
+        match resolve_send_target(&inv, None, &rows, "dup").unwrap() {
+            Resolved::AmbiguousRows(ids) => assert_eq!(ids, vec!["dup".to_string(), "dup".to_string()]),
+            _ => panic!("expected an ambiguous recipient"),
+        }
+    }
+
+    fn write_retired(inv: &Inv, id: &str, to: &str) {
+        let dir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("devswarm_cli.rr_dir_retired"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = serde_json::json!({ defaults::text("devswarm_cli.rr_field_retired_to"): to });
+        std::fs::write(dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))), body.to_string()).unwrap();
+    }
+
+    /// A fold-time retired-redirect is followed one hop to the registry row of the survivor; a redirect to nothing falls through.
+    #[test]
+    fn a_retired_id_is_redirected_to_its_survivor_row() {
+        let inv = scratch_inv("redirect");
+        write_retired(&inv, "gone-1", "live-1");
+        let rows = vec![crow("live-1", Some("s-1"), 1.0)];
+        match resolve_send_target(&inv, None, &rows, "gone-1").unwrap() {
+            Resolved::Redirected(t, from) => assert_eq!((t.id.as_str(), from.as_str()), ("live-1", "gone-1")),
+            _ => panic!("expected a redirect"),
+        }
+        write_retired(&inv, "gone-2", "no-such-row");
+        assert!(matches!(resolve_send_target(&inv, None, &rows, "gone-2").unwrap(), Resolved::Unregistered));
+    }
+
+    /// A truthy non-string `worktreePath` is `String()`-coerced by Node, not an error.
+    #[test]
+    fn a_descriptor_worktree_of_another_type_is_coerced_not_deferred() {
+        let inv = scratch_inv("wtshape");
+        let dir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (id, body) in [("d-num", r#"{"worktreePath": 5}"#), ("d-arr", r#"{"worktreePath": ["/a", "/b"]}"#), ("d-obj", r#"{"worktreePath": {"x": 1}}"#), ("d-true", r#"{"worktreePath": true}"#)] {
+            std::fs::write(dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))), body).unwrap();
+            assert!(descriptor_mesh_id(&inv.home, id).is_ok(), "{id}");
+        }
+    }
+
+    /// An unreadable message file is a refusal worded as Node words it; an operating system error outside the table is worded too.
+    #[test]
+    fn an_unreadable_message_file_is_always_a_worded_refusal() {
+        let inv = scratch_inv("msgfile");
+        let dir = inv.home.to_string_lossy().into_owned();
+        assert!(read_message_file(&dir).unwrap_err().starts_with("EISDIR"), "a directory");
+        assert!(read_message_file(&format!("{dir}/absent")).unwrap_err().starts_with("ENOENT"));
+        let file = format!("{dir}/f");
+        std::fs::write(&file, "x").unwrap();
+        assert!(read_message_file(&format!("{file}/below")).unwrap_err().starts_with("ENOTDIR"));
+        let (a, b) = (format!("{dir}/loop-a"), format!("{dir}/loop-b"));
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+        std::os::unix::fs::symlink(&a, &b).unwrap();
+        let why = read_message_file(&a).unwrap_err();
+        assert!(why.ends_with(&format!(", open '{a}'")) && !why.contains("os error"), "{why}");
     }
 }

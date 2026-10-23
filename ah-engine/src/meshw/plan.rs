@@ -250,12 +250,13 @@ fn step_mut(plan: &mut OVal, idx: usize) -> R<&mut OVal> {
     }
 }
 
-/// `noteActivity(plan, text, now)`.
-fn note_activity(plan: &mut OVal, text: &str, now: f64) {
+/// `noteActivity(plan, text, now)`: whether the clock was refreshed (text already seen does not refresh it).
+pub(crate) fn note_activity(plan: &mut OVal, text: &str, now: f64) -> bool {
     let mut norm = String::new();
     let mut gap = false;
     for ch in text.to_lowercase().chars() {
-        if matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r') {
+        // JavaScript's `\s` (and `trim`): ASCII whitespace, no-break space, the Unicode spaces, line/paragraph separators, the BOM
+        if matches!(ch, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}') {
             gap = true;
         } else {
             if gap && !norm.is_empty() {
@@ -271,13 +272,14 @@ fn note_activity(plan: &mut OVal, text: &str, now: f64) {
         _ => Vec::new(),
     };
     if seen.iter().any(|x| matches!(x, OVal::Str(t) if *t == sig)) {
-        return;
+        return false;
     }
     seen.push(OVal::Str(sig));
     let keep = defaults::num("mesh_write.plan_activity_keep") as usize;
     let from = seen.len().saturating_sub(keep);
     plan.set("activity_sigs", OVal::Arr(seen.split_off(from)));
     plan.set("activity_ts", n(now));
+    true
 }
 
 /// `recordSummary(plan, text, stepped, now)`. Text with a non-ASCII character is not reproduced (JavaScript counts UTF-16
