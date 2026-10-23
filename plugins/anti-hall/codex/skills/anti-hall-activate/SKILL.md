@@ -37,13 +37,13 @@ test -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" || sh "$ANTI_HALL_ROOT/hooks/in
 1. Install project-local Codex hooks:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 2. For global Codex hooks instead:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex --global
 ```
 
 3. Verify:

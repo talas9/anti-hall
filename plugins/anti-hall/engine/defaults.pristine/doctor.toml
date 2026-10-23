@@ -1894,7 +1894,7 @@ value = "failed to move {dir} aside — {error}"
 
 [doctor_msg.stores_uninspected]
 doc = "Stores the engine does not read. Placeholder: {n}."
-value = "{n} store(s) use the journal backend, which the engine doctor does not inspect; run `ah-hook doctor --repair-test-stores` for them"
+value = "{n} store(s) use the journal backend, which the engine doctor does not inspect; run `ah-engine doctor --repair-test-stores` for them"
 
 [doctor_msg.resurrected_none]
 doc = "No store exists, so no row can be resurrected."
@@ -1902,7 +1902,7 @@ value = "no resurrected registry rows found — nothing to repair"
 
 [doctor_msg.resurrected_deferred]
 doc = "Stores exist; the engine doctor leaves the resurrected-row repair to the Node doctor."
-value = "the resurrected-row repair is not available in the engine doctor yet (`ah-hook doctor --repair-resurrected [--apply]` only reports it); the engine doctor did not touch the stores"
+value = "the resurrected-row repair is not available in the engine doctor yet (`ah-engine doctor --repair-resurrected [--apply]` only reports it); the engine doctor did not touch the stores"
 
 [doctor_msg.repair_head_explicit]
 doc = "The heading of an explicit repair section. Placeholders: {title}, {mode}, {flag}."
@@ -2148,7 +2148,7 @@ value = "supervisor companion not installed — background auto-recovery is off;
 
 [doctor_msg.ds_runtime_deferred]
 doc = "A DevSwarm session is active; the runtime checks the engine doctor does not make yet. Placeholder: {n}."
-value = "DevSwarm is active ({n} workspace descriptor(s)); the per-workspace liveness verdicts, the app-database view, the delivery log, the wake monitor and the other DevSwarm runtime checks are not made by the engine doctor yet - check them with `ah-hook devswarm status`"
+value = "DevSwarm is active ({n} workspace descriptor(s)); the per-workspace liveness verdicts, the app-database view, the delivery log, the wake monitor and the other DevSwarm runtime checks are not made by the engine doctor yet - check them with `ah-engine devswarm status`"
 
 [doctor_msg.ds_cron_found]
 doc = "Cron ticks that found mail while a watcher was armed. Placeholder: {n}."
@@ -2230,7 +2230,7 @@ value = "(warn) {count} DevSwarm store(s) use the legacy journal backend (Node o
 doc = "Stores split between a journal and SQLite. Placeholders: {count}, {shown}."
 value = "(warn) {count} DevSwarm store(s) are split between the legacy journal and SQLite: {shown}. The update's merge-split-backend-stores stage folds the journal side into SQLite (neither side is deleted); run the anti-hall update."
 
-# ---- the thin client's built-in doctor (`ah-hook doctor`, ah-launcher/src/doctor.rs) ---------------------------------------------------
+# ---- the thin client's built-in doctor (`ah-engine doctor`, ah-launcher/src/doctor.rs) ---------------------------------------------------
 # It shares the doctor_msg.* texts above; the keys below are read only by it.
 
 [doctor_l.line_chars]
@@ -2410,7 +2410,7 @@ value = "the thin client {path} is not installed - Fix: sh {install} --download 
 
 [doctor_l.msg_health_client_not_exec]
 doc = "Placeholders: {path}, {mode}."
-value = "the thin client {path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-hook doctor --repair does this)"
+value = "the thin client {path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engine doctor --repair does this)"
 
 [doctor_l.msg_health_client_differs]
 doc = "Placeholders: {path}, {have}, {want}, {install}."
@@ -2422,11 +2422,11 @@ value = "the thin client {path} is installed and executable"
 
 [doctor_l.msg_health_hooks_old]
 doc = "Placeholders: {file}, {n}, {first}."
-value = "{file} still runs {n} hook command(s) through the retired shell wrapper (first: {first}) - Fix: ah-hook doctor --repair (a backup is kept)"
+value = "{file} still runs {n} hook command(s) through the retired shell wrapper (first: {first}) - Fix: ah-engine doctor --repair (a backup is kept)"
 
 [doctor_l.msg_health_node_entry]
 doc = "Placeholders: {file}, {n}, {first}."
-value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: update the plugin, or ah-hook doctor --repair"
+value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: update the plugin, or ah-engine doctor --repair"
 
 [doctor_l.msg_health_hooks_ok]
 doc = "Placeholder: {file}."
@@ -2450,7 +2450,7 @@ value = "{n} launcher shim(s) in {dir} are sh shims"
 
 [doctor_l.msg_health_statusline_old]
 doc = "Placeholders: {file}, {command}."
-value = "the statusLine in {file} still runs the retired shell wrapper ({command}) - Fix: ah-hook doctor --repair rewrites it to the thin client (a backup is kept)"
+value = "the statusLine in {file} still runs the retired shell wrapper ({command}) - Fix: ah-engine doctor --repair rewrites it to the thin client (a backup is kept)"
 
 [doctor_l.msg_repair_exec]
 doc = "Placeholder: {path}."

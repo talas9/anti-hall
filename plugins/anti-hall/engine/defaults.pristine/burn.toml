@@ -68,6 +68,18 @@ value = '''^\s*(?:cat|echo|printf|tee)\b[^|&;`$()<>]*>>?\s*["\x27]?([^\s"\x27|&;
 doc = "A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it."
 value = '''<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$'''
 
+[burn.send_bash_re]
+doc = "A mesh or agents send, which a blocked subagent may always run (the escalation to the parent and every mesh send): the engine binary (or the old launcher name) with `mesh` or `agents`, then `send`. Regular expression (Rust syntax), tested on the first line of the command."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?(?:ah-(?:engine|hook)\s+(?:mesh|agents)\s+send|(?:\.anti-hall/bin|scripts)/devswarm\.js\s+send)\b'''
+
+[burn.send_chain_re]
+doc = "What chains a second command onto a send line (after quoted text is blanked and a heredoc opener removed): `;`, `&`, a pipe, a backtick, `$(` or a redirect. Regular expression (Rust syntax)."
+value = '''[;&|`<>]|\$\('''
+
+[burn.send_heredoc_opener_re]
+doc = "A heredoc opener with a QUOTED delimiter at the end of a send line. Regular expression (Rust syntax)."
+value = '''\s*<<-?\s*(["'])[A-Za-z_][A-Za-z0-9_]*\1\s*$'''
+
 [burn.bash_tools]
 doc = "Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks."
 value = ["Bash"]

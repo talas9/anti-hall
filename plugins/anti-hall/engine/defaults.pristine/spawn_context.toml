@@ -102,7 +102,7 @@ value = "It does not drain the queue, but bypasses the durable cursor, so messag
 
 [inbox_read.msg_inbox_instead]
 doc = "What to do instead of reading the inbox."
-value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>`."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`."
 
 [inbox_read.msg_override]
 doc = "How to disable the guard entirely."
@@ -268,7 +268,7 @@ value = "; sent in full on your first spawn"
 
 [verify_first_orch.primary_rule]
 doc = "The DevSwarm Primary workspace-tier rule (W), inserted after the header line of the full orchestration text when the session is a Primary."
-value = "  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/deploy (workspace-scale: owns a branch, spans many files/commits, runs to done) = a CHILD WORKSPACE, NOT a subagent. Spawn it: `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"`. Bounded work inside your OWN branch -> subagent (rules A-N). Handing workspace-scale work to a subagent leaves it off the parent task list and unsupervised."
+value = "  W. DEVSWARM PRIMARY — WORKSPACE IS THE TOP FAN-OUT TIER: a feature/fix/deploy (workspace-scale: owns a branch, spans many files/commits, runs to done) = a CHILD WORKSPACE, NOT a subagent. Spawn it: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"`. Bounded work inside your OWN branch -> subagent (rules A-N). Handing workspace-scale work to a subagent leaves it off the parent task list and unsupervised."
 
 [verify_first_orch.full_lines]
 doc = "Lines of the full orchestration text for a Claude session, joined with a newline."

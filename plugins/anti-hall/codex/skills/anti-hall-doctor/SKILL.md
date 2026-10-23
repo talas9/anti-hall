@@ -29,10 +29,10 @@ hooks via `install-codex.js`), so its read-only default and opt-in repair mode a
 identically here:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" doctor           # diagnose only (default, read-only — no repair pass)
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" doctor --repair  # diagnose + apply the safe repairs (alias --fix)
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" doctor --dry-run # print what --repair would fix; writes nothing
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" doctor --check   # read-only — the CI/scripting path
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor           # diagnose only (default, read-only — no repair pass)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --repair  # diagnose + apply the safe repairs (alias --fix)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --dry-run # print what --repair would fix; writes nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --check   # read-only — the CI/scripting path
 ```
 
 Doctor also warns (report-only, nothing moved) about handover files tracked by git or
@@ -115,11 +115,11 @@ Interpretation:
 If hooks are missing, install them:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 For global install:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex --global
 ```

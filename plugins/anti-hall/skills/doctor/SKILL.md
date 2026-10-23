@@ -18,7 +18,7 @@ changes nothing.
 
 ## What it reports
 - **Environment:** platform, plugin version, the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook`) and engine. No Node is needed on a hook path.
-- **Hooks:** every command in `hooks.json` is the direct form (thin client first, `hooks/install.sh` as the fallback), the plugin ships no shell file besides `hooks/install.sh`, and a hook command or `statusLine` that still runs a retired `ah-hook.sh`/`ah-run.sh` wrapper fails the doctor (`ah-hook doctor --repair` rewrites it, keeping a backup).
+- **Hooks:** every command in `hooks.json` is the direct form (thin client first, `hooks/install.sh` as the fallback), the plugin ships no shell file besides `hooks/install.sh`, and a hook command or `statusLine` that still runs a retired `ah-hook.sh`/`ah-run.sh` wrapper fails the doctor (`ah-engine doctor --repair` rewrites it, keeping a backup).
 - **Guard behavior (live self-tests):** spawns the real guards with crafted payloads and
   asserts exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
   command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
@@ -159,7 +159,7 @@ Flags:
 
 | Invocation | Behavior |
 |---|---|
-| `"$HOME/.anti-hall/ah-engine/bin/ah-hook" doctor` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
+| `"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
 | `--repair` / `--fix` | FULL detection + apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. |
 | `--dry-run` | Detection + print exactly what WOULD be fixed. **Writes nothing** (threads each installer's own `--dry-run`, migrate-state `dryRun:true`). |
 | `--check` | **PURE read-only** — detects + reports everything, mutates NOTHING. The CI / scripting path. |
@@ -224,19 +224,19 @@ Windows is not supported.
 
 ## How to run
 
-The doctor (`ah-hook doctor`) **writes units/settings** in repair mode (and the
+The doctor (`ah-engine doctor`) **writes units/settings** in repair mode (and the
 command-guard blocks heavy commands on the main thread), so **delegate it to a Haiku
 subagent** (`model:"haiku"` — an execution-shaped spawn with no explicit model also trips
 model-routing-guard's strict-mode block) and relay the report:
 
 ```
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" doctor           # diagnose only (default, read-only)
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" doctor --repair  # diagnose + apply the safe repairs
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" doctor --dry-run # show what --repair would fix
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" doctor --check   # read-only (CI)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor           # diagnose only (default, read-only)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --repair  # diagnose + apply the safe repairs
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --dry-run # show what --repair would fix
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --check   # read-only (CI)
 ```
 
-The engine runs the doctor (`ah-engine doctor`); Node's `ah-hook doctor` answers only when the engine is absent. The engine
+The engine runs the doctor (`ah-engine doctor`); Node's `ah-engine doctor` answers only when the engine is absent. The engine
 doctor names what it does not check yet (the DevSwarm runtime checks of an active session, `--prune-cache`,
 `--reclaim-ingest-lock`, `--logs`): run `~/.anti-hall/ah-engine/bin/ah-engine doctor` with that flag for those. The explicit
 `--repair-ingest-orphans`, `--repair-test-stores` and `--repair-resurrected` flags preview by default and act with `--apply`.

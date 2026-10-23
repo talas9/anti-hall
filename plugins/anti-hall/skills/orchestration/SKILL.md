@@ -104,7 +104,7 @@ L3  Workers
 >
 > | Work | Tier |
 > |---|---|
-> | A workspace-scale **matter** — a feature, a fix, a deploy: multi-step, wants its own branch + worktree, its own agent session and token budget, its own review/merge | **Child workspace** (`ah-hook mesh spawn`) |
+> | A workspace-scale **matter** — a feature, a fix, a deploy: multi-step, wants its own branch + worktree, its own agent session and token budget, its own review/merge | **Child workspace** (`ah-engine mesh spawn`) |
 > | A read-only lookup, a single command, a scoped investigation, a review/verify pass, a mechanical transform | Subagent / Explore / Workflow (the L1→L2→L3 hierarchy above) |
 >
 > They **compose, they do not compete**: the Primary splits into workspace-sized chunks;
@@ -245,7 +245,7 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
 ## DevSwarm mesh-only messaging (when this session runs inside a DevSwarm workspace)
 
 This skill governs subagent/Workflow fan-out WITHIN one workspace (L2) **and** — for a
-DevSwarm **Primary** — the tier above it: spinning child workspaces (`ah-hook mesh spawn`),
+DevSwarm **Primary** — the tier above it: spinning child workspaces (`ah-engine mesh spawn`),
 see the DevSwarm note under "Swarm topology for larger work". The *doctrine* for that tier
 is shipped (the injected rule W + the guard redirects); there is no mechanical classifier
 that decides scale for you — see the `devswarm` skill. The other place the two intersect: if THIS

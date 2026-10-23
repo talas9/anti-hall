@@ -37,9 +37,9 @@ takes effect in-session — this skill does not over-promise.
   without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
   a daemon installed before this fix shipped.
 
-## What the helper does (`ah-hook update`)
+## What the helper does (`ah-engine update`)
 
-Runs inside the thin client (`ah-hook update`), macOS + Linux (Windows is not supported), fail-open
+Runs inside the thin client (`ah-engine update`), macOS + Linux (Windows is not supported), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).
@@ -178,16 +178,16 @@ its own purposes).
    never reach cache sync).
 
 Modes:
-- `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" update --check` — `git fetch` + compare local vs remote
+- `"$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check` — `git fetch` + compare local vs remote
   `plugin.json` version. **No pull, no writes.** Answers "is anti-hall up to date?".
-- `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "${CLAUDE_PLUGIN_ROOT}" update` — the full update above.
+- `"$HOME/.anti-hall/ah-engine/bin/ah-engine" update` — the full update above.
 
 ## Steps
 
 1. Pick the mode from the user's words:
    - "is anti-hall up to date" / "check for an update" → `--check`
    - "update" / "upgrade anti-hall" → full update
-2. The helper (`ah-hook update`; a state change — it pulls, may copy into the
+2. The helper (`ah-engine update`; a state change — it pulls, may copy into the
    cache, and runs migrations), so **run it directly in the main session, in the
    foreground, with a generous Bash `timeout`** (e.g. 600000) — never delegate it
    to a subagent: the main session holds the context needed to judge a migration
@@ -195,8 +195,8 @@ Modes:
    handed to a cheaper model. command-guard allows exactly this invocation
    (optionally piped to a bounded sink). Run exactly one of:
    ```
-   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall" update --check
-   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall" update
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" update
    ```
    Never spawn a subagent for it (model-routing-guard blocks an update spawn;
    `guards.updateInSession`).
@@ -250,7 +250,7 @@ Modes:
    the opt-in `migrate-state.js --restore-planning --dir <worktree>`. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
-7. Run the capability scan (`"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall capability-scan`)
+7. Run the capability scan (`"$HOME/.anti-hall/ah-engine/bin/ah-engine" capability-scan`)
    to find what's missing on **this machine** vs what this build **ships**.
    Read-only — it never installs anything. It reports each opt-in capability
    (companions under `companion/install-*.js`, statusline, pending state

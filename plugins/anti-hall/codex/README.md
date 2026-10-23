@@ -89,7 +89,7 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
   `SendMessage` (Claude Code's cross-session/remote-agent messaging tool) has
   no Codex CLI equivalent to gate against. The underlying RULE still applies
   conceptually to Codex: a Codex-run DevSwarm Primary/child must channel
-  workspace comms through the DevSwarm mesh (`ah-hook mesh send --to
+  workspace comms through the DevSwarm mesh (`ah-engine mesh send --to
   <meshId>`), not any future cross-session messaging mechanism Codex might add.
 - `fable-availability`: intentionally **Claude-only, no Codex mirror** — it probes Claude's own user config for a Fable model entitlement to inform the Claude Reviewer-seat fallback, which is irrelevant to gpt-5.x Codex/OMX sessions (Fable is an Anthropic-exclusive model tier, not reachable from the Codex CLI). Like the DevSwarm supervisor, it has no Codex mirror by design — this holds regardless of whether Fable routing itself is policy-enabled or disabled on the Claude side (see `MODEL-POLICY.md`; Fable routing is RE-ENABLED as of 2026-07-12).
 
@@ -121,7 +121,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-devswarm` — DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB
 - `anti-hall-jev` — activate/configure/check the opt-in Jev classifier
 - `anti-hall-system-briefing` — live enumeration of every installed hook, skill and substrate
-- `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent (Claude Code's `/config` carries only the headline switches, the safety guards and the keys) — `ah-hook settings` is the only front door, grouped by category (`show`, then `show --section <category>`)
+- `anti-hall-settings` — show/change any anti-hall setting; numbered-choice menu fallback (Codex has no `AskUserQuestion`) and no `/config` panel equivalent (Claude Code's `/config` carries only the headline switches, the safety guards and the keys) — `ah-engine settings` is the only front door, grouped by category (`show`, then `show --section <category>`)
 - `deadly-loop-multi` (the double/triple/quadruple deadly loop) is intentionally **Claude-only, not ported** — it multiplies the Claude Sonnet/Opus/Codex trio, and there is no `anti-hall-deadly-loop-multi` Codex skill; use `anti-hall-deadly-loop` instead.
 - `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
 - `anti-hall-engine`, `anti-hall-engine-agents`, `anti-hall-engine-devswarm`, `anti-hall-engine-devswarm-supervisor`, `anti-hall-engine-doctor`, `anti-hall-engine-github`, `anti-hall-engine-guards`, `anti-hall-engine-handovers`, `anti-hall-engine-mesh`, `anti-hall-engine-processes`, `anti-hall-engine-resources`, `anti-hall-engine-settings` — the generated engine skill family: `anti-hall-engine` is the tiny entry point, one sub-skill per feature area; which engine verbs a session may run depends on its role (main, workspace child, subagent, Codex)

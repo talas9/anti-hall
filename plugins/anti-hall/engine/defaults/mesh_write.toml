@@ -1269,7 +1269,7 @@ value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
 doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
-value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-hook mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
 
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
@@ -2031,7 +2031,7 @@ value = "pull"
 
 [mesh_write.read_ack_hint]
 doc = "The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}."
-value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
+value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
 
 [mesh_write.action_read]
 doc = "The `action` of an `inbox read` result."

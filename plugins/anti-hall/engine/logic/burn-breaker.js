@@ -44,12 +44,27 @@ function bbReportWrite(cmd) {
   var m = new RegExp(ah.cfg('burn.report_bash_re')).exec(first);
   if (m === null || !bbReportPath(m[1])) return false;
   if (nl < 0) return m[2] === undefined;
-  var h = m[2] === undefined ? null : new RegExp(ah.cfg('burn.report_heredoc_re')).exec(first);
+  return bbHeredocClosed(cmd, first, nl, m[2] !== undefined);
+}
+
+// True when a first line that opens a QUOTED heredoc is followed by a body that ends at its delimiter with only blank lines after it.
+function bbHeredocClosed(cmd, first, nl, opens) {
+  var h = opens ? new RegExp(ah.cfg('burn.report_heredoc_re')).exec(first) : null;
   if (h === null) return false;
-  // the body ends at the first line that is the delimiter; nothing but blank lines may follow it
   var lines = cmd.slice(nl + 1).split('\n'), end = -1;
   for (var i = 0; i < lines.length && end < 0; i++) if (lines[i].replace(/^\t+/, '') === h[2]) end = i;
   return end >= 0 && lines.slice(end + 1).every(function (l) { return l.trim() === ''; });
+}
+
+// True when the command is one mesh/agents `send` (the escalation to the parent and the other mesh sends): burn.send_bash_re on the first
+// line, quoted text blanked first so a message may hold `;` or `|`, nothing chained, and a heredoc body only if quoted and closed.
+function bbSend(cmd) {
+  var nl = cmd.indexOf('\n'), first = nl < 0 ? cmd : cmd.slice(0, nl);
+  var masked = first.replace(new RegExp(ah.cfg('burn.send_heredoc_opener_re')), '').replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
+  if (new RegExp(ah.cfg('burn.send_chain_re')).test(masked)) return false;
+  if (!new RegExp(ah.cfg('burn.send_bash_re')).test(first)) return false;
+  if (nl < 0) return true;
+  return bbHeredocClosed(cmd, first, nl, new RegExp(ah.cfg('burn.send_heredoc_opener_re')).test(first));
 }
 
 function decide(p) {
@@ -78,6 +93,7 @@ function decide(p) {
     ah.state.remove(rel);
     return 'allow';
   }
+  if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string' && bbSend(ti.command)) return 'allow'; // escalation and mesh sends always get through
   if (ah.cfg('burn.bash_tools').indexOf(tool) >= 0 && typeof ti.command === 'string' && bbReportWrite(ti.command)) {
     ah.state.remove(rel);
     return 'allow';

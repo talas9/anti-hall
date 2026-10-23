@@ -78,7 +78,7 @@ value = "Direct Claude remote-agent messaging between a DevSwarm Primary/child a
 
 [devswarm_comms.msg_block_instead]
 doc = "What to do instead of the blocked send."
-value = "use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-hook mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
+value = "use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
 
 [devswarm_comms.msg_ok_what]
 doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."

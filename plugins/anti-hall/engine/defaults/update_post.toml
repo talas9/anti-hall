@@ -232,7 +232,7 @@ value = "could not write jev.allowLegacyKeyRead: unknown"
 
 [update_post.key_opt_in_fixed]
 doc = "The setting was turned on. Placeholder: path (the key file; it is never read or copied)."
-value = "ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at {path}, so anti-hall keeps reading it; the key was not read or copied). To turn it off: ah-hook settings set jev.allowLegacyKeyRead false (then store the key in the plugin's options screen -> jev_api_key)"
+value = "ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at {path}, so anti-hall keeps reading it; the key was not read or copied). To turn it off: ah-engine settings set jev.allowLegacyKeyRead false (then store the key in the plugin's options screen -> jev_api_key)"
 
 [update_post.graphify_hooks_rel]
 doc = "The Codex hooks.json the graphify cleanup inspects, relative to the home and then to the working directory (codexGraphifyHooksMigratePostUpdate's two targets)."

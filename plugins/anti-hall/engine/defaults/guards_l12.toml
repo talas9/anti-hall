@@ -16,7 +16,7 @@ value = "That file decides which files the main thread may edit directly, so the
 
 [edit_guard.msg_self_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `~/.anti-hall/ah-engine/bin/ah-hook settings trust-edit-allow <repo> --confirmed`."
+value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `~/.anti-hall/ah-engine/bin/ah-engine settings trust-edit-allow <repo> --confirmed`."
 
 [edit_guard.msg_outside_what]
 doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
@@ -189,4 +189,4 @@ value = "developer"
 
 [edit_guard.nudge_note]
 doc = "The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live."
-value = "💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"`. Keep inline edits to small, scoped changes."
+value = "💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"`. Keep inline edits to small, scoped changes."

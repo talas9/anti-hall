@@ -20,15 +20,15 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-All commands below run as `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings <verb>`.
+All commands below run as `"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings <verb>`.
 
 ## No `/config` equivalent on Codex
 
 On Claude Code the native `/config` panel (the plugin's options screen) carries only the
 headline switches, the safety guards and the API keys; every other setting is reached
-through this skill's `ah-hook settings`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
+through this skill's `ah-engine settings`. **Codex has no `/config` equivalent** — its plugin manifest has no `userConfig` and there is no plugin settings UI.
 On Codex, run `show` (one table per category), then `show --section <category> [--all]`;
-change with `set` / `reset`. This skill (over `ah-hook settings`) is the ONLY way to see or change a
+change with `set` / `reset`. This skill (over `ah-engine settings`) is the ONLY way to see or change a
 setting. It is complete (every setting, advanced included), and a value set here lands
 in `~/.anti-hall/settings.json`, which both platforms read from the same `~/.anti-hall/` home.
 On Claude Code, a non-default value stored in Claude Code's plugin options by earlier versions is copied into `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that runs the migration (safety keys are copied as human-confirmed values), and still resolves until then; `/anti-hall:settings` is the place to see and change every setting.
@@ -38,7 +38,7 @@ On Claude Code, a non-default value stored in Claude Code's plugin options by ea
 If the user named the setting and the value ("turn off the merge gate", "set
 auto-handover to 80%", "disable Jev"), resolve it to a `section.key` and value and apply it:
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings set <section.key> <value>
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings set <section.key> <value>
 ```
 then confirm with the single-key line from `get <section.key>`. Never print the full
 table for a direct change. A validation failure (out-of-range number, unknown enum
@@ -86,8 +86,8 @@ thread run inline. Because that file lives in the working tree, a cloned repo co
 ship one — so it applies ONLY after the user trusts that exact file content with `trust-command-allow`:
 
 ```
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root <plugin-root> settings trust-command-allow [<repo>]              # print patterns, record nothing
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root <plugin-root> settings trust-command-allow [<repo>] --confirmed  # record the trust
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-command-allow [<repo>]              # print patterns, record nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-command-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust is a sha256 of the file bytes stored OUTSIDE the repo in
@@ -108,8 +108,8 @@ delegating them. It uses the same trust model as the command allowlist and appli
 only after the user trusts that exact file content with `trust-edit-allow`:
 
 ```
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root <plugin-root> settings trust-edit-allow [<repo>]              # print paths, record nothing
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root <plugin-root> settings trust-edit-allow [<repo>] --confirmed  # record the trust
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-edit-allow [<repo>]              # print paths, record nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-edit-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust lives in `~/.anti-hall/trusted-edit-allow.json`, and any edit to the file revokes
@@ -124,7 +124,7 @@ Kill-switch: `guards.projectEditAllow=false`.
 The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings judge on|off|status
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings judge on|off|status
 ```
 
 `on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
@@ -157,11 +157,11 @@ have no switch on purpose, and why.
 1. `show` prints every section's tables — run it ONLY when the user explicitly asks to
    see their settings:
    ```bash
-   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings show        # or: show --section <key> [--all]
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show        # or: show --section <key> [--all]
    ```
    Present the output as-is. Advanced/tuning knobs are hidden unless `--all`.
    The engine's own keys (cadences, limits, deadlines, widgets) are in the plugin's `engine/defaults/*.toml`: list them with
-   `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings tunables [<category|key prefix>] [--all]` (read-only; edit the file to change one).
+   `"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings tunables [<category|key prefix>] [--all]` (read-only; edit the file to change one).
 
 2. To help the user pick without a wall of tables, Codex has no `AskUserQuestion`
    tool, so use **numbered lists** in prose:
@@ -303,7 +303,7 @@ Check the result with `ah-engine config --json` and `ah-engine config validate <
 
 ## Resetting a setting
 
-`"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings reset <section.key>` removes the
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings reset <section.key>` removes the
 settings.json override for that one key, so the legacy source or schema default
 takes over again.
 
@@ -311,17 +311,17 @@ takes over again.
 
 Every subcommand takes `--json`:
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings show --json
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings get jev.enabled --json
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" settings set limitConserve.threshold 90 --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings get jev.enabled --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings set limitConserve.threshold 90 --json
 ```
 
 ## What this skill never does
 
 - Never edits `~/.anti-hall/settings.json` (or any legacy config file) by hand —
-  always through `ah-hook settings`.
+  always through `ah-engine settings`.
 - Never deletes a legacy config file (e.g. `~/.anti-hall/jev.json`) — anti-hall
   forward-migrates its values into `settings.json` once but always leaves the
   legacy file in place.
-- Never invents a setting or value not in the schema — `ah-hook settings show`
+- Never invents a setting or value not in the schema — `ah-engine settings show`
   is the source of truth.

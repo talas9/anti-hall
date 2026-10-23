@@ -773,7 +773,7 @@ value = "update.js runs migrations and the main session must judge the result."
 
 [model_routing.msg_update_instead]
 doc = "Update-in-session block advice."
-value = "run `ah-hook update ...` directly in the main session."
+value = "run `ah-engine update ...` directly in the main session."
 
 [model_routing.msg_handover_what]
 doc = "Handover-delegation advisory headline."
@@ -1339,8 +1339,8 @@ doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe with
 value = ["tail", "head", "wc", "grep", "egrep", "rg", "sort", "uniq", "cut", "nl"]
 
 [coordinator_work.bookkeeping_cli]
-doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm launcher (`devswarm.js`, the `ah-hook mesh` thin client or `ah-engine mesh|devswarm`), then one of the verbs ({verbs})."
-value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-hook\s+mesh|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh|agents|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs})."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-(?:hook|engine)\s+mesh|ah-engine\s+(?:agents|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
 
 [coordinator_work.bookkeeping_filter]
 doc = "Regex source of one output-filter segment ({filters} are the allowed filter words); its arguments are flags, plain words or quoted strings."
