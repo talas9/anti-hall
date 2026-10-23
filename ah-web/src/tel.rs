@@ -216,7 +216,14 @@ async fn read_raw(app: &App, cfg: &TelCfg) -> Raw {
 
 /// The texts of the screens the page needs before one is opened (the navigation labels); empty when the file cannot be read.
 pub fn boot_texts(app: &App) -> BTreeMap<String, String> {
-    TelCfg::load(&cfg_path(app)).map_or_else(|_| BTreeMap::new(), |c| c.boot_keys.iter().filter_map(|k| c.texts.get(k).map(|v| (k.clone(), v.clone()))).collect())
+    TelCfg::load(&cfg_path(app)).map_or_else(
+        |e| {
+            // without these the navigation shows raw keys ("nav_telemetry"), so a missing or broken web_tel.toml must not pass unnoticed
+            eprintln!("ah-web: the telemetry texts are unavailable, the navigation will show raw keys: {e}");
+            BTreeMap::new()
+        },
+        |c| c.boot_keys.iter().filter_map(|k| c.texts.get(k).map(|v| (k.clone(), v.clone()))).collect(),
+    )
 }
 
 /// The telemetry config next to `web.toml`.
