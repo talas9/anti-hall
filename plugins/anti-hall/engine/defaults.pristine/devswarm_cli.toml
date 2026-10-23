@@ -3101,8 +3101,8 @@ doc = "The refusal of a send whose `--message-file` cannot be read: `{file}` is 
 value = "send --message-file {file} could not be read: {why}"
 
 [devswarm_cli.send_fs_errors]
-doc = "The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is left to Node."
-value = { "2" = "ENOENT: no such file or directory, open {path}", "13" = "EACCES: permission denied, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read" }
+doc = "The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is worded by `send_fs_error_other`."
+value = { "2" = "ENOENT: no such file or directory, open {path}", "13" = "EACCES: permission denied, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read", "5" = "EIO: i/o error, read", "24" = "EMFILE: too many open files, open {path}", "23" = "ENFILE: file table overflow, open {path}", "16" = "EBUSY: resource busy or locked, open {path}", "6" = "ENXIO: no such device or address, open {path}" }
 
 [devswarm_cli.msg_send_multi_combine]
 doc = "The refusal of a send with several recipients combined with a broadcast or the Primary."
@@ -3717,3 +3717,31 @@ value = "inbox-"
 [devswarm_cli.window_logged_subs]
 doc = "The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing."
 value = ["pull", "messages", "read-primary", "peek-primary", "ack-primary", "drain-primary-legacy"]
+
+[devswarm_cli.send_fs_error_other]
+doc = "How a failed read of the message file is worded when the operating system error is not in `send_fs_errors`: `{message}` is the operating system's own text and `{path}` the path in single quotes."
+value = "{message}, open {path}"
+
+[devswarm_cli.msg_send_stdin_unreadable]
+doc = "The refusal of a send whose `--message-stdin` cannot be read: `{why}` is the operating system's message."
+value = "send --message-stdin could not read fd 0: {why}"
+
+[devswarm_cli.msg_send_multi_stdin_unreadable]
+doc = "The refusal of a send to several recipients whose `--message-stdin` cannot be read: `{why}` is the operating system's message."
+value = "send --message-stdin could not be read: {why}"
+
+[devswarm_cli.send_stdin_unavailable_why]
+doc = "The operating system's message when standard input was not read at all (a closed descriptor)."
+value = "EBADF: bad file descriptor, read"
+
+[devswarm_cli.msg_send_rows_ambiguous]
+doc = "The refusal of a send whose `--to` names two different registered rows (the exact id of one, the mesh label of another) or several rows of one id: `{to}` is the recipient, quoted; `{candidates}` the ids."
+value = "send --to {to} matches more than one registered workspace row ({candidates}) — this should never happen (id is the registry primary key); address a specific meshId instead"
+
+[devswarm_cli.reason_send_no_primary_worktree]
+doc = "The reason `send --to-primary` refuses when the working directory is in no resolvable git worktree."
+value = "no-primary-worktree"
+
+[devswarm_cli.msg_send_no_primary_worktree]
+doc = "The refusal text of that case."
+value = "send --to-primary: cwd is not inside a resolvable git worktree"
