@@ -161,7 +161,7 @@ impl<'a> Act<'a> {
     }
 
     /// `hivecontrol --version`, once per layer.
-    fn version(&self) -> (bool, Option<Vec<u64>>) {
+    pub fn version(&self) -> (bool, Option<Vec<u64>>) {
         if let Some(p) = self.probe.borrow().clone() {
             return p;
         }
@@ -173,7 +173,7 @@ impl<'a> Act<'a> {
     }
 
     /// Whether the DevSwarm CLI can run `verb`: present, and new enough where the verb has a minimum.
-    pub(super) fn capability(&self, verb: &str) -> Result<(), String> {
+    pub fn capability(&self, verb: &str) -> Result<(), String> {
         let (missing, ver) = self.version();
         if missing {
             return Err(defaults::text("devswarm_act.msg_inert").to_string());
@@ -298,7 +298,7 @@ impl<'a> Act<'a> {
 
     /// One auto-archive candidate: decide from current facts; `fresh` reads git itself instead of its remembered answers (the re-check
     /// right before an archive must never act on a remembered "clean").
-    pub(super) fn auto_candidate(&self, id: &str, s: &ActSettings, fresh: bool) -> Option<Value> {
+    pub fn auto_candidate(&self, id: &str, s: &ActSettings, fresh: bool) -> Option<Value> {
         let kind = defaults::text("devswarm_act.auto_archive_kind");
         let facts = if fresh { self.live.facts_fresh(kind, id)? } else { self.live.facts(kind, id)? };
         let p = self.payload(defaults::text("devswarm_act.auto_archive_kind"), facts.clone(), json!({}), self.archived_keys(id), s);

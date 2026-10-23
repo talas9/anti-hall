@@ -381,6 +381,13 @@ fn nonempty(v: Option<&OVal>) -> Option<&str> {
 
 /// `archive <id>`.
 pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
+    archive_with(inv, a, None)
+}
+
+/// [`archive`] with Node's `opts.revalidate`: the caller's check of the descriptor, run INSIDE the workspace's lock immediately before
+/// the first write. A reason skips the archive (`{ ok: true, skipped: true, reason }`, nothing written), so a workspace that came back to
+/// life after the caller collected it as a candidate is never archived.
+pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> R<Answer> {
     let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
     if id.is_empty() {
         return Ok(bad_id());
@@ -490,6 +497,17 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
     attempt(inv, id, &wt, branch.as_deref(), true)?;
     // ---- the writes, under the workspace's lock ----
     let Some(lock) = idlock::acquire(&inv.home, id) else { return defer("lock-busy") };
+    if let Some(reason) = revalidate.and_then(|check| check(&desc)) {
+        lock.release();
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(true))
+            .put("action", s(text("devswarm_cli.action_archive")))
+            .put("id", s(id))
+            .put("descriptorArchived", OVal::Bool(false))
+            .put("skipped", OVal::Bool(true))
+            .put("reason", s(&reason));
+        return Ok(answer(0, o.done()));
+    }
     let intent_rel = crate::dssup::recon::view::ds(&format!("{}/{id}{json}", text("devswarm_cli.dir_recovery_intent")));
     let (arel, drel) = (crate::dssup::recon::view::archived_rel(id), crate::dssup::recon::view::descriptor_rel(id));
     let mut intent = Obj::default();
