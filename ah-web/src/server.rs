@@ -1,14 +1,16 @@
 //! The HTTP side: loopback only, a Host check against DNS rebinding, a session cookie minted from the one-time token in the
 //! printed address, the page, its files and the event stream.
-use crate::agents;
+use crate::data;
+use crate::model::Out;
 use crate::app::App;
-use ah_web_proto::{Boot, SNAPSHOT_EVENT};
+use ah_web_proto::{ActionReq, ActionRes, Boot, Detail, DELTA_EVENT, SNAPSHOT_EVENT};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::Json;
 use axum::Router;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::WatchStream;
+use tokio_stream::wrappers::IntervalStream;
 
 type Shared = Arc<App>;
 
@@ -27,6 +29,8 @@ pub fn router(app: Shared) -> Router {
         .route("/static/{*path}", get(static_file))
         .route("/pkg/{*path}", get(pkg_file))
         .route("/api/stream", get(stream))
+        .route("/api/action", post(action))
+        .route("/api/agent/{id}", get(detail))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -102,6 +106,10 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         heartbeat_warn_s: s.heartbeat_warn_s,
         heartbeat_stale_s: s.heartbeat_stale_s,
         kind_order: s.kind_order.clone(),
+        mode: s.mode.clone(),
+        limits: s.limits(),
+        actions: s.menu(),
+        feed_max: s.feed_max,
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
@@ -139,34 +147,144 @@ async fn pkg_file(State(app): State<Shared>, headers: HeaderMap, Path(p): Path<S
     serve_from(&app, &headers, &dir, &p).await
 }
 
-/// Counts an open stream; the poller stops when the last one is gone.
-struct StreamGuard(Shared);
+/// Counts an open stream in its tier; the poller stops when the last one is gone.
+struct StreamGuard(Shared, bool);
 
 impl Drop for StreamGuard {
     fn drop(&mut self) {
-        self.0.streams.fetch_sub(1, Ordering::SeqCst);
+        let counter = if self.1 { &self.0.lite_streams } else { &self.0.full_streams };
+        counter.fetch_sub(1, Ordering::SeqCst);
         self.0.touch();
     }
 }
 
-/// `/api/stream`: the current snapshot at once, then every change.
-async fn stream(State(app): State<Shared>, headers: HeaderMap) -> Response {
+#[derive(Deserialize)]
+struct StreamQuery {
+    /// `lite` or `full`; anything else (or nothing) takes the configured start tier, `auto` counting as full.
+    mode: Option<String>,
+}
+
+/// `/api/stream?mode=`: the current snapshot at once, then only what changed, at the tier's rate.
+async fn stream(State(app): State<Shared>, Query(q): Query<StreamQuery>, headers: HeaderMap) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
     let s = app.settings();
-    if app.streams.fetch_add(1, Ordering::SeqCst) >= s.max_streams {
-        app.streams.fetch_sub(1, Ordering::SeqCst);
+    if app.streams() >= s.max_streams {
         return (StatusCode::SERVICE_UNAVAILABLE, s.msg_busy.clone()).into_response();
     }
-    let guard = StreamGuard(app.clone());
+    let lite = match q.mode.as_deref().unwrap_or(&s.mode) {
+        "lite" => true,
+        _ => false,
+    };
+    let counter = if lite { &app.lite_streams } else { &app.full_streams };
+    counter.fetch_add(1, Ordering::SeqCst);
+    let guard = StreamGuard(app.clone(), lite);
     if app.polling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-        tokio::spawn(agents::poll(app.clone()));
+        tokio::spawn(data::poll(app.clone()));
     }
-    let events = WatchStream::new(app.tx.subscribe()).map(move |json| {
+    let hz = if lite { s.lite_push_hz } else { s.full_push_hz }.min(s.push_hz_max).max(0.01);
+    let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / hz));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last: Option<u64> = None;
+    let events = IntervalStream::new(tick).filter_map(move |_| {
         let _held = &guard;
-        guard.0.touch();
-        Ok::<Event, Infallible>(Event::default().event(SNAPSHOT_EVENT).data(json))
+        let out = {
+            let m = guard.0.model();
+            match last {
+                None => Out::Snapshot(m.snapshot()),
+                Some(n) => m.since(n),
+            }
+        };
+        match out {
+            Out::Nothing => None,
+            Out::Delta(d) => {
+                last = Some(d.seq);
+                Event::default().event(DELTA_EVENT).json_data(&d).ok().map(Ok::<Event, Infallible>)
+            }
+            Out::Snapshot(snap) => {
+                last = Some(snap.seq);
+                Event::default().event(SNAPSHOT_EVENT).json_data(&snap).ok().map(Ok::<Event, Infallible>)
+            }
+        }
     });
     Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(s.sse_keepalive_s))).into_response()
+}
+
+/// An agent id is a tracker id: letters, digits and `-_.:` only, so it can be put in an engine argument or a control request.
+fn id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+}
+
+fn res(ok: bool, outcome: &str, message: String) -> Response {
+    Json(ActionRes { ok, outcome: outcome.into(), message }).into_response()
+}
+
+/// `POST /api/action`: run one menu action on one agent as an engine verb (the engine audits it). Actions that ask first are refused
+/// until the request says the person confirmed.
+async fn action(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<ActionReq>) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    let Some(def) = s.actions.iter().find(|a| a.name == req.action) else {
+        return res(false, "refused", s.msg_action_unknown.clone());
+    };
+    if !id_ok(&req.id) {
+        return res(false, "refused", s.msg_action_bad_id.clone());
+    }
+    if def.confirm && !req.confirmed {
+        return res(false, "refused", s.msg_action_confirm.clone());
+    }
+    if def.local {
+        return res(true, "done", String::new());
+    }
+    let args: Vec<String> = def.args.iter().map(|a| a.replace("{id}", &req.id)).collect();
+    let run = tokio::process::Command::new(&app.engine)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await else {
+        return res(false, "failed", s.msg_action_timeout.clone());
+    };
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let ok = body.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let text = |k: &str| body.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
+    if ok {
+        let note = body.get("result").map(|r| r.to_string()).unwrap_or_default();
+        res(true, "done", note.chars().take(s.action_note_max_chars).collect())
+    } else {
+        res(false, &text("outcome").unwrap_or_else(|| "failed".into()), text("error").unwrap_or_else(|| s.msg_action_failed.clone()))
+    }
+}
+
+/// `GET /api/agent/{id}`: what the tracker knows of one agent, as label/value rows.
+async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    if !id_ok(&id) {
+        return (StatusCode::BAD_REQUEST, s.msg_action_bad_id.clone()).into_response();
+    }
+    let Ok(doc) = crate::ctl::call(&app.socket, &format!("agents agent={id}"), Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes).await else {
+        return (StatusCode::BAD_GATEWAY, s.msg_action_timeout.clone()).into_response();
+    };
+    let mut rows = Vec::new();
+    if let Some(a) = doc.get("agents").and_then(serde_json::Value::as_array).and_then(|l| l.first()).and_then(serde_json::Value::as_object) {
+        for (k, v) in a {
+            if s.detail_skip_keys.contains(k) || v.is_null() {
+                continue;
+            }
+            let text = match v {
+                serde_json::Value::String(t) => t.clone(),
+                other => other.to_string(),
+            };
+            rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));
+        }
+    }
+    Json(Detail { rows }).into_response()
 }

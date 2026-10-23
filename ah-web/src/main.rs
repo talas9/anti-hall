@@ -1,11 +1,13 @@
-//! `ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine>`: the Command Center server.
+//! `ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket>`: the Command Center server.
 //!
 //! Started by `ah-engine web`, never at boot. It binds to a loopback address on a random free port, publishes its address
 //! and per-session token in a state file, serves the page and the live agent list, and exits when nobody has used it for
 //! `web.idle_exit_s`. Every number and text comes from the plugin's `web.toml`.
-mod agents;
 mod app;
 mod cfg;
+mod ctl;
+mod data;
+mod model;
 mod server;
 
 use app::App;
@@ -39,7 +41,11 @@ fn mtime(p: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// `web.port` when it is free, else a random free port from the configured range.
 async fn bind(s: &cfg::Settings) -> Result<tokio::net::TcpListener, String> {
+    if let Ok(l) = tokio::net::TcpListener::bind((s.bind_host.as_str(), s.port)).await {
+        return Ok(l);
+    }
     let span = u32::from(s.port_max.saturating_sub(s.port_min)) + 1;
     for _ in 0..s.bind_attempts {
         let r = random_bytes(4).map_err(|e| e.to_string())?;
@@ -56,11 +62,13 @@ async fn bind(s: &cfg::Settings) -> Result<tokio::net::TcpListener, String> {
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) != Some("serve") {
-        eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine>");
+        eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket>");
         std::process::exit(64);
     }
-    let (Some(config), Some(root), Some(state), Some(engine)) = (arg(&args, "--config"), arg(&args, "--root"), arg(&args, "--state"), arg(&args, "--engine")) else {
-        eprintln!("ah-web: --config, --root, --state and --engine are required");
+    let (Some(config), Some(root), Some(state), Some(engine), Some(socket)) =
+        (arg(&args, "--config"), arg(&args, "--root"), arg(&args, "--state"), arg(&args, "--engine"), arg(&args, "--socket"))
+    else {
+        eprintln!("ah-web: --config, --root, --state, --engine and --socket are required");
         std::process::exit(64);
     };
     let settings = cfg::Settings::load(&config).unwrap_or_else(|e| {
@@ -84,7 +92,8 @@ async fn main() {
         std::process::exit(73);
     }
 
-    let app = Arc::new(App::new(settings, config.clone(), root, engine, token, port));
+    println!("ah-web: {url}"); // for a run by hand; under `ah-engine web` stdout is closed
+    let app = Arc::new(App::new(settings, config.clone(), root, engine, socket, token, port));
 
     // idle exit and settings reload share one timer
     let watcher = {
@@ -102,7 +111,7 @@ async fn main() {
                     }
                 }
                 let idle = app.started.elapsed().as_secs().saturating_sub(app.last_active_s.load(Ordering::Relaxed));
-                if app.streams.load(Ordering::SeqCst) == 0 && idle >= app.settings().idle_exit_s {
+                if app.streams() == 0 && idle >= app.settings().idle_exit_s {
                     break;
                 }
             }

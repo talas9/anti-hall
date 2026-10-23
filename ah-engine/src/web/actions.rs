@@ -46,6 +46,12 @@ pub fn register(name: &str, kind: &str, argv: &[String]) {
     write_record(name, kind, std::process::id(), argv);
 }
 
+/// Record the process `pid`, started by this one, as the engine-family process `name` (the web server, which cannot write its own
+/// record: it is a separate binary). `argv` starts it again.
+pub fn register_pid(name: &str, kind: &str, pid: u32, argv: &[String]) {
+    write_record(name, kind, pid, argv);
+}
+
 fn records() -> Vec<Value> {
     let mut v: Vec<Value> = std::fs::read_dir(procs_dir())
         .into_iter()

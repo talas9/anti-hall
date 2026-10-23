@@ -70,11 +70,16 @@ fn start() -> Result<Running, String> {
         .arg(paths::dir())
         .arg("--engine")
         .arg(engine)
+        .arg("--socket")
+        .arg(paths::socket())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0); // its own group: closing this terminal must not stop the dashboard
-    cmd.spawn().map_err(|e| e.to_string())?;
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    // make the server manageable: `proc status|stop|restart <pid>` finds it by this record (and restarts it with the same arguments)
+    let argv: Vec<String> = std::iter::once(&bin).map(|b| b.display().to_string()).chain(cmd.get_args().map(|a| a.to_string_lossy().into_owned())).collect();
+    crate::web::actions::register_pid(defaults::text("web.proc_name"), defaults::text("web.proc_kind"), child.id(), &argv);
     let until = Instant::now() + defaults::millis("web.start_wait_ms");
     while Instant::now() < until {
         if let Some(r) = running() {

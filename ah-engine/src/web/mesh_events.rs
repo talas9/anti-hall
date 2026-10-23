@@ -34,8 +34,11 @@ pub fn events(args: &str) -> Value {
     let after: i64 = arg(args, "after=").and_then(|v| v.parse().ok()).unwrap_or(0);
     let reads_after: i64 = arg(args, "reads_after=").and_then(|v| v.parse().ok()).unwrap_or(0);
     let limit = arg(args, "limit=").and_then(|v| v.parse::<i64>().ok()).unwrap_or(i64::MAX).min(defaults::num("mesh_events.limit") as i64);
+    // `latest=<n>`: the newest n rows instead of the oldest after `after` (a first look at a store with a long history)
+    let latest = arg(args, "latest=").and_then(|v| v.parse::<i64>().ok()).map(|n| n.clamp(1, defaults::num("mesh_events.limit") as i64));
+    let (order, limit) = if latest.is_some() { ("DESC", latest.unwrap_or(limit)) } else { ("ASC", limit) };
     let rows = conn
-        .prepare("SELECT id, workspace_id, ts, sender, recipient, mtype, urgency, needs_reply, seq, length(body) FROM messages WHERE id > ?1 AND COALESCE(is_heartbeat, 0) = 0 ORDER BY id LIMIT ?2")
+        .prepare(&format!("SELECT id, workspace_id, ts, sender, recipient, mtype, urgency, needs_reply, seq, length(body) FROM messages WHERE id > ?1 AND COALESCE(is_heartbeat, 0) = 0 ORDER BY id {order} LIMIT ?2"))
         .and_then(|mut s| {
             s.query_map(params![after, limit], |r| {
                 Ok(json!({"id": r.get::<_, i64>(0)?, "partition": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?, "sender": r.get::<_, Option<String>>(3)?,
@@ -52,6 +55,12 @@ pub fn events(args: &str) -> Value {
             })
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
         });
+    let rows = rows.map(|mut m| {
+        if latest.is_some() {
+            m.reverse(); // newest-first from the query, oldest-first for the reader
+        }
+        m
+    });
     match (rows, reads) {
         (Ok(m), Ok(c)) => json!({"messages": m, "reads": c, "at_ms": health::now_ms()}),
         (Err(e), _) | (_, Err(e)) => json!({"error": e.to_string()}),

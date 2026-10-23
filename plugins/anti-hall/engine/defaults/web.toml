@@ -68,24 +68,148 @@ value = "web/pkg"
 doc = "The page served at /, inside web.static_dir."
 value = "index.html"
 
-[web.agents_cmd]
-doc = "Engine arguments whose JSON output is the live agent list (run with the engine binary; read-only)."
-value = ["agents", "status", "--json"]
+[web.port]
+doc = "The port the dashboard listens on. When something else holds it, a random free port from web.port_min..web.port_max is used and printed."
+value = 47821
+min = 1024
+max = 65535
 
-[web.agents_poll_ms]
-doc = "How often the agent list is refreshed while at least one browser tab is connected."
-value = 3000
-min = 500
+[web.mode]
+doc = "The tier the page starts in: auto (full unless the browser asks for reduced motion), full, or lite (no animation, a lower rate, static styling). The header toggle changes it live and the browser remembers the choice."
+value = "auto"
 
-[web.agents_timeout_ms]
-doc = "A refresh that takes longer than this is abandoned (the last list stays on screen)."
+[web.full_push_hz]
+doc = "Changes pushed per second to a tab in the full tier (never above web.push_hz_max)."
+value = 2.0
+min = 0.1
+
+[web.lite_push_hz]
+doc = "Changes pushed per second to a tab in the lite tier."
+value = 0.2
+min = 0.05
+
+[web.push_hz_max]
+doc = "Hard ceiling of the push rate and of how often the engine is asked."
+value = 2.0
+min = 0.1
+
+[web.ctl_timeout_ms]
+doc = "A request to the engine's control socket that takes longer than this is abandoned (the last data stays on screen)."
+value = 2000
+min = 100
+
+[web.ctl_max_bytes]
+doc = "Largest engine reply accepted."
+value = 16777216
+min = 65536
+
+[web.delta_ring]
+doc = "Changes kept so a slow tab can be sent everything it missed in one message; a tab further behind gets a full snapshot."
+value = 64
+min = 2
+
+[web.pulse_min_interval_ms]
+doc = "How often the engine's vital signs (CPU, memory, requests, errors) are read and pushed."
+value = 2000
+min = 250
+
+[web.mesh_poll_ms]
+doc = "How often the mesh store is read for new messages while a tab is connected."
+value = 1000
+min = 250
+
+[web.mesh_db_rel]
+doc = "The mesh store, relative to the home directory."
+value = ".anti-hall/devswarm/store/devswarm.db"
+
+[web.mesh_limit]
+doc = "Most mesh messages read in one round."
+value = 200
+min = 1
+
+[web.feed_max]
+doc = "Activity feed lines kept (server and page)."
+value = 100
+min = 10
+
+[web.feed_decisions_shown]
+doc = "Which check decisions become feed lines (allow is left out: it is the normal case)."
+value = ["block", "advisory", "error"]
+
+[web.feed_text]
+doc = "Feed sentences by kind. Placeholders: {check}, {event}, {rule}, {sender}, {recipient}, {type}."
+value = { block = "{check} blocked a step ({event})", advisory = "{check} gave advice ({event})", error = "{check} failed ({event})", mesh = "{sender} sent a {type} message to {recipient}", unknown = "an agent", everyone = "everyone", engine_up = "The engine is reachable again", engine_down = "The engine does not answer" }
+
+[web.feed_events]
+doc = "Plain names for the host's event names in the feed; an event not listed shows as it is."
+value = { PreToolUse = "before a tool call", PostToolUse = "after a tool call", UserPromptSubmit = "on a prompt", SessionStart = "at session start", Stop = "at turn end", SubagentStart = "at subagent start", SubagentStop = "at subagent end" }
+
+[web.pulse_cpu_warn_permille]
+doc = "Engine CPU (parts per thousand of one core) at which the CPU pill turns amber."
+value = 20
+
+[web.pulse_cpu_bad_permille]
+doc = "Engine CPU (parts per thousand of one core) at which the CPU pill turns red."
+value = 100
+
+[web.pulse_mem_warn_mb]
+doc = "Engine memory (MB) at which the MEM pill turns amber."
+value = 100
+
+[web.pulse_mem_bad_mb]
+doc = "Engine memory (MB) at which the MEM pill turns red."
+value = 200
+
+[web.pulse_err_warn]
+doc = "Failed engine requests at which the ERR pill turns amber."
+value = 1
+
+[web.pulse_err_bad]
+doc = "Failed engine requests at which the ERR pill turns red."
+value = 25
+
+[web.action_timeout_ms]
+doc = "An action that takes longer than this is reported as failed."
 value = 10000
 min = 500
 
-[web.agents_max_bytes]
-doc = "Largest engine reply accepted for the agent list."
-value = 16777216
-min = 65536
+[web.action_note_max_chars]
+doc = "Longest verb result shown after a successful action."
+value = 160
+min = 20
+
+[web.actions]
+doc = "The agent action menu, in order. name: sent to the server; label: key of the page's text table; confirm: the page asks first; local: no engine call (opens the details); args: the engine arguments, {id} is the agent's id. Every engine action is audited by the engine."
+value = [
+  { name = "details", label = "act_details", confirm = false, local = true, args = [] },
+  { name = "progress", label = "act_progress", confirm = false, local = false, args = ["agents", "send", "{id}", "--progress-request", "--json"] },
+  { name = "ping", label = "act_ping", confirm = false, local = false, args = ["agents", "send", "{id}", "--ping", "--json"] },
+  { name = "stop", label = "act_stop", confirm = true, local = false, args = ["agents", "send", "{id}", "--stop-request", "--json"] },
+]
+
+[web.detail_skip_keys]
+doc = "Tracker fields left out of the details panel."
+value = ["agent"]
+
+[web.msg_action_unknown]
+doc = "Said for an action the menu does not list."
+value = "That action is not available."
+
+[web.msg_action_bad_id]
+doc = "Said for an agent id that is not a tracker id."
+value = "That is not an agent id."
+
+[web.msg_action_confirm]
+doc = "Said when an action that asks first arrives without the confirmation."
+value = "This action needs your confirmation first."
+
+[web.msg_action_timeout]
+doc = "Said when the engine did not answer in time."
+value = "The engine did not answer in time."
+
+[web.msg_action_failed]
+doc = "Said when the verb failed without a message."
+value = "The action failed."
 
 [web.sse_keepalive_s]
 doc = "Interval of the keep-alive comment on the event stream."
@@ -114,6 +238,14 @@ value = true
 [web.open_cmd]
 doc = "Command that opens a URL; the URL is appended as the last argument."
 value = ["open"]
+
+[web.proc_name]
+doc = "The name the server is recorded under for `ah-engine proc` (status, stop, restart by pid)."
+value = "ah-web"
+
+[web.proc_kind]
+doc = "The kind it is recorded as."
+value = "web"
 
 [web.bin_name]
 doc = "File name of the server binary, looked up next to the engine binary."
@@ -193,4 +325,4 @@ value = "Not found."
 # The page's texts. The compiled page carries none of its own: it asks /api/ui for this table.
 [web.ui]
 doc = "Every label the page shows, by key. Edit here; reload the page."
-value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", running = "RUNNING", stopped = "STOPPED", search = "Search agents, sessions, messages", search_label = "Search agents", nav_agents = "Agents", nav_health = "Health", nav_logs = "Logs", nav_settings = "Settings", nav_updates = "Updates", nav_label = "Views", title_agents = "Live agents", layout_label = "Layout", tab_graph = "Graph", tab_tree = "Tree", live = "live", idle = "idle", projects = "projects", graph_placeholder = "Graph view: a later slice", graph_hint = "The agent graph arrives with the WebGPU slice. The tree is live now.", col_name = "Agent", col_kind = "Kind", col_hb = "Heartbeat", col_brief = "Doing now", empty = "No agents tracked.", connecting = "Connecting...", reconnecting = "Reconnecting...", selected_label = "Selected agent", pick_prompt = "Pick an agent in the tree.", heartbeat = "Heartbeat", running_for = "Tokens out", model = "State", doing_now = "Doing now", recent = "Recent activity", recent_placeholder = "Activity feed: a later slice", send_label = "Send a message", send_placeholder = "Message or command for this agent", send = "Send", nudge = "Nudge", stop = "Stop...", controls_note = "Controls arrive with the actions slice.", placeholder_title = "Coming later", kind_main = "Primary", kind_workspace = "Workspace", kind_subagent = "Subagent", kind_teammate = "Teammate", kind_codex = "Codex", kind_heartbeat = "Heartbeat", kind_other = "Agent", legend_primary = "Primary", legend_workspace = "Workspace", legend_subagent = "Subagent", legend_codex = "Codex", claude = "Claude", codex = "Codex", theme_light = "Light", theme_dark = "Dark", theme_label = "Theme" }
+value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", running = "RUNNING", stopped = "STOPPED", search = "Search agents, sessions, messages", search_label = "Search agents", nav_agents = "Agents", nav_health = "Health", nav_logs = "Logs", nav_settings = "Settings", nav_updates = "Updates", nav_label = "Views", title_agents = "Live agents", layout_label = "Layout", tab_graph = "Graph", tab_tree = "Tree", live = "live", idle = "idle", projects = "projects", graph_placeholder = "Graph view: a later slice", graph_hint = "The agent graph arrives with the WebGPU slice. The tree is live now.", col_name = "Agent", col_kind = "Kind", col_hb = "Heartbeat", col_brief = "Doing now", empty = "No agents tracked.", connecting = "Connecting...", reconnecting = "Reconnecting...", selected_label = "Selected agent", pick_prompt = "Pick an agent in the tree.", heartbeat = "Heartbeat", running_for = "Tokens out", model = "State", doing_now = "Doing now", recent = "Recent activity", send_label = "Send a message", send_placeholder = "Message or command for this agent", send = "Send", nudge = "Nudge", stop = "Stop...", controls_note = "Message sending arrives with a later slice.", placeholder_title = "Coming later", kind_main = "Primary", kind_workspace = "Workspace", kind_subagent = "Subagent", kind_teammate = "Teammate", kind_codex = "Codex", kind_heartbeat = "Heartbeat", kind_other = "Agent", legend_primary = "Primary", legend_workspace = "Workspace", legend_subagent = "Subagent", legend_codex = "Codex", claude = "Claude", codex = "Codex", theme_light = "Light", theme_dark = "Dark", theme_label = "Theme", nav_topology = "Topology", mode_label = "Tier", mode_auto = "Auto", mode_full = "Full", mode_lite = "Lite", pill_cpu = "CPU", pill_mem = "MEM", pill_req = "REQ", pill_err = "ERR", feed_title = "Activity", feed_empty = "Nothing has happened yet.", act_menu = "Actions", act_details = "Show details", act_progress = "Request progress", act_ping = "Ping heartbeat", act_stop = "Request stop", act_running = "Working...", act_done = "Done", act_failed = "Failed", act_refused = "Refused", act_confirm_title = "Are you sure?", act_confirm_stop = "This asks the agent to stop at its next prompt. It does not kill it.", act_confirm_yes = "Yes, do it", act_confirm_no = "Cancel", details_title = "Details", details_loading = "Loading...", details_failed = "Details are not available.", just_now = "just now", ago = "ago" }

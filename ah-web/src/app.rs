@@ -1,11 +1,10 @@
-//! Shared state of the running server.
+//! Shared state of the running server: the settings, the connection counts and the model every stream reads.
 use crate::cfg::Settings;
-use ah_web_proto::Snapshot;
+use crate::model::Model;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use tokio::sync::watch;
 
 /// Everything the handlers share.
 pub struct App {
@@ -13,33 +12,37 @@ pub struct App {
     pub config_path: PathBuf,
     pub root: PathBuf,
     pub engine: PathBuf,
+    /// The engine daemon's control socket.
+    pub socket: PathBuf,
     pub token: String,
     pub port: u16,
     pub started: Instant,
-    /// Seconds since `started` of the last request or stream event.
+    /// Seconds since `started` of the last request.
     pub last_active_s: AtomicU64,
-    pub streams: AtomicUsize,
+    /// Open streams by tier; the poller runs while either is above zero and follows the faster tier.
+    pub full_streams: AtomicUsize,
+    pub lite_streams: AtomicUsize,
     pub polling: AtomicBool,
-    pub last_good: Mutex<Snapshot>,
-    pub tx: watch::Sender<String>,
+    pub model: Mutex<Model>,
 }
 
 impl App {
-    pub fn new(settings: Settings, config_path: PathBuf, root: PathBuf, engine: PathBuf, token: String, port: u16) -> App {
-        let first = serde_json::to_string(&Snapshot::default()).unwrap_or_default();
+    pub fn new(settings: Settings, config_path: PathBuf, root: PathBuf, engine: PathBuf, socket: PathBuf, token: String, port: u16) -> App {
+        let model = Model::new(settings.delta_ring, settings.feed_max);
         App {
             settings: RwLock::new(Arc::new(settings)),
             config_path,
             root,
             engine,
+            socket,
             token,
             port,
             started: Instant::now(),
             last_active_s: AtomicU64::new(0),
-            streams: AtomicUsize::new(0),
+            full_streams: AtomicUsize::new(0),
+            lite_streams: AtomicUsize::new(0),
             polling: AtomicBool::new(false),
-            last_good: Mutex::new(Snapshot::default()),
-            tx: watch::channel(first).0,
+            model: Mutex::new(model),
         }
     }
 
@@ -59,5 +62,15 @@ impl App {
     /// Note activity now.
     pub fn touch(&self) {
         self.last_active_s.store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Streams open now, both tiers.
+    pub fn streams(&self) -> usize {
+        self.full_streams.load(std::sync::atomic::Ordering::SeqCst) + self.lite_streams.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The model, even after a panic elsewhere poisoned the lock (the data in it is plain values).
+    pub fn model(&self) -> std::sync::MutexGuard<'_, Model> {
+        self.model.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
