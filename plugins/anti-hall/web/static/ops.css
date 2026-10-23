@@ -24,14 +24,14 @@
 .ring span { position: relative; font: 600 17px var(--font-mono); color: var(--text-hi); }
 .g-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
 .g-name { font: 600 14px var(--font-head); }
-.bar { display: none; height: 10px; border-radius: 6px; background: color-mix(in oklch, var(--line-2) 70%, transparent); overflow: hidden; }
-.bar i { display: block; height: 100%; background: var(--gc); }
+.g-bar { display: none; height: 10px; border-radius: 6px; background: color-mix(in oklch, var(--line-2) 70%, transparent); overflow: hidden; }
+.g-bar i { display: block; height: 100%; background: var(--gc); }
 .g-pct { display: none; font: 600 18px var(--font-mono); }
 .g-reset { font: 12px var(--font-mono); color: var(--muted); }
 .g-warn-text { font-size: 12px; font-weight: 600; color: var(--gc); }
 .gauge.g-ok .g-warn-text { display: none; }
 [data-mode="lite"] .ring { display: none; }
-[data-mode="lite"] .bar, [data-mode="lite"] .g-pct { display: block; }
+[data-mode="lite"] .g-bar, [data-mode="lite"] .g-pct { display: block; }
 
 /* table */
 .ops-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -59,3 +59,6 @@
 
 /* agents tree: finished turn, a shell still running */
 .badge-idle { margin-left: 8px; padding: 1px 8px; border-radius: 999px; font: normal 10px var(--font-mono); letter-spacing: .02em; color: var(--idle); border: 1px solid color-mix(in oklch, var(--idle) 45%, transparent); background: color-mix(in oklch, var(--idle) 10%, transparent); }
+
+/* a button never wraps its label */
+.ops-btn { white-space: nowrap; flex: 0 0 auto; }

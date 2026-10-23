@@ -13,7 +13,7 @@ mod apex;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -86,34 +86,86 @@ fn kind_label(a: &Agent) -> String {
     boot.ui.get(&key).or_else(|| boot.ui.get("kind_other")).cloned().unwrap_or(key)
 }
 
-/// Depth-first rows (id, depth): roots first by kind order then label, children the same way.
-fn flatten(boot: &Boot, agents: &[Agent]) -> Vec<(String, usize)> {
-    let ids: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-    let rank = |a: &Agent| boot.kind_order.iter().position(|k| *k == a.kind).unwrap_or(usize::MAX);
-    let mut kids: BTreeMap<&str, Vec<&Agent>> = BTreeMap::new();
-    let mut roots: Vec<&Agent> = Vec::new();
+/// One line of the agents tree: a project heading or an agent, how deep it sits and whether something is nested under it.
+#[derive(Clone, PartialEq)]
+struct TreeRow {
+    /// `p:<project root>` for a heading, `a:<agent id>`: also what the person's fold choice is kept under.
+    key: String,
+    depth: usize,
+    /// The agent shown; `None` for a project heading.
+    agent: Option<String>,
+    /// The heading's name and how many agents it holds (live, all).
+    project: Option<(String, usize, usize)>,
+    kids: bool,
+    /// " #2" ... for an agent whose siblings carry the same name and kind.
+    suffix: String,
+}
+
+/// The tree: projects, each with its agents nested by parent (Primary, then its workspaces, then what they started). Every agent is
+/// under exactly one project; a parent that is in another project (or missing) makes the agent a top row of its own project. What the
+/// person folded (`collapsed`) hides everything beneath it.
+fn flatten(kind_order: &[String], agents: &[Agent], collapsed: &HashSet<String>) -> Vec<TreeRow> {
+    let rank = |a: &Agent| kind_order.iter().position(|k| *k == a.kind).unwrap_or(usize::MAX);
+    let mut groups: BTreeMap<&str, Vec<&Agent>> = BTreeMap::new();
     for a in agents {
-        if a.parent.is_empty() || !ids.contains(a.parent.as_str()) {
-            roots.push(a);
-        } else {
-            kids.entry(a.parent.as_str()).or_default().push(a);
-        }
+        groups.entry(a.project_root.as_str()).or_default().push(a);
     }
-    let order = |v: &mut Vec<&Agent>| v.sort_by(|x, y| rank(x).cmp(&rank(y)).then_with(|| x.label.cmp(&y.label)).then_with(|| x.id.cmp(&y.id)));
-    order(&mut roots);
-    for v in kids.values_mut() {
-        order(v);
-    }
-    let mut out = Vec::with_capacity(agents.len());
-    let mut seen = BTreeSet::new();
-    let mut stack: Vec<(&Agent, usize)> = roots.into_iter().rev().map(|a| (a, 0)).collect();
-    while let Some((a, d)) = stack.pop() {
-        if !seen.insert(a.id.as_str()) {
-            continue; // a parent cycle in the data must not loop
+    // an empty root (no folder reported) goes last
+    let mut order: Vec<(&str, Vec<&Agent>)> = groups.into_iter().collect();
+    order.sort_by(|x, y| x.0.is_empty().cmp(&y.0.is_empty()).then_with(|| x.1[0].project_name.to_lowercase().cmp(&y.1[0].project_name.to_lowercase())).then_with(|| x.0.cmp(y.0)));
+    let mut out = Vec::with_capacity(agents.len() + order.len());
+    for (root, members) in order {
+        let ids: BTreeSet<&str> = members.iter().map(|a| a.id.as_str()).collect();
+        let mut kids: BTreeMap<&str, Vec<&Agent>> = BTreeMap::new();
+        let mut roots: Vec<&Agent> = Vec::new();
+        for a in &members {
+            if a.parent.is_empty() || a.parent == a.id || !ids.contains(a.parent.as_str()) {
+                roots.push(a);
+            } else {
+                kids.entry(a.parent.as_str()).or_default().push(a);
+            }
         }
-        out.push((a.id.clone(), d));
-        if let Some(c) = kids.get(a.id.as_str()) {
-            stack.extend(c.iter().rev().map(|k| (*k, d + 1)));
+        let nkids = |a: &Agent| kids.get(a.id.as_str()).map_or(0, Vec::len);
+        let sort = |v: &mut Vec<&Agent>| v.sort_by(|x, y| rank(x).cmp(&rank(y)).then_with(|| nkids(y).cmp(&nkids(x))).then_with(|| x.label.cmp(&y.label)).then_with(|| x.id.cmp(&y.id)));
+        sort(&mut roots);
+        for v in kids.values_mut() {
+            v.sort_by(|x, y| rank(x).cmp(&rank(y)).then_with(|| x.label.cmp(&y.label)).then_with(|| x.id.cmp(&y.id)));
+        }
+        let live = members.iter().filter(|a| !a.placeholder && a.state == "running" && !a.idle_shell).count();
+        let key = format!("p:{root}");
+        let open = !collapsed.contains(&key);
+        out.push(TreeRow { key, depth: 0, agent: None, project: Some((members[0].project_name.clone(), live, members.iter().filter(|a| !a.placeholder).count())), kids: !members.is_empty(), suffix: String::new() });
+        if !open {
+            continue;
+        }
+        let mut seen = BTreeSet::new();
+        // siblings that share a name and a kind are told apart by a number
+        let suffixes = |v: &[&Agent]| -> Vec<String> {
+            let mut count: HashMap<(&str, &str), usize> = HashMap::new();
+            v.iter().for_each(|a| *count.entry((a.label.as_str(), a.kind.as_str())).or_default() += 1);
+            let mut n: HashMap<(&str, &str), usize> = HashMap::new();
+            v.iter()
+                .map(|a| {
+                    let k = (a.label.as_str(), a.kind.as_str());
+                    let i = n.entry(k).or_default();
+                    *i += 1;
+                    if count[&k] > 1 { format!(" #{i}") } else { String::new() }
+                })
+                .collect()
+        };
+        let mut stack: Vec<(&Agent, usize, String)> = roots.iter().zip(suffixes(&roots)).map(|(a, s)| (*a, 1usize, s)).rev().collect();
+        while let Some((a, d, suffix)) = stack.pop() {
+            if !seen.insert(a.id.as_str()) {
+                continue; // a parent cycle in the data must not loop
+            }
+            let children = kids.get(a.id.as_str()).cloned().unwrap_or_default();
+            let akey = format!("a:{}", a.id);
+            let open = !collapsed.contains(&akey);
+            out.push(TreeRow { key: akey, depth: d, agent: Some(a.id.clone()), project: None, kids: !children.is_empty(), suffix });
+            if open {
+                let sfx = suffixes(&children);
+                stack.extend(children.iter().zip(sfx).map(|(k, s)| (*k, d + 1, s)).rev());
+            }
         }
     }
     out
@@ -402,18 +454,20 @@ fn App(boot: Boot) -> impl IntoView {
 
     let by_id = Memo::new(move |_| snap.with(|s| s.agents.iter().map(|a| (a.id.clone(), a.clone())).collect::<HashMap<_, _>>()));
     let b2 = boot.clone();
-    let rows = Memo::new(move |_| snap.with(|s| flatten(&b2, &s.agents)));
+    let collapsed = RwSignal::new(HashSet::<String>::new());
+    let rows = Memo::new(move |_| snap.with(|s| collapsed.with(|c| flatten(&b2.kind_order, &s.agents, c))));
     let counts = Memo::new(move |_| {
         snap.with(|s| {
-            let live = s.agents.iter().filter(|a| a.state == "running" && !a.idle_shell).count();
-            let idle = s.agents.len() - live;
-            let projects = s.agents.iter().map(|a| a.project.as_str()).collect::<BTreeSet<_>>().len();
-            let codex = s.agents.iter().filter(|a| a.kind == "codex").count();
-            (live, idle, projects, s.agents.len() - codex, codex)
+            let real: Vec<&Agent> = s.agents.iter().filter(|a| !a.placeholder).collect();
+            let live = real.iter().filter(|a| a.state == "running" && !a.idle_shell).count();
+            let idle = real.len() - live;
+            let projects = real.iter().map(|a| a.project_root.as_str()).collect::<BTreeSet<_>>().len();
+            let codex = real.iter().filter(|a| a.kind == "codex").count();
+            (live, idle, projects, real.len() - codex, codex)
         })
     });
     let current = Memo::new(move |_| {
-        let id = selected.get().or_else(|| rows.with(|r| r.first().map(|(i, _)| i.clone())));
+        let id = selected.get().or_else(|| rows.with(|r| r.iter().find_map(|x| x.agent.clone())));
         id.and_then(|i| by_id.with(|m| m.get(&i).cloned()))
     });
     let lim = boot.limits.clone();
@@ -479,16 +533,16 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| go(false, false, false, false, 0)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
-                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(true, false, false, false, 0)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 4 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 4)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 5 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 5)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
-                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, true, false, false, 0)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
-                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, true, false, 0)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 3 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 3)><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></button>
-                    <button type="button" class=move || if manage_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, true, 0)><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 1 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 1)><span class="glyph">"\u{25D4}"</span><span>{tx("nav_accounts")}</span></button>
-                    <button type="button" class=move || if ops_screen.get() == 2 { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, false, 2)><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></button>
+                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } title=tx("nav_agents") on:click=move |_| go(false, false, false, false, 0)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_live") on:click=move |_| go(true, false, false, false, 0)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 4 { "nav-item on" } else { "nav-item" } title=tx("nav_telemetry") on:click=move |_| go(false, false, false, false, 4)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 5 { "nav-item on" } else { "nav-item" } title=tx("nav_impact") on:click=move |_| go(false, false, false, false, 5)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
+                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_health") on:click=move |_| go(false, true, false, false, 0)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
+                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_topology") on:click=move |_| go(false, false, true, false, 0)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 3 { "nav-item on" } else { "nav-item" } title=tx("nav_logs") on:click=move |_| go(false, false, false, false, 3)><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></button>
+                    <button type="button" class=move || if manage_on.get() { "nav-item on" } else { "nav-item" } title=tx("nav_settings") on:click=move |_| go(false, false, false, true, 0)><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 1 { "nav-item on" } else { "nav-item" } title=tx("nav_accounts") on:click=move |_| go(false, false, false, false, 1)><span class="glyph">"\u{25D4}"</span><span>{tx("nav_accounts")}</span></button>
+                    <button type="button" class=move || if ops_screen.get() == 2 { "nav-item on" } else { "nav-item" } title=tx("nav_updates") on:click=move |_| go(false, false, false, false, 2)><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></button>
                 </nav>
                 <main class="main" hidden=move || other_on.get()>
                     <div class="main-head">
@@ -518,14 +572,17 @@ fn App(boot: Boot) -> impl IntoView {
                             <span>"\u{25C7} " {tx("legend_codex")}</span>
                         </div>
                     </section>
+                    <HeartbeatLegend />
                     <section class="tree" hidden=move || graph.get()>
                         <div class="tree-cols" aria-hidden="true">
-                            <span class="c-name">{tx("col_name")}</span><span class="c-kind">{tx("col_kind")}</span><span class="c-hb">{tx("col_hb")}</span><span class="c-brief">{tx("col_brief")}</span>
+                            <span class="twist-sp"></span>
+                            <div class="row-cols"><span class="dot-sp"></span><span class="c-name">{tx("col_name")}</span><span class="c-kind">{tx("col_kind")}</span><span class="c-hb">{tx("col_hb")}</span><span class="c-brief">{tx("col_brief")}</span></div>
+                            <span class="kebab-sp"></span>
                         </div>
                         <Show when=move || rows.with(|r| r.is_empty())>
                             <p class="empty">{tx("empty")}</p>
                         </Show>
-                        <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
+                        <For each=move || rows.get() key=|r| format!("{}|{}|{}", r.key, r.depth, r.kids) children=move |r| view! { <TreeLine row=r by_id=by_id current=current collapsed=collapsed /> } />
                     </section>
                 </main>
                 <main class="main live-main" hidden=move || !live_on.get() || ops_screen.get() != 0>
@@ -559,9 +616,9 @@ fn App(boot: Boot) -> impl IntoView {
                             view! {
                                 <div class="who">
                                     <div class=format!("avatar {rc}")><span class="avatar-dot"></span></div>
-                                    <div class="who-text"><span class="who-name">{a.label.clone()}</span><span class="who-kind">{kind_label(&a)} " \u{b7} " {a.project.rsplit('/').find(|s| !s.is_empty()).unwrap_or_default().to_string()}</span></div>
+                                    <div class="who-text"><span class="who-name">{a.label.clone()}</span><span class="who-kind">{kind_label(&a)} " \u{b7} " {a.project_name.clone()}</span></div>
                                     <div class="grow"></div>
-                                    <ActionMenu id=a.id.clone() uid="panel".to_string() />
+                                    {(!a.placeholder).then(|| view! { <ActionMenu id=a.id.clone() uid="panel".to_string() /> })}
                                 </div>
                                 <Feedback_ id=a.id.clone() />
                                 <div class="stats">
@@ -686,12 +743,47 @@ fn ConfirmBox(boot: Arc<Boot>) -> impl IntoView {
     }
 }
 
+/// The fold button of a row that has something nested under it; an empty spacer of the same width otherwise.
+#[component]
+fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>>, label_key: &'static str) -> impl IntoView {
+    if !kids {
+        return view! { <span class="twist-sp"></span> }.into_any();
+    }
+    let (k1, k2, k3) = (key.clone(), key.clone(), key);
+    view! {
+        <button type="button" class="twist" aria-label=tx(label_key) aria-expanded=move || (!collapsed.with(|c| c.contains(&k1))).to_string()
+            on:click=move |_| collapsed.update(|c| { if !c.remove(&k2) { c.insert(k2.clone()); } })>
+            {move || if collapsed.with(|c| c.contains(&k3)) { "\u{25B8}" } else { "\u{25BE}" }}
+        </button>
+    }.into_any()
+}
+
+/// A line of the tree: a project heading or an agent.
+#[component]
+fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Option<Agent>>, collapsed: RwSignal<HashSet<String>>) -> impl IntoView {
+    match (row.agent.clone(), row.project.clone()) {
+        (Some(id), _) => view! { <Row id=id key=row.key.clone() depth=row.depth kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
+        (None, Some((name, live, all))) => view! {
+            <div class="row-wrap proj-row">
+                <Twist key=row.key.clone() kids=row.kids collapsed=collapsed label_key="proj_toggle" />
+                <span class="proj-name">{name}</span>
+                <span class="proj-meta">{live} " " {tx("live")} " \u{b7} " {all.saturating_sub(live)} " " {tx("idle")}</span>
+            </div>
+        }.into_any(),
+        _ => ().into_any(),
+    }
+}
+
 #[component]
 fn Row(
     id: String,
+    key: String,
     depth: usize,
+    kids: bool,
+    suffix: String,
     by_id: Memo<HashMap<String, Agent>>,
     current: Memo<Option<Agent>>,
+    collapsed: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let a = {
@@ -707,22 +799,39 @@ fn Row(
         move |_| ctx.selected.set(Some(id.clone()))
     };
     let uid: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
+    let placeholder = move || a.get().is_some_and(|a| a.placeholder);
     view! {
         <div class="row-wrap">
+            <span class="indent" style=format!("flex-basis:{}px", depth * 20)></span>
+            <Twist key=key kids=kids collapsed=collapsed label_key="agent_toggle" />
             <button type="button" class=move || if is_sel() { "row sel" } else { "row" } on:click=pick>
-                <span class="indent" style=format!("flex-basis:{}px", depth * 24)></span>
                 <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>
-                <span class="c-name">{move || a.get().map(|a| a.label).unwrap_or_default()}{move || a.get().filter(|a| a.idle_shell).map(|_| view! { <em class="badge-idle" title=tx("ops_idle_shell_tip")>{tx("ops_idle_shell")}</em> })}</span>
+                <span class="c-name" class:ghost=placeholder title=move || if placeholder() { tx("placeholder_tip") } else { String::new() }>{move || a.get().map(|a| a.label).unwrap_or_default()}{suffix}{move || a.get().filter(|a| a.idle_shell).map(|_| view! { <em class="badge-idle" title=tx("ops_idle_shell_tip")>{tx("ops_idle_shell")}</em> })}</span>
                 <span class="c-kind">{move || a.get().map(|a| kind_label(&a)).unwrap_or_default()}</span>
                 <span class=move || {
                     let b = expect_context::<Arc<Boot>>();
-                    a.get().map(|a| format!("c-hb {}", hb_class(&b, &a))).unwrap_or_default()
+                    a.get().map(|a| format!("c-hb {}", if a.placeholder { "hb-none" } else { hb_class(&b, &a) })).unwrap_or_default()
                 }>{move || a.get().and_then(|a| a.last_output_s).map(fmt_age).unwrap_or_else(|| "\u{2014}".into())}</span>
                 <span class="c-brief">{move || a.get().map(|a| a.step).unwrap_or_default()}</span>
             </button>
-            <ActionMenu id=id.clone() uid=uid />
-            <Feedback_ id=id />
+            {let menu_id = id.clone(); move || (!placeholder()).then(|| view! { <ActionMenu id=menu_id.clone() uid=uid.clone() /> })}
+            <Feedback_ id=id.clone() />
         </div>
+    }
+}
+
+/// What the heartbeat colours mean, from the configured thresholds.
+#[component]
+fn HeartbeatLegend() -> impl IntoView {
+    let b = expect_context::<Arc<Boot>>();
+    let (warn, stale) = (fmt_age(b.heartbeat_warn_s), fmt_age(b.heartbeat_stale_s));
+    view! {
+        <p class="hb-legend">
+            <span>{tx("hb_legend_title")}</span>
+            <span class="hb-ok">{tx("hb_legend_ok").replace("{t}", &warn)}</span>
+            <span class="hb-warn">{tx("hb_legend_warn").replace("{t}", &stale)}</span>
+            <span class="hb-stale">{tx("hb_legend_stale").replace("{t}", &stale)}</span>
+        </p>
     }
 }
 

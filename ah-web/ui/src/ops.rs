@@ -149,7 +149,7 @@ fn Gauge(bucket: Bucket, cfg: OpsCfg, now: RwSignal<u64>) -> impl IntoView {
             <div class="ring" style=move || format!("--p:{:.1}", pct()) role="img" aria-label=format!("{} {:.0}%", bucket.label, raw)><span>{move || format!("{:.0}%", pct())}</span></div>
             <div class="g-body">
                 <div class="g-name">{bucket.label.clone()}</div>
-                <div class="bar" aria-hidden="true"><i style=move || format!("width:{:.1}%", pct())></i></div>
+                <div class="g-bar" aria-hidden="true"><i style=move || format!("width:{:.1}%", pct())></i></div>
                 <div class="g-pct">{move || format!("{:.0}%", pct())}</div>
                 <div class="g-reset">{countdown}</div>
                 {move || warning().map(|w| view! { <div class="g-warn-text" role="status">{w}</div> })}
@@ -281,7 +281,7 @@ fn UpdatesScreen() -> impl IntoView {
             busy.set(false);
         });
     };
-    let (n1, n2, n3, n4) = (none.clone(), none.clone(), none.clone(), none.clone());
+    let (n1, n2, n3) = (none.clone(), none.clone(), none.clone());
     view! {
         <div class="main-head"><h1>{tx("ops_updates_title")}</h1></div>
         <p class="soft-note">{tx("ops_updates_hint")}</p>
@@ -290,9 +290,8 @@ fn UpdatesScreen() -> impl IntoView {
                 <dt>{tx("ops_ver_plugin")}</dt><dd>{if plugin.is_empty() { n1 } else { format!("v{plugin}") }}</dd>
                 <dt>{tx("ops_ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).unwrap_or_else(|| n2.clone())}</dd>
                 <dt>{tx("ops_ver_build")}</dt><dd>{move || pulse(|p| p.build_sha.clone()).unwrap_or_else(|| n3.clone())}</dd>
-                <dt>{tx("ops_ver_engine_plugin")}</dt><dd>{move || pulse(|p| p.plugin_version.clone()).map(|v| format!("v{v}")).unwrap_or_else(|| n4.clone())}</dd>
+                {move || pulse(|p| p.plugin_version.clone()).map(|v| view! { <dt>{tx("ops_ver_engine_plugin")}</dt><dd>{format!("v{v}")}</dd> })}
                 <dt>{tx("ops_ver_web")}</dt><dd>{format!("v{web}")}</dd>
-                <dt>{tx("ops_ver_hook")}</dt><dd>{none.clone()}</dd>
             </dl>
             <Show when=skew><p class="fb fb-bad" role="status">{tx("ops_skew")}</p></Show>
         </section>
@@ -443,7 +442,10 @@ fn LogsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl IntoV
     view! {
         <div class="main-head">
             <h1>{tx("ops_logs_title")}</h1>
-            <span class="counts">{move || format!("{} {} {} {}", shown.with(Vec::len), tx("ops_log_shown"), total(), tx("ops_log_lines"))}</span>
+            <span class="counts">{move || {
+                let n = shown.with(Vec::len);
+                if n == total() { format!("{n} {}", tx("ops_log_lines")) } else { format!("{n} {} \u{b7} {} {}", tx("ops_log_shown"), total(), tx("ops_log_lines")) }
+            }}</span>
             <span class="conn">{move || if st.paused.get() { tx("ops_log_paused") } else { String::new() }}</span>
         </div>
         <p class="soft-note">{tx("ops_logs_hint")}</p>

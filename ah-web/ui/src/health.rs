@@ -6,7 +6,7 @@ use super::{compact, fmt_age, now_ms, since, tier_of, tx};
 use ah_web_graph::{ActionCall, ActionDef, EdgeDef, Graph, GraphConfig, GraphData, LayoutMode, NodeDef, Tier};
 use ah_web_proto::{ActionRes, Boot, ClientRow, Health, StoreRow, TopoActionDef, TopoCfg, TopoReq, HEALTH_PATH, TOPO_ACTION_PATH};
 use leptos::prelude::*;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -40,8 +40,8 @@ impl HealthState {
 
 thread_local! {
     static PREV: RefCell<Option<Health>> = const { RefCell::new(None) };
-    static TIMER: Cell<Option<i32>> = const { Cell::new(None) };
-    static TICK: RefCell<Option<Closure<dyn FnMut()>>> = const { RefCell::new(None) };
+    /// The tick closures, by the interval id each one runs under: an interval is cleared, then its closure dropped, never the other way.
+    static TICKS: RefCell<HashMap<i32, Closure<dyn FnMut()>>> = RefCell::new(HashMap::new());
 }
 
 fn per_s(now: u64, before: u64, dt_s: f64) -> f32 {
@@ -112,17 +112,17 @@ pub fn Poller(mode: RwSignal<String>) -> impl IntoView {
         }
         read_now(st);
     });
-    if let Some(w) = web_sys::window() {
-        if let Ok(id) = w.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), ms.max(250) as i32) {
-            TIMER.with(|t| t.set(Some(id)));
-        }
+    let id = web_sys::window().and_then(|w| w.set_interval_with_callback_and_timeout_and_arguments_0(tick.as_ref().unchecked_ref(), ms.max(250) as i32).ok());
+    if let Some(id) = id {
+        TICKS.with(|t| t.borrow_mut().insert(id, tick));
     }
-    TICK.with(|t| *t.borrow_mut() = Some(tick));
-    on_cleanup(|| {
-        if let (Some(w), Some(id)) = (web_sys::window(), TIMER.with(|t| t.take())) {
-            w.clear_interval_with_handle(id);
+    on_cleanup(move || {
+        if let Some(id) = id {
+            if let Some(w) = web_sys::window() {
+                w.clear_interval_with_handle(id);
+            }
+            TICKS.with(|t| t.borrow_mut().remove(&id));
         }
-        TICK.with(|t| *t.borrow_mut() = None);
     });
 }
 
@@ -286,10 +286,15 @@ fn HealthBody() -> impl IntoView {
                             }).collect_view()}
                         </ul>
                     </section>
-                    <section class="h-card">
-                        <div class="sect">{tx("h_system")}</div>
-                        <dl class="kv"><dt>{tx("h_load")}</dt><dd>{load}</dd><dt>{tx("h_disk")}</dt><dd>{disk}</dd></dl>
-                    </section>
+                    {(h.load_per_core.is_some() || h.disk_free_kb.is_some()).then(|| view! {
+                        <section class="h-card">
+                            <div class="sect">{tx("h_system")}</div>
+                            <dl class="kv">
+                                {h.load_per_core.is_some().then(|| view! { <dt>{tx("h_load")}</dt><dd>{load.clone()}</dd> })}
+                                {h.disk_free_kb.is_some().then(|| view! { <dt>{tx("h_disk")}</dt><dd>{disk.clone()}</dd> })}
+                            </dl>
+                        </section>
+                    })}
                 </div>
                 <section class="h-card">
                     <div class="sect">{tx("h_clients")}</div>

@@ -89,6 +89,19 @@ pub struct Settings {
     pub number_decimals: usize,
     pub number_raw_keys: Vec<String>,
     pub kind_order: Vec<String>,
+    pub project_workspace_marker: String,
+    pub project_git_entry: String,
+    pub project_gitdir_split: String,
+    pub project_primary_role: String,
+    pub project_primary_kinds: Vec<String>,
+    pub project_workspace_kinds: Vec<String>,
+    pub project_cache_max: usize,
+    pub placeholder_kind: String,
+    pub placeholder_state: String,
+    pub placeholder_label: String,
+    pub placeholder_id_chars: usize,
+    pub project_home_label: String,
+    pub project_none_label: String,
     pub msg_unauthorized: String,
     pub msg_busy: String,
     pub msg_not_found: String,
@@ -159,8 +172,9 @@ impl Settings {
     /// The page's start-up data: the part of the settings the page needs.
     pub fn limits(&self) -> ah_web_proto::PulseLimits {
         ah_web_proto::PulseLimits {
-            cpu_warn_permille: self.pulse_cpu_warn_permille,
-            cpu_bad_permille: self.pulse_cpu_bad_permille,
+            // the header pill and the Health banner judge the CPU by the same bars
+            cpu_warn_permille: self.health_cpu_soft_permille,
+            cpu_bad_permille: self.health_cpu_hard_permille,
             mem_warn_mb: self.pulse_mem_warn_mb,
             mem_bad_mb: self.pulse_mem_bad_mb,
             err_warn: self.pulse_err_warn,

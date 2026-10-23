@@ -24,6 +24,7 @@ pub struct Cfg {
     pub jev_modes: Vec<String>,
     pub safety_categories: Vec<String>,
     pub guard_categories: Vec<String>,
+    pub strip_notes: Vec<Vec<String>>,
     pub msg_bad_request: String,
     pub msg_flag_value: String,
     pub msg_timeout: String,
@@ -45,6 +46,19 @@ impl Cfg {
             }
         }
         toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// A description as the person should read it: the notes written for maintainers (`[read by ...]`, `(port of ...)`) are cut out.
+    pub fn clean(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for pair in &self.strip_notes {
+            let [open, close] = pair.as_slice() else { continue };
+            while let Some(i) = out.find(open.as_str()) {
+                let end = out[i..].find(close.as_str()).map_or(out.len(), |e| i + e + close.len());
+                out.replace_range(i..end, "");
+            }
+        }
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// What the page needs at start: its texts and the few limits it shows.
@@ -82,7 +96,14 @@ pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
     let doc = engine(app, c, &describe_args("settings_registry,checks,switches,jev_integrations,files"), t, false).await?;
     let stats = engine(app, c, &["query".into(), "checks".into(), "--limit".into(), c.stats_limit.to_string(), "--json".into()], t, false).await.unwrap_or(Value::Null);
     let fires: BTreeMap<String, &Value> = stats.get("rows").and_then(Value::as_array).map(|rows| rows.iter().map(|r| (s(r, "h"), r)).collect()).unwrap_or_default();
-    let settings: Vec<Value> = doc.get("settings_registry").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut settings: Vec<Value> = doc.get("settings_registry").and_then(Value::as_array).cloned().unwrap_or_default();
+    for st in &mut settings {
+        for key in ["description", "summary", "safety_note"] {
+            if let Some(v) = st.get(key).and_then(Value::as_str).map(|x| c.clean(x)) {
+                st[key] = Value::String(v);
+            }
+        }
+    }
     let by_id: BTreeMap<String, &Value> = settings.iter().map(|x| (s(x, "id"), x)).collect();
     let switches: BTreeMap<String, Value> = doc.get("switches").and_then(Value::as_array).map(|l| l.iter().map(|x| (s(x, "id"), x.clone())).collect()).unwrap_or_default();
     let checks: Vec<Value> = doc
@@ -100,7 +121,7 @@ pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
                     let reg = by_id.get(&setting);
                     let f = fires.get(&name);
                     json!({
-                        "name": name, "summary": s(ch, "summary"), "events": events,
+                        "name": name, "summary": c.clean(&s(ch, "summary")), "events": events,
                         "setting": setting, "on": reg.and_then(|r| r.get("value")).cloned().or_else(|| sw.and_then(|x| x.get("value")).cloned()),
                         "registry": reg.is_some(), "category": reg.map(|r| s(r, "category")).unwrap_or_default(),
                         "safety_note": reg.map(|r| s(r, "safety_note")).unwrap_or_default(),

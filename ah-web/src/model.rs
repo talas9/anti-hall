@@ -129,6 +129,14 @@ impl Model {
         }
     }
 
+    /// The tracked agent a (possibly shortened) id belongs to: an exact id, else the one it is the start of (or that starts with it).
+    pub fn lookup(&self, id: &str, min_chars: usize) -> Option<Agent> {
+        if id.is_empty() {
+            return None;
+        }
+        self.agents.get(id).cloned().or_else(|| (id.len() >= min_chars).then(|| self.agents.values().find(|a| !a.placeholder && (a.id.starts_with(id) || id.starts_with(&a.id))).cloned()).flatten())
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             seq: self.seq,

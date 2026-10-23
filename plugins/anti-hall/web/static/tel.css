@@ -58,9 +58,9 @@
 .mover.dir-down .mover-delta { color: var(--cyan); }
 
 /* weekly gauge (Lite) */
-.gauge { position: relative; height: 14px; border-radius: 7px; background: var(--card); border: 1px solid var(--line); overflow: hidden; margin: 8px 0; }
-.gauge-fill { height: 100%; background: var(--tone, var(--cyan)); opacity: .85; }
-.gauge-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-hi); }
+.wk-gauge { position: relative; height: 14px; border-radius: 7px; background: var(--card); border: 1px solid var(--line); overflow: hidden; margin: 8px 0; }
+.wk-gauge-fill { height: 100%; background: var(--tone, var(--cyan)); opacity: .85; }
+.wk-gauge-mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text-hi); }
 
 /* heat grid (Lite) */
 .heat { display: flex; flex-direction: column; gap: 3px; }

@@ -54,6 +54,9 @@ pub fn reduce(doc: &Value, step_max: usize, idle_shell_state: &str) -> Vec<Agent
                         tokens_out: a.get("tokens_out").and_then(Value::as_u64).unwrap_or(0),
                         tool_calls: a.get("tool_calls").and_then(Value::as_u64).unwrap_or(0),
                         // the registry says a shell is running and the transcript says the turn ended (engine field `turn_ended`)
+                        project_root: String::new(),
+                        project_name: String::new(),
+                        placeholder: false,
                         idle_shell: !idle_shell_state.is_empty() && text(a, "host_state") == idle_shell_state && a.get("turn_ended").and_then(Value::as_bool) == Some(true),
                         id,
                     }
@@ -172,7 +175,9 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
                 if doc.get("unchanged").is_none() && doc.get("error").is_none() {
                     f.generated_ms = doc.get("generated_ms").and_then(Value::as_u64);
                     f.rev = doc.get("rev").and_then(Value::as_str).map(str::to_string);
-                    f.agents = Some(reduce(&doc, s.step_max_chars, &crate::ops::idle_shell_state(&app)));
+                    let mut list = reduce(&doc, s.step_max_chars, &crate::ops::idle_shell_state(&app));
+                    crate::hier::link(s, &mut list);
+                    f.agents = Some(list);
                 }
             }
             Err(_) => {

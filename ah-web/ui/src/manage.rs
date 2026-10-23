@@ -435,7 +435,6 @@ fn matches(filter: &str, parts: &[&str]) -> bool {
 #[component]
 fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
     let filter = RwSignal::new(String::new());
-    let cat = RwSignal::new(String::new());
     let adv = RwSignal::new(false);
     let prefix = expect_context::<M>().0.get("jev_prefix").and_then(Value::as_str).unwrap_or_default().to_string();
     let all: Vec<Value> = rows_of(&data, "settings").into_iter().filter(|s| !text_of(s, "id").starts_with(&prefix)).cloned().collect();
@@ -452,6 +451,8 @@ fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
         }
     }
     cats.sort();
+    // the first category is open from the start: one page of options, not all of them in one scroll
+    let cat = RwSignal::new(cats.first().map(|c| c.0.clone()).unwrap_or_default());
     let all = Arc::new(all);
     view! {
         <div class="mg-split">
@@ -482,8 +483,11 @@ fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
                         }
                     }
                     groups.sort_by(|a, b| a.0.cmp(&b.0));
+                    // all categories at once: each one folded, open while a search is narrowing them
+                    let folded = c.is_empty();
+                    let searching = !f.is_empty();
                     groups.into_iter().map(|(g, rows)| view! {
-                        <div class="mg-card"><h2>{g}</h2>{rows.into_iter().map(|o| view! { <OptRow opt=o done=reload /> }).collect_view()}</div>
+                        <details class="mg-card mg-fold" open=!folded || searching><summary><h2>{g}" "<span class="mg-count">{rows.len()}</span></h2></summary>{rows.into_iter().map(|o| view! { <OptRow opt=o done=reload /> }).collect_view()}</details>
                     }).collect_view().into_any()
                 }}
             </section>
@@ -512,6 +516,10 @@ fn ConfigTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
         }
         reload.run(());
     });
+    // the first file is open from the start
+    if let Some(first) = files.first().map(|f| text_of(f, "file")) {
+        open(first);
+    }
     view! {
         <div class="mg-split">
             <nav class="mg-cats" aria-label=mt("config_files")>
@@ -676,6 +684,7 @@ fn HistoryRow(row: Value, reload: Callback<()>) -> impl IntoView {
     let (old, new) = (val("old"), val("new"));
     let ts = row.get("ts").and_then(Value::as_u64).unwrap_or(0);
     let id2 = id.clone();
+    let when: String = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts as f64)).to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED).into();
     view! {
         <div class=if ok { "mg-row" } else { "mg-row off" }>
             <div class="mg-main">
@@ -685,7 +694,7 @@ fn HistoryRow(row: Value, reload: Callback<()>) -> impl IntoView {
                     {(!ok).then(|| view! { <span class="mg-badge warn">{mt("history_failed")}</span> })}
                 </div>
                 <p class="mg-doc"><span class="mono">{old}</span> " \u{2192} " <span class="mono">{new}</span></p>
-                <p class="mg-meta">{mt("history_who")} " " {text_of(&row, "who")} " \u{b7} " {crate::since(ts)}{(!ok).then(|| format!(" \u{b7} {}", text_of(&row, "error")))}</p>
+                <p class="mg-meta">{when} " \u{b7} " {crate::since(ts)}{(!ok).then(|| format!(" \u{b7} {}", text_of(&row, "error")))}</p>
             </div>
             <div class="mg-side">
                 {can_undo.then(|| view! { <button type="button" class="mg-btn" title=mt("history_undo_row") on:click=move |_| run_write(fb, pending, "undo", &id2, "", false, false, reload)>{mt("history_undo")}</button> })}

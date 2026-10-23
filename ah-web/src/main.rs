@@ -8,6 +8,7 @@ mod cfg;
 mod ctl;
 mod data;
 mod health;
+mod hier;
 mod live;
 mod manage;
 mod model;
