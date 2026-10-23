@@ -353,6 +353,12 @@ pub struct Agent {
     pub files: Vec<String>,
     /// The declared step.
     pub step: String,
+    /// The task whose subject is the declared step (empty when the step came from elsewhere).
+    #[serde(default)]
+    pub step_task: String,
+    /// Task id -> subject, from the task-list creates and updates this agent made (names the step of a status-only update).
+    #[serde(default)]
+    pub task_names: std::collections::BTreeMap<String, String>,
     /// Edits and commands since the step was declared.
     pub step_events: u64,
     /// Words of the recent work.

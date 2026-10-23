@@ -335,40 +335,31 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     }
 }
 
-/// The teammates a launching session stopped, by name: the host answers a `TaskStop` of an in-process teammate with its own task id (not
-/// the agent id or the name) plus the task's description, so the stop is tied back to the `Agent` call that launched the teammate under
-/// that description. Only the stops after the latest launch of the name count (a teammate launched again under it is a new one).
-fn teammate_stops(parent: &str) -> std::collections::HashSet<String> {
+/// The stops a launching session answered for in-process teammates, as task description -> latest stop time (ms): the host answers a
+/// `TaskStop` of a teammate with its own task id (not the agent id or the name) plus the task's description, which is the `description`
+/// field of that teammate's meta file. Only the answer is read here (the recent tail of the transcript), so a stop whose launch line is
+/// long gone from the window still counts; the caller matches it to a teammate by description and start time.
+fn teammate_stops(parent: &str) -> std::collections::HashMap<String, u64> {
     use std::collections::{HashMap, HashSet};
     let cfg = defaults::raw("agent_tracker.stop_result");
     let field = |k: &str| cfg.str_field(k);
-    let launch = defaults::raw("agent_scan.launch_tools").strings();
     let stop_tool = defaults::text("agent_scan.stop_tool");
-    let Some(text) = tail_of(parent, defaults::num("agent_scan.tail_bytes")) else { return HashSet::new() };
-    let (mut launched, mut stop_calls): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
-    let (mut by_desc, mut stopped): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
+    let Some(text) = tail_of(parent, defaults::num("agent_scan.tail_bytes")) else { return HashMap::new() };
+    let mut stop_calls: HashSet<String> = HashSet::new();
+    let mut stopped: HashMap<String, u64> = HashMap::new();
     for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
         let blocks = v["message"]["content"].as_array().map_or(&[][..], Vec::as_slice);
-        for b in blocks.iter().filter(|b| b["type"] == field("use_type")) {
-            let id = b["id"].as_str().unwrap_or_default().to_string();
-            let name = b["name"].as_str().unwrap_or_default();
-            if name == stop_tool {
-                stop_calls.insert(id);
-            } else if launch.contains(&name) {
-                let (n, d) = (b["input"][field("name")].as_str().unwrap_or_default(), b["input"][field("desc")].as_str().unwrap_or_default());
-                if !n.is_empty() && !d.is_empty() {
-                    stopped.remove(n);
-                    by_desc.insert(d.to_string(), n.to_string());
-                    launched.insert(id, n.to_string());
-                }
-            }
+        for b in blocks.iter().filter(|b| b["type"] == field("use_type") && b["name"] == stop_tool) {
+            stop_calls.insert(b["id"].as_str().unwrap_or_default().to_string());
         }
         let res = &v[field("result")];
         let answers_stop = blocks.iter().any(|b| b["tool_use_id"].as_str().is_some_and(|i| stop_calls.contains(i)));
         if answers_stop && res[field("kind")] == field("teammate")
-            && let Some(name) = res[field("command")].as_str().and_then(|d| by_desc.get(d))
+            && let Some(desc) = res[field("command")].as_str()
         {
-            stopped.insert(name.clone());
+            let ts = crate::checks::agent_scan::date_parse(v[super::tr("ts")].as_str().unwrap_or_default()).ok().filter(|t| t.is_finite()).map_or(u64::MAX, |t| t as u64);
+            let e = stopped.entry(desc.to_string()).or_insert(0);
+            *e = (*e).max(ts);
         }
     }
     stopped
@@ -385,13 +376,22 @@ fn tail_of(path: &str, max: u64) -> Option<String> {
 }
 
 /// A teammate its launching session stopped with `TaskStop` is finished at once, without waiting for the host to drop it from the team
-/// roster (which [`off_roster`] reads, later and only for a team that has a roster).
+/// roster (which [`off_roster`] reads, later and only for a team that has a roster). The teammate's description comes from its own meta
+/// file; a stop counts only when it is not older than the agent's start (a teammate launched again under the same description is new).
 fn stopped_teammates(st: &mut State) {
-    let mut seen: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
-    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished && !a.name.is_empty()) {
+    let mf = defaults::raw("agent_tracker.meta");
+    let mut seen: std::collections::HashMap<String, std::collections::HashMap<String, u64>> = std::collections::HashMap::new();
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished) {
         let Some(dir) = Path::new(&a.path).parent().and_then(Path::parent) else { continue };
+        let meta_file = facts::meta_path(&a.path);
+        let desc = json_of(Path::new(&meta_file)).and_then(|m| m.get(mf.str_field("description")).and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        if desc.is_empty() {
+            continue;
+        }
         let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
-        if seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent)).contains(&a.name) {
+        let stops = seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent));
+        let started = mtime_ms(Path::new(&meta_file)).map_or(0, |m| m as u64);
+        if stops.get(&desc).is_some_and(|t| *t >= started) {
             a.finished = true;
         }
     }
