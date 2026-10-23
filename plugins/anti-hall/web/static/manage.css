@@ -47,3 +47,11 @@
 .mg-confirm p { margin: 4px 0 8px; font-size: 13px; color: var(--text); }
 .mg-fb { flex: 1 1 100%; margin: 0; font: 12px var(--font-mono); overflow-wrap: anywhere; }
 .mg button:focus-visible, .mg input:focus-visible, .mg select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+/* a category of options folds under its heading */
+.mg-fold > summary { cursor: pointer; list-style: none; }
+.mg-fold > summary::-webkit-details-marker { display: none; }
+.mg-fold > summary h2 { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.mg-fold > summary h2::before { content: "\25B8"; color: var(--dim); font-size: 12px; }
+.mg-fold[open] > summary h2::before { content: "\25BE"; }
+.mg-count { font: 11px var(--font-mono); color: var(--muted); }

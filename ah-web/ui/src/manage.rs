@@ -435,7 +435,6 @@ fn matches(filter: &str, parts: &[&str]) -> bool {
 #[component]
 fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
     let filter = RwSignal::new(String::new());
-    let cat = RwSignal::new(String::new());
     let adv = RwSignal::new(false);
     let prefix = expect_context::<M>().0.get("jev_prefix").and_then(Value::as_str).unwrap_or_default().to_string();
     let all: Vec<Value> = rows_of(&data, "settings").into_iter().filter(|s| !text_of(s, "id").starts_with(&prefix)).cloned().collect();
@@ -452,6 +451,8 @@ fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
         }
     }
     cats.sort();
+    // the first category is open from the start: one page of options, not all of them in one scroll
+    let cat = RwSignal::new(cats.first().map(|c| c.0.clone()).unwrap_or_default());
     let all = Arc::new(all);
     view! {
         <div class="mg-split">
@@ -482,8 +483,11 @@ fn SettingsTab(data: Arc<Value>, reload: Callback<()>) -> impl IntoView {
                         }
                     }
                     groups.sort_by(|a, b| a.0.cmp(&b.0));
+                    // all categories at once: each one folded, open while a search is narrowing them
+                    let folded = c.is_empty();
+                    let searching = !f.is_empty();
                     groups.into_iter().map(|(g, rows)| view! {
-                        <div class="mg-card"><h2>{g}</h2>{rows.into_iter().map(|o| view! { <OptRow opt=o done=reload /> }).collect_view()}</div>
+                        <details class="mg-card mg-fold" open=!folded || searching><summary><h2>{g}" "<span class="mg-count">{rows.len()}</span></h2></summary>{rows.into_iter().map(|o| view! { <OptRow opt=o done=reload /> }).collect_view()}</details>
                     }).collect_view().into_any()
                 }}
             </section>

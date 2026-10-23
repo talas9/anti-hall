@@ -286,10 +286,15 @@ fn HealthBody() -> impl IntoView {
                             }).collect_view()}
                         </ul>
                     </section>
-                    <section class="h-card">
-                        <div class="sect">{tx("h_system")}</div>
-                        <dl class="kv"><dt>{tx("h_load")}</dt><dd>{load}</dd><dt>{tx("h_disk")}</dt><dd>{disk}</dd></dl>
-                    </section>
+                    {(h.load_per_core.is_some() || h.disk_free_kb.is_some()).then(|| view! {
+                        <section class="h-card">
+                            <div class="sect">{tx("h_system")}</div>
+                            <dl class="kv">
+                                {h.load_per_core.is_some().then(|| view! { <dt>{tx("h_load")}</dt><dd>{load.clone()}</dd> })}
+                                {h.disk_free_kb.is_some().then(|| view! { <dt>{tx("h_disk")}</dt><dd>{disk.clone()}</dd> })}
+                            </dl>
+                        </section>
+                    })}
                 </div>
                 <section class="h-card">
                     <div class="sect">{tx("h_clients")}</div>

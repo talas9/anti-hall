@@ -172,8 +172,9 @@ impl Settings {
     /// The page's start-up data: the part of the settings the page needs.
     pub fn limits(&self) -> ah_web_proto::PulseLimits {
         ah_web_proto::PulseLimits {
-            cpu_warn_permille: self.pulse_cpu_warn_permille,
-            cpu_bad_permille: self.pulse_cpu_bad_permille,
+            // the header pill and the Health banner judge the CPU by the same bars
+            cpu_warn_permille: self.health_cpu_soft_permille,
+            cpu_bad_permille: self.health_cpu_hard_permille,
             mem_warn_mb: self.pulse_mem_warn_mb,
             mem_bad_mb: self.pulse_mem_bad_mb,
             err_warn: self.pulse_err_warn,
