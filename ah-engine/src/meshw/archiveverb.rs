@@ -379,6 +379,53 @@ fn nonempty(v: Option<&OVal>) -> Option<&str> {
     }
 }
 
+/// The answer fields every app leg reports (`appArchive`, the side-effect warning, `manualStep`, `partial`); whether the leg was partial.
+fn app_fields(o: &mut Obj, leg: &AppLeg, id: &str) -> bool {
+    o.put("appArchive", OVal::Obj(leg.json.0.clone()));
+    if let Some((message, changed)) = &leg.side {
+        o.put("warnings", OVal::Arr(vec![s(&tpl("devswarm_cli.msg_app_side_warning", &[("message", message), ("changed", &changed.stringify())]))]));
+    }
+    let mut partial = false;
+    if leg.ok {
+        let retry = if leg.retried { text("devswarm_cli.msg_app_retry_note") } else { "" };
+        o.put("manualStep", s(&tpl("devswarm_cli.msg_app_step_ok", &[("retry", retry)])));
+    } else {
+        if leg.attempted {
+            partial = true;
+            o.put("partial", OVal::Bool(true));
+        }
+        let cmd = leg.manual.clone().unwrap_or_else(|| tpl("devswarm_cli.app_manual_command", &[("target", id)]));
+        let tail = if leg.attempted {
+            let e = leg.error.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| text("devswarm_cli.msg_app_error_unknown").to_string());
+            tpl("devswarm_cli.msg_app_tail_attempted", &[("error", &e)])
+        } else {
+            match leg.reason.as_deref().filter(|r| !r.is_empty()) {
+                Some(r) => tpl("devswarm_cli.msg_app_tail_skipped", &[("reason", r)]),
+                None => String::new(),
+            }
+        };
+        o.put("manualStep", s(&tpl("devswarm_cli.msg_app_step_fail", &[("cmd", &cmd), ("id", id), ("tail", &tail)])));
+    }
+    partial
+}
+
+/// A resolved id with no local descriptor (a workspace that never registered, known to the app and to this project's registry):
+/// only the app is asked to archive it and nothing local changes. `None` when the registry or the app does not know it.
+fn app_only(inv: &Inv, raw: &str, id: &str) -> R<Option<Answer>> {
+    let Some(key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return Ok(None) };
+    let Ok(rows) = crate::dssup::recon::view::registry(&inv.home, &key) else { return Ok(None) };
+    let Some(wt) = rows.iter().find(|r| r.row.id == id).and_then(|r| r.row.worktree_path.clone()).filter(|w| !w.is_empty()) else { return Ok(None) };
+    let leg = attempt(inv, id, &wt, None, false)?;
+    if !leg.attempted {
+        return Ok(None);
+    }
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(leg.ok)).put("action", s(text("devswarm_cli.action_archive"))).put("id", s(raw)).put("descriptorArchived", OVal::Bool(false));
+    let partial = app_fields(&mut o, &leg, id);
+    o.put("note", s(text("devswarm_cli.aa_only_note")));
+    Ok(Some(answer(if partial || !leg.ok { 2 } else { 0 }, o.done())))
+}
+
 /// `archive <id>`.
 pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
     let id = a.positionals.get(1).map(String::as_str).unwrap_or("");
@@ -416,6 +463,9 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
             // nothing resolved: no active and no archived descriptor is Node's "invalid or missing workspace id" refusal
             let archived = root.join(text("mesh_write.dir_archived")).join(format!("{id}{json}"));
             if std::fs::symlink_metadata(&archived).is_err() {
+                if let Some(done) = app_only(inv, raw, id)? {
+                    return Ok(done);
+                }
                 let mut o = Obj::default();
                 o.put("action", s(text("devswarm_cli.action_archive"))).put("id", s(raw)).put("descriptorArchived", OVal::Bool(false));
                 o.put("ok", OVal::Bool(false)).put("error", s(text("devswarm_cli.msg_bad_id")));
@@ -526,31 +576,7 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
     };
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(true)).put("action", s(text("devswarm_cli.action_archive"))).put("id", s(id)).put("descriptorArchived", OVal::Bool(true));
-    o.put("appArchive", OVal::Obj(leg.json.0.clone()));
-    if let Some((message, changed)) = &leg.side {
-        o.put("warnings", OVal::Arr(vec![s(&tpl("devswarm_cli.msg_app_side_warning", &[("message", message), ("changed", &changed.stringify())]))]));
-    }
-    let mut partial = false;
-    if leg.ok {
-        let retry = if leg.retried { text("devswarm_cli.msg_app_retry_note") } else { "" };
-        o.put("manualStep", s(&tpl("devswarm_cli.msg_app_step_ok", &[("retry", retry)])));
-    } else {
-        if leg.attempted {
-            partial = true;
-            o.put("partial", OVal::Bool(true));
-        }
-        let cmd = leg.manual.clone().unwrap_or_else(|| tpl("devswarm_cli.app_manual_command", &[("target", id)]));
-        let tail = if leg.attempted {
-            let e = leg.error.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| text("devswarm_cli.msg_app_error_unknown").to_string());
-            tpl("devswarm_cli.msg_app_tail_attempted", &[("error", &e)])
-        } else {
-            match leg.reason.as_deref().filter(|r| !r.is_empty()) {
-                Some(r) => tpl("devswarm_cli.msg_app_tail_skipped", &[("reason", r)]),
-                None => String::new(),
-            }
-        };
-        o.put("manualStep", s(&tpl("devswarm_cli.msg_app_step_fail", &[("cmd", &cmd), ("id", id), ("tail", &tail)])));
-    }
+    let partial = app_fields(&mut o, &leg, id);
     // a child that still beats may register again
     if has_fresh_heartbeat(inv, id) {
         let gone = match appdb::builder_states(&inv.home, &inv.env, inv.now, false) {

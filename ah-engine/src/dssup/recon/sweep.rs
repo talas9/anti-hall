@@ -459,6 +459,8 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     if !healed.deferred.is_empty() {
         return defer("heal-deferred");
     }
+    // label-only rows (a spawn that could not find the app's id) get their app id; the ghost fold retires the label row into it
+    let id_filled = super::labelfill::fill(ctx, &repo_key);
     let rows = view::registry(home, &repo_key)?;
     let mut targets: Vec<Target> = rows
         .iter()
@@ -721,6 +723,9 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     out.insert("healed".into(), healed.result);
     if backfilled > 0 {
         out.insert("namesBackfilled".into(), json!(backfilled));
+    }
+    if id_filled > 0 {
+        out.insert(defaults::text("devswarm_recon.lf_report_key").into(), json!(id_filled));
     }
     let out = Value::Object(out);
     // `run()` logs a result that is not ok

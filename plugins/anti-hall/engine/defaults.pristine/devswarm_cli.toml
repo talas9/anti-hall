@@ -3595,3 +3595,43 @@ value = "inbox-"
 [devswarm_cli.window_logged_subs]
 doc = "The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing."
 value = ["pull", "messages", "read-primary", "peek-primary", "ack-primary", "drain-primary-legacy"]
+
+[devswarm_cli.sp_uuid_attempts]
+doc = "How many times a spawn looks for the new workspace's app id (the app database row of its worktree) before it registers the workspace as pending."
+value = 5
+min = 1
+max = 20
+
+[devswarm_cli.sp_uuid_interval_ms]
+doc = "The wait before the second look for the app id; each later wait grows by sp_uuid_backoff_pct."
+value = 200
+
+[devswarm_cli.sp_uuid_backoff_pct]
+doc = "How much each wait grows, in percent of the previous one (200 doubles it)."
+value = 200
+min = 100
+max = 1000
+
+[devswarm_cli.sp_uuid_max_interval_ms]
+doc = "The longest single wait between two looks for the app id."
+value = 2000
+
+[devswarm_cli.sp_field_registry_id]
+doc = "The spawn answer's field naming the id the new workspace was registered under (the app id)."
+value = "registryId"
+
+[devswarm_cli.sp_field_registry_pending]
+doc = "The spawn answer's field that is true when the app id could not be found yet and the workspace was registered under its label only, to be filled in by the next sweep."
+value = "registryPending"
+
+[devswarm_cli.sp_field_registry_note]
+doc = "The spawn answer's field that explains a pending registration."
+value = "registryNote"
+
+[devswarm_cli.sp_uuid_pending_note]
+doc = "Why a spawn registered a workspace under its label only. {label} {worktree}."
+value = "The app has no workspace row for {worktree} yet, so it is registered under its label {label}; the next sweep fills in its app id from the app database."
+
+[devswarm_cli.aa_only_note]
+doc = "Added to an archive answer when the workspace had no local descriptor and only the app was asked to archive it."
+value = "The workspace has no local descriptor (it never registered); the app was asked to archive it and nothing local changed."

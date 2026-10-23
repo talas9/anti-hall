@@ -690,6 +690,11 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<R
     mesh.sort();
     match mesh.len() {
         0 => {
+            // a label-only row (a spawn that never got the app's id): the app database names the workspace by its worktree path
+            if let Some(uuid) = label_app_id(inv, &rows, raw) {
+                note_ref("mesh_write.ref_outcome_mesh");
+                return Ok(Resolved::Id(uuid));
+            }
             note_ref("mesh_write.ref_outcome_none");
             Ok(Resolved::Id(raw.to_string()))
         }
@@ -701,6 +706,19 @@ pub(crate) fn resolve_archive_id(inv: &Inv, raw: &str, unarchiving: bool) -> R<R
             note_ref("mesh_write.ref_outcome_ambiguous");
             Ok(Resolved::Ambiguous(defaults::text("devswarm_cli.msg_ambig_mesh"), mesh))
         }
+    }
+}
+
+/// The app's id of the workspace a label-only registry row stands for: the row `label` (keyed by the `primary-<hash>` its own
+/// worktree derives to) names the worktree, and the app database (read-only) names the one live non-primary builder there.
+fn label_app_id(inv: &Inv, rows: &[Row], label: &str) -> Option<String> {
+    let wt = rows.iter().find(|r| r.id == label)?.worktree_path.as_deref().filter(|w| !w.is_empty())?;
+    if ident::primary_workspace_id(wt).ok()? != label {
+        return None;
+    }
+    match crate::meshw::appid::lookup(&inv.home, &inv.env, wt) {
+        crate::meshw::appid::Lookup::Found(uuid) => Some(uuid),
+        _ => None,
     }
 }
 
