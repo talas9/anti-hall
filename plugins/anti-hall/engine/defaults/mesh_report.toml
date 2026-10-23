@@ -1,0 +1,324 @@
+# Settings and texts of the mesh verbs that answer natively where they once handed a case to Node: heartbeat, summary projection,
+# diagnose/healthcheck, the central log's test guard and the unknown `mesh` subcommand. One table per setting.
+
+[mesh_write.msg_bad_workspace_id]
+doc = "The error of a verb that is given no usable workspace id (devswarm.js: `invalid or missing workspace id`)."
+value = "invalid or missing workspace id"
+
+[mesh_write.msg_unknown_mesh_sub]
+doc = "The error of `mesh <sub>` for a subcommand other than read and history; {sub} is the subcommand as a JSON string."
+value = "unknown mesh subcommand: {sub} (read|history)"
+
+[mesh_write.msg_hb_id_mismatch]
+doc = "The stderr warning of a heartbeat from a child workspace that addresses an id other than its own DEVSWARM_BUILDER_ID; {id} and {env_id} are JSON strings."
+value = "⚠️ anti-hall · devswarm: addressing id {id} but this workspace's real DEVSWARM_BUILDER_ID is {env_id} — addressing the meshId row counts the wrong partition; use {env_id} unless you deliberately mean a different workspace"
+
+[mesh_write.hb_app_repos_rel]
+doc = "The DevSwarm app's worktree tree under the home; a cwd inside it corroborates a child workspace."
+value = ".devswarm/repos"
+
+[mesh_write.hb_journal_dir]
+doc = "The directory of a store held in the journal backend, under the store's directory."
+value = "journal"
+
+[mesh_write.hb_app_override_keys]
+doc = "The environment variables that move the app database or its cache time; they are removed for the first-claim ownership read, so a caller cannot point ground truth at a database it wrote."
+value = ["ANTIHALL_DEVSWARM_APP_DB", "ANTIHALL_DEVSWARM_APP_DB_CACHE_MS"]
+
+[mesh_write.hb_site_anchor]
+doc = "The `site` label of a degraded step: the Primary anchor's session refresh."
+value = "anchor-refresh"
+
+[mesh_write.hb_site_store]
+doc = "The `site` label of a degraded step: opening a partition's store for the unread count."
+value = "store-open"
+
+[mesh_write.hb_site_pending]
+doc = "The `site` label of a degraded step: the mailbox backlog of a heartbeat."
+value = "pending"
+
+[mesh_write.hb_site_archived]
+doc = "The `site` label of a degraded step: the app-database archive guard."
+value = "app-archived-verdict"
+
+[mesh_write.hb_site_plan]
+doc = "The `site` label of a degraded step: reading a workspace's plan."
+value = "plan"
+
+[mesh_write.hb_site_identity]
+doc = "The `site` label of a degraded step: the caller's identity in the answer."
+value = "identity"
+
+[mesh_write.hb_site_broadcast]
+doc = "The `site` label of a degraded step: preparing a --summary broadcast."
+value = "summary-broadcast"
+
+[mesh_write.hb_site_owns]
+doc = "The `site` label of a degraded step: the ownership check of a --summary broadcast (a failure reads as not owned)."
+value = "summary-ownership"
+
+[mesh_write.hb_site_label]
+doc = "The `site` label of a degraded step: the child-label refusal check (a failure reads as no refusal)."
+value = "child-label"
+
+[mesh_write.hb_site_session]
+doc = "The `site` label of a skipped read of a harness session record."
+value = "session-record"
+
+[mesh_write.hb_reason_lock_busy]
+doc = "The reason of an anchor refresh that gave up because the anchor's id lock was held."
+value = "lock-busy"
+
+[mesh_write.hb_reason_app_archived]
+doc = "The reason of a --summary dropped because the DevSwarm app reports the workspace archived."
+value = "app-archived"
+
+[mesh_write.hb_reason_no_project]
+doc = "The reason of a --summary skipped because the directory is in no project (the mesh is dormant)."
+value = "no-project"
+
+[mesh_write.hb_reason_child_label]
+doc = "The reason of a heartbeat refused because its id is the worktree label of a child workspace."
+value = "child-label-id"
+
+[mesh_write.hb_reason_unknown]
+doc = "The reason named in a note when a dropped summary carries none."
+value = "unknown"
+
+[mesh_write.hb_cause_unresolvable]
+doc = "Why a --summary was dropped: the caller's identity could not be resolved."
+value = "unresolvable-caller-identity"
+
+[mesh_write.hb_cause_unregistered]
+doc = "Why a --summary was dropped: the caller has no registry row."
+value = "caller-not-registered"
+
+[mesh_write.hb_cause_mismatch]
+doc = "Why a --summary was dropped: the caller does not own the workspace id."
+value = "ownership-mismatch"
+
+[mesh_write.hb_benign_reasons]
+doc = "The reasons of a broadcast that did not happen which do NOT fail the heartbeat (a non-git directory, and the ownership refusals, which are a working security control)."
+value = ["no-project", "unresolvable-caller-identity", "caller-not-registered", "ownership-mismatch"]
+
+[mesh_write.msg_hb_app_archived]
+doc = "The error of a --summary dropped for an app-archived workspace; {id} is the workspace id."
+value = "heartbeat --summary refused: workspace {id} is archived in the DevSwarm app; the summary was DROPPED (not broadcast) — the base heartbeat still succeeded"
+
+[mesh_write.msg_hb_urgency]
+doc = "The error of a heartbeat --urgency outside the allowed words; {allowed} lists them."
+value = "heartbeat --urgency must be one of {allowed}"
+
+[mesh_write.msg_hb_not_owner]
+doc = "The error of a --summary dropped because the caller does not own the id; {cause}, {caller} and {id} (the last two JSON strings)."
+value = "heartbeat --summary refused ({cause}): caller {caller} does not own workspace {id} — the summary was DROPPED (not broadcast); the base heartbeat still succeeded"
+
+[mesh_write.msg_hb_note]
+doc = "The top-level line that makes a dropped summary impossible to miss; {why} is the drop reason."
+value = "summary NOT recorded: {why}"
+
+[mesh_write.msg_hb_no_detail]
+doc = "The log message of a broadcast report that names neither an error nor a reason."
+value = "verb returned ok:false"
+
+[mesh_write.msg_hb_degraded]
+doc = "The log line of a heartbeat step that failed and was read as Node reads it (fail-open); {site} is the step, {reason} the failure."
+value = "heartbeat step degraded: site={site}, reason={reason}"
+
+[mesh_write.msg_store_backend_skipped]
+doc = "The log line of a store the engine does not read (the journal backend): the unread count then comes from the NDJSON inbox alone. {dir} and {backend}."
+value = "mesh store not read: dir={dir}, backend={backend}"
+
+[mesh_write.msg_registry_unreadable]
+doc = "The log line of a registry read that failed (diagnose and healthcheck then report the store unavailable); {error}."
+value = "mesh registry unreadable: {error}"
+
+[mesh_write.msg_summary_read_failed]
+doc = "The log line of a store read of the summary projection that failed and read as empty; {site} and {error}."
+value = "mesh summary read failed: site={site}, error={error}"
+
+[mesh_write.msg_summary_settings_unreadable]
+doc = "The log line of a settings file JavaScript reads but the engine cannot parse: the setting {key} falls to the plugin option and the default."
+value = "mesh summary setting {key}: settings file not parsed by the engine, using the lower layers"
+
+[mesh_write.hb_attempts_dir]
+doc = "The directory of dropped-summary attempt records, under the DevSwarm state directory."
+value = "summary-attempts"
+
+[mesh_write.hb_attempts_suffix]
+doc = "The suffix of a workspace's attempt-record file."
+value = ".ndjson"
+
+[mesh_write.hb_attempt_summary_cap]
+doc = "How many UTF-16 units of a dropped summary an attempt record keeps."
+value = 120
+min = 1
+max = 100000
+
+[mesh_write.hb_attempt_trim_over]
+doc = "An attempt-record file with more lines than this is trimmed."
+value = 100
+min = 1
+max = 100000
+
+[mesh_write.hb_attempt_trim_to]
+doc = "How many of the newest lines a trimmed attempt-record file keeps."
+value = 50
+min = 1
+max = 100000
+
+[mesh_write.hb_log_op]
+doc = "The central-log operation of a broadcast refusal."
+value = "heartbeat-broadcast"
+
+[mesh_write.hb_plan_error]
+doc = "The reason of a heartbeat's plan step that failed."
+value = "error"
+
+[mesh_write.hb_syscall_mkdir]
+doc = "The call named in the error text of a directory that could not be created."
+value = "mkdir"
+
+[mesh_write.hb_syscall_open]
+doc = "The call named in the error text of a file that could not be written."
+value = "open"
+
+[mesh_write.msg_hb_label_retired]
+doc = "The error of a heartbeat under a retired worktree label; {id} and {to} are JSON strings."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[mesh_write.msg_hb_label_child]
+doc = "The error of a heartbeat under the worktree label of a child workspace; {id} (JSON string), {wt} and {hint}."
+value = "{id} is the worktree label of a CHILD workspace ({wt}), not an identity — {hint}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[mesh_write.msg_hb_label_use]
+doc = "The hint naming the child's own workspace id; {child} is a JSON string."
+value = "use its workspace id {child}"
+
+[mesh_write.msg_hb_label_unregistered]
+doc = "The hint of a child that has no registered workspace id yet."
+value = "the child has not registered its workspace id yet"
+
+[devswarm_cli.msg_log_test_guard]
+doc = "The stderr line of a log entry dropped because a test context gave no log directory (the real home is never logged into); {home}."
+value = "[anti-hall-log] anti-hall-log: refusing to fall back to the real home ({home}) while running under `node --test` (NODE_TEST_CONTEXT is set). This test never set ANTI_HALL_LOG_DIR, which would leak a log entry into the real ~/.anti-hall/logs/devswarm.jsonl (defect class be2c6c9e81a1/f3c1bc827d89). Set process.env.ANTI_HALL_LOG_DIR to an isolated tmp dir before requiring anything that may log (see tests/scripts/devswarm-v064.test.js for the established pattern)."
+
+[devswarm_cli.diag_unavailable_reason]
+doc = "The reason diagnose and healthcheck give for a registry that could not be read (Node's code of an unnamed failure)."
+value = "EUNKNOWN"
+
+[devswarm_cli.diag_unavailable_scope]
+doc = "The scope diagnose and healthcheck give for an unreadable registry."
+value = "registry"
+
+[devswarm_cli.diag_warn_unreadable]
+doc = "The diagnose warning for an unreadable registry; {scope} and {reason}."
+value = "{scope} unreadable ({reason}) — counts below are unknown, not verified-zero"
+
+[devswarm_cli.health_warn_unreadable]
+doc = "The healthcheck warning for an unreadable registry; {scope} and {reason}."
+value = "{scope} unreadable ({reason}) — counts above are unknown, not verified-zero"
+
+[devswarm_cli.health_status_unavailable]
+doc = "The status word of a healthcheck whose registry could not be read."
+value = "store-unavailable"
+
+[metric.mesh_heartbeat_degraded]
+doc = "Heartbeat steps that failed and were read as Node's fail-open reads them, by step and reason."
+value = { kind = "counter", unit = "steps", labels = ["site", "reason"] }
+
+[metric.mesh_store_backend_skipped]
+doc = "Partition stores the engine did not read because they are held in the journal backend, by site and backend."
+value = { kind = "counter", unit = "stores", labels = ["site", "backend"] }
+
+[metric.mesh_summary_read_failed]
+doc = "Store reads of the summary projection that failed and read as empty (Node's fail-open), by site."
+value = { kind = "counter", unit = "reads", labels = ["site"] }
+
+[metric.mesh_summary_settings_unreadable]
+doc = "Summary settings read while the settings file was one the engine cannot parse but JavaScript can, by key."
+value = { kind = "counter", unit = "reads", labels = ["key"] }
+
+[devswarm_cli.sr_msg_null_read]
+doc = "The text of the exception Node raises when it reads a field of a null; {what} is `null`, {field} the field."
+value = "Cannot read properties of {what} (reading '{field}')"
+
+[devswarm_cli.sr_null_word]
+doc = "The word JavaScript names a null by in a failed property read."
+value = "null"
+
+[devswarm_cli.sr_field_integration]
+doc = "The field Node reads from each `jev` note of a correction row (named by the exception when the note is null)."
+value = "integration"
+
+[devswarm_cli.sr_field_n]
+doc = "The first counter Node reads from a rollup's `jev` group (named by the exception when the group is null)."
+value = "n"
+
+[devswarm_cli.sr_field_plans]
+doc = "The first field Node reads from a day's rollup when summing (named by the exception when the rollup file holds null)."
+value = "plans"
+
+[devswarm_cli.sr_msg_invalid_time]
+doc = "The text of the exception `toISOString` raises for a time outside the Date range (a huge --days)."
+value = "Invalid time value"
+
+[devswarm_cli.sr_msg_skipped]
+doc = "The log line of a supervision-report input that was skipped; {why} is the reason."
+value = "supervision-report input skipped: {why}"
+
+[devswarm_cli.sr_skip_ts]
+doc = "Why a supervision log row was skipped: its `ts` is a date string the engine does not read (only ISO forms are written)."
+value = "unread-timestamp"
+
+[devswarm_cli.sr_skip_rollup]
+doc = "Why a daily rollup file was skipped: a field is no number or list of numbers (Node would add it as text)."
+value = "malformed-rollup"
+
+[devswarm_cli.sui_setting_entry]
+doc = "Where the screenshot-sync switch is read from (devswarm.screenshotSync, default on): off makes sync-ui refuse and change nothing."
+value = { section = "devswarm", key = "screenshotSync", option = "devswarm_screenshot_sync", default = true }
+
+[devswarm_cli.sui_msg_disabled]
+doc = "The error of sync-ui while the screenshot-sync switch is off."
+value = "screenshot sync is off (setting devswarm.screenshotSync=false); turn it on with /anti-hall:settings"
+
+[devswarm_cli.sui_msg_cannot_read]
+doc = "The error of sync-ui when its titles cannot be read; {why} is the reason."
+value = "cannot read titles: {why}"
+
+[devswarm_cli.sui_reason_conflicts]
+doc = "The reason of an applied sync-ui that stopped at conflicts."
+value = "conflicts"
+
+[devswarm_cli.sui_msg_conflicts]
+doc = "The error of an applied sync-ui that stopped at conflicts; {n} is how many."
+value = "{n} conflict(s) — confirm with the owner, then re-run with --accept-conflicts"
+
+[devswarm_cli.sui_archived_by]
+doc = "What the archived markers written by an applied sync-ui name as their author."
+value = "devswarm-ui-sync"
+
+[devswarm_cli.flag_accept_conflicts]
+doc = "The sync-ui flag that applies a plan despite conflicts."
+value = "accept-conflicts"
+
+[devswarm_cli.flag_no_repair]
+doc = "The sync-ui flag that leaves the names cache alone."
+value = "no-repair"
+
+[metric.mesh_report_skipped]
+doc = "Supervision-report inputs skipped (an unread timestamp, a malformed rollup file), by reason."
+value = { kind = "counter", unit = "inputs", labels = ["why"] }
+
+[devswarm_cli.sui_syscall_lstat]
+doc = "The call named in the error text of an archived directory that could not be inspected."
+value = "lstat"
+
+[devswarm_cli.sui_syscall_write]
+doc = "The call named in the error text of an archived marker that could not be written."
+value = "write"
+
+[mesh_write.hb_store_error_prefixes]
+doc = "The starts of a union reader's failure reasons that mean the STORE could not be read (a heartbeat then reports the mailbox as pending, toward the alarm); any other reason is a form the engine does not convert and reads the NDJSON inbox alone."
+value = ["store-read:", "cursor-rows:"]
