@@ -149,7 +149,7 @@ fn Gauge(bucket: Bucket, cfg: OpsCfg, now: RwSignal<u64>) -> impl IntoView {
             <div class="ring" style=move || format!("--p:{:.1}", pct()) role="img" aria-label=format!("{} {:.0}%", bucket.label, raw)><span>{move || format!("{:.0}%", pct())}</span></div>
             <div class="g-body">
                 <div class="g-name">{bucket.label.clone()}</div>
-                <div class="bar" aria-hidden="true"><i style=move || format!("width:{:.1}%", pct())></i></div>
+                <div class="g-bar" aria-hidden="true"><i style=move || format!("width:{:.1}%", pct())></i></div>
                 <div class="g-pct">{move || format!("{:.0}%", pct())}</div>
                 <div class="g-reset">{countdown}</div>
                 {move || warning().map(|w| view! { <div class="g-warn-text" role="status">{w}</div> })}

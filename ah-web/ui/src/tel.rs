@@ -594,9 +594,9 @@ fn ForecastCard(doc: RwSignal<Option<TelDoc>>) -> impl IntoView {
 #[allow(unused_variables)]
 fn forecast_view(f: Forecast, ui: TelUi, texts: BTreeMap<String, String>) -> AnyView {
     let bar = view! {
-        <div class=format!("gauge tone-{}", f.tone)>
-            <div class="gauge-fill" style=format!("width:{:.0}%", f.used_pct.clamp(0.0, 100.0))></div>
-            {f.projected_pct.map(|p| view! { <div class="gauge-mark" style=format!("left:{:.0}%", p.clamp(0.0, 100.0))></div> })}
+        <div class=format!("wk-gauge tone-{}", f.tone)>
+            <div class="wk-gauge-fill" style=format!("width:{:.0}%", f.used_pct.clamp(0.0, 100.0))></div>
+            {f.projected_pct.map(|p| view! { <div class="wk-gauge-mark" style=format!("left:{:.0}%", p.clamp(0.0, 100.0))></div> })}
         </div>
     };
     let note = view! { <p class=format!("tone-{}", f.tone)>{f.text.clone()}</p><p class="soft-note">{tt(&texts, "f_method")}</p> };

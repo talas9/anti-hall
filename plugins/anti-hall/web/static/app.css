@@ -251,3 +251,17 @@ a { color: var(--cyan); }
   .top .search input { min-width: 0; }
 }
 @media (min-width: 1280px) and (max-width: 1599px) { .brand-product { display: none; } }
+
+/* header at 1280: the tier switch and theme button never shrink; the search and the version badge give way first */
+.top .seg, .top .theme { flex: 0 0 auto; }
+@media (min-width: 1280px) {
+  .top .grow { flex: 1 1 0; min-width: 0; }
+  .top .pills { margin-left: 12px; flex: 0 1 auto; min-width: 0; }
+  .top .ver { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  .top .search { flex: 0 1 140px; min-width: 56px; }
+}
+
+/* every screen has the same width: the scrollbar's gutter is always reserved */
+html { scrollbar-gutter: stable; }
+/* the logo has no plate to pulse; a box-shadow animation on it only flickers */
+[data-mode="full"] .logo.live { animation: none; }
