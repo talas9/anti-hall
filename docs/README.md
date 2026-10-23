@@ -32,7 +32,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | Doc | What it covers |
 |---|---|
 | [`GUIDE.md` install](./GUIDE.md#install-verify-and-uninstall) | Install for Claude Code and Codex, the `.anti-hall/` git-ignore line, how to check it worked, and uninstall (including companions). |
-| [`GUIDE.md` requirements](./GUIDE.md#requirements) | Node 22+ on `PATH`, and what `/config` needs. |
+| [`GUIDE.md` requirements](./GUIDE.md#requirements) | What the plugin needs, and what `/config` needs. |
 | [`GUIDE.md` capabilities](./GUIDE.md#capabilities-at-a-glance) | What each area of the plugin does, in one table. |
 | [Skills](#skills) | Every `/anti-hall:<name>` skill, one line each. |
 | [`GUIDE.md` troubleshooting](./GUIDE.md#troubleshooting--faq) | Hooks not firing, a guard blocking something legitimate, statusline, updates. |

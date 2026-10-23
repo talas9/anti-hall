@@ -8,9 +8,7 @@
 > LLM judge), task-list discipline, and a TTL'd user-override escape hatch
 > (`~/.anti-hall/skip.json`). Optional parts: a two-line statusline, an MCP-orphan reaper,
 > the Jev classifier, and DevSwarm multi-workspace coordination (dormant unless DevSwarm is
-> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. Node >= 22 on PATH
-> is needed only for the temporary compatibility hooks, which are removed in v0.301 (the engine is then the
-> only runtime). Windows is not supported yet.
+> in use). The core is a Rust engine (`ah-engine`, downloaded once, sha256-pinned), macOS + Linux. No Node.js is needed (the engine is the only runtime). Windows is not supported yet.
 
 anti-hall targets four failure modes of coding agents: eagerness (acting before
 investigating), hallucination (unverified facts stated as truth), fix-before-diagnosis, and

@@ -11,10 +11,7 @@ tasks, handovers and the other [features](../features/index.md) are what the eng
 this page is how it does it.
 
 !!! info "Status"
-    The plugin fetches the engine binary itself. Node.js is a **temporary compatibility
-    fallback** during the migration to the engine: it only answers when the engine cannot,
-    and it is **removed entirely in v1.0**, after which the Rust engine is the only
-    runtime.
+    The plugin fetches the engine binary itself. No Node.js is needed: the Rust engine is the only runtime.
 
 ## The core: one engine, one thin trigger
 
