@@ -190,10 +190,11 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
                             <strong>{tx("ops_claude")}</strong>
                             <span class=if a.claude.signed_in { "pill pill-ok" } else { "pill pill-warn" }>{if a.claude.signed_in { tx("ops_signed_in") } else { tx("ops_signed_out") }}</span>
                         </div>
+                        {(!a.claude.email.is_empty()).then(|| view! { <div class="acct-who"><span class="acct-email">{a.claude.email.clone()}</span>{(!a.claude.name.is_empty()).then(|| view! { <span class="acct-name">{a.claude.name.clone()}</span> })}</div> })}
                         <dl class="kv">
-                            {(!a.claude.fingerprint.is_empty()).then(|| view! { <dt>{tx("ops_fingerprint")}</dt><dd>{a.claude.fingerprint.clone()}</dd> })}
-                            {a.claude.fields.iter().map(|(k, v)| view! { <dt>{tx(k)}</dt><dd>{v.clone()}</dd> }).collect_view()}
+                            {a.claude.fields.iter().map(|f| { let tip = (!f.raw.is_empty()).then(|| format!("{}: {}", tx("ops_raw_tip"), f.raw)); view! { <dt>{tx(&f.label_key)}</dt><dd title=tip>{f.text.clone()}</dd> } }).collect_view()}
                         </dl>
+                        {(!a.claude.fingerprint.is_empty()).then(|| view! { <p class="acct-id">{tx("ops_fingerprint")} " " {a.claude.fingerprint.clone()}</p> })}
                     </section>
                     <section class="card ops-card">
                         <div class="ops-card-head">
@@ -203,6 +204,7 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
                         <dl class="kv">
                             {a.codex.signed_in.then(|| view! { <dt>{tx("ops_codex_changed")}</dt><dd>{since(a.codex.changed_ms)}</dd> })}
                         </dl>
+                        {a.codex.signed_in.then(|| view! { <p class="soft-note">{tx("ops_codex_no_details")}</p> })}
                         <p class="soft-note">{tx("ops_codex_usage")}</p>
                     </section>
                     <section class="card ops-card ops-later" aria-disabled="true">
@@ -484,8 +486,8 @@ fn LogsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl IntoV
             <label class="ops-check"><input type="checkbox" prop:checked=move || follow.get() on:change=move |e| follow.set(event_target_checked(&e)) /> {tx("ops_log_follow")}</label>
         </div>
         <Show when=move || !st.error.get().is_empty()><p class="fb fb-bad" role="status">{tx("ops_failed")} " " <span class="fb-note">{move || st.error.get()}</span></p></Show>
-        <Show when=move || st.truncated.get()><p class="soft-note">{tx("ops_log_truncated")}</p></Show>
         <div class="ops-log" node_ref=list tabindex="0" aria-live="off">
+            <Show when=move || st.truncated.get()><div class="log-note">{tx("ops_log_truncated")}</div></Show>
             {move || {
                 let rows = shown.get();
                 if rows.is_empty() {

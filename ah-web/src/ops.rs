@@ -5,7 +5,7 @@
 use crate::app::App;
 use crate::ctl;
 use crate::server::{cookie_ok, refuse};
-use ah_web_proto::ops::{Accounts, Bucket, ClaudeAccount, CodexAccount, CostRow, LogLine, LogTail, OpsCfg, UpdateCheck};
+use ah_web_proto::ops::{AccountField, Accounts, Bucket, ClaudeAccount, CodexAccount, CostRow, LogLine, LogTail, OpsCfg, UpdateCheck};
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -70,6 +70,10 @@ pub struct Ops {
     usage_bad_pct: f64,
     usage_buckets: Vec<BucketDef>,
     usage_scoped_field: String,
+    usage_scoped_active_field: String,
+    usage_scoped_hide_idle: bool,
+    usage_scoped_label_text: String,
+    usage_weekly_bucket: String,
     usage_scoped_keys: ScopedKeys,
     usage_timestamp_field: String,
     usage_data_field: String,
@@ -77,6 +81,9 @@ pub struct Ops {
     claude_json_max_bytes: u64,
     claude_account_fields: Vec<FieldDef>,
     claude_account_key: String,
+    claude_email_field: String,
+    claude_name_field: String,
+    claude_value_labels: BTreeMap<String, String>,
     claude_user_key: String,
     fingerprint_chars: usize,
     codex_auth_rel: String,
@@ -98,6 +105,10 @@ pub struct Ops {
     logs_text_max: usize,
     logs_view_max: usize,
     logs_poll_ms: u64,
+    logs_unit_from: String,
+    logs_unit_small: String,
+    logs_unit_big: String,
+    logs_unit_step: u64,
     log_levels: Vec<String>,
     log_default_level: String,
     log_level_rules: Vec<LevelRule>,
@@ -227,14 +238,20 @@ async fn usage(o: &Ops, home: &Path) -> (Vec<Bucket>, u64, bool) {
     }
     let k = &o.usage_scoped_keys;
     for b in data.get(&o.usage_scoped_field).and_then(Value::as_array).into_iter().flatten() {
-        if let Some(p) = b.get(&k.pct).and_then(Value::as_f64) {
-            out.push(Bucket { id: s(b, "id"), label: s(b, &k.label), percent: p, resets_at: s(b, &k.resets) });
+        let Some(p) = b.get(&k.pct).and_then(Value::as_f64) else { continue };
+        // a model-specific limit that is not in use and has nothing used is not shown
+        let active = b.get(&o.usage_scoped_active_field).and_then(Value::as_bool).unwrap_or(true);
+        if o.usage_scoped_hide_idle && !active && p <= 0.0 {
+            continue;
         }
+        let label = o.usage_scoped_label_text.replace("{label}", &s(b, &k.label));
+        out.push(Bucket { id: s(b, "id"), label, percent: p, resets_at: s(b, &k.resets) });
     }
     (out, u(&doc, &o.usage_timestamp_field), false)
 }
 
-/// The logged-in Claude account from the host file: the plan fields on the allow-list and a fingerprint of the user id.
+/// The logged-in Claude account from the host file: who it is (e-mail, display name), the plan fields on the allow-list as human labels
+/// and a fingerprint of the user id. No token or key is read.
 async fn claude(o: &Ops, home: &Path) -> ClaudeAccount {
     let Some(doc) = read_json(&home.join(&o.claude_json_rel), o.claude_json_max_bytes).await else { return ClaudeAccount::default() };
     let account = doc.get(&o.claude_account_key).filter(|a| a.is_object());
@@ -244,19 +261,33 @@ async fn claude(o: &Ops, home: &Path) -> ClaudeAccount {
                 .iter()
                 .filter_map(|f| {
                     let v = a.get(&f.field)?;
-                    let shown = match v {
-                        Value::Bool(true) => text_of(o, "ops_yes"),
-                        Value::Bool(false) => text_of(o, "ops_no"),
+                    let raw = match v {
+                        Value::Bool(true) => return Some(AccountField { label_key: f.label_key.clone(), text: text_of(o, "ops_yes"), raw: String::new() }),
+                        Value::Bool(false) => return Some(AccountField { label_key: f.label_key.clone(), text: text_of(o, "ops_no"), raw: String::new() }),
                         Value::String(t) => t.clone(),
                         Value::Null => return None,
                         other => other.to_string(),
                     };
-                    Some((f.label_key.clone(), shown))
+                    // a known raw value shows its label; the raw value is kept for the tooltip only
+                    Some(match o.claude_value_labels.get(&raw) {
+                        Some(label) => AccountField { label_key: f.label_key.clone(), text: label.clone(), raw },
+                        None => AccountField { label_key: f.label_key.clone(), text: raw, raw: String::new() },
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default();
-    ClaudeAccount { signed_in: account.is_some(), fingerprint: s(&doc, &o.claude_user_key).chars().take(o.fingerprint_chars).collect(), fields }
+    let pick = |k: &str| account.map(|a| s(a, k)).unwrap_or_default();
+    ClaudeAccount { signed_in: account.is_some(), fingerprint: s(&doc, &o.claude_user_key).chars().take(o.fingerprint_chars).collect(), email: pick(&o.claude_email_field), name: pick(&o.claude_name_field), fields }
+}
+
+/// When the weekly window resets (ms since the epoch), read from the same usage cache the Accounts gauges use; `None` when unknown.
+pub async fn weekly_reset_ms(app: &App) -> Option<f64> {
+    let o = ops(app).ok()?;
+    let home = home()?;
+    let (buckets, _, _) = usage(&o, &home).await;
+    let at = buckets.into_iter().find(|b| b.id == o.usage_weekly_bucket)?.resets_at;
+    humantime::parse_rfc3339(&at).ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as f64)
 }
 
 /// Codex's login: only the file's existence and modified time.
@@ -371,9 +402,45 @@ fn level_of(o: &Ops, mode: &str, field: &str) -> String {
     o.log_level_rules.iter().find(|r| r.words.iter().any(|w| low.contains(w.as_str()))).map_or_else(|| o.log_default_level.clone(), |r| r.level.clone())
 }
 
+/// Every "<number> <small unit>" in `text` as the unit a person reads: the big unit (one decimal below ten) from `logs_unit_step` up, the
+/// small unit's label otherwise. The units and the step are `web.ops.logs_unit_*`.
+fn units(o: &Ops, text: &str) -> String {
+    let (from, step) = (o.logs_unit_from.as_str(), o.logs_unit_step.max(1));
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(from) {
+        let (before, after) = (&rest[..at], &rest[at + from.len()..]);
+        // "<digits><space>" ends `before`, the unit is a whole word, and the digits are not the tail of a longer token
+        let head = before.strip_suffix(' ').unwrap_or(before);
+        let start = head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        let number = &head[start..];
+        let word_end = !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        let token_start = head[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric() && c != '.' && c != '_');
+        match number.parse::<u64>() {
+            Ok(n) if before.ends_with(' ') && word_end && token_start => {
+                out.push_str(&head[..start]);
+                if n >= step {
+                    let big = n as f64 / step as f64;
+                    let shown = if big < 10.0 { format!("{big:.1}") } else { format!("{big:.0}") };
+                    out.push_str(&format!("{shown} {}", o.logs_unit_big));
+                } else {
+                    out.push_str(&format!("{n} {}", o.logs_unit_small));
+                }
+            }
+            _ => {
+                out.push_str(before);
+                out.push_str(from);
+            }
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One raw line as a [`LogLine`]; `None` when it does not parse.
 fn parse_line(o: &Ops, src: &SourceDef, raw: &str) -> Option<LogLine> {
-    let cut = |t: String| -> String { t.chars().take(o.logs_text_max).collect() };
+    let cut = |t: String| -> String { units(o, &t).chars().take(o.logs_text_max).collect() };
     let (ts, comp, level_field, text) = match src.format.as_str() {
         "tsv" => {
             let cols: Vec<&str> = raw.splitn(src.text.parse::<usize>().ok()? + 1, '\t').collect();
