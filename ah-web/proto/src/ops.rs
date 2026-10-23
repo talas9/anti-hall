@@ -16,6 +16,8 @@ pub const OPS_LOGS_PATH: &str = "/api/ops/logs";
 pub struct OpsCfg {
     pub warn_pct: f64,
     pub bad_pct: f64,
+    /// A usage reading older than this is shown as stale, ms.
+    pub stale_ms: u64,
     pub poll_accounts_ms: u64,
     pub tick_ms: u64,
     pub logs_poll_ms: u64,

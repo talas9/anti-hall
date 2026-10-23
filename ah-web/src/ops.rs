@@ -65,6 +65,7 @@ struct LevelRule {
 pub struct Ops {
     usage_cache_rel: String,
     usage_cache_max_bytes: u64,
+    usage_stale_ms: u64,
     usage_warn_pct: f64,
     usage_bad_pct: f64,
     usage_buckets: Vec<BucketDef>,
@@ -124,6 +125,7 @@ impl Ops {
         OpsCfg {
             warn_pct: self.usage_warn_pct,
             bad_pct: self.usage_bad_pct,
+            stale_ms: self.usage_stale_ms,
             poll_accounts_ms: self.poll_accounts_ms,
             tick_ms: self.tick_ms,
             logs_poll_ms: self.logs_poll_ms,
