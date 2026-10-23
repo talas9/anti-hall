@@ -306,9 +306,10 @@ impl Raw {
         ((self.now_ms % DAY_MS) as f64 / DAY_MS as f64).max(f64::EPSILON)
     }
 
-    /// Index of the first day the engine has records for (leading empty days are before it was recording).
-    fn first_active(&self) -> usize {
-        self.daily(&|s| num(&s["invocations"])).iter().position(|v| *v > 0.0).unwrap_or(0)
+    /// Which days the engine recorded anything on. A day with no decision at all is a day it was not recording (not a quiet day), so
+    /// it is left out of every "usual".
+    fn active_days(&self) -> Vec<bool> {
+        self.daily(&|s| num(&s["invocations"])).iter().map(|v| *v > 0.0).collect()
     }
 
     fn day_starts(&self) -> Vec<u64> {
@@ -348,13 +349,13 @@ impl Judged {
 }
 
 /// Today (the last point, projected to a whole day) against the median and spread of the days before it.
-fn judge(series: &[f64], first_active: usize, frac: f64, c: &TelCfg) -> Option<Judged> {
+fn judge(series: &[f64], active: &[bool], frac: f64, c: &TelCfg) -> Option<Judged> {
     let (today, before) = series.split_last()?;
-    let history = before.get(first_active..).unwrap_or_default();
+    let history: Vec<f64> = before.iter().zip(active).filter(|(_, on)| **on).map(|(v, _)| *v).collect();
     if history.len() < c.min_history_days || frac < c.min_day_fraction {
         return None;
     }
-    let usual = median(history);
+    let usual = median(&history);
     let mad = median(&history.iter().map(|x| (x - usual).abs()).collect::<Vec<_>>());
     let spread = (mad * c.mad_scale).max(usual * c.mad_floor_frac).max(c.min_abs_change / c.z_threshold);
     let projected = today / frac;
@@ -529,7 +530,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
         doc.headlines.push(Headline { tone: "bad".into(), text: c.text("h_engine_down") });
         return doc;
     }
-    let (frac, first) = (raw.day_fraction(), raw.first_active());
+    let (frac, first) = (raw.day_fraction(), raw.active_days());
     let today = raw.sums.first().unwrap_or(&Value::Null);
     let mut judged: Vec<(String, Judged)> = Vec::new();
 
@@ -537,7 +538,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
     for m in &c.metrics {
         let Some(src) = parse_src(&m.source) else { continue };
         let series = raw.daily(&|s| eval(&src, s));
-        let j = judge(&series, first, frac, c);
+        let j = judge(&series, &first, frac, c);
         doc.kpis.push(Kpi {
             id: m.id.clone(),
             label: m.label.clone(),
@@ -562,7 +563,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt) -> TelDoc {
     for m in &c.mover_measures {
         let mut rows: Vec<Mover> = Vec::new();
         for (name, series) in hook_series(raw, &m.measure) {
-            let Some(j) = judge(&series, first, frac, c) else { continue };
+            let Some(j) = judge(&series, &first, frac, c) else { continue };
             if m.anomaly && j.unusual(c) {
                 anomalies.push(anomaly(c, &name, &format!("{name} ({})", m.label.to_lowercase()), &j, number));
             }

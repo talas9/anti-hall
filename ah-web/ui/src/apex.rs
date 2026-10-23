@@ -33,7 +33,12 @@ impl Chart {
     /// Draw a chart in `el` from `options` (JSON). `fmt` writes the values of the y axis and the tooltips.
     pub fn create(el: &web_sys::Element, options: &str, fmt: Rc<dyn Fn(f64) -> String>) -> Result<Chart, String> {
         let opts = js_sys::JSON::parse(options).map_err(|_| "chart options".to_string())?;
-        let f = Closure::<dyn Fn(f64) -> String>::new(move |v: f64| fmt(v)).into_js_value();
+        // a heatmap's y labels are names: only a number is formatted
+        let f = Closure::<dyn Fn(JsValue) -> String>::new(move |v: JsValue| match v.as_f64() {
+            Some(n) => fmt(n),
+            None => v.as_string().unwrap_or_default(),
+        })
+        .into_js_value();
         for path in [["yaxis", "labels", "formatter"], ["tooltip", "y", "formatter"]] {
             set_path(&opts, &path, &f);
         }

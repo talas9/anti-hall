@@ -16,6 +16,8 @@ use web_sys::Response;
 
 const TELEMETRY_PATH: &str = "/api/telemetry";
 const IMPACT_PATH: &str = "/api/impact";
+/// The address fragments of the two screens (`#telemetry`, `#impact`); the page opens on the one in the address.
+const FRAGMENTS: [&str; 2] = ["telemetry", "impact"];
 const STYLE_ID: &str = "tel-style";
 const STYLE_HREF: &str = "/static/tel.css";
 
@@ -36,6 +38,19 @@ async fn sleep_ms(ms: i32) {
         }
     });
     let _ = JsFuture::from(p).await;
+}
+
+/// 1 or 2 when the address names the Telemetry or Impact screen, else 0.
+pub fn initial_screen() -> u8 {
+    let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
+    FRAGMENTS.iter().position(|f| hash.trim_start_matches('#') == *f).map_or(0, |i| i as u8 + 1)
+}
+
+/// Put the shown screen in the address (empty for the others) so it can be linked.
+pub fn remember_screen(n: u8) {
+    if let Some(w) = web_sys::window() {
+        let _ = w.location().set_hash(n.checked_sub(1).and_then(|i| FRAGMENTS.get(i as usize)).copied().unwrap_or(""));
+    }
 }
 
 /// The screens' stylesheet, added to the page the first time one opens.
@@ -98,7 +113,7 @@ fn fmt_val(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, v: f64) -> 
     match unit {
         "us" => ui.fmt_us.fmt(whole),
         "bytes" => ui.fmt_bytes.fmt(whole),
-        "usd" => format!("{}{:.*}", tt(texts, "unit_usd"), ui.usd_decimals, v),
+        "usd" => format!("{}{}{:.*}", if v < 0.0 { "-" } else { "" }, tt(texts, "unit_usd"), ui.usd_decimals, v.abs()),
         "pct" => format!("{v:.0}%"),
         "ts" => age_text(ui, texts, v),
         _ => ui.number.fmt(whole),
@@ -311,6 +326,13 @@ fn apex_cfg(ui: &TelUi) -> serde_json::Value {
     ui.apex_json.parse().unwrap_or_default()
 }
 
+/// "Oct 23" for a day start in epoch ms.
+#[cfg(feature = "full")]
+fn day_label(ms: u64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64)).to_date_string().as_string().unwrap_or_default();
+    d.get(4..10).unwrap_or_default().to_string()
+}
+
 #[cfg(feature = "full")]
 fn day_labels(day_ms: &[u64]) -> Vec<f64> {
     day_ms.iter().map(|m| *m as f64).collect()
@@ -362,17 +384,16 @@ fn HeatChart(heat: Heat, day_ms: Vec<u64>, ui: TelUi, texts: BTreeMap<String, St
         .checks
         .iter()
         .zip(heat.cells.iter())
-        .map(|(n, cells)| serde_json::json!({ "name": n, "data": day_ms.iter().zip(cells.iter()).map(|(d, v)| serde_json::json!({ "x": d, "y": v })).collect::<Vec<_>>() }))
+        .map(|(n, cells)| serde_json::json!({ "name": n, "data": day_ms.iter().zip(cells.iter()).map(|(d, v)| serde_json::json!({ "x": day_label(*d), "y": v })).collect::<Vec<_>>() }))
         .collect();
     let rows = heat.checks.len() as u64;
     let mut o = apex::base(&cfg, is_dark(), (rows * 30 + 70).max(cfg["height_small"].as_u64().unwrap_or(0)));
     apex::merge(&mut o, serde_json::json!({
         "chart": { "type": "heatmap", "toolbar": { "show": false } },
         "series": series,
-        "xaxis": { "type": "datetime" },
-        "plotOptions": { "heatmap": { "radius": 3, "colorScale": { "min": 0 } } },
+        "plotOptions": { "heatmap": { "radius": 3, "shadeIntensity": 0.8, "useFillColorAsStroke": false } },
         "colors": [cfg["info"]],
-        "stroke": { "width": 1 },
+        "stroke": { "width": 1, "colors": [cfg[if is_dark() { "dark" } else { "light" }]["grid"]] },
         "legend": { "show": false },
     }));
     let opts = Memo::new(move |_| o.to_string());
@@ -392,7 +413,7 @@ fn GaugeChart(forecast: Forecast, ui: TelUi, texts: BTreeMap<String, String>) ->
         "series": [forecast.used_pct.min(100.0).round()],
         "labels": [tt(&texts, "f_used")],
         "colors": [if tone.is_null() { cfg["info"].clone() } else { tone }],
-        "plotOptions": { "radialBar": { "hollow": { "size": "62%" }, "dataLabels": { "value": { "formatter": null } } } },
+        "plotOptions": { "radialBar": { "hollow": { "size": "62%" }, "track": { "background": cfg[if is_dark() { "dark" } else { "light" }]["grid"] } } },
     }));
     let opts = Memo::new(move |_| o.to_string());
     view! { <ApexChart opts=opts ui=ui unit="pct".to_string() texts=texts fallback=ViewFn::from(|| view! { <></> }) /> }
