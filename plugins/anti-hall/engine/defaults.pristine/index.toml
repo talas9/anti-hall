@@ -89,5 +89,6 @@ files = [
     "wire.toml",
     "devswarm_parent.toml",
     "nodeback.toml",
+    "web.toml",
 ]
 extra_dir = "hooks.d"

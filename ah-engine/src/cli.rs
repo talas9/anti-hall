@@ -98,6 +98,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("codex-activate", crate::ops::cmd_codex_activate),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
+        ("web", crate::webcli::run_cmd),
         ("refresh", crate::refresh::run_cmd),
         ("units", crate::setup::units::cmd_units),
         ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),

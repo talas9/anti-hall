@@ -205,6 +205,10 @@ value = { args = "[--global] [--dry-run] [--root <plugin dir>]", read_only = fal
 doc = "The handover brief tree: `index` rebuilds the root brief and the per-day briefs (BRIEF.md plus a typed BRIEF.json) of the changed days under .anti-hall/handovers (`--registered` walks every project the SessionStart check has seen, `--force` rebuilds all days), `check` reports unindexed or stale handovers, missing briefs, malformed handovers and broken references without writing (exit 3 when there are any), `search <words> [date:..] [session:..] [decision:..] [file:..]` ranks entries from the sidecars. Never edits a handover file and never deletes. The logic is the plugin script handover-hygiene.js; the scheduled job `handovers` runs `index --registered`."
 value = { args = "<index|check|search> [query] [--project <dir>] [--registered] [--force] [--limit <n>]", read_only = false, status = "implemented" }
 
+[cmd.web]
+doc = "The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address, opening it in the browser unless --no-open; `status` says whether it runs. The server (binary ah-web) binds to the loopback address on a random port behind a per-session token, serves the live agent tree and exits when idle (web.idle_exit_s). Reads the agent list through `agents status`; changes nothing. Switch: web.enabled."
+value = { args = "[open|status] [--no-open] [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
+
 [cmd.diag]
 doc = "Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing."
 value = { args = "<cpu|mem|threads|hooks|mesh|jev|fs|locks|trace>", read_only = true, status = "implemented" }

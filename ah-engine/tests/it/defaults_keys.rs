@@ -161,6 +161,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
             || k.starts_with("coordinator_work.lock_") // the lock timings of the coordinator-work-guard script, read as a group (`Params::from_group("coordinator_work")`)
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
+            || k.starts_with("web.") // the Command Center server (ah-web) reads its own file; the engine reads only the start-up keys
             || k.starts_with("launcher.") // the hook launcher (ah-launcher, binary ah-hook) reads these; the engine does not
             || k.starts_with("files.launcher_") // the launcher's own log, drop counter, spawn lock and spawn log
             || k.starts_with("msg.launcher_") // the launcher's texts

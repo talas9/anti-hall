@@ -1,0 +1,163 @@
+# ah-engine shipped defaults for the Command Center web dashboard (`ah-engine web`, binary ah-web; GH #266). Format: see the
+# header of engine.toml. The dashboard is a local page: it binds to the loopback address only, on a random free port, behind a
+# per-session token, and exits when nobody has used it for web.idle_exit_s. Nothing runs until `ah-hook web` is called.
+# `ah-web` reads this file itself (start-up and whenever the file changes); the engine reads the start-up keys.
+
+[web.enabled]
+doc = "Master switch: when false, `ah-engine web` prints web.msg_disabled and starts nothing."
+value = true
+
+[web.bind_host]
+doc = "The address the dashboard server binds to. Keep it a loopback address: the page can send agent messages."
+value = "127.0.0.1"
+
+[web.port_min]
+doc = "Lowest port tried when picking a random free port."
+value = 20000
+min = 1024
+max = 65535
+
+[web.port_max]
+doc = "Highest port tried when picking a random free port."
+value = 29999
+min = 1024
+max = 65535
+
+[web.bind_attempts]
+doc = "How many random ports are tried before the server gives up."
+value = 40
+min = 1
+
+[web.idle_exit_s]
+doc = "The server exits after this many seconds with no request and no open stream."
+value = 300
+min = 30
+max = 3600
+
+[web.idle_check_s]
+doc = "How often the server checks whether it has been idle long enough to exit."
+value = 5
+min = 1
+
+[web.token_bytes]
+doc = "Random bytes in the per-session token (shown as twice as many hex digits)."
+value = 16
+min = 8
+
+[web.cookie_name]
+doc = "Name of the session cookie the browser receives after it presents the token."
+value = "ah_web_session"
+
+[web.state_file]
+doc = "File (in the engine state directory) the server writes while it runs: pid, port, token and URL. Mode 0600."
+value = "web.json"
+
+[web.config_rel]
+doc = "This file's path relative to the plugin root; the engine hands it to the server, which reads it itself."
+value = "engine/defaults/web.toml"
+
+[web.static_dir]
+doc = "Directory of the page's own files (index, CSS), relative to the plugin root."
+value = "web/static"
+
+[web.pkg_dir]
+doc = "Directory of the compiled page (WASM and its loader), relative to the plugin root."
+value = "web/pkg"
+
+[web.index_file]
+doc = "The page served at /, inside web.static_dir."
+value = "index.html"
+
+[web.agents_cmd]
+doc = "Engine arguments whose JSON output is the live agent list (run with the engine binary; read-only)."
+value = ["agents", "status", "--json"]
+
+[web.agents_poll_ms]
+doc = "How often the agent list is refreshed while at least one browser tab is connected."
+value = 3000
+min = 500
+
+[web.agents_timeout_ms]
+doc = "A refresh that takes longer than this is abandoned (the last list stays on screen)."
+value = 10000
+min = 500
+
+[web.agents_max_bytes]
+doc = "Largest engine reply accepted for the agent list."
+value = 16777216
+min = 65536
+
+[web.sse_keepalive_s]
+doc = "Interval of the keep-alive comment on the event stream."
+value = 15
+min = 1
+
+[web.max_streams]
+doc = "Most event streams open at once; more are refused with 503."
+value = 16
+min = 1
+
+[web.start_wait_ms]
+doc = "How long `ah-engine web` waits for a freshly started server to publish its state file."
+value = 8000
+min = 500
+
+[web.start_poll_ms]
+doc = "Poll interval of that wait."
+value = 50
+min = 10
+
+[web.open_browser]
+doc = "Open the page in the default browser after `ah-engine web` (the --no-open flag overrides it)."
+value = true
+
+[web.open_cmd]
+doc = "Command that opens a URL; the URL is appended as the last argument."
+value = ["open"]
+
+[web.bin_name]
+doc = "File name of the server binary, looked up next to the engine binary."
+value = "ah-web"
+
+[web.heartbeat_warn_s]
+doc = "An agent whose last output is older than this many seconds shows its heartbeat in the warning colour."
+value = 60
+min = 1
+
+[web.heartbeat_stale_s]
+doc = "An agent whose last output is older than this many seconds shows its heartbeat in the stale colour."
+value = 600
+min = 1
+
+[web.msg_disabled]
+doc = "Printed when web.enabled is false."
+value = "The Command Center is switched off (web.enabled = false)."
+
+[web.msg_url]
+doc = "Printed with the page address. Placeholder: {url}."
+value = "Command Center: {url}"
+
+[web.msg_start_failed]
+doc = "Printed when the server did not publish its state file in time. Placeholder: {bin}."
+value = "The Command Center did not start ({bin}); see the engine log."
+
+[web.msg_no_bin]
+doc = "Printed when the server binary is missing. Placeholder: {bin}."
+value = "The Command Center server binary was not found: {bin}"
+
+[web.msg_status_stopped]
+doc = "Printed by `ah-engine web status` when no server is running."
+value = "Command Center: not running"
+
+[web.msg_status_running]
+doc = "Printed by `ah-engine web status` when the server runs. Placeholders: {pid}, {url}."
+value = "Command Center: running (pid {pid}) {url}"
+
+[web.msg_usage]
+doc = "Usage line of `ah-engine web`."
+value = "usage: ah-engine web [open|status] [--no-open] [--json]"
+
+# The page's texts. The compiled page carries none of its own: it asks /api/ui for this table.
+[web.ui]
+doc = "Every label the page shows, by key. Edit here; reload the page."
+value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", running = "RUNNING", stopped = "STOPPED", search = "Search agents, sessions, messages", search_label = "Search agents", nav_agents = "Agents", nav_health = "Health", nav_logs = "Logs", nav_settings = "Settings", nav_updates = "Updates", nav_label = "Views", title_agents = "Live agents", layout_label = "Layout", tab_graph = "Graph", tab_tree = "Tree", live = "live", idle = "idle", projects = "projects", graph_placeholder = "Graph view: a later slice", graph_hint = "The agent graph arrives with the WebGPU slice. The tree is live now.", col_name = "Agent", col_kind = "Kind", col_hb = "Heartbeat", col_brief = "Doing now", empty = "No agents tracked.", connecting = "Connecting...", reconnecting = "Reconnecting...", selected_label = "Selected agent", pick_prompt = "Pick an agent in the tree.", heartbeat = "Heartbeat", running_for = "Tokens out", model = "State", doing_now = "Doing now", recent = "Recent activity", recent_placeholder = "Activity feed: a later slice", send_label = "Send a message", send_placeholder = "Message or command for this agent", send = "Send", nudge = "Nudge", stop = "Stop...", controls_note = "Controls arrive with the actions slice.", placeholder_title = "Coming later", kind_main = "Primary", kind_workspace = "Workspace", kind_subagent = "Subagent", kind_teammate = "Teammate", kind_codex = "Codex", kind_heartbeat = "Heartbeat", kind_other = "Agent", legend_primary = "Primary", legend_workspace = "Workspace", legend_subagent = "Subagent", legend_codex = "Codex", theme_light = "Light", theme_dark = "Dark", theme_label = "Theme" }
