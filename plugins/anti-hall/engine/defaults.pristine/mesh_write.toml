@@ -2993,10 +2993,6 @@ value = "bad-tail"
 doc = "The error of an `inbox messages --tail` that is not a positive integer. Placeholder: {got} (JSON-quoted)."
 value = "--tail must be a positive integer (got {got})"
 
-[mesh_write.reason_bad_since]
-doc = "The `reason` of an `inbox messages --since` that is neither an index nor a date."
-value = "bad-since"
-
 [mesh_write.msg_bad_since]
 doc = "The error of an `inbox messages --since` that is neither an index nor a date. Placeholder: {got} (JSON-quoted)."
 value = "--since must be a non-negative integer (a per-partition message index, the same space `cursor` counts in) or an ISO 8601 date or timestamp such as 2026-10-23 or 2026-10-23T09:30:00Z (got {got})"

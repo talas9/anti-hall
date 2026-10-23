@@ -1021,17 +1021,18 @@ fn unavailable_refusal(inv: &Inv, a: &Args, id: &str, peek: bool, why: &tick::Un
         .put("totalsPartial", OVal::Bool(true))
         .put("reason", s(&why.reason))
         .put("ok", OVal::Bool(false))
-        .put("id", s(id))
-        .put("error", common::s_or_null(why.error.as_deref()));
+        .put("id", s(id));
     if genuine {
         o.put("storeUnavailableReason", common::s_or_null(why.code.as_deref()));
     }
+    // the fields the open adds come before its error text, as devswarm.js's refusal object lists them
     if let Some(r) = &why.registered {
         o.put("registeredRepoKey", s(r));
     }
     if why.registered.is_some() || why.caller.is_some() {
         o.put("callerRepoKey", common::s_or_null(why.caller.as_deref()));
     }
+    o.put("error", common::s_or_null(why.error.as_deref()));
     let result = o.done();
     let msg = why.error.clone().unwrap_or_default();
     crate::meshw::clog::ready(inv)?;
