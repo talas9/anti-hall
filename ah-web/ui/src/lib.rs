@@ -4,6 +4,9 @@
 //! Data arrives as one snapshot and then only changes (server-sent events); the tier (full or lite) picks the push rate and
 //! whether anything moves.
 mod live;
+mod tel;
+#[cfg(feature = "full")]
+mod apex;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -364,6 +367,8 @@ fn App(boot: Boot) -> impl IntoView {
     let selected = ctx.selected;
     let graph = RwSignal::new(false);
     let live_on = RwSignal::new(false);
+    // 0 = Agents or Live (live_on), 1 = Telemetry, 2 = Impact
+    let screen = RwSignal::new(0u8);
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);
@@ -446,14 +451,16 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <button type="button" class=move || if live_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| live_on.set(false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
-                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| live_on.set(true)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if live_on.get() || screen.get() != 0 { "nav-item" } else { "nav-item on" } on:click=move |_| { screen.set(0); live_on.set(false) }><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() && screen.get() == 0 { "nav-item on" } else { "nav-item" } on:click=move |_| { screen.set(0); live_on.set(true) }><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if screen.get() == 1 { "nav-item on" } else { "nav-item" } on:click=move |_| screen.set(1)><span class="glyph">"\u{2248}"</span><span>{tx("nav_telemetry")}</span></button>
+                    <button type="button" class=move || if screen.get() == 2 { "nav-item on" } else { "nav-item" } on:click=move |_| screen.set(2)><span class="glyph">"\u{2191}"</span><span>{tx("nav_impact")}</span></button>
                     <span class="nav-item soft"><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></span>
                 </nav>
-                <main class="main" hidden=move || live_on.get()>
+                <main class="main" hidden=move || live_on.get() || screen.get() != 0>
                     <div class="main-head">
                         <h1>{tx("title_agents")}</h1>
                         <span class="counts">
@@ -491,10 +498,16 @@ fn App(boot: Boot) -> impl IntoView {
                         <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
                     </section>
                 </main>
-                <main class="main live-main" hidden=move || !live_on.get()>
-                    <live::LiveScreen mode=mode active=live_on.into() />
+                <main class="main live-main" hidden=move || !live_on.get() || screen.get() != 0>
+                    <live::LiveScreen mode=mode active=Signal::derive(move || live_on.get() && screen.get() == 0) />
                 </main>
-                <aside class="detail" aria-label=tx("selected_label") hidden=move || live_on.get()>
+                <main class="main tel-main" hidden=move || screen.get() != 1>
+                    <tel::TelScreen active=Signal::derive(move || screen.get() == 1) />
+                </main>
+                <main class="main tel-main" hidden=move || screen.get() != 2>
+                    <tel::ImpactScreen active=Signal::derive(move || screen.get() == 2) />
+                </main>
+                <aside class="detail" aria-label=tx("selected_label") hidden=move || live_on.get() || screen.get() != 0>
                     {move || match current.get() {
                         None => view! { <p class="empty">{tx("pick_prompt")}</p> }.into_any(),
                         Some(a) => {

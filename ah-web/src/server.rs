@@ -105,8 +105,10 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
     let Ok(html) = tokio::fs::read_to_string(&path).await else {
         return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
     };
+    let mut ui = s.ui.clone();
+    ui.extend(crate::tel::boot_texts(&app));
     let boot = Boot {
-        ui: s.ui.clone(),
+        ui,
         heartbeat_warn_s: s.heartbeat_warn_s,
         heartbeat_stale_s: s.heartbeat_stale_s,
         kind_order: s.kind_order.clone(),

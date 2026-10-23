@@ -19,6 +19,10 @@ pub struct TelUi {
     pub fmt_bytes: NumFmt,
     pub fmt_age: NumFmt,
     pub usd_decimals: usize,
+    /// Seconds between two reads while the screen is open.
+    pub refresh_s: u64,
+    /// Table rows drawn before "show more".
+    pub rows_shown: usize,
     /// The page-wide number format (12k, 1.1M).
     pub number: NumFmt,
 }

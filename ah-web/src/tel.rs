@@ -97,6 +97,9 @@ pub struct TelCfg {
     apex: Value,
     texts: BTreeMap<String, String>,
     export_path: String,
+    refresh_s: u64,
+    rows_shown: usize,
+    boot_keys: Vec<String>,
 }
 
 impl TelCfg {
@@ -134,6 +137,8 @@ impl TelCfg {
             fmt_bytes: self.fmt_bytes.clone(),
             fmt_age: self.fmt_age.clone(),
             usd_decimals: self.usd_decimals,
+            refresh_s: self.refresh_s,
+            rows_shown: self.rows_shown,
             number: number.clone(),
         }
     }
@@ -202,6 +207,11 @@ async fn read_raw(app: &App, cfg: &TelCfg) -> Raw {
     raw.usage = run_cmd(&app.engine, &cfg.usage_cmd, limit).await;
     raw.coverage = run_cmd(&app.engine, &cfg.coverage_cmd, limit).await;
     raw
+}
+
+/// The texts of the screens the page needs before one is opened (the navigation labels); empty when the file cannot be read.
+pub fn boot_texts(app: &App) -> BTreeMap<String, String> {
+    TelCfg::load(&cfg_path(app)).map_or_else(|_| BTreeMap::new(), |c| c.boot_keys.iter().filter_map(|k| c.texts.get(k).map(|v| (k.clone(), v.clone()))).collect())
 }
 
 /// The telemetry config next to `web.toml`.
