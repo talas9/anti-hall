@@ -77,6 +77,19 @@ fn in_stop_event() -> bool {
     crate::deadline::event().is_some_and(|e| defaults::list("dispatch.stop_events").iter().any(|s| *s == e))
 }
 
+thread_local! {
+    static ASKING_CHECK: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The check now running on this thread; a Jev decision row names it (`check`) so the dashboard can show which check asked.
+pub fn set_asking_check(check: &str) {
+    ASKING_CHECK.with(|c| {
+        let mut c = c.borrow_mut();
+        c.clear();
+        c.push_str(check);
+    });
+}
+
 /// One decision to ask Jev about.
 #[derive(Clone)]
 pub struct AskRequest {
@@ -1226,6 +1239,10 @@ impl Jev {
         row.put("project", json!(req.project.clone().filter(|p| !p.is_empty()).unwrap_or_else(default_project)));
         if let Some(sid) = req.session_id.as_ref().filter(|s| !s.is_empty()) {
             row.put("sessionId", json!(sid));
+        }
+        let asking = ASKING_CHECK.with(|c| c.borrow().clone());
+        if !asking.is_empty() {
+            row.put("check", json!(asking));
         }
         if let Some(t) = req.turn_ref.as_ref().filter(|s| !s.is_empty()) {
             row.put("turnRef", json!(t));

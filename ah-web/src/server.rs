@@ -31,6 +31,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/stream", get(stream))
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
+        .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -110,6 +111,10 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         limits: s.limits(),
         actions: s.menu(),
         feed_max: s.feed_max,
+        graph: crate::cfg::graph_json(&app.root.join(&s.live_graph_rel)).unwrap_or_default(),
+        live: s.live(),
+        plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.get("version").and_then(serde_json::Value::as_str).map(str::to_string)).unwrap_or_default(),
+        web_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
@@ -303,5 +308,27 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
             rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));
         }
     }
-    Json(Detail { rows }).into_response()
+    let tasks = doc
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(|a| a.get("tasks"))
+        .and_then(serde_json::Value::as_array)
+        .map(|l| {
+            let t = |v: &serde_json::Value, k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+            l.iter()
+                .map(|v| ah_web_proto::TaskRow { subject: t(v, "subject"), status: t(v, "status"), priority: t(v, "priority"), changed_ms: v.get("updated_ms").and_then(serde_json::Value::as_u64).unwrap_or(0) })
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(Detail { rows, tasks }).into_response()
+}
+
+/// `GET /api/live/map`: which checks answer which hook events, for the Live screen.
+async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    Json(crate::live::map(&app, &s).await).into_response()
 }

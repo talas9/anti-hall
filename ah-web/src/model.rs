@@ -1,6 +1,6 @@
 //! What the server knows, and the changes between its states. Every change gets a sequence number and is kept in a short ring, so a
 //! stream asks "what moved since n" and is answered with one merged [`Delta`]; a stream that fell behind the ring gets a snapshot.
-use ah_web_proto::{Agent, Delta, FeedItem, Pulse, Snapshot};
+use ah_web_proto::{JevEvt, ActionEvt, Agent, Decision, Delta, FeedItem, Pulse, Snapshot};
 use std::collections::{BTreeMap, VecDeque};
 
 /// What one poll found (every field is "unchanged" when `None` / empty).
@@ -12,6 +12,9 @@ pub struct Found {
     /// The full agent list when it was re-read; `None` when the engine said it is unchanged.
     pub agents: Option<Vec<Agent>>,
     pub feed: Vec<(u64, String, String)>,
+    pub decisions: Vec<Decision>,
+    pub actions: Vec<ActionEvt>,
+    pub jev: Vec<JevEvt>,
     pub rev: Option<String>,
 }
 
@@ -33,17 +36,22 @@ pub struct Model {
     ring: VecDeque<Delta>,
     ring_cap: usize,
     feed_cap: usize,
+    recent: VecDeque<Decision>,
+    recent_cap: usize,
     /// Cursors for the poller: the agent revision, the last decision and mesh message seen.
     pub rev: String,
     pub decisions_seq: u64,
     pub mesh_after: i64,
     pub mesh_reads_after: i64,
+    /// Where the action log was read up to (`None` before the first read).
+    pub actions_off: Option<u64>,
+    pub jev_off: Option<u64>,
     /// False until the first poll has been folded in: a tab connecting before it would be shown an engine that "does not answer".
     pub ready: bool,
 }
 
 impl Model {
-    pub fn new(ring_cap: usize, feed_cap: usize) -> Model {
+    pub fn new(ring_cap: usize, feed_cap: usize, recent_cap: usize) -> Model {
         Model {
             seq: 0,
             engine_ok: false,
@@ -55,10 +63,14 @@ impl Model {
             ring: VecDeque::new(),
             ring_cap: ring_cap.max(1),
             feed_cap: feed_cap.max(1),
+            recent: VecDeque::new(),
+            recent_cap,
             rev: String::new(),
             decisions_seq: 0,
             mesh_after: -1,
             mesh_reads_after: 0,
+            actions_off: None,
+            jev_off: None,
             ready: false,
         }
     }
@@ -97,7 +109,16 @@ impl Model {
             }
             d.feed.push(item);
         }
-        if d.engine_ok.is_none() && d.generated_ms.is_none() && d.pulse.is_none() && d.upsert.is_empty() && d.removed.is_empty() && d.feed.is_empty() {
+        for x in f.decisions {
+            self.recent.push_back(x.clone());
+            while self.recent.len() > self.recent_cap {
+                self.recent.pop_front();
+            }
+            d.decisions.push(x);
+        }
+        d.actions = f.actions;
+        d.jev = f.jev;
+        if d.engine_ok.is_none() && d.generated_ms.is_none() && d.pulse.is_none() && d.upsert.is_empty() && d.removed.is_empty() && d.feed.is_empty() && d.decisions.is_empty() && d.actions.is_empty() && d.jev.is_empty() {
             return;
         }
         self.seq += 1;
@@ -116,6 +137,7 @@ impl Model {
             generated_ms: self.generated_ms,
             engine_ok: self.engine_ok,
             agents: self.agents.values().cloned().collect(),
+            decisions: self.recent.iter().cloned().collect(),
         }
     }
 
@@ -148,6 +170,9 @@ impl Model {
                 }
             }
             out.feed.extend(d.feed.iter().cloned());
+            out.decisions.extend(d.decisions.iter().cloned());
+            out.actions.extend(d.actions.iter().cloned());
+            out.jev.extend(d.jev.iter().cloned());
         }
         out.upsert = up.into_values().collect();
         Out::Delta(out)

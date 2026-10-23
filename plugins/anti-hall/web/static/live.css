@@ -1,0 +1,51 @@
+/* The Live screen (ah-web/ui live.rs). Tokens come from app.css; the graph component's chrome is mapped onto them here. */
+button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
+.live-main { gap: 10px; }
+.live { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
+.live-stats { display: grid; grid-template-columns: repeat(5, minmax(90px, 130px)) minmax(0, 1fr); gap: 8px; }
+.live-block { color: var(--red); }
+.live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
+.live-top li { display: flex; gap: 6px; }
+.live-top li b { color: var(--cyan); font-weight: 600; }
+.live-cols { display: grid; grid-template-columns: repeat(6, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+.live-graph { flex: 1 1 auto; min-height: 520px; height: calc(100vh - 400px); }
+.live .ahg {
+  --ah-line: var(--line); --ah-panel: var(--panel); --ah-text: var(--text); --ah-muted: var(--muted);
+  --ah-bad: var(--red); --ah-ok: var(--green); --ah-warn: var(--amber);
+  --ah-mono: var(--font-mono); --ah-sans: var(--font-ui);
+}
+.live-timeline { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 8px 12px; }
+.live-timeline ol, .live-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 148px; overflow: auto; }
+.tl { display: flex; align-items: center; gap: 10px; font: 12px var(--font-mono); min-width: 0; }
+.tl i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--tl, var(--idle)); box-shadow: 0 0 8px var(--tl, transparent); }
+.tl-check { color: var(--text-hi); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-ev, .tl-rule { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-age { margin-left: auto; color: var(--dim); white-space: nowrap; }
+.tl-allow { --tl: var(--green); } .tl-advise { --tl: var(--amber); } .tl-block { --tl: var(--red); }
+.tl-inject { --tl: oklch(0.76 0.13 245); } .tl-travel { --tl: var(--cyan); } .tl-action { --tl: var(--violet); }
+.live-panel { display: flex; flex-direction: column; gap: 6px; }
+.live-panel .live-rows { max-height: none; }
+@media (max-width: 720px) { .live-stats { grid-template-columns: 1fr 1fr; } .live-top { grid-column: 1 / -1; } .live-cols { display: none; } }
+.task { display: flex; align-items: center; gap: 8px; font: 12px var(--font-mono); min-width: 0; }
+.chip { flex: 0 0 auto; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 10px; color: var(--muted); }
+.chip-in_progress { color: var(--cyan); border-color: color-mix(in oklch, var(--cyan) 50%, transparent); }
+.chip-completed { color: var(--green); border-color: color-mix(in oklch, var(--green) 50%, transparent); }
+.chip-blocked { color: var(--red); border-color: color-mix(in oklch, var(--red) 50%, transparent); }
+.chip-pending { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }
+.jev-row { display: flex; flex-direction: column; gap: 2px; font: 12px var(--font-mono); padding: 4px 0; border-bottom: 1px solid var(--line); }
+
+/* sci-fi deck (Full): deep field, luminous core. Every motion below is triggered by data (a judgement, a fired effect); at rest the scene is still. */
+.live .ahg-view { background-color: oklch(0.12 0.03 265); background-image: radial-gradient(900px 500px at 70% 40%, oklch(0.2 0.07 270 / .5), transparent 70%), linear-gradient(var(--ahg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ahg-grid) 1px, transparent 1px); }
+.live .ahg-node[data-kind="jev"] { overflow: visible; border-color: color-mix(in oklch, var(--k) 60%, transparent); }
+.live .ahg-node[data-kind="jev"]::before { content: ""; position: absolute; inset: -7px; border-radius: 18px; border: 2px solid transparent; border-top-color: var(--k); border-bottom-color: color-mix(in oklch, var(--k) 40%, transparent); opacity: .5; }
+.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="running"]::before { animation: ahCoreSpin 3s linear infinite; opacity: 1; box-shadow: 0 0 22px var(--k); }
+.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="waiting"]::before { animation: ahCoreSpin 7s linear infinite; opacity: .8; }
+@keyframes ahCoreSpin { to { transform: rotate(360deg); } }
+.live .stat-v, .live .tl-age, .live .tl-check { font-variant-numeric: tabular-nums; }
+
+/* scan-line sweep: started by a real live decision (live.rs flips data-scan); Full only, never at rest */
+.live .ahg[data-tier="full"] .ahg-view::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 90px; pointer-events: none; opacity: 0; background: linear-gradient(to bottom, transparent, oklch(0.83 0.13 210 / .10) 70%, oklch(0.9 0.1 210 / .22) 100%); }
+.live .ahg[data-tier="full"] .ahg-view[data-scan="a"]::after { animation: ahScanA var(--ahg-scan-ms, 900ms) ease-out; }
+.live .ahg[data-tier="full"] .ahg-view[data-scan="b"]::after { animation: ahScanB var(--ahg-scan-ms, 900ms) ease-out; }
+@keyframes ahScanA { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }
+@keyframes ahScanB { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }

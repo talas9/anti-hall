@@ -77,6 +77,35 @@ pub struct Settings {
     pub msg_action_failed: String,
     pub action_note_max_chars: usize,
     pub ui: BTreeMap<String, String>,
+    pub live_checks_max: usize,
+    pub live_events_max: usize,
+    pub live_rate_window_s: u64,
+    pub live_block_window_s: u64,
+    pub live_timeline_max: usize,
+    pub live_panel_rows: usize,
+    pub live_top_n: usize,
+    pub live_tick_ms: u64,
+    pub live_block_decisions: Vec<String>,
+    pub live_action_fx: BTreeMap<String, String>,
+    pub live_outcome_fx: BTreeMap<String, String>,
+    pub live_travel_fx: String,
+    pub live_decision_fx: BTreeMap<String, String>,
+    pub live_inject_decision: String,
+    pub live_inject_fx: String,
+    pub live_backfill: usize,
+    pub live_actions_file: String,
+    pub live_actions_max_bytes: u64,
+    pub live_map_ttl_s: u64,
+    pub live_map_timeout_ms: u64,
+    pub live_map_parts: Vec<String>,
+    pub live_graph_rel: String,
+    pub plugin_manifest_rel: String,
+    pub live_jev_log_rel: String,
+    pub live_rules_max: usize,
+    pub live_scan_gap_ms: u64,
+    pub live_jev_fx: BTreeMap<String, String>,
+    pub live_col_gap: f32,
+    pub live_row_gap: f32,
 }
 
 impl Settings {
@@ -89,6 +118,29 @@ impl Settings {
             mem_bad_mb: self.pulse_mem_bad_mb,
             err_warn: self.pulse_err_warn,
             err_bad: self.pulse_err_bad,
+        }
+    }
+
+    /// The Live screen's part of the start-up data.
+    pub fn live(&self) -> ah_web_proto::LiveCfg {
+        ah_web_proto::LiveCfg {
+            checks_max: self.live_checks_max,
+            events_max: self.live_events_max,
+            rate_window_s: self.live_rate_window_s,
+            block_window_s: self.live_block_window_s,
+            timeline_max: self.live_timeline_max,
+            panel_rows: self.live_panel_rows,
+            top_n: self.live_top_n,
+            tick_ms: self.live_tick_ms,
+            block_decisions: self.live_block_decisions.clone(),
+            action_fx: self.live_action_fx.clone(),
+            outcome_fx: self.live_outcome_fx.clone(),
+            travel_fx: self.live_travel_fx.clone(),
+            col_gap: self.live_col_gap,
+            row_gap: self.live_row_gap,
+            rules_max: self.live_rules_max,
+            scan_gap_ms: self.live_scan_gap_ms,
+            jev_fx: self.live_jev_fx.clone(),
         }
     }
 
@@ -110,4 +162,29 @@ impl Settings {
         }
         toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+/// The graph component's config as the JSON text the page reads: every `[web.graph.<path>]` table's `value` at `<path>`.
+pub fn graph_json(path: &Path) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
+    let graph = doc.get("web").and_then(|w| w.get("graph")).and_then(toml::Value::as_table).ok_or("no [web.graph] section")?;
+    fn walk(t: &toml::Table, out: &mut serde_json::Map<String, serde_json::Value>) {
+        for (k, v) in t {
+            match v.as_table() {
+                Some(sub) if sub.contains_key("value") && sub.contains_key("doc") => {
+                    out.insert(k.clone(), serde_json::to_value(&sub["value"]).unwrap_or_default());
+                }
+                Some(sub) => {
+                    let mut child = serde_json::Map::new();
+                    walk(sub, &mut child);
+                    out.insert(k.clone(), serde_json::Value::Object(child));
+                }
+                None => {}
+            }
+        }
+    }
+    let mut root = serde_json::Map::new();
+    walk(graph, &mut root);
+    serde_json::to_string(&serde_json::Value::Object(root)).map_err(|e| e.to_string())
 }

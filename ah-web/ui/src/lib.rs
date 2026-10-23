@@ -3,6 +3,7 @@
 //! with its action menu, the selected-agent panel with details and the activity feed; the graph is a styled placeholder.
 //! Data arrives as one snapshot and then only changes (server-sent events); the tier (full or lite) picks the push rate and
 //! whether anything moves.
+mod live;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -178,6 +179,7 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     let Ok(es) = EventSource::new(&format!("{STREAM_PATH}?mode={tier}")) else { return };
     let on_snapshot = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         if let Some(s) = e.data().as_string().and_then(|t| serde_json::from_str::<Snapshot>(&t).ok()) {
+            live::on_snapshot(&s);
             ctx.snap.set(s);
             ctx.conn.set(Conn::Live);
         }
@@ -186,6 +188,7 @@ fn connect(ctx: Ctx, tier: &str, feed_max: usize, current: StoredValue<Option<Ev
     on_snapshot.forget();
     let on_delta = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         if let Some(d) = e.data().as_string().and_then(|t| serde_json::from_str::<Delta>(&t).ok()) {
+            live::on_delta(&d);
             ctx.snap.update(|s| apply(s, d, feed_max));
             ctx.conn.set(Conn::Live);
         }
@@ -235,6 +238,15 @@ fn tier_of(mode: &str) -> &'static str {
         _ => {
             let reduced = web_sys::window().and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten()).is_some_and(|m| m.matches());
             if reduced { "lite" } else { "full" }
+        }
+    }
+}
+
+/// This build is the Full or the Lite page; a choice that needs the other one reloads the page, and the loader picks the right build.
+fn reload_if_other_build(mode: &str) {
+    if (tier_of(mode) == "full") != cfg!(feature = "full") {
+        if let Some(w) = web_sys::window() {
+            let _ = w.location().reload();
         }
     }
 }
@@ -341,6 +353,7 @@ fn choose(ctx: Ctx, boot: &Boot, id: String, action: &str) {
 
 #[component]
 fn App(boot: Boot) -> impl IntoView {
+    live::init(&boot);
     let boot = Arc::new(boot);
     provide_context(boot.clone());
     let ctx = Ctx {
@@ -356,6 +369,7 @@ fn App(boot: Boot) -> impl IntoView {
     let conn = ctx.conn;
     let selected = ctx.selected;
     let graph = RwSignal::new(false);
+    let live_on = RwSignal::new(false);
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
         set_theme(d);
@@ -405,7 +419,7 @@ fn App(boot: Boot) -> impl IntoView {
         <div class="shell">
             <header class="top">
                 <div class="brand">
-                    <div class="mark"><div class="mark-dot"></div></div>
+                    <img class=move || if snap.with(|s| s.engine_ok) { "logo live" } else { "logo" } src="/static/logo.svg" alt=tx("logo_alt") width="30" height="30" />
                     <span class="brand-name">{tx("brand")}</span>
                     <span class="brand-product">{tx("product")}</span>
                 </div>
@@ -419,10 +433,11 @@ fn App(boot: Boot) -> impl IntoView {
                     {req_pill}
                     {err_pill}
                 </div>
+                <VersionBadge snap=snap />
                 <div class="grow"></div>
                 <div class="seg" role="group" aria-label=tx("mode_label")>
                     {["auto", "full", "lite"].into_iter().map(|m| view! {
-                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); }>{tx(&format!("mode_{m}"))}</button>
+                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); reload_if_other_build(m); }>{tx(&format!("mode_{m}"))}</button>
                     }).collect_view()}
                 </div>
                 <button type="button" class="theme" aria-label=tx("theme_label") on:click=move |_| {
@@ -437,13 +452,14 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <a class="nav-item on" href="/" aria-current="page"><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></a>
+                    <button type="button" class=move || if live_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| live_on.set(false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| live_on.set(true)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
                     <span class="nav-item soft"><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></span>
                     <span class="nav-item soft"><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></span>
                 </nav>
-                <main class="main">
+                <main class="main" hidden=move || live_on.get()>
                     <div class="main-head">
                         <h1>{tx("title_agents")}</h1>
                         <span class="counts">
@@ -481,7 +497,10 @@ fn App(boot: Boot) -> impl IntoView {
                         <For each=move || rows.get() key=|(id, d)| (id.clone(), *d) children=move |(id, depth)| view! { <Row id=id depth=depth by_id=by_id current=current /> } />
                     </section>
                 </main>
-                <aside class="detail" aria-label=tx("selected_label")>
+                <main class="main live-main" hidden=move || !live_on.get()>
+                    <live::LiveScreen mode=mode active=live_on.into() />
+                </main>
+                <aside class="detail" aria-label=tx("selected_label") hidden=move || live_on.get()>
                     {move || match current.get() {
                         None => view! { <p class="empty">{tx("pick_prompt")}</p> }.into_any(),
                         Some(a) => {
@@ -655,6 +674,39 @@ fn Row(
             </button>
             <ActionMenu id=id.clone() uid=uid />
             <Feedback_ id=id />
+        </div>
+    }
+}
+
+/// The header's version badge: the plugin and engine versions at a glance (amber when they differ), a popover with all of them.
+#[component]
+fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
+    let boot = expect_context::<Arc<Boot>>();
+    let (plugin, web) = (boot.plugin_version.clone(), boot.web_version.clone());
+    let none = tx("ver_unavailable");
+    let pulse = move |f: fn(&Pulse) -> String| snap.with(|s| s.pulse.as_ref().map(f)).filter(|v| !v.is_empty());
+    let sha = move || pulse(|p| p.build_sha.clone());
+    let engine_plugin = move || pulse(|p| p.plugin_version.clone());
+    let plugin2 = plugin.clone();
+    // amber only on a real mismatch: the plugin the engine says it loaded against the plugin this server serves
+    let skew = Memo::new(move |_| engine_plugin().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
+    let (n1, n3) = (none.clone(), none.clone());
+    let p1 = plugin.clone();
+    let badge_plugin = plugin.clone();
+    view! {
+        <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
+            {move || format!("{}{}", if badge_plugin.is_empty() { String::new() } else { format!("v{badge_plugin} \u{b7} ") }, sha().map(|s| format!("{} {s}", tx("ver_engine"))).unwrap_or_else(|| n1.clone()))}
+        </button>
+        <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
+            <dl class="kv">
+                <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
+                <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| sha().map_or_else(|| v.clone(), |h| format!("{v} \u{b7} {h}"))).unwrap_or_else(|| n3.clone())}</dd>
+                <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
+                <dt>{tx("ver_hook")}</dt><dd>{none.clone()}</dd>
+                <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
+                <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
+            </dl>
+            <Show when=move || skew.get()><p class="fb fb-bad">{tx("ver_skew")}</p></Show>
         </div>
     }
 }

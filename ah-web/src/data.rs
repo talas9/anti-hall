@@ -5,7 +5,7 @@ use crate::app::App;
 use crate::cfg::Settings;
 use crate::ctl;
 use crate::model::Found;
-use ah_web_proto::{Agent, Pulse};
+use ah_web_proto::{Agent, Decision, Pulse};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -61,7 +61,7 @@ fn num(v: &Value, k: &str) -> u64 {
 }
 
 fn pulse(v: &Value) -> Pulse {
-    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s") }
+    Pulse { cpu_permille: v.get("cpu_permille").and_then(Value::as_u64), rss_kb: num(v, "rss_kb"), requests: num(v, "requests"), errors: num(v, "errors"), uptime_s: num(v, "uptime_s"), version: text(v, "version"), build_sha: text(v, "build_sha"), plugin_version: text(v, "plugin_version") }
 }
 
 fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
@@ -78,6 +78,14 @@ fn decision_line(s: &Settings, row: &Value) -> Option<(u64, String, String)> {
     let event = s.feed_events.get(&event).cloned().unwrap_or(event);
     let template = s.feed_text.get(&decision)?;
     Some((num(row, "ts_ms"), decision.clone(), fill(template, &[("check", &text(row, "check")), ("event", &event), ("rule", &text(row, "rule"))])))
+}
+
+/// A decision row, ready for the Live screen: with the effect colour its decision plays in.
+fn decision_of(s: &Settings, row: &Value) -> Decision {
+    let decision = text(row, "decision");
+    let injected_bytes = num(row, "injected_bytes");
+    let fx = if decision == s.live_inject_decision && injected_bytes > 0 { s.live_inject_fx.clone() } else { s.live_decision_fx.get(&decision).cloned().unwrap_or_default() };
+    Decision { seq: num(row, "seq"), ts_ms: num(row, "ts_ms"), event: text(row, "event"), check: text(row, "check"), session: text(row, "session"), decision, rule: text(row, "rule"), us: num(row, "us"), injected_bytes, fx }
 }
 
 /// A mesh message row as a plain sentence. The store keeps times in seconds or milliseconds; both are taken.
@@ -155,8 +163,13 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
                 f.engine_ok = Some(true);
                 let rows = doc.get("rows").and_then(Value::as_array).cloned().unwrap_or_default();
                 f.feed.extend(rows.iter().filter_map(|r| decision_line(s, r)));
+                f.decisions = rows.iter().map(|r| decision_of(s, r)).collect();
                 let last = rows.iter().map(|r| num(r, "seq")).max().unwrap_or(dseq);
-                app.model().decisions_seq = last.max(dseq);
+                // a ring that is behind the cursor belongs to a restarted engine: read it from its start next time
+                let mut m = app.model();
+                m.decisions_seq = if num(&doc, "last_seq") < dseq { 0 } else { last.max(dseq) };
+                f.actions = crate::live::new_actions(s, &app.socket, &mut m.actions_off);
+                f.jev = crate::live::new_jev(s, &mut m.jev_off);
             }
             Err(_) => {
                 f.engine_ok = Some(false);
