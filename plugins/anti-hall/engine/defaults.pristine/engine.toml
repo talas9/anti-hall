@@ -305,7 +305,7 @@ min = 1
 unit = "ms"
 
 [daemon.eval_budget_us]
-doc = "HARD per-request thread CPU budget for rule evaluation: past it every remaining check gets no answer and takes its failure policy. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
+doc = "HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
 value = 1000000
 env = "AH_ENGINE_EVAL_BUDGET_US"
 unit = "us"
@@ -759,6 +759,22 @@ unit = "bytes"
 doc = "Event log size above which it is trimmed to its last log_keep_lines lines."
 value = 65536
 unit = "bytes"
+
+[health.log_queue]
+doc = "Lines the daemon's log thread can hold before a worker appends its line itself. The daemon queues every event-log line to one thread that writes them in batches (the per-line stat, lock, open and write were where the four workers waited under load); other processes still append directly."
+value = 4096
+min = 16
+
+[health.log_batch]
+doc = "Most queued lines the daemon's log thread writes in one append."
+value = 256
+min = 1
+
+[health.log_flush_ms]
+doc = "Longest the daemon waits at exit for its queued event-log lines to reach the file."
+value = 1000
+min = 10
+unit = "ms"
 
 [health.log_keep_lines]
 doc = "Lines kept when the event log is trimmed."

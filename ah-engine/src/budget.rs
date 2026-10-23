@@ -6,6 +6,7 @@
 //! the limit (one busy window is a burst). Memory is the figure `daemon.mem_metric` selects, and it breaches while over the limit.
 //! A budget of 0 is off. Reporting only: a breach never stops or slows anything (the RSS cap and the CPU back-off are other rules).
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 /// The daemon is past its HARD CPU limit and sheds optional work (`diagnostics.budget_cpu_hard_pct`). Process-wide so the check
@@ -22,6 +23,44 @@ pub fn shedding() -> bool {
 /// Count one piece of optional work that was skipped because of [`shedding`].
 pub fn note_shed_skipped() {
     SHED_SKIPPED.fetch_add(1, Relaxed);
+}
+
+/// Answers a request's checks did not give, by `guard|optional` + reason, for THIS daemon (the lifetime counts are the
+/// `answers_dropped` metric, which survives restarts); and the last event-log line per check and reason.
+static DROPPED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+static DROPPED_LOGGED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// A check of `event` gave no answer, for `reason`: counted (this daemon and lifetime), and logged at most once per
+/// `diagnostics.abandoned_log_interval_ms` per check and reason. A guard event's drop is its own kind (`guard_answer_dropped`) so it
+/// stands out; the dispatcher then applies the check's failure policy (`script.failure_mode_by_check`).
+pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
+    let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
+    crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
+    let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
+        *m.entry(format!("{kind}:{reason}")).or_default() += 1;
+    }
+    drop(m);
+    let (now, every) = (crate::health::now_ms(), crate::defaults::num("diagnostics.abandoned_log_interval_ms"));
+    let mut seen = DROPPED_LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    let key = format!("{check}:{reason}");
+    if seen.len() >= crate::defaults::num("diagnostics.abandoned_log_keys_max") as usize {
+        seen.clear();
+    }
+    if seen.get(&key).is_some_and(|last| now.saturating_sub(*last) < every) {
+        return;
+    }
+    seen.insert(key, now);
+    drop(seen);
+    let line = if guard { "guard_answer_dropped" } else { "answer_dropped" };
+    crate::health::log_event(line, check, &crate::defaults::render("msg.log_answer_dropped", &[("check", &check), ("event", &event), ("reason", &reason)]));
+}
+
+/// This daemon's dropped answers: `{guard: n, optional: n, by_reason: {"guard:cpu_budget": n, ...}}`.
+pub fn dropped_this_daemon() -> Value {
+    let m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    let sum = |kind: &str| m.iter().filter(|(k, _)| k.starts_with(&format!("{kind}:"))).map(|(_, v)| *v).sum::<u64>();
+    json!({ "guard": sum(crate::defaults::text("answer_drop.kind_guard")), "optional": sum(crate::defaults::text("answer_drop.kind_optional")), "by_reason": *m })
 }
 
 /// Which budget.

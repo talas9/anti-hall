@@ -351,6 +351,17 @@ value = 65536
 doc = "Most session transcripts of a worktree the drift check opens, newest first (MAX_SCAN)."
 value = 25
 
+[devswarm_parent.drift_cache_ms]
+doc = "How long the list of a worktree's sessions (the project transcript directory read, every transcript stat-ed, the heads of the newest read) is reused by the drift check. It ran on every prompt of a parent session; a notice about a newer session is no worse for being a few seconds old. 0 = list every time. The first-line cwd of a transcript is cached per file (it never changes)."
+value = 5000
+min = 0
+unit = "ms"
+
+[devswarm_parent.drift_cache_keys_max]
+doc = "Most worktrees whose session list the drift check keeps cached (the per-file cwd cache holds 64 times this); past it the cache is emptied."
+value = 64
+min = 1
+
 [devswarm_parent.drift_cwd_re]
 doc = "The pattern that finds the working directory a session transcript records (capture 1: the JSON string body)."
 value = '"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"'

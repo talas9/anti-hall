@@ -551,6 +551,14 @@ impl Shared {
                 })
             }),
             "fail_open": crate::failopen::status(&self.telemetry),
+            // answers a request's checks did not give (a guard's is the one to watch): THIS daemon, apart from the lifetime counts
+            "answers_dropped": serde_json::json!({
+                "this_daemon": crate::budget::dropped_this_daemon(),
+                "lifetime": self.telemetry.with_metrics(|m| m.snapshot("")["counters"].as_array().cloned().unwrap_or_default().into_iter()
+                    .filter(|c| c["name"] == "answers_dropped")
+                    .map(|c| serde_json::json!({"event": c["labels"]["event"], "kind": c["labels"]["kind"], "reason": c["labels"]["reason"], "count": c["value"]}))
+                    .collect::<Vec<_>>()),
+            }),
             "degraded": degraded,
             "mem_limit": self.rlimit,
             "malloc_stack_logging": cfg.malloc_stack_logging,
@@ -1022,10 +1030,16 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::web::decisions::push(&meta.event, check, rule, session, &v, micros);
         sh.telemetry.observe_check_who(defaults::text("telemetry.no_event_label"), check, &e.id, &v, micros, &phash, &telemetry::Who { event: meta.event.clone(), ..telemetry::Who::of(&p) });
     };
+    // the HARD CPU budget is per check (the CPU one check used): a runaway loses its own answer, never the later checks' answers
     let (start_cpu, budget) = cpu_budget(cfg);
-    let over = || over_cpu_budget(start_cpu, budget);
+    let tripped = std::cell::Cell::new(false);
+    let over = |used: u64| {
+        let over = budget > 0 && used > budget;
+        tripped.set(tripped.get() || over);
+        over
+    };
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
-    if over() {
+    if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
     }
     note_cpu_soft(sh, start_cpu, cfg);
@@ -1992,6 +2006,7 @@ pub fn serve() {
     health::write_marker();
     health::clear_env_failure();
     let starts = next_start_count();
+    health::start_log_thread();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
     crate::client::release_spawn_lock();
     crate::dispatch::sweep_stale_spool();
@@ -2081,6 +2096,7 @@ pub fn serve() {
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
+    health::flush_log();
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
 }

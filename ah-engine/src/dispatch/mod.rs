@@ -503,7 +503,12 @@ fn start_node(e: &table::Entry, _raw: &[u8], _payload: Option<&File>) -> node::R
 /// ([`crate::script::unanswered`]): `open` allows (counted `abandoned` and told to the user once per session), `closed` blocks on a
 /// guard event. Never a hook that "could not run", which on a guard event would fail the whole event closed.
 fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
-    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("dispatch:hook:{}", e.id), event);
+    // the daemon says why (`answer_dropped` / `guard_answer_dropped` in the event log, `answers_dropped` in status); this side counts the decision
+    crate::obs::counters::handback_why(
+        crate::obs::counters::Handback::Abandoned,
+        &format!("dispatch:hook:{}", e.id),
+        &defaults::render("dispatch.msg_unanswered_why", &[("event", &event)]),
+    );
     let check = e.check.as_deref().unwrap_or(&e.id);
     match native::answer_of(&e.id, Some(crate::script::unanswered(check, event))) {
         native::Answer::Decided(r, _) => r,
@@ -702,7 +707,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Vec::new()
         }
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
-        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|| false, &|_, _, _| {}),
+        (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
             None if crate::client::take_non_ok_reply() => Vec::new(),
@@ -737,26 +742,20 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 }
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
-            _ if !table::runnable(&e.command) => {
-                if guard {
-                    // the hooks already started are finished first: one that ran and blocked still decides, as below
-                    let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
-                    let mut done = results.clone();
-                    for (i, f) in slots.iter().zip(node::finish(running)) {
-                        if f.fate == node::Fate::Ran && !shadow[*i] {
-                            done[*i] = Some(f.result);
-                        }
+            // a guard entry whose check gave no answer and that has no hook to fall back to fails closed
+            _ if guard && !table::runnable(&e.command) => {
+                // the hooks already started are finished first: one that ran and blocked still decides, as below
+                let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
+                let mut done = results.clone();
+                for (i, f) in slots.iter().zip(node::finish(running)) {
+                    if f.fate == node::Fate::Ran && !shadow[*i] {
+                        done[*i] = Some(f.result);
                     }
-                    if let Some(o) = genuine_block(done) {
-                        return o;
-                    }
-                    return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
                 }
-                let note = defaults::render("dispatch.msg_skipped_entry", &[("id", &e.id)]);
-                let stderr = defaults::render("dispatch.msg_skipped_entry_stderr", &[("event", &args.event), ("id", &e.id)]);
-                health::log_event("dispatch_defer", &args.event, &note);
-                pre_err.push_str(&stderr);
-                pre_err.push('\n');
+                if let Some(o) = genuine_block(done) {
+                    return o;
+                }
+                return closed(&args.event, parsed.as_ref(), &no_command(&e.id));
             }
             // a check whose answer needs a model call of seconds (the daemon explicitly deferred it: its deadline cannot wait; no answer at all
             // means the daemon was down or unusable and every entry runs its Node hook): this process runs it
