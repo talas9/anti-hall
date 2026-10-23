@@ -1663,10 +1663,6 @@ value = "unknown"
 
 # ---- plain roster (scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHumanText; companion/lib/devswarm-pull.js defaultRun) ----
 
-[mesh_write.roster_flags]
-doc = "The flags plain `roster` may carry for the engine to answer it; any other flag is Node's."
-value = ["all", "json"]
-
 [mesh_write.roster_flag_all]
 doc = "The roster flag that includes archived rows in the text rendering."
 value = "all"
@@ -2397,3 +2393,39 @@ value = "] "
 [mesh_write.settings_devswarm_section]
 doc = "The settings.json section of the DevSwarm settings."
 value = "devswarm"
+[mesh_write.jev_outcome_hash_len]
+doc = "How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage)."
+value = 32
+min = 1
+
+[mesh_write.reason_store_unavailable]
+doc = "The reason of a verb refused because a store, registry or message table it needs cannot be opened, read or written (Node throws there too)."
+value = "store-unavailable"
+
+[mesh_write.msg_store_unavailable]
+doc = "The refusal text of that case: {what} names the thing, {detail} is the operating system's or database's own message."
+value = "{what} is unavailable ({detail}); nothing was done"
+
+[mesh_write.what_store_dir]
+doc = "What the refusal names when a project's store directory cannot be created."
+value = "the mesh store directory"
+
+[mesh_write.what_store]
+doc = "What the refusal names when a project's store cannot be opened."
+value = "the mesh store"
+
+[mesh_write.what_registry]
+doc = "What the refusal names when a project's registry cannot be read."
+value = "the workspace registry"
+
+[mesh_write.what_append]
+doc = "What the refusal names when a message cannot be appended to the store."
+value = "the message table"
+
+[mesh_write.what_messages]
+doc = "What the refusal names when the broadcast messages cannot be read."
+value = "the broadcast messages"
+
+[mesh_write.msg_not_regular]
+doc = "The refusal text of a mesh file that is a FIFO, socket or device: {path}."
+value = "{path} is not a regular file (a FIFO, socket or device); it was not read and nothing was done"

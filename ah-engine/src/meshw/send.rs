@@ -13,7 +13,7 @@ use crate::defaults;
 use crate::meshw::actverbs::note_ref;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s, s_or_null};
-use crate::meshw::ident::{self, Defer, R, Row};
+use crate::meshw::ident::{self, R, Row};
 use crate::meshw::store::{self, MeshStore};
 
 /// What a verb wrote to the store, for the shadow comparison.
@@ -685,7 +685,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     };
     // registrySnapshot opens the store as a writer; the engine opens it once, below, and refuses what Node would create
     let st = common::open_store(inv, &repo_key)?;
-    let rows = ident::rows_of(&st.reader().roster().map_err(|e| Defer(format!("registry:{e}")))?);
+    let rows = ident::rows_of(&st.reader().roster().or_else(|e| ident::unavailable("mesh_write.what_registry", &e))?);
     let from_d = ident::sender_identity_detailed(&inv.env, &cwd, &rows, home)?;
     // writeAlias(home, meshId, child, worktree): a no-op when the alias already says so
     common::ensure_alias(inv, &from_d, &cwd);
@@ -1006,7 +1006,7 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     let row = store::mesh_message_row(Some(c.from), to_field, c.broadcast, c.message, c.now, c.urgency, &hash, c.question, nonce.as_deref());
     let (inserted, seq) = match c.st.append_mesh_row(&row) {
         Ok(r) => (r.inserted, r.seq),
-        Err(e) => return Err(Defer(format!("append:{e}"))),
+        Err(e) => return ident::unavailable("mesh_write.what_append", &e),
     };
     crate::meshw::mark_committed();
     // deriveSummary(s, {home, env, now}), in the same call as the append (the wake watcher reads it)
