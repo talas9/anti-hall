@@ -400,14 +400,14 @@ fn unarchive_matches_node() {
         u("ua-prefix-resolves-to-one-registered-id", &["unarchive", "child-2"], "main", true),
         u("ua-ambiguous-prefix", &["unarchive", "child-"], "main", true),
         u("ua-ambiguous-mesh-label-or-unknown", &["unarchive", &fx.child_mesh], "main", true),
-        u("ua-unreadable-descriptor-is-node", &["unarchive", "ua-bad"], "main", false).setup(bad_json),
+        u("ua-unreadable-descriptor-is-node", &["unarchive", "ua-bad"], "main", true).setup(bad_json),
         u("ua-outside-a-project-refuses-by-owner", &["unarchive", "ua-1"], "nongit", true).setup(with("ua-1", "")),
-        u("ua-outside-a-project-unknown-id-is-node", &["unarchive", "ua-zz"], "nongit", false),
+        u("ua-outside-a-project-unknown-id-is-node", &["unarchive", "ua-zz"], "nongit", true),
         u("ua-unsafe-id", &["unarchive", "../x"], "main", true),
         u("ua-no-id", &["unarchive"], "main", true),
         u("ua-two-archived-in-sequence-first", &["unarchive", "ua-5"], "main", true).setup(both(with("ua-5", ""), with("ua-6", ""))),
     ];
-    check(&fx, &cases, &[], 15, 3);
+    check(&fx, &cases, &[], 18, 0);
 }
 
 // ---- migrate-owner-keys --------------------------------------------------------------------------------------------------
@@ -505,9 +505,9 @@ fn migrate_owner_keys_matches_node() {
                 a(h);
             }
         }),
-        m("mo-stranded-in-the-hash-bucket-is-node", "main", false).setup(stranded),
+        m("mo-stranded-in-the-hash-bucket-is-node", "main", true).setup(stranded),
         m("mo-stranded-archived-is-only-backfilled-never-rehomed", "main", true).setup(stranded_archived),
-        m("mo-file-name-is-not-the-id-is-node", "main", false).setup(mismatch),
+        m("mo-file-name-is-not-the-id-is-node", "main", true).setup(mismatch),
         m("mo-same-id-in-both-dirs-counts-once", "main", true).setup(both_dirs),
         m("mo-twice-is-idempotent", "main", true).setup({
             let main = fx.main.clone();
@@ -518,7 +518,7 @@ fn migrate_owner_keys_matches_node() {
             }
         }),
     ];
-    check(&fx, &cases, &[], 13, 1);
+    check(&fx, &cases, &[], 13, 0);
 }
 
 // ---- ensure / register ---------------------------------------------------------------------------------------------------
@@ -587,23 +587,23 @@ fn ensure_and_register_match_node() {
         e("ens-creates-from-the-primary-checkout", &["ensure", "reg-new", "--worktree", &w2, "--session", "s-new"], "main", true),
         e("ens-existing-steady-state", &["ensure", "reg-full", "--worktree", &w2, "--session", "ignored"], "wt2", true).setup(full.clone()),
         e("ens-existing-backfills-owner-and-paths", &["ensure", "reg-bare"], "wt2", true).setup(bare.clone()),
-        e("ens-existing-hash-bucket-is-node", &["ensure", "reg-hash"], "wt2", false).setup(hashed),
-        e("ens-existing-other-project-is-node", &["ensure", "reg-foreign"], "wt2", false).setup(foreign),
-        e("ens-archived-twin-is-node", &["ensure", "reg-arch", "--worktree", &w2, "--session", "s"], "wt2", false).setup(archived_twin),
-        e("ens-reserved-id-is-node", &["ensure", "reg.base", "--worktree", &w2, "--session", "s"], "wt2", false),
-        e("ens-without-worktree-is-node", &["ensure", "reg-nowt", "--session", "s"], "wt2", false),
-        e("ens-without-session-is-node", &["ensure", "reg-nosess", "--worktree", &w2], "wt2", false),
+        e("ens-existing-hash-bucket-is-node", &["ensure", "reg-hash"], "wt2", true).setup(hashed),
+        e("ens-existing-other-project-is-node", &["ensure", "reg-foreign"], "wt2", true).setup(foreign),
+        e("ens-archived-twin-is-node", &["ensure", "reg-arch", "--worktree", &w2, "--session", "s"], "wt2", true).setup(archived_twin),
+        e("ens-reserved-id-is-node", &["ensure", "reg.base", "--worktree", &w2, "--session", "s"], "wt2", true),
+        e("ens-without-worktree-is-node", &["ensure", "reg-nowt", "--session", "s"], "wt2", true),
+        e("ens-without-session-is-node", &["ensure", "reg-nosess", "--worktree", &w2], "wt2", true),
         e("ens-second-row-of-a-worktree-folds-it", &["ensure", "reg-dup", "--worktree", &child, "--session", "s"], "wt2", true),
         e(
             "ens-another-project-worktree-is-node",
             &["ensure", "reg-x", "--worktree", fx.root.join("repo-other").to_str().unwrap(), "--session", "s"],
             "wt2",
-            false,
+            true,
         ),
         e("ens-a-path-that-is-no-worktree", &["ensure", "reg-x", "--worktree", fx.root.join("not-a-repo").to_str().unwrap(), "--session", "s"], "wt2", true),
-        e("ens-outside-a-project-is-node", &["ensure", "reg-new", "--worktree", &w2, "--session", "s"], "nongit", false),
-        e("ens-primary-label-is-node", &["ensure", "primary-0123abcd", "--worktree", &w2, "--session", "s"], "wt2", false),
-        e("ens-unreadable-descriptor-is-node", &["ensure", "reg-broken", "--worktree", &w2, "--session", "s"], "wt2", false).setup(broken),
+        e("ens-outside-a-project-is-node", &["ensure", "reg-new", "--worktree", &w2, "--session", "s"], "nongit", true),
+        e("ens-primary-label-is-node", &["ensure", "primary-0123abcd", "--worktree", &w2, "--session", "s"], "wt2", true),
+        e("ens-unreadable-descriptor-is-node", &["ensure", "reg-broken", "--worktree", &w2, "--session", "s"], "wt2", true).setup(broken),
         e("ens-unsafe-id", &["ensure", "../x"], "wt2", true),
         e("ens-no-id", &["ensure"], "wt2", true),
         r("reg-creates", &["register", "reg-new", "--worktree", &w2, "--session", "s-new"], "wt2", true),
@@ -619,13 +619,13 @@ fn ensure_and_register_match_node() {
         r("reg-updates-a-descriptor-keeping-its-fields", &["register", "reg-upd", "--session", "fresh-session"], "wt2", true).setup(upd),
         r("reg-re-registers-the-same-descriptor", &["register", "reg-full", "--worktree", &w2, "--session", "s-full"], "wt2", true).setup(full),
         r("reg-over-an-archived-twin-revives-nothing-else", &["register", "reg-arch", "--worktree", &w2, "--session", "s"], "wt2", true).setup(archived_twin2),
-        r("reg-without-session-is-node", &["register", "reg-nosess", "--worktree", &w2], "wt2", false),
+        r("reg-without-session-is-node", &["register", "reg-nosess", "--worktree", &w2], "wt2", true),
         r("reg-second-row-of-a-worktree-folds-it", &["register", "reg-dup", "--worktree", &child, "--session", "s"], "wt2", true),
-        r("reg-reserved-id-is-node", &["register", "x.inst-abcdef", "--worktree", &w2, "--session", "s"], "wt2", false),
+        r("reg-reserved-id-is-node", &["register", "x.inst-abcdef", "--worktree", &w2, "--session", "s"], "wt2", true),
         r("reg-unsafe-id", &["register", "a/b"], "wt2", true),
-        r("reg-empty-flag-value-is-node", &["register", "reg-new", "--worktree", "", "--session", "s"], "wt2", false),
+        r("reg-empty-flag-value-is-node", &["register", "reg-new", "--worktree", "", "--session", "s"], "wt2", true),
     ];
-    check(&fx, &cases, &extra, 18, 13);
+    check(&fx, &cases, &extra, 18, 0);
 }
 
 // ---- correct --------------------------------------------------------------------------------------------------------------

@@ -1962,6 +1962,128 @@ value = "migrate-owner-keys"
 doc = "The ending of the staging file a descriptor rewrite is made in before it is renamed over the descriptor."
 value = "tmp"
 
+# ---- native answers to the cases Node's lifecycle verbs handle (lane defer-life) -----------------------------------------
+
+[devswarm_cli.js_object_text]
+doc = "What JavaScript's string conversion gives an object (`String({})`), for a descriptor field that holds one."
+value = "[object Object]"
+
+[devswarm_cli.js_undefined_text]
+doc = "What JavaScript's string concatenation prints for a missing value."
+value = "undefined"
+
+[devswarm_cli.msg_js_null_property]
+doc = "The TypeError JavaScript throws when a property is read off `null`; `{prop}` is the property."
+value = "Cannot read properties of null (reading '{prop}')"
+
+[devswarm_cli.js_prop_status]
+doc = "The step property whose read fails on a `null` step of a plan file."
+value = "status"
+
+[devswarm_cli.js_prop_reason]
+doc = "The straying-entry property whose read fails on a `null` entry of the stray-state file (the correction text reads it first)."
+value = "reason"
+
+[devswarm_cli.js_prop_signal]
+doc = "The straying-entry property read next (the recorded signals)."
+value = "signal"
+
+[devswarm_cli.js_prop_integration]
+doc = "The Jev-note property whose read fails on a `null` note."
+value = "integration"
+
+[devswarm_cli.msg_verb_not_ok]
+doc = "The logged message of a refusal that carries neither an error nor a reason."
+value = "verb returned ok:false"
+
+[devswarm_cli.action_app_archived_skip]
+doc = "The `action` of a registration refused because the DevSwarm app archived the workspace."
+value = "app-archived-skip"
+
+[devswarm_cli.msg_reg_app_archived]
+doc = "The `reason` of that refusal; `{id}` is the workspace id."
+value = "workspace {id} is archived in the DevSwarm app (isActive=0, isHidden=1); registration is refused regardless of any local marker or heartbeat — the app DB is ground truth over anti-hall's own markers (owner rule). A live session is still running in this archived workspace: close its DevSwarm tab, or run `hivecontrol workspace archive <full id>`, to stop it retrying."
+
+[devswarm_cli.reason_reserved_id]
+doc = "The `reason` of a registration refused because the id carries a reserved token."
+value = "reserved-id-token"
+
+[devswarm_cli.msg_reg_reserved]
+doc = "The error of that refusal; `{id}` and `{token}` are JSON strings."
+value = "refusing to register workspace id {id} — it contains the reserved token {token}, which anti-hall uses for its own cursor namespaces under cursors/. Choose an id without it."
+
+[devswarm_cli.action_archived_skip]
+doc = "The `action` of an auto-ensure refused because the same workspace is archived."
+value = "archived-skip"
+
+[devswarm_cli.msg_reg_archived_skip]
+doc = "The `reason` of that refusal; `{id}` is the workspace id."
+value = "workspace {id} is archived; routine auto-ensure does not revive it (run `devswarm register {id} ...` to explicitly re-register)"
+
+[devswarm_cli.msg_reg_archived_other]
+doc = "The note when an archived record of the id belongs to a different worktree: the registration is a new workspace. `{id}`, `{path}` (the archived worktree)."
+value = "an archived record for id {id} exists from a different worktree ({path}); treating this as a new workspace, not a resurrection"
+
+[devswarm_cli.msg_reg_archived_ambiguous]
+doc = "The note when an archived record of the id exists but whether it is the same workspace cannot be told. `{id}`."
+value = "an archived record for id {id} exists but same-workspace-vs-new could not be determined (missing worktree info); allowing (fail-open) — verify manually"
+
+[devswarm_cli.msg_ensure_tail]
+doc = "What follows the project-mismatch error of an ensure."
+value = "run this from within that project's worktree to ensure it"
+
+[devswarm_cli.msg_ensure_not_owner]
+doc = "The error of an ensure over a descriptor that does not belong to the project of the caller's directory."
+value = "existing descriptor does not belong to the current project"
+
+[devswarm_cli.msg_reg_missing_worktree]
+doc = "The name of the missing worktree flag in a registration refusal."
+value = "--worktree"
+
+[devswarm_cli.msg_reg_missing_session]
+doc = "The name of the missing session flag in a registration refusal."
+value = "--session"
+
+[devswarm_cli.msg_reg_missing_join]
+doc = "What joins the names of two missing registration flags."
+value = " and "
+
+[devswarm_cli.msg_reg_requires]
+doc = "The error of a registration without the required fields; `{missing}` the flags that are missing."
+value = "register requires {missing} (required workspace fields; a descriptor without them is ignored by the supervisor)"
+
+[devswarm_cli.msg_reg_cross_project]
+doc = "The error of a registration whose worktree belongs to another project. `{worktree}` is a JSON string, `{worktree_key}` and `{current}` the two project keys."
+value = "register --worktree {worktree} belongs to a different project ({worktree_key}) than the current cwd ({current}) — cross-project registration is refused"
+
+[devswarm_cli.msg_reg_upsert_skipped]
+doc = "The error when the registry refused the row of a registration; `{id}` is a JSON string."
+value = "registry upsert was skipped for {id} — descriptor and registry are now out of sync (retry required)"
+
+[devswarm_cli.reason_child_label]
+doc = "The `reason` of a registration refused because the id is the label of a child's worktree."
+value = "child-label-id"
+
+[devswarm_cli.msg_child_label_retired]
+doc = "The error when the label was folded into another workspace. `{id}` and `{to}` are JSON strings."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[devswarm_cli.msg_child_label_child]
+doc = "The error when the label belongs to a child worktree. `{id}` is a JSON string, `{worktree}` the path, `{remedy}` one of the two sentences below."
+value = "{id} is the worktree label of a CHILD workspace ({worktree}), not an identity — {remedy}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[devswarm_cli.msg_child_label_use]
+doc = "The remedy when the child's own workspace id is known; `{child}` is a JSON string."
+value = "use its workspace id {child}"
+
+[devswarm_cli.msg_child_label_unregistered]
+doc = "The remedy when the child has not registered its workspace id yet."
+value = "the child has not registered its workspace id yet"
+
+[devswarm_cli.msg_reap_cursor_import]
+doc = "Why a reaped partition is reported failed when its reader cursors cannot be settled: the archive was written, nothing was retired, and the next pass retries."
+value = "the partition's reader cursors could not be settled this pass (its legacy read positions could not be classified); its unread mail was archived and nothing was retired — the next pass retries"
+
 # ---- ensure / register (lane l8h) ---------------------------------------------------------------------------------------
 
 [devswarm_cli.verb_ensure]
