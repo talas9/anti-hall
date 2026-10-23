@@ -7,11 +7,8 @@
 use std::path::Path;
 
 /// `(file, allowed call sites, why)`.
-const ALLOWED: &[(&str, usize, &str)] = &[
-    // Node's own `readFileSync` of a FIFO blocks for good (a socket or device fails into its catch), so there is no answer of Node's to
-    // reproduce, and a mutating caller must never open such a path to append. The reason names the cause (`not-a-regular-file`).
-    ("ident.rs", 2, "a FIFO, socket or device read as a mesh file"),
-];
+/// Nothing is allowed: a FIFO, socket or device read as a mesh file is the verb's own refusal (`not-a-regular-file`).
+const ALLOWED: &[(&str, usize, &str)] = &[];
 
 const FILES: &[&str] = &["send.rs", "rosterrows.rs", "roster.rs", "rostertail.rs", "common.rs", "ident.rs"];
 

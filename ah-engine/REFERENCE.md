@@ -5785,6 +5785,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.msg_legacy_journal_store` | `the mesh store of project {repo_key} uses the legacy journal backend (written...` |  |  | The refusal text of that case: {repo_key} is the project's store. |
 | `mesh_write.msg_mesh_read_hint` | `consumed broadcasts stay re-readable without moving any cursor: `mesh history...` |  |  | `hint` of a consuming mesh read. |
 | `mesh_write.msg_no_inbox_path` | `no inboxPath for workspace {id} (registered, but never given an --inbox path ...` |  |  | The refusal text for a registered id that never got an inbox path. Placeholder: {id} (JSON-quoted). |
+| `mesh_write.msg_not_regular` | `{path} is not a regular file (a FIFO, socket or device); it was not read and ...` |  |  | The refusal text of a mesh file that is a FIFO, socket or device: {path}. |
 | `mesh_write.msg_not_verified` | `send appended a row (hash {hash}) but the readback against partition {partiti...` |  |  | `error` of that send. Placeholders: {hash}, {partition} (JSON-quoted). |
 | `mesh_write.msg_pull_count_failed` | `message-count failed` |  |  | What `inbox pull` reports when the message count failed without saying why. |
 | `mesh_write.msg_pull_ensure_failed` | `the workspace registration could not be written` |  |  | What `inbox pull` reports when the ensure's writes failed and the pull was skipped. |

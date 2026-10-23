@@ -2349,3 +2349,7 @@ value = "the message table"
 [mesh_write.what_messages]
 doc = "What the refusal names when the broadcast messages cannot be read."
 value = "the broadcast messages"
+
+[mesh_write.msg_not_regular]
+doc = "The refusal text of a mesh file that is a FIFO, socket or device: {path}."
+value = "{path} is not a regular file (a FIFO, socket or device); it was not read and nothing was done"
