@@ -48,12 +48,23 @@ jobs:
           rustup target add "$TRIPLE"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: ah-engine
+          workspaces: |
+            ah-engine
+            ah-launcher
           key: bins-${{ matrix.triple }}
       - name: Build
         env:
           TRIPLE: ${{ matrix.triple }}
         run: scripts/build.sh --target "$TRIPLE"
+      # The thin client (ah-hook, crate ah-launcher; GH #164) ships in the same dev archive, built for the same target.
+      - name: Build ah-hook
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-launcher
+        run: |
+          rustup show active-toolchain || rustup toolchain install --profile minimal
+          rustup target add "$TRIPLE"
+          RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" cargo build --release --locked --target "$TRIPLE"
       - name: Smoke test
         env:
           TRIPLE: ${{ matrix.triple }}
@@ -80,6 +91,7 @@ jobs:
           name="ah-engine-dev-${SHORT}-${TRIPLE}"
           mkdir -p "rel/$name"
           cp dist/ah-engine "rel/$name/ah-engine"
+          cp "../ah-launcher/target/$TRIPLE/release/ah-hook" "rel/$name/ah-hook"
           cp ../LICENSE "rel/$name/LICENSE"
           cp README.md "rel/$name/README.md"
           tar -czf "rel/$name.tar.gz" -C rel "$name"

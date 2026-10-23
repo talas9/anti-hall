@@ -9,9 +9,9 @@ on:
   push:
     branches: [engine-proto, dev, main]
     tags: ['v*']
-    paths: ['ah-engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', '.github/workflows/ah-engine.yml']
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
     - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes
@@ -25,6 +25,28 @@ env:
   AH_FULL: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the gate builds it on both OSes.
+  launcher:
+    name: ah-hook (${{ matrix.os }})
+    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: ah-launcher
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-launcher
+      - run: cargo build --release --locked
+
   rust:
     name: rust (${{ matrix.os }})
     if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
