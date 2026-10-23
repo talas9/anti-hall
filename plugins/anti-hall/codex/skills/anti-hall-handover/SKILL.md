@@ -23,6 +23,8 @@ user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause
 shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
 
+**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. Shipped defaults stay 85% and no token ceiling; see the `anti-hall-settings` skill, "Recommended setup". Codex: leave `model_auto_compact_token_limit` alone; if you set it, hand over 5% of the window before it.
+
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
 disk so a fresh session — with no memory of this one — resumes correctly.
@@ -331,6 +333,8 @@ verbatim (Codex rollout `user_message` events), and a pointer to the newest
 `HANDOVER*.md`. Mechanical, never a substitute for this skill, and it never
 stops compaction (no stdout, exit 0). The resume hook names it on the next
 `SessionStart`.
+
+Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 **Write proactively** — at task boundaries or when a reset is likely, not only
 when asked and not at the absolute context-window limit (reset mechanisms can

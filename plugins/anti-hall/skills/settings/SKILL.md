@@ -262,6 +262,28 @@ wording.
 over the same keys:
 `~/.anti-hall/ah-engine/bin/ah-engine auto-handover-config get [--json] | set <1-99> | off | on | max-tokens <n> | nag on|off | nag-step <n> | nag-quiet <n>`.
 
+### Recommended setup: hand over 5% before auto-compact
+
+Shipped defaults are `autoHandover.pct` = 85 and `autoHandover.maxTokens` = 0 (no ceiling). This section does not change them; it describes a recommended configuration.
+
+The rule: the handover fires about 5% of the context window before that model's auto-compact, so the agent writes it while it still has room.
+
+| Model window | Auto-compact | Recommended anti-hall setting |
+|---|---|---|
+| 200k | Claude auto-compact at 98% (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=98`) | `autoHandover.pct` = 93 |
+| 1M | `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. Claude Code clamps it to the model window, so 200k models are unaffected and 1M models compact at about 55%. | `autoHandover.maxTokens` = 500000 |
+
+`pct` and `maxTokens` fire on whichever comes first, so a `maxTokens` of 500000 only bites on 1M sessions. Commands:
+
+```
+ah-engine auto-handover-config set 93
+ah-engine auto-handover-config max-tokens 500000
+```
+
+Why cap a 1M window: on one machine, over 7 days and about 4.3k transcripts, turns above 550k context were 41% of input tokens, and a 55% cap simulated about 32% less input. This is a measured example from one machine, not a guarantee.
+
+Codex: leave `model_auto_compact_token_limit` alone. If you do set it, the same rule applies: hand over 5% of the window before it.
+
 Context % comes from the best source available: the statusline's real
 `context_window` figure (Claude), the rollout's `model_context_window` (Codex), else
 a transcript estimate (`ANTIHALL_CONTEXT_WINDOW_TOKENS` overrides the window size). An
@@ -269,7 +291,7 @@ estimate with an unknown window gets only a soft advisory from the percent path 
 token ceiling still fires the directive). If a long autonomous turn never reaches a
 new prompt, the Stop hook delivers the directive once instead. Before every compaction
 `precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
-next to the handovers (it never blocks compaction).
+next to the handovers (it never blocks compaction). Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 ## Engine settings (`ah-engine`)
 
