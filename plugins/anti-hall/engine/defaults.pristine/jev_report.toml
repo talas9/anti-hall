@@ -1,4 +1,4 @@
-# ah-engine shipped defaults for `ah-engine jev-report` (the port of scripts/jev-report.js): the report's thresholds, texts and file
+# ah-engine shipped defaults for `ah-engine jev-report`: the report's thresholds, texts and file
 # names. The rules that use them are the plugin script engine/logic/rules/jev-report.js. Format: see the header of engine.toml.
 # The texts are the Node report's own, word for word, because the parity test compares the commands' output with the script's.
 

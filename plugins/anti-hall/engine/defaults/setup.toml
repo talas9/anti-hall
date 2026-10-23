@@ -109,7 +109,7 @@ value = "no plugin tree to read: pass --root <plugin directory>, or run it where
 doc = "Printed by the helper commands when the home directory variable is not set, because their files live under it."
 value = "the home directory is not set"
 
-# ---- harvest (scripts/harvest-debt.js) ---------------------------------------------------------------------------------
+# ---- harvest ---------------------------------------------------------------------------------
 
 [setup.harvest_leaders]
 doc = "The comment leaders a debt marker may follow, in the order the Node pattern tries them."
@@ -197,7 +197,7 @@ value = "No anti-hall debt markers found."
 doc = "The title line of the `harvest` text table."
 value = "anti-hall debt markers"
 
-# ---- capability-scan (scripts/capability-scan.js) ----------------------------------------------------------------------
+# ---- capability-scan ----------------------------------------------------------------------
 
 [setup.cap_listing_fn]
 doc = "The name of the installer export that lists every installed unit; an installer that exports it is checked with it (the per-worktree readback contract)."
@@ -219,7 +219,7 @@ value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/companion/{file}"'
 doc = "How pending state migrations are applied."
 value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/scripts/migrate-state.js"'
 
-# ---- briefing (scripts/briefing.js) ------------------------------------------------------------------------------------
+# ---- briefing ------------------------------------------------------------------------------------
 
 [setup.brief_registry_file]
 doc = "The per-hook registry under hooks/ that the briefing groups by event."
@@ -305,9 +305,9 @@ value = "migration (auto-safe: idempotent, non-destructive, single-consumer-lock
 
 [setup.brief_doctor_line]
 doc = "The last line of the briefing."
-value = "Health check (do the guards actually fire?): node hooks/doctor.js"
+value = "Health check (do the guards actually fire?): ah-hook doctor"
 
-# ---- jev-setup (scripts/jev-setup.js) ----------------------------------------------------------------------------------
+# ---- jev-setup ----------------------------------------------------------------------------------
 
 [setup.known_integrations]
 doc = "The integrations `jev-setup status` always lists, in the order the Node script lists them (every one has a settings key)."
@@ -519,7 +519,7 @@ value = "set-key --role fallback: no fallback transport is configured — run `e
 
 [setup.msg_setkey_empty]
 doc = "Why `set-key` refused: nothing arrived on stdin."
-value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | node jev-setup.js set-key`"
+value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | ah-hook jev-setup set-key`"
 
 [setup.msg_setkey_nonprintable]
 doc = "Why `set-key` refused: the key holds a control character."

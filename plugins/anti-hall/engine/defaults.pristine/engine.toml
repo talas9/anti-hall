@@ -964,7 +964,7 @@ doc = "The environment variables the client forwards with every request, and the
 value = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "DEVSWARM_REPO_ID", "DEVSWARM_SOURCE_BRANCH", "DISABLE_ANTIHALL_DEVSWARM", "NODE_TEST_CONTEXT", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_NOSYSTEM", "GIT_EXEC_PATH", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS", "XDG_CONFIG_HOME", "TZ", "TMPDIR", "TMP", "TEMP", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_NAME", "DEVSWARM_AI_AGENT", "DISABLE_OMC", "OMC_SKIP_HOOKS"]
 
 [request_env.presence_only]
-doc = "Environment variables whose PRESENCE the checks need but whose value they must never see (a secret): the client forwards the presence text when one is set and non-empty, nothing otherwise, and the value never leaves the client. These are the legacy API-key variables the session-start key notice looks for (credentials.js legacyKeyPresent)."
+doc = "Environment variables whose PRESENCE the checks need but whose value they must never see (a secret): the client forwards the presence text when one is set and non-empty, nothing otherwise, and the value never leaves the client. These are the legacy API-key variables the session-start key notice looks for."
 value = ["ANTHROPIC_API_KEY"]
 
 [request_env.presence_text]

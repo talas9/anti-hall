@@ -38,11 +38,11 @@ value = '^\s*gitdir:\s*(.+?)\s*$'
 doc = "The name of the entry that marks a git checkout root."
 value = ".git"
 
-# ---- task-lifecycle-log (hooks/task-lifecycle-log.js) ---------------------------------------------------------
+# ---- task-lifecycle-log ---------------------------------------------------------
 
 [task_lifecycle_log.summary]
 doc = "One-line description of the task-lifecycle-log check in the generated reference."
-value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index (port of task-lifecycle-log.js)."
+value = "Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index."
 
 [task_lifecycle_log.setting]
 doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
@@ -88,11 +88,11 @@ value = "INDEX.md"
 doc = "The ledger file extension."
 value = ".md"
 
-# ---- dispatch-tier (hooks/dispatch-tier.js) -------------------------------------------------------------------------
+# ---- dispatch-tier -------------------------------------------------------------------------
 
 [dispatch_tier.summary]
 doc = "One-line description of the dispatch-tier check in the generated reference."
-value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off (port of dispatch-tier.js)."
+value = "Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task text, and keeps the request marker in dispatch-tier-state.json; does nothing while the integration is off."
 
 [dispatch_tier.jev_id]
 doc = "The Jev integration id the dispatch-tier hook asks."
@@ -255,11 +255,11 @@ min = 1
 doc = "Prefix of the stamp file that throttles one prefix's sweep."
 value = ".prune-stamp-"
 
-# ---- task-guard (hooks/task-guard.js) --------------------------------------------------------------------------------
+# ---- task-guard --------------------------------------------------------------------------------
 
 [task_guard.summary]
 doc = "One-line description of the task-guard check in the generated reference."
-value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node (port of task-guard.js)."
+value = "Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has no running agent, else the generic block), with the loop state, the per-prompt budget and the OMC and live-agent steps aside of the Node hook; hands a Stop whose answer needs the DevSwarm app database to Node."
 
 [task_guard.guard_name]
 doc = "The guard id of task-guard (the skip key and the message prefix)."
@@ -567,7 +567,7 @@ value = "idleNeglectBlocks"
 doc = "The metrics file's per-session pending-demand object (kept as is, made an empty object when it is not one)."
 value = "pending"
 
-# -- task-guard: the DevSwarm app database (companion/lib/devswarm-app-db.js appDbPath); its presence defers the answers that need it
+# -- task-guard: the DevSwarm app database; its presence defers the answers that need it
 
 [task_guard.app_db_env]
 doc = "The environment variable that names the DevSwarm app database (or `off`)."
@@ -593,7 +593,7 @@ value = ".config"
 doc = "The DevSwarm app database under the application data directory, as path segments."
 value = ["DevSwarm", "devswarm.db"]
 
-# -- task-guard: OMC loop detection (hooks/omc-detect.js)
+# -- task-guard: OMC loop detection
 
 [task_guard.omc_disable_env]
 doc = "The environment variable that turns OMC off."
@@ -667,7 +667,7 @@ unit = "ms"
 doc = "The state field that ties a loop to one session."
 value = "session_id"
 
-# -- task-guard: the per-prompt budget (hooks/lib/stop-policy.js budgetSpent)
+# -- task-guard: the per-prompt budget
 
 [task_guard.budget_setting]
 doc = "Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)."
@@ -767,11 +767,11 @@ value = ["Agent", "Task", "CronCreate", "CronDelete"]
 doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
 value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
-# ---- tasklist-guard (hooks/tasklist-guard.js) ---------------------------------------------------------------------------
+# ---- tasklist-guard ---------------------------------------------------------------------------
 
 [tasklist_guard.summary]
 doc = "One-line description of the tasklist-guard check in the generated reference."
-value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects (port of tasklist-guard.js)."
+value = "Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects."
 
 [tasklist_guard.guard_name]
 doc = "The guard id of tasklist-guard (the skip key and the message prefix)."
@@ -1108,7 +1108,7 @@ doc = "The stop-policy state directory under the anti-hall state directory, as p
 value = ["devswarm", "stop-policy"]
 
 [tasklist_guard.policy_tail_bytes]
-doc = "How much of the end of the transcript is read for the prompt key (transcript-tail.js MAX_TAIL_BYTES)."
+doc = "How much of the end of the transcript is read for the prompt key."
 value = 1572864
 min = 1
 
@@ -1130,7 +1130,7 @@ doc = "Text a transcript line must hold to be read as a possible user prompt."
 value = '"user"'
 
 [tasklist_guard.omc_state_files]
-doc = "The oh-my-claudecode loop state files (omc-detect.js)."
+doc = "The oh-my-claudecode loop state files."
 value = ["ralph-state.json", "ultrawork-state.json", "autopilot-state.json", "ultraqa-state.json", "team-state.json", "ultrapilot-state.json", "pipeline-state.json", "omc-teams-state.json"]
 
 [tasklist_guard.omc_state_dir]

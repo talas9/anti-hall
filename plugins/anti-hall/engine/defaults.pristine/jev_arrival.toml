@@ -1,7 +1,7 @@
 # ah-engine shipped defaults for Jev arrival labelling (the `jev::arrival` module, `ah-engine jev arrival`, the scheduled job
 # `jev_arrival`). Format: see the header of engine.toml. A freshly sent direct message is queued here; the job drains the queue
 # in small batches through the triage labeller and writes the labels into the shared label cache that the mesh summary reads
-# (jevQuestionCandidates). Port of hooks/lib/jev-triage.js enqueueArrival / runArrivalWorker / triageMessagesSync. Every cap,
+# (jevQuestionCandidates). Every cap,
 # interval, file name and word below is tuned here, never in Rust.
 
 [job.jev_arrival]

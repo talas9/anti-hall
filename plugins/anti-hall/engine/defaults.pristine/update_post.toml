@@ -62,11 +62,11 @@ doc = "The most instance cursor files one hygiene walk scans (cursors.js gcInsta
 value = 5000
 
 [update_post.journal_dir]
-doc = "The directory (inside a store directory) that holds the journal backend's `.ndjson` segments; a store with a segment there AND a sqlite database is split (devswarm-store.js hasBackendData)."
+doc = "The directory (inside a store directory) that holds the journal backend's `.ndjson` segments; a store with a segment there AND a sqlite database is split."
 value = "journal"
 
 [update_post.anchor_prefix]
-doc = "Prefix of the string a pre-Phase-3 build hashed to tag a harness instance (reader-cursors.js legacyShortFor): `anc:<pid>:<startMs>`."
+doc = "Prefix of the string a pre-Phase-3 build hashed to tag a harness instance: `anc:<pid>:<startMs>`."
 value = "anc:"
 
 [update_post.legacy_inst_sep]
@@ -106,7 +106,7 @@ doc = "The verb named in the engine log when the summary refresh after a promoti
 value = "promote-unclaimed"
 
 [update_post.promote_event_op]
-doc = "The `op` of the central log line written for a promoted session (identity.js promoteUnclaimedSession)."
+doc = "The `op` of the central log line written for a promoted session."
 value = "unclaimed-session-promoted"
 
 [update_post.promote_event_msg]
@@ -167,7 +167,7 @@ doc = "Appended to the settings-migrate detail for the legacy key opt-in and the
 value = " | {id} {status}: {msg}"
 
 [update_post.key_opt_in_id]
-doc = "The legacy Jev key opt-in's step id (migrations.js runLegacyKeyOptInMigration)."
+doc = "The legacy Jev key opt-in's step id."
 value = "migrate-legacy-key-opt-in"
 
 [update_post.key_opt_in_note_id]
@@ -232,14 +232,14 @@ value = "could not write jev.allowLegacyKeyRead: unknown"
 
 [update_post.key_opt_in_fixed]
 doc = "The setting was turned on. Placeholder: path (the key file; it is never read or copied)."
-value = "ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at {path}, so anti-hall keeps reading it; the key was not read or copied). To turn it off: node scripts/settings.js set jev.allowLegacyKeyRead false (then store the key in the plugin's options screen -> jev_api_key)"
+value = "ENABLED jev.allowLegacyKeyRead (Jev is on and a key file exists at {path}, so anti-hall keeps reading it; the key was not read or copied). To turn it off: ah-hook settings set jev.allowLegacyKeyRead false (then store the key in the plugin's options screen -> jev_api_key)"
 
 [update_post.graphify_hooks_rel]
 doc = "The Codex hooks.json the graphify cleanup inspects, relative to the home and then to the working directory (codexGraphifyHooksMigratePostUpdate's two targets)."
 value = ".codex/hooks.json"
 
 [update_post.graphify_removed_files]
-doc = "Hook scripts retired with graphify: a Codex hook group that registers one of them is removed (install-codex.js REMOVED_GRAPHIFY_FILES)."
+doc = "Hook scripts retired with graphify: a Codex hook group that registers one of them is removed."
 value = ["graphify-session.js", "graphify-guard.js", "graphify-reminder.js"]
 
 [update_post.graphify_backup_suffix]
@@ -312,7 +312,7 @@ doc = "The environment variable that sets the sweep budget of one store stage of
 value = "ANTIHALL_UPDATE_SWEEP_BUDGET_MS"
 
 [update_post.sweep_budget_default]
-doc = "The sweep budget of one store stage of the update when the environment does not set one (update.js DEFAULT_SWEEP_BUDGET_MS)."
+doc = "The sweep budget of one store stage of the update when the environment does not set one."
 value = 20000
 unit = "ms"
 
@@ -333,7 +333,7 @@ doc = "The member order of the objects nested in the answers of the engine-run r
 value = { unhealableSample = ["repoKey", "id", "reason"], stores = ["repoKey", "rows"] }
 
 [update_post.recon_max_listed]
-doc = "How many failing worktrees the reconcile failure detail names (update.js MAX_LISTED)."
+doc = "How many failing worktrees the reconcile failure detail names."
 value = 5
 
 [update_post.recon_unknown]

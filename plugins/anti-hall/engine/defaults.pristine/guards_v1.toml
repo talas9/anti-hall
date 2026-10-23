@@ -95,7 +95,7 @@ value = '^\s*\[[^\]]*\b2\b'
 doc = "Request environment variables whose values are part of a kept probe answer's key, because they pick the interpreter version behind a shim (pyenv, asdf, virtualenv, conda); a different value probes again."
 value = ["PATH", "PYENV_VERSION", "ASDF_PYTHON_VERSION", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"]
 
-# ---- the hook process (engine/logic/lib/78-hook-proc.js) -------------------------------------------------------------------------
+# ---- the hook process -------------------------------------------------------------------------
 
 [hook_proc.cwd_envs]
 doc = "Stand-ins for the hook process's working directory, which a Node guard read (process.cwd()) when the payload had no cwd or a relative one: the first of these request variables that holds an absolute path. Claude Code runs a hook in the session's directory, which CLAUDE_PROJECT_DIR names."
@@ -105,7 +105,7 @@ value = ["CLAUDE_PROJECT_DIR", "HOME"]
 doc = "The hook process's working directory when no stand-in in hook_proc.cwd_envs is absolute."
 value = "/"
 
-# ---- api-guard (engine/logic/api-guard.js) ------------------------------------------------------------------------------------
+# ---- api-guard ------------------------------------------------------------------------------------
 
 [api_guard_v1.max_modules]
 doc = "Most module groups probed per language (one interpreter run each), as the Node guard bounds them."
@@ -220,22 +220,22 @@ value = "  • "
 doc = "The one stderr line when a probe timed out, was killed or could not run in the time left and nothing was blocked (the edit is allowed unchecked); {bin} is the interpreter, {ms} the asked budget."
 value = "anti-hall api-guard: API verification skipped (probe for \"{bin}\" timed out after {ms}ms budget) — edit allowed unchecked."
 
-# ---- shell-write parser (engine/logic/inc/shell-writes.js) -------------------------------------------------------------------------
+# ---- shell-write parser -------------------------------------------------------------------------
 
 [shell_writes.big_len]
-doc = "A command longer than this is not parsed whole: its leading heredoc header (or its first shell_writes.head_len characters) is, with the heredoc body attached as the content (hooks/lib/shell-writes.js BIG_LEN)."
+doc = "A command longer than this is not parsed whole: its leading heredoc header (or its first shell_writes.head_len characters) is, with the heredoc body attached as the content."
 value = 60000
 min = 1
 
 [shell_writes.head_len]
-doc = "How much of a big command's start is parsed when it has no leading heredoc, cut at a line end (hooks/lib/shell-writes.js HEAD_LEN)."
+doc = "How much of a big command's start is parsed when it has no leading heredoc, cut at a line end."
 value = 16384
 min = 1
 
-# ---- compact-declaration-guard (engine/logic/compact-declaration-guard.js) --------------------------------------------------------
+# ---- compact-declaration-guard --------------------------------------------------------
 
 [compact_decl_v1.declaration_forms]
-doc = "Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 \"safe to compact\" and 2 \"safe for a reset\" (hooks/lib/compact-advice.js DECLARATION_RE_INDEXES); the pause nag's mandated \"good point to /compact\" footer and a bare /compact command do not."
+doc = "Which of the recommendation patterns of lib/76-compact-advice.js (cadv.ADVICE_RES, by position) count as a declaration for this guard: 0 \"safe to compact\" and 2 \"safe for a reset\"; the pause nag's mandated \"good point to /compact\" footer and a bare /compact command do not."
 value = [0, 2]
 
 [compact_decl_v1.this_tool]
@@ -258,10 +258,10 @@ value = "stop, or retract: write a line \"RETRACT SAFE TO COMPACT: <why>\", then
 doc = "Block message: what stays allowed."
 value = "read-only tools."
 
-# ---- inbox-read-guard (engine/logic/inbox-read-guard.js) ----------------------------------------------------------------------
+# ---- inbox-read-guard ----------------------------------------------------------------------
 
 [inbox_read_v1.store_cli_present]
-doc = "Whether the wrapper's store-read command exists, so a raw read of the DevSwarm store (its database, sidecars and journal) is blocked as well as a raw inbox read. The Node hook asked hooks/lib/devswarm-inbox-paths.js storeReadCliPresent(), true for every shipped plugin since the journal store; the engine ships the same answer."
+doc = "Whether the wrapper's store-read command exists, so a raw read of the DevSwarm store (its database, sidecars and journal) is blocked as well as a raw inbox read. The store-read CLI is present in every shipped plugin since the journal store; the engine ships the same answer."
 value = true
 
 [inbox_read_v1.guard_store]
@@ -278,9 +278,9 @@ value = "The store is the write/derive layer; a raw read risks a partial view an
 
 [inbox_read_v1.msg_store_instead]
 doc = "Store-read block: what to do instead."
-value = "`devswarm.js inbox read <id>` (or `devswarm.js inbox pull <id>` first to import)."
+value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` (or `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` first to import)."
 
-# ---- output-verify-guard (engine/logic/output-verify-guard.js) ----------------------------------------------------------------
+# ---- output-verify-guard ----------------------------------------------------------------
 
 [output_verify_v1.key_order]
 doc = "The order in which the host writes the keys of a tool output object (Claude Code's Bash tool_response, seen in recorded payloads), so the scanned text is built in the order the Node hook saw. The engine receives the payload with its keys sorted; keys not listed here follow the listed ones, sorted."

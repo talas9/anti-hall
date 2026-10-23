@@ -16,7 +16,7 @@ value = "That file decides which files the main thread may edit directly, so the
 
 [edit_guard.msg_self_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `node <plugin-root>/scripts/settings.js trust-edit-allow <repo> --confirmed`."
+value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `~/.anti-hall/ah-engine/bin/ah-hook settings trust-edit-allow <repo> --confirmed`."
 
 [edit_guard.msg_outside_what]
 doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
@@ -122,7 +122,7 @@ value = 128
 doc = "The writer prefix of the stale-file sweep of the counter files."
 value = "inline-work"
 
-# ---- orch-on-spawn, pending marker (hooks/orch-on-spawn.js, hooks/lib/orch-full-state.js) ----
+# ---- orch-on-spawn, pending marker ----
 
 [orch_on_spawn.lease_ms]
 doc = "How long the first claim of an epoch is held before a second slot may be opened by a spawn that finds no delivered copy (2 minutes)."

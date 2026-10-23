@@ -60,7 +60,7 @@ doc = "The hook event name an advisory carries when the payload names none (a no
 value = "SessionStart"
 
 [session_gates.test_markers]
-doc = "Environment variables that mark a test run; with one set, the Node hook refuses to use the real (password database) home directory (companion/lib/test-home-guard.js)."
+doc = "Environment variables that mark a test run; with one set, the Node hook refuses to use the real (password database) home directory."
 value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
 
 [session_gates.allow_real_home_env]
@@ -71,7 +71,7 @@ value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
 
 [jev_weekly.summary]
 doc = "One-line description of the jev-weekly-scorecard check in the generated reference."
-value = "Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when it is due it builds the 7-day verdicts (the jev-report scorecard), names the first integration whose mode does not yet match its KEEP or REMOVE verdict and stamps the weekly latch; a week whose scorecard could not be built is not consumed (port of jev-weekly-scorecard.js)."
+value = "Stays silent when the weekly Jev scorecard notice cannot be due (Jev off, notice off, child workspace, checked within a week); when it is due it builds the 7-day verdicts (the jev-report scorecard), names the first integration whose mode does not yet match its KEEP or REMOVE verdict and stamps the weekly latch; a week whose scorecard could not be built is not consumed."
 
 [jev_weekly.notice_setting]
 doc = "The setting jev.weeklyNotice (on by default; a legacy jev.json value is honoured)."
@@ -124,7 +124,7 @@ value = "off"
 
 [jev_review.summary]
 doc = "One-line description of the jev-review-reminder check in the generated reference."
-value = "SessionStart notices of Jev: the one-time legacy-key notice, the recommend-Jev notice (Jev off) and the review-due line (Jev on), with their state files kept by the engine; answers every case itself (port of hooks/jev-review-reminder.js)."
+value = "SessionStart notices of Jev: the one-time legacy-key notice, the recommend-Jev notice (Jev off) and the review-due line (Jev on), with their state files kept by the engine; answers every case itself."
 
 [jev_review.recommend_setting]
 doc = "The setting jev.recommendNotice (on by default): the one-in-30-days notice recommending Jev while it is off."
@@ -151,7 +151,7 @@ doc = "The protocol level that turns the headless recommend notice on by default
 value = "full"
 
 [jev_review.recommend_notice]
-doc = "The recommend-Jev notice the session receives (hooks/lib/jev-recommend.js: the directive line, then shortNotice()), byte for byte."
+doc = "The recommend-Jev notice the session receives (the directive line, then the short notice), byte for byte."
 value = "Tell the user now, verbatim, bold kept:\n**Recommended: enable Jev, the optional classifier, for more accurate guards.**\nWithout it the guards rely on pattern matching alone; with it they also get a model's second opinion (by default it can only add blocks the patterns miss, never remove one).\nOptional and off by default: needs your own API key, sends the text a guard judges to the provider you choose, uses credits. Details: README \"Enable Jev\" and PRIVACY.md.\nEnable: say \"activate jev\". Turn this reminder off: set `jev.recommendNotice` to false."
 
 [jev_review.remind_every_ms]
@@ -204,7 +204,7 @@ doc = "Appended to the list of the review line when more integrations are due th
 value = ", +{n} more"
 
 [jev_review.line_text]
-doc = "The review line (hooks/jev-review-reminder.js buildLine), byte for byte. Placeholder: {list}."
+doc = "The review line, byte for byte. Placeholder: {list}."
 value = "\U0001F4A1 anti-hall \u00B7 jev-review: review due for {list}.\nDo instead: tell the owner and offer to run `/anti-hall:jev report` (they asked to be reminded)."
 
 [jev_review.line_ellipsis]
@@ -276,7 +276,7 @@ doc = "The opt-in setting that keeps a legacy Anthropic key in use."
 value = "guards.allowAnthropicEnvKey"
 
 [session_gates.key_migration_note]
-doc = "The legacy-key notice for one kind (hooks/lib/credentials.js migrationNotice). Placeholders: {what}, {option}, {setting}."
+doc = "The legacy-key notice for one kind. Placeholders: {what}, {option}, {setting}."
 value = "a legacy {what} exists but anti-hall no longer reads credentials from this machine: re-enter your key in the plugin's options screen (anti-hall -> {option}), or enable {setting} to keep using the existing key."
 
 [session_gates.key_binding_note]

@@ -35,7 +35,7 @@ value = "path-probe"
 
 [codex_handover.avail_summary]
 doc = "One-line description of the codex-availability check in the generated reference."
-value = "SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session (port of codex-availability.js)."
+value = "SessionStart: probes PATH for a real codex executable, records it, folds a Codex job-log usage-limit error into the quota record and tells the session."
 
 [codex_handover.avail_tier_claude]
 doc = "Where a Claude session routes review while Codex is unavailable."
@@ -125,7 +125,7 @@ value = 20000
 
 [codex_handover.detect_summary]
 doc = "One-line description of the codex-quota-detect check in the generated reference."
-value = "Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file (port of codex-quota-detect.js)."
+value = "Advisory: records a Codex quota or rate-limit exhaustion reported by a codex:codex-rescue Agent result, once, in the shared availability file."
 
 [codex_handover.git_binary]
 doc = "The git executable the hooks run."
@@ -379,7 +379,7 @@ value = "codex-nudge-state"
 
 [codex_handover.nudge_summary]
 doc = "One-line description of the codex-nudge check in the generated reference."
-value = "Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it (port of codex-nudge.js)."
+value = "Stop: one soft nudge to get a Codex second opinion after several substantial code edits with no Codex review; defers when Jev is enabled for it."
 
 [codex_handover.nudge_tail_bytes]
 doc = "How much of the end of the transcript the Codex nudge reads."
@@ -417,7 +417,7 @@ value = "PRECOMPACT-"
 
 [codex_handover.precompact_summary]
 doc = "One-line description of the precompact-snapshot check in the generated reference."
-value = "PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it (port of precompact-snapshot.js)."
+value = "PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it."
 
 [codex_handover.prefix_continuation]
 doc = "Lead-in of the resume pointer after a clear or compaction."
@@ -531,7 +531,7 @@ value = "handover-resume-state-"
 
 [codex_handover.resume_summary]
 doc = "One-line description of the handover-resume check in the generated reference."
-value = "SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js)."
+value = "SessionStart: points a fresh or compacted session at the newest handover with git facts measured now."
 
 [codex_handover.resume_writer]
 doc = "The writer-kept-running line; {sid}, {min} and {iso}."

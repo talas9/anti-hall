@@ -1,5 +1,5 @@
-# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the Node liveness supervisor
-# (companion/devswarm-supervisor.js, run by launchd / systemd / cron every 60-120 s) does besides auto-archive, so the engine's
+# ah-engine shipped defaults for the DevSwarm supervisor duties (lane l7, `src/dssup`): everything the old Node liveness supervisor
+# (run by launchd / systemd / cron every 60-120 s) did besides auto-archive, so the engine's
 # scheduler can take them over and the Node job can be switched off as a whole. Format: see the header of engine.toml. Every key
 # can be overridden in the `devswarm_sup` section of settings.json. Nothing here is compiled into the binary.
 #
@@ -706,7 +706,7 @@ max = 604800000
 unit = "ms"
 
 [devswarm_sup.lv_git_timeout_ms]
-doc = "Bound of the git call that reads a worktree's last commit time (liveness.js GIT_TIMEOUT_MS)."
+doc = "Bound of the git call that reads a worktree's last commit time."
 value = 4000
 min = 100
 max = 600000
@@ -738,7 +738,7 @@ doc = "The arguments of the last-commit-time call; {worktree} is the workspace's
 value = ["-C", "{worktree}", "log", "-1", "--format=%ct"]
 
 [devswarm_sup.lv_projects_dir]
-doc = "The directory of the Claude session transcripts under ~/.claude (companion/lib/target-session.js projectDirFor)."
+doc = "The directory of the Claude session transcripts under ~/.claude."
 value = "projects"
 
 [devswarm_sup.lv_transcript_ext]
@@ -838,7 +838,7 @@ value = "delivered"
 
 # ---- retention, native (src/dssup/retention) ---------------------------------------------------------------------------------
 # The settings are Node's (devswarm.retention.*), read exactly (no rounding of a fractional value). Everything below the settings is
-# a rule or a name of Node's retention module (companion/lib/devswarm-retention.js), kept here so none is compiled into the binary.
+# a rule or a name of Node's retention module, kept here so none is compiled into the binary.
 
 [devswarm_sup.set_rt_days]
 doc = "Days of message bodies kept before they are archived and tombstoned; 0 switches retention off. Node: devswarm.retention.days."

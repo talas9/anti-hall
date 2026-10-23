@@ -43,13 +43,13 @@ value = ["surrogate", "hex escape", "recursion limit", "out of range"]
 doc = "The role value of an assistant transcript entry."
 value = "assistant"
 
-# ---- once-per-turn gate (hooks/lib/turn-gate.js) ----------------------------------------------------------
+# ---- once-per-turn gate ----------------------------------------------------------
 
-# ---- speculation-guard (hooks/speculation-guard.js) -------------------------------------------------------
+# ---- speculation-guard -------------------------------------------------------
 
 [speculation_guard.summary]
 doc = "One-line description of the speculation-guard check in the generated reference."
-value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js)."
+value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair."
 
 [speculation_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -315,11 +315,11 @@ value = "repeat-speculation"
 doc = "The source recorded in the pending outcome of a block Jev added."
 value = "jev"
 
-# ---- speculation-judge (hooks/speculation-judge.js) -------------------------------------------------------
+# ---- speculation-judge -------------------------------------------------------
 
 [speculation_judge.summary]
 doc = "One-line description of the speculation-judge check in the generated reference."
-value = "Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process (the daemon hands the check to the dispatcher, which cannot be made to wait); an Anthropic API call is never made by the engine (counted, the reply is allowed) (port of speculation-judge.js)."
+value = "Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process (the daemon hands the check to the dispatcher, which cannot be made to wait); an Anthropic API call is never made by the engine (counted, the reply is allowed)."
 
 [speculation_judge.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -337,11 +337,11 @@ value = "ANTIHALL_JUDGE_CHILD"
 doc = "The value of the judge-child variable that means this process is the judge's child."
 value = "1"
 
-# ---- claim-ledger (hooks/claim-ledger.js) -----------------------------------------------------------------
+# ---- claim-ledger -----------------------------------------------------------------
 
 [claim_ledger.summary]
 doc = "One-line description of the claim-ledger check in the generated reference."
-value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js)."
+value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting."
 
 [claim_ledger.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -453,11 +453,11 @@ value = '\b\d+\s+days?\s+ago\b'
 doc = "Regex source of a number in the evidence (thousands separators allowed)."
 value = '\d[\d,]*(?:\.\d+)?'
 
-# ---- output-verify-guard (hooks/output-verify-guard.js) ---------------------------------------------------
+# ---- output-verify-guard ---------------------------------------------------
 
 [output_verify.summary]
 doc = "One-line description of the output-verify-guard check in the generated reference."
-value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js)."
+value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting."
 
 [output_verify.guard_name]
 doc = "The guard id this check answers to in skip.json, in messages and as the once-per-turn key."

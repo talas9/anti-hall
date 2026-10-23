@@ -271,11 +271,11 @@ doc = "The label of the closing summary unit of a fold."
 value = "derive-summary"
 
 [devswarm_recon.dir_retired]
-doc = "The directory of retired-id redirect files under the DevSwarm state directory (core.js retiredRedirectDir)."
+doc = "The directory of retired-id redirect files under the DevSwarm state directory."
 value = "retired"
 
 [devswarm_recon.seen_sep]
-doc = "The separator of a sibling-seen watermark file name, cursors/<caller>.seen-<sibling>.json (cursors.js SIBLING_SEEN_SEP)."
+doc = "The separator of a sibling-seen watermark file name, cursors/<caller>.seen-<sibling>.json."
 value = ".seen-"
 
 [devswarm_recon.log_gate_fold]
@@ -663,7 +663,7 @@ min = 0
 max = 10000
 
 [devswarm_recon.terminal_left_reasons]
-doc = "The reasons a left row can have that no later run could change: they do not keep a pass from being complete (migrations.js TERMINAL_LEFT_REASONS)."
+doc = "The reasons a left row can have that no later run could change: they do not keep a pass from being complete."
 value = ["live-descriptor", "archived-tombstone-differs", "mesh-anchor-attended"]
 
 [devswarm_recon.reason_unknown]

@@ -1,11 +1,11 @@
 # ah-engine shipped defaults for the DevSwarm role checks ported from Node: devswarm-child-role (SessionStart) and
 # devswarm-parent-gate (Stop). Every name, switch, pattern and message text of those two checks lives here (D17). Format: see the
-# header of engine.toml. The message templates are the exact text of hooks/devswarm-child-role.js and hooks/lib/devswarm-wake.js with
-# the run-time values replaced by {placeholders}; the parity test (tests/devswarm_role_parity.rs) compares them with the Node hook.
+# header of engine.toml. The message templates are the exact message text with
+# the run-time values replaced by {placeholders}.
 
 [devswarm_role.child_summary]
 doc = "One-line description of the devswarm-child-role check in the generated reference."
-value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace or a Primary with no seat to settle (port of devswarm-child-role.js); a Primary in a git checkout (seat adoption writes the mesh store), a stale stable launcher or anything else it cannot prove byte-identical defers to Node."
+value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace or a Primary with no seat to settle; a Primary in a git checkout (seat adoption writes the mesh store), a stale stable launcher or anything else it cannot prove byte-identical defers to Node."
 
 [devswarm_role.gate_summary]
 doc = "One-line description of the devswarm-parent-gate check in the generated reference."
@@ -203,7 +203,7 @@ doc = "The workspace descriptors, under the DevSwarm directory."
 value = "workspaces"
 
 [devswarm_role.pg_dir_escalation]
-doc = "The parked escalation notices (recovery.js listEscalationIntents), under the DevSwarm directory."
+doc = "The parked escalation notices, under the DevSwarm directory."
 value = "escalation-pending"
 
 [devswarm_role.pg_dir_liveness]
@@ -223,15 +223,15 @@ doc = "The legacy cursor files, under the DevSwarm directory."
 value = "cursors"
 
 [devswarm_role.pg_dir_stray]
-doc = "The straying-plan states (devswarm-plan.js listStray), under the DevSwarm directory."
+doc = "The straying-plan states, under the DevSwarm directory."
 value = "stray"
 
 [devswarm_role.pg_dir_drain]
-doc = "The in-flight drain markers (devswarm-drain-marker.js), under the DevSwarm directory."
+doc = "The in-flight drain markers, under the DevSwarm directory."
 value = "drain"
 
 [devswarm_role.pg_ignore_file]
-doc = "The nag-ignore list (devswarm-ignore.js), under the DevSwarm directory."
+doc = "The nag-ignore list, under the DevSwarm directory."
 value = "ignore.json"
 
 [devswarm_role.pg_journal_dir]
@@ -239,11 +239,11 @@ doc = "The journal backend directory of a store (inferBackendFromDisk)."
 value = "journal"
 
 [devswarm_role.pg_base_suffix]
-doc = "The suffix of a legacy baseline cursor file (reader-cursors.js legacyBaseline)."
+doc = "The suffix of a legacy baseline cursor file."
 value = "#base.json"
 
 [devswarm_role.pg_inst_infix]
-doc = "The infix of a legacy per-instance cursor file (reader-cursors.js listLegacy)."
+doc = "The infix of a legacy per-instance cursor file."
 value = "#inst-"
 
 [devswarm_role.pg_ident_unsure_id]
@@ -255,7 +255,7 @@ doc = "The state-file name used when the payload has no session id (stateFileFor
 value = "nosession"
 
 [devswarm_role.pg_poke_prefix]
-doc = "The text prefix of a system poke row, never real unread (devswarm-noise.js POKE_PREFIX)."
+doc = "The text prefix of a system poke row, never real unread."
 value = "[Primary poke]"
 
 [devswarm_role.pg_broadcast]
@@ -339,7 +339,7 @@ doc = "The watcher part of the wake re-verify line: {watcher} (double-quoted)."
 value = "; WATCH={watcher}, `Monitor` on `\"$WATCH\"` armed (never two)"
 
 [devswarm_role.pg_wake_line]
-doc = "The mailbox-wake re-verify line (devswarm-wake.js wakeReassert): {cli}, {cron}, {tick}, {watch}, {id}."
+doc = "The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}."
 value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `\"$CLI\" wake-directive {id}`."
 
 [devswarm_role.pg_frame_head]
@@ -408,7 +408,7 @@ value = " (a stated intent was on file for this exact condition, but the absolut
 
 [devswarm_role.pg_escalation_archive]
 doc = "Escalation note when every flagged child is done or idle."
-value = "Every flagged child is done or idle: archive them (`devswarm.js archive <id>`) instead of acknowledging again. "
+value = "Every flagged child is done or idle: archive them (`~/.anti-hall/ah-engine/bin/ah-hook mesh archive <id>`) instead of acknowledging again. "
 
 [devswarm_role.pg_neglect]
 doc = "The neglect line: {n}, {shown}, {more}."
@@ -428,7 +428,7 @@ value = "worktree-gone"
 
 [devswarm_role.pg_attr_drain]
 doc = "How a contributor is drained: {id}."
-value = " — clear via `devswarm.js inbox ack {id} --ack-as-owner`"
+value = " — clear via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox ack {id} --ack-as-owner`"
 
 [devswarm_role.pg_attribution]
 doc = "Attribution of a family's count: {id}, {n}, {parts}."
@@ -436,11 +436,11 @@ value = "ATTRIBUTION for {id} ({n} total): {parts}. "
 
 [devswarm_role.pg_own_unknown]
 doc = "The own-summary-unreadable segment: {id}."
-value = "YOUR OWN inbound status could not be confirmed (own-summary unreadable or corrupt — possibly a daemon problem) — treat this as UNKNOWN, not \"no messages\". Check explicitly via `devswarm.js inbox read-primary {id}` (then its `ackCommand`; and `devswarm.js healthcheck` / `devswarm.js logs` to check the daemon) before assuming there is nothing pending. "
+value = "YOUR OWN inbound status could not be confirmed (own-summary unreadable or corrupt — possibly a daemon problem) — treat this as UNKNOWN, not \"no messages\". Check explicitly via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read-primary {id}` (then its `ackCommand`; and `~/.anti-hall/ah-engine/bin/ah-hook mesh healthcheck` / `~/.anti-hall/ah-engine/bin/ah-hook mesh logs` to check the daemon) before assuming there is nothing pending. "
 
 [devswarm_role.pg_twins]
 doc = "The merged-twin note: {n}, {s}, {list}."
-value = "NOTE — the unread count above includes {n} same-worktree twin descriptor{s} registered under a different id ({list}) — this is the SAME identity as this Primary under a duplicate registration, not a separate child. Inspect/drain each via `devswarm.js inbox read <id>` (read-only, safe from any worktree). "
+value = "NOTE — the unread count above includes {n} same-worktree twin descriptor{s} registered under a different id ({list}) — this is the SAME identity as this Primary under a duplicate registration, not a separate child. Inspect/drain each via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` (read-only, safe from any worktree). "
 
 [devswarm_role.pg_twin_more]
 doc = "More twins than shown: {n}."
@@ -452,7 +452,7 @@ value = "s"
 
 [devswarm_role.pg_foreign]
 doc = "The foreign-project note: {ids}, {verb}."
-value = "NOTE — {ids} {verb} registered under a DIFFERENT project (their worktree no longer resolves), so `inbox peek-primary` will refuse them with project-context-mismatch. Read that backlog with `devswarm.js inbox read <id>` instead — it is read-only, works from any project, and shows the durable-inbox messages counted above. "
+value = "NOTE — {ids} {verb} registered under a DIFFERENT project (their worktree no longer resolves), so `inbox peek-primary` will refuse them with project-context-mismatch. Read that backlog with `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` instead — it is read-only, works from any project, and shows the durable-inbox messages counted above. "
 
 [devswarm_role.pg_verb_is]
 doc = "Singular verb."
@@ -472,14 +472,14 @@ value = "have"
 
 [devswarm_role.pg_gone]
 doc = "The gone-worktree note: {ids}, {verb}."
-value = "NOTE — {ids} {verb} a GONE worktree at its recorded path — this cannot be cleared by cd-ing in. WARNING: a MOVED (not retired) worktree reads exactly the same way — this is a path-existence check only, not proof the workspace is dead — and `--ack-as-owner` bypasses ownership with no liveness check of its own, so do not apply it on this signal alone. FIRST inspect with `devswarm.js inbox read <id>` (read-only, works from any project/cwd, and will NOT clear this block either way) to see what is actually pending. Only once you have CONFIRMED the workspace is genuinely retired (not just relocated), clear it with `devswarm.js inbox ack <id> --ack-as-owner` — the sanctioned cross-workspace-ack override for a confirmed-dead workspace's backlog. "
+value = "NOTE — {ids} {verb} a GONE worktree at its recorded path — this cannot be cleared by cd-ing in. WARNING: a MOVED (not retired) worktree reads exactly the same way — this is a path-existence check only, not proof the workspace is dead — and `--ack-as-owner` bypasses ownership with no liveness check of its own, so do not apply it on this signal alone. FIRST inspect with `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` (read-only, works from any project/cwd, and will NOT clear this block either way) to see what is actually pending. Only once you have CONFIRMED the workspace is genuinely retired (not just relocated), clear it with `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox ack <id> --ack-as-owner` — the sanctioned cross-workspace-ack override for a confirmed-dead workspace's backlog. "
 
 [devswarm_role.pg_inspect]
 doc = "The inspect hint when a child has unread."
-value = "INSPECT the unread backlog via `devswarm.js inbox peek-primary <id>` (read-only — does not advance any cursor) to see what is pending for each workspace, then follow up with that workspace as needed; a workspace's own cursor is only advanced by that workspace reading its own inbox, never by this Primary. "
+value = "INSPECT the unread backlog via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox peek-primary <id>` (read-only — does not advance any cursor) to see what is pending for each workspace, then follow up with that workspace as needed; a workspace's own cursor is only advanced by that workspace reading its own inbox, never by this Primary. "
 
 [devswarm_role.pg_dir_heartbeats]
-doc = "The workspace heartbeat files (liveness.js heartbeatPathFor), under the DevSwarm directory."
+doc = "The workspace heartbeat files, under the DevSwarm directory."
 value = "heartbeats"
 
 [devswarm_role.pg_err_uncorroborated]
@@ -520,7 +520,7 @@ value = "unknown sender"
 
 [devswarm_role.pg_q_truncated]
 doc = "The truncated-question-list segment of the reason (buildTruncatedSegment): {kept}, {dropped}, {cap} from the summary's pendingQuestionsTruncated."
-value = "PENDING QUESTIONS LIST TRUNCATED — {kept} sender(s) shown, {dropped} more sender(s) with an unanswered question are NOT shown (cap {cap}). The true unanswered count is HIGHER than what this message can list. This is not resolvable by replying to only the senders named below — check `devswarm.js inbox read-primary` (read-only; its `ackCommand` acks) / registry state directly. "
+value = "PENDING QUESTIONS LIST TRUNCATED — {kept} sender(s) shown, {dropped} more sender(s) with an unanswered question are NOT shown (cap {cap}). The true unanswered count is HIGHER than what this message can list. This is not resolvable by replying to only the senders named below — check `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read-primary` (read-only; its `ackCommand` acks) / registry state directly. "
 
 [devswarm_role.pg_q_truncated_unknown]
 doc = "The figure shown in the truncated segment for a count the summary does not carry as a finite number."
@@ -643,7 +643,7 @@ doc = "A workspace's display name: {name}, {short} (the id's first characters)."
 value = "{name} ({short})"
 
 [devswarm_role.pg_short_id_len]
-doc = "Characters of an id in its display name (companion/lib/devswarm-names.js shortId)."
+doc = "Characters of an id in its display name."
 value = 8
 
 [devswarm_role.pg_dir_names]
@@ -695,7 +695,7 @@ doc = "The session text hashed into the stray-seen file name when the Stop paylo
 value = "no-session"
 
 [devswarm_role.pg_stray_line_max]
-doc = "Straying warnings named on the one advisory line; the rest are counted (devswarm-supervision.js LINE_MAX_ENTRIES)."
+doc = "Straying warnings named on the one advisory line; the rest are counted."
 value = 3
 min = 1
 max = 100
@@ -730,7 +730,7 @@ value = " more)"
 
 [devswarm_role.pg_stray_tail]
 doc = "Ends the straying advisory line."
-value = " — advisory (Jev notes are recommendations; your call); `devswarm.js correct <id>` sends the correction."
+value = " — advisory (Jev notes are recommendations; your call); `~/.anti-hall/ah-engine/bin/ah-hook mesh correct <id>` sends the correction."
 
 [devswarm_role.pg_kind_wakepath]
 doc = "The block kind of the clean pass's mailbox-wake block (its loop-state signature is the hashed prefix and this kind)."
@@ -738,7 +738,7 @@ value = "wakepath"
 
 [devswarm_role.pg_own_unread]
 doc = "The reason segment for the Primary's own unread mail. Placeholders: {n}, {id}."
-value = "YOU (the Primary) have {n} unread parent/peer message(s) — STOP and read them FIRST via `devswarm.js inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns). "
+value = "YOU (the Primary) have {n} unread parent/peer message(s) — STOP and read them FIRST via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns). "
 
 [devswarm_role.pg_live_resolved]
 doc = "Marks an own count the gate re-read live from this reader's own position in the store."
@@ -754,10 +754,10 @@ value = "URGENT — "
 
 [devswarm_role.pg_own_stale]
 doc = "The own-summary segment when the cached summary predates this reader's live position and the live recheck could not settle it: {id}."
-value = "YOUR OWN inbound status could not be confirmed: the cached summary predates this reader's live read position (own cursor caught up to or past what the summary last recorded), and a live recheck did not resolve it — treat this as UNKNOWN, not \"no messages\". Check explicitly via `devswarm.js inbox count {id}` or `devswarm.js inbox read-primary {id}` (then its `ackCommand`) before assuming there is nothing pending. "
+value = "YOUR OWN inbound status could not be confirmed: the cached summary predates this reader's live read position (own cursor caught up to or past what the summary last recorded), and a live recheck did not resolve it — treat this as UNKNOWN, not \"no messages\". Check explicitly via `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox count {id}` or `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read-primary {id}` (then its `ackCommand`) before assuming there is nothing pending. "
 
 [devswarm_role.pg_set_drain_ttl]
-doc = "Setting devswarm.drainTtlMs: milliseconds an in-flight drain marker stays fresh (devswarm-drain-marker.js). The engine answers only while it is unset, with this default."
+doc = "Setting devswarm.drainTtlMs: milliseconds an in-flight drain marker stays fresh. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "drainTtlMs", env = "ANTIHALL_DEVSWARM_DRAIN_TTL_MS", option = "", default = 600000 }
 
 [devswarm_role.pg_drain_tag]

@@ -1,9 +1,9 @@
 # ah-engine shipped mesh-writer defaults (D45, stage 2): the mesh CLI verbs that WRITE the per-repo DevSwarm store
-# (`ah-engine mesh <devswarm.js argv>`), with Node's schema, statements, locking and output. Format: see the header of
-# engine.toml. Every name, path, text and limit the port of scripts/devswarm.js and companion/lib/devswarm-store.js
-# uses lives here; the values are Node's own (cited per key).
+# (`ah-engine mesh <mesh verb argv>`), with Node's schema, statements, locking and output. Format: see the header of
+# engine.toml. Every name, path, text and limit the mesh write verbs
+# use lives here; the values are Node's own (cited per key).
 
-# ---- store and statements (companion/lib/devswarm-store.js) -------------------------------------------------------
+# ---- store and statements -------------------------------------------------------
 
 [mesh_write.store_file]
 doc = "File name of a per-repo store (`devswarm.db`)."
@@ -63,7 +63,7 @@ value = "journal"
 doc = "The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND)."
 value = "ANTIHALL_DEVSWARM_STORE_BACKEND"
 
-# ---- the per-workspace lock (scripts/devswarm-lib/core.js acquireIdLock, companion/lib/recovery.js acquireLock) ----
+# ---- the per-workspace lock ----
 
 [mesh_write.id_lock_budget_ms]
 doc = "How long one acquire keeps retrying a lock held by a live, fresh holder before the verb reports lockBusy (Node: 2000)."
@@ -84,25 +84,25 @@ min = 1000
 max = 86400000
 
 [mesh_write.id_lock_reclaim_stale_ms]
-doc = "A takeover marker (`<lock>.reclaim`) older than this is abandoned (lock.js RECLAIM_STALE_MS)."
+doc = "A takeover marker (`<lock>.reclaim`) older than this is abandoned."
 value = 5000
 min = 100
 max = 600000
 
 [mesh_write.id_lock_release_tries]
-doc = "Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES)."
+doc = "Attempts a release makes to take the takeover marker."
 value = 5
 min = 1
 max = 100
 
 [mesh_write.id_lock_release_step_ms]
-doc = "Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS)."
+doc = "Pause between those attempts."
 value = 10
 min = 1
 max = 10000
 
 [mesh_write.id_lock_boot_slop_s]
-doc = "Two boot times this close are one boot (lock.js BOOT_SLOP_S)."
+doc = "Two boot times this close are one boot."
 value = 5
 min = 0
 max = 3600
@@ -156,7 +156,7 @@ doc = "The heartbeats directory under the DevSwarm state directory."
 value = "heartbeats"
 
 [mesh_write.dir_plans]
-doc = "The plans directory under the DevSwarm state directory (devswarm-plan.js)."
+doc = "The plans directory under the DevSwarm state directory."
 value = "plans"
 
 [mesh_write.dir_send_receipts]
@@ -168,7 +168,7 @@ doc = "anti-hall's state directory under its home directory."
 value = "state"
 
 [mesh_write.alias_file]
-doc = "The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js)."
+doc = "The sender alias map under the DevSwarm state directory."
 value = "sender-aliases.json"
 
 [mesh_write.alias_key]
@@ -184,11 +184,11 @@ doc = "Suffix of a staged file before its rename."
 value = ".tmp"
 
 [mesh_write.ingest_beat_prefix]
-doc = "File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath)."
+doc = "File-name prefix of a project's ingest-daemon heartbeat."
 value = "ingest-"
 
 [mesh_write.ingest_lock_prefix]
-doc = "File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath)."
+doc = "File-name prefix of a project's ingest-daemon lock."
 value = "ingest-project-"
 
 [mesh_write.ingest_beat_stale_ms]
@@ -198,7 +198,7 @@ min = 1000
 max = 86400000
 
 [mesh_write.monitor_failure_threshold]
-doc = "Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD)."
+doc = "Consecutive monitor failures that make a live ingest daemon FAILING."
 value = 3
 min = 1
 max = 1000
@@ -220,7 +220,7 @@ doc = "The harness's per-process session records under it (`<pid>.json`)."
 value = "sessions"
 
 [mesh_write.max_ppid_hops]
-doc = "Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS)."
+doc = "Parent hops the reader-nonce walk takes looking for a harness session record."
 value = 6
 min = 0
 max = 64
@@ -234,11 +234,11 @@ doc = "The process-table tool the nonce walk runs, as Node does."
 value = "ps"
 
 [mesh_write.ps_ppid_args]
-doc = "Its arguments for the pid/parent table (reader-identity.js defaultPpidTable)."
+doc = "Its arguments for the pid/parent table."
 value = ["-A", "-o", "pid=,ppid="]
 
 [mesh_write.ps_lstart_args]
-doc = "Its arguments for one process's start time, followed by the pid (liveness.js processStartMs)."
+doc = "Its arguments for one process's start time, followed by the pid."
 value = ["-o", "lstart=", "-p"]
 
 [mesh_write.month_names]
@@ -246,7 +246,7 @@ doc = "Month abbreviations of that start time, January first (what Date.parse re
 value = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 [mesh_write.jev_file]
-doc = "Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath)."
+doc = "Jev's own config file under anti-hall's directory."
 value = "jev.json"
 
 [mesh_write.settings_file]
@@ -262,7 +262,7 @@ doc = "Jev's on/off field."
 value = "enabled"
 
 [mesh_write.jev_pending_file]
-doc = "Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath)."
+doc = "Jev triage's pending labeled messages under anti-hall's state directory."
 value = "jev-triage-pending.json"
 
 [mesh_write.env_jev]
@@ -277,7 +277,7 @@ value = "1"
 doc = "Its off value."
 value = "0"
 
-# ---- identity (companion/lib/identity.js, scripts/devswarm-lib/identity.js) -----------------------------------------
+# ---- identity -----------------------------------------
 
 [mesh_write.dot_git]
 doc = "A checkout's git entry."
@@ -308,13 +308,13 @@ doc = "Where a superproject keeps absorbed submodule git directories."
 value = "modules"
 
 [mesh_write.max_submodule_hops]
-doc = "Superproject hops a resolution takes (identity.js MAX_SUBMODULE_HOPS)."
+doc = "Superproject hops a resolution takes."
 value = 32
 min = 1
 max = 1024
 
 [mesh_write.repo_name_max]
-doc = "Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN)."
+doc = "Length cap of a repo name in a repoKey."
 value = 40
 min = 1
 max = 255
@@ -451,7 +451,7 @@ value = "builderType"
 doc = "The builder type of a Primary checkout."
 value = "primary"
 
-# ---- argv (scripts/devswarm-lib/core.js parseArgs) and verbs -------------------------------------------------------
+# ---- argv and verbs -------------------------------------------------------
 
 [mesh_write.value_required_flags]
 doc = "Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS)."
@@ -720,11 +720,11 @@ doc = "The per-project summary projections directory under the DevSwarm state di
 value = "summaries"
 
 [mesh_write.dir_archived]
-doc = "The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds)."
+doc = "The archived workspace descriptors directory under the DevSwarm state directory."
 value = "archived"
 
 [mesh_write.dir_cursors]
-doc = "The legacy cursor files directory under the DevSwarm state directory (reader-cursors.js cursorsDir)."
+doc = "The legacy cursor files directory under the DevSwarm state directory."
 value = "cursors"
 
 [mesh_write.dir_cache]
@@ -732,11 +732,11 @@ doc = "anti-hall's cache directory under its home directory (Jev's triage label 
 value = "cache"
 
 [mesh_write.cursor_line_field]
-doc = "Field of a JSON cursor file that holds its position (devswarm-inbox-cursor.js readCursor)."
+doc = "Field of a JSON cursor file that holds its position."
 value = "line"
 
 [mesh_write.cursor_floor_reader]
-doc = "The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR)."
+doc = "The reader key of a partition's floor row in reader_cursors."
 value = "#floor"
 
 [mesh_write.cursor_ns_store]
@@ -756,13 +756,13 @@ doc = "Separator of a legacy per-instance store cursor file name (cursors/<id>#i
 value = "#inst-"
 
 [mesh_write.legacy_cursor_short_len]
-doc = "Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy)."
+doc = "Length of the hex instance tag in a legacy cursor file name."
 value = 6
 min = 1
 max = 64
 
 [mesh_write.legacy_cursor_forbidden]
-doc = "Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId)."
+doc = "Texts a partition id must not contain to have legacy cursor files."
 value = ["#", ".seen-"]
 
 [mesh_write.field_cursor_path]
@@ -770,23 +770,23 @@ doc = "Descriptor field naming the durable inbox's cursor file."
 value = "cursorPath"
 
 [mesh_write.urgency_rank]
-doc = "Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored."
+doc = "Urgency words from lowest to highest; any other word is ignored."
 value = ["low", "normal", "high", "urgent"]
 
 [mesh_write.summary_recent_cap]
-doc = "Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP)."
+doc = "Most broadcast runs a summary keeps in recent[]."
 value = 50
 min = 1
 max = 100000
 
 [mesh_write.summary_pending_questions_cap]
-doc = "Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP)."
+doc = "Most per-sender pending questions a summary keeps per workspace."
 value = 200
 min = 1
 max = 100000
 
 [mesh_write.archive_request_marker]
-doc = "Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+doc = "Body marker of an archive-request send."
 value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
 
 [mesh_write.gate_done]
@@ -794,7 +794,7 @@ doc = "The gate a child's `done` verb sets."
 value = "done"
 
 [mesh_write.done_setby_prefix]
-doc = "Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX)."
+doc = "Setter prefix of a done gate that carries the HEAD sha."
 value = "devswarm-done@"
 
 [mesh_write.gate_merged_verified]
@@ -802,7 +802,7 @@ doc = "The report-only gate recording the merged ancestry check."
 value = "merged_verified"
 
 [mesh_write.merged_setby_prefix]
-doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
+doc = "Setter prefix of a merged_verified gate that carries the HEAD sha."
 value = "devswarm-merged@"
 
 [mesh_write.csv_separator]
@@ -810,7 +810,7 @@ doc = "Separator of a comma-separated setting."
 value = ","
 
 [mesh_write.required_gates_env]
-doc = "Environment variable of devswarm.requiredGates (settings-schema.js)."
+doc = "Environment variable of devswarm.requiredGates."
 value = "ANTIHALL_DEVSWARM_REQUIRED_GATES"
 
 [mesh_write.required_gates_key]
@@ -822,7 +822,7 @@ doc = "Plugin option (/config) of devswarm.requiredGates."
 value = "devswarm_required_gates"
 
 [mesh_write.required_gates_option_default]
-doc = "The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption)."
+doc = "The plugin option's manifest default; a plugin option equal to it does not override."
 value = "done,merged,tests_passed"
 
 [mesh_write.required_gates_default]
@@ -830,7 +830,7 @@ doc = "Schema default of devswarm.requiredGates."
 value = "done,merged,tests_passed"
 
 [mesh_write.required_gates_fallback]
-doc = "The gates used when the setting lists none (devswarm-store.js DEFAULT_REQUIRED_GATES)."
+doc = "The gates used when the setting lists none."
 value = ["done", "merged", "tests_passed"]
 
 [mesh_write.held_partitions_env]
@@ -854,11 +854,11 @@ doc = "Schema default of devswarm.heldPartitions (none held)."
 value = ""
 
 [mesh_write.jev_cache_file]
-doc = "Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath)."
+doc = "Jev triage's label cache file under anti-hall's cache directory."
 value = "jev-triage.json"
 
 [mesh_write.jev_question_kind]
-doc = "The triage label kind of a message that asks a question (jev-triage.js)."
+doc = "The triage label kind of a message that asks a question."
 value = "question-needs-answer"
 
 [mesh_write.field_kind]
@@ -891,7 +891,7 @@ value = "ah-engine mesh: the write was committed but the engine failed before pr
 doc = "Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file)."
 value = "summary-failed"
 
-# ---- inbox ack-primary (scripts/devswarm-lib/inbox-cmd.js cmdInboxAckPrimary, cursors.js, companion/lib/reader-cursors.js) ----
+# ---- inbox ack-primary ----
 
 [mesh_write.verb_inbox]
 doc = "The inbox verb."
@@ -918,11 +918,11 @@ doc = "Directory of read receipts under the DevSwarm root (readReceiptDir)."
 value = "read-receipts"
 
 [mesh_write.dir_drain]
-doc = "Directory of the drain markers under the DevSwarm root (devswarm-drain-marker.js)."
+doc = "Directory of the drain markers under the DevSwarm root."
 value = "drain"
 
 [mesh_write.dir_cursor_log]
-doc = "Directory of the cursor-write journals under the DevSwarm root (cursors.js cursorLogPath)."
+doc = "Directory of the cursor-write journals under the DevSwarm root."
 value = "cursor-log"
 
 [mesh_write.receipt_id_prefix]
@@ -1095,7 +1095,7 @@ value = 6
 min = 1
 max = 40
 
-# ---- heartbeat and the NDJSON + store unread union (scripts/devswarm-lib/heartbeat-plan.js cmdHeartbeat, companion/lib/liveness.js, devswarm-unread.js, reader-cursors.js) ----
+# ---- heartbeat and the NDJSON + store unread union ----
 
 [mesh_write.verb_heartbeat]
 doc = "The heartbeat verb."
@@ -1138,7 +1138,7 @@ doc = "The repeatable heartbeat flag for blockers."
 value = "blockers"
 
 [mesh_write.dir_liveness]
-doc = "Directory of the persisted liveness verdicts under the DevSwarm root (liveness.js livenessPathFor)."
+doc = "Directory of the persisted liveness verdicts under the DevSwarm root."
 value = "liveness"
 
 [mesh_write.liveness_alive]
@@ -1152,7 +1152,7 @@ min = 1
 max = 31536000000
 
 [mesh_write.env_source_branch]
-doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
+doc = "The environment variable that marks a DevSwarm child workspace."
 value = "DEVSWARM_SOURCE_BRANCH"
 
 [mesh_write.plugin_manifest_dir]
@@ -1172,7 +1172,7 @@ doc = "The descriptor field holding the workspace id."
 value = "id"
 
 [mesh_write.legacy_hash_prefix]
-doc = "Prefix of the dedupe hash of one physical legacy inbox line (devswarm-unread.js legacyLineHash)."
+doc = "Prefix of the dedupe hash of one physical legacy inbox line."
 value = "legacy:"
 
 [mesh_write.ndjson_hash_field]
@@ -1193,7 +1193,7 @@ value = "createdAt"
 doc = "File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped)."
 value = "mesh-verify.jsonl"
 
-# ---- the DevSwarm app database reader (companion/lib/devswarm-app-db.js): read only, bounded, fail-open ----
+# ---- the DevSwarm app database reader: read only, bounded, fail-open ----
 
 [mesh_write.app_col_id]
 doc = "The `builders` id column."
@@ -1269,7 +1269,7 @@ value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
 doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
-value = "no step plan for {id} — run `devswarm.js plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-hook mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
 
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
@@ -1478,15 +1478,15 @@ doc = "The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{
 value = "tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}"
 
 [mesh_write.dir_wake_tick]
-doc = "The wake-tick marker directory under the DevSwarm state directory (core.js wakeTickDir)."
+doc = "The wake-tick marker directory under the DevSwarm state directory."
 value = "wake-tick"
 
 [mesh_write.file_cron_found_mail]
-doc = "The cron-found-mail measurement file under the DevSwarm state directory (core.js cronFoundMailPath)."
+doc = "The cron-found-mail measurement file under the DevSwarm state directory."
 value = "cron-found-mail.jsonl"
 
 [mesh_write.cron_found_mail_cap]
-doc = "How many lines the cron-found-mail file keeps (core.js CRON_FOUND_MAIL_CAP)."
+doc = "How many lines the cron-found-mail file keeps."
 value = 1000
 
 [mesh_write.tick_tmp_suffix]
@@ -1498,7 +1498,7 @@ doc = "The `source` a tick stamps on a heartbeat record it has to create (cmdInb
 value = "inbox-tick"
 
 [mesh_write.wake_lock_prefix]
-doc = "File-name prefix of the wake-watch lock of a workspace in the locks directory (devswarm-wake-watch.js lockPathFor)."
+doc = "File-name prefix of the wake-watch lock of a workspace in the locks directory."
 value = "wake-watch-"
 
 [mesh_write.wake_lock_suffix]
@@ -1506,11 +1506,11 @@ doc = "File-name suffix of the wake-watch lock."
 value = ".lock"
 
 [mesh_write.wake_lock_stale_ms]
-doc = "A wake-watch lock older than this is not a live watcher (devswarm-wake-watch.js WATCH_LOCK_STALE_MS)."
+doc = "A wake-watch lock older than this is not a live watcher."
 value = 120000
 
 [mesh_write.dir_wal]
-doc = "The delivery write-ahead-log directory under the DevSwarm state directory (devswarm-read-wal.js)."
+doc = "The delivery write-ahead-log directory under the DevSwarm state directory."
 value = "wal"
 
 [mesh_write.dir_wal_spill]
@@ -1645,7 +1645,7 @@ value = "⚠️ anti-hall · devswarm: {label} reported known:false ({reasons}) 
 doc = "The reason `emitKnownWarning` names when the result carries no more specific one."
 value = "unknown"
 
-# ---- plain roster (scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHumanText; companion/lib/devswarm-pull.js defaultRun) ----
+# ---- plain roster ----
 
 [mesh_write.roster_flag_all]
 doc = "The roster flag that includes archived rows in the text rendering."
@@ -1726,11 +1726,11 @@ doc = "The `inbox tick` flag that first imports the child's native message queue
 value = "child"
 
 [mesh_write.dir_inbox]
-doc = "The directory of the default NDJSON inboxes under the DevSwarm state directory (devswarm-pull.js inboxDefaultPath)."
+doc = "The directory of the default NDJSON inboxes under the DevSwarm state directory."
 value = "inbox"
 
 [mesh_write.cursor_file_suffix]
-doc = "The suffix of a default cursor file under `cursors/` (devswarm-pull.js cursorDefaultPath)."
+doc = "The suffix of a default cursor file under `cursors/`."
 value = ".cursor"
 
 [mesh_write.cursor_initial]
@@ -1746,19 +1746,19 @@ doc = "The delivery-log kind of the child pull (the file is `wal/<kind>-<id>.ndj
 value = "pull"
 
 [mesh_write.pull_lock_stale_ms]
-doc = "A pull lock older than this, whose holder is not a live process, is taken over (devswarm-pull.js PULL_LOCK_STALE_MS). A live holder is never taken over."
+doc = "A pull lock older than this, whose holder is not a live process, is taken over. A live holder is never taken over."
 value = 60000
 min = 1000
 max = 3600000
 
 [mesh_write.pull_lock_step_ms]
-doc = "The pause between the two create attempts of a pull lock acquire (lock.js stepMs)."
+doc = "The pause between the two create attempts of a pull lock acquire."
 value = 5
 min = 1
 max = 1000
 
 [mesh_write.pull_read_timeout_ms]
-doc = "How long the ONE bounded `hivecontrol workspace read-messages` of a pull may run (devswarm-pull.js READ_TIMEOUT_MS)."
+doc = "How long the ONE bounded `hivecontrol workspace read-messages` of a pull may run."
 value = 10000
 min = 1000
 max = 600000
@@ -1816,15 +1816,15 @@ doc = "What a pull prints to stderr when the batch held fewer messages than the 
 value = "devswarm-pull: reception shortfall for {id} — message-count={count} recovered={recovered} lost={lost} (marked-read natively but not parsed; raw batch kept in {wal} entry {entry})\n"
 
 [mesh_write.reserved_id_tokens]
-doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files (cursors.js RESERVED_ID_TOKENS)."
+doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files."
 value = ["#", ".seen-", ".inst-", ".nd-"]
 
 [mesh_write.reserved_id_suffix]
-doc = "A fresh registration whose id ends with this is refused (cursors.js reservedIdToken)."
+doc = "A fresh registration whose id ends with this is refused."
 value = ".base"
 
 [mesh_write.reserved_exact_id]
-doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones (cursors.js RESERVED_EXACT_IDS)."
+doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones."
 value = "system"
 
 [mesh_write.field_repo_id]
@@ -1856,7 +1856,7 @@ doc = "`send --quiet` line of one failed recipient of a multi-recipient send. Pl
 value = "ok:false -> {to}: {why}"
 
 [mesh_write.super_cache_ttl_ms]
-doc = "How long a superproject answer git gave for a nested checkout is reused (identity.js SUPER_CACHE_TTL_MS)."
+doc = "How long a superproject answer git gave for a nested checkout is reused."
 value = 300000
 unit = "ms"
 min = 1000
@@ -1990,11 +1990,11 @@ doc = "The note when a cursor journal's older file passes its soft limit. {path}
 value = "{path}: the older cursor journal is {bytes} bytes, past its soft limit; nothing is deleted (move it aside by hand when it is no longer needed)"
 
 [mesh_write.unread_reason_cursors]
-doc = "The reason a child's unread count is UNKNOWN when its store's reader cursors cannot be read (reader-cursors.js unknownResult)."
+doc = "The reason a child's unread count is UNKNOWN when its store's reader cursors cannot be read."
 value = "reader-cursors-unreadable"
 
 [mesh_write.unread_reason_union]
-doc = "The reason a child's unread count is UNKNOWN when the union of inbox lines and store rows cannot be computed (reader-cursors.js unknownResult)."
+doc = "The reason a child's unread count is UNKNOWN when the union of inbox lines and store rows cannot be computed."
 value = "union-threw"
 
 [mesh_write.heartbeat_callers_log]
@@ -2031,7 +2031,7 @@ value = "pull"
 
 [mesh_write.read_ack_hint]
 doc = "The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}."
-value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `devswarm.js inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
+value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
 
 [mesh_write.action_read]
 doc = "The `action` of an `inbox read` result."
@@ -2376,7 +2376,7 @@ doc = "The stderr warning of warnIdMismatch: a child workspace addressing an id 
 value = "⚠️ anti-hall · devswarm: addressing id \"{id}\" but this workspace's real DEVSWARM_BUILDER_ID is \"{env_id}\" — addressing the meshId row counts the wrong partition; use \"{env_id}\" unless you deliberately mean a different workspace"
 
 [mesh_write.child_repos_dir]
-doc = "The DevSwarm worktree layout under the home directory: a cwd below it corroborates a child workspace (devswarm-role.js isChildWorkspaceCorroborated)."
+doc = "The DevSwarm worktree layout under the home directory: a cwd below it corroborates a child workspace."
 value = ".devswarm/repos"
 
 [mesh_write.anchor_reason_unknown]
@@ -2396,7 +2396,7 @@ doc = "The watcherArmed word while limit conservation is active."
 value = "limit-skip"
 
 [mesh_write.file_rearm_cues]
-doc = "The re-arm cue measurement under the DevSwarm state directory (core.js rearmMetricsPath)."
+doc = "The re-arm cue measurement under the DevSwarm state directory."
 value = "rearm-cues.jsonl"
 
 [mesh_write.rearm_cues_cap]
@@ -2421,12 +2421,12 @@ doc = "The re-arm cue bucket of a limit skip."
 value = "limit-skip"
 
 [mesh_write.wal_alert_ms]
-doc = "A pending delivery batch older than this many milliseconds is an alert (devswarm-read-wal.js PENDING_ALERT_MS)."
+doc = "A pending delivery batch older than this many milliseconds is an alert."
 value = 3600000
 min = 1
 
 [mesh_write.wal_alert_bytes]
-doc = "Pending delivery batches over this many bytes are an alert (devswarm-read-wal.js PENDING_ALERT_BYTES)."
+doc = "Pending delivery batches over this many bytes are an alert."
 value = 1048576
 min = 1
 
@@ -2783,11 +2783,11 @@ doc = "The JSON text of a lone surrogate. Placeholder: {unit} (four lowercase he
 value = "\\u{unit}"
 
 [mesh_write.jev_triage_log_file]
-doc = "Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message."
+doc = "Jev triage's own log under anti-hall's logs directory: one row per answered labeled message."
 value = "jev-triage.ndjson"
 
 [mesh_write.jev_triage_log_max_bytes]
-doc = "Size past which the Jev triage log is rotated before a row is appended (jev-triage.js CACHE_LOG_MAX_BYTES)."
+doc = "Size past which the Jev triage log is rotated before a row is appended."
 value = 1048576
 min = 1
 
@@ -2891,7 +2891,7 @@ doc = "The settings.json section of the DevSwarm settings."
 value = "devswarm"
 
 [mesh_write.jev_outcome_hash_len]
-doc = "How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage)."
+doc = "How many hex characters of the SHA-256 name an answered-label outcome row."
 value = 32
 min = 1
 

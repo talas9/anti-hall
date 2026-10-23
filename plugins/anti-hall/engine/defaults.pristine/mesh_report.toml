@@ -2,7 +2,7 @@
 # diagnose/healthcheck, the central log's test guard and the unknown `mesh` subcommand. One table per setting.
 
 [mesh_write.msg_bad_workspace_id]
-doc = "The error of a verb that is given no usable workspace id (devswarm.js: `invalid or missing workspace id`)."
+doc = "The error of a verb that is given no usable workspace id (`invalid or missing workspace id`)."
 value = "invalid or missing workspace id"
 
 [mesh_write.msg_unknown_mesh_sub]

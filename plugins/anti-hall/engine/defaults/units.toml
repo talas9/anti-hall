@@ -1,6 +1,6 @@
 # ah-engine shipped defaults for the engine's own service units (`ah-engine units`, `src/setup/units.rs`): the one launchd /
 # systemd user unit that keeps the engine daemon (`ah-engine serve`) running, and the retirement of the units the Node installers
-# wrote (companion/install-reaper.js, install-devswarm-supervisor.js, install-devswarm-ingest.js). Format: see the header of
+# wrote. Format: see the header of
 # engine.toml.
 #
 # The engine unit does not compete with the daemon a hook starts: it runs `ah-engine serve` on load and again every

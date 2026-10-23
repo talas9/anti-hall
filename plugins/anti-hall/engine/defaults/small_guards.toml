@@ -93,11 +93,11 @@ value = " anti-hall · "
 doc = "Labels of the optional lines of a block or advisory message."
 value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }
 
-# ---- merge-side-pick (hooks/merge-side-pick.js, hooks/lib/merge-side-pick.js) ----------------------------
+# ---- merge-side-pick ----------------------------
 
 [merge_side_pick.summary]
 doc = "One-line description of the merge-side-pick check in the generated reference."
-value = "Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js)."
+value = "Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since."
 
 [merge_side_pick.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -227,11 +227,11 @@ value = '^[A-Za-z0-9][A-Za-z0-9._/@-]*$'
 doc = "Text used for the side-pick command when none was recorded."
 value = "a side-pick"
 
-# ---- ship-it-guard (hooks/ship-it-guard.js) ----------------------------------------------------------------
+# ---- ship-it-guard ----------------------------------------------------------------
 
 [ship_it.summary]
 doc = "One-line description of the ship-it-guard check in the generated reference."
-value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare (port of ship-it-guard.js)."
+value = "Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's phases do not declare."
 
 [ship_it.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -337,11 +337,11 @@ value = "It may be a legitimate shared-file touch (`files:` is free text, so fal
 doc = "Advisory advice."
 value = "if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase."
 
-# ---- scan-throttle (hooks/scan-throttle.js) ----------------------------------------------------------------
+# ---- scan-throttle ----------------------------------------------------------------
 
 [scan_throttle.summary]
 doc = "One-line description of the scan-throttle check in the generated reference."
-value = "Advisory: recommends the background-throttled form of a user-configured heavy scan command (port of scan-throttle.js)."
+value = "Advisory: recommends the background-throttled form of a user-configured heavy scan command."
 
 [scan_throttle.guard_name]
 doc = "The guard id this check answers to in messages."
@@ -407,11 +407,11 @@ value = "To keep the machine responsive."
 doc = "Advice when the scan is the first simple command; {throttled} is the command with the prefix in place."
 value = "re-run it background-throttled: `{throttled}`."
 
-# ---- coordinator-work-guard (hooks/coordinator-work-guard.js, hooks/coordinator-detect.js) -----------------
+# ---- coordinator-work-guard -----------------
 
 [coordinator_work.summary]
 doc = "One-line description of the coordinator-work-guard check in the generated reference."
-value = "Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers (port of coordinator-work-guard.js)."
+value = "Main-thread work window. PreToolUse: allows subagent Bash calls in the engine and defers the rest (the classification and the block stay with Node). PostToolUse: records the call in the window, nudges once per crossing and folds stale session files, when the call's classification is already known (the Node pre-verdict of the same tool call) or provably not work; otherwise defers."
 
 [coordinator_work.agent_markers]
 doc = "Payload fields the host puts on a subagent's hook payload and never on the main thread's."
@@ -421,11 +421,11 @@ value = ["agent_id", "agent_type"]
 doc = "Payload fields that, both non-empty strings, identify a Codex payload."
 value = ["turn_id", "model"]
 
-# ---- compact-declaration-guard (hooks/compact-declaration-guard.js, hooks/lib/compact-advice.js) ------------
+# ---- compact-declaration-guard ------------
 
 [compact_decl.summary]
 doc = "One-line description of the compact-declaration-guard check in the generated reference."
-value = "Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks (port of compact-declaration-guard.js)."
+value = "Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks."
 
 [compact_decl.setting]
 doc = "Where the on/off switch is read from (guards.compactDeclarationGuard, default on; it has no environment variable)."
@@ -500,11 +500,11 @@ value = 100
 doc = "Content block types that carry assistant text in a Codex rollout entry."
 value = ["output_text", "text"]
 
-# ---- model-routing-guard (hooks/model-routing-guard.js) ----------------------------------------------------
+# ---- model-routing-guard ----------------------------------------------------
 
 [model_routing.summary]
 doc = "One-line description of the model-routing check in the generated reference."
-value = "Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches (port of model-routing-guard.js)."
+value = "Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches."
 
 [model_routing.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -773,7 +773,7 @@ value = "update.js runs migrations and the main session must judge the result."
 
 [model_routing.msg_update_instead]
 doc = "Update-in-session block advice."
-value = "run `node <path>/update.js ...` directly in the main session."
+value = "run `ah-hook update ...` directly in the main session."
 
 [model_routing.msg_handover_what]
 doc = "Handover-delegation advisory headline."
@@ -959,7 +959,7 @@ value = "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent to
 doc = "Row-6 advisory reason."
 value = "general-purpose carries the Agent tool and can recurse; chains waste ~7x tokens by depth 5."
 
-# ---- file-backed guard state (checks::guardkit::fsio, hooks/lib/state-prune.js) -----------------------------
+# ---- file-backed guard state (checks::guardkit::fsio) -----------------------------
 
 [guardkit.state_dir_name]
 doc = "Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine."
@@ -989,7 +989,7 @@ value = ".prune-stamp-{prefix}.json"
 doc = "Key of the stamp file that holds the time of the last sweep."
 value = "lastSweep"
 
-# ---- turn gate (hooks/lib/turn-gate.js) ---------------------------------------------------------------------
+# ---- turn gate ---------------------------------------------------------------------
 
 [turn_gate.dir]
 doc = "Directory under the state directory that holds the per-session turn-gate files."
@@ -1032,7 +1032,7 @@ value = "agent:"
 doc = "The slot label used for the main thread."
 value = "main"
 
-# ---- expected-failure classifier (hooks/lib/expected-failure.js) -------------------------------------------
+# ---- expected-failure classifier -------------------------------------------
 
 [expected_failure.predicate_verbs]
 doc = "Verbs whose exit status 1 means no, different or false rather than broken."
@@ -1113,11 +1113,11 @@ value = '^\s*Exit code (\d+)\b'
 doc = "Regex source of an error text that is a harness refusal: the command never ran."
 value = '^\s*This (?:agent|session) is isolated in the worktree\b'
 
-# ---- failure-root-cause-nudge (hooks/failure-root-cause-nudge.js) -------------------------------------------
+# ---- failure-root-cause-nudge -------------------------------------------
 
 [failure_nudge.summary]
 doc = "One-line description of the failure-root-cause-nudge check in the generated reference."
-value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn (port of failure-root-cause-nudge.js)."
+value = "Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn."
 
 [failure_nudge.guard_name]
 doc = "The skip.json key that silences this hook."
@@ -1169,7 +1169,7 @@ value = "this command failed{cmd}."
 doc = "Advisory advice."
 value = "before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom."
 
-# ---- coordinator-work-guard, PostToolUse pass (hooks/coordinator-work-guard.js --post, hooks/lib/coordinator-work.js) ----
+# ---- coordinator-work-guard, PostToolUse pass ----
 
 [coordinator_work.post_event]
 doc = "The event name of the pass that records calls into the window."
@@ -1335,7 +1335,7 @@ doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe with
 value = ["tail", "head", "wc"]
 
 [coordinator_work.bookkeeping_cli]
-doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall devswarm.js launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall ah-hook mesh launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
 value = '^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'
 
 [coordinator_work.bookkeeping_filter]
@@ -1418,11 +1418,11 @@ value = ["calls", "work", "blocks", "skippedWouldBlock"]
 doc = "The keys of one version's entry in the metrics file, in file order: the number of folded sessions, then the counters."
 value = ["sessions", "calls", "work", "blocks", "skippedWouldBlock"]
 
-# ---- merge-gate (hooks/merge-gate.js) ---------------------------------------------------------------------
+# ---- merge-gate ---------------------------------------------------------------------
 
 [merge_gate.summary]
 doc = "One-line description of the merge-gate check in the generated reference."
-value = "Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair (port of merge-gate.js)."
+value = "Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and the Jev shadow ask that goes with a hedge; defers only a relative transcript path, a transcript line the engine cannot parse and a text window that would cut a surrogate pair."
 
 [merge_gate.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -1522,11 +1522,11 @@ value = [
   { verb = "hivecontrol", prefix = ["workspace", "merge-from-source"] },
 ]
 
-# ---- api-guard (hooks/api-guard.js) -----------------------------------------------------------------------
+# ---- api-guard -----------------------------------------------------------------------
 
 [api_guard.summary]
 doc = "One-line description of the api-guard check in the generated reference."
-value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook (port of api-guard.js)."
+value = "Fabricated-API guard: answers every call the Node api-guard would allow without probing an interpreter (guard off or skipped, a target that is not Python or JavaScript, code that names no verifiable module or global, a Bash command that names no code file, or whose text cannot hold a verifiable reference or cannot write a file) and defers the rest, so every interpreter probe stays with the Node hook."
 
 [api_guard.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -1596,11 +1596,11 @@ value = ["fs", "path", "os", "crypto", "util", "stream", "buffer", "events", "ur
 doc = "JavaScript global builtins whose members the Node guard verifies by default."
 value = ["Array", "String", "Object", "Promise", "Map", "Set", "WeakMap", "WeakSet", "Number", "Math", "JSON", "Reflect", "Symbol", "Date", "RegExp", "BigInt", "Buffer"]
 
-# ---- edit-guard (hooks/edit-guard.js) ---------------------------------------------------------------------
+# ---- edit-guard ---------------------------------------------------------------------
 
 [edit_guard.summary]
 doc = "One-line description of the edit-guard check in the generated reference."
-value = "Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook (port of edit-guard.js)."
+value = "Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch: blocks a write into the launcher directory for every agent, lets a subagent pass, and decides every main-thread target as the Node edit-guard does (the coordinator allowlist with its symlink and hard-link honesty checks, the trusted per-project allowlist, the harness plan file, the session scratchpad, handover documents, plan mode, DevSwarm child workers and the DevSwarm wording); a call that needs the hook process's own working directory or home defers to the Node hook."
 
 [edit_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -1642,7 +1642,7 @@ value = "leave that directory alone."
 doc = "What stays allowed next to the launcher directory."
 value = "the rest of .anti-hall/** (handovers, progress, history, state)."
 
-# ---- coordinator detection (hooks/coordinator-detect.js) --------------------------------------------------
+# ---- coordinator detection --------------------------------------------------
 
 [coordinator_work.main_entrypoints]
 doc = "Entry point values (exact) of a main-thread session."
@@ -1655,15 +1655,15 @@ value = "terminal_ide_"
 [coordinator_work.codex_tool]
 doc = "The tool name only Codex sends; a payload naming it is a Codex payload."
 value = "apply_patch"
-# ---- DevSwarm prompt gates (hooks/devswarm-parent-inbox.js, hooks/devswarm-child-turn.js) -------------------------------
+# ---- DevSwarm prompt gates -------------------------------
 
 [devswarm_prompt.parent_summary]
 doc = "One-line description of the devswarm-parent-inbox check in the generated reference."
-value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer (port of devswarm-parent-inbox.js)."
+value = "DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer."
 
 [devswarm_prompt.child_summary]
 doc = "One-line description of the devswarm-child-turn check in the generated reference."
-value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook (port of devswarm-child-turn.js)."
+value = "DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook."
 
 [devswarm_prompt.parent_setting]
 doc = "Where the devswarm.parentInbox switch (default on) is read from: no environment variable, then settings.json, then the plugin option."
@@ -1674,7 +1674,7 @@ doc = "Where the devswarm.childTurn switch (default on) is read from: no environ
 value = { section = "devswarm", key = "childTurn", env = "", aliases = [], option = "devswarm_child_turn", default = true }
 
 [devswarm_prompt.judge_env]
-doc = "Environment variable that marks a Jev judge child process; its hooks do nothing (hooks/lib/judge-child-exit.js). Only the exact value in judge_value counts."
+doc = "Environment variable that marks a Jev judge child process; its hooks do nothing. Only the exact value in judge_value counts."
 value = "ANTIHALL_JUDGE_CHILD"
 
 [devswarm_prompt.judge_value]
@@ -1682,7 +1682,7 @@ doc = "The value of judge_env that silences the hook."
 value = "1"
 
 [devswarm_prompt.kill_env]
-doc = "Hard kill switch of the DevSwarm integration (hooks/lib/devswarm-detect.js): the exact value in kill_value makes the integration inactive."
+doc = "Hard kill switch of the DevSwarm integration: the exact value in kill_value makes the integration inactive."
 value = "DISABLE_ANTIHALL_DEVSWARM"
 
 [devswarm_prompt.kill_value]
@@ -1694,7 +1694,7 @@ doc = "Environment variable whose non-blank value makes the DevSwarm integration
 value = "DEVSWARM_REPO_ID"
 
 [devswarm_prompt.branch_env]
-doc = "Environment variable whose non-blank value marks a child workspace (hooks/lib/devswarm-role.js)."
+doc = "Environment variable whose non-blank value marks a child workspace."
 value = "DEVSWARM_SOURCE_BRANCH"
 
 [devswarm_prompt.event]
@@ -1706,7 +1706,7 @@ doc = "The emit-dedupe key of the Primary's communication-override reminder."
 value = "parent-inbox-comms-override"
 
 [devswarm_prompt.override_reassert]
-doc = "The Primary's per-turn communication-override reminder (hooks/devswarm-parent-inbox.js OVERRIDE_REASSERT), byte for byte."
+doc = "The Primary's per-turn communication-override reminder, byte for byte."
 value = "\U0001F4A1 anti-hall \u00B7 devswarm-comms: mesh only \u2014 native hivecontrol messaging blocked. Check: `roster` / `mesh read`. Direct: `send --to <meshId>`."
 
 [devswarm_prompt.seat_dir]
@@ -1720,22 +1720,22 @@ min = 1
 max = 1000
 
 [devswarm_prompt.child_override]
-doc = "The child workspace's communication-override reminder of every turn (hooks/devswarm-child-turn.js OVERRIDE_REASSERT), byte for byte."
+doc = "The child workspace's communication-override reminder of every turn, byte for byte."
 value = '''
 💡 anti-hall · devswarm-comms: mesh only — native hivecontrol messaging blocked. Report: `heartbeat <id> --summary`. Direct: `send --to-primary`.'''
 
 [devswarm_prompt.child_autonomy]
-doc = "The child's self-continue reminder (hooks/devswarm-child-turn.js SELF_CONTINUE), byte for byte."
+doc = "The child's self-continue reminder, byte for byte."
 value = '''
 💡 anti-hall · devswarm-autonomy: if you are running a multi-round autonomous task (deadly-loop, iterative fix waves, a long staged build), do NOT end your turn to wait between rounds — keep issuing tool calls and proceed to the next round within the SAME turn. End your turn (Stop) ONLY at: (a) a genuine BLOCK needing a parent decision, (b) your final completion / merge-gate report, or (c) an unrecoverable error. Ending your turn just to 'check in' between rounds costs a full wake-cycle of latency and is the main cause of slow workspace work.'''
 
 [devswarm_prompt.child_reminder]
-doc = "The child's per-turn report reminder (hooks/devswarm-child-turn.js REMINDER); {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+doc = "The child's per-turn report reminder; {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
 value = '''
 💡 anti-hall · devswarm-child-workspace: (per turn) keep the parent orchestrator updated — run `{cli} heartbeat <DEVSWARM_BUILDER_ID> --summary "<status>"` to report progress/blockers as you make them — this is what satisfies your Stop-gate report (`send --to-primary --message-file <path>` is a SEPARATE direct message, not a substitute) — and check for + act on any parent messages before continuing, so you stay visible on the parent's task list instead of drifting off it.'''
 
 [devswarm_prompt.child_receive]
-doc = "The child's reception reminder (hooks/devswarm-child-turn.js RECEIVE_NUDGE); {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
+doc = "The child's reception reminder; {cli} is the DevSwarm CLI path and the id token is replaced by the builder id when that is a safe id."
 value = '''
 💡 anti-hall · devswarm-child-reception: to RECEIVE parent messages, run `{cli} inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm CLI) — a SAFE, bounded drain that folds the native parent->child queue into your durable inbox (non-destructive count gate, one bounded read, never `monitor`). Then read them via `{cli} inbox read-primary <DEVSWARM_BUILDER_ID>` (read-only; after handling, run the `ackCommand` it returns). Substitute your own DEVSWARM_BUILDER_ID for <...>.'''
 
@@ -1814,7 +1814,7 @@ doc = "The setting devswarm.planRequired (off by default): a child without a ste
 value = { section = "devswarm", key = "planRequired", type = "boolean", env = "ANTIHALL_DEVSWARM_PLAN_REQUIRED", option = "devswarm_plan_required", default = false }
 
 [devswarm_prompt.plan_none]
-doc = "The plan segment of a child with no step plan when one is required (hooks/devswarm-child-turn.js buildPlanSegment). Placeholders: {cli}, {id}."
+doc = "The plan segment of a child with no step plan when one is required. Placeholders: {cli}, {id}."
 value = '''
 💡 anti-hall · devswarm-plan: you have no step plan yet. Write your brief as numbered steps once: `{cli} plan set {id} --steps "1. …\n2. …"` — then report each step with `heartbeat {id} --step N --status doing|done|blocked`.'''
 
@@ -1846,7 +1846,7 @@ doc = "Environment variable that holds a child workspace's builder name."
 value = "DEVSWARM_BUILDER_NAME"
 
 [devswarm_prompt.mode_setting]
-doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset, as in hooks/lib/settings.js)."
+doc = "Where devswarm.supervisorMode is read from: environment variable, settings.json, then the plugin option; `values` are the accepted words and `manifest_default` is the default the plugin manifest declares for the option (a stored option equal to it counts as unset)."
 value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", option = "devswarm_supervisor_mode", default = "auto", manifest_default = "auto", values = ["auto", "on", "off"] }
 
 [devswarm_prompt.summary_dir]
@@ -1858,15 +1858,15 @@ doc = "The setting devswarm.archivedChildStop (on by default): an archived child
 value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env = "ANTIHALL_DEVSWARM_ARCHIVED_CHILD_STOP", option = "devswarm_archived_child_stop", default = true }
 
 [devswarm_prompt.git_push_args]
-doc = "The git arguments, after `-C <worktree>`, of the push-state probe the heartbeat carries (companion/lib/devswarm-git-truth.js gitPushState): the commits ahead of the upstream."
+doc = "The git arguments, after `-C <worktree>`, of the push-state probe the heartbeat carries: the commits ahead of the upstream."
 value = ["rev-list", "--count", "@{u}..HEAD"]
 
 [devswarm_prompt.git_env]
-doc = "The environment the push-state probe adds to the request's: the read-only git environment (hooks/lib/git-env.js), so the probe never takes a repository lock."
+doc = "The environment the push-state probe adds to the request's: the read-only git environment, so the probe never takes a repository lock."
 value = { GIT_OPTIONAL_LOCKS = "0" }
 
 [devswarm_prompt.git_timeout_ms]
-doc = "How long the push-state probe may run (companion/lib/devswarm-git-truth.js GIT_TIMEOUT_MS); a probe that does not finish leaves the push keys out of the heartbeat."
+doc = "How long the push-state probe may run; a probe that does not finish leaves the push keys out of the heartbeat."
 value = 4000
 min = 10
 unit = "ms"
@@ -1876,24 +1876,24 @@ doc = "What git says on stderr when the directory is no repository: the probe th
 value = "not a git repository"
 
 [devswarm_prompt.stale_key]
-doc = "The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it (companion/lib/ingest-health.js STALE_DEDUPE_KEY)."
+doc = "The emit-dedupe key of the ingest-daemon stale banner; a healthy daemon forgets it."
 value = "devswarm-ingest-stale"
 
 [devswarm_prompt.fault_key]
-doc = "The emit-dedupe key of the ingest monitor-fault banner; a healthy daemon forgets it (companion/lib/ingest-health.js MONITOR_FAULT_DEDUPE_KEY)."
+doc = "The emit-dedupe key of the ingest monitor-fault banner; a healthy daemon forgets it."
 value = "devswarm-ingest-monitor-fault"
 
 [devswarm_prompt.archive_marker]
-doc = "The token a parent embeds in a message to ask the child to archive its own workspace (companion/lib/devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+doc = "The token a parent embeds in a message to ask the child to archive its own workspace."
 value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
 
 [devswarm_prompt.unread_segment]
-doc = "The child's unread-parent-mail segment (hooks/devswarm-child-turn.js buildUnreadSegment). Placeholders: {count}, {cli}, {id}."
+doc = "The child's unread-parent-mail segment. Placeholders: {count}, {cli}, {id}."
 value = '''
 ⚠️ anti-hall · devswarm-child-inbox: priority — you have {count} unread parent message(s). STOP and address these parent message(s) FIRST before continuing. Read them the SAFE way via the durable inbox cursor — `{cli} inbox read-primary {id}` (anti-hall devswarm CLI) (read-only; after handling, run the `ackCommand` it returns). Do NOT run `hivecontrol workspace read-messages` or `monitor` — those DESTRUCTIVELY drain the native queue.'''
 
 [devswarm_prompt.archive_request]
-doc = "The segment that relays a parent's request to archive the workspace (hooks/devswarm-child-turn.js buildArchiveRequestSegment). Placeholders: {cli}, {id}."
+doc = "The segment that relays a parent's request to archive the workspace. Placeholders: {cli}, {id}."
 value = '''
 💡 anti-hall · devswarm-archive-request: your parent asks you to archive this workspace. Confirm with YOUR user, then run `{cli} archive {id}`. NEVER auto-archive.'''
 
@@ -1934,7 +1934,7 @@ doc = "The event-log kind of the line the child-turn check writes when it hands 
 value = "child-turn-defer"
 
 [devswarm_prompt.mesh_direct]
-doc = "The child's nudge for mesh mail addressed to it (hooks/devswarm-child-turn.js buildMeshDirectSegment). Placeholders: {count}, {age}, {cli}, {id}."
+doc = "The child's nudge for mesh mail addressed to it. Placeholders: {count}, {age}, {cli}, {id}."
 value = '''
 ⚠️ anti-hall · devswarm-mesh-direct: you have {count} unread mesh direct message(s){age} addressed to you. Read them via `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns).'''
 
@@ -1958,7 +1958,7 @@ min = 1
 unit = "ms"
 
 [devswarm_prompt.relative_none]
-doc = "How an unknown or unset time reads in a banner (companion/lib/ingest-health.js formatRelative)."
+doc = "How an unknown or unset time reads in a banner."
 value = "—"
 
 [devswarm_prompt.launchd_platform]
@@ -1966,7 +1966,7 @@ doc = "The platform name (as the host reports it) on which the ingest job is a l
 value = "macos"
 
 [devswarm_prompt.test_markers]
-doc = "Environment variables that mark a test run; under one the service manager is never asked (companion/lib/test-home-guard.js TEST_MARKERS)."
+doc = "Environment variables that mark a test run; under one the service manager is never asked."
 value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST_ISOLATION"]
 
 [devswarm_prompt.launchctl_args]
@@ -1974,7 +1974,7 @@ doc = "The arguments of the launchd query that lists the disabled jobs of the us
 value = ["print-disabled", "gui/{uid}"]
 
 [devswarm_prompt.launchctl_timeout_ms]
-doc = "How long the launchd query may run (companion/lib/ingest-health.js launchdDisabledLabel)."
+doc = "How long the launchd query may run."
 value = 3000
 min = 10
 unit = "ms"
@@ -1984,19 +1984,19 @@ doc = "The prefix of a project's ingest job label; the project key follows."
 value = "com.anti-hall.devswarm-ingest."
 
 [devswarm_prompt.banner_keepalive]
-doc = "Delivered turns after which an unchanged ingest banner is sent again (companion/lib/ingest-health.js STALE_KEEPALIVE_TURNS)."
+doc = "Delivered turns after which an unchanged ingest banner is sent again."
 value = 50
 min = 0
 max = 100000
 
 [devswarm_prompt.banner_grace_ms]
-doc = "A stale ingest heartbeat younger than this, with the daemon's lock held by a live process, is a hand-over in progress and gets no banner (companion/lib/ingest-health.js BANNER_GRACE_MS)."
+doc = "A stale ingest heartbeat younger than this, with the daemon's lock held by a live process, is a hand-over in progress and gets no banner."
 value = 300000
 min = 0
 unit = "ms"
 
 [devswarm_prompt.stale_banner]
-doc = "The ingest-daemon stale banner (companion/lib/ingest-health.js buildStaleBanner). Placeholders: {age}, {tail}."
+doc = "The ingest-daemon stale banner. Placeholders: {age}, {tail}."
 value = '''
 ⚠️ anti-hall · devswarm-stale-data: ingest daemon last alive {age} ago — roster/app-state freshness may be stale (the daemon may have stopped or never started for this worktree). Mesh sends are written directly to the store and are NOT affected. {tail}Shown once per stale episode.'''
 

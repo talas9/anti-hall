@@ -1,12 +1,12 @@
-# ah-engine shipped defaults for the spawn and comms guards ported from Node: swarm-guard (hooks/swarm-guard.js) and
-# devswarm-comms-guard (hooks/devswarm-comms-guard.js). Format: see the header of engine.toml. Regex sources use
+# ah-engine shipped defaults for the spawn and comms guards ported from Node: swarm-guard and
+# devswarm-comms-guard. Format: see the header of engine.toml. Regex sources use
 # JavaScript syntax (the Node guards are the authority) and are translated by `checks::guardkit::jsre`.
 
 # ---- devswarm-comms-guard ----------------------------------------------------------------------------------
 
 [devswarm_comms.summary]
 doc = "One-line description of the devswarm-comms-guard check in the generated reference."
-value = "Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets (port of devswarm-comms-guard.js)."
+value = "Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets."
 
 [devswarm_comms.guard_name]
 doc = "Guard name in the block message and the skip file."
@@ -78,7 +78,7 @@ value = "Direct Claude remote-agent messaging between a DevSwarm Primary/child a
 
 [devswarm_comms.msg_block_instead]
 doc = "What to do instead of the blocked send."
-value = "use the DevSwarm mesh: `~/.anti-hall/bin/devswarm.js send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
+value = "use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-hook mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
 
 [devswarm_comms.msg_ok_what]
 doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."
@@ -88,7 +88,7 @@ value = "target \"{to}\" resolves to a live session (cwd: {cwd}) that is not a D
 
 [swarm_guard.summary]
 doc = "One-line description of the swarm-guard check in the generated reference."
-value = "Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent (port of swarm-guard.js and lib/shared-tree-note.js)."
+value = "Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the shared-tree advisory to an allowed write-capable spawn that shares a working tree with a running write-capable agent."
 
 [swarm_guard.guard_name]
 doc = "Guard name in the block message and the skip file."
@@ -308,7 +308,7 @@ value = ["subagent_type", "agentType", "agent_type"]
 doc = "The largest integer a JavaScript number prints exactly in decimal (2 to the 53rd); a spawn log holding a larger entry is left to the Node hook."
 value = 9007199254740992
 
-# ---- swarm-guard: the shared-tree advisory (lib/shared-tree-note.js) -----------------------------------------
+# ---- swarm-guard: the shared-tree advisory -----------------------------------------
 
 [swarm_guard.shared_tree_label]
 doc = "Guard name in the shared-tree advisory."

@@ -1,4 +1,4 @@
-# ah-engine shipped defaults for the statusline helper commands (L9a): `phase` (statusline/phase.js), `install-statusline` and
+# ah-engine shipped defaults for the statusline helper commands (L9a): `phase`, `install-statusline` and
 # `uninstall-statusline` (the `src/ops/phase.rs` and `src/ops/slcfg.rs` modules). Format: see the header of engine.toml.
 #
 # The message texts are the Node scripts' own, word for word: the parity tests compare the commands' output with the scripts'
@@ -226,11 +226,11 @@ value = "  To switch modes, uninstall first, then re-run with --consolidate:"
 
 [slcfg.advisory_3]
 doc = "The uninstall hint."
-value = "    node statusline/install-statusline.js --uninstall   # or remove statusLine from settings manually"
+value = "    ah-hook uninstall-statusline          # or remove statusLine from settings manually"
 
 [slcfg.advisory_4]
 doc = "The reinstall hint."
-value = "    node statusline/install-statusline.js --consolidate"
+value = "    ah-hook install-statusline --consolidate"
 
 [slcfg.no_changes]
 doc = "Nothing was changed."

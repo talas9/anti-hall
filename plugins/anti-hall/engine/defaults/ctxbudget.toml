@@ -2,7 +2,7 @@
 # auto-handover, auto-handover-pause-nag, compact-advice-guard) and the helpers they share (D17, D30, D74).
 #
 # Every file name, setting name, limit and message of these checks lives here. The settings tables
-# (`ctxbudget.set_*`) describe one entry of hooks/lib/settings-schema.js each: `kind` is bool, num or enum; `env` and
+# (`ctxbudget.set_*`) describe one settings entry each: `kind` is bool, num or enum; `env` and
 # `aliases` are the environment names; `option` is the plugin option name (empty: none); `manifest_default` is the text
 # a stored plugin option must equal to count as "never touched" (the default the plugin manifest or the schema carries);
 # `default` is the schema default; `min`/`max` clamp a number, `values` lists the words of an enum. Format of the file:
@@ -11,7 +11,7 @@
 # ---- shared ---------------------------------------------------------------------------------------------------
 
 [ctxbudget.judge_child_env]
-doc = "Environment variable the judge child sets to 1 so that every hook is a no-op (hooks/lib/judge-child-exit.js)."
+doc = "Environment variable the judge child sets to 1 so that every hook is a no-op."
 value = "ANTIHALL_JUDGE_CHILD"
 
 [ctxbudget.judge_child_on]
@@ -35,12 +35,12 @@ doc = "The skip-file name of the compact-advice-guard."
 value = "compact-advice-guard"
 
 [ctxbudget.tail_bytes]
-doc = "How many bytes of the end of a transcript the guards read (hooks/lib/transcript-tail.js MAX_TAIL_BYTES)."
+doc = "How many bytes of the end of a transcript the guards read."
 value = 1572864
 unit = "bytes"
 
 [ctxbudget.session_tag_max]
-doc = "Characters of a session id kept in a state file tag (hooks/lib/auto-handover-state.js sessionTag)."
+doc = "Characters of a session id kept in a state file tag."
 value = 64
 
 [ctxbudget.state_root]
@@ -86,18 +86,18 @@ value = "token_count"
 doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
 value = '"usage"'
 
-# ---- limit-conserve-inject (hooks/limit-conserve-inject.js, hooks/limit-conserve.js) -------------------------
+# ---- limit-conserve-inject -------------------------
 
 [ctxbudget.summary_limit_conserve]
 doc = "One-line description of the limit-conserve-inject check in the generated reference."
-value = "UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently (port of limit-conserve-inject.js)."
+value = "UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold (account-switch guard and emit-dedupe as in Node), else an empty context; defers only what JavaScript could read differently."
 
 [ctxbudget.usage_cache]
 doc = "The OMC usage cache file, relative to the home directory."
 value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
 
 [ctxbudget.usage_max_stale_ms]
-doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent (hooks/limit-conserve.js MAX_STALE_MS)."
+doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent."
 value = 21600000
 unit = "ms"
 
@@ -118,7 +118,7 @@ doc = "The host file whose top-level userID names the logged-in account, relativ
 value = ".claude.json"
 
 [ctxbudget.account_state]
-doc = "The account-switch state file of limit conservation, relative to the home directory (hooks/limit-conserve.js ACCOUNT_STATE_FILE)."
+doc = "The account-switch state file of limit conservation, relative to the home directory."
 value = ".anti-hall/limit-conserve-account.json"
 
 [ctxbudget.lc_account_json]
@@ -146,7 +146,7 @@ doc = "The directive reason when the mode setting forces conservation on."
 value = "manual-on"
 
 [ctxbudget.lc_guard]
-doc = "The guard name the limit-conservation directive carries (hooks/lib/block-message.js guard)."
+doc = "The guard name the limit-conservation directive carries ."
 value = "limit-conserve"
 
 [ctxbudget.lc_dedupe_key]
@@ -183,7 +183,7 @@ doc = "The reset clause when no tripped bucket states a reset time."
 value = " Defer non-urgent heavy work until the next reset."
 
 [ctxbudget.lc_downshift]
-doc = "The main-model downshift text at the end of the directive (limit-conserve-inject.js DOWNSHIFT_DIRECTIVE)."
+doc = "The main-model downshift text at the end of the directive."
 value = "Main-model downshift: if the main agent is on the flagship model (Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant to use less of the shared Claude pool (a cheaper model draws it down more slowly) — Claude → Sonnet (1M context), Codex → the workhorse category's 1M-context model (resolve the slug from the live catalog; never pin one). NEVER downshift to a smaller-context model (e.g. a fast-category model may have well under 1M context) — check the catalog's context window first. Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. The agent cannot self-switch models (/model is a user action) — SURFACE this recommendation to the user; under an orchestration layer that can set the model (OMC/OMX), route main accordingly."
 
 [ctxbudget.ups_line]
@@ -194,11 +194,11 @@ value = "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"addit
 
 [ctxbudget.summary_auto_handover]
 doc = "One-line description of the auto-handover check in the generated reference."
-value = "UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently (port of auto-handover.js)."
+value = "UserPromptSubmit: the threshold fire, the soft advisory, the milestone nag, the latch re-arm and the post-handover gate with its backstop, latch and inferred-window writes as in Node; defers the gate on a prompt with text (Node logs a Jev decision row there) and what JavaScript could read differently."
 
 [ctxbudget.summary_pause_nag]
 doc = "One-line description of the auto-handover-pause-nag check in the generated reference."
-value = "Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently (port of auto-handover-pause-nag.js)."
+value = "Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently."
 
 [ctxbudget.env_pct_off]
 doc = "Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express)."
@@ -269,7 +269,7 @@ doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated h
 value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
 
 [ctxbudget.ah_housekeeping]
-doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate (auto-handover-gate.js HOUSEKEEPING_MARKERS)."
+doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate."
 value = ["inbox tick", "peer check", "BROADCAST bug sweep"]
 
 [ctxbudget.ah_marker_seps]
@@ -277,7 +277,7 @@ doc = "The characters that separate the extra housekeeping markers of the settin
 value = [",", ":"]
 
 [ctxbudget.ah_mtime_slack_ms]
-doc = "How much older than the fire a handover file may be and still count as this arm's handover (auto-handover-gate.js MTIME_SLACK_MS)."
+doc = "How much older than the fire a handover file may be and still count as this arm's handover."
 value = 2000
 unit = "ms"
 
@@ -291,7 +291,7 @@ value = 120000
 unit = "ms"
 
 [ctxbudget.ah_freshness_grace_ms]
-doc = "How much later than the handover file the last counted work may be and the handover still count as fresh (handover-freshness.js MTIME_GRACE_MS)."
+doc = "How much later than the handover file the last counted work may be and the handover still count as fresh."
 value = 1000
 unit = "ms"
 
@@ -516,7 +516,7 @@ doc = "The stdout line of a Stop hook that blocks with {reason} (already JSON-qu
 value = "{\"decision\":\"block\",\"reason\":{reason}}\n"
 
 [ctxbudget.ah_hash_tag_len]
-doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id (auto-handover-state.js sessionTag)."
+doc = "Hex digits of the transcript path's SHA-1 that tag a session without a usable id."
 value = 16
 
 [ctxbudget.ah_via_pct]
@@ -560,7 +560,7 @@ min = 100
 
 [ctxbudget.summary_compact_advice]
 doc = "One-line description of the compact-advice-guard check in the generated reference."
-value = "Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently (port of compact-advice-guard.js)."
+value = "Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently."
 
 [ctxbudget.set_compact_advice_guard]
 doc = "The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact."

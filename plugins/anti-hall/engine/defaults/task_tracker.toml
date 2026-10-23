@@ -1,4 +1,4 @@
-# ah-engine shipped defaults for the `task-tracker` check (hooks/task-tracker.js): the UserPromptSubmit task-list discipline
+# ah-engine shipped defaults for the `task-tracker` check: the UserPromptSubmit task-list discipline
 # reminder. Format: see the header of engine.toml.
 #
 # The hook injects the full directive on the first prompt of a session and again when its window elapses or the transcript has
@@ -8,7 +8,7 @@
 
 [task_tracker.summary]
 doc = "One-line description of the task-tracker check in the generated reference."
-value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node (port of task-tracker.js)."
+value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
 
 [task_tracker.setting]
 doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
@@ -264,7 +264,7 @@ unit = "chars"
 min = 40
 max = 5000
 
-# ---- the per-turn DISPATCH NOW line (hooks/lib/dispatch-demand.js demandLine) and the running-agent proof -----------------------------
+# ---- the per-turn DISPATCH NOW line and the running-agent proof -----------------------------
 
 [task_tracker.demand_line]
 doc = "The per-turn demand line; `{running}` the running agents, `{cap}` the parallel cap, `{shown}` the labelled tasks, `{more}` the tail for tasks past the shown ones."
@@ -341,7 +341,7 @@ min = 1
 doc = "The counter of per-turn demand lines shown."
 value = "demandsShown"
 
-# ---- the dispatchTier annotation and outcome tracking (hooks/lib/dispatch-tier.js annotator, remember, trackOutcomes) --------------
+# ---- the dispatchTier annotation and outcome tracking  --------------
 
 [task_tracker.tier_names]
 doc = "The tiers a cached Jev verdict may name, in the order of the question."

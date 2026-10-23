@@ -9,7 +9,7 @@ doc = "Directory under the home directory that holds every state file these hook
 value = ".anti-hall"
 
 [spawn_ctx.judge_child_env]
-doc = "Environment variable that marks a judge child process; a hook that sees it set to the judge value does nothing (hooks/lib/judge-child-exit.js)."
+doc = "Environment variable that marks a judge child process; a hook that sees it set to the judge value does nothing."
 value = "ANTIHALL_JUDGE_CHILD"
 
 [spawn_ctx.judge_child_value]
@@ -17,19 +17,19 @@ doc = "The value of the judge-child variable that turns a hook into a no-op."
 value = "1"
 
 [spawn_ctx.test_markers]
-doc = "Environment variables that mark a test run; under one of them a state path inside the real user home is refused (companion/lib/test-home-guard.js)."
+doc = "Environment variables that mark a test run; under one of them a state path inside the real user home is refused."
 value = ["NODE_TEST_CONTEXT", "ANTIHALL_TEST", "ANTIHALL_TEST_ISOLATION"]
 
 [spawn_ctx.real_home_optout_env]
-doc = "Environment variable that lets a test run use the real home anyway (companion/lib/test-home-guard.js)."
+doc = "Environment variable that lets a test run use the real home anyway."
 value = "ANTIHALL_ALLOW_REAL_HOME_TEST"
 
 [spawn_ctx.unknown_session]
-doc = "Session id used in a state file name when the real one sanitizes to nothing (hooks/lib/handover-find.js)."
+doc = "Session id used in a state file name when the real one sanitizes to nothing."
 value = "unknown-session"
 
 [spawn_ctx.devswarm_kill_env]
-doc = "Environment variable that, set to the kill value, turns DevSwarm detection off entirely (hooks/lib/devswarm-detect.js)."
+doc = "Environment variable that, set to the kill value, turns DevSwarm detection off entirely."
 value = "DISABLE_ANTIHALL_DEVSWARM"
 
 [spawn_ctx.devswarm_kill_value]
@@ -44,11 +44,11 @@ value = "DEVSWARM_REPO_ID"
 doc = "Where the DevSwarm supervisor mode (auto, on, off) is read from (devswarm.supervisorMode)."
 value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM_SUPERVISOR", aliases = [], option = "devswarm_supervisor_mode", default = "auto", values = ["auto", "on", "off"] }
 
-# ---- inbox-read-guard (hooks/inbox-read-guard.js, hooks/lib/devswarm-inbox-paths.js) -----------------------
+# ---- inbox-read-guard -----------------------
 
 [inbox_read.summary]
 doc = "One-line description of the inbox-read-guard check in the generated reference."
-value = "Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active (port of inbox-read-guard.js)."
+value = "Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes the wrapper; dormant unless DevSwarm is active."
 
 [inbox_read.setting]
 doc = "Where the on/off switch is read from (devswarm.inboxReadGuard, default on; it has no environment variable)."
@@ -102,17 +102,17 @@ value = "It does not drain the queue, but bypasses the durable cursor, so messag
 
 [inbox_read.msg_inbox_instead]
 doc = "What to do instead of reading the inbox."
-value = "`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`."
+value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>`."
 
 [inbox_read.msg_override]
 doc = "How to disable the guard entirely."
 value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely"
 
-# ---- phase-tracker (hooks/phase-tracker.js) ---------------------------------------------------------------
+# ---- phase-tracker ---------------------------------------------------------------
 
 [phase_tracker.summary]
 doc = "One-line description of the phase-tracker check in the generated reference."
-value = "Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks (port of phase-tracker.js)."
+value = "Records each Agent or Task spawn in ~/.anti-hall (the statusline's live swarm bar and the running-agents heartbeat); never blocks."
 
 [phase_tracker.log_file]
 doc = "The spawn log, relative to the state root."
@@ -153,7 +153,7 @@ value = 12
 min = 1
 max = 40
 
-# ---- orchestration state and delivery (hooks/lib/orch-full-state.js, hooks/orch-on-spawn.js, hooks/verify-first-orch.js) ----
+# ---- orchestration state and delivery ----
 
 [orch_state.dir]
 doc = "Directory of the orchestration markers and claims, relative to the state root."
@@ -191,11 +191,11 @@ value = "orch-on-spawn"
 doc = "The protocol level that sends today's full text everywhere."
 value = "full"
 
-# ---- orch-on-spawn (hooks/orch-on-spawn.js) ---------------------------------------------------------------
+# ---- orch-on-spawn ---------------------------------------------------------------
 
 [orch_on_spawn.summary]
 doc = "One-line description of the orch-on-spawn check in the generated reference."
-value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node (port of orch-on-spawn.js)."
+value = "Silent unless a spawn-time delivery is pending: answers every case where Node would print nothing; a pending marker takes the claim (a file created only when absent) and sends the full rules; only the retry slot after the claim lease, which needs the transcript scan, defers to Node."
 
 [orch_on_spawn.spawn_tools]
 doc = "Tool names that are a spawn: a call to any other named tool is ignored."
@@ -205,7 +205,7 @@ value = ["Agent", "Task", "Workflow", "spawn_agent", "collaborationspawn_agent"]
 doc = "Payload fields whose mere presence (not null) marks a subagent's own call."
 value = ["agent_id", "agent_type"]
 
-# ---- verify-first-orch (hooks/verify-first-orch.js, hooks/verify-first-core.js) ----------------------------
+# ---- verify-first-orch ----------------------------
 
 [verify_first_orch.summary]
 doc = "One-line description of the verify-first-orch check in the generated reference."

@@ -1,20 +1,20 @@
-# ah-engine shipped defaults for the DevSwarm CLI verbs ported from scripts/devswarm.js (lane l8): `help` (and the unknown-verb
+# ah-engine shipped defaults for the DevSwarm CLI verbs (lane l8): `help` (and the unknown-verb
 # answer), `skip`, `archive-ignore`, `archive-unignore`, `gate-intent` and `notice --list`. Format: see the header of engine.toml.
-# They run as `ah-engine mesh <devswarm.js argv>` (the launcher's route) or `ah-engine devswarm <verb> <args>` (under the role
+# They run as `ah-engine mesh <mesh verb argv>` (the launcher's route) or `ah-engine devswarm <verb> <args>` (under the role
 # matrix of devswarm_wire.toml). Every verb name, flag, path, limit and message text lives here; the values are Node's own
-# (scripts/devswarm.js, scripts/devswarm-lib/misc-verbs.js, archive.js, companion/lib/devswarm-maintainer-notice.js), and the
+#, and the
 # parity test (tests/devswarm_cli_parity.rs) compares them with the Node CLI, including the help table below.
 
 [devswarm_cli.verbs]
-doc = "The verbs scripts/devswarm.js dispatches, in the order of its switch (the order `help` lists them and the unknown-command message names them). A verb the engine does not port is still listed: it is Node's."
+doc = "The mesh verbs the dispatcher handles, in the order of its switch (the order `help` lists them and the unknown-command message names them). A verb the engine does not port is still listed: it is Node's."
 value = ["primary", "register", "ensure", "heartbeat", "inbox", "workspaces", "gate", "done", "nudge", "archive", "reap-orphans", "reconcile-registry", "unarchive", "archive-ignore", "archive-unignore", "archive-request", "register-primary", "migrate", "logs", "migrate-owner-keys", "send", "relay", "roster", "wake-directive", "app-state", "sync-ui", "app-sync", "diagnose", "plan", "scope", "supervision-report", "respawn", "correct", "healthcheck", "ready-check", "mesh", "reconcile", "reap-stale", "reconcile-active", "spawn", "merge", "skip", "auto-archive", "prune-archived", "gate-intent", "retention", "notice"]
 
 [devswarm_cli.help]
-doc = "The one-line synopsis and the side-effect note of every verb (scripts/devswarm.js VERB_HELP), by verb name. `mutates` absent means none is on file."
+doc = "The one-line synopsis and the side-effect note of every verb, by verb name. `mutates` absent means none is on file."
 value = { "primary" = { synopsis = "primary [status|takeover] [--session S] — status (default, read-only) prints this checkout's Primary-seat verdict; takeover re-registers the Primary seat to this session (--force), demoting the other holder (run it in the Primary checkout)", mutates = "`status` is read-only; `takeover` rewrites the Primary descriptor/registry row" }, "register" = { synopsis = "register a new workspace descriptor", mutates = "writes the descriptor file + store registry + summary" }, "ensure" = { synopsis = "like register, but idempotent: creates the descriptor when absent, otherwise keeps the existing one (backfilling missing fields only); refuses an archived workspace", mutates = "writes the descriptor file + store registry + summary" }, "heartbeat" = { synopsis = "record a liveness heartbeat for a workspace [--summary TEXT] [--step N --status doing|done|blocked] (--step records progress on the workspace's step plan)", mutates = "writes a heartbeat file; may emit a mesh broadcast; --step updates the plan file" }, "inbox" = { synopsis = "inbox subcommands: count | read | ack | pull | tick | messages | read-primary | ack-primary | peek-primary | drain-primary-legacy (drain = read-primary, consume, then the returned ack-primary --receipt command). `tick <id> [--child]` is the mailbox-wake cron's one-command drain: with --child it runs `pull` first, then reports the `count` shape and writes the wake-tick marker + heartbeat ts. `read-primary <id> --format text` prints one `from/seq/body` line per message instead of the raw JSON (still two-step by default: nothing is acked). `read-primary <id> --ack-after-print` is opt-in: acks immediately after printing (equivalent to running the returned `ackCommand` right away) — omit it and the two-step read-then-`ack-primary --receipt` default is unchanged. `inbox messages <id> [--limit N] [--since <index>|<ISO date>] [--tail N]` bounds a non-acking read: --since (a per-partition message index, or a parseable date such as ISO 8601) filters to rows at/after that point BEFORE the per-source --limit cap is applied, so a recent window is never emptied by an old, oversized inbox; --tail N keeps only the newest N of what --since (if given) returned, and refuses outright (rather than guess) if the --limit cap itself still truncated. --since/--tail are rejected on any ack-bearing call (read-primary/ack/pull/etc) — use the non-acking `messages` read for a bounded view.", mutates = "`pull`/`ack`/`ack-primary`/`drain-primary-legacy` mutate cursors; `tick` writes the wake-tick marker + heartbeat ts (and pulls with --child); `read-primary` writes only a read receipt (or also acks, with --ack-after-print); the rest are read-only" }, "workspaces" = { synopsis = "list registered workspaces", mutates = "read-only" }, "gate" = { synopsis = "set/clear merge gates on a workspace (--set/--clear)", mutates = "writes gate state to the store" }, "done" = { synopsis = "child: report this workspace done (sets the `done` gate on your own id + one [[ANTIHALL_DONE]] message to the Primary; idempotent) [--summary TEXT]", mutates = "writes the done gate + one mesh-direct message to the Primary" }, "nudge" = { synopsis = "send a nudge command to a workspace", mutates = "runs the configured nudge command against the workspace" }, "archive" = { synopsis = "archive (tombstone) a workspace registry row", mutates = "writes an archive tombstone to the store" }, "reap-orphans" = { synopsis = "clean up orphaned partitions across stores", mutates = "mutates store partitions; may rehome/heal registry rows" }, "reconcile-registry" = { synopsis = "reconcile the workspace registry against descriptors on disk", mutates = "writes registry rows" }, "unarchive" = { synopsis = "restore a previously archived workspace", mutates = "reverses an archive tombstone in the store" }, "archive-ignore" = { synopsis = "mark an archived workspace to be ignored by reap/heal", mutates = "writes an ignore marker" }, "archive-unignore" = { synopsis = "clear the archive-ignore marker on a workspace", mutates = "removes an ignore marker" }, "archive-request" = { synopsis = "request another session archive its own workspace", mutates = "mesh-direct store write" }, "register-primary" = { synopsis = "register the primary session for the current project", mutates = "MUTATES the store — writes a primary registry row derived from cwd" }, "migrate" = { synopsis = "run the store forward-migration", mutates = "MUTATES the store — this is a real migration run, not a dry check" }, "logs" = { synopsis = "query the shared devswarm JSONL log", mutates = "read-only" }, "migrate-owner-keys" = { synopsis = "forward-migrate descriptor owner keys", mutates = "MUTATES descriptor files on disk" }, "send" = { synopsis = "send a mesh message: --to <id>[,<id2>…]|--to-primary|--broadcast --message TEXT|--message-file <path>|--message-stdin [--urgency low|normal|high|urgent] [--question] [--answers] [--quiet] [--cc-primary]. `--quiet` prints one line (\"sent seq N -> X, B bytes, ok\") instead of the full JSON, and still prints \"ok:false ...\" + a non-zero exit on failure. `--cc-primary` (direct --to sends only) ALSO copies the Primary with the identical message body, best-effort — reported under the result's `ccPrimary`, never flips the primary send's own ok/exit code. Several recipients (`--to a,b` or a repeated `--to`, deduped) each get the same body; every one is attempted, results come back per recipient (ok, seq, bytes), and the exit is non-zero if any failed.", mutates = "MUTATES the store — appends a mesh message (and, with --cc-primary, a second one to the Primary) and may wake recipients" }, "relay" = { synopsis = "relay <seq|receipt> --to <id> [--note-file <path>] — forward a message THIS caller already received (its own inbox) to <id> verbatim, prefixed with a provenance header (\"relayed from X, seq N, M bytes\"). <seq> is the row's own `seq` (from `inbox messages`/`read-primary`); <receipt> is a read-primary readReceiptId and resolves only when it covers exactly one message. relay never acks: the read still needs its own `inbox ack-primary --receipt <receipt>`. Verifies the relayed byte length against the source and refuses (ok:false) on a mismatch or an empty source body — never a silent partial relay. Example: `relay 42 --to sibling-workspace-id`.", mutates = "MUTATES the store — appends one mesh message (via `send`, under this file's own Primary-seat gate)" }, "roster" = { synopsis = "show the mesh roster as a compact table of live workspaces (--all adds archived rows, --json prints the full data, --ack clears your own broadcast-unread)", mutates = "read-only, unless --ack is passed (clears broadcastUnread)" }, "wake-directive" = { synopsis = "reprint the SessionStart mailbox wake directive", mutates = "read-only" }, "app-state" = { synopsis = "DevSwarm app-DB summary: open workspaces by sidebar rank, PR/brief signals, session map, drift, message gaps (--json)", mutates = "read-only" }, "sync-ui" = { synopsis = "reconcile a transcribed DevSwarm sidebar screenshot (--titles-json <file>|--stdin) against the app DB; dry run unless --yes", mutates = "with --yes: archived markers (app-DB-proven only, never deletes) + names cache" }, "app-sync" = { synopsis = "run the supervisor app-DB sync now (archived markers, names cache, app-state.json; --dry-run)", mutates = "writes archived markers (never deletes), names cache, app-state.json" }, "diagnose" = { synopsis = "read-only mesh-health projection", mutates = "read-only" }, "plan" = { synopsis = "plan set <id> --steps \"1. …\\n2. …\"|--steps-file <path> [--scope glob,glob] — write the workspace's numbered step plan (idempotent); plan show <id> — print it with its step label", mutates = "`set` writes ~/.anti-hall/devswarm/plans/<key>.json; `show` is read-only" }, "scope" = { synopsis = "scope add <id> --glob <glob> [--glob …] --note TEXT — child: record extra work the user asked for, so the off-scope straying signal treats it as sanctioned and the Primary sees the note (idempotent)", mutates = "writes the plan file's extras" }, "supervision-report" = { synopsis = "supervision-report [--days N] [--json] — how DevSwarm supervision performed: straying warnings by signal, repeats, corrections followed by step progress, extras tagged, time-to-done and steps done vs planned, Jev shadow agreement (default 7 days)", mutates = "nothing (read-only)" }, "respawn" = { synopsis = "respawn <id> [--dry-run] — Primary only, after a `correct` warning and devswarm.respawnGraceMin minutes: ask the child to commit+push, park anything left on a new pushed park/<branch>-<ts> branch (abort if that fails), write plans/<id>.handover.md, spawn <branch>-r<N> from the default branch with the handover + remaining steps, archive the old id (--dry-run prints the plan only)", mutates = "one mesh send, a new park branch (pushed), the handover file, a new workspace, the old workspace archived" }, "correct" = { synopsis = "correct <id> [--dry-run] — Primary: send a straying child the correction \"step N '<text>': <reasons>. Return to step N or reply BLOCKED <why>\" and record warned_at (--dry-run prints it only)", mutates = "one mesh-direct send + the plan file's warned_at" }, "healthcheck" = { synopsis = "pass/fail health gate over the same data as diagnose", mutates = "read-only" }, "ready-check" = { synopsis = "ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch] — read-only readiness verdict (ok|review|block) for a child's \"READY <sha>\" claim: fast-forward vs base (default origin/main), gitlink changes, watched-dir deletions, files outside --allow", mutates = "read-only (--fetch runs `git fetch`)" }, "mesh" = { synopsis = "mesh subcommands: read", mutates = "read-only" }, "reconcile" = { synopsis = "rehome/heal descriptors across stores", mutates = "MUTATES the store — rehomes descriptors, heals the registry, spawns `inbox pull` per descriptor" }, "reap-stale" = { synopsis = "reap stale workspaces past their liveness window", mutates = "MUTATES the store — archives/tombstones stale rows" }, "reconcile-active" = { synopsis = "reconcile active workspaces against liveness", mutates = "MUTATES the store" }, "spawn" = { synopsis = "spawn <branch> [-s|--source <branch>] [-a|--agent <agent>] [-p|--prompt <text>] [-r|--remote] [-t|--title <title>] [--from-local] — create a new workspace via `hivecontrol workspace create` (raw argv tail forwarded verbatim; anti-hall adds ONLY `--from-local`, which it strips before forwarding). -s/--source: source branch to branch from (default: your current branch). -a/--agent: AI agent to use (default: repo default, then claude). -p/--prompt: initial prompt for the AI to start on immediately (also used to derive the workspace title when -t is absent). -r/--remote: use an existing remote branch (fetches from origin). -t/--title: display title (defaults to the branch name; anti-hall applies it via a separate update-title follow-up, reported as `titled`). --from-local: spawn from local HEAD even when it is stale/diverged from origin (anti-hall's own freshness gate; never forwarded to hivecontrol). Example: `spawn feature/foo -p \"implement X end to end\" -t \"Feature X\"`. Follow-up brief to an already-spawned child: `send --to <childId> --message \"...\"` (mesh-direct, this file's own delivery+ack path) — hivecontrol's own `workspace message-child <branch> \"<message>\"` also exists but bypasses anti-hall's mesh/ack bookkeeping, so prefer `send`. Read a child's status: `roster` (mesh-wide liveness/gates) or `inbox pull <childId>`/`inbox messages <childId>` (its own inbox).", mutates = "MUTATES — forwards the raw argv tail straight to the hivecontrol child process" }, "merge" = { synopsis = "check-merge + merge-into-source via hivecontrol (raw argv pass-through)", mutates = "MUTATES — forwards to hivecontrol AND unconditionally sends a mesh broadcast reporting the outcome" }, "skip" = { synopsis = "skip <guard> [--ttl <minutes>] — temporarily disable an anti-hall guard", mutates = "writes a skip-file entry" }, "auto-archive" = { synopsis = "show the auto-archive plan (done+merged+clean+no-unread+idle workspaces)", mutates = "read-only" }, "prune-archived" = { synopsis = "prune-archived --older-than <days> (dry run) | --confirm-ids <ids> --plan <nonce>", mutates = "dry run writes a plan file; --confirm-ids DELETES the listed archived workspaces via hivecontrol (owner-approved only)" }, "gate-intent" = { synopsis = "record a stated-intent signal for the Stop-hook parent gate", mutates = "writes a gate-intent record" }, "retention" = { synopsis = "message retention: status | run [--dry-run] [--store X] | restore --store X --month yyyy-mm", mutates = "`run` archives then prunes old message bodies (rows, positions and hashes stay) and VACUUMs; `restore` re-imports an archive month; `status`/`run --dry-run` are read-only" }, "notice" = { synopsis = "notice --post \"<text>\" [--ttl 7d] | notice --list — the anti-hall dev agent's cross-project maintainer broadcast", mutates = "`--post` appends one entry to ~/.anti-hall/devswarm/maintainer-notices.jsonl (refused unless devswarm.maintainerNotice.post=true AND this checkout is anti-hall itself); `--list` is read-only" } }
 
 [devswarm_cli.verb_help]
-doc = "The word of the help verb (`devswarm.js help [<verb>]`)."
+doc = "The word of the help verb (`ah-hook mesh help [<verb>]`)."
 value = "help"
 
 [devswarm_cli.verb_skip]
@@ -73,7 +73,7 @@ value = "text"
 
 [devswarm_cli.usage_head]
 doc = "First line of the verb list."
-value = "usage: devswarm.js <verb> [args] [--help]"
+value = "usage: ah-hook mesh <verb> [args] [--help]"
 
 [devswarm_cli.usage_verbs_label]
 doc = "The line that introduces the verbs."
@@ -81,7 +81,7 @@ value = "verbs:"
 
 [devswarm_cli.usage_tail]
 doc = "Last line of the verb list."
-value = "Run `devswarm.js help <verb>` or `devswarm.js <verb> --help` for detail on one verb."
+value = "Run `~/.anti-hall/ah-engine/bin/ah-hook mesh help <verb>` or `~/.anti-hall/ah-engine/bin/ah-hook mesh <verb> --help` for detail on one verb."
 
 [devswarm_cli.usage_verb_line]
 doc = "One verb of the list: `{verb}`, `{synopsis}` and `{mutates}` (empty, or the bracketed note)."
@@ -105,7 +105,7 @@ value = "read-only"
 
 [devswarm_cli.verb_usage_head]
 doc = "First line of one verb's help: `{verb}`."
-value = "usage: devswarm.js {verb} [args]"
+value = "usage: ah-hook mesh {verb} [args]"
 
 [devswarm_cli.side_effects]
 doc = "The side-effects line of one verb's help: `{mutates}`."
@@ -159,7 +159,7 @@ value = 60000
 
 [devswarm_cli.msg_skip_usage]
 doc = "The error for a skip without a guard name."
-value = "usage: devswarm.js skip <guard> [--ttl <minutes>]"
+value = "usage: ah-hook mesh skip <guard> [--ttl <minutes>]"
 
 [devswarm_cli.msg_skip_ttl_missing]
 doc = "The error for a bare --ttl."
@@ -302,7 +302,7 @@ doc = "The scope flag carrying what the user asked for."
 value = "note"
 
 [devswarm_cli.plan_max_steps]
-doc = "Most steps a plan keeps (devswarm-plan.js MAX_STEPS)."
+doc = "Most steps a plan keeps."
 value = 50
 min = 1
 max = 1000
@@ -385,11 +385,11 @@ value = "extra"
 
 [devswarm_cli.msg_plan_bad_id]
 doc = "The error for a plan without a safe workspace id."
-value = "usage: devswarm.js plan set|show <id> …"
+value = "usage: ah-hook mesh plan set|show <id> …"
 
 [devswarm_cli.msg_plan_usage]
 doc = "The error for a plan subcommand that is neither set nor show (the backslash-n is two characters, as in Node)."
-value = "usage: devswarm.js plan set <id> --steps \"1. …\\n2. …\"|--steps-file <path> [--scope glob,glob] | plan show <id>"
+value = "usage: ah-hook mesh plan set <id> --steps \"1. …\\n2. …\"|--steps-file <path> [--scope glob,glob] | plan show <id>"
 
 [devswarm_cli.msg_plan_no_steps]
 doc = "The error when no numbered list of at least two steps is found."
@@ -401,11 +401,11 @@ value = "the plan file is locked by another writer — retry"
 
 [devswarm_cli.msg_scope_bad_id]
 doc = "The error for a scope without a safe workspace id."
-value = "usage: devswarm.js scope add <id> --glob <glob> --note TEXT"
+value = "usage: ah-hook mesh scope add <id> --glob <glob> --note TEXT"
 
 [devswarm_cli.msg_scope_usage]
 doc = "The error for a scope subcommand that is not add."
-value = "usage: devswarm.js scope add <id> --glob <glob> [--glob …] --note \"<what the user asked for>\""
+value = "usage: ah-hook mesh scope add <id> --glob <glob> [--glob …] --note \"<what the user asked for>\""
 
 [devswarm_cli.msg_scope_glob_required]
 doc = "The error for a scope add without a glob."
@@ -540,7 +540,7 @@ min = 0
 max = 100000
 
 [devswarm_cli.log_levels]
-doc = "The log levels from the lowest rank to the highest (anti-hall-log.js LEVEL_RANK)."
+doc = "The log levels from the lowest rank to the highest."
 value = ["debug", "info", "warn", "error"]
 
 [devswarm_cli.log_file]
@@ -599,7 +599,7 @@ value = "watch-deletions"
 
 [devswarm_cli.msg_ready_usage]
 doc = "The ready-check usage error."
-value = "usage: devswarm.js ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch]"
+value = "usage: ah-hook mesh ready-check <sha> [--base <ref>] [--allow glob,glob] [--watch-deletions dir,dir] [--fetch]"
 
 [devswarm_cli.ready_default_base]
 doc = "The base ref of a ready-check without --base."
@@ -614,7 +614,7 @@ doc = "The git option that names the directory to work in."
 value = "-C"
 
 [devswarm_cli.ready_git_timeout_ms]
-doc = "How long one git call of ready-check may run (devswarm-git-truth.js GIT_TIMEOUT_MS); a call that overruns is unknown, never a fact."
+doc = "How long one git call of ready-check may run; a call that overruns is unknown, never a fact."
 value = 4000
 min = 100
 max = 600000
@@ -1030,7 +1030,7 @@ value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
 
 [devswarm_cli.archive_tail]
 doc = "The closing words of an archive request message."
-value = "your parent asks you to archive this workspace; confirm with your user, then run devswarm.js archive <id>."
+value = "your parent asks you to archive this workspace; confirm with your user, then run ~/.anti-hall/ah-engine/bin/ah-hook mesh archive <id>."
 
 [devswarm_cli.archive_urgency]
 doc = "The urgency of an archive request message (fixed: it is a reminder, never an emergency)."
@@ -1082,7 +1082,7 @@ value = "supervision-report"
 
 [devswarm_cli.sr_usage]
 doc = "The usage error of supervision-report."
-value = "usage: devswarm.js supervision-report [--days N] [--json]"
+value = "usage: ah-hook mesh supervision-report [--days N] [--json]"
 
 [devswarm_cli.flag_days]
 doc = "The supervision-report flag that sets how many UTC days the report covers."
@@ -1422,19 +1422,19 @@ doc = "Appended to the log file's name for its rotate lock."
 value = ".rotate.lock"
 
 [devswarm_cli.log_max_bytes]
-doc = "The log is rotated before an append that would take it past this size (anti-hall-log.js MAX_LOG_BYTES)."
+doc = "The log is rotated before an append that would take it past this size."
 value = 5242880
 min = 1024
 max = 1073741824
 
 [devswarm_cli.log_lock_stale_ms]
-doc = "A rotate lock older than this whose holder is not alive is taken over (anti-hall-log.js ROTATE_LOCK_STALE_MS)."
+doc = "A rotate lock older than this whose holder is not alive is taken over."
 value = 3000
 min = 100
 max = 600000
 
 [devswarm_cli.log_lock_wait_ms]
-doc = "How long one writer waits for the rotate lock before it appends without it (anti-hall-log.js ROTATE_LOCK_WAIT_MS)."
+doc = "How long one writer waits for the rotate lock before it appends without it."
 value = 300
 min = 0
 max = 60000
@@ -1446,25 +1446,25 @@ min = 1
 max = 10000
 
 [devswarm_cli.log_lock_reclaim_stale_ms]
-doc = "A takeover marker of the rotate lock older than this is abandoned (lock.js RECLAIM_STALE_MS)."
+doc = "A takeover marker of the rotate lock older than this is abandoned."
 value = 5000
 min = 100
 max = 600000
 
 [devswarm_cli.log_lock_release_tries]
-doc = "Attempts a release of the rotate lock makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES)."
+doc = "Attempts a release of the rotate lock makes to take the takeover marker."
 value = 5
 min = 1
 max = 100
 
 [devswarm_cli.log_lock_release_step_ms]
-doc = "Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS)."
+doc = "Pause between those attempts."
 value = 10
 min = 1
 max = 10000
 
 [devswarm_cli.log_lock_boot_slop_s]
-doc = "Two boot times this close are one boot (lock.js BOOT_SLOP_S)."
+doc = "Two boot times this close are one boot."
 value = 5
 min = 0
 max = 3600
@@ -1654,7 +1654,7 @@ doc = "How long a workspace whose session transcript resolves may stay silent be
 value = { type = "number", section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", exact = true, exclusive_min = 0, default = 1800000 }
 
 [devswarm_cli.rr_env_idle_ms]
-doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve (liveness.js idleThresholdMs)."
+doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve."
 value = "ANTIHALL_DEVSWARM_IDLE_MS"
 
 [devswarm_cli.rr_idle_ms_default]
@@ -1666,7 +1666,7 @@ doc = "Milliseconds in a day: the unit of the `idle Nd` hint."
 value = 86400000
 
 [devswarm_cli.rr_split_gap_ms]
-doc = "Two instance nonces count as concurrent only when their activity is within this many milliseconds of each other (roster-diag.js INSTANCE_SPLIT_CONCURRENT_GAP_MS)."
+doc = "Two instance nonces count as concurrent only when their activity is within this many milliseconds of each other."
 value = 60000
 
 [devswarm_cli.rr_field_last_outbound]
@@ -1674,15 +1674,15 @@ doc = "The liveness verdict field the `idle Nd` hint and the `last` column read.
 value = "lastOutboundTs"
 
 [devswarm_cli.rr_repos_root_re]
-doc = "The path segment under which the DevSwarm app keeps its worktrees (devswarm-archived-cache.js DEVSWARM_REPOS_ROOT_RE); only such a worktree can be archived by absence from the app's active list."
+doc = "The path segment under which the DevSwarm app keeps its worktrees; only such a worktree can be archived by absence from the app's active list."
 value = '[\\/]\.devswarm[\\/]repos[\\/]'
 
 [devswarm_cli.rr_active_list_file]
-doc = "The supervisor's cache of the app's active workspaces, under the DevSwarm root (devswarm-archived-cache.js CACHE_BASENAME). A roster that would have to read it goes to Node."
+doc = "The supervisor's cache of the app's active workspaces, under the DevSwarm root. A roster that would have to read it goes to Node."
 value = "hivecontrol-active.json"
 
 [devswarm_cli.rr_ghost_label_re]
-doc = "The shape of a worktree label (`primary-<8 hex>`): only such a row can fold into its canonical row (devswarm-sender-alias.js rosterFoldTarget)."
+doc = "The shape of a worktree label (`primary-<8 hex>`): only such a row can fold into its canonical row."
 value = '^primary-[0-9a-f]{8}$'
 
 [devswarm_cli.msg_read_arg_ambiguous]
@@ -1706,7 +1706,7 @@ doc = "The variable that scopes `hivecontrol workspace list children` to a repos
 value = "DEVSWARM_REPO_ID"
 
 [devswarm_cli.rr_trusted_args]
-doc = "The hivecontrol arguments of the trusted repository lookup (roster-diag.js fetchTrustedRepositoryId)."
+doc = "The hivecontrol arguments of the trusted repository lookup."
 value = ["workspace", "list", "all"]
 
 [devswarm_cli.rr_env_hide_archived]
@@ -2142,7 +2142,7 @@ value = " / "
 
 [devswarm_cli.corr_text]
 doc = "The correction message; {n} the step number, {text} its text, {reasons} the joined reasons, {id} the workspace id."
-value = "step {n} '{text}': {reasons}. Return to step {n} or reply BLOCKED <why>. If the user asked you for this extra work, record it with `devswarm.js scope add {id} --glob '<glob>' --note '<what they asked>'`."
+value = "step {n} '{text}': {reasons}. Return to step {n} or reply BLOCKED <why>. If the user asked you for this extra work, record it with `~/.anti-hall/ah-engine/bin/ah-hook mesh scope add {id} --glob '<glob>' --note '<what they asked>'`."
 
 [devswarm_cli.corr_reason_no_plan]
 doc = "The `reason` of the refusal when the workspace has no step plan."
@@ -2154,7 +2154,7 @@ value = "correction"
 
 [devswarm_cli.msg_corr_usage]
 doc = "The refusal for a missing or unsafe workspace id."
-value = "usage: devswarm.js correct <id> [--dry-run]"
+value = "usage: ah-hook mesh correct <id> [--dry-run]"
 
 [devswarm_cli.msg_corr_no_plan]
 doc = "The refusal when there is no step plan; {id} is the workspace id."
@@ -2990,7 +2990,7 @@ value = { type = "bool", section = "devswarm", key = "spawnStrictFlagValues", en
 
 [devswarm_cli.msg_respawn_usage]
 doc = "The refusal of respawn without a safe id."
-value = "usage: devswarm.js respawn <id> [--dry-run]"
+value = "usage: ah-hook mesh respawn <id> [--dry-run]"
 
 [devswarm_cli.msg_respawn_not_primary]
 doc = "The refusal of respawn from a session that does not hold the Primary seat. {seat}."
@@ -3009,12 +3009,12 @@ doc = "Seconds respawn waits for the child to commit and push its work after bei
 value = { type = "number", section = "devswarm", key = "respawnWipWaitSec", env = "ANTIHALL_DEVSWARM_RESPAWN_WIP_WAIT_SEC", option = "devswarm_respawn_wip_wait_sec", min = 0, max = 100000000, default = 120, exact = true }
 
 [devswarm_cli.rs_git_timeout_ms]
-doc = "How long one git read or write of respawn may take (Node: GIT_TIMEOUT_MS of devswarm-respawn.js)."
+doc = "How long one git read or write of respawn may take."
 value = 30000
 unit = "ms"
 
 [devswarm_cli.rs_push_timeout_ms]
-doc = "How long the push of the park branch may take (Node: PUSH_TIMEOUT_MS of devswarm-respawn.js)."
+doc = "How long the push of the park branch may take."
 value = 120000
 unit = "ms"
 
@@ -3069,7 +3069,7 @@ value = "no-plan"
 
 [devswarm_cli.rs_msg_not_warned]
 doc = "The refusal of respawn before any `correct` warning. {id}."
-value = "respawn needs a prior warning: send `devswarm.js correct {id}` first, then wait devswarm.respawnGraceMin minutes"
+value = "respawn needs a prior warning: send `~/.anti-hall/ah-engine/bin/ah-hook mesh correct {id}` first, then wait devswarm.respawnGraceMin minutes"
 
 [devswarm_cli.rs_reason_not_warned]
 doc = "The `reason` of that refusal."
@@ -3446,7 +3446,7 @@ doc = "The interpreter word a mailbox-class command starts with (companion/lib/d
 value = "node"
 
 [devswarm_cli.rr_mb_verbs]
-doc = "The CLI verbs a mailbox-class `devswarm.js` command may run."
+doc = "The mesh CLI verbs a mailbox-class command may run."
 value = ["inbox", "heartbeat", "roster", "mesh"]
 
 [devswarm_cli.rr_mb_filters]
@@ -3686,7 +3686,7 @@ doc = "The git option that names the repository directory."
 value = "-C"
 
 [devswarm_cli.sp_git_timeout_ms]
-doc = "Timeout of one quick git query of the create path (Node: devswarm-git-truth.js GIT_TIMEOUT_MS)."
+doc = "Timeout of one quick git query of the create path."
 value = 4000
 min = 100
 max = 600000
@@ -4318,7 +4318,7 @@ doc = "The `source` of the roster row of a Primary found in the legacy hash buck
 value = "store-fallback"
 
 [devswarm_cli.rr_dir_token_usage]
-doc = "Directory under the DevSwarm state directory of the supervisor's per-plan token usage files (devswarm-token-usage.js statePath)."
+doc = "Directory under the DevSwarm state directory of the supervisor's per-plan token usage files."
 value = "token-usage"
 
 [devswarm_cli.rr_tr_max_depth]

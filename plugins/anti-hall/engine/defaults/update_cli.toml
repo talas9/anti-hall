@@ -1,5 +1,4 @@
-# ah-engine shipped defaults for the operator commands `update` and `install-codex` (D81, lane L9b): the ports of
-# skills/update/scripts/update.js and codex/install-codex.js. Format: see the header of engine.toml.
+# ah-engine shipped defaults for the operator commands `update` and `install-codex` (D81, lane L9b): the native update and Codex install. Format: see the header of engine.toml.
 #
 # The texts are the Node scripts' own, word for word: tests/operator_parity.rs runs the script and the command on the same seeded
 # scratch home and compares their output and the files they leave behind.

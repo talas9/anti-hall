@@ -5,15 +5,15 @@
 
 [devswarm_gates.child_gate_summary]
 doc = "One-line description of the devswarm-child-gate check in the generated reference."
-value = "DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget (port of devswarm-child-gate.js); an archived workspace and the shapes it cannot read exactly defer to the Node gate."
+value = "DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget; an archived workspace and the shapes it cannot read exactly defer to the Node gate."
 
 [devswarm_gates.reply_tracker_summary]
 doc = "One-line description of the devswarm-parent-reply-tracker check in the generated reference."
-value = "DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call (port of devswarm-parent-reply-tracker.js)."
+value = "DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call."
 
 [devswarm_gates.child_drain_summary]
 doc = "One-line description of the devswarm-child-drain check in the generated reference."
-value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged (port of devswarm-child-drain.js)."
+value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged."
 
 [devswarm_gates.child_gate_setting]
 doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
@@ -112,7 +112,7 @@ doc = "Stop payload field that is exactly `true` when the model is already conti
 value = "stop_hook_active"
 
 [devswarm_gates.cg_hook]
-doc = "The hook name of the child Stop gate in the shared stop-policy budgets (`<session>|<hook>|<kind>`, hooks/lib/stop-policy.js)."
+doc = "The hook name of the child Stop gate in the shared stop-policy budgets (`<session>|<hook>|<kind>`)."
 value = "child-gate"
 
 [devswarm_gates.cg_policy_dir]

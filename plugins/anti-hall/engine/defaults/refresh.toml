@@ -200,7 +200,7 @@ doc = "An X.Y token, used only when a stream has no full token; again exactly on
 value = '(?-u:\b)v?([0-9]+\.[0-9]+)(?-u:\b)'
 
 [refresh.claude_cli_bins]
-doc = "The programs the Claude Code probe asks, in order (hooks/claude-cli-version-refresh.js)."
+doc = "The programs the Claude Code probe asks, in order."
 value = ["claude"]
 
 [refresh.devswarm_bins]

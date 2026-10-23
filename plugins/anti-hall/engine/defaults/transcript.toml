@@ -4,7 +4,7 @@
 # Every cap here bounds memory per indexed transcript; a hook never sees a line, only facts.
 
 [transcript.initial_window_bytes]
-doc = "Bytes read from the end of a transcript the first time it is indexed (a long transcript is never read from the start); mirrors MAX_TAIL_BYTES of hooks/lib/transcript-tail.js."
+doc = "Bytes read from the end of a transcript the first time it is indexed (a long transcript is never read from the start)."
 value = 1572864
 min = 4096
 unit = "bytes"
@@ -33,7 +33,7 @@ value = 4096
 unit = "bytes"
 
 [transcript.task_tools]
-doc = "Names of the task tools whose uses and string results are kept in order, so a task list can be rebuilt from the index (mirrors hooks/lib/task-state.js)."
+doc = "Names of the task tools whose uses and string results are kept in order, so a task list can be rebuilt from the index."
 value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
 
 [transcript.task_events]
@@ -95,15 +95,15 @@ value = 21600000
 unit = "ms"
 
 [transcript.terminal_statuses]
-doc = "Task-notification statuses that mean an agent has ended (hooks/lib/agent-scan.js TERMINAL_NOTIFICATION_STATUS), case-insensitive."
+doc = "Task-notification statuses that mean an agent has ended, case-insensitive."
 value = "completed failed stopped killed cancelled canceled"
 
 [transcript.final_statuses]
-doc = "Task-notification statuses the DevSwarm idle gate treats as final (companion/lib/devswarm-idle.js FINAL_STATUS), case-insensitive."
+doc = "Task-notification statuses the DevSwarm idle gate treats as final, case-insensitive."
 value = "completed failed stopped"
 
 [transcript.non_prompt_prefixes]
-doc = "Text starts that mark a user entry as injected, not typed (hooks/lib/inference-check.js lastUserPrompt)."
+doc = "Text starts that mark a user entry as injected, not typed."
 value = ["<task-notification", "<command-", "<local-command", "<system-reminder"]
 
 [transcript.msg_io]
