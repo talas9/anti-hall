@@ -319,6 +319,68 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     }
 }
 
+/// The teammates a launching session stopped, by name: the host answers a `TaskStop` of an in-process teammate with its own task id (not
+/// the agent id or the name) plus the task's description, so the stop is tied back to the `Agent` call that launched the teammate under
+/// that description. Only the stops after the latest launch of the name count (a teammate launched again under it is a new one).
+fn teammate_stops(parent: &str) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    let cfg = defaults::raw("agent_tracker.stop_result");
+    let field = |k: &str| cfg.str_field(k);
+    let launch = defaults::raw("agent_scan.launch_tools").strings();
+    let stop_tool = defaults::text("agent_scan.stop_tool");
+    let Some(text) = tail_of(parent, defaults::num("agent_scan.tail_bytes")) else { return HashSet::new() };
+    let (mut launched, mut stop_calls): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
+    let (mut by_desc, mut stopped): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        let blocks = v["message"]["content"].as_array().map_or(&[][..], Vec::as_slice);
+        for b in blocks.iter().filter(|b| b["type"] == field("use_type")) {
+            let id = b["id"].as_str().unwrap_or_default().to_string();
+            let name = b["name"].as_str().unwrap_or_default();
+            if name == stop_tool {
+                stop_calls.insert(id);
+            } else if launch.contains(&name) {
+                let (n, d) = (b["input"][field("name")].as_str().unwrap_or_default(), b["input"][field("desc")].as_str().unwrap_or_default());
+                if !n.is_empty() && !d.is_empty() {
+                    stopped.remove(n);
+                    by_desc.insert(d.to_string(), n.to_string());
+                    launched.insert(id, n.to_string());
+                }
+            }
+        }
+        let res = &v[field("result")];
+        let answers_stop = blocks.iter().any(|b| b["tool_use_id"].as_str().is_some_and(|i| stop_calls.contains(i)));
+        if answers_stop && res[field("kind")] == field("teammate")
+            && let Some(name) = res[field("command")].as_str().and_then(|d| by_desc.get(d))
+        {
+            stopped.insert(name.clone());
+        }
+    }
+    stopped
+}
+
+fn tail_of(path: &str, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A teammate its launching session stopped with `TaskStop` is finished at once, without waiting for the host to drop it from the team
+/// roster (which [`off_roster`] reads, later and only for a team that has a roster).
+fn stopped_teammates(st: &mut State) {
+    let mut seen: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished && !a.name.is_empty()) {
+        let Some(dir) = Path::new(&a.path).parent().and_then(Path::parent) else { continue };
+        let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
+        if seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent)).contains(&a.name) {
+            a.finished = true;
+        }
+    }
+}
+
 /// A teammate the host's team roster (`agent_tracker.roster`) no longer lists - or lists as joined after this agent started, so the name
 /// belongs to a newer spawn - was stopped or finished. The host writes nothing into such a teammate's own transcript, and the scan of
 /// the launching session's transcript only sees a stop still inside its window, so the roster is the one record that stays true. A
@@ -424,6 +486,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
         live::codex_state(env, a, a.last_output_ms);
     }
     stopped_subagents(env, st);
+    stopped_teammates(st);
     off_roster(env, st);
     heartbeats(env, st);
     devswarm(env, st);
