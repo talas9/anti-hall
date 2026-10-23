@@ -20,6 +20,7 @@
     "api-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
     "ask-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ask-guard.js\"",
     "broad-kill-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"",
+    "burn-breaker": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker\"",
     "command-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
     "coordinator-work-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js\"",

@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bash_pre_tool_use_entries_are_the_nine_node_hooks_and_the_engine_only_role_guard_in_order() {
+    fn the_bash_pre_tool_use_entries_are_the_nine_node_hooks_and_the_engine_only_guards_in_order() {
         let p = json!({"tool_name": "Bash"});
         let ids: Vec<String> = select("claude", "PreToolUse", &p, None).into_iter().map(|e| e.id).collect();
         assert_eq!(
@@ -400,10 +400,12 @@ mod tests {
                 "ship-it-guard",
                 "procwatch-advisory",
                 "engine-role-guard",
-                "broad-kill-guard"
+                "broad-kill-guard",
+                "burn-breaker"
             ]
         );
-        assert_eq!(select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None), Vec::new(), "no entry matches Glob");
+        let glob: Vec<String> = select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None).into_iter().map(|e| e.id).collect();
+        assert_eq!(glob, ["burn-breaker"], "only the every-tool entries match Glob");
     }
 
     #[test]

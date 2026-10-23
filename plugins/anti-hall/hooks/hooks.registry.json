@@ -269,6 +269,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [

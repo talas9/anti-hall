@@ -244,7 +244,8 @@ mod tests {
                 "ship-it-guard",
                 "procwatch-advisory",
                 "engine-role-guard",
-                "broad-kill-guard"
+                "broad-kill-guard",
+                "burn-breaker"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );

@@ -12,6 +12,7 @@
   "PreToolUse": {
     "api-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
     "broad-kill-guard": "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"",
+    "burn-breaker": "sh \"${PLUGIN_ROOT}/hooks/burn-breaker\"",
     "command-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",

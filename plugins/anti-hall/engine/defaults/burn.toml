@@ -1,0 +1,85 @@
+# Burn breaker (GH #270): tokens spent versus outcome. The agent tracker (src/agents/signals.rs) counts the tokens an agent spent since its
+# last outcome (a commit, a finished step, a passing check, a new file) inside the waste window. Soft line: warn the agent through its
+# next tool-call context and notify the coordinator's wake feed. Hard line: the `burn-breaker` check (engine/logic/burn-breaker.js,
+# PreToolUse on every tool, subagents only) blocks the subagent's tool calls except commit, push, status and its report. An outcome
+# resets the count. Every number, list, pattern and text is here (D88).
+
+[burn.sw]
+doc = "Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker check allow every call."
+value = { section = "agents", key = "burnBreaker", env = "ANTIHALL_BURN_BREAKER", option = "", default = true }
+
+[burn.guard_name]
+doc = "The guard id the burn-breaker check answers to in skip.json and in its messages."
+value = "burn-breaker"
+
+[burn.summary]
+doc = "One-line description of the burn-breaker check in the generated reference."
+value = "PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag (tokens spent since the last commit, finished step, passing check or new file past burn.hard_tokens_no_outcome) blocks every call except commit, push, status commands and SendMessage (the report)."
+
+[burn.soft_tokens_no_outcome]
+doc = "Soft line: tokens (cache reads weighted by agent_tracker.limits.cache_read_pct) spent since the last outcome, within agent_tracker.limits.waste_window_ms, at which the agent is warned and the coordinator notified. 0 = no soft line. Chosen from the 2026-10-23 incident (alerts of 1.5M to 7.7M per 30 minutes with no commit)."
+value = 1500000
+
+[burn.hard_tokens_no_outcome]
+doc = "Hard line: tokens spent since the last outcome, within the waste window, at which the subagent's tool calls are blocked (see burn.allowed_tools and burn.allowed_bash_re). 0 = no hard line."
+value = 3000000
+
+[burn.marker_dir]
+doc = "Directory under the tracker directory that holds one marker file per agent while its hard flag is up."
+value = "breaker"
+
+[burn.marker_ext]
+doc = "Extension of a marker file."
+value = ".json"
+
+[burn.marker_ttl_ms]
+doc = "A marker older than this is ignored by the check and removed by the tracker (an agent that left the state without clearing its flag)."
+value = 7200000
+
+[burn.agent_field]
+doc = "Hook payload field that names a subagent; a call without it is the main session and is never blocked."
+value = "agent_id"
+
+[burn.allowed_tools]
+doc = "Tools a blocked subagent may still call: SendMessage carries its final report."
+value = ["SendMessage"]
+
+[burn.bash_tools]
+doc = "Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks."
+value = ["Bash"]
+
+[burn.allowed_bash_re]
+doc = "A command a blocked subagent may still run: it must start with git commit, add, push, status, log, diff, show, rev-parse or branch (optionally after `git -C <dir>`). Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to \"\"."
+value = '^\s*git(?:\s+-C\s+\S+)?\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)\b'
+
+[burn.forbidden_bash_re]
+doc = "What makes an otherwise allowed command a chain or a hidden command: a separator, pipe, redirect, background, backtick, newline or $( outside quoted text. Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to \"\"."
+value = '[;&|`<>\n\r]|\$\('
+
+[burn.quoted_re]
+doc = "Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by \"\" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax)."
+value = '''(?:'[^']*')|(?:"(?:[^"\\$`]|\\.)*")'''
+
+[burn.msg_soft]
+doc = "Soft advisory, delivered to the agent at its next tool call and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Commit what works or finish a step soon; at the hard line its tool calls are blocked until it commits and reports."
+
+[burn.msg_hard]
+doc = "Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}."
+value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window} with no commit, finished step, passing check or new file. Its tool calls are now blocked except commit, push, status and its report: commit what works, report, stop."
+
+[burn.msg_what]
+doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
+value = "This tool call is blocked: you spent about {tokens} tokens with no commit, finished step, passing check or new file."
+
+[burn.msg_why]
+doc = "Why the breaker blocks."
+value = "Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about 60% of a weekly limit waiting on build locks, re-reading files and re-running suites). Parallel agents are fine; spending with nothing to show is not."
+
+[burn.msg_instead]
+doc = "What to do instead."
+value = "Commit what works (plain `git commit -m` with a quoted message), report (SendMessage) what is done and what is not, and stop. A commit, finished step, passing check or new file resets the count."
+
+[burn.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "the user turns the breaker off with `agents.burnBreaker` or skips it for a session in skip.json as burn-breaker; the burn.hard_tokens_no_outcome line is plugin data."

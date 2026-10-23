@@ -48,6 +48,7 @@ impl Env {
             "procwatch-advisory",
             "engine-role-guard",
             "broad-kill-guard",
+            "burn-breaker",
         ];
         let m: serde_json::Map<String, serde_json::Value> =
             ids.iter().map(|id| (id.to_string(), outs.iter().find(|(k, _)| k == id).map_or("true".to_string(), |(_, c)| c.to_string()).into())).collect();
@@ -383,8 +384,8 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
 #[test]
 fn an_event_no_entry_matches_says_nothing_and_starts_no_daemon() {
     let e = Env::new("nomatch");
-    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Glob", "tool_input": {}}).to_string();
-    assert_eq!(e.run(&["hook", "--event", "PreToolUse"], false, &p, true), (0, String::new(), String::new()));
+    let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Notification", "tool_name": "Glob", "tool_input": {}}).to_string();
+    assert_eq!(e.run(&["hook", "--event", "Notification"], false, &p, true), (0, String::new(), String::new()));
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
     assert!(!e.state().join("failure.json").exists(), "nothing matched, so the daemon was not woken");
 }

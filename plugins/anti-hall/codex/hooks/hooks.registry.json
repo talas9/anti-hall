@@ -132,6 +132,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${PLUGIN_ROOT}/hooks/burn-breaker\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionStart": [
