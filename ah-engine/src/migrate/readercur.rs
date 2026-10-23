@@ -339,11 +339,10 @@ fn cwd_in_partition(cx: &mut Cx, cwd: Option<&str>, ids: &HashSet<String>) -> Op
         return Some(false);
     }
     match ident::resolve_context(cwd, false) {
-        Ok(c) => Some(c.worktree_root.is_some_and(|r| ids.contains(&ident::mesh_id_for_real_path(&r)))),
         // a resolution git could not answer (a failed or timed-out superproject query) is Node's `c.uncertain`: `null`, which every
-        // caller reads as "keep / include", never as a confident "no". Any other reason (a relative path Node would resolve against
-        // its own working directory) is not reproducible: Node's.
-        Err(d) if d.0 == "git-superproject" => None,
+        // caller reads as "keep / include", never as a confident "no"
+        Ok(c) if c.uncertain => None,
+        Ok(c) => Some(c.worktree_root.is_some_and(|r| ids.contains(&ident::mesh_id_for_real_path(&r)))),
         Err(_) => {
             cx.deferred = true;
             None

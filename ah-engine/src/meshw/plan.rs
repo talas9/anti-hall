@@ -22,7 +22,7 @@ use crate::checks::guardkit::text::{is_js_space, js_number_of_str};
 use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::meshw::common::{Inv, Obj, n, s};
-use crate::meshw::ident::{self, Defer, R};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,16 +36,6 @@ pub(crate) struct Throw(pub String);
 
 pub(crate) fn null_read(prop: &str) -> Throw {
     Throw(defaults::render("mesh_write.js_err_null_read", &[("prop", &prop)]))
-}
-
-/// A plan file could not be written (Node: the throw of `writeJsonAtomic`, which `run()` reports as `{ ok: false, error }`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WriteError(pub String);
-
-impl From<WriteError> for Defer {
-    fn from(e: WriteError) -> Defer {
-        Defer(defaults::render("mesh_write.plan_write_failed", &[("error", &e.0)]))
-    }
 }
 
 fn mark() -> char {
@@ -434,8 +424,8 @@ fn step_set(plan: &mut OVal, idx: usize, key: &str, val: OVal) {
     }
 }
 
-/// `noteActivity(plan, text, now)`.
-fn note_activity(plan: &mut OVal, text: &str, now: f64) {
+/// `noteActivity(plan, text, now)`: whether the clock was refreshed (text already seen does not refresh it).
+pub(crate) fn note_activity(plan: &mut OVal, text: &str, now: f64) -> bool {
     let mut norm = String::new();
     let mut gap = false;
     for ch in text.to_lowercase().chars() {
@@ -455,13 +445,14 @@ fn note_activity(plan: &mut OVal, text: &str, now: f64) {
         _ => Vec::new(),
     };
     if seen.iter().any(|x| matches!(x, OVal::Str(t) if *t == sig)) {
-        return;
+        return false;
     }
     seen.push(OVal::Str(sig));
     let keep = defaults::num("mesh_write.plan_activity_keep") as usize;
     let from = seen.len().saturating_sub(keep);
     plan.set("activity_sigs", OVal::Arr(seen.split_off(from)));
     plan.set("activity_ts", n(now));
+    true
 }
 
 /// `recordSummary(plan, text, stepped, now)`.
@@ -709,7 +700,7 @@ pub fn update(inv: &Inv, key: &str, id: &str, call: &Call<'_>) -> R<Option<(Comp
 
 /// `updatePlan(home, key, mutate)` for any mutation: `mutate` gets the fresh plan (`None` when the file holds none) and returns
 /// its own result plus the plan to write (`None` writes nothing). The write is the first thing the engine does on the plan, so a
-/// failure inside `mutate` has written nothing; a write that fails is a [`WriteError`] (Node's throw of `writeJsonAtomic`). The caller
+/// failure inside `mutate` has written nothing; a write that fails is the verb's own refusal ([`ident::refuse`], Node's throw of `writeJsonAtomic`). The caller
 /// marks the commit point after this returns.
 pub fn update_with<T>(inv: &Inv, key: &str, mutate: impl FnOnce(Option<OVal>) -> R<(T, Option<OVal>)>) -> R<Option<(T, Option<String>)>> {
     let path = plan_file(inv, key);
@@ -731,7 +722,10 @@ pub fn update_with<T>(inv: &Inv, key: &str, mutate: impl FnOnce(Option<OVal>) ->
         let (out, next) = mutate(cur)?;
         let Some(next) = &next else { return Ok((out, None)) };
         let text = stringify(next);
-        write_atomic(&path, &text).map_err(|e| WriteError(e.to_string()))?;
+        if let Err(e) = write_atomic(&path, &text) {
+            // Node's `writeJsonAtomic` throws and `run()` answers `{ ok: false, error }`
+            return ident::refuse(&Obj(vec![("ok".into(), OVal::Bool(false)), ("error".into(), s(&e.to_string()))]).done().stringify());
+        }
         Ok((out, Some(text)))
     })();
     held.release();
@@ -930,7 +924,7 @@ mod tests {
         let c = compute(&inv, "k", "id", &call(None, Some(&long)), Some(plan.clone())).unwrap();
         let next = c.next.expect("a summary dirties the plan");
         let Some(OVal::Arr(list)) = next.get("summaries") else { panic!("summaries") };
-        assert!(matches!(list[0].get("text"), Some(OVal::Str(t)) if t.chars().count() == 201 + 1), "199 letters, the mark and one private character");
+        assert!(matches!(list[0].get("text"), Some(OVal::Str(t)) if t.chars().count() == 201), "199 letters, the mark and one private character");
         assert!(stringify(&next).contains("\\ud83d\""), "{}", stringify(&next));
         let a = compute(&inv, "k", "id", &call(None, Some("Caf\u{c9}\u{a0}\u{a0}BAR")), Some(plan.clone())).unwrap().next.unwrap();
         let b = compute(&inv, "k", "id", &call(None, Some("caf\u{e9} bar")), Some(plan)).unwrap().next.unwrap();
@@ -969,13 +963,14 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_that_cannot_be_written_is_a_write_error_with_the_systems_message() {
+    fn a_plan_that_cannot_be_written_is_the_verbs_refusal_with_the_systems_message() {
         let inv = scratch_inv("write");
         // the plan's own path is a directory: the rename onto it fails
         std::fs::create_dir_all(plan_file(&inv, "k").join("sub")).unwrap();
         let r = update_with(&inv, "k", |cur| Ok(((), cur.or_else(|| Some(parse(r#"{"steps":[]}"#))))));
-        let Err(Defer(why)) = r else { panic!("{r:?}") };
-        assert!(!why.is_empty() && !why.contains("plan-write"), "{why}");
+        let Err(d) = r else { panic!("{r:?}") };
+        let body = ident::refusal_body(&d).expect("a refusal, not a hand-off");
+        assert!(body.starts_with("{\"ok\":false,\"error\":\"") && !body.contains("plan-write"), "{body}");
     }
 
     #[test]

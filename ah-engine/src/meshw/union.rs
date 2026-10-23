@@ -469,12 +469,12 @@ mod tests {
     }
 
     #[test]
-    fn a_file_over_the_cap_defers_without_being_read_and_a_directory_is_absent() {
+    fn a_file_past_the_hard_limit_reads_as_absent_without_being_read_and_a_directory_is_absent() {
         let dir = scratch("big");
         let big = dir.join("in.ndjson");
-        std::fs::File::create(&big).unwrap().set_len(defaults::num("mesh_write.file_read_max_bytes") + 1).unwrap();
+        std::fs::File::create(&big).unwrap().set_len(defaults::num("mesh_write.file_read_hard_max_bytes") + 1).unwrap();
         let b = big.to_string_lossy().into_owned();
-        assert!(within("oversize", move || non_empty_lines(&b).is_err() && cursor_position(&b).is_err()));
+        assert!(within("oversize", move || non_empty_lines(&b) == Ok(None) && cursor_position(&b).is_ok()));
         std::fs::create_dir_all(dir.join("d")).unwrap();
         assert_eq!(non_empty_lines(&dir.join("d").to_string_lossy()), Ok(None), "a directory reads as Node's caught EISDIR");
         assert_eq!(non_empty_lines(&dir.join("none").to_string_lossy()), Ok(None));

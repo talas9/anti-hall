@@ -487,3 +487,148 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
     }
     Ok(answer(0, o.done()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::args;
+    use crate::meshw::idlock::devswarm_root;
+
+    fn scratch_inv(tag: &str) -> Inv {
+        let home = std::env::temp_dir().join(format!("ah-planverbs-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&home).unwrap();
+        let dir = devswarm_root(&home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("w1.json"), r#"{"id":"w1"}"#).unwrap();
+        Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 2_000_000, stdin: None, store_override: None }
+    }
+
+    fn run(inv: &Inv, argv: &[&str]) -> (i32, String) {
+        let a = args::parse(&argv.iter().map(|x| (*x).to_string()).collect::<Vec<_>>());
+        let ans = if argv[0] == "scope" { run_scope(inv, &a) } else { run_plan(inv, &a) }.expect("the verb answers");
+        (ans.code, ans.stdout)
+    }
+
+    fn plan_path(inv: &Inv, key: &str) -> std::path::PathBuf {
+        devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_plans")).join(format!("{key}.json"))
+    }
+
+    fn put_plan(inv: &Inv, key: &str, json: &str) {
+        let p = plan_path(inv, key);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, json).unwrap();
+    }
+
+    #[test]
+    fn a_step_cut_inside_an_emoji_is_written_as_javascript_writes_it() {
+        let inv = scratch_inv("emoji");
+        let steps = format!("1. {}\u{1F600}tail\n2. second", "a".repeat(199));
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+        assert_eq!(code, 0, "{out}");
+        let written = std::fs::read_to_string(plan_path(&inv, "w1")).unwrap();
+        assert!(written.contains(&format!("{}\\ud83d\"", "a".repeat(199))), "{written}");
+        // the same list again is a no-op on the very bytes it wrote
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", &steps]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"changed\":false"), "{out}");
+        assert_eq!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap(), written);
+        let (_, shown) = run(&inv, &["plan", "show", "w1"]);
+        assert!(shown.contains("\\ud83d"), "{shown}");
+    }
+
+    #[test]
+    fn an_unreadable_steps_file_is_the_operating_systems_message_in_the_verbs_own_refusal() {
+        let inv = scratch_inv("stepsfile");
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps-file", "/nonexistent/steps.txt"]);
+        assert_eq!(code, 2);
+        assert_eq!(
+            out,
+            "{\"ok\":false,\"action\":\"plan\",\"sub\":\"set\",\"id\":\"w1\",\"error\":\"cannot read --steps-file: ENOENT: no such file or directory, open '/nonexistent/steps.txt'\"}\n"
+        );
+        let dir = std::env::temp_dir();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps-file", &dir.to_string_lossy()]);
+        assert_eq!(code, 2);
+        assert!(out.contains("EISDIR: illegal operation on a directory, read"), "{out}");
+    }
+
+    #[test]
+    fn a_plan_with_a_null_step_is_refused_with_the_type_error_and_left_alone() {
+        let inv = scratch_inv("nullstep");
+        let bad = r#"{"v":1,"key":"w1","steps":[{"n":1,"text":"a","status":"todo"},null],"extras":[null],"created_at":1}"#;
+        put_plan(&inv, "w1", bad);
+        let status = "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'status')\"}\n";
+        // a different list: stepsDone reads every status
+        assert_eq!(run(&inv, &["plan", "set", "w1", "--steps", "1. x\n2. y\n3. z"]), (2, status.to_string()));
+        // the same length and a first step that differs: `every` stops before the null, the replacement then reads every status
+        assert_eq!(run(&inv, &["plan", "set", "w1", "--steps", "1. x\n2. y"]), (2, status.to_string()));
+        // the show label reads every status
+        assert_eq!(run(&inv, &["plan", "show", "w1"]), (2, status.to_string()));
+        // an extra that is null is read by `find` before any match
+        let glob = "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'glob')\"}\n";
+        assert_eq!(run(&inv, &["scope", "add", "w1", "--glob", "src/**", "--note", "asked"]), (2, glob.to_string()));
+        assert_eq!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap(), bad, "a refused verb writes nothing");
+    }
+
+    #[test]
+    fn a_null_step_after_a_matching_prefix_is_read_for_its_text() {
+        let inv = scratch_inv("nullokay");
+        // same length, the first step already differs: `every` stops at the first mismatch, so the null is never read by it
+        put_plan(&inv, "w1", r#"{"v":1,"key":"w1","steps":[{"n":1,"text":"a","status":"todo"},null],"created_at":1}"#);
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b", "--scope", "src/**"]);
+        // the texts match at 0 and the null is reached at 1: Node throws reading `text`
+        assert_eq!((code, out.as_str()), (2, "{\"ok\":false,\"error\":\"Cannot read properties of null (reading 'text')\"}\n"));
+    }
+
+    #[test]
+    fn a_descriptor_worktree_that_is_a_number_lands_in_the_plan_as_it_is() {
+        let inv = scratch_inv("numwt");
+        let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::write(dir.join("w1.json"), r#"{"id":"w1","worktreePath":5}"#).unwrap();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("\"key\":\"w1\""), "{out}");
+        assert!(std::fs::read_to_string(plan_path(&inv, "w1")).unwrap().contains("\"worktreePath\":5,"));
+    }
+
+    #[test]
+    fn a_full_supervision_log_is_rotated_by_the_event_not_handed_over() {
+        let inv = scratch_inv("rotate");
+        let log = inv.home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs")).join(defaults::text("mesh_write.supervision_log"));
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let row = "{\"ts\":\"2025-10-09T08:00:00.000Z\",\"type\":\"warn\",\"id\":\"w1\",\"signal\":\"stall\",\"repeat\":false}\n";
+        std::fs::write(&log, row.repeat(defaults::num("mesh_write.supervision_max_bytes") as usize / row.len() + 2)).unwrap();
+        let (code, out) = run(&inv, &["plan", "set", "w1", "--steps", "1. a\n2. b"]);
+        assert_eq!(code, 0, "{out}");
+        let fresh = std::fs::read_to_string(&log).unwrap();
+        assert!(fresh.lines().count() == 1 && fresh.contains("\"type\":\"plan\""), "{fresh}");
+        let (code, out) = run(&inv, &["scope", "add", "w1", "--glob", "src/**", "--note", "asked"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2, "an event under the limit just appends");
+    }
+
+    #[test]
+    fn replacing_a_list_keeps_what_did_not_change_and_a_note_cut_inside_an_emoji_keeps_the_half() {
+        let mut p = OVal::parse(r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"todo"}],"extras":[{"glob":"x","note":"n","ts":1}]}"#).unwrap();
+        assert_eq!(replace_steps(&mut p, &["a".to_string(), "c".to_string()], None, 7.0), Ok(true));
+        assert_eq!(plan::steps_of(&p)[0].get("status"), Some(&s("done")), "an unchanged step keeps its status");
+        assert_eq!(plan::steps_of(&p)[1].get("status"), Some(&s("todo")));
+        // a repeated glob with the same note is a no-op, with a new one an update
+        assert_eq!(add_extra(&mut p, "x", "n", 8.0), Ok(false));
+        assert_eq!(add_extra(&mut p, "x", "m", 8.0), Ok(true));
+        let long = format!("{}\u{1F600}", "e".repeat(299));
+        assert_eq!(add_extra(&mut p, "y", &long, 9.0), Ok(true));
+        assert!(plan::stringify(&p).contains(&format!("{}\\ud83d\"", "e".repeat(299))));
+        // an extra found before a null one never reaches it
+        let mut q = OVal::parse(r#"{"steps":[],"extras":[{"glob":"x","note":"n"},null]}"#).unwrap();
+        assert_eq!(add_extra(&mut q, "x", "n", 1.0), Ok(false));
+    }
+
+    #[test]
+    fn the_operating_systems_read_errors_read_as_javascript_words_them() {
+        let msg = |n: i32| fs_error_text(&std::io::Error::from_raw_os_error(n), "/x");
+        assert_eq!(msg(13), "EACCES: permission denied, open '/x'");
+        assert_eq!(msg(20), "ENOTDIR: not a directory, open '/x'");
+        assert_eq!(msg(9999), "UNKNOWN: unknown error, open '/x'");
+    }
+}

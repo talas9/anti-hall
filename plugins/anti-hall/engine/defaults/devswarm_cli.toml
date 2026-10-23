@@ -620,14 +620,6 @@ doc = "Most output bytes of one git call (Node's spawnSync maxBuffer); more is a
 value = 1048576
 min = 1024
 
-[devswarm_cli.ready_any]
-doc = "The regular-expression piece that stands for JavaScript's `.` (any character but a line terminator)."
-value = "[^\\n\\r\\u{2028}\\u{2029}]"
-
-[devswarm_cli.ready_escape]
-doc = "The characters a glob's literal text escapes in the regular expression (roster-diag.js globToRegExp)."
-value = ".+^${}()|[]\\"
-
 [devswarm_cli.ready_gitlink_mode]
 doc = "The git file mode of a submodule pointer (a gitlink)."
 value = "160000"
@@ -2979,8 +2971,8 @@ doc = "The refusal of a send whose `--message-file` cannot be read: `{file}` is 
 value = "send --message-file {file} could not be read: {why}"
 
 [devswarm_cli.send_fs_errors]
-doc = "The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is left to Node."
-value = { "2" = "ENOENT: no such file or directory, open {path}", "13" = "EACCES: permission denied, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read" }
+doc = "The message JavaScript gives for a failed read of the message file, by operating system error number; `{path}` is the path in single quotes. An error not listed here is worded by `send_fs_error_other`."
+value = { "2" = "ENOENT: no such file or directory, open {path}", "13" = "EACCES: permission denied, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read", "5" = "EIO: i/o error, read", "24" = "EMFILE: too many open files, open {path}", "23" = "ENFILE: file table overflow, open {path}", "16" = "EBUSY: resource busy or locked, open {path}", "6" = "ENXIO: no such device or address, open {path}" }
 
 [devswarm_cli.msg_send_multi_combine]
 doc = "The refusal of a send with several recipients combined with a broadcast or the Primary."
@@ -3613,3 +3605,46 @@ value = "UNKNOWN: unknown error, open {path}"
 [devswarm_cli.msg_plan_threw]
 doc = "The log line of a plan verb that threw in Node's code (a null step or extra in the plan file) and refused instead. Placeholder: {error}."
 value = "plan verb refused, Node throws on this plan: {error}"
+[devswarm_cli.send_fs_error_other]
+doc = "How a failed read of the message file is worded when the operating system error is not in `send_fs_errors`: `{message}` is the operating system's own text and `{path}` the path in single quotes."
+value = "{message}, open {path}"
+
+[devswarm_cli.msg_send_stdin_unreadable]
+doc = "The refusal of a send whose `--message-stdin` cannot be read: `{why}` is the operating system's message."
+value = "send --message-stdin could not read fd 0: {why}"
+
+[devswarm_cli.msg_send_multi_stdin_unreadable]
+doc = "The refusal of a send to several recipients whose `--message-stdin` cannot be read: `{why}` is the operating system's message."
+value = "send --message-stdin could not be read: {why}"
+
+[devswarm_cli.send_stdin_unavailable_why]
+doc = "The operating system's message when standard input was not read at all (a closed descriptor)."
+value = "EBADF: bad file descriptor, read"
+
+[devswarm_cli.msg_send_rows_ambiguous]
+doc = "The refusal of a send whose `--to` names two different registered rows (the exact id of one, the mesh label of another) or several rows of one id: `{to}` is the recipient, quoted; `{candidates}` the ids."
+value = "send --to {to} matches more than one registered workspace row ({candidates}) — this should never happen (id is the registry primary key); address a specific meshId instead"
+
+[devswarm_cli.reason_send_no_primary_worktree]
+doc = "The reason `send --to-primary` refuses when the working directory is in no resolvable git worktree."
+value = "no-primary-worktree"
+
+[devswarm_cli.msg_send_no_primary_worktree]
+doc = "The refusal text of that case."
+value = "send --to-primary: cwd is not inside a resolvable git worktree"
+
+[devswarm_cli.ready_line_terminators]
+doc = "The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character."
+value = "\n\r\u2028\u2029"
+
+[devswarm_cli.ready_fetch]
+doc = "The git subcommand `ready-check --fetch` runs first."
+value = "fetch"
+
+[devswarm_cli.ready_quiet]
+doc = "The git flag that keeps the fetch of `ready-check --fetch` quiet."
+value = "--quiet"
+
+[devswarm_cli.msg_ready_fetch_failed]
+doc = "The log line of a `ready-check --fetch` whose git fetch did not finish cleanly; the checks read whatever refs exist, as Node does."
+value = "ready-check --fetch: git fetch did not finish cleanly, the checks read the refs that exist"
