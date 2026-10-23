@@ -7339,7 +7339,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `
+,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -9600,7 +9601,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run (devswarm-git-truth.js GIT_TIMEOUT_MS); a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n
+  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -9731,7 +9733,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n
+  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (companion/lib/devswarm-idle.js: a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
@@ -11603,7 +11606,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mem.regex_hard_bytes` | `83886080` |  | bytes | Estimated bytes of compiled regular expressions plus their per-thread search scratch at which the `ah.re.*` cache refuses an insert (the pattern is compiled and used, not kept) and is recycled. |
 | `mem.regex_low_water_pct` | `80` |  |  | Percent of mem.regex_soft_bytes the `ah.re.*` cache is evicted down to when the soft limit is reached. |
 | `mem.regex_max_entries` | `256` |  |  | Compiled regular expressions the process-wide `ah.re.*` cache keeps at most (all workers share one cache); past it the least recently used pattern is dropped first, and its per-thread search caches go with it. 167 patterns are in use today. |
-| `mem.regex_soft_bytes` | `50331648` |  | bytes | Estimated bytes of compiled regular expressions plus their per-thread search scratch (script.regex_scratch_bytes per worker) the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h, one every ~30 min, bursts under load). 16 MiB keeps them all. |
+| `mem.regex_soft_bytes` | `50331648` |  | bytes | Estimated bytes of compiled regular expressions plus their per-thread search scratch (script.regex_scratch_bytes per worker) the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB of programs alone the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h). With the scratch counted (147 shipped patterns weigh about 27 MB at 4 workers) 48 MiB keeps them all. |
 | `mem.spawn_probe_hard_bytes` | `131072` |  | bytes | Bytes of kept spawn-probe answers at which an insert is refused (the answer is returned, not kept) and the cache is recycled. |
 | `mem.spawn_probe_low_water_pct` | `80` |  |  | Percent of mem.spawn_probe_soft_bytes the spawn-probe cache is evicted down to when the soft limit is reached. |
 | `mem.spawn_probe_max_entries` | `64` |  |  | Spawn-probe answers the cache keeps at most; past it the least recently used is dropped first. |

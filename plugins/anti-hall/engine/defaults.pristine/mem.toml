@@ -43,7 +43,7 @@ min = 0
 unit = "bytes"
 
 [mem.regex_soft_bytes]
-doc = "Estimated bytes of compiled regular expressions plus their per-thread search scratch (script.regex_scratch_bytes per worker) the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h, one every ~30 min, bursts under load). 16 MiB keeps them all."
+doc = "Estimated bytes of compiled regular expressions plus their per-thread search scratch (script.regex_scratch_bytes per worker) the shared `ah.re.*` cache may hold before it evicts the least recently used down to its low-water mark (an entry weighs the heap its build kept, measured by the counting allocator; where that is off, script.regex_entry_base_bytes plus script.regex_bytes_per_src_byte per byte of its translated source). The shipped checks reach about 47 distinct patterns on a short run (7.3 MB estimated, up to 5.3 MB measured on 4 workers) and more across a real day; at 8 MiB of programs alone the working set did not fit and the cache evicted and recompiled in a cycle (live20.1: 16 evictions in 7 h). With the scratch counted (147 shipped patterns weigh about 27 MB at 4 workers) 48 MiB keeps them all."
 value = 50331648
 min = 262144
 unit = "bytes"
