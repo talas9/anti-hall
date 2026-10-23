@@ -60,6 +60,7 @@ pub mod spawnverb;
 pub mod store;
 pub mod summary;
 pub mod tick;
+pub mod tickarm;
 pub mod union;
 pub mod watcher;
 pub mod wsverbs;

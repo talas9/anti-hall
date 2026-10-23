@@ -9,8 +9,8 @@
 //! * a `native` case: the engine answers itself; stdout, the exit code, every store table and every file of the home tree
 //!   (the wake-tick marker, the refreshed heartbeat, the cron-found-mail file) are byte-identical to Node's, and the
 //!   detached background run of Node on a scratch copy reaches the same verdict (`mesh-verify.jsonl`);
-//! * a `defer` case: the engine must write NOTHING and exit 75 when it cannot run Node, and hand the verb to Node
-//!   otherwise (exit 75 means "deferred, nothing written").
+//! * there is no `defer` case any more: there is no Node to hand a verb to, so every shape of the call (the ones Node refuses, the
+//!   ones that skip the watcher, the ones that report a store or a delivery log it cannot use) is answered by the engine.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use serde_json::{Value, json};
@@ -160,7 +160,15 @@ fn seed(h: &Path, fx: &Fx, c: &Case, now: i64) {
 }
 
 fn normalized(home: &Path, bytes: &[u8]) -> Vec<u8> {
-    String::from_utf8_lossy(bytes).replace(&home.to_string_lossy().to_string(), "<HOME>").into_bytes()
+    // a summary the pull refreshes carries the wall clock of the process that wrote it
+    let text = String::from_utf8_lossy(bytes).replace(&home.to_string_lossy().to_string(), "<HOME>");
+    let text = regex::Regex::new(r#""generatedAt":[0-9]+"#).unwrap().replace_all(&text, "\"generatedAt\":<wall>");
+    // a re-arm cue line carries `Date.now()`, not the pinned clock
+    regex::Regex::new(r#"\{"ts":[0-9]+,"id":"([^"]*)","trigger""#)
+        .unwrap()
+        .replace_all(&text, "{\"ts\":<wall>,\"id\":\"$1\",\"trigger\"")
+        .into_owned()
+        .into_bytes()
 }
 
 fn tree(home: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -176,7 +184,9 @@ fn assert_same_home(name: &str, a: &Path, b: &Path, key: &str, what: &str) {
         };
         // a registry row a group read touches carries the wall clock of whichever process wrote it
         let wall = |t: String| regex::Regex::new(r"updated_at=i[0-9]+").unwrap().replace_all(&t, "updated_at=<wall>").into_owned();
-        let (da, dbb) = (wall(one(&db(a))), wall(one(&db(b))));
+        // a registry row names the home it was written in (an inbox path): the two scratch homes differ
+        let home_of = |t: String, h: &Path| t.replace(&h.to_string_lossy().to_string(), "<HOME>");
+        let (da, dbb) = (home_of(wall(one(&db(a))), a), home_of(wall(one(&db(b))), b));
         assert!(da == dbb, "{name}: {what}: store differs: {}", first_diff(&da, &dbb));
     }
     let (fa, fb) = (tree(a), tree(b));
@@ -214,6 +224,7 @@ fn inbox(text: String) -> Spec {
 
 fn cases(fx: &Fx) -> Vec<Case> {
     let wt = fx.child.clone();
+    let primary_id = fx.primary_id.clone();
     let pid = i64::from(std::process::id());
     let d_inbox = {
         let wt = wt.clone();
@@ -622,7 +633,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -655,7 +666,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: Box::new(|_, _| {}),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -666,7 +677,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: Box::new(move |h, now| lock(h, "child-1", now - 121_000, pid)),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -677,7 +688,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: Box::new(move |h, now| lock(h, "child-1", now - 120_001, pid)),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -688,7 +699,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: Box::new(|h, now| lock(h, "child-1", now - 1000, 4_000_000)),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -699,7 +710,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: Box::new(|h, _| put(h, "locks/wake-watch-child-1.lock", "garbage")),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -710,7 +721,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: with_lock(|h, _| put(h, "wal/inbox-x.ndjson", "{\"t\":\"batch\",\"e\":\"e1\",\"ts\":1,\"raw\":\"r\"}\n")),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -721,7 +732,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: with_lock(|h, _| put(h, "wal-spill/inbox-x/e1.json", "{}")),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -732,7 +743,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -745,7 +756,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             fixup: with_lock(|h, _| {
                 fs::write(h.join(".anti-hall").join("settings.json"), "{\"mesh\":{\"engine_writes\":\"on\"},\"devswarm\":{\"tickRosterEvery\":3}}\n").unwrap()
             }),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -756,7 +767,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: Box::new(|_| json!({"rows": floors("child-1", 2, 0)})),
             union: none(),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["ok:false"],
         },
         Case {
@@ -770,7 +781,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             }),
             union: none(),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["ok:false"],
         },
         Case {
@@ -807,7 +818,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             }),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -818,7 +829,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -829,7 +840,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["ok:false"],
         },
         Case {
@@ -840,7 +851,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["tick child-1"],
         },
         Case {
@@ -851,7 +862,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: none(),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["\"known\":false"],
         },
         Case {
@@ -862,7 +873,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: live_lock(),
-            native: false,
+            native: true,
             expect: vec!["\"action\":\"tick\""],
         },
         Case {
@@ -873,7 +884,276 @@ fn cases(fx: &Fx) -> Vec<Case> {
             ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
             union: inbox(String::new()),
             fixup: with_lock(|h, _| put(h, "heartbeats/child-1.json", "[1,2]")),
-            native: false,
+            native: true,
+            expect: vec!["tick child-1"],
+        },
+        // ---- the shapes that used to be handed to Node ----
+        Case {
+            name: "wal-pending-batch-is-an-alert-in-the-json-form",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, _| put(h, "wal/inbox-x.ndjson", "{\"t\":\"batch\",\"e\":\"e1\",\"ts\":1,\"raw\":\"r\"}\n")),
+            native: true,
+            expect: vec!["\"walAlerts\":[{"],
+        },
+        Case {
+            name: "wal-pending-batch-too-big-is-an-alert",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, now| {
+                let raw = "x".repeat(1_100_000);
+                put(h, "wal/inbox-big.ndjson", &format!("{{\"t\":\"batch\",\"e\":\"e1\",\"ts\":{},\"raw\":\"{raw}\"}}\n", now - 1000));
+            }),
+            native: true,
+            expect: vec!["pending bytes"],
+        },
+        Case {
+            name: "wal-unreadable-is-an-alert",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, _| {
+                put(h, "wal/inbox-locked.ndjson", "{}\n");
+                chmod(&devswarm(h).join("wal/inbox-locked.ndjson"), 0o000);
+            }),
+            native: true,
+            expect: vec!["unreadable ("],
+        },
+        Case {
+            name: "wal-spill-without-a-log-is-an-alert",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, _| put(h, "wal-spill/pull-gone/e1.json", "{}")),
+            native: true,
+            expect: vec!["spilled batch(es)"],
+        },
+        Case {
+            name: "another-project-reads-as-an-unknown-store-side",
+            cwd: "outside",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["project-context-mismatch"],
+        },
+        Case {
+            name: "another-project-in-the-line-form",
+            cwd: "outside",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["known false"],
+        },
+        Case {
+            name: "outside-any-project-with-no-descriptor",
+            cwd: "outside",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![],
+            ack: Box::new(|_| json!({})),
+            union: none(),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["unregistered-workspace"],
+        },
+        Case {
+            name: "window-flag-is-refused",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--tail", "3"]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["window-flags-unsupported-on-acking-verb"],
+        },
+        Case {
+            name: "window-flag-is-refused-in-the-line-form",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--quiet", "--since", "3"]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["ok:false --since is not supported"],
+        },
+        Case {
+            name: "unsafe-id-in-the-json-form",
+            cwd: "child",
+            argv: tick_argv("../x", &[]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["invalid or missing workspace id"],
+        },
+        Case {
+            name: "no-id-at-all",
+            cwd: "child",
+            argv: vec!["inbox".into(), "tick".into(), "--quiet".into()],
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["ok:false invalid or missing workspace id"],
+        },
+        Case {
+            name: "valued-quiet-flag-and-unknown-flags-are-ignored",
+            cwd: "child",
+            argv: tick_argv("child-1", &["--quiet=1", "--whatever", "x", "--limit", "5"]),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(text3.clone()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["\"action\":\"tick\""],
+        },
+        Case {
+            name: "lock-ts-as-an-array",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: Box::new(|h, now| put(h, "locks/wake-watch-child-1.lock", &format!("{{\"pid\":{},\"ts\":[{}]}}", std::process::id(), now - 1000))),
+            native: true,
+            expect: vec!["tick child-1"],
+        },
+        Case {
+            name: "lock-ts-as-an-object",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: Box::new(|h, _| put(h, "locks/wake-watch-child-1.lock", &format!("{{\"pid\":{},\"ts\":{{}}}}", std::process::id()))),
+            native: true,
+            expect: vec!["tick child-1"],
+        },
+        Case {
+            name: "marker-seq-is-null",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: with_lock(|h, _| put(h, "wake-tick/child-1.json", "{\"seq\":null}")),
+            native: true,
+            expect: vec!["tick child-1"],
+        },
+        Case {
+            name: "limit-conservation-skips-the-rearm",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![("ANTIHALL_LIMIT_CONSERVE", "on".into()), ("ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP", "false".into())],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: Box::new(|_, _| {}),
+            native: true,
+            expect: vec!["watcherArmed limit-skip"],
+        },
+        Case {
+            name: "no-skip-no-lock-is-the-lapse-cue",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![("ANTIHALL_LIMIT_CONSERVE", "off".into()), ("ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP", "false".into())],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: Box::new(|_, _| {}),
+            native: true,
+            expect: vec!["watcherArmed false"],
+        },
+        Case {
+            name: "a-child-addressing-another-id-is-warned",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![("DEVSWARM_SOURCE_BRANCH", "feature".into()), ("DEVSWARM_BUILDER_ID", "child-9".into())],
+            ack: Box::new({
+                let d = d_inbox.clone();
+                move |h| {
+                    let mut ds = d(h);
+                    let mut other = ds[0].clone();
+                    other["id"] = json!("child-9");
+                    other["inboxPath"] = json!(h.join("inbox/child-9.ndjson").to_string_lossy());
+                    ds.push(other);
+                    json!({"rows": floors("child-1", 2, 0), "descriptors": ds})
+                }
+            }),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["tick child-1"],
+        },
+        Case {
+            name: "a-child-addressing-another-id-in-the-json-form",
+            cwd: "child",
+            argv: tick_argv("child-1", &[]),
+            extra: vec![("DEVSWARM_SOURCE_BRANCH", "feature".into()), ("DEVSWARM_BUILDER_ID", "child-9".into())],
+            ack: Box::new({
+                let d = d_inbox.clone();
+                move |h| {
+                    let mut ds = d(h);
+                    let mut other = ds[0].clone();
+                    other["id"] = json!("child-9");
+                    other["inboxPath"] = json!(h.join("inbox/child-9.ndjson").to_string_lossy());
+                    ds.push(other);
+                    json!({"rows": floors("child-1", 2, 0), "descriptors": ds})
+                }
+            }),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
+            expect: vec!["\"idMismatch\":true"],
+        },
+        Case {
+            name: "a-primary-whose-recorded-session-is-another-is-not-refreshed-while-the-caller-is-not-running",
+            cwd: "main",
+            argv: tick_argv(&primary_id, &[]),
+            extra: vec![("CLAUDE_CODE_SESSION_ID", "sess-new".into())],
+            ack: {
+                let (wt, pid) = (fx.main.clone(), primary_id.clone());
+                Box::new(move |h| {
+                    let mut d = desc(h, &pid, Some("inbox/primary.ndjson"), Some("cursors-nd/primary.txt"), &wt);
+                    d["sessionId"] = json!("sess-old");
+                    let rows = floors(&pid, 3, 0);
+                    json!({"rows": rows, "descriptors": [d]})
+                })
+            },
+            union: Box::new(|_| json!({"files": [{"rel": "inbox/primary.ndjson", "text": ""}, {"rel": "cursors-nd/primary.txt", "text": "0"}]})),
+            fixup: {
+                let pid = primary_id.clone();
+                Box::new(move |h, now| lock(h, &pid, now - 1000, i64::from(std::process::id())))
+            },
+            native: true,
+            expect: vec!["\"action\":\"tick\""],
+        },
+        Case {
+            name: "the-tick-roster-interval-is-set",
+            cwd: "child",
+            argv: quiet("child-1"),
+            extra: vec![("ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY", "1".into())],
+            ack: ack(floors("child-1", 2, 0), d_inbox.clone()),
+            union: inbox(String::new()),
+            fixup: live_lock(),
+            native: true,
             expect: vec!["tick child-1"],
         },
     ]
@@ -898,7 +1178,11 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
         }
         let _undo = Undo(["node", "engine", "defer"].iter().map(|k| fx.root.join(format!("{}-{k}", c.name))).collect());
         let now = NOW + i as i64 * 7_919;
-        let cwd: PathBuf = if c.cwd == "main" { fx.main.clone() } else { fx.child.clone() };
+        let cwd: PathBuf = match c.cwd {
+            "main" => fx.main.clone(),
+            "outside" => fx.root.clone(),
+            _ => fx.child.clone(),
+        };
         let (hn, he, hd) = (fx.root.join(format!("{}-node", c.name)), fx.root.join(format!("{}-engine", c.name)), fx.root.join(format!("{}-defer", c.name)));
         for h in [&hn, &he, &hd] {
             copy_tree(&fx.seed_home, h);
@@ -942,5 +1226,5 @@ fn tick_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("tick parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 35 && deferred >= 15, "{native} native, {deferred} deferred");
+    assert!(native == list.len() && deferred == 0, "every tick shape is answered by the engine: {native} native, {deferred} deferred");
 }

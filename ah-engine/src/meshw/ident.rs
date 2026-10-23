@@ -66,6 +66,13 @@ fn common_obj() -> Vec<(String, OVal)> {
     Vec::new()
 }
 
+/// [`refuse`] for a failure that is the verb's own answer: `{"ok":false,"error":<text of `msg_key` with `vars`>}`.
+pub fn refuse_text<T>(msg_key: &str, vars: &[(&str, &str)]) -> Result<T, Defer> {
+    let mut o = crate::meshw::common::Obj::default();
+    o.put("ok", OVal::Bool(false)).put("error", OVal::Str(defaults::render(msg_key, &vars.iter().map(|(k, v)| (*k, v as &dyn std::fmt::Display)).collect::<Vec<_>>())));
+    refuse(&o.done().stringify())
+}
+
 /// The JSON body of a refusal carried by [`refuse`]; `None` for any other deferral.
 pub fn refusal_body(d: &Defer) -> Option<&str> {
     d.0.strip_prefix(defaults::text("mesh_write.refusal_prefix"))

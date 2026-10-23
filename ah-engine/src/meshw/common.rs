@@ -142,40 +142,78 @@ pub fn self_heal(inv: &Inv) -> R<Vec<(String, OVal)>> {
     if daemon_healthy(inv, repo_key.as_deref())? {
         return Ok(vec![(defaults::text("mesh_write.heal_healthy").into(), OVal::Bool(true))]);
     }
-    let stale = || (defaults::text("mesh_write.heal_warning").to_string(), OVal::Str(defaults::text("mesh_write.heal_stale").into()));
-    let Some(repo_key) = repo_key.filter(|_| crate::checks::spawnctx::devswarm_active(&inv.settings())) else { return Ok(vec![stale()]) };
+    let stale = || vec![(defaults::text("mesh_write.heal_warning").to_string(), OVal::Str(defaults::text("mesh_write.heal_stale").into()))];
+    let Some(key) = repo_key.filter(|_| crate::checks::spawnctx::devswarm_active(&inv.settings())) else { return Ok(stale()) };
+    // the engine owns the ingest of the projects while its marker says so: no installer is started in front of it
     if engine_owns_ingest(inv) {
-        return Ok(vec![stale()]);
+        return Ok(stale());
     }
+    // one attempt per cooldown window
+    let attempt_file = self_heal_file(inv, &key);
+    let last = read_json(&attempt_file).and_then(|o| num_of(o.get("lastAttemptAt")));
     let cooldown = defaults::num("mesh_write.self_heal_cooldown_ms") as f64;
-    if let Some(last) = last_heal_attempt(inv, &repo_key) {
-        let elapsed = inv.now as f64 - last;
-        if elapsed < cooldown {
-            return Ok(vec![
-                stale(),
-                (defaults::text("mesh_write.heal_cooldown_flag").to_string(), OVal::Bool(true)),
-                (defaults::text("mesh_write.heal_retry_after").to_string(), OVal::Num((cooldown - elapsed).max(0.0))),
-            ]);
+    if let Some(l) = last.filter(|l| (inv.now as f64 - l) < cooldown) {
+        let mut v = stale();
+        v.push((defaults::text("mesh_write.heal_cooldown_key").to_string(), OVal::Bool(true)));
+        v.push((defaults::text("mesh_write.heal_retry_key").to_string(), OVal::Num((cooldown - (inv.now as f64 - l)).max(0.0))));
+        return Ok(v);
+    }
+    // only a project a registered workspace descriptor names qualifies for an automatic heal
+    if !project_registered(inv, &key) {
+        return Ok(stale());
+    }
+    let mut v = stale();
+    v.push((defaults::text("mesh_write.heal_attempted_key").to_string(), OVal::Bool(true)));
+    Ok(v)
+}
+
+/// The self-heal cooldown file of a project.
+fn self_heal_file(inv: &Inv, repo_key: &str) -> PathBuf {
+    devswarm_root(&inv.home).join(defaults::text("mesh_write.self_heal_dir")).join(format!(
+        "{}{repo_key}{}",
+        defaults::text("mesh_write.self_heal_file_prefix"),
+        defaults::text("mesh_write.json_suffix")
+    ))
+}
+
+/// `markSelfHealAttempt`: record this attempt (a staged write renamed into place), once per heal that reported
+/// `daemonHealAttempted`. Best effort: a failed write only means a later call may try again sooner.
+pub fn self_heal_mark(inv: &Inv, fields: &[(String, OVal)]) {
+    if !fields.iter().any(|(k, v)| k == defaults::text("mesh_write.heal_attempted_key") && matches!(v, OVal::Bool(true))) {
+        return;
+    }
+    let Ok(c) = ident::resolve_context(&inv.cwd, true) else { return };
+    let Some(top) = c.toplevel else { return };
+    let Ok(Some(key)) = ident::repo_key_for_worktree(&top) else { return };
+    let file = self_heal_file(inv, &key);
+    let mut tmp = file.as_os_str().to_os_string();
+    tmp.push(defaults::text("mesh_write.tmp_suffix"));
+    let tmp = PathBuf::from(tmp);
+    let go = || -> std::io::Result<()> {
+        if let Some(d) = file.parent() {
+            std::fs::create_dir_all(d)?;
         }
-    }
-    Ok(vec![stale()])
+        std::fs::write(&tmp, format!("{{\"lastAttemptAt\":{}}}", inv.now))?;
+        std::fs::rename(&tmp, &file)
+    };
+    crate::discard::harmless(go()); // keep: Node's markSelfHealAttempt swallows a failed write
 }
 
-/// `ingestHealth.engineOwnsIngest(home)`: the engine's ownership marker names the engine and is still inside its own lifetime.
+/// `ingest-health.js` `engineOwnsIngest`: the owner marker names the engine and is still within its validity.
 fn engine_owns_ingest(inv: &Inv) -> bool {
-    let Some(m @ OVal::Obj(_)) = read_json(&devswarm_root(&inv.home).join(defaults::text("mesh_write.ingest_owner_file"))) else { return false };
-    let owner = matches!(m.get("owner"), Some(OVal::Str(o)) if o == defaults::text("mesh_write.ingest_owner_name"));
-    match (num_of(m.get("ts")), num_of(m.get("validForMs"))) {
-        (Some(ts), Some(valid)) => owner && inv.now as f64 - ts <= valid,
-        _ => false,
-    }
+    let Some(m) = read_json(&devswarm_root(&inv.home).join(defaults::text("mesh_write.ingest_owner_file"))) else { return false };
+    let (ts, valid) = (num_of(m.get("ts")), num_of(m.get("validForMs")));
+    matches!(m.get("owner"), Some(OVal::Str(o)) if o == defaults::text("mesh_write.ingest_owner_engine"))
+        && matches!((ts, valid), (Some(t), Some(v)) if inv.now as f64 - t <= v)
 }
 
-/// `lastAttemptAt` of the project's self-heal cooldown file (`selfHealCooldownElapsed`), `None` for no usable record.
-fn last_heal_attempt(inv: &Inv, repo_key: &str) -> Option<f64> {
-    let file = format!("{}{repo_key}{}", defaults::text("mesh_write.self_heal_file_prefix"), defaults::text("mesh_write.json_suffix"));
-    let rec = read_json(&devswarm_root(&inv.home).join(defaults::text("mesh_write.self_heal_dir")).join(file))?;
-    num_of(rec.get("lastAttemptAt"))
+/// `ingest-health.js` `projectRegistered`: a registered workspace descriptor carries the project's key.
+fn project_registered(inv: &Inv, repo_key: &str) -> bool {
+    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    rd.flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(defaults::text("mesh_write.json_suffix")))
+        .any(|e| read_json(&e.path()).is_some_and(|d| matches!(d.get(defaults::text("mesh_write.field_repo_key")), Some(OVal::Str(k)) if k == repo_key)))
 }
 
 fn pid_alive(pid: f64) -> bool {

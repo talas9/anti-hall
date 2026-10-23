@@ -1,5 +1,5 @@
-//! `devswarm.js inbox tick <id> [--quiet] [--json]`, ported from `scripts/devswarm-lib/inbox-cmd.js` `cmdInboxTick` (with the `count`
-//! it runs) and `inboxTickQuietLine`.
+//! `devswarm.js inbox tick <id> [--quiet] [--json] [--child]`, ported from `scripts/devswarm-lib/inbox-cmd.js` `cmdInboxTick` (with the
+//! `count` it runs) and `inboxTickQuietLine`.
 //!
 //! A tick counts the unread mail of a workspace (its NDJSON inbox plus its store partition, see [`crate::meshw::union`]),
 //! then writes three small records and prints one line (`--quiet`) or the JSON of the `count` it ran:
@@ -9,159 +9,146 @@
 //!   there is none);
 //! * the cron-found-mail line, when the tick found unread mail and a wake-watch lock exists.
 //!
-//! The engine answers the common steady state and nothing else: the line form or the JSON form, a workspace with a
-//! descriptor, a single store partition (no mesh group), reader-cursor floor rows in place, a LIVE wake-watch lock (so
-//! `watcherArmed` is `true` and none of the idle, archived or limit skips, nor the re-arm cue, is involved), no delivery-log
-//! alert, no roster setting. A count that is not known (the inbox or its cursor file does not read) is answered in the line
-//! form, with Node's `known:false` warning on stderr. Everything else (a `--child` tick that first imports the native queue,
-//! the JSON form of an unknown count, a mesh group, a watcher that is not armed, a Primary whose anchor session Node
-//! would refresh) is a
-//! [`Defer`]: decided before the first write, so Node then runs the verb and nothing is written twice. After the first
-//! write nothing defers; every write is best effort, as in Node (`try { ... } catch (_) {}`).
+//! Every shape of the call is answered here, in Node's order. A call Node refuses (a missing or unsafe id, `--since` / `--tail`)
+//! prints Node's refusal and exits 2; an id with no inbox gets `count`'s refusal inside the tick's own result; a store that cannot
+//! be used (another project, a store that does not open) makes the count `known:false` with the reason, exactly as `count`
+//! reports it; the watcher decision (`watcherArmed`: a live lock, `archived-skip`, `idle-skip`, `limit-skip`, or the lapse
+//! `false` with its re-arm cue) is [`crate::meshw::tickarm`]'s. There is no Node to hand a verb to, so nothing here defers.
 // Discard triage (E3): every `.ok()` / `harmless` / `unwrap_or*` in this file is a deliberate keep, for these reasons:
 // - the three records a tick writes are best effort in Node (each in its own try/catch): a failed write is not an error
 // - an unreadable optional file is the same as an absent one (Node's try/catch around readFileSync)
 // - text that does not parse is the absent value (Node's JSON.parse catch parity)
-use serde_json::Value;
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::js_number_of_str;
 use crate::defaults;
 use crate::mesh::MeshReader;
-use crate::meshw::args::{Args, FlagVal};
+use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
-use crate::meshw::heartbeat::{anchor_refresh_possible, id_mismatch_possible, running_version};
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::heartbeat::running_version;
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::{Answer, Effect, rehome_is_noop};
+use crate::meshw::tickarm::{self, Armed};
 use crate::meshw::union;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// The one-line form (`--quiet`) or the JSON form (no flag, or `--json`): the flag sets the engine answers. Every other
-/// flag (`--child` first imports the native queue) is Node's.
+/// The two forms of the tick: the one line (`--quiet` without `--json`, read from the words themselves as `main()` does) or the JSON
+/// of the count; and `--child`, which first pulls the native queue (see [`crate::meshw::pull`]). Any other flag is ignored, as in Node.
 struct Form {
-    /// `main()` prints the one-line rendering (`--quiet` without `--json`).
+    /// `main()` prints the one-line rendering.
     line: bool,
-    /// `--child`: the tick first pulls the native queue (see [`crate::meshw::pull`]).
+    /// `hasFlag(flags, 'child')`: passed at all, with or without a value.
     child: bool,
 }
 
-fn tick_form(a: &Args) -> R<Form> {
-    let bare = |name: &str| -> R<bool> {
-        match a.flags.get(name) {
-            None => Ok(false),
-            Some(v) if v.iter().all(|x| *x == FlagVal::True) => Ok(true),
-            Some(_) => defer("flag-value"),
-        }
-    };
-    let (quiet, json) = (bare(defaults::text("mesh_write.flag_quiet"))?, bare(defaults::text("mesh_write.flag_json"))?);
-    let child = bare(defaults::text("mesh_write.flag_child"))?;
-    let known = [defaults::text("mesh_write.flag_quiet"), defaults::text("mesh_write.flag_json"), defaults::text("mesh_write.flag_child")];
-    if a.flags.keys().any(|k| !known.contains(&k.as_str())) {
-        return defer("flags");
-    }
-    Ok(Form { line: quiet && !json, child })
+/// `argv.includes('--<name>')`.
+fn word(a: &Args, flag_key: &str) -> bool {
+    let want = format!("--{}", defaults::text(flag_key));
+    a.raw.iter().any(|w| *w == want)
 }
 
-/// The `devswarm.tickRosterEvery` setting might be set anywhere Node reads it (the environment, `~/.anti-hall/settings.json`,
-/// the plugin options in `~/.claude/settings.json`): any trace of it sends the tick to Node, which appends the roster
-/// on every Nth tick. Reading the number itself would repeat the settings resolution for no gain.
-fn roster_setting_possible(inv: &Inv) -> bool {
-    if inv.env.get(defaults::text("mesh_write.tick_roster_env")).is_some_and(|v| !v.trim().is_empty()) {
-        return true;
-    }
-    let key = defaults::text("mesh_write.tick_roster_setting");
-    defaults::list("mesh_write.tick_settings_files").iter().any(|f| std::fs::read_to_string(inv.home.join(f)).is_ok_and(|t| t.contains(key)))
+fn tick_form(a: &Args) -> Form {
+    let quiet = word(a, "mesh_write.flag_quiet");
+    let json = word(a, "mesh_write.flag_json");
+    Form { line: quiet && !json, child: a.has(defaults::text("mesh_write.flag_child")) }
 }
 
-/// `devswarm-read-wal.js` `health()` reports an alert (or something this port cannot judge): then the tick carries
-/// `walAlerts` and Node prints it. Defer on any pending batch, spilled batch or last-resort batch; a log with every batch
-/// closed (the normal state) is quiet.
-fn wal_is_quiet(inv: &Inv, own: Option<&Path>) -> R<()> {
-    let root = devswarm_root(&inv.home);
-    let suffix = defaults::text("mesh_write.wal_suffix");
-    if let Ok(rd) = std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal"))) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(suffix) {
-                continue;
-            }
-            let text = match std::fs::read(e.path()) {
-                Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return defer("wal-unreadable"),
-            };
-            let (mut opened, mut closed) = (std::collections::HashSet::new(), std::collections::HashSet::new());
-            for line in text.split('\n').filter(|l| !crate::checks::guardkit::text::js_trim(l).is_empty()) {
-                let Ok(rec) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                let Some(id) = rec["e"].as_str() else { continue };
-                match rec["t"].as_str() {
-                    Some("batch") if rec["raw"].is_string() => {
-                        opened.insert(id.to_string());
-                    }
-                    Some("done" | "quarantine") => {
-                        closed.insert(id.to_string());
-                    }
-                    _ => {}
-                }
-            }
-            // a `--child` tick's own log is replayed and closed by the pull before the health report
-            if opened.iter().any(|b| !closed.contains(b)) && own != Some(e.path().as_path()) {
-                return defer("wal-pending");
-            }
-        }
-    }
-    // a spill directory holds the preflight's probe file once any pull has run; only a spilled batch (`*.json`) is an alert
-    let json = defaults::text("mesh_write.json_suffix");
-    let spilled = std::fs::read_dir(root.join(defaults::text("mesh_write.dir_wal_spill")))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten().any(|f| f.file_name().to_string_lossy().ends_with(json)));
-    if spilled {
-        return defer("wal-spill");
-    }
-    let tmp = defaults::list("mesh_write.env_tmpdir")
-        .iter()
-        .find_map(|k| inv.env.get(*k).filter(|v| !v.is_empty()))
-        .map_or_else(|| PathBuf::from(defaults::text("mesh_write.default_tmpdir")), PathBuf::from);
-    let prefix = defaults::text("mesh_write.wal_lastresort_prefix");
-    if std::fs::read_dir(tmp).is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with(prefix))) {
-        return defer("wal-lastresort");
-    }
-    Ok(())
+/// A `{ok:false, error}` result of this verb at exit 2, rendered the way `main()` renders it: its JSON, or `ok:false <error>` in the
+/// tick's line form.
+fn refused(a: &Args, error: &str) -> Answer {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false)).put("error", s(error));
+    Answer { code: 2, stdout: format!("{}\n", rendered_refusal(a, &o.done())), effect: Effect::None }
 }
 
-/// Open the read-only store of the project the way `openStore` settles it; `Ok(None)` is a store Node would first create.
-pub(crate) fn open_reader(inv: &Inv, repo_key: &str) -> R<Option<MeshReader>> {
+fn rendered_refusal(a: &Args, result: &OVal) -> String {
+    if tick_form(a).line { rendered_refusal_line(result) } else { result.stringify() }
+}
+
+/// What opening a project's store came to.
+pub(crate) enum Probe {
+    /// There is no store yet (Node's `openStore` would create it; a read-only open finds none).
+    Missing,
+    /// The store.
+    Open(MeshReader),
+    /// The store exists but cannot be used; the code names why (`storeUnavailableReason`).
+    Unreadable(String),
+}
+
+/// The error code Node's `e.code` names for an I/O error on the store.
+fn io_code(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(libc::EACCES) => "EACCES".to_string(),
+        Some(libc::EPERM) => "EPERM".to_string(),
+        Some(libc::ENOTDIR) => "ENOTDIR".to_string(),
+        Some(libc::EISDIR) => "EISDIR".to_string(),
+        Some(libc::EIO) => "EIO".to_string(),
+        _ => defaults::text("mesh_write.store_unknown_code").to_string(),
+    }
+}
+
+/// Open the read-only store of the project the way `openStore` settles it.
+pub(crate) fn probe_reader(inv: &Inv, repo_key: &str) -> Probe {
     let dir = union::store_dir(&inv.home, repo_key);
     if !dir.exists() {
-        return Ok(None);
+        return Probe::Missing;
     }
     let forced = inv.env.get(defaults::text("mesh_write.env_store_backend")).map(|v| v.trim().to_lowercase()).unwrap_or_default();
     if forced != defaults::text("mesh.backend_sqlite") {
+        // a store of another backend (the journal) is not one this engine reads: it is reported as unusable, never as empty
         if !forced.is_empty() && forced == defaults::text("mesh_write.backend_journal") {
-            return defer("journal-backend");
+            return Probe::Unreadable(defaults::text("mesh_write.store_backend_code").to_string());
         }
         let marker = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).map(|m| m.trim().to_lowercase()).unwrap_or_default();
         if marker != defaults::text("mesh.backend_sqlite") {
-            return defer("store-backend");
+            return Probe::Unreadable(defaults::text("mesh_write.store_backend_code").to_string());
         }
     }
     let db = dir.join(defaults::text("mesh_write.store_file"));
     if !db.exists() {
-        return Ok(None);
+        return Probe::Missing;
     }
-    MeshReader::open(&db).map(Some).map_err(|e| ident::Defer(format!("store-open:{e}")))
+    match MeshReader::open(&db) {
+        Ok(r) => Probe::Open(r),
+        Err(_) => {
+            Probe::Unreadable(std::fs::File::open(&db).err().map_or_else(|| defaults::text("mesh_write.store_unknown_code").to_string(), |e| io_code(&e)))
+        }
+    }
 }
 
-/// [`open_reader`] for a verb whose Node counterpart opens (and so creates) the project's store: a project with no store yet gets a new
-/// sqlite one first. Sweeps that must not create stores use [`open_reader`].
-pub(crate) fn open_reader_creating(inv: &Inv, repo_key: &str) -> R<MeshReader> {
-    if let Some(r) = open_reader(inv, repo_key)? {
-        return Ok(r);
+/// Open the read-only store of the project the way `openStore` settles it; `Ok(None)` is a store Node would first create. A store the
+/// engine cannot use is a [`Defer`] for the verbs that need a reader (the count reports it as unavailable instead).
+pub(crate) fn open_reader(inv: &Inv, repo_key: &str) -> R<Option<MeshReader>> {
+    match probe_reader(inv, repo_key) {
+        Probe::Missing => Ok(None),
+        Probe::Open(r) => Ok(Some(r)),
+        Probe::Unreadable(code) => Err(Defer(format!("store-unreadable:{code}"))),
     }
-    crate::meshw::common::open_store(inv, repo_key)?; // creates the directory, the marker and the database
-    open_reader(inv, repo_key)?.ok_or_else(|| ident::Defer("store-create".into()))
+}
+
+/// [`probe_reader`] for a verb whose Node counterpart opens (and so creates) the project's store: a project with no store yet gets a new
+/// sqlite one first.
+pub(crate) fn probe_reader_creating(inv: &Inv, repo_key: &str) -> Probe {
+    match probe_reader(inv, repo_key) {
+        Probe::Missing => {
+            if let Err(Defer(why)) = crate::meshw::common::open_store(inv, repo_key) {
+                return Probe::Unreadable(why);
+            }
+            probe_reader(inv, repo_key)
+        }
+        other => other,
+    }
+}
+
+/// [`open_reader`] for a verb whose Node counterpart opens (and so creates) the project's store. Sweeps that must not create stores
+/// use [`open_reader`].
+pub(crate) fn open_reader_creating(inv: &Inv, repo_key: &str) -> R<MeshReader> {
+    match probe_reader_creating(inv, repo_key) {
+        Probe::Open(r) => Ok(r),
+        Probe::Missing => Err(Defer("store-create".into())),
+        Probe::Unreadable(code) => Err(Defer(format!("store-unreadable:{code}"))),
+    }
 }
 
 /// The reader nonce of this process, derived once (it walks the process table): the tick reads it and the background
@@ -173,27 +160,180 @@ pub fn reader_nonce_cached(home: &Path) -> Option<String> {
 
 /// The project's open reader and its registry rows, as `resolveWorkspaceStoreForRead` settles them for a read of `id`.
 pub(crate) struct Opened {
-    /// The caller's project key.
+    /// The directory key of the store (the caller's project, else the legacy per-id bucket).
     pub repo_key: String,
+    /// The caller's project key (`repoKey`); none outside a project.
+    pub caller: Option<String>,
     /// The read-only store of that project.
     pub reader: MeshReader,
     /// The registry rows.
     pub rows: Vec<ident::Row>,
 }
 
-/// `resolveWorkspaceStoreForRead` for a read of `id`: the caller's project against the id's registered project, then the
-/// re-home trigger, then the store (read only) and its registry. Anything Node would write or refuse defers.
-pub(crate) fn open_partition(inv: &Inv, id: &str, desc: &OVal) -> R<Opened> {
-    let Some(repo_key) = ident::resolve_context(&inv.cwd, true)?.repo_key else { return defer("no-project") };
-    if let Some(reg) = crate::meshw::inbox::registered_repo_key(desc, id)?
-        && reg != repo_key
-    {
-        return defer("project-context-mismatch");
+/// Why the store side of a read cannot be used (`storeUnavailable` of `count`): another project's id, a store that does not open, a
+/// registry or cursor read that failed. The read still answers from the NDJSON side, and reports the store side as unknown.
+#[derive(Debug, Clone)]
+pub(crate) struct Unavail {
+    /// `project-context-mismatch`, `store-unavailable`, `store-open-failed` or `store-read-error`.
+    pub reason: String,
+    /// The refusal's text.
+    pub error: Option<String>,
+    /// The project the id is registered under (`project-context-mismatch`).
+    pub registered: Option<String>,
+    /// The project the caller's directory resolves to.
+    pub caller: Option<String>,
+    /// The underlying code (`storeUnavailableReason`).
+    pub code: Option<String>,
+}
+
+impl Unavail {
+    fn of(reason: &str, error: String, code: Option<String>) -> Unavail {
+        Unavail { reason: reason.to_string(), error: Some(error), registered: None, caller: None, code }
     }
-    rehome_is_noop(inv, id)?;
-    let Some(reader) = open_reader(inv, &repo_key)? else { return defer("no-store") };
-    let rows = ident::rows_of(&reader.roster().map_err(|e| ident::Defer(format!("registry:{e}")))?);
-    Ok(Opened { repo_key, reader, rows })
+
+    /// `isGenuineStoreUnavailableReason`: only a store that could not be opened or read is an outage.
+    fn genuine(&self) -> bool {
+        self.reason == defaults::text("mesh_write.reason_store_unavailable") || self.reason == defaults::text("mesh_write.reason_store_open_failed")
+    }
+
+    /// The detail object (`storeUnavailableDetail`).
+    fn detail(&self) -> OVal {
+        let opt = |v: &Option<String>| v.as_deref().map_or(OVal::Null, s);
+        let mut o = Obj::default();
+        o.put("reason", s(&self.reason))
+            .put("error", opt(&self.error))
+            .put("registeredRepoKey", opt(&self.registered))
+            .put("callerRepoKey", opt(&self.caller))
+            .put("storeUnavailableReason", opt(&self.code));
+        o.done()
+    }
+}
+
+/// `resolveWorkspaceStoreForRead`'s answer for a read of `id`.
+pub(crate) enum PartitionOpen {
+    /// The store, ready.
+    Open(Opened),
+    /// The store side is unusable (the read goes on without it).
+    Unavailable {
+        /// Why.
+        why: Unavail,
+        /// The directory key the store lives (or would live) under: the caller's project, else the legacy per-id bucket.
+        store_key: String,
+        /// The caller's project key (`repoKey` of the result).
+        repo_key: Option<String>,
+    },
+}
+
+/// `cwdInsideRegisteredWorktree(cwd, worktreePath)`: the caller's real directory lies inside the workspace's registered worktree (or
+/// that worktree's git toplevel).
+fn cwd_inside_registered_worktree(inv: &Inv, desc: &OVal) -> R<bool> {
+    let Some(wt) = union::path_field(desc, defaults::text("mesh_write.field_worktree_path"))? else { return Ok(false) };
+    let cwd_real = match ident::resolve_context(&inv.cwd, true) {
+        Ok(_) => ident::realpath(&inv.cwd).or_else(|| {
+            // a deleted cwd stands for its nearest existing ancestor
+            let mut d = ident::dirname(&ident::resolve_abs(&inv.cwd));
+            loop {
+                if let Some(r) = ident::realpath(&d) {
+                    break Some(r);
+                }
+                let up = ident::dirname(&d);
+                if up == d {
+                    break None;
+                }
+                d = up;
+            }
+        }),
+        Err(e) => return Err(e),
+    };
+    let Some(cwd_real) = cwd_real else { return Ok(false) };
+    let Some(wt_real) = ident::realpath(&wt) else { return Ok(false) };
+    let mut roots = vec![wt_real];
+    if let Some(top) = ident::resolve_context(&wt, false)?.toplevel {
+        roots.push(top);
+    }
+    Ok(roots.iter().any(|r| cwd_real == *r || cwd_real.starts_with(&format!("{r}/"))))
+}
+
+/// `resolveWorkspaceStoreForRead` for a read of `id`: the caller's project against the id's registered project, then the re-home
+/// trigger, then the store and its registry. A refusal or a store that cannot be used is [`PartitionOpen::Unavailable`], as
+/// `count` reports it; it is never an error of the verb.
+pub(crate) fn open_partition_ex(inv: &Inv, id: &str, desc: &OVal) -> R<PartitionOpen> {
+    let mut caller = ident::resolve_context(&inv.cwd, true)?.repo_key;
+    let registered = crate::meshw::inbox::registered_repo_key(desc, id)?;
+    // an unresolved caller key is not evidence of a different project: inside the workspace's own worktree it reads under the registered key
+    if registered.is_some() && caller.is_none() && cwd_inside_registered_worktree(inv, desc)? {
+        caller.clone_from(&registered);
+    }
+    let legacy = crate::meshw::send::hash_from_workspace_id(id);
+    if let Some(reg) = registered.as_deref()
+        && Some(reg) != caller.as_deref()
+    {
+        let q = |t: &str| OVal::Str(t.to_string()).stringify();
+        let mut error = defaults::render("mesh_write.msg_ctx_mismatch_head", &[("id", &q(id)), ("registered", &q(reg))]);
+        match caller.as_deref() {
+            Some(c) => error.push_str(&defaults::render("mesh_write.msg_ctx_mismatch_other", &[("caller", &q(c))])),
+            None => error.push_str(defaults::text("mesh_write.msg_ctx_mismatch_none")),
+        }
+        error.push_str(defaults::text("mesh_write.msg_ctx_mismatch_tail"));
+        let why = Unavail {
+            reason: defaults::text("mesh_write.reason_ctx_mismatch").to_string(),
+            error: Some(error),
+            registered: Some(reg.to_string()),
+            caller: caller.clone(),
+            code: None,
+        };
+        return Ok(PartitionOpen::Unavailable { why, store_key: caller.clone().unwrap_or(legacy), repo_key: caller });
+    }
+    let store_key = caller.clone().unwrap_or(legacy);
+    // the re-home of a workspace stranded in the legacy bucket moves rows: when it is due, the store side cannot be read as it stands
+    if let Err(Defer(why)) = rehome_is_noop(inv, id) {
+        let q = OVal::Str(id.to_string()).stringify();
+        let error = defaults::render("mesh_write.msg_store_unreadable", &[("id", &q), ("code", &why)]);
+        return Ok(PartitionOpen::Unavailable {
+            why: Unavail::of(defaults::text("mesh_write.reason_store_unavailable"), error, Some(why)),
+            store_key,
+            repo_key: caller,
+        });
+    }
+    match probe_reader_creating(inv, &store_key) {
+        Probe::Open(reader) => match reader.roster() {
+            Ok(roster) => Ok(PartitionOpen::Open(Opened { repo_key: store_key, caller, reader, rows: ident::rows_of(&roster) })),
+            Err(e) => {
+                let q = OVal::Str(id.to_string()).stringify();
+                let error = defaults::render("mesh_write.msg_store_unreadable", &[("id", &q), ("code", &e.to_string())]);
+                Ok(PartitionOpen::Unavailable {
+                    why: Unavail::of(
+                        defaults::text("mesh_write.reason_store_unavailable"),
+                        error,
+                        Some(defaults::text("mesh_write.store_unknown_code").to_string()),
+                    ),
+                    store_key,
+                    repo_key: caller,
+                })
+            }
+        },
+        failed => {
+            let code = match failed {
+                Probe::Unreadable(c) => c,
+                _ => defaults::text("mesh_write.store_unknown_code").to_string(),
+            };
+            let q = OVal::Str(id.to_string()).stringify();
+            let error = defaults::render("mesh_write.msg_store_unopened", &[("id", &q), ("code", &code)]);
+            Ok(PartitionOpen::Unavailable {
+                why: Unavail::of(defaults::text("mesh_write.reason_store_unavailable"), error, Some(code)),
+                store_key,
+                repo_key: caller,
+            })
+        }
+    }
+}
+
+/// [`open_partition_ex`] for a verb that needs the store itself: an unusable store side is a [`Defer`] named for its reason.
+pub(crate) fn open_partition(inv: &Inv, id: &str, desc: &OVal) -> R<Opened> {
+    match open_partition_ex(inv, id, desc)? {
+        PartitionOpen::Open(o) => Ok(o),
+        PartitionOpen::Unavailable { why, .. } => Err(Defer(why.reason)),
+    }
 }
 
 /// `positions()`: the floor rows, then this reader's own rows when it is a declared reader: `(store base, nd base)`.
@@ -238,9 +378,11 @@ pub(crate) struct Sibling {
 
 /// What `count` reports for a single partition that a tick uses.
 pub(crate) struct Counted {
-    /// The caller's project key.
-    pub repo_key: String,
-    /// `known`: the inbox and its cursor file both read.
+    /// `repoKey`: the caller's project key (none outside a project).
+    pub repo_key: Option<String>,
+    /// The directory key the store lives under (`storePath`): the caller's project, else the legacy per-id bucket.
+    pub store_key: String,
+    /// `known` (`readSideKnown`): the inbox and its cursor file both read, the store side is usable and the mesh group resolved.
     pub known: bool,
     /// `unreadTotal`.
     pub unread: usize,
@@ -252,8 +394,8 @@ pub(crate) struct Counted {
     pub nd_cursor: f64,
     /// `cursorStore`.
     pub store_cursor: f64,
-    /// `total` (only a known count reports a merged total).
-    pub total: Option<usize>,
+    /// `total`.
+    pub total: usize,
     /// The unread NDJSON lines (what `inbox read` prints).
     pub nd_lines: Vec<String>,
     /// The unread store rows no NDJSON line covers.
@@ -270,81 +412,158 @@ pub(crate) struct Counted {
     pub limit: usize,
     /// The mesh group's other partitions: what each contributes to a read and where an ack moves it.
     pub siblings: Vec<Sibling>,
+    /// Why the store side could not be used (`storeUnavailable`), when it could not.
+    pub unavail: Option<Unavail>,
+    /// `meshGroupError`: the mesh group could not be resolved or one of its partitions read.
+    pub mesh_error: Option<String>,
 }
 
-/// `count` for a single, registered partition. An unknown count (the inbox or its cursor file does not read) is the store
-/// alone, exactly as Node's union reports it; only the line form can print that, since its JSON carries more.
-pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, line_form: bool, full: bool, limit: usize) -> R<Counted> {
-    if !matches!(desc.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(d)) if d == id) {
-        return defer("descriptor-id");
+/// The mesh group's other partitions as a read of `id` sees them (`cmdInbox`'s count widening): the siblings, their unread count,
+/// their total and the rows the fold withheld.
+struct Widened {
+    ids: Vec<String>,
+    siblings: Vec<Sibling>,
+    unread: usize,
+    total: f64,
+    gap_withheld: usize,
+}
+
+impl Widened {
+    fn alone(id: &str) -> Widened {
+        Widened { ids: vec![id.to_string()], siblings: Vec::new(), unread: 0, total: 0.0, gap_withheld: 0 }
     }
-    let Some(inbox) = union::path_field(desc, defaults::text("mesh_write.field_inbox_path"))? else { return defer("no-inbox-path") };
-    let Some(cursor_file) = union::path_field(desc, defaults::text("mesh_write.field_cursor_path"))? else { return defer("no-cursor-path") };
-    let o = open_partition(inv, id, desc)?;
+}
+
+fn widen(inv: &Inv, o: &Opened, id: &str, desc: &OVal, store_base: f64, own_shown: &[Value]) -> R<Widened> {
     let group = crate::meshw::meshgroup::resolve(
         &o.rows,
         id,
         crate::meshw::meshgroup::worktree_of(&o.rows, id, union::path_field(desc, defaults::text("mesh_write.field_worktree_path"))?.as_deref()).as_deref(),
     )?;
-    // known: the inbox and its cursor file both read (otherwise Node prints a warning and the count is unknown)
-    let known = union::non_empty_lines(&inbox)?.is_some() && union::cursor_position(&cursor_file)?.is_some();
-    if !known && !line_form {
-        return defer("unknown-count");
+    let mut w = Widened { ids: group.ids.clone(), ..Widened::alone(id) };
+    if !group.active {
+        return Ok(w);
     }
+    let mut parts: Vec<(String, f64, Vec<Value>)> = Vec::new();
+    for pid in group.ids.iter().filter(|p| p.as_str() != id) {
+        let base = crate::meshw::meshgroup::base_cursor(inv, &o.reader, pid)?;
+        // a sibling the caller may not ack keeps the watermark the caller left, so its rows are not counted twice
+        let cursor =
+            if crate::meshw::meshgroup::ack_gate(inv, &o.rows, id, pid)? { base.max(crate::meshw::meshgroup::seen_cursor(inv, id, pid)) } else { base };
+        let total = o.reader.message_count(pid).map_err(|e| Defer(format!("store-read:{e}")))?;
+        let mut rows: Vec<Value> = Vec::new();
+        o.reader
+            .for_each_message(pid, if cursor.is_finite() && cursor > 0.0 { cursor.floor() as u64 } else { 0 }, |m| {
+                rows.push(m);
+                true
+            })
+            .map_err(|e| Defer(format!("store-read:{e}")))?;
+        w.total += total as f64;
+        parts.push((pid.clone(), cursor, rows));
+    }
+    let mut dedup = crate::meshw::meshgroup::Dedup::seed(&o.reader, id, store_base)?;
+    for r in own_shown {
+        dedup.note_shown(r);
+    }
+    for (pid, cursor, rows) in parts {
+        let folded = dedup.fold(inv, rows);
+        w.gap_withheld += folded.gap_withheld;
+        w.unread += folded.delivered.len();
+        w.siblings.push(Sibling {
+            id: pid,
+            cursor,
+            delivered: folded.delivered,
+            consumed_count: folded.consumed_count,
+            consumed_through: folded.consumed_through,
+            kept: 0,
+            physical: 0.0,
+        });
+    }
+    Ok(w)
+}
+
+/// `count` for a single, registered partition. An unknown count (the inbox or its cursor file does not read, a store that cannot be
+/// used) is reported as such in the result (`known: false`), exactly as Node's union reports it.
+pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Counted> {
+    let inbox = union::path_field(desc, defaults::text("mesh_write.field_inbox_path"))?;
+    let cursor_file = union::path_field(desc, defaults::text("mesh_write.field_cursor_path"))?;
+    // known: the inbox and its cursor file both read (otherwise Node prints a warning and the count is unknown)
+    let nd_known = match (&inbox, &cursor_file) {
+        (Some(i), Some(c)) => union::non_empty_lines(i)?.is_some() && union::cursor_position(c)?.is_some(),
+        _ => false,
+    };
+    let (inbox_in, cursor_in) = (inbox.as_deref().filter(|_| nd_known), cursor_file.as_deref().filter(|_| nd_known));
+    let (mut opened, store_key, repo_key, mut unavail) = match open_partition_ex(inv, id, desc)? {
+        PartitionOpen::Open(o) => {
+            let (key, caller) = (o.repo_key.clone(), o.caller.clone());
+            (Some(o), key, caller, None)
+        }
+        PartitionOpen::Unavailable { why, store_key, repo_key } => (None, store_key, repo_key, Some(why)),
+    };
     let me = crate::meshw::cursors::reader_key(reader_nonce_cached(&inv.home).as_deref());
-    let family = family_of(id, &o.rows);
-    let (inbox_in, cursor_in) = (known.then_some(inbox.as_str()), known.then_some(cursor_file.as_str()));
-    let c = union::unread_for(&o.reader, &inv.home, id, inbox_in, cursor_in, me.as_deref(), &family, inv.now)?;
-    note_own_excluded(&c);
-    let (store_base, nd_base, u) = (c.store_base, c.nd_base, c.union);
-    let input = union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: Some(&o.reader), store_base, nd_base, now: inv.now };
-    let total = if known {
-        Some(union::merged_total(&input)?)
-    } else if full {
-        // an unknown count: Node's total is the inbox's own line count (0 when it does not read) plus the store rows no line covers
-        Some(union::merged_total(&union::UnionIn { inbox: Some(&inbox), ..input })?)
+    // the union at the reader's bases; a store read that fails is the store side unknown (`store-read-error`), counted without it
+    let mut counted = None;
+    if let Some(o) = &opened {
+        let family = family_of(id, &o.rows);
+        match union::unread_for(&o.reader, &inv.home, id, inbox_in, cursor_in, me.as_deref(), &family, inv.now) {
+            Ok(c) => {
+                note_own_excluded(&c);
+                counted = Some((c.unread, c.store_base, c.nd_base, c.union));
+            }
+            Err(Defer(why)) => {
+                let q = OVal::Str(id.to_string()).stringify();
+                let error = defaults::render("mesh_write.msg_store_read_error", &[("id", &q), ("why", &why)]);
+                unavail = Some(Unavail {
+                    reason: defaults::text("mesh_write.reason_store_read_error").to_string(),
+                    error: Some(error),
+                    registered: None,
+                    caller: None,
+                    code: Some(why),
+                });
+            }
+        }
+    }
+    if counted.is_none() {
+        opened = None;
+    }
+    let (unread, store_base, nd_base, u) = match counted {
+        Some(c) => c,
+        None => {
+            // no store behind the count (`countFor(null, ...)`): the NDJSON side alone, from the cursor file's position
+            let nd_base = crate::migrate::readercur::legacy_nd_floor(cursor_in);
+            let u = union::union_unread(&union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: None, store_base: 0.0, nd_base, now: inv.now })?;
+            (u.unread, 0.0, nd_base, u)
+        }
+    };
+    let input = union::UnionIn { inbox: inbox_in, cursor_file: cursor_in, id, store: opened.as_ref().map(|o| &o.reader), store_base, nd_base, now: inv.now };
+    let total = if nd_known {
+        union::merged_total(&input)?
     } else {
-        None
+        // an unknown count: Node's total is the inbox's own line count (0 when it does not read) plus the store rows no line covers
+        union::merged_total(&union::UnionIn { inbox: inbox.as_deref(), ..input })?
     };
     let nd_target = nd_base_floor(nd_base) + u.nd_skipped as f64 + u.nd_unread_lines.len() as f64;
-    let nd_cursor = if !known && full {
-        crate::meshw::cursors::read_cursor(Path::new(&cursor_file))
+    let nd_cursor = if !nd_known {
+        cursor_file.as_deref().map_or(0.0, |c| crate::meshw::cursors::read_cursor(Path::new(c)))
     } else if nd_base.is_finite() && nd_base > 0.0 {
         nd_base.floor()
     } else {
         0.0
     };
-    // ---- the sibling partitions of the mesh group (`cmdInbox`'s count widening) ----
-    let (mut added_unread, mut added_total, mut gap_withheld) = (0usize, 0.0f64, 0usize);
-    let mut siblings: Vec<Sibling> = Vec::new();
-    if group.active {
-        let mut parts: Vec<(String, f64, Vec<Value>)> = Vec::new();
-        for pid in group.ids.iter().filter(|p| p.as_str() != id) {
-            let base = crate::meshw::meshgroup::base_cursor(inv, &o.reader, pid)?;
-            // a sibling the caller may not ack keeps the watermark the caller left, so its rows are not counted twice
-            let cursor = if crate::meshw::meshgroup::ack_gate(inv, &o.rows, id, pid)? { base.max(crate::meshw::meshgroup::seen_cursor(inv, id, pid)) } else { base };
-            let total = o.reader.message_count(pid).map_err(|e| ident::Defer(format!("store-read:{e}")))?;
-            let mut rows: Vec<Value> = Vec::new();
-            o.reader
-                .for_each_message(pid, if cursor.is_finite() && cursor > 0.0 { cursor.floor() as u64 } else { 0 }, |m| {
-                    rows.push(m);
-                    true
-                })
-                .map_err(|e| ident::Defer(format!("store-read:{e}")))?;
-            added_total += total as f64;
-            parts.push((pid.clone(), cursor, rows));
-        }
-        let mut dedup = crate::meshw::meshgroup::Dedup::seed(&o.reader, id, store_base)?;
-        for r in &u.store_only_unread {
-            dedup.note_shown(r);
-        }
-        for (pid, cursor, rows) in parts {
-            let folded = dedup.fold(inv, rows);
-            gap_withheld += folded.gap_withheld;
-            added_unread += folded.delivered.len();
-            siblings.push(Sibling { id: pid, cursor, delivered: folded.delivered, consumed_count: folded.consumed_count, consumed_through: folded.consumed_through, kept: 0, physical: 0.0 });
-        }
-    }
+    // ---- the sibling partitions of the mesh group: a group that cannot be resolved narrows the read to the partition itself ----
+    let mut mesh_error: Option<String> = None;
+    let widened = match &opened {
+        Some(o) => match widen(inv, o, id, desc, store_base, &u.store_only_unread) {
+            Ok(w) => w,
+            Err(Defer(why)) => {
+                let q = OVal::Str(id.to_string()).stringify();
+                mesh_error = Some(defaults::render("mesh_write.msg_mesh_unresolved", &[("id", &q), ("why", &why)]));
+                Widened::alone(id)
+            }
+        },
+        None => Widened::alone(id),
+    };
+    let Widened { ids, mut siblings, unread: added_unread, total: added_total, gap_withheld } = widened;
     // the read limit: the workspace's own rows are kept first, then each sibling's, up to the limit
     let mut u = u;
     let own_total = u.store_only_unread.len();
@@ -375,23 +594,27 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, line_form: bool, full
             sib.physical = if sib.consumed_count.is_finite() { sib.consumed_count } else { rows as f64 };
         }
     }
+    let known = nd_known && unavail.is_none() && mesh_error.is_none();
     Ok(Counted {
-        repo_key: o.repo_key,
+        repo_key,
+        store_key,
         known,
-        unread: c.unread + added_unread,
+        unread: unread + added_unread,
         nd_unread: u.nd_unread_lines.len(),
         store_unread,
         nd_cursor,
         store_cursor: store_base,
-        total: total.map(|t| t + added_total as usize),
-        mesh_ids: group.ids,
+        total: total + added_total as usize,
+        mesh_ids: ids,
         gap_withheld,
         truncated,
         limit,
         siblings,
         nd_lines: u.nd_unread_lines,
         store_rows: u.store_only_unread,
-        nd_target: if known { nd_target } else { nd_cursor },
+        nd_target: if nd_known { nd_target } else { nd_cursor },
+        unavail,
+        mesh_error,
     })
 }
 
@@ -412,40 +635,50 @@ pub(crate) fn pid_alive(pid: f64) -> Option<bool> {
     }
 }
 
-/// `Number(v)` for the JSON values a lock's `ts` can hold; anything JavaScript would convert in its own way defers.
+/// `Number(v)` for the JSON values a lock's `ts` can hold, as JavaScript converts them: an array is its elements joined by commas
+/// (`Number([])` is 0, `Number([5])` is 5, `Number([1, 2])` is NaN), an object is `"[object Object]"` (NaN).
 pub(crate) fn js_number(v: Option<&OVal>) -> R<f64> {
-    match v {
-        None => Ok(f64::NAN),
-        Some(OVal::Num(x)) => Ok(*x),
-        Some(OVal::Str(t)) => Ok(js_number_of_str(t)),
-        Some(OVal::Null) => Ok(0.0),
-        Some(OVal::Bool(b)) => Ok(f64::from(u8::from(*b))),
-        Some(_) => defer("lock-field-type"),
+    fn text_of(v: &OVal) -> String {
+        match v {
+            OVal::Null => String::new(),
+            OVal::Bool(b) => b.to_string(),
+            OVal::Num(x) => crate::checks::jsport::num::to_js_string(*x),
+            OVal::Str(t) => t.clone(),
+            OVal::Arr(items) => items.iter().map(text_of).collect::<Vec<_>>().join(","),
+            OVal::Obj(_) => defaults::text("mesh_write.js_object_string").to_string(),
+        }
     }
+    Ok(match v {
+        None => f64::NAN,
+        Some(OVal::Num(x)) => *x,
+        Some(OVal::Str(t)) => js_number_of_str(t),
+        Some(OVal::Null) => 0.0,
+        Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
+        Some(other) => js_number_of_str(&text_of(other)),
+    })
 }
 
 /// `watcherArmed`: a live watcher covers the workspace (its own lock, or another row of its checkout); the file is the workspace's
-/// own lock, whose mere presence the cron-found-mail measurement counts.
-fn watcher_lock(inv: &Inv, id: &str) -> R<(PathBuf, bool)> {
-    let found = crate::meshw::watcher::live_for_workspace(&inv.home, id, inv.now)?;
-    if found.by_checkout {
-        crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
-    }
-    Ok((crate::meshw::watcher::lock_file(&inv.home, id), found.armed))
+/// own lock, whose mere presence the cron-found-mail measurement counts. A check that fails reads as not armed (Node's catch).
+fn watcher_lock(inv: &Inv, id: &str) -> (PathBuf, bool) {
+    let armed = match crate::meshw::watcher::live_for_workspace(&inv.home, id, inv.now) {
+        Ok(found) => {
+            if found.by_checkout {
+                crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
+            }
+            found.armed
+        }
+        Err(_) => false,
+    };
+    (crate::meshw::watcher::lock_file(&inv.home, id), armed)
 }
 
-/// `Number(JSON.parse(file).seq) || 0`.
-fn previous_seq(file: &Path) -> R<f64> {
-    let Ok(bytes) = std::fs::read(file) else { return Ok(0.0) };
-    let Some(OVal::Obj(o)) = OVal::parse(&String::from_utf8_lossy(&bytes)) else { return Ok(0.0) };
-    let seq = js_number(o.iter().find(|(k, _)| k == "seq").map(|(_, v)| v))?;
-    if seq.is_nan() {
-        return Ok(0.0);
-    }
-    if !seq.is_finite() {
-        return defer("seq-not-finite");
-    }
-    Ok(seq)
+/// `Number(JSON.parse(file).seq) || 0`: a tick count that is not a number is 0; an infinite one stays (and is written as `null`).
+fn previous_seq(file: &Path) -> f64 {
+    let Ok(bytes) = std::fs::read(file) else { return 0.0 };
+    let Some(OVal::Obj(o)) = OVal::parse(&String::from_utf8_lossy(&bytes)) else { return 0.0 };
+    let seq = js_number(o.iter().find(|(k, _)| k == "seq").map(|(_, v)| v)).unwrap_or(f64::NAN);
+    if seq.is_nan() { 0.0 } else { seq }
 }
 
 /// Stage `text` next to `dst` and rename it into place; the staged file never outlives a failed rename.
@@ -459,13 +692,17 @@ fn write_staged(dst: &Path, text: &str, now: i64) -> std::io::Result<()> {
     })
 }
 
-/// Effect 1: the wake-tick marker.
-fn write_marker(inv: &Inv, id: &str, unread: usize, known: bool, seq: f64, gap: bool) {
+/// Effect 1: the wake-tick marker. `unread` is `None` for a result that carries no count (a refused one): `unreadTotal: null`.
+fn write_marker(inv: &Inv, id: &str, unread: Option<usize>, known: bool, seq: f64, gap: bool) {
     let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick"));
     let mut m = Obj::default();
-    m.put("ts", n(inv.now as f64)).put("unreadTotal", n(unread as f64)).put("meshGapWithheld", OVal::Bool(gap)).put("known", OVal::Bool(known));
-    if seq != 0.0 {
-        m.put("seq", n(seq));
+    m.put("ts", n(inv.now as f64))
+        .put("unreadTotal", unread.map_or(OVal::Null, |u| n(u as f64)))
+        .put("meshGapWithheld", OVal::Bool(gap))
+        .put("known", OVal::Bool(known));
+    if seq != 0.0 && !seq.is_nan() {
+        // JSON.stringify writes an infinite number as null
+        m.put("seq", if seq.is_finite() { n(seq) } else { OVal::Null });
     }
     let file = dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let go = || -> std::io::Result<()> {
@@ -475,8 +712,8 @@ fn write_marker(inv: &Inv, id: &str, unread: usize, known: bool, seq: f64, gap: 
     crate::discard::harmless(go()); // keep: the marker is instrumentation only (Node's catch)
 }
 
-/// Effect 2: the heartbeat refresh. `Err(Defer)` only for an existing record the engine cannot update like Node does.
-fn heartbeat_beat(inv: &Inv, id: &str) -> R<OVal> {
+/// Effect 2: the heartbeat refresh.
+fn heartbeat_beat(inv: &Inv, id: &str) -> OVal {
     let file = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let now = inv.now as f64;
     let existing = std::fs::read(&file).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
@@ -485,10 +722,10 @@ fn heartbeat_beat(inv: &Inv, id: &str) -> R<OVal> {
             beat.set("ts", n(now));
             beat.set("state_ts", n(now));
             beat.set("version", running_version());
-            Ok(beat)
+            beat
         }
-        // an array is an object to JavaScript (the assignments do not show in its JSON); defer rather than copy that
-        Some(OVal::Arr(_)) => defer("heartbeat-array"),
+        // an array is an object to JavaScript: the assignments do not show in its JSON, which is written back as it was
+        Some(arr @ OVal::Arr(_)) => arr,
         _ => {
             let mut b = Obj::default();
             b.put("id", s(id))
@@ -501,7 +738,7 @@ fn heartbeat_beat(inv: &Inv, id: &str) -> R<OVal> {
                 .put("blockers", OVal::Arr(Vec::new()))
                 .put("sessionId", OVal::Null)
                 .put("version", running_version());
-            Ok(b.done())
+            b.done()
         }
     }
 }
@@ -537,21 +774,50 @@ fn write_cron_found_mail(inv: &Inv, id: &str, unread: usize) {
     crate::discard::harmless(go()); // keep: a measurement only, never breaks the tick (Node's catch)
 }
 
-/// The JSON form of a tick: `count`'s result with `action` renamed in place, then `idMismatch` and `watcherArmed`.
-pub(crate) fn count_json(inv: &Inv, id: &str, c: &Counted, action: &str, tick: bool, resolved_from: Option<&str>, redirected_from: Option<&str>) -> R<String> {
-    let Some(total) = c.total else { return defer("unknown-count-json") };
+/// What a tick adds to `count`'s result, in Node's order: the delivery-log fields, then `idMismatch`, `watcherArmed` and the anchor refresh.
+pub(crate) struct TickTail {
+    /// A pull refused because its delivery log is unwritable (`walBlocked`), with its error.
+    pub wal_blocked: Option<Option<String>>,
+    /// `walAlerts`.
+    pub wal_alerts: Vec<OVal>,
+    /// `idMismatch`.
+    pub id_mismatch: bool,
+    /// `watcherArmed`.
+    pub armed: Armed,
+    /// `anchorRefresh`, when the anchor was looked at and something came of it.
+    pub anchor: Option<OVal>,
+}
+
+/// `known`, `storeUnavailable`, `storeUnavailableReason`, its detail, `meshGroupUnresolved`, `meshGroupError`, `totalsPartial` and
+/// `unreadStoreUnknown`: how a read-side result reports a store side or a mesh group it could not use.
+pub(crate) fn put_known_block(o: &mut Obj, c: &Counted) {
+    let genuine = c.unavail.as_ref().is_some_and(Unavail::genuine);
+    o.put("known", OVal::Bool(c.known))
+        .put("storeUnavailable", OVal::Bool(genuine))
+        .put("storeUnavailableReason", if genuine { c.unavail.as_ref().and_then(|u| u.code.as_deref()).map_or(OVal::Null, s) } else { OVal::Null });
+    if let Some(u) = &c.unavail {
+        o.put("storeUnavailableDetail", u.detail());
+    }
+    o.put("meshGroupUnresolved", OVal::Bool(c.mesh_error.is_some()))
+        .put("meshGroupError", c.mesh_error.as_deref().map_or(OVal::Null, s))
+        .put("totalsPartial", OVal::Bool(c.mesh_error.is_some()));
+    if c.unavail.is_some() {
+        o.put("unreadStoreUnknown", OVal::Bool(true));
+    }
+}
+
+/// The `count` result's fields up to the aliases, in Node's order; `tail` is a tick's own addition.
+pub(crate) fn count_obj(inv: &Inv, id: &str, c: &Counted, action: &str, resolved_from: Option<&str>, redirected_from: Option<&str>) -> Obj {
     let mut o = Obj::default();
-    o.put("ok", OVal::Bool(true))
-        .put("action", s(action))
-        .put("id", s(id));
+    o.put("ok", OVal::Bool(true)).put("action", s(action)).put("id", s(id));
     if let Some(f) = resolved_from {
         o.put("resolvedFrom", s(f));
     }
     if let Some(f) = redirected_from {
         o.put("redirected", OVal::Bool(true)).put("redirectedFrom", s(f));
     }
-    o.put("repoKey", s(&c.repo_key))
-        .put("storePath", OVal::Str(union::store_dir(&inv.home, &c.repo_key).to_string_lossy().into_owned()))
+    o.put("repoKey", c.repo_key.as_deref().map_or(OVal::Null, s))
+        .put("storePath", OVal::Str(union::store_dir(&inv.home, &c.store_key).to_string_lossy().into_owned()))
         .put("cwd", s(&inv.cwd))
         .put("meshPartitionIds", OVal::Arr(c.mesh_ids.iter().map(|x| s(x)).collect()))
         .put("unreadTotal", n(c.unread as f64))
@@ -559,13 +825,8 @@ pub(crate) fn count_json(inv: &Inv, id: &str, c: &Counted, action: &str, tick: b
         .put("unreadStore", n(c.store_unread as f64))
         .put("cursorNdjson", n(c.nd_cursor))
         .put("cursorStore", n(c.store_cursor))
-        .put("total", n(total as f64))
-        .put("known", OVal::Bool(c.known))
-        .put("storeUnavailable", OVal::Bool(false))
-        .put("storeUnavailableReason", OVal::Null)
-        .put("meshGroupUnresolved", OVal::Bool(false))
-        .put("meshGroupError", OVal::Null)
-        .put("totalsPartial", OVal::Bool(false));
+        .put("total", n(c.total as f64));
+    put_known_block(&mut o, c);
     if c.gap_withheld > 0 {
         o.put("meshGapWithheld", OVal::Bool(true)).put("meshGapWithheldCount", n(c.gap_withheld as f64));
     }
@@ -577,59 +838,152 @@ pub(crate) fn count_json(inv: &Inv, id: &str, c: &Counted, action: &str, tick: b
             OVal::Str(crate::checks::devswarm_role::text::fill_once(defaults::text("mesh_write.truncated_hint"), &[("count", &count), ("limit", &lim)])),
         );
     }
-    o.put("unread", n(c.unread as f64))
-        .put("cursor", n(c.nd_cursor))
-        .put("storeCursor", n(c.store_cursor))
-        .put("storeUnread", n(c.store_unread as f64));
-    if tick {
-        o.put("idMismatch", OVal::Bool(false)).put("watcherArmed", OVal::Bool(true));
+    o.put("unread", n(c.unread as f64)).put("cursor", n(c.nd_cursor)).put("storeCursor", n(c.store_cursor)).put("storeUnread", n(c.store_unread as f64));
+    o
+}
+
+/// Add a tick's fields to a result object, in Node's order (`Object.assign({}, counted, { action: 'tick', idMismatch, watcherArmed })`).
+pub(crate) fn with_tail(mut o: Obj, tail: &TickTail) -> Obj {
+    if let Some(err) = &tail.wal_blocked {
+        o.put("known", OVal::Bool(false)).put("walBlocked", OVal::Bool(true)).put("walError", err.as_deref().map_or(OVal::Null, s));
     }
-    Ok(o.done().stringify())
+    if !tail.wal_alerts.is_empty() {
+        o.put("walAlerts", OVal::Arr(tail.wal_alerts.clone()));
+    }
+    o.put("action", s(defaults::text("mesh_write.verb_tick"))).put("idMismatch", OVal::Bool(tail.id_mismatch)).put("watcherArmed", tail.armed.json());
+    if let Some(a) = &tail.anchor {
+        o.put("anchorRefresh", a.clone());
+    }
+    o
+}
+
+/// The reasons `emitKnownWarning` names for a result that reports `known: false`.
+fn known_reasons(result: &OVal) -> Vec<String> {
+    let text = |v: Option<&OVal>| match v {
+        Some(OVal::Str(t)) if !t.is_empty() => Some(t.clone()),
+        _ => None,
+    };
+    let truthy = |v: Option<&OVal>| matches!(v, Some(OVal::Bool(true)));
+    let su_reason = text(result.get("storeUnavailableReason"));
+    let su_kind = text(result.get("storeUnavailableDetail").and_then(|d| d.get("reason"))).or_else(|| text(result.get("reason")));
+    let store_reason = |code: &str| defaults::render("mesh_write.known_reason_store", &[("code", &code)]);
+    let mut reasons: Vec<String> = Vec::new();
+    if truthy(result.get("storeUnavailable")) {
+        match (&su_kind, &su_reason) {
+            (Some(k), Some(code)) if k == defaults::text("mesh_write.reason_store_unavailable") => reasons.push(store_reason(code)),
+            (None, Some(code)) => reasons.push(store_reason(code)),
+            (kind, _) => reasons.push(format!(
+                "{}{}",
+                defaults::text("mesh_write.known_reason_flag"),
+                kind.as_ref().map(|k| defaults::render("mesh_write.known_reason_kind", &[("kind", k)])).unwrap_or_default()
+            )),
+        }
+    } else if let Some(k) = &su_kind {
+        reasons.push(k.clone());
+    } else if let Some(code) = &su_reason {
+        reasons.push(store_reason(code));
+    }
+    let mesh = truthy(result.get("meshGroupUnresolved"));
+    if mesh {
+        let err = text(result.get("meshGroupError")).map(|e| format!("{}{e}", defaults::text("mesh_write.known_reason_colon"))).unwrap_or_default();
+        reasons.push(format!("{}{err}", defaults::text("mesh_write.known_reason_mesh")));
+    }
+    if truthy(result.get("totalsPartial")) && !mesh {
+        reasons.push(defaults::text("mesh_write.known_reason_partial").to_string());
+    }
+    if let Some(r) = text(result.get("reason"))
+        && !reasons.iter().any(|x| x.contains(&r))
+    {
+        reasons.push(r);
+    }
+    if reasons.is_empty() {
+        reasons.push(defaults::text("mesh_write.known_unknown").to_string());
+    }
+    reasons
+}
+
+/// Node's `emitKnownWarning(argv, result)` for an `inbox <sub>` result: one stderr line, naming the concrete reason, whenever the result
+/// reports `known === false`.
+pub(crate) fn emit_known_warning(sub: &str, result: &OVal) {
+    if !matches!(result.get("known"), Some(OVal::Bool(false))) {
+        return;
+    }
+    let id = match result.get("id") {
+        Some(OVal::Str(t)) => t.clone(),
+        Some(OVal::Null) | None => String::new(),
+        Some(other) => other.stringify(),
+    };
+    let label = format!("{} {sub} {}", defaults::text("mesh_write.verb_inbox"), OVal::Str(id).stringify());
+    eprintln!("{}", defaults::render("mesh_write.known_warning", &[("label", &label), ("reasons", &known_reasons(result).join("; "))]));
+}
+
+/// Where a tick's count comes from.
+enum Target {
+    /// A descriptor to count: the id as counted (a label resolves to its row), and how it got there.
+    Count { id: String, desc: OVal, resolved_from: Option<String>, redirected_from: Option<String> },
+    /// The refusal `count` prints for an id nothing backs.
+    Refused(Answer),
 }
 
 /// Run `inbox tick <id>` in its line form (`--quiet`) or its JSON form.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
-    if a.is_help() {
-        return defer("help");
+    // `help` never gets here: `simple::classify` takes a help request before any verb, as `run()` does
+    let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else {
+        return Ok(refused(a, defaults::text("devswarm_cli.msg_bad_id")));
+    };
+    // `--since` / `--tail` are refused before anything is read (`inboxWindowRejection`)
+    if let Some(w) = crate::meshw::readprimary::window_refusal(inv, a, id, defaults::text("mesh_write.verb_tick"))? {
+        let error = OVal::parse(w.stdout.trim()).unwrap_or(OVal::Null);
+        return Ok(Answer { code: w.code, stdout: format!("{}\n", rendered_refusal(a, &error)), effect: w.effect });
     }
-    if a.positionals.len() != 3 {
-        return defer("argv-shape");
-    }
-    let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else { return defer("bad-id") };
-    let form = tick_form(a)?;
-    if id_mismatch_possible(inv, id) {
-        return defer("id-mismatch");
-    }
-    if anchor_refresh_possible(inv)? {
-        return defer("anchor-refresh");
-    }
-    if roster_setting_possible(inv) {
-        return defer("roster-setting");
-    }
-    // ---- reads: everything that can defer happens before the first write ----
+    let form = tick_form(a);
+    let verb = defaults::text("mesh_write.verb_tick");
+    let id_mismatch = tickarm::warn_id_mismatch(inv, id);
+    let anchor = tickarm::refresh_anchor_session(inv);
+    // ---- reads: everything that can fail is read before the first write ----
     let found = ident::read_descriptor(&inv.home, id);
-    if found.is_none() && !form.child {
-        return defer("no-descriptor");
-    }
-    // a `--child` tick pulls first: the ensure completes the descriptor (or registers the workspace) the count then reads
-    let prepared = if form.child { Some(crate::meshw::pull::prepare(inv, id, found.as_ref())?) } else { None };
-    let Some(desc) = prepared.as_ref().map(|p| p.ensured().clone()).or(found) else { return defer("no-descriptor") };
-    // a `--child` tick's pre-count only proves the count can be answered: the pull pre-creates the inbox and cursor files that
-    // make it known, and the count that is printed is taken after it
-    let counted = count_mail(inv, id, &desc, form.line || form.child, false, defaults::num("mesh_write.inbox_read_limit") as usize)?;
-    wal_is_quiet(inv, prepared.as_ref().map(|p| p.wal_path()))?;
+    // a `--child` tick pulls first (`withSelfHeal(() => cmdInbox('pull', ...))`): the ensure completes the descriptor (or registers the
+    // workspace) the count then reads. An ensure Node refuses leaves the pull undone and the tick goes on to count what is there.
+    let prepared = if form.child {
+        crate::meshw::pull::heal_first(inv);
+        let (found, _) = crate::meshw::inboxcmd::promote_preface(inv, a, id, found.clone());
+        let args = crate::meshw::pull::PullArgs {
+            session: a.one(defaults::text("mesh_write.flag_session")).filter(|v| !v.is_empty()),
+            worktree_flag: a.one(defaults::text("devswarm_cli.flag_worktree")),
+            rows_left_by_fold: false,
+        };
+        match crate::meshw::pull::prepare_ex(inv, id, found.as_ref(), &args)? {
+            crate::meshw::pull::Prepared::Plan(p) => Some(*p),
+            crate::meshw::pull::Prepared::Refused(_) => None,
+        }
+    } else {
+        None
+    };
+    let limit = crate::meshw::inboxcmd::limit_of(a);
+    let target = match prepared.as_ref() {
+        Some(p) => Target::Count { id: id.to_string(), desc: p.ensured().clone(), resolved_from: None, redirected_from: None },
+        None => match crate::meshw::inboxcmd::locate(inv, verb, id, false, false)? {
+            crate::meshw::inboxcmd::Found::Go { id, desc, resolved_from, redirected_from } => Target::Count { id, desc, resolved_from, redirected_from },
+            crate::meshw::inboxcmd::Found::Out(refusal) => Target::Refused(refusal),
+        },
+    };
+    // a `--child` tick's pre-count only proves the count can be answered: the pull pre-creates the inbox and cursor files that make
+    // it known, and the count that is printed is taken after it
+    let pre = match &target {
+        Target::Count { id: rid, desc, .. } => Some(count_mail(inv, rid, desc, limit)?),
+        Target::Refused(_) => None,
+    };
     let marker_file =
         devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_wake_tick")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
-    let seq = previous_seq(&marker_file)?;
-    let beat = heartbeat_beat(inv, id)?;
-    let (lock_file, armed) = watcher_lock(inv, id)?;
-    if !armed {
-        // the idle, archived and limit skips and the re-arm cue are Node's
-        return defer("watcher-not-armed");
-    }
-    // the pull's plan settles every remaining deferral (the lock, the delivery log, the native count) before any write
+    let every = tickarm::roster_every(inv);
+    let want_roster = every > 0 && word(a, "mesh_write.flag_quiet") && !form.child;
+    let prev_seq = previous_seq(&marker_file);
+    let tick_seq = if want_roster { prev_seq + 1.0 } else { prev_seq };
+    let beat = heartbeat_beat(inv, id);
+    let (lock_file, lock_armed) = watcher_lock(inv, id);
+    // the pull's plan settles every remaining refusal (the lock, the delivery log, the native count) before any write
     let pull_plan = match prepared {
-        Some(p) => Some(p.finish(inv, counted.store_unread, form.line)?),
+        Some(p) => Some(p.finish(inv, pre.as_ref().map_or(0, |c| c.store_unread), form.line)?),
         None => None,
     };
     // ---- writes ----
@@ -638,58 +992,100 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
             // `execute` takes the workspace's lock first and defers only while nothing is written; it marks the commit point itself
             let out = crate::meshw::pull::execute(inv, p)?;
             // the count runs after the pull, over what the pull left (a failure here is a committed failure: exit 70)
-            let after = ident::read_descriptor(&inv.home, id).unwrap_or(desc);
-            (count_mail(inv, id, &after, form.line, false, defaults::num("mesh_write.inbox_read_limit") as usize)?, out.wal_blocked)
+            let counted = match &target {
+                Target::Count { id: rid, desc, .. } => {
+                    let after = ident::read_descriptor(&inv.home, rid);
+                    Some(count_mail(inv, rid, after.as_ref().unwrap_or(desc), limit)?)
+                }
+                Target::Refused(_) => None,
+            };
+            (counted, out.wal_blocked.then_some(out.res.error.clone()))
         }
         None => {
             crate::meshw::mark_committed();
-            (counted, false)
+            (pre, None)
         }
     };
-    let unread = counted.unread;
+    let armed = tickarm::decide(inv, id, form.child, lock_armed);
+    let unread = counted.as_ref().map(|c| c.unread);
     // a pull refused because its delivery log is unwritable: mail may be waiting that this count cannot see, so it is UNKNOWN
-    let known = counted.known && !wal_blocked;
-    write_marker(inv, id, unread, known, seq, counted.gap_withheld > 0);
+    let known = counted.as_ref().is_some_and(|c| c.known) && wal_blocked.is_none();
+    write_marker(inv, id, unread, known, tick_seq, counted.as_ref().is_some_and(|c| c.gap_withheld > 0));
     write_heartbeat(inv, id, &beat);
-    if unread > 0 && lock_file.exists() {
-        write_cron_found_mail(inv, id, unread);
+    if let Some(u) = unread.filter(|u| *u > 0)
+        && lock_file.exists()
+    {
+        write_cron_found_mail(inv, id, u);
     }
-    if !counted.known {
-        // `emitKnownWarning`: the count is not known and the caller is told on stderr
-        eprintln!(
-            "{}",
-            defaults::render(
-                "mesh_write.known_warning",
-                &[
-                    (
-                        "label",
-                        &format!(
-                            "{} {} {}",
-                            defaults::text("mesh_write.verb_inbox"),
-                            defaults::text("mesh_write.verb_tick"),
-                            OVal::Str(id.to_string()).stringify()
-                        )
-                    ),
-                    ("reasons", &defaults::text("mesh_write.known_unknown"))
-                ]
-            )
-        );
-    }
-    if !form.line {
-        if wal_blocked {
-            return defer("wal-blocked-json");
+    tickarm::record_rearm_cue(inv, id, armed);
+    // ---- the result: `count`'s (or its refusal) with the tick's fields after it ----
+    let (code, obj) = match (&target, &counted) {
+        (Target::Count { id: rid, resolved_from, redirected_from, .. }, Some(c)) => {
+            (0, count_obj(inv, rid, c, verb, resolved_from.as_deref(), redirected_from.as_deref()))
         }
-        return Ok(Answer { code: 0, stdout: format!("{}\n", count_json(inv, id, &counted, defaults::text("mesh_write.verb_tick"), true, None, None)?), effect: Effect::None });
+        (Target::Refused(r), _) => {
+            let mut obj = Obj::default();
+            if let Some(OVal::Obj(fields)) = OVal::parse(r.stdout.trim()) {
+                for (k, v) in fields {
+                    obj.put(&k, v);
+                }
+            }
+            (r.code, obj)
+        }
+        (Target::Count { .. }, None) => (2, Obj::default()),
+    };
+    let tail = TickTail {
+        wal_blocked,
+        wal_alerts: if form.line { Vec::new() } else { tickarm::wal_alerts(inv) },
+        id_mismatch,
+        armed,
+        anchor: anchor.filter(|r| matches!(r.get("refreshed"), Some(OVal::Bool(true)))),
+    };
+    let roster = if want_roster && every > 0 && (tick_seq % every as f64) == 0.0 && counted.as_ref().is_some_and(|c| c.known && c.unread == 0) && code == 0 {
+        tickarm::roster_text(inv, id)
+    } else {
+        None
+    };
+    let result = with_tail(obj, &tail).done();
+    emit_known_warning(verb, &result);
+    let stdout = if form.line { line_of(&result, roster.as_deref()) } else { result.stringify() };
+    Ok(Answer { code, stdout: format!("{stdout}\n"), effect: Effect::None })
+}
+
+/// `inboxTickQuietLine(result)`.
+fn line_of(result: &OVal, roster: Option<&str>) -> String {
+    if !matches!(result.get("ok"), Some(OVal::Bool(true))) {
+        return rendered_refusal_line(result);
     }
+    let flag =
+        |k: &str| if matches!(result.get(k), Some(OVal::Bool(true))) { defaults::text("mesh_write.js_true") } else { defaults::text("mesh_write.js_false") };
+    let word = match result.get("watcherArmed") {
+        Some(OVal::Str(w)) => w.as_str(),
+        Some(OVal::Bool(true)) => defaults::text("mesh_write.js_true"),
+        _ => defaults::text("mesh_write.js_false"),
+    };
+    let id = match result.get("id") {
+        Some(OVal::Str(t)) => t.clone(),
+        _ => String::new(),
+    };
+    let unread = match result.get("unreadTotal") {
+        Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
+        _ => defaults::text("mesh_write.js_null").to_string(),
+    };
     let line = defaults::render(
         "mesh_write.tick_line",
-        &[
-            ("id", &id),
-            ("unread", &unread),
-            ("known", &if known { defaults::text("mesh_write.js_true") } else { defaults::text("mesh_write.js_false") }),
-            ("gap", &defaults::text("mesh_write.js_false")),
-            ("armed", &defaults::text("mesh_write.js_true")),
-        ],
+        &[("id", &id), ("unread", &unread), ("known", &flag("known")), ("gap", &flag("meshGapWithheld")), ("armed", &word)],
     );
-    Ok(Answer { code: 0, stdout: format!("{line}\n"), effect: Effect::None })
+    match roster {
+        Some(r) if !r.is_empty() => format!("{line}\n{r}"),
+        _ => line,
+    }
+}
+
+fn rendered_refusal_line(result: &OVal) -> String {
+    let why = ["error", "reason"].iter().find_map(|k| match result.get(k) {
+        Some(OVal::Str(t)) if !t.is_empty() => Some(t.clone()),
+        _ => None,
+    });
+    defaults::render("mesh_write.tick_refused_line", &[("error", &why.unwrap_or_else(|| defaults::text("mesh_write.tick_failed").to_string()))])
 }
