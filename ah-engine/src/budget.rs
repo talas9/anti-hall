@@ -34,10 +34,10 @@ static DROPPED_LOGGED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mute
 /// `diagnostics.abandoned_log_interval_ms` per check and reason. A guard event's drop is its own kind (`guard_answer_dropped`) so it
 /// stands out; the dispatcher then applies the check's failure policy (`script.failure_mode_by_check`).
 pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
-    let kind = if guard { crate::defaults::text("budget.kind_guard") } else { crate::defaults::text("budget.kind_optional") };
+    let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
     crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
     let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
-    if m.len() < crate::defaults::num("budget.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
+    if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
         *m.entry(format!("{kind}:{reason}")).or_default() += 1;
     }
     drop(m);
@@ -60,7 +60,7 @@ pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
 pub fn dropped_this_daemon() -> Value {
     let m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
     let sum = |kind: &str| m.iter().filter(|(k, _)| k.starts_with(&format!("{kind}:"))).map(|(_, v)| *v).sum::<u64>();
-    json!({ "guard": sum(crate::defaults::text("budget.kind_guard")), "optional": sum(crate::defaults::text("budget.kind_optional")), "by_reason": *m })
+    json!({ "guard": sum(crate::defaults::text("answer_drop.kind_guard")), "optional": sum(crate::defaults::text("answer_drop.kind_optional")), "by_reason": *m })
 }
 
 /// Which budget.

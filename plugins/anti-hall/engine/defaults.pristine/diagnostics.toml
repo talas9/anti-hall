@@ -163,15 +163,15 @@ value = 0
 min = 0
 max = 1
 
-[budget.kind_guard]
+[answer_drop.kind_guard]
 doc = "Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon)."
 value = "guard"
 
-[budget.kind_optional]
+[answer_drop.kind_optional]
 doc = "Label of a dropped answer that belongs to an event that cannot block."
 value = "optional"
 
-[budget.dropped_keys_max]
+[answer_drop.dropped_keys_max]
 doc = "Most distinct kind:reason keys the this-daemon dropped-answer table holds; a further new key is only counted in the lifetime metric."
 value = 32
 min = 4

@@ -13,3 +13,31 @@
   command` (mod.rs:715-ish, NOT counted abandoned, no reason); otherwise `resolve_unanswered` (mod.rs:505) counts Abandoned at
   `dispatch:hook:<id>` and applies the check's failure policy (script.failure_mode_by_check).
 - "abandoned at dispatch:hook:X" = the daemon gave X no answer; the failure policy decided in its place.
+
+## Verdict on the premise
+- A SLOW check alone does not drop other answers: soft overrun only logs (deadline_soft); the client keeps waiting (slow window 2.6 s) and
+  the launcher extends its watchdog while the wait file exists. Scratch repro with one 450 ms check: all answers delivered.
+- What really drops answers (all proven in code): (1) cumulative per-REQUEST CPU hard budget (1 s): the check that crosses it loses its answer and
+  EVERY later check is deferred; (2) CPU hard-limit shedding (diagnostics.budget_cpu_hard_pct 10%) defers ALL checks of non-guard events
+  process-wide -- this matches the live "abandoned on every PostToolUse" and the ERROR "daemon CPU hard limit" at the same minute;
+  (3) client_gone; (4) hard request deadline.
+- Repro (scratch HOME, 3 checks of 450 ms CPU each, PostToolUse):
+  BEFORE: budget devswarm-child-drain "cpu budget crossed ... 450420 us"; budget coordinator-work-guard "deferred, cpu budget already spent";
+          budget agent-reminders "deferred, cpu budget already spent"; budget "rule evaluation exceeded its cpu budget"
+  AFTER:  only client_late / deadline_soft / budget_soft; no budget skip lines; status answers_dropped all 0.
+
+## Fix
+- native::evaluate: CPU budget is per check (the check that alone crossed loses only its own answer); no cascade.
+- diagnostics.shed_checks (TOML, shipped 0): shedding no longer drops checks of non-guard events; duties + Jev still shed.
+- Every dropped answer: budget::note_dropped (reason: shed, client_gone, hard_deadline, cpu_budget, check_deferred), event log kind
+  answer_dropped / guard_answer_dropped (rate limited), metric answers_dropped (lifetime), status.answers_dropped.this_daemon vs lifetime.
+- Client: an unanswered non-guard entry is no longer logged "skipped: no runnable Node command"; it is counted abandoned with a reason.
+  Guards unchanged: unanswered guard with no hook -> fail closed; check failure policy (script.failure_mode_by_check) unchanged.
+
+## Worker syscall CPU (no root: no dtrace/fs_usage; sample + code)
+1. script::resolve per check call: read_dir of logic/lib + stat of every lib file (29) + script stats = ~40 file ops per check, ~15 checks per tool call.
+   Fixed: shared fingerprint cache, script.fingerprint_ttl_ms = 1000.
+2. health::log_event: stat + lock-file open + flock + log open + write per line; 45 of 46 busy worker samples under load were in this flock.
+   Self-amplifying: overrun -> deadline_soft line -> serialised lock -> longer. Not changed (needs a buffered logger).
+3. per-request state writes (crash breadcrumb, memdiag; task #184) -- not measured here.
+- The supervisor duties are NOT the 74%: verdicts 81 ms/call on a 60 s tick = 0.14% of a core.
