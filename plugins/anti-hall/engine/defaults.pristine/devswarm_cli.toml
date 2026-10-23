@@ -4321,3 +4321,464 @@ value = "\\ufffd"
 [devswarm_cli.rr_tr_metric_skipped]
 doc = "Counter bumped when a transcript line is skipped because it could not be read."
 value = "mesh_roster_transcript_line_skipped"
+
+# ah-engine shipped defaults for the DevSwarm CLI verbs `done`, `relay`, `archive-request`, `nudge`, `archive`, `skip`,
+# `gate-intent`, `notice`, `logs`, `wake-directive` and `help`: the answers they give where they used to hand the case to Node
+# (their messages, reasons and the few constants Node holds in its modules). Format: see the header of engine.toml. The values
+# are Node's own (scripts/devswarm-lib/*.js, companion/lib/devswarm-maintainer-notice.js, companion/lib/anti-hall-log.js).
+# Nothing here is compiled into the binary.
+
+[devswarm_cli.help_own_render]
+doc = "Verbs whose own one-line renderer main() applies to ANY result when no --json is given, a help result included: the line Node prints for a help-shaped result (which carries none of the fields the renderer reads), by verb name. `supervision-report` is absent on purpose: its renderer throws on a help result in Node, so the usage text is printed."
+value = { healthcheck = "healthcheck: ok [orphansWithUnread=0 stale=0 splits=0 deadSplits=0 mixedSplits=0 phantoms=0 unread=0]", diagnose = "diagnose: ok [registry=0 splits=0 deadSplits=0 mixedSplits=0 orphans=0 held=0 stale=0]" }
+
+[devswarm_cli.help_render_send_quiet]
+doc = "The line `send --quiet --help` prints (the quiet renderer read from a help-shaped result)."
+value = "sent seq undefined -> (unknown), undefined bytes, ok"
+
+[devswarm_cli.help_render_tick_quiet]
+doc = "The line `inbox tick --quiet --help` prints (the quiet renderer read from a help-shaped result)."
+value = "tick : unread null, known true, meshGap false, watcherArmed false"
+
+[devswarm_cli.help_render_read_primary_text]
+doc = "The line `inbox read-primary --format text --help` prints (the text renderer read from a help-shaped result)."
+value = "(no messages)"
+
+
+[devswarm_cli.act_sys_mkdir]
+doc = "The system call name Node puts in the message of a failed directory creation."
+value = "mkdir"
+
+[devswarm_cli.act_sys_open]
+doc = "The system call name Node puts in the message of a failed file open (write or append)."
+value = "open"
+
+[devswarm_cli.act_sys_rename]
+doc = "The system call name Node puts in the message of a failed rename."
+value = "rename"
+
+[devswarm_cli.act_msg_invalid_time]
+doc = "The message of the RangeError `Date.prototype.toISOString` throws for a time it cannot print."
+value = "Invalid time value"
+
+[devswarm_cli.act_proto_key]
+doc = "The one key JavaScript assigns through a prototype setter instead of storing: a number assigned to it is ignored, an object replaces the prototype."
+value = "__proto__"
+
+[devswarm_cli.act_proto_names]
+doc = "The property names every JavaScript object inherits: a `--min-level` named like one ranks as a function or object that no log level compares `>=` to, so every entry drops."
+value = ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"]
+
+[devswarm_cli.act_js_null]
+doc = "`String(null)` in JavaScript."
+value = "null"
+
+[devswarm_cli.act_js_object]
+doc = "`String({})` in JavaScript."
+value = "[object Object]"
+
+
+[devswarm_cli.act_metric_ts_unread]
+doc = "Counter: a log timestamp V8 might read by rules the engine does not reproduce (taken as no date). Label `site`."
+value = "mesh_log_ts_unread"
+
+
+[devswarm_cli.act_site_logs]
+doc = "The label of the `logs` reads in the counters above."
+value = "logs"
+
+[devswarm_cli.notice_default_ttl_ms]
+doc = "The lifetime of a maintainer notice posted without --ttl (7 days)."
+value = 604800000
+min = 1000
+max = 31536000000
+
+[devswarm_cli.notice_walk_levels]
+doc = "How many directory levels up from the working directory the maintainer-notice post looks for the anti-hall plugin manifest."
+value = 64
+min = 1
+max = 4096
+
+[devswarm_cli.notice_manifest]
+doc = "The plugin manifest, relative to a checkout, whose name must be `anti-hall` for a maintainer notice to be posted."
+value = "plugins/anti-hall/.claude-plugin/plugin.json"
+
+[devswarm_cli.notice_manifest_name]
+doc = "The name the plugin manifest must carry."
+value = "anti-hall"
+
+[devswarm_cli.notice_max_text_bytes]
+doc = "The longest maintainer notice text, in UTF-8 bytes."
+value = 2048
+min = 1
+max = 1048576
+
+[devswarm_cli.notice_day_ms]
+doc = "The window of the maintainer-notice rate limit (24 hours)."
+value = 86400000
+min = 1000
+max = 604800000
+
+[devswarm_cli.notice_max_posts_per_day]
+doc = "How many maintainer notices may be posted inside the rate-limit window."
+value = 3
+min = 1
+max = 1000
+
+[devswarm_cli.act_notice_component]
+doc = "The component of the maintainer-notice central-log events."
+value = "devswarm-maintainer-notice"
+
+[devswarm_cli.act_notice_kind_post]
+doc = "The operation of the maintainer-notice post events."
+value = "post"
+
+[devswarm_cli.act_set_notice_post]
+doc = "Setting devswarm.maintainerNotice.post: whether this checkout may post a maintainer notice (a mistake guard, locked, off by default)."
+value = { section = "devswarm", key = "maintainerNotice.post", type = "boolean", env = "ANTIHALL_DEVSWARM_MAINTAINER_NOTICE_POST", option = "devswarm_maintainer_notice_post", default = false }
+
+[devswarm_cli.act_notice_reason_setting_off]
+doc = "The reason of a post refused because the setting is off."
+value = "setting-off"
+
+[devswarm_cli.act_notice_log_setting_off]
+doc = "The central-log message of that refusal."
+value = "refused: setting off"
+
+[devswarm_cli.act_notice_msg_setting_off]
+doc = "The error of that refusal."
+value = "devswarm.maintainerNotice.post is off — this is a mistake guard, not authentication; set it (and confirm) only in the anti-hall dev checkout"
+
+[devswarm_cli.act_notice_reason_wrong_checkout]
+doc = "The reason of a post refused because the checkout is not anti-hall's own."
+value = "wrong-checkout"
+
+[devswarm_cli.act_notice_log_wrong_checkout]
+doc = "The central-log message of that refusal."
+value = "refused: checkout is not anti-hall"
+
+[devswarm_cli.act_notice_msg_wrong_checkout]
+doc = "The error of that refusal."
+value = "this checkout's plugins/anti-hall/.claude-plugin/plugin.json does not name \"anti-hall\" — refusing to post (mistake guard, not authentication)"
+
+[devswarm_cli.act_notice_reason_empty_text]
+doc = "The reason of a post refused for an empty text."
+value = "empty-text"
+
+[devswarm_cli.act_notice_msg_empty_text]
+doc = "The error of that refusal."
+value = "--post requires non-empty text"
+
+[devswarm_cli.act_notice_reason_too_long]
+doc = "The reason of a post refused for a text over the byte limit."
+value = "text-too-long"
+
+[devswarm_cli.act_notice_log_too_long]
+doc = "The central-log message of that refusal."
+value = "refused: text too long"
+
+[devswarm_cli.act_notice_msg_too_long]
+doc = "The error of that refusal. Placeholders: {max}, {got}."
+value = "text exceeds {max} bytes (got {got})"
+
+[devswarm_cli.act_notice_reason_bad_ttl]
+doc = "The reason of a post refused for a --ttl that is none of the forms."
+value = "bad-ttl"
+
+[devswarm_cli.act_notice_msg_bad_ttl]
+doc = "The error of that refusal. Placeholder: {ttl} (JSON-quoted)."
+value = "unparseable --ttl: {ttl}"
+
+[devswarm_cli.act_notice_reason_rate]
+doc = "The reason of a post refused by the rate limit."
+value = "rate-limited"
+
+[devswarm_cli.act_notice_log_rate]
+doc = "The central-log message of that refusal."
+value = "refused: rate limit"
+
+[devswarm_cli.act_notice_msg_rate]
+doc = "The error of that refusal. Placeholders: {max}, {count}."
+value = "{max} posts per 24h already used ({count})"
+
+[devswarm_cli.act_notice_reason_write_failed]
+doc = "The reason of a post whose write failed."
+value = "write-failed"
+
+[devswarm_cli.act_notice_log_posted]
+doc = "The central-log message of a posted notice."
+value = "posted maintainer notice"
+
+[devswarm_cli.act_msg_no_entropy]
+doc = "The message when the system random source cannot be read (Node: randomBytes throws)."
+value = "could not read random bytes"
+
+[devswarm_cli.act_app_sourced_markers]
+doc = "The archive markers the DevSwarm app sync writes (never anti-hall's own `archive` verb): a workspace archived by one of them is not the app-only archive's to touch."
+value = ["devswarm-app", "devswarm-app-deleted", "devswarm-ui-sync"]
+
+[devswarm_cli.act_authority_log]
+doc = "The file of the cross-project archive audit trail, in the log directory."
+value = "devswarm-authority-override.log"
+
+[devswarm_cli.act_done_reason_error]
+doc = "The `messageReason` of a done report whose message step raised a store error."
+value = "error"
+
+[devswarm_cli.act_force_cross_warning]
+doc = "The consequence of an archive taken across projects, stated on the refusal hint and on the result."
+value = "NOTE: archiving across projects removes the row from THIS project only — if that workspace still has unread messages, its partition becomes an ORPHAN in its own project (nothing is deleted; drain or heal it from inside that project)."
+
+[devswarm_cli.act_heal_suffix]
+doc = "The suffix of the temporary link that replaces an orphaned archived marker atomically."
+value = ".tmp-heal"
+
+[devswarm_cli.act_js_undefined]
+doc = "`String(undefined)` in JavaScript."
+value = "undefined"
+
+[devswarm_cli.act_msg_app_ambiguous]
+doc = "The refusal of `archive <ref>` when several app-live workspaces match. Placeholders: {raw} (JSON-quoted), {n}, {ids}."
+value = "ambiguous: {raw} matches {n} app-live workspaces — archived nothing; use one full id: {ids}"
+
+[devswarm_cli.act_msg_app_only_error]
+doc = "The tail naming why an app-only archive failed. Placeholder: {error}."
+value = " [{error}]"
+
+[devswarm_cli.act_msg_app_only_step]
+doc = "The manual step of an app-only archive that was not verified. Placeholders: {cmd}, {tail}."
+value = "run `{cmd}` — the app archive was NOT verified{tail}"
+
+[devswarm_cli.act_msg_archive_request_direct]
+doc = "The note on an archive-request that archived the target directly."
+value = "target has no live session and is archive-ready; archived directly instead of posting a message it could never read"
+
+[devswarm_cli.act_msg_archived_dir]
+doc = "The error when the archived directory cannot be used. Placeholder: {error}."
+value = "unsafe archived directory: {error}"
+
+[devswarm_cli.act_msg_archived_not_dir]
+doc = "Why the archived path is unusable when it is not a plain directory."
+value = "archived path is not a real directory"
+
+[devswarm_cli.act_msg_child_label_child]
+doc = "The refusal of a child worktree label used as an identity. Placeholders: {id} (JSON-quoted), {wt}, {use}."
+value = "{id} is the worktree label of a CHILD workspace ({wt}), not an identity — {use}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[devswarm_cli.act_msg_child_label_retired]
+doc = "The refusal of a retired worktree label used as an identity. Placeholders: {id}, {to} (JSON-quoted)."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[devswarm_cli.act_msg_child_label_unregistered]
+doc = "The remedy text when the child has no registered id yet."
+value = "the child has not registered its workspace id yet"
+
+[devswarm_cli.act_msg_child_label_use]
+doc = "The remedy text naming the child's real id. Placeholder: {child} (JSON-quoted)."
+value = "use its workspace id {child}"
+
+[devswarm_cli.act_msg_ctx_tail_archive]
+doc = "The remedy named by an archive refused for a project mismatch."
+value = "run this from within that project's worktree to archive it"
+
+[devswarm_cli.act_msg_desc_identity]
+doc = "The refusal when a descriptor is not the workspace's. Placeholder: {id} (JSON-quoted)."
+value = "descriptor identity does not match workspace {id}"
+
+[devswarm_cli.act_msg_desc_not_file]
+doc = "Why a descriptor path cannot be read: it is not a regular file."
+value = "descriptor path is not a regular file"
+
+[devswarm_cli.act_msg_desc_not_object]
+doc = "Why a descriptor cannot be read: it holds JSON that is no object."
+value = "descriptor is not a JSON object"
+
+[devswarm_cli.act_msg_desc_persist]
+doc = "The error when the project identity cannot be written into a descriptor. Placeholder: {error}."
+value = "failed to persist descriptor project identity: {error}"
+
+[devswarm_cli.act_msg_desc_read_active]
+doc = "The error when the active descriptor cannot be read. Placeholder: {error}."
+value = "failed to read existing descriptor: {error}"
+
+[devswarm_cli.act_msg_desc_read_archived]
+doc = "The error when the archived descriptor cannot be read. Placeholder: {error}."
+value = "failed to read archived descriptor: {error}"
+
+[devswarm_cli.act_msg_desc_unreadable]
+doc = "Why a descriptor cannot be read: its bytes could not be read."
+value = "descriptor could not be read"
+
+[devswarm_cli.act_msg_done_unregistered]
+doc = "The error of a done report for a workspace the project's mesh does not track. Placeholder: {id} (JSON-quoted)."
+value = "workspace {id} is not registered in this project's mesh — nothing surfaces its done gate"
+
+[devswarm_cli.act_msg_force_hint]
+doc = "The hint appended to a cross-project archive refusal when no override was given. Placeholders: {id}, {warning}."
+value = " — if this cross-project archive is intentional, re-run with `--force-cross-project {id}` (the flag must name this exact id; the override is logged). {warning}"
+
+[devswarm_cli.act_msg_force_rejected]
+doc = "The hint appended when the override named another id. Placeholders: {value} (JSON-quoted), {id}."
+value = " — `--force-cross-project {value}` does NOT match this workspace id; the override must name the EXACT id being archived: `--force-cross-project {id}`"
+
+[devswarm_cli.act_msg_link_exists]
+doc = "Why the archived name cannot be linked: another file holds it."
+value = "archived descriptor already exists and is not the active descriptor"
+
+[devswarm_cli.act_msg_link_failed]
+doc = "The error when the descriptor cannot be linked into archived/. Placeholder: {error}."
+value = "failed to link descriptor into archived/: {error}"
+
+[devswarm_cli.act_msg_not_this_project]
+doc = "The refusal of an archive of a descriptor that belongs to another project."
+value = "descriptor does not belong to the current project"
+
+[devswarm_cli.act_msg_nudge_dead]
+doc = "The message of an escalation whose last poke failed. Placeholder: {error}."
+value = "session appears dead/unreachable — needs a manual continue in the DevSwarm app (last poke failed: {error})"
+
+[devswarm_cli.act_msg_relay_ambiguous_receipt]
+doc = "The refusal of a relay whose receipt does not cover exactly one message. Placeholders: {rid} (JSON-quoted), {n}, {caller}."
+value = "receipt {rid} covers {n} message(s) — relay needs exactly one; pass the exact <seq> instead (see `inbox messages {caller}`)"
+
+[devswarm_cli.act_msg_relay_bad_seq]
+doc = "The refusal of a relay whose sequence is neither a number nor a receipt. Placeholder: {got} (JSON-quoted)."
+value = "relay requires a non-negative integer <seq> or a read receipt id (r...), got {got}"
+
+[devswarm_cli.act_msg_relay_empty_body]
+doc = "The refusal of a relay of an empty message. Placeholder: {seq}."
+value = "source message (seq {seq}) has an empty body — refusing to relay nothing"
+
+[devswarm_cli.act_msg_relay_mismatch]
+doc = "The refusal when the relayed byte length is not the expected one. Placeholders: {got}, {expected}, {source}."
+value = "relayed byte length ({got}) does not match the expected length ({expected} = header + {source} source bytes + note) — refusing to report a silent partial relay"
+
+[devswarm_cli.act_msg_relay_no_project]
+doc = "The refusal of a relay outside a project."
+value = "relay requires running inside a registered devswarm project"
+
+[devswarm_cli.act_msg_relay_no_seq]
+doc = "The refusal of a relay naming no message."
+value = "relay requires a <seq> or <receipt> identifying the message to forward"
+
+[devswarm_cli.act_msg_relay_no_to]
+doc = "The refusal of a relay naming no recipient."
+value = "relay requires --to <id>"
+
+[devswarm_cli.act_msg_relay_not_found_receipt]
+doc = "The refusal when a receipt's message is not in the caller's inbox. Placeholders: {rid}, {id} (JSON-quoted)."
+value = "no message for receipt {rid} in {id}'s own inbox"
+
+[devswarm_cli.act_msg_relay_not_found_seq]
+doc = "The refusal when no message has the sequence. Placeholders: {seq}, {id} (JSON-quoted)."
+value = "no message at seq {seq} in {id}'s own inbox"
+
+[devswarm_cli.act_msg_relay_note_file]
+doc = "The refusal when the note file cannot be read. Placeholders: {file} (JSON-quoted), {why}."
+value = "relay --note-file {file} could not be read: {why}"
+
+[devswarm_cli.act_msg_relay_send_failed]
+doc = "The error of a relay whose send failed. Placeholder: {why}."
+value = "relay send failed: {why}"
+
+[devswarm_cli.act_msg_relay_send_unknown]
+doc = "What a failed send without an error is called."
+value = "unknown send failure"
+
+[devswarm_cli.act_msg_relay_unknown_receipt]
+doc = "The refusal when the receipt does not exist. Placeholders: {rid}, {id} (JSON-quoted), {caller}."
+value = "no read receipt {rid} for {id} — re-run `inbox read-primary {caller}`"
+
+[devswarm_cli.act_msg_tombstone_failed]
+doc = "The error when the registry tombstone could not be applied (the archive is rolled back). Placeholder: {error}."
+value = "failed to tombstone registry (rolled back — nothing archived): {error}"
+
+[devswarm_cli.act_msg_unlink_failed]
+doc = "The error when the active descriptor could not be removed after the tombstone. Placeholder: {error}."
+value = "failed to remove active descriptor after tombstone — recovery-intent persisted for repair: {error}"
+
+[devswarm_cli.act_msg_verb_failed]
+doc = "The message of a logged failure that carries neither an error nor a reason."
+value = "verb returned ok:false"
+
+[devswarm_cli.act_nudge_cooldown_ms]
+doc = "The minimum gap between two pokes of one workspace (Node: DEFAULT_NUDGE_COOLDOWN_MS)."
+value = 120000
+min = 1000
+max = 86400000
+
+[devswarm_cli.act_nudge_max_attempts]
+doc = "How many pokes a workspace gets before the next nudge escalates (Node: DEFAULT_NUDGE_MAX_ATTEMPTS)."
+value = 2
+min = 1
+max = 100
+
+[devswarm_cli.act_nudge_word_escalate]
+doc = "The `action` of a nudge that escalated."
+value = "escalate"
+
+[devswarm_cli.act_nudge_word_nudged]
+doc = "The `action` of a nudge that poked."
+value = "nudged"
+
+[devswarm_cli.act_prefix_min]
+doc = "The shortest id prefix the app-only archive accepts."
+value = 6
+min = 1
+max = 64
+
+[devswarm_cli.act_reap_thread]
+doc = "The name of the thread that waits for a fired poke command to exit."
+value = "nudge-reap"
+
+[devswarm_cli.act_reason_already_archived_app]
+doc = "The reason on an archive of a workspace already archived in the app too."
+value = "already archived in the DevSwarm app"
+
+[devswarm_cli.act_reason_ambiguous_receipt]
+doc = "The reason of a relay whose receipt covers several messages."
+value = "ambiguous-receipt"
+
+[devswarm_cli.act_reason_became_live]
+doc = "The reason an archive-request's direct archive is skipped: the target became live."
+value = "became-live"
+
+[devswarm_cli.act_reason_byte_mismatch]
+doc = "The reason of a relay whose copy has the wrong length."
+value = "byte-length-mismatch"
+
+[devswarm_cli.act_reason_child_label]
+doc = "The reason of a refused child worktree label."
+value = "child-label-id"
+
+[devswarm_cli.act_reason_empty_body]
+doc = "The reason of a relay of an empty message."
+value = "empty-body"
+
+[devswarm_cli.act_reason_message_not_found]
+doc = "The reason of a relay of a message that is not there."
+value = "message-not-found"
+
+[devswarm_cli.act_reason_relay_send_failed]
+doc = "The reason of a relay whose send failed without saying why."
+value = "relay-send-failed"
+
+[devswarm_cli.act_reason_unknown_receipt]
+doc = "The reason of a relay of a receipt that does not exist."
+value = "unknown-receipt"
+
+[devswarm_cli.act_sys_lstat]
+doc = "The system call name Node puts in the message of a failed lstat."
+value = "lstat"
+
+[devswarm_cli.act_shield_base]
+doc = "The first code point of the private-use stand-ins for lone UTF-16 surrogates in a state file (one per surrogate unit, 2048 of them): JSON text is shielded with them while it is parsed and they are written back as escapes. Text that already holds one is taken as unreadable."
+value = 983040
+min = 65536
+max = 1112063
+
+[devswarm_cli.notice_id_bytes]
+doc = "How many random bytes make a maintainer notice id (written as hex)."
+value = 8
+min = 4
+max = 64
