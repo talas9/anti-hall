@@ -266,6 +266,15 @@ pub struct Agent {
     /// The host's meta file records the agent as finished.
     #[serde(default)]
     pub finished: bool,
+    /// A Codex rollout as last read: (mtime, size), so an unchanged file is not read again.
+    #[serde(default)]
+    pub codex_stamp: (u64, u64),
+    /// A Codex rollout's last turn has ended (a terminal record is the last mark in its tail).
+    #[serde(default)]
+    pub codex_terminal: bool,
+    /// A Codex rollout is a one-shot run (its originator is one of `exec_originators`).
+    #[serde(default)]
+    pub codex_exec: bool,
     /// Its transcript start was checked and is not a headless run (checked once).
     #[serde(default)]
     pub interactive: bool,
