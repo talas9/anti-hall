@@ -473,6 +473,10 @@ unit = "ms"
 doc = "The `describe` parts the Live screen reads (`describe --part`)."
 value = ["bindings"]
 
+[web.manage_file]
+doc = "The Settings screens' config file, next to this one (texts and limits of the Settings, Config, Checks, Jev and History tabs)."
+value = "web_manage.toml"
+
 [web.live_graph_rel]
 doc = "The graph component's config file, relative to the plugin root; the server turns it into the JSON the page reads."
 value = "engine/defaults/web_graph.toml"

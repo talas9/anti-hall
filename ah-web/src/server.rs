@@ -32,6 +32,11 @@ pub fn router(app: Shared) -> Router {
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
         .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
+        .route("/api/manage/cfg", get(manage_cfg))
+        .route("/api/manage/data", get(manage_data))
+        .route("/api/manage/file", get(manage_file))
+        .route("/api/manage/history", get(manage_history))
+        .route("/api/manage/write", post(manage_write))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -333,4 +338,56 @@ async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
     }
     let s = app.settings();
     Json(crate::live::map(&app, &s).await).into_response()
+}
+
+/// The Settings screens: each handler reads `web_manage.toml`, asks the engine and answers JSON (`{"error": text}` with 502 on a failure).
+async fn manage_run<F, Fut>(app: &App, headers: &HeaderMap, f: F) -> Response
+where
+    F: FnOnce(crate::manage::Cfg) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+    if !cookie_ok(app, headers) {
+        return refuse(app);
+    }
+    let cfg = match crate::manage::Cfg::load(&app.config_path, &app.settings().manage_file) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+    match f(cfg).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+async fn manage_cfg(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    manage_run(&app, &headers, |c| async move { Ok(c.for_page()) }).await
+}
+
+async fn manage_data(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move { crate::manage::data(&a, &c).await }).await
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    name: String,
+}
+
+async fn manage_file(State(app): State<Shared>, Query(q): Query<FileQuery>, headers: HeaderMap) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move { crate::manage::file_keys(&a, &c, &q.name).await }).await
+}
+
+async fn manage_history(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move { crate::manage::history(&a, &c).await }).await
+}
+
+async fn manage_write(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move {
+        let w = serde_json::from_slice::<crate::manage::Write>(&body).map_err(|_| c.msg_bad_request.clone())?;
+        crate::manage::write(&a, &c, w).await
+    })
+    .await
 }

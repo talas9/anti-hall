@@ -8,6 +8,7 @@ mod cfg;
 mod ctl;
 mod data;
 mod live;
+mod manage;
 mod model;
 mod server;
 
