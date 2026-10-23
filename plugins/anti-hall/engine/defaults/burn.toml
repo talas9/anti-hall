@@ -33,8 +33,8 @@ doc = "Extension of a marker file."
 value = ".json"
 
 [burn.marker_ttl_ms]
-doc = "A marker older than this is ignored by the check and removed by the tracker (an agent that left the state without clearing its flag)."
-value = 7200000
+doc = "A marker older than this is ignored by the check and removed by the tracker. The tracker rewrites a standing marker on every tick, so an old one means the flag is no longer being kept up (the engine stopped, or the agent left the state without clearing it): the block lifts by itself."
+value = 900000
 
 [burn.agent_field]
 doc = "Hook payload field that names a subagent; a call without it is the main session and is never blocked."
@@ -83,6 +83,14 @@ value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {
 [burn.msg_what]
 doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
 value = "This tool call is blocked: you spent about {tokens} tokens with no commit, finished step, passing check or new file."
+
+[burn.msg_what_waste]
+doc = "Heading of the block when the waste sensor (agent_waste.toml) holds the hard mark rather than the token line. Placeholders: {score} the waste score (thousands of tokens per outcome unit), {hard} the hard threshold, {tokens} the tokens of the window, {reason} the sensor's own reason."
+value = "This tool call is blocked: the waste sensor marks you as wasting budget (score {score}, hard line {hard}; about {tokens} tokens in the window) - {reason}."
+
+[burn.lift_bash_re]
+doc = "A segment that lifts the block at once: a git commit (optionally with `-C <dir>` / `-c k=v`). A commit is the outcome the block asks for; the tracker counts it on its next tick and raises the flag again only if the hard condition still holds. Regular expression (Rust syntax), tested like burn.allowed_bash_re."
+value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+commit\b'''
 
 [burn.msg_why]
 doc = "Why the breaker blocks."

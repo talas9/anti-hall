@@ -168,6 +168,18 @@ fn compact_dir(env: &Env, dir: &PathBuf) {
     }
 }
 
+/// A token count for a message: the largest step that fits, with the configured suffix (995687 -> `995k`, 1500000 -> `1.5M`).
+pub(crate) fn count(n: u64) -> String {
+    let fmt = crate::defaults::raw("agent_tracker.fmt");
+    let steps = fmt.get("count_steps").and_then(crate::defaults::V::as_array).map(|a| a.iter().filter_map(crate::defaults::V::as_integer).collect::<Vec<_>>()).unwrap_or_default();
+    let names = fmt.get("count_units").map(crate::defaults::V::strings).unwrap_or_default();
+    let i = steps.iter().rposition(|u| n >= (*u).max(1) as u64).unwrap_or(0);
+    let step = steps.get(i).copied().unwrap_or(1).max(1) as u64;
+    let tenths = n * 10 / step;
+    let whole = if tenths < 100 && tenths % 10 != 0 { format!("{}.{}", tenths / 10, tenths % 10) } else { (tenths / 10).to_string() };
+    format!("{whole}{}", names.get(i).copied().unwrap_or(""))
+}
+
 /// Age text: the largest unit that fits, with the configured suffixes.
 pub(crate) fn age(ms: u64) -> String {
     let units = super::sources::unit_ms();
