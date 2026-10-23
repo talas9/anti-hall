@@ -158,10 +158,14 @@ min = 0
 unit = "%"
 
 [diagnostics.shed_checks]
-doc = "1 = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the checks of events that cannot block are not run either (their answers are dropped, counted as answers_dropped reason `shed`). 0 (shipped) = they keep answering: a check costs milliseconds, while the CPU that crosses the limit is the background duties' file work, so shedding the duties and Jev is enough and no PostToolUse tracker, audit or drain answer is lost. Guard events never shed."
-value = 0
+doc = "1 (shipped) = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the PURE-ADVICE checks of events that cannot block are not run (their answers are dropped, counted as answers_dropped reason `shed`). Checks listed in diagnostics.shed_never always run, and so do all checks of guard events. 0 = nothing is shed."
+value = 1
 min = 0
 max = 1
+
+[diagnostics.shed_never]
+doc = "Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed."
+value = { "merge-side-pick" = "PostToolUse recorder: the merge guard reads what it recorded.", "git-audit" = "PostToolUse audit of git calls (git-guard:audit); later git guards read it.", "output-verify-guard" = "PostToolUse recorder of tool output the verify guard checks later.", "devswarm-parent-reply-tracker" = "Records parent replies; the parent gate decides from them.", "devswarm-child-drain" = "Drains a child's mail; skipping it strands messages.", "coordinator-work-guard" = "PostToolUse half records coordinator work the PreToolUse half judges.", "agent-reminders" = "Delivers the stale-agent nudges and reminders the tracker queued.", "task-tracker" = "Keeps the task state the Stop guards read.", "task-lifecycle-log" = "Task create/complete log other guards read.", "devswarm-parent-inbox" = "Delivers a parent's inbox.", "devswarm-child-turn" = "Per-turn child bookkeeping.", "devswarm-child-role" = "Seats a child in its role.", "auto-handover" = "Triggers the handover at the context threshold.", "handover-resume" = "Restores a session from its handover.", "codex-quota-detect" = "Records the quota state later routing reads.", "dispatch-tier" = "Records the dispatch tier later guards read.", "precompact-snapshot" = "Takes the pre-compaction snapshot.", "session-end-mcp-reaper" = "Cleans up the session's MCP processes.", "emit-dedupe-reset" = "Resets the emit dedupe state of a session.", "progress-prune" = "Prunes progress files; state upkeep.", "repair-on-reload" = "Repairs state after a reload." }
 
 [answer_drop.kind_guard]
 doc = "Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon)."

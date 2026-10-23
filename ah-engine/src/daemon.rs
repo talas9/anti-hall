@@ -2004,6 +2004,7 @@ pub fn serve() {
     health::write_marker();
     health::clear_env_failure();
     let starts = next_start_count();
+    health::start_log_thread();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
     crate::client::release_spawn_lock();
     crate::dispatch::sweep_stale_spool();
@@ -2093,6 +2094,7 @@ pub fn serve() {
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
+    health::flush_log();
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
 }

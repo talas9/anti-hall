@@ -130,8 +130,8 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         // a check that gets no answer takes its failure policy in the dispatcher (the entries answered in time still count), so a slow
         // machine costs single checks, never the event; every dropped answer is recorded with its reason (`budget::note_dropped`)
         let cpu_before = crate::limits::thread_cpu_us();
-        let a = if shed_checks && !guard_event && crate::budget::shedding() {
-            // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the checks of events that cannot block wait
+        let a = if shed_checks && !guard_event && crate::budget::shedding() && crate::defaults::raw("diagnostics.shed_never").get(check).is_none() {
+            // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct), when `diagnostics.shed_checks` is on, the pure-advice checks of events that cannot block wait (`diagnostics.shed_never` lists the ones that never do)
             crate::budget::note_shed_skipped();
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
             Answer::Defer
