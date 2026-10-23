@@ -142,6 +142,18 @@ fn throttled(src: Signal<Vec<String>>, ms: u32) -> RwSignal<HashSet<String>> {
     out
 }
 
+/// Positions with the pinned position of every node the layout has not placed yet (a node that arrives after the first layout still
+/// shows where its data pins it, not at the origin).
+fn effective_pos(pos: &Pos, d: &GraphData) -> Pos {
+    let mut p = pos.clone();
+    for n in &d.nodes {
+        if let (false, Some(x), Some(y)) = (p.contains_key(&n.id), n.x, n.y) {
+            p.insert(n.id.clone(), (x, y));
+        }
+    }
+    p
+}
+
 fn node_by_id(ctx: &Ctx, id: &str) -> Option<NodeDef> {
     ctx.data.with(|d| d.nodes.iter().find(|n| n.id == id).cloned())
 }
@@ -164,7 +176,7 @@ fn Card(id: String) -> impl IntoView {
     let style = {
         let (ctx, id, nd, size, idx) = (ctx.clone(), id.clone(), nd.clone(), size.clone(), idx.clone());
         move || {
-            let (x, y) = ctx.pos.with(|p| p.get(&id).copied()).unwrap_or((0.0, 0.0));
+            let (x, y) = ctx.pos.with(|p| p.get(&id).copied()).or_else(|| nd().and_then(|n| n.x.zip(n.y))).unwrap_or((0.0, 0.0));
             let (w, h) = size();
             let (kind, status) = nd().map(|n| (n.kind, n.status)).unwrap_or_default();
             format!("left:{x}px;top:{y}px;width:{w}px;height:{h}px;--k:var(--ahg-k-{kind}, var(--ahg-k-{}));--st:var(--ahg-s-{status}, transparent);anchor-name:--ahg{}-n{}", ctx.cfg.theme.fallback_kind, ctx.inst, idx())
@@ -301,7 +313,8 @@ pub fn Graph(
     let full = tier == Tier::Full && cfg!(feature = "full");
     let geo = cfg.geometry.clone();
 
-    let pos = RwSignal::new(Pos::new());
+    // positions exist before the first card renders (a card created ahead of the layout effect would otherwise stay at the origin)
+    let pos = RwSignal::new(layout::compute(&data.get_untracked(), mode, &cfg));
     let dragged = shared(HashSet::<String>::new());
     let cam = RwSignal::new(Cam { x: 0.0, y: 0.0, k: 1.0 });
     let vp = RwSignal::new((800.0f32, 600.0f32));
@@ -356,7 +369,7 @@ pub fn Graph(
         let cfg = cfg.clone();
         Callback::new(move |_: ()| {
             let d = data.get_untracked();
-            let p = pos.get_untracked();
+            let p = effective_pos(&pos.get_untracked(), &d);
             let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for n in &d.nodes {
                 if let Some((x, y)) = p.get(&n.id) {
@@ -383,7 +396,6 @@ pub fn Graph(
             skey.track();
             let d = data.get_untracked();
             let fresh = layout::compute(&d, mode, &cfg);
-            web_sys::console::log_1(&format!("DBG layout nodes={} fresh={} first={}", d.nodes.len(), fresh.len(), *first.borrow()).into());
             let mut cur = pos.get_untracked();
             cur.retain(|id, _| d.nodes.iter().any(|n| &n.id == id));
             let is_first = *first.borrow();
@@ -403,7 +415,10 @@ pub fn Graph(
 
     let wires = Memo::new({
         let cfg = cfg.clone();
-        move |_| geom::wires(&data.get(), &pos.get(), &cfg, mode)
+        move |_| {
+            let d = data.get();
+            geom::wires(&d, &effective_pos(&pos.get(), &d), &cfg, mode)
+        }
     });
     #[allow(unused_variables)]
     let is_hot = move |edge: usize| -> bool {
@@ -569,7 +584,8 @@ pub fn Graph(
                 }
                 #[cfg(feature = "full")]
                 if full && moving {
-                    let (d, p, w) = (data.get_untracked(), pos.get_untracked(), wires.get_untracked());
+                    let d = data.get_untracked();
+                    let (p, w) = (effective_pos(&pos.get_untracked(), &d), wires.get_untracked());
                     if let Some(a) = crate::fx::start(&ev, &d, &w, &p, &cfgc, now_ms) {
                         active.borrow_mut().push(a);
                         if let Some(pc) = pacer.borrow().as_ref() {
@@ -718,7 +734,7 @@ pub fn Graph(
         let cfg = cfg.clone();
         move |_| {
             let d = data.get();
-            let p = pos.get();
+            let p = effective_pos(&pos.get(), &d);
             let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for n in &d.nodes {
                 if let Some((x, y)) = p.get(&n.id) {
@@ -743,7 +759,7 @@ pub fn Graph(
             let (x0, y0, _, _) = bbox.get();
             let s = mscale();
             let d = data.get();
-            let p = pos.get();
+            let p = effective_pos(&pos.get(), &d);
             d.nodes
                 .iter()
                 .filter_map(|n| {
