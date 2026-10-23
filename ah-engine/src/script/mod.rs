@@ -377,12 +377,20 @@ fn dirs(home: &str) -> Vec<PathBuf> {
     out
 }
 
-/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
-/// script exists for `name`.
-fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
-    let ext = defaults::text("script.ext");
-    let ds = dirs(home);
-    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+/// The lib files (by name) of the logic directories `ds`, each with its size and modification time. The listing is the same for every
+/// check, so it is taken once per `script.fingerprint_ttl_ms` and shared by all worker threads: a check call used to list the library
+/// directory and stat every lib file (about 40 file operations per check, 15 checks per tool call). An edited or added lib file is seen
+/// within the interval; 0 lists on every call.
+fn lib_fingerprint(ds: &[PathBuf], ext: &str) -> Fingerprint {
+    static CACHE: std::sync::Mutex<Option<(Vec<PathBuf>, std::time::Instant, Fingerprint)>> = std::sync::Mutex::new(None);
+    let ttl = std::time::Duration::from_millis(defaults::num("script.fingerprint_ttl_ms"));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((key, at, fp)) = cache.as_ref()
+        && key.as_slice() == ds
+        && at.elapsed() < ttl
+    {
+        return fp.clone();
+    }
     let mut libs: std::collections::BTreeMap<String, (PathBuf, u64, u128)> = std::collections::BTreeMap::new();
     // the shipped directory last, so an override of the same file name wins
     for d in ds.iter().rev() {
@@ -396,7 +404,18 @@ fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
             }
         }
     }
-    let libs: Fingerprint = libs.into_values().collect();
+    let fp: Fingerprint = libs.into_values().collect();
+    *cache = Some((ds.to_vec(), std::time::Instant::now(), fp.clone()));
+    fp
+}
+
+/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
+/// script exists for `name`.
+fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
+    let ext = defaults::text("script.ext");
+    let ds = dirs(home);
+    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+    let libs = lib_fingerprint(&ds, ext);
     let mut fp: Fingerprint = Vec::new();
     // scripts the owner's configuration says this check builds on (`script.includes`: check name to script names), loaded as
     // libraries after the shared helpers and before the check's own script, which may then redefine the entry

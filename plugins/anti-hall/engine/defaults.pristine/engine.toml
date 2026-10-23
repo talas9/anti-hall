@@ -305,7 +305,7 @@ min = 1
 unit = "ms"
 
 [daemon.eval_budget_us]
-doc = "HARD per-request thread CPU budget for rule evaluation: past it every remaining check gets no answer and takes its failure policy. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
+doc = "HARD thread CPU budget of ONE check: a check that used more than this alone loses its own answer (counted answers_dropped reason `cpu_budget`) and takes its failure policy; the checks after it still run and answer, and the request as a whole is bounded by daemon.request_hard_ms. The SOFT budget (a warning only) is daemon.eval_soft_us. 0 turns the hard budget off."
 value = 1000000
 env = "AH_ENGINE_EVAL_BUDGET_US"
 unit = "us"

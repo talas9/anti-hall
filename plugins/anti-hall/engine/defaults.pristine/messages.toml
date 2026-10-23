@@ -121,8 +121,12 @@ value = "daemon service thread {thread} exceeded panic restart cap"
 doc = "Log detail when a rule evaluation exceeded its CPU budget."
 value = "rule evaluation exceeded its cpu budget"
 
+[msg.log_answer_dropped]
+doc = "Event-log detail (kinds answer_dropped and guard_answer_dropped, at most one per check and reason per diagnostics.abandoned_log_interval_ms) when a check of a request gave no answer. Reasons: shed (CPU hard limit, diagnostics.shed_checks), client_gone (the client closed its connection), hard_deadline (the request passed daemon.request_hard_ms), cpu_budget (this check alone used more than daemon.eval_budget_us), check_deferred (the check itself gave no answer). The check's failure policy decides in its place."
+value = "{check} ({event}) gave no answer: {reason}"
+
 [msg.log_budget_crossed]
-doc = "Log detail when a check ran and the request's CPU budget was crossed while it did: the check's own thread CPU and wall time."
+doc = "Log detail when a check ran and crossed the per-check CPU budget (daemon.eval_budget_us) alone, so its answer was dropped: the check's own thread CPU and wall time."
 value = "cpu budget crossed by {check}: it used {cpu_us} us of cpu and {wall_us} us of wall time"
 
 [msg.log_budget_skipped]

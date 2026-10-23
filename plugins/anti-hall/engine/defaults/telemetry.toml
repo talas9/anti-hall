@@ -223,6 +223,10 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Evaluations cut off by the per-request CPU budget."
 value = { kind = "counter", unit = "evaluations", labels = [] }
 
+[metric.answers_dropped]
+doc = "Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started."
+value = { kind = "counter", unit = "answers", labels = ["event", "kind", "reason"] }
+
 [metric.budget_soft]
 doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
 value = { kind = "counter", unit = "requests", labels = [] }

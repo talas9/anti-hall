@@ -21,6 +21,12 @@ value = ".anti-hall/logic"
 doc = "Sub-directory (of both the shipped and the override directory) whose `*.js` files are evaluated, in file-name order, before a check script."
 value = "lib"
 
+[script.fingerprint_ttl_ms]
+doc = "How long the listing of the shared lib files (names, sizes, modification times) of the logic directories is reused by all checks before it is read again. A check call checks whether its scripts changed by comparing this fingerprint, and listing the library directory and stating every lib file on every call cost about 40 file operations per check (live: the workers' file work was most of the daemon's CPU). An edited, added or removed lib file takes effect within this interval; the check's own script file is still stat-ed on every call. 0 = list on every call."
+value = 1000
+min = 0
+unit = "ms"
+
 [script.ext]
 doc = "File extension of a check script and of a lib file."
 value = ".js"

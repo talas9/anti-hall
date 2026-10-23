@@ -266,6 +266,10 @@ value = "anti-hall: the engine could not run the guards for {event} ({why}). The
 doc = "Deferral reason (event log and stderr) when the dispatcher panicked on a guard event: the Node hooks answer instead of a block."
 value = "the dispatcher hit an internal error: the Node hooks decide"
 
+[dispatch.msg_unanswered_why]
+doc = "Reason text of an abandoned decision for an entry whose check gave no answer in this call. The daemon logs the cause (event-log kinds answer_dropped / guard_answer_dropped, status answers_dropped); a call that got no reply at all logs client_late / client_slow / client_fail_open. Placeholder: {event}."
+value = "{event}: the check gave no answer (cause in the event log: answer_dropped, guard_answer_dropped, client_slow)"
+
 [dispatch.msg_skipped_entry]
 doc = "Event-log detail when a non-guard event goes on without an entry that has no runnable Node command. Placeholder: {id}."
 value = "entry {id} skipped: no runnable Node command"

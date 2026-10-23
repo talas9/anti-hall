@@ -152,10 +152,29 @@ min = 0
 unit = "%"
 
 [diagnostics.budget_cpu_hard_pct]
-doc = "HARD CPU limit of the daemon, percent of one core (10, owner decision 2026-10-23), measured over the same daemon.cpu_check_ms windows and the same diagnostics.budget_cpu_windows count as the soft bar (diagnostics.budget_cpu_pct, which only warns and counts). Once it is crossed the daemon sheds OPTIONAL work and nothing else: scheduled and background duties are delayed (the schedule.cpu_backoff_ms backoff, renewed every window), the checks of events that cannot block (everything outside dispatch.guard_events) are not run, and Jev is not consulted (every caller gets its baseline). Guards and block decisions never stop. The event is logged and counted (status budget: cpu_hard_breaches, shed_skipped). Shedding ends by itself on the first window under the soft limit. 0 turns the hard limit off."
+doc = "HARD CPU limit of the daemon, percent of one core (10, owner decision 2026-10-23), measured over the same daemon.cpu_check_ms windows and the same diagnostics.budget_cpu_windows count as the soft bar (diagnostics.budget_cpu_pct, which only warns and counts). Once it is crossed the daemon sheds OPTIONAL work and nothing else: scheduled and background duties are delayed (the schedule.cpu_backoff_ms backoff, renewed every window), the checks of events that cannot block (everything outside dispatch.guard_events) are not run only when diagnostics.shed_checks is 1 (shipped 0), and Jev is not consulted (every caller gets its baseline). Guards and block decisions never stop. The event is logged and counted (status budget: cpu_hard_breaches, shed_skipped). Shedding ends by itself on the first window under the soft limit. 0 turns the hard limit off."
 value = 10
 min = 0
 unit = "%"
+
+[diagnostics.shed_checks]
+doc = "1 = past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the checks of events that cannot block are not run either (their answers are dropped, counted as answers_dropped reason `shed`). 0 (shipped) = they keep answering: a check costs milliseconds, while the CPU that crosses the limit is the background duties' file work, so shedding the duties and Jev is enough and no PostToolUse tracker, audit or drain answer is lost. Guard events never shed."
+value = 0
+min = 0
+max = 1
+
+[budget.kind_guard]
+doc = "Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon)."
+value = "guard"
+
+[budget.kind_optional]
+doc = "Label of a dropped answer that belongs to an event that cannot block."
+value = "optional"
+
+[budget.dropped_keys_max]
+doc = "Most distinct kind:reason keys the this-daemon dropped-answer table holds; a further new key is only counted in the lifetime metric."
+value = 32
+min = 4
 
 [diagnostics.budget_cpu_windows]
 doc = "Consecutive daemon.cpu_check_ms windows over the CPU budget that make a breach (one busy window is a burst, not a breach)."
