@@ -242,6 +242,15 @@ fn tier_of(mode: &str) -> &'static str {
     }
 }
 
+/// This build is the Full or the Lite page; a choice that needs the other one reloads the page, and the loader picks the right build.
+fn reload_if_other_build(mode: &str) {
+    if (tier_of(mode) == "full") != cfg!(feature = "full") {
+        if let Some(w) = web_sys::window() {
+            let _ = w.location().reload();
+        }
+    }
+}
+
 fn set_tier_attr(tier: &str) {
     if let Some(root) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.document_element()) {
         let _ = root.set_attribute("data-mode", tier);
@@ -427,7 +436,7 @@ fn App(boot: Boot) -> impl IntoView {
                 <div class="grow"></div>
                 <div class="seg" role="group" aria-label=tx("mode_label")>
                     {["auto", "full", "lite"].into_iter().map(|m| view! {
-                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); }>{tx(&format!("mode_{m}"))}</button>
+                        <button type="button" class=move || if mode.get() == m { "on" } else { "" } on:click=move |_| { store_mode(m); mode.set(m.to_string()); reload_if_other_build(m); }>{tx(&format!("mode_{m}"))}</button>
                     }).collect_view()}
                 </div>
                 <button type="button" class="theme" aria-label=tx("theme_label") on:click=move |_| {
