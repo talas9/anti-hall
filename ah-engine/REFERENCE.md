@@ -1392,6 +1392,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `telemetry.inbox_max_bytes` | `4194304` |  | bytes | Largest the telemetry inbox may grow while no daemon reads it; events appended beyond that are not kept (the daemon empties the file on every flush). |
 | `telemetry.inherit_prefix` | `inherit:` |  |  | Prefix used when a route event records an inherited model. The model-routing hook can use a parent_model field from the hook payload; otherwise it records inherit:unknown because no current settings source exposes the parent model. |
 | `telemetry.injection_kinds` | `check, spill` |  |  | The telemetry row kinds whose injected bytes count as context the engine put in front of the model: check (what each check's advisory or context reply injected) and spill (a reply spilled to a file). The old whole-hook kind is left out: nothing records it any more. |
+| `telemetry.jev_skip_backend` | `baseline-only` |  |  | The backend label of a Jev call that got no usable answer (the rule baseline stood): counted as skipped, not as a model call. |
+| `telemetry.jev_skip_reason_default` | `not-asked` |  |  | The reason token counted for a Jev call that got no answer and recorded none (no call was made). |
 | `telemetry.latency_buckets_us` | `10 items` |  | us | Upper bounds of the latency histogram buckets; a quantile is reported as the upper bound of the bucket holding that rank, so it is an upper estimate. |
 | `telemetry.link_window_s` | `7200` |  | s | How long before a spawn result a routing decision with the same spawn key still belongs to it (D77). |
 | `telemetry.max_event_rows` | `200000` |  |  | Most events kept in hot.db; the oldest beyond this are removed when `telemetry rollup` runs. |
@@ -12634,8 +12636,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.project_none_label` | `Other` |  |  | The project name shown for agents that report no folder. |
 | `web.project_primary_kinds` | `main, workspace` |  |  | Agent kinds that can be a project's Primary. |
 | `web.project_primary_role` | `primary` |  |  | The tracker role of a project's Primary agent. |
+| `web.project_workspace_file` | `.devswarm.code-workspace` |  |  | The file in a DevSwarm workspace set's folder (the first segment after the workspace marker) that names the repository the set belongs to: a checkout that is gone is still grouped under that repository's project. |
+| `web.project_workspace_folders` | `folders` |  |  | The key of that file's list of folders; the first one is the repository. |
 | `web.project_workspace_kinds` | `main, workspace` |  |  | Agent kinds that are a DevSwarm workspace when their directory is a workspace checkout. |
 | `web.project_workspace_marker` | `/.devswarm/repos/` |  |  | A path segment that marks a DevSwarm workspace checkout; agents whose directory contains it are workspaces of the project their checkout belongs to, never that project's Primary. |
+| `web.project_workspace_path` | `path` |  |  | The key of a folder entry's path. |
 | `web.pulse_cpu_bad_permille` | `100` |  |  | Engine CPU (parts per thousand of one core) at which the CPU pill turns red. |
 | `web.pulse_cpu_warn_permille` | `50` |  |  | Engine CPU (parts per thousand of one core) at which the CPU pill turns amber. |
 | `web.pulse_err_bad` | `25` |  |  | Failed engine requests at which the ERR pill turns red. |

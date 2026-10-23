@@ -318,3 +318,6 @@ html { scrollbar-gutter: stable; }
 .tg > .tg-1::before, .tg > .tg-2::before, .tg > .tg-3::before { content: ""; position: absolute; left: calc(var(--tg-w) / 2); top: -7px; bottom: -7px; border-left: 1px solid var(--tg-line); }
 .tg > .tg-3::before { bottom: 50%; }
 .tg > .tg-2::after, .tg > .tg-3::after { content: ""; position: absolute; left: calc(var(--tg-w) / 2); right: 2px; top: 50%; border-top: 1px solid var(--tg-line); }
+
+/* every table (.data Telemetry, .ops-table cost, .h-table Health): numbers right-aligned with tabular figures, their header the same */
+table th.num,table td.num{text-align:right;font-variant-numeric:tabular-nums}

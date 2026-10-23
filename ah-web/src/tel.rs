@@ -98,6 +98,8 @@ pub struct TelCfg {
     usd_decimals: usize,
     apex: Value,
     texts: BTreeMap<String, String>,
+    jev_integrations: Value,
+    jev_skip_reasons: Value,
     export_path: String,
     refresh_s: u64,
     rows_shown: usize,
@@ -121,6 +123,26 @@ impl TelCfg {
 
     fn text(&self, key: &str) -> String {
         self.texts.get(key).cloned().unwrap_or_else(|| key.to_string())
+    }
+
+    /// The table cell of a Jev integration: its human name, its one-line purpose under it, its id as the hover.
+    fn jev_cell(&self, id: &str) -> Cell {
+        let sub = self.jev_integrations.get(id).and_then(|e| e.get("purpose")).and_then(Value::as_str).unwrap_or_default().to_string();
+        Cell::Named { text: self.jev_label(id), sub, tip: id.to_string() }
+    }
+
+    /// The human name of a Jev integration (its id stays only as the hover text, added by the screen); an id with no entry is split into words.
+    fn jev_label(&self, id: &str) -> String {
+        self.jev_integrations.get(id).and_then(|e| e.get("name")).and_then(Value::as_str).map_or_else(
+            || id.chars().fold(String::new(), |mut acc, ch| {
+                if ch.is_uppercase() && !acc.is_empty() {
+                    acc.push(' ');
+                }
+                acc.push(ch.to_ascii_lowercase());
+                acc
+            }),
+            str::to_string,
+        )
     }
 
     fn fill(&self, key: &str, pairs: &[(&str, String)]) -> String {
@@ -417,7 +439,12 @@ fn cell_num(v: &Value) -> Cell {
 }
 
 fn col(c: &TelCfg, key: &str, label_key: &str, kind: &str) -> Col {
-    Col { key: key.into(), label: c.text(label_key), kind: kind.into() }
+    Col { key: key.into(), label: c.text(label_key), kind: kind.into(), hint: String::new() }
+}
+
+/// A column whose header carries a tooltip text (the text key `hint_key`).
+fn col_hint(c: &TelCfg, key: &str, label_key: &str, kind: &str, hint_key: &str) -> Col {
+    Col { hint: c.text(hint_key), ..col(c, key, label_key, kind) }
 }
 
 /// What to call a cost-report agent: its own name, else the tracked agent its id belongs to, else plain words (never the raw id).
@@ -458,15 +485,17 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
                 vec![cell_text(&r["h"]), cell_text(&r["k"]), cell_num(&r["n"]), o("allow"), o("advise"), o("block"), o("defer"), o("error"), cell_num(&r["mean_us"]), cell_num(&r["p50_us"]), cell_num(&r["p95_us"]), cell_num(&r["p99_us"]), cell_num(&r["injected_bytes"])]
             })
             .collect(),
+        totals: Vec::new(),
     });
     // per day, one column per metric card
     let mut cols = vec![col(c, "day", "col_day", "ts")];
-    cols.extend(kpis.iter().map(|k| Col { key: k.id.clone(), label: k.label.clone(), kind: k.unit.clone() }));
+    cols.extend(kpis.iter().map(|k| Col { key: k.id.clone(), label: k.label.clone(), kind: k.unit.clone(), hint: String::new() }));
     out.push(Table {
         id: "days".into(),
         title: c.text("tab_days"),
         cols,
         rows: (0..days.len()).rev().map(|i| std::iter::once(Cell::Num(days[i] as f64)).chain(kpis.iter().map(|k| Cell::Num(k.series.get(k.series.len().saturating_sub(days.len()) + i).copied().unwrap_or(0.0)))).collect()).take(cap).collect(),
+        totals: Vec::new(),
     });
     // agents: what each tracked agent spent against what it produced
     let agents = raw.sums.first().map_or(&[][..], |s| s["agent_cost"]["agents"].as_array().map_or(&[][..], Vec::as_slice));
@@ -492,16 +521,45 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
                 vec![Cell::Text(who), cell_text(&a["kind"]), cell_num(&a["tokens"]), cell_num(&a["outcomes"]), cell_num(&a["tokens_per_outcome"]), cell_num(&a["commits"]), cell_num(&a["guard_fires"]), cell_num(&a["files_edited"]), cell_num(&a["tests_passed"])]
             })
             .collect(),
+        totals: Vec::new(),
     });
-    // Jev, per integration, over the window
+    // Jev, per integration, over the window: asked = model calls + cached + skipped
     let jev = raw.sums.last().and_then(|s| s["detail"]["jev"]["by_integration"].as_object());
+    let reason_label = |tok: &str| c.jev_skip_reasons.get(tok).and_then(Value::as_str).map_or_else(|| tok.replace(['-', '_'], " "), str::to_string);
+    let mut jev_rows: Vec<Vec<Cell>> = Vec::new();
+    let mut totals = [0.0f64; 4];
+    for (id, i) in jev.into_iter().flatten().take(cap) {
+        let why = i["skip_reasons"].as_object().map_or_else(String::new, |m| {
+            let mut v: Vec<(&String, f64)> = m.iter().map(|(k, n)| (k, num(n))).collect();
+            v.sort_by(|a, b| b.1.total_cmp(&a.1));
+            v.iter().map(|(k, n)| format!("{} ({})", reason_label(k), n)).collect::<Vec<_>>().join("; ")
+        });
+        let (calls, model, cached, skipped, usd) = (num(&i["calls"]), num(&i["model_calls"]), num(&i["cached"]), num(&i["skipped"]), num(&i["cost_uc"]) / c.uc_per_usd);
+        for (t, v) in totals.iter_mut().zip([calls, model, cached, skipped]) {
+            *t += v;
+        }
+        jev_rows.push(vec![c.jev_cell(id), Cell::Num(calls), Cell::Num(model), Cell::Num(cached), Cell::Num(skipped), Cell::Text(why), cell_num(&i["mean_ms"]), Cell::Num(usd)]);
+    }
+    let jev_cost: f64 = jev.into_iter().flatten().take(cap).map(|(_, i)| num(&i["cost_uc"]) / c.uc_per_usd).sum();
     out.push(Table {
         id: "jev".into(),
         title: c.text("tab_jev"),
-        cols: vec![col(c, "integration", "col_integration", "text"), col(c, "calls", "col_calls", "count"), col(c, "mean_ms", "col_ms", "count"), col(c, "cost", "col_cost", "usd")],
-        rows: jev
-            .map(|m| m.iter().take(cap).map(|(name, i)| vec![Cell::Text(name.clone()), cell_num(&i["calls"]), cell_num(&i["mean_ms"]), Cell::Num(num(&i["cost_uc"]) / c.uc_per_usd)]).collect())
-            .unwrap_or_default(),
+        cols: vec![
+            col(c, "integration", "col_jev_name", "text"),
+            col_hint(c, "calls", "col_jev_calls", "count", "hint_jev_calls"),
+            col_hint(c, "model_calls", "col_jev_model", "count", "hint_jev_model"),
+            col_hint(c, "cached", "col_jev_cached", "count", "hint_jev_cached"),
+            col_hint(c, "skipped", "col_jev_skipped", "count", "hint_jev_skipped"),
+            col(c, "skip_reasons", "col_jev_why", "text"),
+            col(c, "mean_ms", "col_jev_ms", "count"),
+            col(c, "cost", "col_jev_cost", "usd"),
+        ],
+        totals: if jev_rows.is_empty() {
+            Vec::new()
+        } else {
+            vec![Cell::Text(c.text("tot_label")), Cell::Num(totals[0]), Cell::Num(totals[1]), Cell::Num(totals[2]), Cell::Num(totals[3]), Cell::Text(String::new()), Cell::Text(String::new()), Cell::Num(jev_cost)]
+        },
+        rows: jev_rows,
     });
     // the raw events of the last day, newest first
     let mut events: Vec<&Value> = raw.events["events"].as_array().map_or(Vec::new(), |a| a.iter().collect());
@@ -511,6 +569,7 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
         title: c.text("tab_events"),
         cols: vec![col(c, "ts", "col_time", "ts"), col(c, "k", "col_kind", "text"), col(c, "h", "col_check", "text"), col(c, "e", "col_event", "text"), col(c, "o", "col_outcome", "text"), col(c, "ms", "col_ms", "count")],
         rows: events.iter().take(cap).map(|e| vec![cell_num(&e["ts"]), cell_text(&e["k"]), cell_text(&e["h"]), cell_text(&e["e"]), cell_text(&e["o"]), cell_num(&e["ms"])]).collect(),
+        totals: Vec::new(),
     });
     out
 }
@@ -847,6 +906,7 @@ fn cell_string(c: &Cell) -> String {
         Cell::Num(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => format!("{}", *n as i64),
         Cell::Num(n) => n.to_string(),
         Cell::Text(t) => t.clone(),
+        Cell::Named { text, .. } => text.clone(),
     }
 }
 

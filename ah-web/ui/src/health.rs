@@ -317,11 +317,11 @@ fn HealthBody() -> impl IntoView {
                     <p class="soft-note">{tx("h_clients_note")}</p>
                     {(!h.io_enabled).then(|| view! { <p class="soft-note">{tx("h_io_off")}</p> })}
                     <table class="h-table">
-                        <thead><tr><th>{tx("h_col_client")}</th><th>{tx("h_col_calls")}</th><th>{tx("h_col_p50")}</th><th>{tx("h_col_p95")}</th><th>{tx("h_col_timeouts")}</th><th>{tx("h_col_failopen")}</th><th>{tx("h_col_last")}</th></tr></thead>
+                        <thead><tr><th>{tx("h_col_client")}</th><th class="num">{tx("h_col_calls")}</th><th class="num">{tx("h_col_p50")}</th><th class="num">{tx("h_col_p95")}</th><th class="num">{tx("h_col_timeouts")}</th><th class="num">{tx("h_col_failopen")}</th><th>{tx("h_col_last")}</th></tr></thead>
                         <tbody>
                             {clients.into_iter().map(|c| view! {
-                                <tr><td title=c.id.clone()>{client_label(&c)}</td><td>{compact(c.calls)}</td><td>{lat_q(c.p50_us, c.p50_over)}</td><td>{lat_q(c.p95_us, c.p95_over)}</td>
-                                    <td class={if c.timeouts > 0 { "t-warn" } else { "" }}>{compact(c.timeouts)}</td><td class={if c.fail_open > 0 { "t-warn" } else { "" }}>{compact(c.fail_open)}</td>
+                                <tr><td title=c.id.clone()>{client_label(&c)}</td><td class="num">{compact(c.calls)}</td><td class="num">{lat_q(c.p50_us, c.p50_over)}</td><td class="num">{lat_q(c.p95_us, c.p95_over)}</td>
+                                    <td class={if c.timeouts > 0 { "num t-warn" } else { "num" }}>{compact(c.timeouts)}</td><td class={if c.fail_open > 0 { "num t-warn" } else { "num" }}>{compact(c.fail_open)}</td>
                                     <td>{if c.last_ms == 0 { tx("topo_never") } else { since(c.last_ms) }}</td></tr>
                             }).collect_view()}
                         </tbody>

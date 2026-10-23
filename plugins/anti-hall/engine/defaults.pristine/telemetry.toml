@@ -197,6 +197,14 @@ value = "Jev cost"
 doc = "Name of the routing saving in the NET figure's not-measured list (no routing decision is linked to a spawn result yet)."
 value = "model routing"
 
+[telemetry.jev_skip_backend]
+doc = "The backend label of a Jev call that got no usable answer (the rule baseline stood): counted as skipped, not as a model call."
+value = "baseline-only"
+
+[telemetry.jev_skip_reason_default]
+doc = "The reason token counted for a Jev call that got no answer and recorded none (no call was made)."
+value = "not-asked"
+
 [telemetry.net_method]
 doc = "How the NET figure of `impact` is computed, shown next to it."
 value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"

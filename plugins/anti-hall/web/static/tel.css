@@ -121,3 +121,12 @@ table.data tbody tr:hover { background: color-mix(in oklch, var(--cyan) 6%, tran
   .mover { grid-template-columns: minmax(0, 1fr) auto auto; }
   .mover .spark { display: none; }
 }
+
+/* every table: text left, numbers right with tabular figures, header aligned with its column, controls sized to content */
+table.data th.num,table.data td.num{text-align:right}
+table.data th.num .th{text-align:right;margin-left:auto}
+table.data td.num,table.data tfoot td{font-variant-numeric:tabular-nums}
+table.data td .nm{display:block}
+table.data td .sub{display:block;color:var(--text-mid);font-size:.85em;font-weight:400}
+table.data tfoot td{font-weight:600;border-top:1px solid var(--line-2)}
+.table-bar .btn{flex:0 0 auto;min-height:0;width:auto}

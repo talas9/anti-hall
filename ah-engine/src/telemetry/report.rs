@@ -125,7 +125,21 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         let failed = matches!(e.o, super::event::Outcome::Error | super::event::Outcome::Timeout);
         add(slot, "calls", 1);
         add(slot, "cost_uc", j.cost_uc);
-        add(slot, "ms_sum", e.ms as u64);
+        // what a "call" was: a fresh model call, a cache hit (no model), or no answer at all (the rule baseline stood: skipped by the
+        // context gate, mode off, breaker open, ...), with the reason the call recorded
+        if backend == "cache" {
+            add(slot, "cached", 1);
+        } else if backend == defaults::text("telemetry.jev_skip_backend") {
+            add(slot, "skipped", 1);
+            let why = j.more.get_tok("error").filter(|w| !w.is_empty()).unwrap_or(defaults::text("telemetry.jev_skip_reason_default"));
+            let reasons = slot.entry("skip_reasons").or_insert_with(|| json!({}));
+            if let Some(m) = reasons.as_object_mut() {
+                bump(m, why);
+            }
+        } else {
+            add(slot, "model_calls", 1);
+            add(slot, "ms_sum", e.ms as u64);
+        }
         let max = slot.get("ms_max").and_then(Value::as_u64).unwrap_or(0).max(e.ms as u64);
         slot.insert("ms_max".into(), json!(max));
         let verdicts = slot.entry("verdicts").or_insert_with(|| json!({}));
@@ -154,9 +168,13 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
     let jev_by: Map<String, Value> = jev
         .into_iter()
         .map(|(k, mut m)| {
-            let calls = m.get("calls").and_then(Value::as_u64).unwrap_or(0);
+            // the mean time is over the calls that reached a model; a cached or skipped call took no model time
+            let model_calls = m.get("model_calls").and_then(Value::as_u64).unwrap_or(0);
             let sum = m.remove("ms_sum").and_then(|v| v.as_u64()).unwrap_or(0);
-            m.insert("mean_ms".into(), json!(sum.checked_div(calls).unwrap_or(0)));
+            m.insert("mean_ms".into(), json!(sum.checked_div(model_calls).unwrap_or(0)));
+            for k in ["model_calls", "cached", "skipped"] {
+                m.entry(k).or_insert(json!(0));
+            }
             (k, Value::Object(m))
         })
         .collect();

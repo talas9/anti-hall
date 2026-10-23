@@ -112,7 +112,7 @@ fn fmt_rate(ui: &TelUi, texts: &BTreeMap<String, String>, v: f64) -> String {
 
 fn fmt_cell(ui: &TelUi, texts: &BTreeMap<String, String>, unit: &str, c: &Cell) -> String {
     match c {
-        Cell::Text(t) => t.clone(),
+        Cell::Text(t) | Cell::Named { text: t, .. } => t.clone(),
         Cell::Num(n) => fmt_val(ui, texts, unit, *n),
     }
 }
@@ -683,13 +683,13 @@ fn heat_view(heat: Heat, days: Vec<u64>, ui: TelUi, texts: BTreeMap<String, Stri
 fn cell_key(c: &Cell) -> (f64, String) {
     match c {
         Cell::Num(n) => (*n, String::new()),
-        Cell::Text(t) => (f64::NAN, t.to_lowercase()),
+        Cell::Text(t) | Cell::Named { text: t, .. } => (f64::NAN, t.to_lowercase()),
     }
 }
 
 fn cell_has(c: &Cell, q: &str) -> bool {
     match c {
-        Cell::Text(t) => t.to_lowercase().contains(q),
+        Cell::Text(t) | Cell::Named { text: t, .. } => t.to_lowercase().contains(q),
         Cell::Num(n) => n.to_string().contains(q),
     }
 }
@@ -734,10 +734,13 @@ fn TableView(doc: RwSignal<Option<TelDoc>>, tab: RwSignal<String>, filter: RwSig
             let more = Memo::new(move |_| rows.with(Vec::len) > limit());
             let rows_label = tt(&texts, "table_rows");
             let head = t.cols.iter().enumerate().map(|(i, c)| {
-                view! { <th><button type="button" class="th" title=tt(&texts, "sort") on:click=move |_| sort.update(|s| *s = if s.0 == i { (i, !s.1) } else { (i, false) })>{c.label.clone()}
+                let numeric = matches!(c.kind.as_str(), "count" | "us" | "bytes" | "usd" | "pct");
+                let tip = if c.hint.is_empty() { tt(&texts, "sort") } else { format!("{} ({})", c.hint, tt(&texts, "sort")) };
+                view! { <th class=if numeric { "num" } else { "" }><button type="button" class="th" title=tip on:click=move |_| sort.update(|s| *s = if s.0 == i { (i, !s.1) } else { (i, false) })>{c.label.clone()}
                     {move || { let s = sort.get(); if s.0 == i { if s.1 { " \u{25B2}" } else { " \u{25BC}" } } else { "" } }}</button></th> }
             }).collect_view();
             let (ui2, texts2, cols) = (ui.clone(), texts.clone(), t.cols.clone());
+            let (ui3, texts3, cols2, totals) = (ui.clone(), texts.clone(), t.cols.clone(), t.totals.clone());
             let export = {
                 let (path, id) = (ui.export_path.clone(), t.id.clone());
                 move |fmt: &str| format!("{path}?table={id}&format={fmt}&q={}", js_sys::encode_uri_component(&filter.get()).as_string().unwrap_or_default())
@@ -758,11 +761,21 @@ fn TableView(doc: RwSignal<Option<TelDoc>>, tab: RwSignal<String>, filter: RwSig
                             {move || rows.with(|r| r.iter().take(limit()).map(|row| {
                                 let cells = row.iter().enumerate().map(|(i, c)| {
                                     let kind = cols.get(i).map_or("text", |c| c.kind.as_str());
-                                    view! { <td class=if matches!(c, Cell::Num(_)) { "num" } else { "" }>{fmt_cell(&ui2, &texts2, kind, c)}</td> }
+                                    match c {
+                                        Cell::Named { text, sub, tip } => view! { <td title=tip.clone()><span class="nm">{text.clone()}</span><span class="sub">{sub.clone()}</span></td> }.into_any(),
+                                        _ => view! { <td class=if matches!(c, Cell::Num(_)) { "num" } else { "" }>{fmt_cell(&ui2, &texts2, kind, c)}</td> }.into_any(),
+                                    }
                                 }).collect_view();
                                 view! { <tr>{cells}</tr> }
                             }).collect_view())}
                         </tbody>
+                        {(!totals.is_empty()).then(|| {
+                            let cells = totals.iter().enumerate().map(|(i, c)| {
+                                let kind = cols2.get(i).map_or("text", |c| c.kind.as_str());
+                                view! { <td class=if matches!(c, Cell::Num(_)) { "num" } else { "" }>{fmt_cell(&ui3, &texts3, kind, c)}</td> }
+                            }).collect_view();
+                            view! { <tfoot><tr>{cells}</tr></tfoot> }
+                        })}
                     </table>
                 </div>
                 <Show when=move || more.get()>

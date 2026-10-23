@@ -114,6 +114,8 @@ pub struct Heat {
 pub enum Cell {
     Num(f64),
     Text(String),
+    /// A name with a one-line explanation under it and a hover text (the raw id); sorts and exports as `text`.
+    Named { text: String, sub: String, tip: String },
 }
 
 impl Default for Cell {
@@ -128,6 +130,8 @@ pub struct Col {
     pub label: String,
     /// `text`, `count`, `us`, `bytes`, `usd`, `ts` (epoch ms), `pct`.
     pub kind: String,
+    /// What the column counts, shown as its header tooltip; empty when the label says it all.
+    pub hint: String,
 }
 
 /// A raw-rows table (sortable, filterable, exportable).
@@ -137,6 +141,8 @@ pub struct Table {
     pub title: String,
     pub cols: Vec<Col>,
     pub rows: Vec<Vec<Cell>>,
+    /// A totals row shown under the data (one cell per column); empty when the table has none.
+    pub totals: Vec<Cell>,
 }
 
 /// The Telemetry screen's document.
