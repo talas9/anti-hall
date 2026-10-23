@@ -1,4 +1,4 @@
-//! The audit's data from `engine/defaults/audit.toml`: the command-string rules, the allowlist and the general lists. Nothing here is a
+//! The audit's data from `engine/defaults/entry_audit.toml`: the command-string rules, the allowlist and the general lists. Nothing here is a
 //! pattern or a word of the audit itself (D88); an invalid pattern in the file is reported and skipped, never a panic.
 use crate::defaults::{self, V};
 use regex::Regex;
@@ -52,7 +52,7 @@ pub fn rx(id: &str, pattern: &str) -> Option<Regex> {
         return None;
     }
     Regex::new(pattern)
-        .map_err(|e| eprintln!("{}", defaults::render("audit_msg.bad_regex", &[("id", &id), ("error", &e)])))
+        .map_err(|e| eprintln!("{}", defaults::render("entry_audit_msg.bad_regex", &[("id", &id), ("error", &e)])))
         .ok()
 }
 
@@ -67,7 +67,7 @@ fn hit(re: &Option<Regex>, s: &str) -> bool {
 impl Cfg {
     /// Read the rules and lists from the shipped defaults.
     pub fn load() -> Cfg {
-        let rules = defaults::raw("audit.rules")
+        let rules = defaults::raw("entry_audit.rules")
             .as_array()
             .unwrap_or_default()
             .iter()
@@ -84,7 +84,7 @@ impl Cfg {
             })
             .filter(|r| r.re.is_some() || r.must.is_some())
             .collect();
-        let allow = defaults::raw("audit.allow")
+        let allow = defaults::raw("entry_audit.allow")
             .as_array()
             .unwrap_or_default()
             .iter()
@@ -93,8 +93,8 @@ impl Cfg {
         Cfg {
             rules,
             allow,
-            exts: defaults::list("audit.file_exts").into_iter().map(str::to_string).collect(),
-            cmd_files: defaults::list("audit.cmd_files").into_iter().filter_map(|p| rx("cmd_files", p)).collect(),
+            exts: defaults::list("entry_audit.file_exts").into_iter().map(str::to_string).collect(),
+            cmd_files: defaults::list("entry_audit.cmd_files").into_iter().filter_map(|p| rx("cmd_files", p)).collect(),
         }
     }
 

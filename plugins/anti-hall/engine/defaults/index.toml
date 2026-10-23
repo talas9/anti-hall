@@ -50,7 +50,7 @@ files = [
     "migrate.toml",
     "migrate_settings.toml",
     "doctor.toml",
-    "audit.toml",
+    "entry_audit.toml",
     "setup.toml",
     "mesh.toml",
     "mesh_write.toml",

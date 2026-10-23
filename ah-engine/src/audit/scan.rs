@@ -15,7 +15,7 @@ pub struct Entry {
 
 /// Every file and symbolic link under `dir`, skipping the directory names of `audit.skip_dirs`. Symbolic links are listed, not followed.
 pub fn walk(dir: &Path, out: &mut Vec<Entry>) {
-    let skip = defaults::list("audit.skip_dirs");
+    let skip = defaults::list("entry_audit.skip_dirs");
     walk_in(dir, &skip, out);
 }
 
@@ -44,7 +44,7 @@ pub fn shown(base: &Path, p: &Path) -> String {
 
 /// The first line of a file when it starts with the interpreter marker.
 pub fn shebang_line(p: &Path) -> Option<String> {
-    let marker = defaults::text("audit.shebang");
+    let marker = defaults::text("entry_audit.shebang");
     let mut buf = vec![0u8; 256];
     let n = fs::File::open(p).and_then(|mut f| f.read(&mut buf)).ok()?;
     buf.truncate(n);
@@ -56,15 +56,15 @@ pub fn shebang_line(p: &Path) -> Option<String> {
 pub fn script_labels(cfg: &Cfg, p: &Path, mode: u32, exec_bit: bool) -> (Vec<&'static str>, Option<String>) {
     let mut labels = Vec::new();
     if exec_bit && mode & 0o111 != 0 {
-        labels.push(defaults::text("audit_msg.file_exec"));
+        labels.push(defaults::text("entry_audit_msg.file_exec"));
     }
     let sheb = shebang_line(p);
     if sheb.is_some() {
-        labels.push(defaults::text("audit_msg.file_shebang"));
+        labels.push(defaults::text("entry_audit_msg.file_shebang"));
     }
     let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
     if cfg.exts.iter().any(|e| name.ends_with(e.as_str())) {
-        labels.push(defaults::text("audit_msg.file_ext"));
+        labels.push(defaults::text("entry_audit_msg.file_ext"));
     }
     (labels, sheb)
 }
@@ -78,7 +78,7 @@ pub fn files(cfg: &Cfg, base: &Path, plugin: &Path, section: &str) -> Vec<Findin
         let rel = shown(base, &e.path);
         if e.link {
             let target = fs::read_link(&e.path).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
-            let text = defaults::render("audit_msg.link_text", &[("target", &target)]);
+            let text = defaults::render("entry_audit_msg.link_text", &[("target", &target)]);
             out.extend(cfg.scan_text(section, &rel, &target).into_iter().map(|f| Finding { text: text.clone(), ..f }));
             continue;
         }
@@ -86,8 +86,8 @@ pub fn files(cfg: &Cfg, base: &Path, plugin: &Path, section: &str) -> Vec<Findin
         if labels.is_empty() {
             continue;
         }
-        let rule = labels.join(defaults::text("audit_msg.file_join"));
-        let text = sheb.unwrap_or_else(|| defaults::render("audit_msg.file_mode", &[("mode", &format!("{:04o}", e.mode & 0o7777))]));
+        let rule = labels.join(defaults::text("entry_audit_msg.file_join"));
+        let text = sheb.unwrap_or_else(|| defaults::render("entry_audit_msg.file_mode", &[("mode", &format!("{:04o}", e.mode & 0o7777))]));
         if !cfg.allowed(section, &rel, &text, &rule) {
             out.push(Finding { section: section.to_string(), path: rel, line: 0, text, rule });
         }
@@ -97,7 +97,7 @@ pub fn files(cfg: &Cfg, base: &Path, plugin: &Path, section: &str) -> Vec<Findin
 
 /// Section 2: the command strings in the files of `roots` that `audit.cmd_files` names.
 pub fn commands(cfg: &Cfg, base: &Path, roots: &[PathBuf], section: &str) -> Vec<Finding> {
-    let max = defaults::num("audit.max_file_bytes");
+    let max = defaults::num("entry_audit.max_file_bytes");
     let mut out = Vec::new();
     for root in roots {
         let mut entries = Vec::new();
@@ -131,7 +131,7 @@ pub struct Generated {
 pub fn generated(home: &Path) -> Vec<Generated> {
     let h = home.to_string_lossy().into_owned();
     let mut out = Vec::new();
-    for g in defaults::raw("audit.generators").as_array().unwrap_or_default() {
+    for g in defaults::raw("entry_audit.generators").as_array().unwrap_or_default() {
         let (id, kind) = (g.str_field("id").to_string(), g.str_field("kind").to_string());
         match kind.as_str() {
             "shim" => {
@@ -160,7 +160,7 @@ pub fn generated_findings(cfg: &Cfg, home: &Path, gens: &[Generated], section: &
         let shown_path = shown(home, &g.path);
         let shown_path = if g.path.starts_with(home) { format!("~/{shown_path}") } else { shown_path };
         let name = g.path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
-        let marker = defaults::text("audit.shebang");
+        let marker = defaults::text("entry_audit.shebang");
         let first = g.text.lines().next().unwrap_or_default().to_string();
         let mut push = |rule: &str, text: String| {
             let f = Finding { section: section.to_string(), path: shown_path.clone(), line: 0, text, rule: rule.to_string() };
@@ -169,10 +169,10 @@ pub fn generated_findings(cfg: &Cfg, home: &Path, gens: &[Generated], section: &
             }
         };
         if cfg.exts.iter().any(|e| name.ends_with(e.as_str())) {
-            push(defaults::text("audit_msg.gen_name"), name.clone());
+            push(defaults::text("entry_audit_msg.gen_name"), name.clone());
         }
         if g.text.starts_with(marker) {
-            push(defaults::text("audit_msg.gen_shebang"), first);
+            push(defaults::text("entry_audit_msg.gen_shebang"), first);
         }
         for f in cfg.scan_text(section, &shown_path, &g.text) {
             if !out.iter().any(|o| o.path == f.path && o.line == f.line && o.rule == f.rule) {

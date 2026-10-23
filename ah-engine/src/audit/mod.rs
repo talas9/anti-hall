@@ -2,7 +2,7 @@
 //! leftover ships. It inventories rather than searching for names already known, in four sections: the files of the plugin tree that are
 //! scripts, the command strings an agent or hook is told to run, the files the engine itself generates into launcher directories, and a
 //! read-only look at the running machine. The rules, the allowlist (each entry with its reason), the generator list and every text are in
-//! `engine/defaults/audit.toml` (D88). Exit 0 = clean, 1 = findings.
+//! `engine/defaults/entry_audit.toml` (D88). Exit 0 = clean, 1 = findings.
 mod live;
 mod rules;
 mod scan;
@@ -37,12 +37,12 @@ pub struct Report {
 /// Run the audit.
 pub fn run(o: &Opts) -> Report {
     let cfg = Cfg::load();
-    let names: Vec<&str> = defaults::list("audit.sections");
+    let names: Vec<&str> = defaults::list("entry_audit.sections");
     let name = |i: usize| names.get(i).copied().unwrap_or_default();
-    let nested = o.root.join(defaults::text("audit.plugin_rel"));
+    let nested = o.root.join(defaults::text("entry_audit.plugin_rel"));
     let plugin = if nested.is_dir() { nested } else { o.root.clone() };
     let mut cmd_roots = vec![plugin.clone()];
-    cmd_roots.extend(defaults::list("audit.repo_cmd_roots").into_iter().map(|r| o.root.join(r)).filter(|p| p.exists() && !p.starts_with(&plugin)));
+    cmd_roots.extend(defaults::list("entry_audit.repo_cmd_roots").into_iter().map(|r| o.root.join(r)).filter(|p| p.exists() && !p.starts_with(&plugin)));
     let gens = scan::generated(&o.home);
     let mut findings = scan::files(&cfg, &o.root, &plugin, name(0));
     findings.extend(scan::commands(&cfg, &o.root, &cmd_roots, name(1)));
@@ -70,15 +70,15 @@ impl Report {
     }
 
     fn table(&self) -> String {
-        let max = defaults::num("audit.text_max") as usize;
+        let max = defaults::num("entry_audit.text_max") as usize;
         let cut = |s: &str| -> String {
-            if s.chars().count() > max { format!("{}{}", s.chars().take(max).collect::<String>(), defaults::text("audit_msg.ellipsis")) } else { s.to_string() }
+            if s.chars().count() > max { format!("{}{}", s.chars().take(max).collect::<String>(), defaults::text("entry_audit_msg.ellipsis")) } else { s.to_string() }
         };
         let place = |f: &Finding| if f.line > 0 { format!("{}:{}", f.path, f.line) } else { f.path.clone() };
-        let mut rows: Vec<Vec<String>> = vec![defaults::list("audit_msg.head").into_iter().map(str::to_string).collect()];
+        let mut rows: Vec<Vec<String>> = vec![defaults::list("entry_audit_msg.head").into_iter().map(str::to_string).collect()];
         rows.extend(self.findings.iter().map(|f| vec![f.section.clone(), place(f), cut(&f.text), f.rule.clone()]));
         let widths: Vec<usize> = (0..4).map(|c| rows.iter().map(|r| r.get(c).map_or(0, |s| s.chars().count())).max().unwrap_or(0)).collect();
-        let sep = defaults::text("audit_msg.col_sep");
+        let sep = defaults::text("entry_audit_msg.col_sep");
         rows.iter()
             .map(|r| r.iter().enumerate().map(|(c, s)| format!("{s:<w$}", w = if c == 3 { 0 } else { widths.get(c).copied().unwrap_or(0) })).collect::<Vec<_>>().join(sep))
             .collect::<Vec<_>>()
@@ -88,15 +88,15 @@ impl Report {
     fn text(&self) -> String {
         let mut out = String::new();
         if self.findings.is_empty() {
-            out.push_str(defaults::text("audit_msg.clean"));
+            out.push_str(defaults::text("entry_audit_msg.clean"));
         } else {
             out.push_str(&self.table());
             out.push('\n');
-            out.push_str(&self.summary("audit_msg.summary"));
+            out.push_str(&self.summary("entry_audit_msg.summary"));
         }
-        out.push_str(&format!("\n{}\n", defaults::text("audit_msg.generators_head")));
+        out.push_str(&format!("\n{}\n", defaults::text("entry_audit_msg.generators_head")));
         for (id, kind, path) in &self.generators {
-            out.push_str(&defaults::render("audit_msg.generator_row", &[("id", id), ("kind", kind), ("path", path)]));
+            out.push_str(&defaults::render("entry_audit_msg.generator_row", &[("id", id), ("kind", kind), ("path", path)]));
             out.push('\n');
         }
         out
@@ -126,13 +126,13 @@ fn home_dir(p: &Parsed) -> Option<PathBuf> {
 
 /// `audit entry-paths`.
 pub fn run_cmd(p: &Parsed) -> i32 {
-    if p.rest.first().map(String::as_str) != Some(defaults::text("audit.subcommand")) {
-        eprintln!("{}", defaults::text("audit_msg.usage"));
+    if p.rest.first().map(String::as_str) != Some(defaults::text("entry_audit.subcommand")) {
+        eprintln!("{}", defaults::text("entry_audit_msg.usage"));
         return 64;
     }
     let root = flag(p, "root").map(PathBuf::from).or_else(defaults::root);
     let (Some(root), Some(home)) = (root, home_dir(p)) else {
-        eprintln!("{}", defaults::text("audit_msg.no_root"));
+        eprintln!("{}", defaults::text("entry_audit_msg.no_root"));
         return 64;
     };
     let report = run(&Opts { root, home, live: !p.rest.iter().any(|a| a == "--no-live") });
@@ -147,5 +147,5 @@ pub fn run_cmd(p: &Parsed) -> i32 {
 /// The one-line summary for `doctor`: the audit of the plugin tree at `root` and the machine; `None` when clean.
 pub fn doctor_line(root: &Path, home: &Path) -> Option<String> {
     let r = run(&Opts { root: root.to_path_buf(), home: home.to_path_buf(), live: true });
-    (!r.findings.is_empty()).then(|| r.summary("audit_msg.doctor_found"))
+    (!r.findings.is_empty()).then(|| r.summary("entry_audit_msg.doctor_found"))
 }

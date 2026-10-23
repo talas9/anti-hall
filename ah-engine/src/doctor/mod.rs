@@ -309,10 +309,10 @@ fn audit_section(doc: &mut Doc) {
 /// js/sh/wrong-entry leftover, an ok line otherwise.
 fn entry_paths_section(doc: &mut Doc, root: Option<&Path>, home: &str) {
     let Some(root) = root else { return };
-    doc.head(defaults::text("audit_msg.doctor_head"));
+    doc.head(defaults::text("entry_audit_msg.doctor_head"));
     match crate::audit::doctor_line(root, Path::new(home)) {
         Some(line) => doc.warnl(line),
-        None => doc.ok(defaults::text("audit_msg.doctor_clean").to_string()),
+        None => doc.ok(defaults::text("entry_audit_msg.doctor_clean").to_string()),
     }
 }
 

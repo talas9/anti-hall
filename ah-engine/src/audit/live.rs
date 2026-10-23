@@ -1,5 +1,5 @@
 //! Section 4 of the audit: a read-only look at the running machine. Nothing is changed and nothing is started except the two listing
-//! commands named in `audit.toml` (the process list and the crontab).
+//! commands named in `entry_audit.toml` (the process list and the crontab).
 use super::rules::{Cfg, Finding, rx};
 use super::scan::{self, Entry};
 use crate::defaults;
@@ -15,23 +15,23 @@ fn run_list(key: &str) -> String {
 }
 
 fn processes(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
-    let Some(re) = rx("live_proc_re", defaults::text("audit.live_proc_re")) else { return };
-    let words = defaults::num("audit.live_proc_tokens") as usize;
+    let Some(re) = rx("live_proc_re", defaults::text("entry_audit.live_proc_re")) else { return };
+    let words = defaults::num("entry_audit.live_proc_tokens") as usize;
     let own = std::process::id().to_string();
-    for row in run_list("audit.live_ps").lines() {
+    for row in run_list("entry_audit.live_ps").lines() {
         let row = row.trim();
         let Some((pid, command)) = row.split_once(char::is_whitespace) else { continue };
         let head = command.split_whitespace().take(words).collect::<Vec<_>>().join(" ");
-        let rule = defaults::text("audit_msg.live_proc");
+        let rule = defaults::text("entry_audit_msg.live_proc");
         if pid != own && re.is_match(&head) && !cfg.allowed(section, pid, command, rule) {
-            out.push(Finding { section: section.to_string(), path: defaults::render("audit_msg.live_proc_path", &[("pid", &pid)]), line: 0, text: command.trim().to_string(), rule: rule.to_string() });
+            out.push(Finding { section: section.to_string(), path: defaults::render("entry_audit_msg.live_proc_path", &[("pid", &pid)]), line: 0, text: command.trim().to_string(), rule: rule.to_string() });
         }
     }
 }
 
 fn units(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
-    let dir = home.join(defaults::text("audit.live_plist_dir"));
-    let Some(name_re) = rx("live_plist_re", defaults::text("audit.live_plist_re")) else { return };
+    let dir = home.join(defaults::text("entry_audit.live_plist_dir"));
+    let Some(name_re) = rx("live_plist_re", defaults::text("entry_audit.live_plist_re")) else { return };
     let mut entries = Vec::new();
     scan::walk(&dir, &mut entries);
     for e in entries.into_iter().filter(|e| !e.link) {
@@ -45,15 +45,15 @@ fn units(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
 }
 
 fn crontab(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
-    let text: String = run_list("audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
-    out.extend(cfg.scan_text(section, defaults::text("audit_msg.live_cron_path"), &text));
+    let text: String = run_list("entry_audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
+    out.extend(cfg.scan_text(section, defaults::text("entry_audit_msg.live_cron_path"), &text));
 }
 
 /// The plugin roots a hook can run from: the installed-plugins entries that are anti-hall's, plus the extra roots.
 fn plugin_roots(home: &Path) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
-    let key_re = rx("live_plugin_key_re", defaults::text("audit.live_plugin_key_re"));
-    let json: Value = std::fs::read_to_string(home.join(defaults::text("audit.live_installed_json"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let key_re = rx("live_plugin_key_re", defaults::text("entry_audit.live_plugin_key_re"));
+    let json: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_installed_json"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
     let mut stack = vec![&json];
     while let Some(v) = stack.pop() {
         match v {
@@ -71,7 +71,7 @@ fn plugin_roots(home: &Path) -> Vec<PathBuf> {
             _ => {}
         }
     }
-    roots.extend(defaults::list("audit.live_roots_extra").into_iter().map(|r| home.join(r)));
+    roots.extend(defaults::list("entry_audit.live_roots_extra").into_iter().map(|r| home.join(r)));
     roots.sort();
     roots.dedup();
     roots
@@ -79,7 +79,7 @@ fn plugin_roots(home: &Path) -> Vec<PathBuf> {
 
 fn installed_roots(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
     for root in plugin_roots(home) {
-        for rel in defaults::list("audit.live_root_files") {
+        for rel in defaults::list("entry_audit.live_root_files") {
             let file = root.join(rel);
             if let Ok(text) = std::fs::read_to_string(&file) {
                 out.extend(cfg.scan_text(section, &format!("{}", file.display()), &text));
@@ -89,7 +89,7 @@ fn installed_roots(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>
 }
 
 fn launcher_dirs(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
-    for rel in defaults::list("audit.live_bin_dirs") {
+    for rel in defaults::list("entry_audit.live_bin_dirs") {
         let mut entries: Vec<Entry> = Vec::new();
         let dir = home.join(rel);
         if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -101,9 +101,9 @@ fn launcher_dirs(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) 
             if labels.is_empty() {
                 continue;
             }
-            let rule = defaults::text("audit_msg.live_bin");
+            let rule = defaults::text("entry_audit_msg.live_bin");
             let shown = format!("~/{}", scan::shown(home, &e.path));
-            let text = sheb.unwrap_or_else(|| labels.join(defaults::text("audit_msg.file_join")));
+            let text = sheb.unwrap_or_else(|| labels.join(defaults::text("entry_audit_msg.file_join")));
             if !cfg.allowed(section, &shown, &text, rule) {
                 out.push(Finding { section: section.to_string(), path: shown, line: 0, text, rule: rule.to_string() });
             }
@@ -112,11 +112,11 @@ fn launcher_dirs(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) 
 }
 
 fn settings(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
-    let Some(mine) = rx("live_settings_re", defaults::text("audit.live_settings_re")) else { return };
-    for rel in defaults::list("audit.live_settings") {
+    let Some(mine) = rx("live_settings_re", defaults::text("entry_audit.live_settings_re")) else { return };
+    for rel in defaults::list("entry_audit.live_settings") {
         let json: Value = std::fs::read_to_string(home.join(rel)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
         let Some(cmd) = json.pointer("/statusLine/command").and_then(Value::as_str).filter(|c| mine.is_match(c)) else { continue };
-        let path = defaults::render("audit_msg.live_status_path", &[("file", &format!("~/{rel}"))]);
+        let path = defaults::render("entry_audit_msg.live_status_path", &[("file", &format!("~/{rel}"))]);
         out.extend(cfg.scan_text(section, &path, cmd));
     }
 }
