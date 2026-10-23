@@ -6,7 +6,7 @@
 use super::backfill::backfill;
 use super::parse::{Facts, Line, NON_STRING_ID, collect_tool_uses, is_not_found, parse_line};
 use super::tail::{lines_of, read_tail};
-use super::{Task, TaskMap, Unknown, norm_priority, number_of_digits, priority_field, is_non_string_status, kept_status};
+use super::{Since, Task, TaskMap, Unknown, norm_priority, number_of_digits, priority_field, is_non_string_status, kept_status};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::taskkit::jsval::{R, Unsure, first_truthy, get, scalar_string, truthy};
@@ -29,6 +29,22 @@ pub struct ScanTasks {
     pub in_progress_count: u64,
     /// Ids of the open tasks, in task-list order.
     pub open_task_ids: Vec<String>,
+    /// Every task the pass reconstructed, in list order, for the dashboard's per-agent list: subject, status, priority, and the time it
+    /// was last set pending or in progress (milliseconds; `None` when not known).
+    pub all: Vec<ListedTask>,
+}
+
+/// One task as the dashboard lists it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListedTask {
+    /// The task's subject.
+    pub subject: String,
+    /// Its status as the transcript last set it (empty when unknown).
+    pub status: String,
+    /// Its priority label (empty when none).
+    pub priority: String,
+    /// When it was last set pending or in progress, ms since the epoch.
+    pub updated_ms: Option<u64>,
 }
 
 pub(crate) fn created_re() -> std::sync::Arc<Regex> {
@@ -343,6 +359,15 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
         return Err(Unsure);
     }
     for t in facts.tasks.values() {
+        s.all.push(ListedTask {
+            subject: t.content.clone(),
+            status: t.status.clone().unwrap_or_default(),
+            priority: t.priority.clone().unwrap_or_default(),
+            updated_ms: match t.since {
+                Since::Ms(v) if v.is_finite() && v > 0.0 => Some(v as u64),
+                _ => None,
+            },
+        });
         if !t.is_open() {
             continue;
         }
