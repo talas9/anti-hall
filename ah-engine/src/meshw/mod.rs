@@ -462,8 +462,8 @@ pub fn next_step(r: std::thread::Result<R<Answer>>, committed: bool) -> (Next, S
             let body = ident::refusal_body(&d).unwrap_or_default().to_string();
             (Next::Refuse(body), w("mesh_write.result_refused"), String::new())
         }
-        Ok(Err(Defer(d))) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d),
-        Ok(Err(Defer(d))) => (Next::Unable, w("mesh_write.shadow_defer"), d),
+        Ok(Err(d)) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d.0),
+        Ok(Err(d)) => (Next::Unable, w("mesh_write.shadow_defer"), d.0),
         Err(_) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), String::new()),
         Err(_) => (Next::Unable, w("mesh_write.shadow_panic"), String::new()),
     }
