@@ -139,15 +139,6 @@ impl Armed {
             Armed::Skip(w) => s(w),
         }
     }
-
-    /// The word the quiet line prints (`inboxTickQuietLine`): the skip words verbatim, every other value as `true` / `false`.
-    pub(crate) fn word(self) -> &'static str {
-        match self {
-            Armed::Yes => defaults::text("mesh_write.js_true"),
-            Armed::No => defaults::text("mesh_write.js_false"),
-            Armed::Skip(w) => w,
-        }
-    }
 }
 
 fn proc_of(inv: &Inv, cwd: &str) -> Proc {
@@ -197,7 +188,7 @@ pub(crate) fn record_rearm_cue(inv: &Inv, id: &str, armed: Armed) {
     let mut lines: Vec<String> =
         std::fs::read(&file).map(|b| String::from_utf8_lossy(&b).split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect()).unwrap_or_default();
     let mut rec = Obj::default();
-    rec.put("ts", n(crate::meshw::common::now_ms() as f64)).put("id", s(id)).put("trigger", s(trigger));
+    rec.put("ts", n(inv.now as f64)).put("id", s(id)).put("trigger", s(trigger));
     lines.push(rec.done().stringify());
     let cap = defaults::num("mesh_write.rearm_cues_cap") as usize;
     if lines.len() > cap {

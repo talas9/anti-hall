@@ -134,7 +134,7 @@ fn parse_reader(reader: &str) -> Option<(f64, f64)> {
 }
 
 /// `legacyShortFor(reader)`: the tag the pre-Phase-3 build minted for the same harness, `sha1("anc:<pid>:<startMs>")`.
-fn legacy_short_for(reader: &str) -> Option<String> {
+pub(crate) fn legacy_short_for(reader: &str) -> Option<String> {
     let (pid, start) = parse_reader(reader)?;
     Some(cursors::short_nonce(&format!("{}{}:{}", defaults::text("update_post.anchor_prefix"), to_js_string(pid), to_js_string(start))))
 }
@@ -148,7 +148,7 @@ fn provably_ended(reader: &str, table: Option<&ProcTable>) -> bool {
 }
 
 /// `listLegacy(home, id, sep)`: `(short, value)` for every `<id><sep><short6>.json`; an unreadable file counts as 0.
-fn list_legacy(home: &Path, id: &str, sep: &str) -> Vec<(String, f64)> {
+pub(crate) fn list_legacy(home: &Path, id: &str, sep: &str) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     if !cursors::legacy_safe(id) {
         return out;

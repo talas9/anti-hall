@@ -384,8 +384,6 @@ pub(crate) struct Counted {
     pub store_key: String,
     /// `known` (`readSideKnown`): the inbox and its cursor file both read, the store side is usable and the mesh group resolved.
     pub known: bool,
-    /// The NDJSON half of `known`: the inbox and its cursor file both read.
-    pub nd_known: bool,
     /// `unreadTotal`.
     pub unread: usize,
     /// `unreadNdjson`.
@@ -601,7 +599,6 @@ pub(crate) fn count_mail(inv: &Inv, id: &str, desc: &OVal, limit: usize) -> R<Co
         repo_key,
         store_key,
         known,
-        nd_known,
         unread: unread + added_unread,
         nd_unread: u.nd_unread_lines.len(),
         store_unread,
@@ -860,11 +857,6 @@ pub(crate) fn with_tail(mut o: Obj, tail: &TickTail) -> Obj {
     o
 }
 
-/// The JSON form of `count` (a verb that is not a tick), or of a tick with its `tail`.
-pub(crate) fn count_json(inv: &Inv, id: &str, c: &Counted, action: &str, resolved_from: Option<&str>, redirected_from: Option<&str>) -> String {
-    count_obj(inv, id, c, action, resolved_from, redirected_from).done().stringify()
-}
-
 /// The reasons `emitKnownWarning` names for a result that reports `known: false`.
 fn known_reasons(result: &OVal) -> Vec<String> {
     let text = |v: Option<&OVal>| match v {
@@ -950,8 +942,23 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let anchor = tickarm::refresh_anchor_session(inv);
     // ---- reads: everything that can fail is read before the first write ----
     let found = ident::read_descriptor(&inv.home, id);
-    // a `--child` tick pulls first: the ensure completes the descriptor (or registers the workspace) the count then reads
-    let prepared = if form.child { Some(crate::meshw::pull::prepare(inv, id, found.as_ref())?) } else { None };
+    // a `--child` tick pulls first (`withSelfHeal(() => cmdInbox('pull', ...))`): the ensure completes the descriptor (or registers the
+    // workspace) the count then reads. An ensure Node refuses leaves the pull undone and the tick goes on to count what is there.
+    let prepared = if form.child {
+        crate::meshw::pull::heal_first(inv);
+        let (found, _) = crate::meshw::inboxcmd::promote_preface(inv, a, id, found.clone());
+        let args = crate::meshw::pull::PullArgs {
+            session: a.one(defaults::text("mesh_write.flag_session")).filter(|v| !v.is_empty()),
+            worktree_flag: a.one(defaults::text("devswarm_cli.flag_worktree")),
+            rows_left_by_fold: false,
+        };
+        match crate::meshw::pull::prepare_ex(inv, id, found.as_ref(), &args)? {
+            crate::meshw::pull::Prepared::Plan(p) => Some(*p),
+            crate::meshw::pull::Prepared::Refused(_) => None,
+        }
+    } else {
+        None
+    };
     let limit = crate::meshw::inboxcmd::limit_of(a);
     let target = match prepared.as_ref() {
         Some(p) => Target::Count { id: id.to_string(), desc: p.ensured().clone(), resolved_from: None, redirected_from: None },

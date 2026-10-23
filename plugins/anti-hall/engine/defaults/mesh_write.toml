@@ -2396,3 +2396,197 @@ value = ": "
 [mesh_write.known_reason_partial]
 doc = "The known:false reason word of totals that are partial."
 value = "totalsPartial"
+
+# ---- inbox pull: the ensure's refusals (cmdInboxPull / cmdRegister) -----------------------------------------------------------
+
+[mesh_write.action_pull]
+doc = "The action word an `inbox pull` result carries (every refusal of the ensure is reported under it)."
+value = "pull"
+
+[mesh_write.msg_pull_app_archived]
+doc = "The refusal of an ensure for a workspace the DevSwarm app has archived; `{id}` is the plain id."
+value = "workspace {id} is archived in the DevSwarm app (isActive=0, isHidden=1); registration is refused regardless of any local marker or heartbeat — the app DB is ground truth over anti-hall's own markers (owner rule). A live session is still running in this archived workspace: close its DevSwarm tab, or run `hivecontrol workspace archive <full id>`, to stop it retrying."
+
+[mesh_write.reason_reserved_id_token]
+doc = "The reason of an ensure refused for an id that carries a reserved token."
+value = "reserved-id-token"
+
+[mesh_write.msg_reserved_id]
+doc = "The refusal text for such an id; `{id}` and `{token}` are JSON-quoted."
+value = "refusing to register workspace id {id} — it contains the reserved token {token}, which anti-hall uses for its own cursor namespaces under cursors/. Choose an id without it."
+
+[mesh_write.reserved_suffix_token]
+doc = "The reserved token reported for an id that ends with the reserved suffix."
+value = ".base"
+
+[mesh_write.msg_pull_archived_skip]
+doc = "The refusal of a routine auto-ensure for an id whose archived record is the same workspace; `{id}` is the plain id."
+value = "workspace {id} is archived; routine auto-ensure does not revive it (run `devswarm register {id} ...` to explicitly re-register)"
+
+[mesh_write.msg_ensure_not_ours]
+doc = "The refusal of an ensure over a descriptor that belongs to another project."
+value = "existing descriptor does not belong to the current project"
+
+[mesh_write.msg_ctx_mismatch_ensure_tail]
+doc = "The end of the project-context-mismatch text of an ensure."
+value = "run this from within that project's worktree to ensure it"
+
+[mesh_write.msg_cross_project_register]
+doc = "The refusal of an ensure that would register a worktree of another project; `{worktree}` is JSON-quoted, `{worktree_key}` and `{current}` are the two project keys."
+value = "register --worktree {worktree} belongs to a different project ({worktree_key}) than the current cwd ({current}) — cross-project registration is refused"
+
+[mesh_write.msg_id_lock_busy]
+doc = "The refusal of a mutation whose workspace lock stays busy; `{id}` is JSON-quoted."
+value = "workspace {id} is locked by another operation in progress; retry shortly"
+
+[mesh_write.msg_descriptor_malformed]
+doc = "The refusal for a descriptor whose field has a type the registry cannot take; `{id}` is JSON-quoted, `{field}` the field name."
+value = "descriptor for {id} has a field of the wrong type: {field}"
+
+[mesh_write.reason_child_label]
+doc = "The reason of a pull refused for the worktree label of a child workspace."
+value = "child-label-id"
+
+[mesh_write.msg_child_label_retired]
+doc = "The refusal text for a retired worktree label; `{id}` and `{to}` are JSON-quoted."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[mesh_write.msg_child_label]
+doc = "The refusal text for the worktree label of a child; `{id}` is JSON-quoted, `{worktree}` the child's checkout, `{hint}` what to use instead."
+value = "{id} is the worktree label of a CHILD workspace ({worktree}), not an identity — {hint}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[mesh_write.msg_child_label_use]
+doc = "The hint when the child has a workspace id; `{child}` is JSON-quoted."
+value = "use its workspace id {child}"
+
+[mesh_write.msg_child_label_unregistered]
+doc = "The hint when the child has not registered a workspace id yet."
+value = "the child has not registered its workspace id yet"
+
+[mesh_write.msg_wal_unreadable]
+doc = "The text of a pull whose delivery log cannot be read; `{code}` is the error code and `{wal}` the log."
+value = "delivery WAL unreadable ({code}): {wal}"
+
+[mesh_write.msg_wal_spill_blocked]
+doc = "The text of a pull whose spilled batches cannot go back into a writable log; `{why}` is the reason and `{dir}` the spill directory."
+value = "delivery WAL not writable ({why}) — spilled batch(es) kept in {dir}; no destructive native read until the WAL is writable"
+
+[mesh_write.msg_wal_replay_failed]
+doc = "The text of a pull whose replay of an open batch failed; `{why}` is the reason."
+value = "WAL replay failed (batch kept pending, no new native read): {why}"
+
+[mesh_write.heal_engine_owned_note]
+doc = "The note under which a stale ingest daemon the engine owns is not healed by this pull (no installer runs)."
+value = "engine owns ingest"
+
+[mesh_write.self_heal_dir]
+doc = "The directory under the DevSwarm state directory that holds the self-heal cooldown files."
+value = "self-heal"
+
+[mesh_write.self_heal_file_prefix]
+doc = "The file-name prefix of a self-heal cooldown file (followed by the repository key)."
+value = "ingest-"
+
+[mesh_write.self_heal_cooldown_ms]
+doc = "How long after one self-heal attempt another may be made."
+value = 60000
+min = 1
+
+[mesh_write.ingest_owner_file]
+doc = "The file under the DevSwarm state directory that says which process owns the ingest of the projects."
+value = "ingest-owner.json"
+
+[mesh_write.ingest_owner_engine]
+doc = "The owner word of that file when the engine owns the ingest."
+value = "engine"
+
+[mesh_write.heal_cooldown_key]
+doc = "The result key a self-heal cooldown adds."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_attempted_key]
+doc = "The result key a self-heal attempt adds."
+value = "daemonHealAttempted"
+
+[mesh_write.heal_retry_key]
+doc = "The result key carrying the remaining cooldown."
+value = "retryAfterMs"
+
+[mesh_write.heal_disabled_key]
+doc = "The result key of an ingest unit the owner disabled in launchd."
+value = "daemonDisabled"
+
+[mesh_write.heal_disabled_label_key]
+doc = "The result key naming that unit."
+value = "daemonDisabledLabel"
+
+[mesh_write.launchd_label_prefix]
+doc = "The label prefix of a project's ingest unit in launchd (followed by the repository key)."
+value = "com.anti-hall.devswarm-ingest."
+
+# ---- inbox ack-primary: the refusals of cmdInboxAckPrimary --------------------------------------------------------------------
+
+[mesh_write.reason_missing_receipt]
+doc = "The reason of an `inbox ack-primary` without a receipt."
+value = "missing-receipt"
+
+[mesh_write.msg_missing_receipt]
+doc = "The refusal text of an `inbox ack-primary` without a receipt."
+value = "--receipt <readReceiptId> (from `inbox read-primary`) is required"
+
+[mesh_write.msg_store_not_opened]
+doc = "The refusal text of an ack whose store could not be opened and that named no reason."
+value = "store could not be opened"
+
+[mesh_write.reason_unknown_receipt]
+doc = "The reason of an ack for a receipt nobody filed."
+value = "unknown-receipt"
+
+[mesh_write.msg_unknown_receipt]
+doc = "The refusal text of an ack for an unknown receipt; `{rid}` and `{id}` are JSON-quoted, `{raw}` is the plain id."
+value = "no read receipt {rid} for {id} — re-run `inbox read-primary {raw}`, then run the ackCommand it returns"
+
+[mesh_write.reason_receipt_owner_mismatch]
+doc = "The reason of an ack for a receipt another identity or another reader was issued."
+value = "receipt-owner-mismatch"
+
+[mesh_write.msg_receipt_owner]
+doc = "The refusal text of an ack for a receipt issued to another identity; `{owner}` is JSON-quoted."
+value = "receipt belongs to {owner}"
+
+[mesh_write.msg_receipt_other_reader]
+doc = "The refusal text of an ack for a receipt another reader was issued; `{id}` is the plain id."
+value = "receipt was issued to a different reader — a receipt acks only for the reader that read it; re-run `inbox read-primary {id}` and then its `ackCommand`"
+
+[mesh_write.reason_receipt_expired]
+doc = "The reason of an ack for a receipt past its lifetime."
+value = "receipt-expired"
+
+[mesh_write.msg_receipt_expired]
+doc = "The refusal text of an ack for an expired receipt; `{hours}` is the lifetime in hours and `{id}` the plain id."
+value = "receipt is older than {hours}h — re-run `inbox read-primary {id}` and then its `ackCommand` (nothing was acked; the mail is still unread)"
+
+[mesh_write.cause_not_registered]
+doc = "The reason of an ack by a caller that resolves fine but has no registry entry of its own."
+value = "caller-not-registered"
+
+[mesh_write.msg_ack_primary_not_owner]
+doc = "The refusal text of an `inbox ack-primary` by a caller that does not own the id; `{id}` is JSON-quoted."
+value = "ack-primary refused: this caller does not own {id} (use --ack-as-owner to override)"
+
+[mesh_write.ms_per_hour]
+doc = "Milliseconds in an hour."
+value = 3600000
+min = 1
+
+[mesh_write.log_op_inbox_ack_primary]
+doc = "The central-log operation of an `inbox ack-primary` that did not succeed."
+value = "inbox-ack-primary"
+
+[mesh_write.msg_ctx_mismatch_ack_tail]
+doc = "The end of the project-context-mismatch text of an `inbox ack`; `{id}` is the plain id."
+value = "run this from within that project's worktree to ack it (`inbox read {id}` is read-only and works from anywhere)"
+
+[mesh_write.msg_no_cursor_path]
+doc = "The refusal text of an `inbox ack` for a descriptor without a cursor file; `{id}` is JSON-quoted."
+value = "no cursorPath for workspace {id}"

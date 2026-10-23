@@ -75,13 +75,28 @@ struct Lc {
     native: bool,
     /// Run without the recording stub on the PATH (no hivecontrol at all).
     no_hc: bool,
+    /// Files of the home tree the comparison leaves out (what Node's installer subprocess writes, which the engine never starts).
+    ignore: Vec<&'static str>,
 }
 
 fn lc(name: &str, argv: &[&str], native: bool) -> Lc {
-    Lc { name: name.into(), argv: argv.iter().map(|s| (*s).into()).collect(), cwd: "child", setup: Box::new(|_| {}), env: vec![], native, no_hc: false }
+    Lc {
+        name: name.into(),
+        argv: argv.iter().map(|s| (*s).into()).collect(),
+        cwd: "child",
+        setup: Box::new(|_| {}),
+        env: vec![],
+        native,
+        no_hc: false,
+        ignore: vec![],
+    }
 }
 
 impl Lc {
+    fn ignoring(mut self, file: &'static str) -> Lc {
+        self.ignore.push(file);
+        self
+    }
     fn env(mut self, k: &str, v: &str) -> Lc {
         self.env.push((k.into(), v.into()));
         self
@@ -337,7 +352,7 @@ fn run_cases(fx: &Fx, w: &W, cases: &[Lc], min_native: usize, min_deferred: usiz
                 assert!(de == dn, "{}: the store differs: {}", c.name, first_diff(&dn, &de));
             }
             let (te, tn) = (tree(&homes[1]), tree(&homes[0]));
-            for k in te.keys().chain(tn.keys()) {
+            for k in te.keys().chain(tn.keys()).filter(|k| !c.ignore.iter().any(|i| k.ends_with(i))) {
                 assert!(te.get(k) == tn.get(k), "{}: the home tree differs at {k}:\n engine: {:?}\n node:   {:?}", c.name, te.get(k), tn.get(k));
             }
         } else {
@@ -498,8 +513,8 @@ fn child_tick_steady_state_matches_node() {
         }),
         // ---- the deferrals: everything Node does that the engine does not, decided before the first write ----
         case("session-flag-is-answered", &["--quiet", "--session", "s1"], true, b(vec![], vec![])),
-        case("defer-unclaimed-session", &["--quiet"], false, b(vec![("sessionId", json!("unclaimed:child-1"))], vec![])),
-        case("defer-owner-key-is-the-legacy-hash-bucket-rehome", &["--quiet"], false, {
+        case("unclaimed-session", &["--quiet"], true, b(vec![("sessionId", json!("unclaimed:child-1"))], vec![])),
+        case("owner-key-is-the-legacy-hash-bucket-rehome", &["--quiet"], true, {
             let key = hash_of("child-1");
             let f = b(vec![], vec![]);
             let rk = w.repo_key.clone();
@@ -513,7 +528,7 @@ fn child_tick_steady_state_matches_node() {
                 fs::write(p, d.to_string()).unwrap();
             }
         }),
-        case("defer-self-heal-would-spawn-the-installer", &["--quiet"], false, b(vec![], vec![])).env("DEVSWARM_REPO_ID", "repo-1"),
+        case("self-heal-would-spawn-the-installer", &["--quiet"], true, b(vec![], vec![])).env("DEVSWARM_REPO_ID", "repo-1").ignoring("hivecontrol-path.json"),
         case("a-foreign-reader-wal-with-an-open-batch-is-reported-not-adopted", &["--quiet"], true, {
             let f = b(vec![], vec![]);
             move |h| {
@@ -521,14 +536,14 @@ fn child_tick_steady_state_matches_node() {
                 put(h, "wal/pull-other.ndjson", "{\"t\":\"batch\",\"e\":\"1-1-1-bbbb\",\"ts\":1,\"raw\":\"[]\"}\n");
             }
         }),
-        case("defer-a-spilled-batch-waits-in-wal-spill", &["--quiet"], false, {
+        case("a-spilled-batch-waits-in-wal-spill", &["--quiet"], true, {
             let f = b(vec![], vec![]);
             move |h| {
                 f(h);
                 put(h, "wal-spill/pull-child-1/x.json", "{\"e\":\"1-1-1-cccc\",\"ts\":1,\"raw\":\"[]\"}");
             }
         }),
-        case("defer-registry-holds-a-second-row-of-the-same-worktree", &["--quiet"], false, {
+        case("registry-holds-a-second-row-of-the-same-worktree", &["--quiet"], true, {
             let f = b(vec![], vec![]);
             let (rk, wt) = (w.repo_key.clone(), w.child.clone());
             move |h| {
@@ -537,9 +552,9 @@ fn child_tick_steady_state_matches_node() {
                 run_seed("ack_seed.js", h, &rk, &spec);
             }
         }),
-        case("defer-no-descriptor", &["--quiet"], false, |_| {}),
+        case("no-descriptor", &["--quiet"], true, |_| {}),
     ];
-    run_cases(&fx, &w, &cases, 20, 6);
+    run_cases(&fx, &w, &cases, 26, 0);
 }
 
 fn hash_of(id: &str) -> String {
@@ -768,8 +783,8 @@ fn child_tick_registers_a_workspace_without_a_descriptor_like_node() {
             }
         })
         .env("DEVSWARM_BUILDER_ID", "child-1"),
-        case("defer-register-unclaimed-without-a-builder-id", &["--quiet"], false, un.clone()),
-        case("defer-register-an-archived-twin-exists", &["--quiet"], false, {
+        case("register-unclaimed-without-a-builder-id", &["--quiet"], true, un.clone()),
+        case("register-an-archived-twin-exists", &["--quiet"], true, {
             let un = un.clone();
             move |h| {
                 un(h);
@@ -777,10 +792,10 @@ fn child_tick_registers_a_workspace_without_a_descriptor_like_node() {
             }
         })
         .env("DEVSWARM_BUILDER_ID", "child-1"),
-        case("defer-register-from-the-primary-checkout-a-row-of-that-worktree-exists", &["--quiet"], false, un.clone())
+        case("register-from-the-primary-checkout-a-row-of-that-worktree-exists", &["--quiet"], true, un.clone())
             .env("DEVSWARM_BUILDER_ID", "child-1")
             .cwd("main"),
-        case("defer-register-declares-but-a-legacy-instance-cursor-maps", &["--quiet"], false, {
+        case("register-declares-but-a-legacy-instance-cursor-maps", &["--quiet"], true, {
             let un = un.clone();
             move |h| {
                 un(h);
@@ -790,7 +805,7 @@ fn child_tick_registers_a_workspace_without_a_descriptor_like_node() {
         })
         .env("DEVSWARM_BUILDER_ID", "child-1"),
     ];
-    run_cases(&fx, &w, &cases, 5, 4);
+    run_cases(&fx, &w, &cases, 9, 0);
 }
 
 // ---- crash safety: a kill between the destructive read and the end of the import ----------------------------------------------
@@ -1202,7 +1217,7 @@ fn inbox_pull_matches_node_and_drains_like_the_child_tick() {
                 put(h, "wal/pull-other.ndjson", "{\"t\":\"batch\",\"e\":\"1-1-1-bbbb\",\"ts\":1,\"raw\":\"[]\"}\n");
             }
         }),
-        pull_case("pull-defer-a-spilled-batch-waits-in-wal-spill", false, {
+        pull_case("pull-a-spilled-batch-waits-in-wal-spill", true, {
             let f = b(vec![], vec![]);
             move |h| {
                 f(h);
@@ -1210,5 +1225,5 @@ fn inbox_pull_matches_node_and_drains_like_the_child_tick() {
             }
         }),
     ];
-    run_cases(&fx, &w, &cases, 24, 1);
+    run_cases(&fx, &w, &cases, 25, 0);
 }
