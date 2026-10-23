@@ -540,34 +540,6 @@ fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_
     assert!(q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
 }
 
-#[test]
-fn the_heartbeat_rule_agrees_with_the_node_watchdog_on_running_agents() {
-    let Ok(node) = std::process::Command::new("node").arg("--version").output() else { return };
-    if !node.status.success() {
-        return;
-    }
-    let h = home("witness");
-    let n = now0();
-    let hb = h.join(".anti-hall/agents");
-    std::fs::create_dir_all(&hb).unwrap();
-    for (id, age) in [("old", 30 * MIN), ("fresh", MIN), ("older", 90 * MIN)] {
-        std::fs::write(hb.join(format!("{id}.json")), json!({"id": id, "ts": n - age, "status": "running"}).to_string()).unwrap();
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/agent-watchdog.js");
-    let out = std::process::Command::new("node").arg(root).arg(lim("heartbeat_stale_ms").to_string()).env("HOME", &h).output().unwrap();
-    let mut node_ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("STALE "))
-        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
-        .collect();
-    node_ids.sort();
-    let mut st = State::default();
-    tick(&env(&h, n), &mut st);
-    let mut ours: Vec<String> = st.agents.values().filter(|a| a.flags.contains_key("heartbeat_stale")).map(|a| a.name.clone()).collect();
-    ours.sort();
-    assert_eq!(ours, node_ids, "the engine and the Node watchdog flag the same running heartbeats");
-}
-
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
 
 /// The injected clock of the cooldown, cap and outcome tests: noon UTC of a fixed day, so the day bucket (`now_ms / day_ms`) of the

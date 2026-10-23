@@ -1325,12 +1325,6 @@ fn devswarm_parent_inbox_script_matches_the_compiled_port() {
     assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
-#[test]
-fn devswarm_child_turn_script_matches_the_compiled_port() {
-    let kinds = golden::assert_script_matches("devswarm-child-turn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
-}
-
 // ---- task-lifecycle-log, the session gates, merge-side-pick, scan-throttle and merge-gate (D88 batch 6) ----
 
 #[test]

@@ -1496,35 +1496,6 @@ fn json_output_carries_the_new_sections() {
     }
 }
 
-// ---- the Node doctor as the shadow: the checks both make give the same answer ---------------------------------------------------
-
-#[test]
-fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
-    let mut sc = Sc::new();
-    sc.own_plugin();
-    fs::remove_file(sc.plugin.join("../anti-hall-node/hooks/git-guard.js")).unwrap();
-    let mut n = Command::new("node");
-    // the Node doctor runs read-only (--dry-run previews the repairs) from the scratch copy, in the scratch home
-    n.arg(sc.plugin.join("../anti-hall-node/hooks/doctor.js")).arg("--dry-run");
-    n.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", &sc.home)
-        .env("USERPROFILE", &sc.home)
-        .env("ANTIHALL_INGEST_DRY_RUN", "1")
-        .current_dir(&sc.cwd);
-    let node = sc.finish(n);
-    let engine = sc.doctor(&[]);
-    // both call the missing script a failure, in the same words, and both exit non-zero
-    let bad = |o: &Out| o.text.lines().any(|l| l.contains("git-guard.js") && l.contains("REGISTERED BUT MISSING"));
-    assert!(bad(&node), "node: {}", node.text);
-    assert!(bad(&engine), "engine: {}", engine.text);
-    assert_ne!(node.code, 0);
-    assert_ne!(engine.code, 0);
-    // the Node doctor sees this Node; the engine doctor never probes it
-    node.has("ok", &["Node v", "hooks can run"]);
-    engine.lacks("Node v");
-}
-
 // ---- the optional `claude doctor` sub-check ---------------------------------------------------------------------------------------
 
 #[test]

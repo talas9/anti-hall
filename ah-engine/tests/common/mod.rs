@@ -5,7 +5,6 @@
 //! test if the process is still alive afterwards, so a leak is a test failure, never silent.
 #![allow(dead_code)] // each test binary uses a subset
 
-pub mod goldens;
 pub mod scale;
 #[allow(unused_imports)] // each test binary uses a subset
 pub use scale::{scaled, scaled_ms, time_scale};
