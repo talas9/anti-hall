@@ -297,6 +297,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),
     ("src/frame.rs", ".take(64)", "the longest reply-frame header scanned: a bound of the wire format"),
+    (
+        "src/jev/assist.rs",
+        "static ASKING_CHECK",
+        "a per-thread cell that starts empty and holds the name of the check now running (runtime state); it carries no configured value, so there is nothing to move to the defaults",
+    ),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     (
         "src/sql.rs",

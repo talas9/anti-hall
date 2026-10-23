@@ -62,7 +62,7 @@ pub(crate) fn flag(rest: &[String], name: &str) -> String {
 
 /// The words of `rest` that are not flags or flag values (`--flag value` pairs and bare `--flag`s are dropped).
 pub(crate) fn positionals(rest: &[String]) -> Vec<String> {
-    let valueless = ["--confirmed", "--json", "--all"];
+    let valueless = defaults::list("web.valueless_flags");
     let mut out = Vec::new();
     let mut skip = false;
     for a in rest {

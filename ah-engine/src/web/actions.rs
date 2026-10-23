@@ -11,7 +11,7 @@ use crate::{actlog, defaults, health, paths, procid};
 use serde_json::{Value, json};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// `Err((refused, why))`: refused (nothing attempted) or failed.
 pub type Done = Result<Value, (bool, String)>;
@@ -90,7 +90,7 @@ fn stop_recorded(rec: &Value) -> Result<bool, String> {
         if t.elapsed() >= wait {
             return Err(defaults::render("act.msg_still_running", &[("name", &name), ("pid", &pid), ("ms", &wait.as_millis())]));
         }
-        std::thread::sleep(poll.min(wait.saturating_sub(t.elapsed()).max(Duration::from_millis(1))));
+        std::thread::sleep(poll.min(wait.saturating_sub(t.elapsed()).max(defaults::millis("act.stop_poll_floor_ms"))));
     }
     Ok(true)
 }
@@ -116,7 +116,7 @@ fn execute(action: &str, pid: Option<u32>, confirmed: bool) -> Done {
     if action == "list" {
         return Ok(json!({"processes": records().iter().map(view).collect::<Vec<_>>()}));
     }
-    if !["status", "stop", "restart"].contains(&action) {
+    if !defaults::list("act.proc_actions").contains(&action) {
         return refuse(defaults::render("act.msg_unknown", &[("what", &action)]));
     }
     let Some(pid) = pid else { return refuse(defaults::text("act.msg_bad_pid").to_string()) };

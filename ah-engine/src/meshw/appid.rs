@@ -69,7 +69,7 @@ pub fn lookup(home: &Path, env: &Env, worktree: &str) -> Lookup {
 /// [`lookup`] with a bounded retry and growing waits (`devswarm_cli.sp_uuid_*`); stops at once on `Found` or `NoApp`.
 pub fn lookup_with_retry(home: &Path, env: &Env, worktree: &str) -> Lookup {
     let attempts = defaults::num("devswarm_cli.sp_uuid_attempts").max(1);
-    let growth = defaults::num("devswarm_cli.sp_uuid_backoff_pct").max(100);
+    let growth = defaults::num("devswarm_cli.sp_uuid_backoff_pct");
     let cap = defaults::num("devswarm_cli.sp_uuid_max_interval_ms");
     let mut wait = defaults::num("devswarm_cli.sp_uuid_interval_ms");
     let mut last = Lookup::Missing;

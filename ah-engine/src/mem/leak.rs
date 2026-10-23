@@ -17,8 +17,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-const MB: f64 = 1_048_576.0;
-const HOUR_S: f64 = 3600.0;
+/// Bytes per MB and seconds per hour as the sentinel counts them (`mem.bytes_per_mb`, `mem.seconds_per_hour`).
+fn mb() -> f64 {
+    defaults::num("mem.bytes_per_mb") as f64
+}
+fn hour_s() -> f64 {
+    defaults::num("mem.seconds_per_hour") as f64
+}
 
 /// One holder's reading in a sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,14 +171,14 @@ pub fn theil_sen(pts: &[(f64, f64)]) -> Option<f64> {
 }
 
 fn slope_of<'a>(samples: impl Iterator<Item = &'a Sample>, f: impl Fn(&Sample) -> f64) -> Option<f64> {
-    let pts: Vec<(f64, f64)> = samples.map(|s| (s.t_s as f64 / HOUR_S, f(s))).collect();
+    let pts: Vec<(f64, f64)> = samples.map(|s| (s.t_s as f64 / hour_s(), f(s))).collect();
     theil_sen(&pts)
 }
 
 /// Slope in MB/h of `f` over the window and over its newer half.
 fn window_slopes(win: &[&Sample], f: impl Fn(&Sample) -> f64 + Copy) -> (f64, f64) {
-    let all = slope_of(win.iter().copied(), f).unwrap_or(0.0) / MB;
-    let late = slope_of(win[win.len() / 2..].iter().copied(), f).unwrap_or(0.0) / MB;
+    let all = slope_of(win.iter().copied(), f).unwrap_or(0.0) / mb();
+    let late = slope_of(win[win.len() / 2..].iter().copied(), f).unwrap_or(0.0) / mb();
     (all, late)
 }
 
@@ -229,7 +234,7 @@ pub fn evaluate(ring: &[&Sample], now_s: u64, p: &Params) -> Verdict {
     let trusted = win.len() >= p.min_samples;
     let (fp, fp_late) = if win.len() >= 3 { window_slopes(&win, |s| s.footprint as f64) } else { (0.0, 0.0) };
     let (hp, hp_late) = if win.len() >= 3 { window_slopes(&win, |s| s.heap as f64) } else { (0.0, 0.0) };
-    let full = span_s * 100 >= p.window_s * p.full_pct;
+    let full = span_s as f64 >= p.window_s as f64 * p.full_pct as f64 / 100.0;
     let climbing = |all: f64, late: f64| all >= p.slope_mb_per_h && late >= p.slope_mb_per_h * p.flatten_pct / 100.0;
     let fp_hit = climbing(fp, fp_late);
     let hp_hit = climbing(hp, hp_late);
@@ -252,11 +257,11 @@ pub fn evaluate(ring: &[&Sample], now_s: u64, p: &Params) -> Verdict {
     if win.len() >= 3 {
         let names: BTreeSet<&str> = win.iter().flat_map(|s| s.holders.iter().map(|h| h.name.as_str())).collect();
         let mut cands: Vec<(String, f64)> =
-            names.into_iter().map(|n| (n.to_string(), slope_of(win.iter().copied(), |s| holder_bytes(s, n)).unwrap_or(0.0) / MB)).collect();
-        cands.push((defaults::text("mem.leak_name_other").to_string(), slope_of(win.iter().copied(), other_bytes).unwrap_or(0.0) / MB));
+            names.into_iter().map(|n| (n.to_string(), slope_of(win.iter().copied(), |s| holder_bytes(s, n)).unwrap_or(0.0) / mb())).collect();
+        cands.push((defaults::text("mem.leak_name_other").to_string(), slope_of(win.iter().copied(), other_bytes).unwrap_or(0.0) / mb()));
         cands.push((
             defaults::text("mem.leak_name_outside").to_string(),
-            slope_of(win.iter().copied(), |s| s.footprint as f64 - s.heap as f64).unwrap_or(0.0) / MB,
+            slope_of(win.iter().copied(), |s| s.footprint as f64 - s.heap as f64).unwrap_or(0.0) / mb(),
         ));
         let best = if trend || level != Level::Suspected {
             cands.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
@@ -362,11 +367,11 @@ pub fn observe(s: Sample) -> Option<Notice> {
 
 fn notice_for(v: &Verdict, ring: &VecDeque<Sample>) -> Notice {
     let last = ring.back();
-    let footprint = last.map_or(0, |s| s.footprint) / MB as u64;
-    let soft = defaults::num("mem.global_soft_bytes") / MB as u64;
+    let footprint = last.map_or(0, |s| s.footprint) / mb() as u64;
+    let soft = defaults::num("mem.global_soft_bytes") / mb() as u64;
     let top = v.top.as_ref().map_or_else(|| "?".to_string(), |t| t.name.clone());
     let text = if v.trend {
-        let hours = format!("{:.1}", v.span_s as f64 / HOUR_S);
+        let hours = format!("{:.1}", v.span_s as f64 / hour_s());
         let share = format!("{:.0}%", v.top.as_ref().map_or(0.0, |t| t.share_pct));
         let rate = format!("{:+.1}", v.top.as_ref().map_or(0.0, |t| t.mb_per_h));
         defaults::render(

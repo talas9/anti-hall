@@ -103,7 +103,7 @@ fn stall_check(env: &Env, a: &mut Agent) {
         a.waste.outcome_at = now;
     }
     a.waste.seen_progress = a.progress;
-    let hard_x = stall_lim("hard_factor_pct").max(100);
+    let hard_x = (stall_lim("hard_factor_pct") as f64).max(100.0) as u64;
     let pct = fmtn("pct");
     let min_ms = fmtn("ms_per_s") * 60;
     let mut parts: Vec<String> = Vec::new();

@@ -1780,7 +1780,7 @@ fn leak_sentinel(sh: &Arc<Shared>) {
     let Some(n) = crate::mem::leak::observe(crate::mem::leak::collect(now_s)) else { return };
     let line = match crate::mem::leak::write_evidence(sh.memory_with_ledger(), health::now_ms()) {
         Ok(p) => format!("{} [{}]", n.text, p.display()),
-        Err(e) => format!("{} [evidence not written: {e}]", n.text),
+        Err(e) => defaults::render("mem.leak_msg_evidence_failed", &[("text", &n.text), ("err", &e)]),
     };
     health::log_event("memory", "leak", &line);
     crate::agents::notify_coordinator(defaults::text("mem.leak_impact_kind"), &line);

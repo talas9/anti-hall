@@ -146,3 +146,109 @@ value = "restore <snapshot-dir>"
 doc = "Name of the per-kind session index file the lifecycle log maintains under the state directory."
 value = "INDEX.md"
 
+
+# ---- rc97: literals moved out of the engine source (owner rule: nothing hardcoded, nothing compiled) -------------------------
+
+[entry_audit.shebang_read_bytes]
+doc = "How many bytes of a file the entry audit reads to see whether it starts with an interpreter line (entry_audit.shebang)."
+value = 256
+unit = "bytes"
+min = 16
+max = 65536
+
+[mem.leak_msg_evidence_failed]
+doc = "The leak notice when its evidence file could not be written. Placeholders: text (the notice, mem.leak_msg_notice), err (why the write failed)."
+value = "{text} [evidence not written: {err}]"
+
+[mem.bytes_per_mb]
+doc = "Bytes in one megabyte as the leak sentinel counts them (1,048,576 = 2^20): converts a byte slope or footprint to MB."
+value = 1048576
+unit = "bytes"
+min = 1
+
+[mem.seconds_per_hour]
+doc = "Seconds in one hour: converts the leak sentinel's per-second slope to MB per hour."
+value = 3600
+unit = "s"
+min = 1
+
+[web.manage.msg_audit_not_written]
+doc = "The note a settings or rules change carries when its audit row could not be written and no other note exists. Placeholder: err."
+value = "audit not written: {err}"
+
+[web.manage.msg_audit_not_written_after]
+doc = "The note when the audit row could not be written and the change already carries a note. Placeholders: note (the existing note), err."
+value = "{note}; audit not written: {err}"
+
+[web.msg_query_no_source]
+doc = "Said when a dashboard query names a data source the engine does not have. Placeholder: what (the name asked for)."
+value = "no source '{what}'"
+
+[web.query_day_ms]
+doc = "Milliseconds in one day: converts the dashboard query window given in days to the millisecond clock the stores use."
+value = 86400000
+unit = "ms"
+min = 1
+
+[web.io_buckets]
+doc = "Number of latency buckets of the dashboard's served-call histogram; bucket b holds calls of 2^b up to 2^(b+1) microseconds and the last bucket takes everything slower."
+value = 16
+min = 2
+max = 64
+
+[web.valueless_flags]
+doc = "Flags of the dashboard's engine verbs that take no value, so the word after them is a positional argument, not their value."
+value = ["--confirmed", "--json", "--all"]
+
+[web.build_sha_bytes]
+doc = "How many leading bytes of the engine binary's SHA-256 the pulse shows as the build id (each byte is two hex digits; the deploy kit verifies the same figure)."
+value = 4
+min = 1
+max = 32
+
+[web.exit_unavailable]
+doc = "Exit code of the web CLI when the server binary is missing or did not come up (sysexits EX_UNAVAILABLE, 69, the code every unavailable verb of the engine uses)."
+value = 69
+min = 1
+max = 255
+
+[web.probe_connect_ms]
+doc = "How long the web CLI waits for the server's port to accept a connection before it treats the recorded server as gone."
+value = 500
+unit = "ms"
+min = 10
+
+[act.stop_poll_floor_ms]
+doc = "The shortest sleep between two looks at a process a stop is waiting on, so the last poll before the deadline never spins."
+value = 1
+unit = "ms"
+min = 1
+
+[act.proc_actions]
+doc = "The actions `proc <action> <pid>` accepts besides `list`."
+value = ["status", "stop", "restart"]
+
+[mesh_events.sql_messages]
+doc = "The query behind `CTL mesh-events` messages (heartbeats left out). Placeholder: order (ASC, or DESC for `latest=`). Parameters: ?1 the id after which to read, ?2 the row limit."
+value = "SELECT id, workspace_id, ts, sender, recipient, mtype, urgency, needs_reply, seq, length(body) FROM messages WHERE id > ?1 AND COALESCE(is_heartbeat, 0) = 0 ORDER BY id {order} LIMIT ?2"
+
+[mesh_events.sql_reads]
+doc = "The query behind `CTL mesh-events` read cursors. Parameter: ?1 the updated_at after which to read."
+value = "SELECT partition, ns, reader, value, updated_at FROM reader_cursors WHERE updated_at > ?1 ORDER BY updated_at"
+
+[mesh_events.sql_body]
+doc = "The query behind `CTL mesh-msg`. Parameter: ?1 the message id."
+value = "SELECT body FROM messages WHERE id = ?1"
+
+[mesh_write.known_block_skip]
+doc = "Keys of the read-side block that `inbox` leaves out of its own reply because it adds its own totals around them."
+value = ["meshGroupUnresolved", "meshGroupError", "totalsPartial"]
+
+[mesh_write.refusal_fields]
+doc = "Fields of an ensure refusal that carry the reason, tried in order; the first one present is the reason a pull was held."
+value = ["reason", "error"]
+
+[devswarm_parent.drift_cache_cwd_factor]
+doc = "How many times devswarm_parent.drift_cache_keys_max the per-file cwd cache may hold before it is emptied."
+value = 64
+min = 1

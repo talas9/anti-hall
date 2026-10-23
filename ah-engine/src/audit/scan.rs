@@ -45,7 +45,7 @@ pub fn shown(base: &Path, p: &Path) -> String {
 /// The first line of a file when it starts with the interpreter marker.
 pub fn shebang_line(p: &Path) -> Option<String> {
     let marker = defaults::text("entry_audit.shebang");
-    let mut buf = vec![0u8; 256];
+    let mut buf = vec![0u8; defaults::num("entry_audit.shebang_read_bytes") as usize];
     let n = fs::File::open(p).and_then(|mut f| f.read(&mut buf)).ok()?;
     buf.truncate(n);
     let text = String::from_utf8_lossy(&buf).into_owned();

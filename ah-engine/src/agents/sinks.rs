@@ -189,7 +189,9 @@ pub(crate) fn count(n: u64) -> String {
     let i = steps.iter().rposition(|u| n >= (*u).max(1) as u64).unwrap_or(0);
     let step = steps.get(i).copied().unwrap_or(1).max(1) as u64;
     let tenths = n * 10 / step;
-    let whole = if tenths < 100 && tenths % 10 != 0 { format!("{}.{}", tenths / 10, tenths % 10) } else { (tenths / 10).to_string() };
+    let (units, frac) = (tenths / 10, tenths % 10);
+    let decimal_below = fmt.get("count_decimal_below_tenths").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    let whole = if tenths < decimal_below && frac != 0 { format!("{units}.{frac}") } else { units.to_string() };
     format!("{whole}{}", names.get(i).copied().unwrap_or(""))
 }
 

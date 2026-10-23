@@ -42,7 +42,7 @@ fn build_sha() -> &'static str {
     static SHA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SHA.get_or_init(|| {
         let Some(bytes) = std::env::current_exe().ok().and_then(|p| std::fs::read(p).ok()) else { return String::new() };
-        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().take(4).map(|b| format!("{b:02x}")).collect()
+        ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().take(crate::defaults::num("web.build_sha_bytes") as usize).map(|b| format!("{b:02x}")).collect()
     })
 }
 

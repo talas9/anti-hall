@@ -488,7 +488,7 @@ fn head_cwd_cached(file: &Path) -> R<Option<String>> {
     if let Some(id) = id {
         let mut g = CWDS.lock().unwrap_or_else(|e| e.into_inner());
         let c = g.get_or_insert_with(Default::default);
-        if c.len() >= defaults::num("devswarm_parent.drift_cache_keys_max") as usize * 64 {
+        if c.len() >= defaults::num("devswarm_parent.drift_cache_keys_max") as usize * defaults::num("devswarm_parent.drift_cache_cwd_factor") as usize {
             c.clear();
         }
         c.insert(id, cwd.clone());
