@@ -129,6 +129,21 @@
   .ahg-btns button { min-height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--ahg-line); background: transparent; color: var(--ahg-text); font: 600 12px var(--ahg-sans); cursor: pointer; }
   .ahg-btns button.destructive { border-color: color-mix(in oklch, var(--ahg-bad) 60%, transparent); background: color-mix(in oklch, var(--ahg-bad) 12%, transparent); color: var(--ahg-bad); }
 
+  /* live effects (fx.rs): the card of a node an event touched. Full animates it; Lite and reduced motion keep the static highlight. */
+  .ahg-wires path[data-busy="true"] { stroke-width: 3.2; }
+  .ahg-node[data-fx] {
+    border-color: var(--fx-c, var(--ahg-wire-hot));
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--fx-c, var(--ahg-wire-hot)) 50%, transparent), 0 0 30px color-mix(in oklch, var(--fx-c, var(--ahg-wire-hot)) 60%, transparent);
+  }
+  @keyframes ahgFxA { from { transform: scale(1.07); } to { transform: scale(1); } }
+  @keyframes ahgFxB { from { transform: scale(1.07); } to { transform: scale(1); } }
+  @keyframes ahgShakeA { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  @keyframes ahgShakeB { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  .ahg[data-tier="full"] .ahg-node[data-fx$="-a"] { animation: ahgFxA .5s ease-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx$="-b"] { animation: ahgFxB .5s ease-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-a"] { animation: ahgShakeA .45s ease-in-out; }
+  .ahg[data-tier="full"] .ahg-node[data-fx^="shake"][data-fx$="-b"] { animation: ahgShakeB .45s ease-in-out; }
+
   @keyframes ahgPulse {
     0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--k) 55%, transparent); }
     70% { box-shadow: 0 0 0 14px transparent; }

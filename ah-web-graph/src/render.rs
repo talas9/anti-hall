@@ -13,13 +13,20 @@ pub struct Palette {
     pub particle: [f32; 4],
 }
 
+/// One wire to draw: its polyline, whether it is hot, and its width as a multiple of the base width.
+pub struct WireRef<'a> {
+    pub pts: &'a [[f32; 2]],
+    pub hot: bool,
+    pub mult: f32,
+}
+
 pub struct Frame<'a> {
     pub cam: Cam,
     /// Canvas size in CSS px.
     pub w: f32,
     pub h: f32,
     pub dpr: f32,
-    pub wires: &'a [(&'a [[f32; 2]], bool)],
+    pub wires: &'a [WireRef<'a>],
     pub parts: &'a [Particle],
     pub pal: Palette,
     pub width: f32,
@@ -45,29 +52,35 @@ impl C2d {
         let sx = |p: &[f32; 2]| ((p[0] * f.cam.k + f.cam.x) as f64, (p[1] * f.cam.k + f.cam.y) as f64);
         c.set_line_cap("round");
         c.set_line_join("round");
-        for hot in [false, true] {
-            c.set_stroke_style_str(&crate::color::rgba_css(if hot { f.pal.hot } else { f.pal.wire }));
-            c.set_line_width((f.width * f.cam.k.max(0.6)) as f64);
+        for w in f.wires {
+            c.set_stroke_style_str(&crate::color::rgba_css(if w.hot { f.pal.hot } else { f.pal.wire }));
+            c.set_line_width((f.width * w.mult * f.cam.k.max(0.6)) as f64);
             c.begin_path();
-            for (pts, h) in f.wires.iter().filter(|(_, h)| *h == hot) {
-                let _ = h;
-                let (x, y) = sx(&pts[0]);
-                c.move_to(x, y);
-                for p in &pts[1..] {
-                    let (x, y) = sx(p);
-                    c.line_to(x, y);
-                }
+            let (x, y) = sx(&w.pts[0]);
+            c.move_to(x, y);
+            for p in &w.pts[1..] {
+                let (x, y) = sx(p);
+                c.line_to(x, y);
             }
             c.stroke();
         }
         for hot in [false, true] {
             c.set_fill_style_str(&crate::color::rgba_css(if hot { f.pal.hot } else { f.pal.particle }));
             c.begin_path();
-            for p in f.parts.iter().filter(|p| p.hot == hot) {
+            for p in f.parts.iter().filter(|p| p.hot == hot && p.col.is_none()) {
                 let (x, y) = sx(&p.pos);
-                c.move_to(x + (f.psize * f.cam.k) as f64, y);
-                let _ = c.arc(x, y, (f.psize * f.cam.k.max(0.6)) as f64, 0.0, std::f64::consts::TAU);
+                let r = (f.psize * f.cam.k.max(0.6)) as f64;
+                c.move_to(x + r, y);
+                let _ = c.arc(x, y, r, 0.0, std::f64::consts::TAU);
             }
+            c.fill();
+        }
+        for p in f.parts.iter().filter(|p| p.col.is_some()) {
+            let Some(col) = p.col else { continue };
+            c.set_fill_style_str(&crate::color::rgba_css(col));
+            c.begin_path();
+            let (x, y) = sx(&p.pos);
+            let _ = c.arc(x, y, (f.psize * p.r * f.cam.k.max(0.6)) as f64, 0.0, std::f64::consts::TAU);
             c.fill();
         }
     }
@@ -290,11 +303,11 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
     fn tessellate(f: &Frame) -> Vec<Vertex> {
         let k = f.cam.k;
         let sx = |p: &[f32; 2]| [p[0] * k + f.cam.x, p[1] * k + f.cam.y];
-        let half = f.width * k.max(0.6) * 0.5 + 0.75;
         let mut v = Vec::new();
-        for (pts, hot) in f.wires {
-            let col = if *hot { f.pal.hot } else { f.pal.wire };
-            for s in pts.windows(2) {
+        for w in f.wires {
+            let half = f.width * w.mult * k.max(0.6) * 0.5 + 0.75;
+            let col = if w.hot { f.pal.hot } else { f.pal.wire };
+            for s in w.pts.windows(2) {
                 let (a, b) = (sx(&s[0]), sx(&s[1]));
                 let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
                 let len = (dx * dx + dy * dy).sqrt().max(1e-4);
@@ -305,10 +318,10 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
                 }
             }
         }
-        let r = f.psize * k.max(0.6) * 2.2;
         for p in f.parts {
+            let r = f.psize * p.r * k.max(0.6) * 2.2;
             let c = sx(&p.pos);
-            let col = if p.hot { f.pal.hot } else { f.pal.particle };
+            let col = p.col.unwrap_or(if p.hot { f.pal.hot } else { f.pal.particle });
             for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0f32)] {
                 v.push(vert([c[0] + dx * r, c[1] + dy * r], [dx, dy], col, 1.0));
             }

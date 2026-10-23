@@ -99,6 +99,10 @@ pub fn along(pts: &[[f32; 2]], t: f32) -> [f32; 2] {
 pub struct Particle {
     pub pos: [f32; 2],
     pub hot: bool,
+    /// Own colour (an effect particle); `None` takes the palette's particle colour.
+    pub col: Option<[f32; 4]>,
+    /// Size multiple of the budget's particle size.
+    pub r: f32,
 }
 
 /// Flow particles at time `t_s` seconds. Density follows the edge rate; the total is capped by the budget.
@@ -120,7 +124,7 @@ pub fn particles(data: &GraphData, wires: &[WireGeom], hot: &dyn Fn(usize) -> bo
         for i in 0..n {
             let ph = i as f32 / n as f32 + wi as f32 * 0.137;
             let t = (t_s * b.particle_speed * (if h { 1.6 } else { 1.0 }) + ph).fract();
-            out.push(Particle { pos: along(&w.pts, t), hot: h });
+            out.push(Particle { pos: along(&w.pts, t), hot: h, col: None, r: 1.0 });
         }
         if out.len() >= b.particles_max {
             break;

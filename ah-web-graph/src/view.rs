@@ -295,6 +295,7 @@ pub fn Graph(
     #[prop(optional)] highlight: Option<Signal<Vec<String>>>,
     #[prop(optional)] selected: Option<RwSignal<Option<String>>>,
     #[prop(optional)] panel: Option<Callback<String, AnyView>>,
+    #[prop(optional)] fx: Option<crate::fx::FxBus>,
 ) -> impl IntoView {
     let inst = INSTANCES.fetch_add(1, Ordering::Relaxed);
     let full = tier == Tier::Full && cfg!(feature = "full");
@@ -429,13 +430,19 @@ pub fn Graph(
         cb.forget();
     });
 
+    // ---- live effects
+    let active: Shared<Vec<crate::fx::Active>> = shared(Vec::new());
+    #[cfg(feature = "full")]
+    let fx_pacer: Shared<Option<Rc<crate::pacer::Pacer>>> = shared(None);
+
     // ---- Full tier: canvas + pacer
     #[cfg(feature = "full")]
     let canvas_ref = NodeRef::<html::Canvas>::new();
     #[cfg(feature = "full")]
     if full {
         use crate::render::{self, Backend, C2d, Frame, Palette};
-        let kick: Shared<Option<Rc<crate::pacer::Pacer>>> = shared(None);
+        let kick: Shared<Option<Rc<crate::pacer::Pacer>>> = fx_pacer.clone();
+        let active = active.clone();
         let be: Shared<Option<Backend>> = shared(None);
         let pal = Palette {
             wire: crate::color::parse_oklch(&cfg.theme.wire).unwrap_or([1.0; 4]),
@@ -449,19 +456,35 @@ pub fn Graph(
             }
             let Some(canvas) = canvas_ref.get() else { return false };
             let (be, cfgc) = (be2.clone(), cfgc.clone());
-            let draw: Box<dyn FnMut(f64)> = Box::new({
-                let (be, cfgc) = (be.clone(), cfgc.clone());
+            let draw: Box<dyn FnMut(f64) -> bool> = Box::new({
+                let (be, cfgc, active) = (be.clone(), cfgc.clone(), active.clone());
                 move |t_ms: f64| {
                     let (w, h) = vp.get_untracked();
                     let dpr = web_sys::window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0) as f32;
                     let ws = wires.get_untracked();
                     let d = data.get_untracked();
-                    let wl: Vec<(&[[f32; 2]], bool)> = ws.iter().map(|g| (g.pts.as_slice(), is_hot(g.edge))).collect();
-                    let parts = geom::particles(&d, &ws, &is_hot, (t_ms / 1000.0) as f32, &cfgc);
+                    let fxc = &cfgc.fx;
+                    let wl: Vec<render::WireRef> = ws
+                        .iter()
+                        .map(|g| {
+                            let rate = d.edges[g.edge].rate;
+                            render::WireRef { pts: g.pts.as_slice(), hot: is_hot(g.edge) || rate >= fxc.glow_rate, mult: (1.0 + rate * fxc.wire_gain).min(fxc.wire_gain_max) }
+                        })
+                        .collect();
+                    let mut parts = geom::particles(&d, &ws, &is_hot, (t_ms / 1000.0) as f32, &cfgc);
+                    let more = {
+                        let mut act = active.borrow_mut();
+                        let mut fp = Vec::new();
+                        act.retain(|a| crate::fx::frame(a, t_ms, fxc, &mut fp));
+                        fp.truncate(fxc.particles_max);
+                        parts.extend(fp);
+                        !act.is_empty()
+                    };
                     let frame = Frame { cam: cam.get_untracked(), w, h, dpr, wires: &wl, parts: &parts, pal, width: cfgc.budget.wire_width, psize: cfgc.budget.particle_size };
                     if let Some(b) = be.borrow_mut().as_mut() {
                         b.draw(&frame);
                     }
+                    more
                 }
             });
             let pacer = crate::pacer::Pacer::new(cfgc.budget.clone(), draw);
@@ -519,6 +542,47 @@ pub fn Graph(
             }
         });
     }
+    // ---- live effects: the node highlight in both tiers, the particles in the Full tier
+    if let Some(bus) = fx.clone() {
+        let (cfgc, active, moving, weak) = (cfg.clone(), active.clone(), !crate::fx::reduced_motion(), bus.weak());
+        #[cfg(feature = "full")]
+        let pacer = fx_pacer.clone();
+        let wake = Rc::new(move || {
+            let Some(root) = view_ref.get_untracked() else { return };
+            let root: web_sys::Element = root.into();
+            let now_ms = web_sys::window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0);
+            for ev in weak.drain() {
+                for (i, id) in ev.path.iter().enumerate() {
+                    // a travelling particle reaches the next stop after one leg; Lite has no travel, so the stops flash at once
+                    let delay = if full && moving && ev.kind == crate::fx::FxKind::Decision { (i as f32 * cfgc.fx.travel_ms) as i32 } else { 0 };
+                    let color = if i == 0 && ev.kind == crate::fx::FxKind::Decision { ev.travel_color.clone() } else { ev.color.clone() };
+                    let (root, id, ms, kind) = (root.clone(), id.clone(), cfgc.fx.flash_ms, ev.kind);
+                    if delay == 0 {
+                        crate::fx::flash(&root, &id, kind, &color, ms);
+                    } else {
+                        let cb = Closure::once_into_js(move || crate::fx::flash(&root, &id, kind, &color, ms));
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), delay);
+                        }
+                    }
+                }
+                #[cfg(feature = "full")]
+                if full && moving {
+                    let (d, p, w) = (data.get_untracked(), pos.get_untracked(), wires.get_untracked());
+                    if let Some(a) = crate::fx::start(&ev, &d, &w, &p, &cfgc, now_ms) {
+                        active.borrow_mut().push(a);
+                        if let Some(pc) = pacer.borrow().as_ref() {
+                            pc.set_fx(true);
+                        }
+                    }
+                }
+                #[cfg(not(feature = "full"))]
+                let _ = (&active, now_ms);
+            }
+        });
+        bus.attach(cfg.fx.queue_max, wake);
+    }
+    let fx_style = crate::fx::colour_rules(&cfg.fx);
     let svg_wires = move || !full || backend.get() == "svg";
 
     // Show/hide the popovers when their state changes. `popover=auto` gives light dismiss + Esc; `toggle` syncs back.
@@ -630,6 +694,7 @@ pub fn Graph(
                 .collect_view()
         }
     };
+    let cfg_fx_glow = cfg.fx.glow_rate;
     let svg_layer = move || {
         svg_wires().then(|| {
             view! {
@@ -639,7 +704,7 @@ pub fn Graph(
                         wires.get().into_iter().map(|w| {
                             let e = &d.edges[w.edge];
                             let hot = hl.with(|h| h.contains(&e.from) && h.contains(&e.to));
-                            view! { <path d=wire_d(&w) data-hot=hot.to_string() /> }
+                            view! { <path d=wire_d(&w) data-hot=(hot || e.rate >= cfg_fx_glow).to_string() data-busy=(e.rate >= cfg_fx_glow).to_string() /> }
                         }).collect_view()
                     }}
                 </svg>
@@ -813,6 +878,7 @@ pub fn Graph(
                 </svg>
             </div>
             {panel_view}
+            <style>{fx_style}</style>
             <div node_ref=menu_ref popover="auto" class="ahg-pop ahg-menu" role="menu" aria-label=t_menu style=menu_style
                 on:toggle=move |ev| if closed(&ev) { menu.set(None) }>
                 {menu_items}

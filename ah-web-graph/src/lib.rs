@@ -2,6 +2,7 @@
 //! Rust API: `Graph` (a Leptos component). JS API for the bundle: `mount_graph`.
 
 pub mod color;
+pub mod fx;
 pub mod geom;
 pub mod layout;
 pub mod model;
@@ -12,6 +13,7 @@ pub mod render;
 pub mod view;
 
 pub use model::*;
+pub use fx::{FxBus, FxEvent, FxKind};
 pub use view::{ActionCall, Graph};
 
 use leptos::prelude::*;

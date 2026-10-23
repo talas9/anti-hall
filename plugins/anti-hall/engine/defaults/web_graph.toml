@@ -416,3 +416,141 @@ value = "/s"
 [web.graph.texts.tier_lite_note]
 doc = "UI text 'tier_lite_note' ({action} and {node} are replaced)."
 value = "Lite view: static, no animation"
+
+[web.graph.fx.colors.allow]
+doc = "Live effect colour 'allow' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.84 0.14 160)"
+
+[web.graph.fx.colors.advise]
+doc = "Live effect colour 'advise' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.82 0.15 75)"
+
+[web.graph.fx.colors.block]
+doc = "Live effect colour 'block' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.69 0.19 12)"
+
+[web.graph.fx.colors.inject]
+doc = "Live effect colour 'inject' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.76 0.13 245)"
+
+[web.graph.fx.colors.travel]
+doc = "Live effect colour 'travel' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.90 0.08 215)"
+
+[web.graph.fx.colors.refused]
+doc = "Live effect colour 'refused' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.69 0.19 12)"
+
+[web.graph.fx.colors.action]
+doc = "Live effect colour 'action' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.83 0.13 210)"
+
+[web.graph.fx.colors.restart]
+doc = "Live effect colour 'restart' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.80 0.14 300)"
+
+[web.graph.fx.colors.config]
+doc = "Live effect colour 'config' (decisions: allow / advise / block / inject; 'travel' is the first leg of a decision; the rest colour action effects)."
+value = "oklch(0.84 0.14 160)"
+
+[web.graph.fx.particles_max]
+doc = "Most effect particles drawn in one frame."
+value = 360
+min = 0
+max = 5000
+
+[web.graph.fx.queue_max]
+doc = "Effects held while the page is busy; the oldest are dropped beyond it."
+value = 200
+min = 1
+max = 5000
+
+[web.graph.fx.travel_ms]
+doc = "Time a decision particle takes to cross one leg (event to check, check to decision)."
+value = 380.0
+
+[web.graph.fx.travel_trail]
+doc = "Trail particles behind the head of a travelling decision."
+value = 6
+min = 0
+max = 32
+
+[web.graph.fx.travel_trail_gap]
+doc = "Spacing of the trail along the leg, as a fraction of its length."
+value = 0.035
+
+[web.graph.fx.burst_ms]
+doc = "Duration of the burst at a stop."
+value = 650.0
+
+[web.graph.fx.burst_count]
+doc = "Particles in a burst."
+value = 22
+min = 4
+max = 96
+
+[web.graph.fx.burst_radius]
+doc = "Radius a burst spreads to, in graph units."
+value = 95.0
+
+[web.graph.fx.burst_size]
+doc = "Particle size of a burst, as a multiple of the base particle size."
+value = 1.1
+
+[web.graph.fx.ripple_ms]
+doc = "Duration of a ripple (an action that went through)."
+value = 900.0
+
+[web.graph.fx.ripple_count]
+doc = "Particles in a ripple ring."
+value = 30
+min = 6
+max = 120
+
+[web.graph.fx.ripple_radius]
+doc = "Radius a ripple spreads to, in graph units."
+value = 130.0
+
+[web.graph.fx.ring_ms]
+doc = "Duration of one ring of a ring pulse (a restart or a config change)."
+value = 800.0
+
+[web.graph.fx.ring_count]
+doc = "Particles in a ring-pulse ring."
+value = 34
+min = 6
+max = 120
+
+[web.graph.fx.ring_radius]
+doc = "Radius a ring pulse spreads to, in graph units."
+value = 150.0
+
+[web.graph.fx.shake_ms]
+doc = "Duration of the refused-action ring (the card shakes by CSS)."
+value = 500.0
+
+[web.graph.fx.flash_ms]
+doc = "How long a node keeps its highlight after an effect, milliseconds. The whole effect in the Lite tier."
+value = 650
+min = 100
+max = 10000
+unit = "ms"
+
+[web.graph.fx.glow_rate]
+doc = "An edge carrying at least this many messages per second is drawn hot."
+value = 1.5
+
+[web.graph.fx.wire_gain]
+doc = "Extra wire width per message per second."
+value = 0.18
+
+[web.graph.fx.wire_gain_max]
+doc = "Largest wire width, as a multiple of the base width."
+value = 3.0
+
+[web.graph.budget.fps_fx]
+doc = "Frame rate while a live effect is on screen (the page falls back to the ambient rate when none is)."
+value = 30
+min = 1
+max = 120
+unit = "fps"

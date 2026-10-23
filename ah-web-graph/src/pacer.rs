@@ -1,5 +1,6 @@
 //! Frame pacing for the Full tier. Three states, all from the budget in config:
 //!   interact  - input within `interact_hold_ms`: requestAnimationFrame, capped at `fps_interact`
+//!   effects   - a live effect is being drawn: setTimeout at `fx_fps`
 //!   ambient   - nothing moving but flow particles / a hot path exist: setTimeout at `fps_ambient`
 //!   idle      - no motion, or the tab is hidden: no timer at all (0 fps, 0 wakeups)
 
@@ -10,11 +11,12 @@ use wasm_bindgen::prelude::*;
 
 pub struct Pacer {
     budget: Budget,
-    draw: RefCell<Box<dyn FnMut(f64)>>,
+    draw: RefCell<Box<dyn FnMut(f64) -> bool>>,
     last_input: Cell<f64>,
     last_frame: Cell<f64>,
     pending: Cell<bool>,
     ambient: Cell<bool>,
+    fx: Cell<bool>,
     hidden: Cell<bool>,
     tick: RefCell<Option<Closure<dyn FnMut()>>>,
 }
@@ -24,7 +26,7 @@ fn now() -> f64 {
 }
 
 impl Pacer {
-    pub fn new(budget: Budget, draw: Box<dyn FnMut(f64)>) -> Rc<Self> {
+    pub fn new(budget: Budget, draw: Box<dyn FnMut(f64) -> bool>) -> Rc<Self> {
         let p = Rc::new(Self {
             budget,
             draw: RefCell::new(draw),
@@ -32,6 +34,7 @@ impl Pacer {
             last_frame: Cell::new(0.0),
             pending: Cell::new(false),
             ambient: Cell::new(false),
+            fx: Cell::new(false),
             hidden: Cell::new(web_sys::window().and_then(|w| w.document()).map(|d| d.hidden()).unwrap_or(false)),
             tick: RefCell::new(None),
         });
@@ -71,6 +74,14 @@ impl Pacer {
         }
     }
 
+    /// A live effect is on screen (or just ended): run at the effect rate until the draw callback says it is over.
+    pub fn set_fx(self: &Rc<Self>, on: bool) {
+        self.fx.set(on);
+        if on {
+            self.schedule();
+        }
+    }
+
     fn interacting(&self, t: f64) -> bool {
         t - self.last_input.get() < self.budget.interact_hold_ms as f64
     }
@@ -82,6 +93,8 @@ impl Pacer {
         let t = now();
         let (interval, raf) = if self.interacting(t) {
             (1000.0 / self.budget.fps_interact.max(1) as f64, true)
+        } else if self.fx.get() && self.budget.fps_fx > 0 {
+            (1000.0 / self.budget.fps_fx as f64, false)
         } else if self.ambient.get() && self.budget.fps_ambient > 0 {
             (1000.0 / self.budget.fps_ambient as f64, false)
         } else {
@@ -107,7 +120,8 @@ impl Pacer {
         }
         let t = now();
         self.last_frame.set(t);
-        (self.draw.borrow_mut())(t);
+        let more = (self.draw.borrow_mut())(t);
+        self.fx.set(more);
         self.schedule();
     }
 }

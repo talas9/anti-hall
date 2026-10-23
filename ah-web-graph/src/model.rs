@@ -103,6 +103,8 @@ pub struct Theme {
 pub struct Budget {
     pub fps_interact: u32,
     pub fps_ambient: u32,
+    /// Frame rate while a live effect is on screen.
+    pub fps_fx: u32,
     /// How long after the last input the 60 fps mode is held.
     pub interact_hold_ms: u32,
     pub particles_max: usize,
@@ -165,9 +167,43 @@ pub struct Texts {
     pub tier_lite_note: String,
 }
 
+/// Live effects (decisions travelling the graph, action pulses). Every value comes from `web.graph.fx.*`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct FxCfg {
+    /// Effect colour by key (`allow`, `advise`, `block`, `inject`, `travel`, ...), OKLCH; the caller names the key in an event.
+    pub colors: HashMap<String, String>,
+    /// Hard cap on effect particles drawn in one frame.
+    pub particles_max: usize,
+    /// Events held while the page is busy; the oldest are dropped past it.
+    pub queue_max: usize,
+    /// Time one particle takes to cross one segment of a path.
+    pub travel_ms: f32,
+    pub travel_trail: usize,
+    pub travel_trail_gap: f32,
+    pub burst_ms: f32,
+    pub burst_count: usize,
+    pub burst_radius: f32,
+    pub burst_size: f32,
+    pub ripple_ms: f32,
+    pub ripple_count: usize,
+    pub ripple_radius: f32,
+    pub ring_ms: f32,
+    pub ring_count: usize,
+    pub ring_radius: f32,
+    pub shake_ms: f32,
+    /// How long a node keeps its highlight after an effect (also the Lite tier's whole effect).
+    pub flash_ms: u32,
+    /// An edge with at least this rate (messages/s) is drawn as hot.
+    pub glow_rate: f32,
+    /// Wire width gain per message/s, and the largest multiple.
+    pub wire_gain: f32,
+    pub wire_gain_max: f32,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphConfig {
     pub theme: Theme,
+    pub fx: FxCfg,
     pub budget: Budget,
     pub geometry: Geometry,
     pub layout: LayoutCfg,
