@@ -371,6 +371,18 @@ min = 10
 doc = "The kind shown for a parent agent that a sub-agent names but the tracker does not list."
 value = "workspace"
 
+[web.project_workspace_file]
+doc = "The file in a DevSwarm workspace set's folder (the first segment after the workspace marker) that names the repository the set belongs to: a checkout that is gone is still grouped under that repository's project."
+value = ".devswarm.code-workspace"
+
+[web.project_workspace_folders]
+doc = "The key of that file's list of folders; the first one is the repository."
+value = "folders"
+
+[web.project_workspace_path]
+doc = "The key of a folder entry's path."
+value = "path"
+
 [web.placeholder_state]
 doc = "The state shown for such a parent."
 value = "waiting"

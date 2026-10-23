@@ -98,6 +98,8 @@ struct TreeRow {
     /// The heading's name and how many agents it holds (live, all).
     project: Option<(String, usize, usize)>,
     kids: bool,
+    /// The tree guides in front of the name, one per level below the top agent (see `Guides`).
+    guides: Vec<u8>,
     /// " #2" ... for an agent whose siblings carry the same name and kind.
     suffix: String,
 }
@@ -135,7 +137,7 @@ fn flatten(kind_order: &[String], agents: &[Agent], collapsed: &HashSet<String>)
         let live = members.iter().filter(|a| !a.placeholder && a.state == "running" && !a.idle_shell).count();
         let key = format!("p:{root}");
         let open = !collapsed.contains(&key);
-        out.push(TreeRow { key, depth: 0, agent: None, project: Some((members[0].project_name.clone(), live, members.iter().filter(|a| !a.placeholder).count())), kids: !members.is_empty(), suffix: String::new() });
+        out.push(TreeRow { key, depth: 0, agent: None, project: Some((members[0].project_name.clone(), live, members.iter().filter(|a| !a.placeholder).count())), kids: !members.is_empty(), guides: Vec::new(), suffix: String::new() });
         if !open {
             continue;
         }
@@ -154,18 +156,22 @@ fn flatten(kind_order: &[String], agents: &[Agent], collapsed: &HashSet<String>)
                 })
                 .collect()
         };
-        let mut stack: Vec<(&Agent, usize, String)> = roots.iter().zip(suffixes(&roots)).map(|(a, s)| (*a, 1usize, s)).rev().collect();
-        while let Some((a, d, suffix)) = stack.pop() {
+        let mut stack: Vec<(&Agent, usize, String, Vec<u8>, Vec<u8>)> = roots.iter().zip(suffixes(&roots)).map(|(a, s)| (*a, 1usize, s, Vec::new(), Vec::new())).rev().collect();
+        while let Some((a, d, suffix, guides, carry)) = stack.pop() {
             if !seen.insert(a.id.as_str()) {
                 continue; // a parent cycle in the data must not loop
             }
             let children = kids.get(a.id.as_str()).cloned().unwrap_or_default();
             let akey = format!("a:{}", a.id);
             let open = !collapsed.contains(&akey);
-            out.push(TreeRow { key: akey, depth: d, agent: Some(a.id.clone()), project: None, kids: !children.is_empty(), suffix });
+            out.push(TreeRow { key: akey, depth: d, agent: Some(a.id.clone()), project: None, kids: !children.is_empty(), guides, suffix });
             if open {
                 let sfx = suffixes(&children);
-                stack.extend(children.iter().zip(sfx).map(|(k, s)| (*k, d + 1, s)).rev());
+                let n = children.len();
+                stack.extend(children.iter().zip(sfx).enumerate().map(|(i, (k, s))| {
+                    let last = i + 1 == n;
+                    (*k, d + 1, s, [carry.clone(), vec![if last { 3u8 } else { 2 }]].concat(), [carry.clone(), vec![if last { 0u8 } else { 1 }]].concat())
+                }).rev());
             }
         }
     }
@@ -768,9 +774,16 @@ fn ConfirmBox(boot: Arc<Boot>) -> impl IntoView {
     }
 }
 
+/// The guide lines in front of a name in any tree: per level a vertical line carried down (pipe), an elbow (last child) or a tee
+/// (a child with later siblings). Drawn by CSS from the level's code (0 gap, 1 pipe, 2 branch, 3 last); one look for every tree.
+#[component]
+pub(crate) fn Guides(guides: Vec<u8>) -> impl IntoView {
+    view! { <span class="tg" aria-hidden="true">{guides.into_iter().map(|g| view! { <i class=format!("tg-{g}")></i> }).collect_view()}</span> }
+}
+
 /// The fold button of a row that has something nested under it; an empty spacer of the same width otherwise.
 #[component]
-fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>>, label_key: &'static str) -> impl IntoView {
+pub(crate) fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>>, label_key: &'static str) -> impl IntoView {
     if !kids {
         return view! { <span class="twist-sp"></span> }.into_any();
     }
@@ -787,7 +800,7 @@ fn Twist(key: String, kids: bool, collapsed: RwSignal<HashSet<String>>, label_ke
 #[component]
 fn TreeLine(row: TreeRow, by_id: Memo<HashMap<String, Agent>>, current: Memo<Option<Agent>>, collapsed: RwSignal<HashSet<String>>) -> impl IntoView {
     match (row.agent.clone(), row.project.clone()) {
-        (Some(id), _) => view! { <Row id=id key=row.key.clone() depth=row.depth kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
+        (Some(id), _) => view! { <Row id=id key=row.key.clone() depth=row.depth guides=row.guides.clone() kids=row.kids suffix=row.suffix.clone() by_id=by_id current=current collapsed=collapsed /> }.into_any(),
         (None, Some((name, live, all))) => view! {
             <div class="row-wrap proj-row">
                 <Twist key=row.key.clone() kids=row.kids collapsed=collapsed label_key="proj_toggle" />
@@ -804,6 +817,7 @@ fn Row(
     id: String,
     key: String,
     depth: usize,
+    guides: Vec<u8>,
     kids: bool,
     suffix: String,
     by_id: Memo<HashMap<String, Agent>>,
@@ -827,7 +841,8 @@ fn Row(
     let placeholder = move || a.get().is_some_and(|a| a.placeholder);
     view! {
         <div class="row-wrap">
-            <span class="indent" style=format!("flex-basis:{}px", depth * 20)></span>
+            <span class="indent"></span>
+            <Guides guides=guides />
             <Twist key=key kids=kids collapsed=collapsed label_key="agent_toggle" />
             <button type="button" class=move || if is_sel() { "row sel" } else { "row" } on:click=pick>
                 <span class=move || a.get().map(|a| format!("dot {}", role_class(&a))).unwrap_or_default()></span>

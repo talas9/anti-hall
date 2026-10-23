@@ -60,14 +60,6 @@ struct LevelRule {
     words: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct TreeGlyphs {
-    branch: String,
-    last: String,
-    pipe: String,
-    gap: String,
-}
-
 /// Every `web.ops.*` value. No field has a default: a missing or mistyped key is a load error naming it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ops {
@@ -98,7 +90,6 @@ pub struct Ops {
     cost_ctl: String,
     cost_key: String,
     cost_rows: usize,
-    cost_tree: TreeGlyphs,
     cost_name_fallback: String,
     cost_name_unknown: String,
     poll_accounts_ms: u64,
@@ -374,19 +365,20 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
         kids.values_mut().for_each(by_tokens);
         let mut seen = std::collections::HashSet::new();
         // depth-first; `lead` is what every descendant's line starts with
-        let mut stack: Vec<(usize, String, String)> = roots.iter().chain(&orphans).rev().map(|&i| (i, String::new(), String::new())).collect();
+        let mut stack: Vec<(usize, Vec<u8>, Vec<u8>)> = roots.iter().chain(&orphans).rev().map(|&i| (i, Vec::new(), Vec::new())).collect();
         while let Some((i, prefix, lead)) = stack.pop() {
             if !seen.insert(i) {
                 continue;
             }
             let mut row = rows[i].clone();
-            row.prefix = prefix;
-            out.push(row);
+            row.guides = prefix;
             let children = kids.get(&i).map_or(&[][..], Vec::as_slice);
+            row.kids = !children.is_empty();
+            out.push(row);
             for (n, &c) in children.iter().enumerate().rev() {
                 let last = n + 1 == children.len();
-                let (glyph, carry) = if last { (&o.cost_tree.last, &o.cost_tree.gap) } else { (&o.cost_tree.branch, &o.cost_tree.pipe) };
-                stack.push((c, format!("{lead}{glyph}"), format!("{lead}{carry}")));
+                let (glyph, carry) = if last { (3u8, 0u8) } else { (2u8, 1u8) };
+                stack.push((c, [lead.clone(), vec![glyph]].concat(), [lead.clone(), vec![carry]].concat()));
             }
         }
     }

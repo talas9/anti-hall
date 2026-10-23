@@ -308,3 +308,13 @@ html { scrollbar-gutter: stable; }
   .nav-item { flex: 0 0 auto; width: 64px; min-height: 48px; }
   .main { padding: 14px 12px; }
 }
+
+/* One look for every tree: a fixed indent per level, thin muted guide lines drawn with borders (no boxes, no glyphs). The codes are
+   per level: 0 gap, 1 line carried down, 2 tee (a child with later siblings), 3 elbow (the last child). */
+:root { --tg-w: 20px; --tg-line: var(--line-2); }
+.row-wrap .indent { flex: 0 0 var(--tg-w); }
+.tg { display: inline-flex; align-self: stretch; flex: 0 0 auto; }
+.tg > i { position: relative; display: block; flex: 0 0 var(--tg-w); width: var(--tg-w); align-self: stretch; }
+.tg > .tg-1::before, .tg > .tg-2::before, .tg > .tg-3::before { content: ""; position: absolute; left: calc(var(--tg-w) / 2); top: -7px; bottom: -7px; border-left: 1px solid var(--tg-line); }
+.tg > .tg-3::before { bottom: 50%; }
+.tg > .tg-2::after, .tg > .tg-3::after { content: ""; position: absolute; left: calc(var(--tg-w) / 2); right: 2px; top: 50%; border-top: 1px solid var(--tg-line); }

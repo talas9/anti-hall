@@ -49,9 +49,20 @@ fn find_root(s: &Settings, home: &str, path: &str) -> String {
         }
         cur = dir.parent().filter(|p| p.parent().is_some());
     }
-    // a checkout that is gone: the workspace folder its path names (marker, then the two ids, then the workspace)
+    // a checkout that is gone: the repository its workspace set belongs to (the folder the set's own workspace file names), else the
+    // workspace folder its path names (marker, then the two ids, then the workspace)
     if let Some(i) = path.find(&s.project_workspace_marker) {
         let after = &path[i + s.project_workspace_marker.len()..];
+        if let Some(set) = after.split('/').next().filter(|x| !x.is_empty()) {
+            let file = Path::new(&path[..i + s.project_workspace_marker.len()]).join(set).join(&s.project_workspace_file);
+            let repo = std::fs::read_to_string(file)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v[s.project_workspace_folders.as_str()][0][s.project_workspace_path.as_str()].as_str().map(str::to_string));
+            if let Some(repo) = repo.filter(|r| !r.is_empty()) {
+                return repo;
+            }
+        }
         let keep: Vec<&str> = after.split('/').take(3).collect();
         return format!("{}{}", &path[..i + s.project_workspace_marker.len()], keep.join("/"));
     }

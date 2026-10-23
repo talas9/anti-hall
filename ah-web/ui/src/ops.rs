@@ -183,6 +183,7 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
             let stale = a.usage_read_ms > 0 && now_ms().saturating_sub(a.usage_read_ms) > c.stale_ms;
             let buckets = a.buckets.clone();
             let cost = a.cost_rows.clone();
+            let collapsed = RwSignal::new(std::collections::HashSet::<String>::new());
             view! {
                 <div class="ops-grid">
                     <section class="card ops-card">
@@ -241,14 +242,24 @@ fn AccountsScreen(active: Signal<bool>, cfg: RwSignal<Option<OpsCfg>>) -> impl I
                             <table class="ops-table">
                                 <thead><tr><th>{tx("ops_cost_agent")}</th><th>{tx("ops_cost_kind")}</th><th class="num">{tx("ops_cost_tokens")}</th><th class="num">{tx("ops_cost_outcomes")}</th><th class="num">{tx("ops_cost_per")}</th></tr></thead>
                                 <tbody>
-                                    {cost.into_iter().map(|r| {
+                                    {move || {
+                                        // a row is hidden while a row above it, one level up, is folded
+                                        let mut hide_below: Option<usize> = None;
+                                        let folded = collapsed.get();
+                                        cost.iter().filter(|r| {
+                                            let depth = r.guides.len();
+                                            if r.header { hide_below = None; return true; }
+                                            if let Some(d) = hide_below { if depth > d { return false; } hide_below = None; }
+                                            if r.kids && folded.contains(&r.agent) { hide_below = Some(depth); }
+                                            true
+                                        }).cloned().collect::<Vec<_>>().into_iter().map(|r| {
                                         if r.header {
                                             return view! { <tr class="cost-group"><td colspan="2">{r.name.clone()}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }.into_any();
                                         }
                                         let name = r.name.clone();
                                         let kind = { let k = format!("kind_{}", r.kind); let t = tx(&k); if t == k { r.kind.clone() } else { t } };
-                                        view! { <tr><td title=r.agent.clone()><span class="tree">{r.prefix.clone()}</span>{name}</td><td>{kind}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }.into_any()
-                                    }).collect_view()}
+                                        view! { <tr><td title=r.agent.clone()><span class="tree-cell"><crate::Guides guides=r.guides.clone() /><crate::Twist key=r.agent.clone() kids=r.kids collapsed=collapsed label_key="agent_toggle" /><span class="tree-name">{name}</span></span></td><td>{kind}</td><td class="num">{compact(r.tokens)}</td><td class="num">{compact(r.outcomes)}</td><td class="num">{compact(r.tokens_per_outcome)}</td></tr> }.into_any()
+                                    }).collect_view() }}
                                 </tbody>
                             </table>
                         }.into_any()

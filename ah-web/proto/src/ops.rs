@@ -79,9 +79,13 @@ pub struct CostRow {
     pub tokens: u64,
     pub outcomes: u64,
     pub tokens_per_outcome: u64,
-    /// The text drawn in front of the name to show the nesting (tree pipes); empty for a top-level row.
+    /// The nesting in front of the name, one entry per level: 0 gap, 1 pipe (a line carried down), 2 branch (a child with later
+    /// siblings), 3 last (the last child). Empty for a top-level row.
     #[serde(default)]
-    pub prefix: String,
+    pub guides: Vec<u8>,
+    /// Something is nested under this row.
+    #[serde(default)]
+    pub kids: bool,
     /// A project's header row: `name` is the project, the numbers its total.
     #[serde(default)]
     pub header: bool,

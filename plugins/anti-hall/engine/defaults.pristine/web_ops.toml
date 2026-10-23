@@ -114,10 +114,6 @@ value = "agent_cost"
 doc = "Most agents listed in the cost table (the highest spenders first). The engine's own cost report is capped by agent_tracker.cost_limit."
 value = 50
 
-[web.ops.cost_tree]
-doc = "The text drawn in front of an agent's name in the cost table to show who it belongs to: branch (a child with later siblings), last (the last child), pipe (carried down under a branch), gap (carried down under a last child). Each is the same width."
-value = { branch = "\u251c\u2500 ", last = "\u2514\u2500 ", pipe = "\u2502  ", gap = "   " }
-
 [web.ops.cost_name_fallback]
 doc = "What an agent with no title is called in the cost table. {dir} is the folder it works in (a workspace's branch folder). Used only when no title exists in the tracker or the DevSwarm name cache."
 value = "{dir}"
