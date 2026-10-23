@@ -131,6 +131,10 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn() -> bool, observe: &d
             let by = culprit.as_deref().unwrap_or("");
             crate::health::log_event("budget", check, &crate::defaults::render("msg.log_budget_skipped", &[("check", &check), ("by", &by)]));
             Answer::Defer
+        } else if crate::budget::shedding() && !crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str()) {
+            // past the HARD CPU limit (diagnostics.budget_cpu_hard_pct) the checks of events that cannot block wait; guard events keep running
+            crate::budget::note_shed_skipped();
+            Answer::Defer
         } else if crate::deadline::client_gone() {
             // the client closed its connection: nobody reads this reply, so the check is not worth running (its Node hook is the
             // client's own business). live19: 478 replies in 1000 s hit a closed pipe after their work was done.

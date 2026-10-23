@@ -1664,6 +1664,23 @@ fn watchdog(sh: Arc<Shared>) {
             let edge = lk(&sh.budget).cpu_window(pct, cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_cpu_windows"));
             report_budget_edge(edge, &format!("{pct:.1}"), cfg.effective.num("diagnostics.budget_cpu_pct"), "msg.log_budget_cpu");
             crate::nodeback::shadow::hold(lk(&sh.budget).mask() & 1 == 1); // the Node shadow starts nothing while the CPU budget is breached
+            let hard_edge = lk(&sh.budget).cpu_hard_window(
+                pct,
+                cfg.effective.num("diagnostics.budget_cpu_hard_pct"),
+                cfg.effective.num("diagnostics.budget_cpu_pct"),
+                cfg.effective.num("diagnostics.budget_cpu_windows"),
+            );
+            if let Some(began) = hard_edge {
+                let state = defaults::text(if began { "msg.state_shed_on" } else { "msg.state_shed_off" });
+                let (limit, soft) = (cfg.effective.num("diagnostics.budget_cpu_hard_pct"), cfg.effective.num("diagnostics.budget_cpu_pct"));
+                health::log_event("budget", "cpu_hard", &defaults::render("msg.log_budget_cpu_hard", &[("state", &state), ("value", &format!("{pct:.1}")), ("limit", &limit), ("soft", &soft)]));
+            }
+            if crate::budget::shedding() {
+                // background duties wait: the same backoff the sustained-CPU warning uses, renewed every window while shedding
+                if let Some(sched) = sh.sched.get() {
+                    sched.backoff_for(cfg.effective.num("schedule.cpu_backoff_ms"));
+                }
+            }
             if warn_pct > 0.0 && pct >= warn_pct {
                 let backoff_ms = cfg.effective.num("schedule.cpu_backoff_ms");
                 if let Some(sched) = sh.sched.get() {

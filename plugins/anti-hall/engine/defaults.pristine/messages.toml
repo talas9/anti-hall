@@ -739,6 +739,18 @@ value = "debug mode off"
 doc = "Event-log detail when the daemon CPU budget is breached or back within budget. Placeholders: {state}, {value} (percent of one core over the last window), {limit} (the budget, percent)."
 value = "daemon CPU budget {state}: {value}% of one core (budget {limit}%)"
 
+[msg.log_budget_cpu_hard]
+doc = "Event-log detail when the daemon passes its HARD CPU limit and starts shedding optional work, or recovers. Placeholders: {state}, {value} (percent of one core over the last window), {limit} (the hard limit, percent), {soft} (the soft limit, percent)."
+value = "daemon CPU hard limit {state}: {value}% of one core (hard {limit}%, shedding ends under {soft}%)"
+
+[msg.state_shed_on]
+doc = "The word for the HARD CPU limit when optional work is being shed."
+value = "crossed, shedding optional work"
+
+[msg.state_shed_off]
+doc = "The word for the HARD CPU limit when shedding has ended."
+value = "recovered, work resumed"
+
 [msg.log_budget_mem]
 doc = "Event-log detail when the daemon memory budget is breached or back within budget. Placeholders: {state}, {value} (MB), {limit} (the budget, MB)."
 value = "daemon memory budget {state}: {value} MB (budget {limit} MB)"

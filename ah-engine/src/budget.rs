@@ -6,6 +6,23 @@
 //! the limit (one busy window is a burst). Memory is the figure `daemon.mem_metric` selects, and it breaches while over the limit.
 //! A budget of 0 is off. Reporting only: a breach never stops or slows anything (the RSS cap and the CPU back-off are other rules).
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+
+/// The daemon is past its HARD CPU limit and sheds optional work (`diagnostics.budget_cpu_hard_pct`). Process-wide so the check
+/// dispatcher and the Jev client read it without a lock.
+static SHEDDING: AtomicBool = AtomicBool::new(false);
+/// Optional work skipped while shedding (checks of non-guard events, Jev consultations).
+static SHED_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+/// True while the hard CPU limit is crossed: optional work (advisory checks, Jev, background duties) waits.
+pub fn shedding() -> bool {
+    SHEDDING.load(Relaxed)
+}
+
+/// Count one piece of optional work that was skipped because of [`shedding`].
+pub fn note_shed_skipped() {
+    SHED_SKIPPED.fetch_add(1, Relaxed);
+}
 
 /// Which budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +58,12 @@ pub struct State {
     mem_breached: bool,
     /// Breaches begun since start (a breach that clears and returns counts twice).
     breaches: u64,
+    /// Consecutive windows at or above the hard CPU limit.
+    hard_over_windows: u64,
+    /// The hard CPU limit in force at the last window (percent, 0 = off).
+    hard_limit_pct: u64,
+    /// Times shedding began since start.
+    hard_breaches: u64,
 }
 
 /// A breach that began or ended: `(which, began)`.
@@ -73,6 +96,30 @@ impl State {
         self.set(Which::Cpu, self.over_windows >= windows.max(1))
     }
 
+    /// One CPU window of `pct` against the HARD limit (`hard_pct` 0 = off, `windows` in a row to cross it). Shedding ends on the first
+    /// window under `soft_pct` (the hard limit when the soft bar is off). `Some(true)` shedding began, `Some(false)` it ended.
+    pub fn cpu_hard_window(&mut self, pct: f64, hard_pct: u64, soft_pct: u64, windows: u64) -> Option<bool> {
+        self.hard_limit_pct = hard_pct;
+        let now = SHEDDING.load(Relaxed);
+        if hard_pct == 0 {
+            self.hard_over_windows = 0;
+            SHEDDING.store(false, Relaxed);
+            return now.then_some(false);
+        }
+        self.hard_over_windows = if pct >= hard_pct as f64 { self.hard_over_windows + 1 } else { 0 };
+        let recover_below = if soft_pct > 0 { soft_pct } else { hard_pct } as f64;
+        if !now && self.hard_over_windows >= windows.max(1) {
+            self.hard_breaches += 1;
+            SHEDDING.store(true, Relaxed);
+            return Some(true);
+        }
+        if now && pct < recover_below {
+            SHEDDING.store(false, Relaxed);
+            return Some(false);
+        }
+        None
+    }
+
     /// One memory sample of `mem_kb` against the budget (`limit_mb` 0 = off).
     pub fn mem_sample(&mut self, mem_kb: u64, limit_mb: u64) -> Edge {
         self.mem_kb = mem_kb;
@@ -101,6 +148,10 @@ impl State {
             "mem_budget_mb": mem_budget_mb,
             "breached": breached,
             "breaches": self.breaches,
+            "cpu_hard_budget_pct": self.hard_limit_pct,
+            "shedding": shedding(),
+            "cpu_hard_breaches": self.hard_breaches,
+            "shed_skipped": SHED_SKIPPED.load(Relaxed),
         })
     }
 }

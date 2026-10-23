@@ -685,6 +685,10 @@ impl Jev {
         if req.trust == Trust::RelaxBlock && req.baseline != Value::Bool(true) {
             return self.finish(&s, req, mode, None, false, true); // nothing to relax: not consulted
         }
+        if crate::budget::shedding() {
+            crate::budget::note_shed_skipped(); // past the HARD CPU limit Jev is not consulted: the caller keeps its baseline
+            return self.finish(&s, req, mode, None, false, true);
+        }
         // The cache is shared by every session, so an entry is only valid for a session that would have asked the same vendor
         // the same way: the key names the vendor chain, models and endpoints, and a test endpoint override never reads or
         // writes the cache. A hit still needs a key for the CALLING session; without one the call fails as `no-key`.
