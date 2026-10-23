@@ -1,13 +1,13 @@
 # ah-engine shipped defaults for the web data API (`describe`, `query`, `manage`): the engine's self-description, the read-only
-# paginated query over the existing stores, and the audited setting writes the dashboard and agents use. Format: see the header
+# paginated query over the existing stores, and the historyed setting writes the dashboard and agents use. Format: see the header
 # of engine.toml. Every topic name, limit and text is here; the code only maps a topic's `source` to the function that reads it.
 
-[webapi.audit_file]
-doc = "The manage audit log (one JSON line per write or undo), in the engine state directory."
-value = "web-audit.ndjson"
+[webapi.history_file]
+doc = "The config history log (one JSON line per write or undo: ts, who, key, old, new, verb, result), in the engine state directory."
+value = "config-history.ndjson"
 
-[webapi.audit_read_max_bytes]
-doc = "Most bytes read from the end of the audit log when listing it or looking a row up for undo."
+[webapi.history_read_max_bytes]
+doc = "Most bytes read from the end of the history log when listing it or looking a row up for undo."
 value = 4194304
 unit = "bytes"
 min = 4096
@@ -26,14 +26,14 @@ min = 1
 max = 10000
 
 [webapi.offset_max]
-doc = "Largest --offset a query accepts (events are fetched newest-first up to offset + limit)."
+doc = "Largest --offset a query accepts (events are fetched newest-first up to offset + limit + 1)."
 value = 5000
 min = 0
 max = 1000000
 
 [webapi.describe_parts]
-doc = "The parts of the self-description, in output order; `describe --part a,b` returns only the named ones."
-value = ["verbs", "settings", "config", "checks", "hooks", "scripts", "jev", "switches", "topics", "coverage"]
+doc = "The parts of the self-description, in output order; `describe --part a,b` returns only the named ones. The generated reference supplies commands, flags, env, metrics and impact_kinds; the rest are built from the registries."
+value = ["commands", "checks", "settings_registry", "files", "bindings", "scripts", "jev_integrations", "switches", "jobs", "ctl_verbs", "sources", "flags", "env", "metrics", "impact_kinds"]
 
 [webapi.switch_key_suffix]
 doc = "A shipped setting whose key name ends with this suffix and whose value names a settings.json key (section, key, env, default) is a feature switch."
@@ -43,49 +43,41 @@ value = "setting"
 doc = "How a check or hook-entry name becomes the section prefix its config keys share: this character is replaced by the next one (`stale-agent-stop-note` reads `stale_agent_stop_note.*`)."
 value = ["-", "_"]
 
-[webapi.coverage_screens]
-doc = "Feature id (`verb:agents`, `check:git`, `section:guards`, `jev:triage`, `switch:agent_tracker.setting`) to the dashboard screen that covers it. The UI fills this in; a feature with no entry is reported with screen null so the gap is visible."
-value = {}
-
-[webapi.derivation_note]
-doc = "Said once in the describe output beside every check's config_keys, because the link is a naming convention, not a declaration."
-value = "config_keys lists the shipped settings whose section matches the check's or its hook entries' name (dashes read as underscores); a check that reads a setting under another name is not linked."
-
-[webapi.topic_checks]
+[webapi.source_checks]
 doc = "Per-check fire counts, decision outcomes and latency percentiles over a window (from telemetry summary)."
 value = { source = "telemetry_summary", rows = "by_hook", filters = ["check:h", "kind:k"], params = ["window"] }
 
-[webapi.topic_outcomes]
+[webapi.source_outcomes]
 doc = "Telemetry totals by decision outcome over a window."
 value = { source = "telemetry_summary", rows = "by_outcome", filters = [], params = ["window"] }
 
-[webapi.topic_kinds]
+[webapi.source_kinds]
 doc = "Telemetry totals by event kind over a window."
 value = { source = "telemetry_summary", rows = "by_kind", filters = [], params = ["window"] }
 
-[webapi.topic_events]
+[webapi.source_events]
 doc = "Telemetry events (routing, spawn, Jev, spill and the rest), newest first, optionally one kind."
 value = { source = "telemetry_events", rows = "events", filters = [], params = ["window", "kind"] }
 
-[webapi.topic_counters]
+[webapi.source_counters]
 doc = "The daemon's metrics counters (needs a running daemon)."
 value = { source = "metrics", rows = "counters", filters = ["name:name"], params = ["check"] }
 
-[webapi.topic_agents]
+[webapi.source_agents]
 doc = "Every tracked agent with state, tokens, progress and flags; the document's summary and today's totals come back as meta."
 value = { source = "agents", rows = "agents", filters = ["state:state", "kind:kind", "agent:agent", "project:project"], params = [] }
 
-[webapi.topic_health]
+[webapi.source_health]
 doc = "The engine's status: version, uptime, memory, breaker and crash-loop state, counters (one row; the full document is in meta)."
 value = { source = "status", rows = "", filters = [], params = [] }
 
-[webapi.topic_audit]
-doc = "The manage audit log, newest first."
-value = { source = "audit", rows = "rows", filters = ["key:key", "op:op"], params = [] }
+[webapi.source_history]
+doc = "The config history log, newest first."
+value = { source = "history", rows = "rows", filters = ["key:key", "verb:verb"], params = [] }
 
 [webapi.msg_unknown_topic]
-doc = "Printed when query names a topic that does not exist; {topic} is what was typed, {topics} the valid names."
-value = "unknown query topic '{topic}'; topics: {topics}"
+doc = "Printed when query names a source that does not exist; {topic} is what was typed, {topics} the valid names."
+value = "unknown query source '{topic}'; sources: {topics}"
 
 [webapi.msg_unknown_part]
 doc = "Printed when describe --part names a part that does not exist; {part} is what was typed, {parts} the valid names."
@@ -99,20 +91,20 @@ value = "the engine daemon is not running; this topic reads live daemon state"
 doc = "The note the agents topic carries when the agent tracker switch is off."
 value = "the agent tracker is switched off (agent_tracker.setting)"
 
-[webapi.msg_manage_usage]
-doc = "Printed for a manage call with a missing or unknown verb."
-value = "usage: manage <set <key> <value>|reset <key>|undo <audit-id>|audit [--limit N]> [--confirmed] [--json]"
+[webapi.msg_config_usage]
+doc = "Printed for a config write call with a missing or unknown verb."
+value = "usage: config <set <key> <value> [--check]|reset <key>|undo <history-id>|apply|history [--limit N]> [--confirmed] [--json]"
 
 [webapi.msg_unknown_key]
-doc = "Printed when manage names a key that is neither a registry setting nor a shipped engine setting; {key} is what was typed."
+doc = "Printed when config names a key that is neither a registry setting nor a shipped engine setting; {key} is what was typed."
 value = "unknown setting '{key}'"
 
 [webapi.msg_locked]
-doc = "Printed when manage is asked to change an engine setting listed in config.locked; {key} is the setting."
+doc = "Printed when config is asked to change an engine setting listed in config.locked; {key} is the setting."
 value = "'{key}' is locked: it resolves to its shipped value whatever the files say"
 
 [webapi.msg_not_scalar]
-doc = "Printed when manage is asked to set an engine setting that is a table; {key} is the setting."
+doc = "Printed when config is asked to set an engine setting that is a table; {key} is the setting."
 value = "'{key}' is a table; edit its file instead"
 
 [webapi.msg_bad_int]
@@ -136,25 +128,25 @@ doc = "Printed when a value for a list engine setting is not a JSON array of str
 value = "'{key}' takes a JSON array of strings"
 
 [webapi.msg_usage_set]
-doc = "Printed for manage set without a key or value."
-value = "usage: manage set <key> <value>"
+doc = "Printed for config set without a key or value."
+value = "usage: config set <key> <value> [--check]"
 
-[webapi.msg_no_audit_row]
-doc = "Printed when undo names an audit id that is not in the log; {id}."
-value = "no audit row '{id}'"
+[webapi.msg_no_history_row]
+doc = "Printed when undo names an history id that is not in the log; {id}."
+value = "no history row '{id}'"
 
 [webapi.msg_undo_not_undoable]
 doc = "Printed when undo names a row that failed, was an undo, or was already undone; {id}."
-value = "audit row '{id}' cannot be undone (it failed, is an undo itself, or is already undone)"
+value = "history row '{id}' cannot be undone (it failed, is an undo itself, or is already undone)"
 
 [webapi.msg_undo_changed]
-doc = "Printed when the value changed again since the audit row; undo needs --confirmed to overwrite. {key}."
+doc = "Printed when the value changed again since the history row; undo needs --confirmed to overwrite. {key}."
 value = "'{key}' changed since that write; repeat with --confirmed to restore the earlier value anyway"
 
 [webapi.msg_restart_only]
 doc = "The note a write carries when the setting only takes effect at the next daemon start."
 value = "takes effect at the next daemon start"
 
-[webapi.audit_actor_env]
-doc = "The environment variable naming who asked for a write (the web server sets it to the screen and user); the audit row records its value."
+[webapi.history_actor_env]
+doc = "The environment variable naming who asked for a write (the web server sets it to the screen and user); the history row records its value."
 value = "AH_WEB_ACTOR"

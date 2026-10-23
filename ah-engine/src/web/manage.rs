@@ -52,17 +52,17 @@ fn now_ms() -> u64 {
     crate::health::now_ms()
 }
 
-fn audit_path() -> std::path::PathBuf {
-    crate::paths::dir().join(defaults::text("webapi.audit_file"))
+fn history_path() -> std::path::PathBuf {
+    crate::paths::dir().join(defaults::text("webapi.history_file"))
 }
 
 fn actor() -> String {
-    std::env::var(defaults::text("webapi.audit_actor_env")).ok().filter(|a| !a.is_empty()).unwrap_or_else(|| "cli".to_string())
+    std::env::var(defaults::text("webapi.history_actor_env")).ok().filter(|a| !a.is_empty()).unwrap_or_else(|| "cli".to_string())
 }
 
 /// Append one audit row; the error is the reason it could not be written.
 fn append(row: &Value) -> Result<(), String> {
-    let path = audit_path();
+    let path = history_path();
     if let Some(dir) = path.parent() {
         crate::limits::ensure_private_dir(dir).map_err(|e| e.to_string())?;
     }
@@ -70,11 +70,11 @@ fn append(row: &Value) -> Result<(), String> {
     writeln!(f, "{row}").map_err(|e| e.to_string())
 }
 
-/// The audit rows in file order, from the end of the log (at most `webapi.audit_read_max_bytes`).
+/// The audit rows in file order, from the end of the log (at most `webapi.history_read_max_bytes`).
 fn read_rows() -> Vec<Value> {
-    let Ok(mut f) = std::fs::File::open(audit_path()) else { return Vec::new() };
+    let Ok(mut f) = std::fs::File::open(history_path()) else { return Vec::new() };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let max = defaults::num("webapi.audit_read_max_bytes");
+    let max = defaults::num("webapi.history_read_max_bytes");
     let start = len.saturating_sub(max);
     if start > 0 && f.seek(SeekFrom::Start(start)).is_err() {
         return Vec::new();
@@ -92,10 +92,10 @@ fn read_rows() -> Vec<Value> {
 }
 
 /// The audit log as a document: newest first, each row marked `undone` when a later undo row restored it.
-pub(crate) fn audit_doc() -> Value {
+pub(crate) fn history_doc() -> Value {
     let rows = read_rows();
     let undone: std::collections::BTreeSet<String> =
-        rows.iter().filter(|r| r["op"] == "undo" && r["ok"] == true).filter_map(|r| r["undoes"].as_str().map(str::to_string)).collect();
+        rows.iter().filter(|r| r["verb"] == "undo" && r["result"] == "ok").filter_map(|r| r["undoes"].as_str().map(str::to_string)).collect();
     let out: Vec<Value> = rows
         .into_iter()
         .rev()
@@ -105,16 +105,16 @@ pub(crate) fn audit_doc() -> Value {
             r
         })
         .collect();
-    json!({"rows": out, "file": audit_path().to_string_lossy()})
+    json!({"rows": out, "file": history_path().to_string_lossy()})
 }
 
-/// `audit [--limit N] [--key k] [--op o]`: the newest rows.
-pub fn audit(rest: &[String]) -> Value {
-    let mut doc = audit_doc();
-    let (key, op) = (flag(rest, "key"), flag(rest, "op"));
+/// `history [--limit N] [--key k] [--verb v]`: the newest rows.
+pub fn history(rest: &[String]) -> Value {
+    let mut doc = history_doc();
+    let (key, op) = (flag(rest, "key"), flag(rest, "verb"));
     let limit = flag(rest, "limit").parse::<usize>().unwrap_or(defaults::num("webapi.page_default") as usize).min(defaults::num("webapi.page_max") as usize);
     if let Some(rows) = doc["rows"].as_array_mut() {
-        rows.retain(|r| (key.is_empty() || r["key"] == key.as_str()) && (op.is_empty() || r["op"] == op.as_str()));
+        rows.retain(|r| (key.is_empty() || r["key"] == key.as_str()) && (op.is_empty() || r["verb"] == op.as_str()));
         rows.truncate(limit);
     }
     doc
@@ -181,7 +181,7 @@ fn finish(ctx: &crate::migrate::Ctx, op: &'static str, kind: &'static str, key: 
     let value = store::file_value(ctx, section, name).as_ref().map(j_to_value);
     let ok = error.is_none();
     let id = format!("{:x}-{:x}", now_ms(), SEQ.fetch_add(1, Ordering::Relaxed));
-    let row = json!({"id": id, "ts_ms": now_ms(), "op": op, "key": key, "kind": kind, "actor": actor(), "prev": prev, "next": value, "ok": ok, "error": error, "undoes": undoes});
+    let row = json!({"id": id, "ts": now_ms(), "verb": op, "key": key, "kind": kind, "who": actor(), "old": prev, "new": value, "result": if ok { "ok" } else { "error" }, "error": error, "undoes": undoes});
     let mut note = error;
     if let Err(e) = append(&row) {
         note = Some(note.map_or(format!("audit not written: {e}"), |n| format!("{n}; audit not written: {e}")));
@@ -196,11 +196,14 @@ fn refused(op: &'static str, kind: &'static str, key: &str, warning: Option<Stri
 }
 
 /// Set `key` to `raw`, validated, audited.
-pub fn set(key: &str, raw: &str, confirmed: bool) -> Result<Written, String> {
+pub fn set(key: &str, raw: &str, confirmed: bool, check: bool) -> Result<Written, String> {
     let t = target(key)?;
     let ctx = registry::store_ctx();
     let (section, name) = split(key).ok_or_else(|| defaults::render("webapi.msg_unknown_key", &[("key", &key)]))?;
     let prev = store::file_value(&ctx, section, name).as_ref().map(j_to_value);
+    if check {
+        return Ok(dry_run(&t, key, raw, prev));
+    }
     Ok(match t {
         Target::Registry(entry, note) => match store::set_cli(&ctx, entry, note, raw, confirmed) {
             Outcome::Done => finish(&ctx, "set", "registry", key, prev, None, None),
@@ -215,6 +218,18 @@ pub fn set(key: &str, raw: &str, confirmed: bool) -> Result<Written, String> {
             },
         },
     })
+}
+
+/// `set --check`: validate only. Nothing is written or recorded; a refusal is reported in `note`.
+fn dry_run(t: &Target, key: &str, raw: &str, prev: Option<Value>) -> Written {
+    let (kind, verdict) = match t {
+        Target::Registry(entry, _) => ("registry", store::validate_msg(entry, &J::Str(raw.to_string())).map(|v| j_to_value(&v))),
+        Target::Engine(entry) => ("engine", validate_engine(entry, raw).map(|v| j_to_value(&v))),
+    };
+    match verdict {
+        Ok(v) => Written { ok: true, id: String::new(), key: key.to_string(), op: "check", kind, prev, value: Some(v), warning: None, note: None },
+        Err(e) => Written { ok: false, id: String::new(), key: key.to_string(), op: "check", kind, prev, value: None, warning: None, note: Some(e) },
+    }
 }
 
 /// Drop the `settings.json` override of `key` (the setting returns to the shipped value), audited.
@@ -239,10 +254,10 @@ pub fn reset(key: &str, confirmed: bool) -> Result<Written, String> {
 /// Restore the value before audit row `id`. Refused when the row failed, is itself an undo, was already undone, or the value
 /// changed again since (unless `confirmed`).
 pub fn undo(id: &str, confirmed: bool) -> Result<Written, String> {
-    let doc = audit_doc();
+    let doc = history_doc();
     let rows = doc["rows"].as_array().cloned().unwrap_or_default();
-    let row = rows.iter().find(|r| r["id"] == id).ok_or_else(|| defaults::render("webapi.msg_no_audit_row", &[("id", &id)]))?;
-    if row["ok"] != true || row["op"] == "undo" || row["undone"] == true {
+    let row = rows.iter().find(|r| r["id"] == id).ok_or_else(|| defaults::render("webapi.msg_no_history_row", &[("id", &id)]))?;
+    if row["result"] != "ok" || row["verb"] == "undo" || row["undone"] == true {
         return Err(defaults::render("webapi.msg_undo_not_undoable", &[("id", &id)]));
     }
     let key = row["key"].as_str().unwrap_or_default().to_string();
@@ -250,11 +265,11 @@ pub fn undo(id: &str, confirmed: bool) -> Result<Written, String> {
     let (section, name) = split(&key).ok_or_else(|| defaults::render("webapi.msg_unknown_key", &[("key", &key)]))?;
     let ctx = registry::store_ctx();
     let current = store::file_value(&ctx, section, name).as_ref().map(j_to_value);
-    let expected = if row["next"].is_null() { None } else { Some(row["next"].clone()) };
+    let expected = if row["new"].is_null() { None } else { Some(row["new"].clone()) };
     if current != expected && !confirmed {
         return Ok(refused("undo", kind, &key, None, Some(defaults::render("webapi.msg_undo_changed", &[("key", &key)]))));
     }
-    let restore = if row["prev"].is_null() { None } else { to_j(&row["prev"]) };
+    let restore = if row["old"].is_null() { None } else { to_j(&row["old"]) };
     Ok(match store::write_raw(&ctx, section, name, restore) {
         Outcome::Done => finish(&ctx, "undo", kind, &key, current, Some(id), None),
         Outcome::Fail(e) | Outcome::Needs(e) => finish(&ctx, "undo", kind, &key, current, Some(id), Some(e)),

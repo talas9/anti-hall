@@ -750,7 +750,7 @@ pub(crate) fn store_ctx() -> Ctx {
 /// Every registry setting as the dashboard shows it: section and its label (the category), type, allowed values and bounds,
 /// default, current value, where the value comes from, and the flags that mark it advanced or locked.
 pub(crate) fn registry_value() -> serde_json::Value {
-    use crate::webapi::j_to_value as val;
+    use crate::web::j_to_value as val;
     let run = Run::new();
     let labels: BTreeMap<&str, &str> = sections().iter().map(|s| (s.key.as_str(), s.label.as_str())).collect();
     serde_json::Value::Array(
@@ -773,7 +773,7 @@ pub(crate) fn registry_value() -> serde_json::Value {
 
 /// The Jev integrations with their effective mode and where it is configured.
 pub(crate) fn integrations_value() -> serde_json::Value {
-    use crate::webapi::j_to_value as val;
+    use crate::web::j_to_value as val;
     let run = Run::new();
     serde_json::Value::Array(
         integrations(&run)

@@ -1,4 +1,4 @@
-//! `query <topic>`: a read-only, paginated view over the stores the engine already keeps. A topic is a `webapi.topic_<name>`
+//! `query <topic>`: a read-only, paginated view over the stores the engine already keeps. A topic is a `webapi.source_<name>`
 //! setting naming a `source` (the function that reads it), the path of its rows in the source's document, the filters
 //! (`--flag:row-field`) and the parameters the source takes. Nothing is written and nothing runs in the background; a source
 //! that needs the daemon says so when none runs.
@@ -24,18 +24,34 @@ impl Page {
     }
 }
 
-/// The topic names, with their docs.
-fn topic_list() -> Vec<Value> {
-    defaults::with_prefix("webapi.topic_")
+/// The sources, with their docs, `--where` fields and parameters.
+pub fn source_list() -> Vec<Value> {
+    defaults::with_prefix("webapi.source_")
         .iter()
-        .map(|e| json!({"topic": &e.key["webapi.topic_".len()..], "doc": e.doc, "filters": e.value.get("filters").map(|f| f.strings()), "params": e.value.get("params").map(|f| f.strings())}))
+        .map(|e| json!({"source": &e.key["webapi.source_".len()..], "doc": e.doc, "backing": e.value.str_field("source"), "filters": e.value.get("filters").map(|f| f.strings()), "params": e.value.get("params").map(|f| f.strings())}))
         .collect()
+}
+
+/// The field names and JSON types of a row.
+fn schema_of(row: Option<&Value>) -> Value {
+    let kind = |v: &Value| match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    row.and_then(Value::as_object).map(|m| Value::Object(m.iter().map(|(k, v)| (k.clone(), json!(kind(v)))).collect())).unwrap_or(Value::Null)
 }
 
 fn telemetry(sub: &str, rest: &[String], params: &[&str], extra: &[(&str, String)]) -> Value {
     let mut args = vec![sub.to_string()];
     for p in params {
-        let v = flag(rest, p);
+        let mut v = flag(rest, p);
+        if v.is_empty() && *p == "window" {
+            v = flag(rest, "since"); // `--since 24h` is the same window
+        }
         if !v.is_empty() {
             args.push(format!("--{p}"));
             args.push(v);
@@ -72,7 +88,7 @@ fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
         }
         "agents" => agents_doc(),
         "status" => crate::client::status_value(),
-        "audit" => super::manage::audit_doc(),
+        "history" => super::manage::history_doc(),
         other => json!({"error": format!("no source '{other}'")}),
     }
 }
@@ -98,11 +114,11 @@ fn text_of(v: &Value) -> String {
 
 /// Run `topic` with the flags in `rest`. `topics` (or no topic) lists the topics.
 pub fn query(topic: &str, rest: &[String]) -> Result<Value, String> {
-    if topic.is_empty() || topic == "topics" {
-        return Ok(json!({"topics": topic_list()}));
+    if topic.is_empty() || topic == "sources" {
+        return Ok(json!({"sources": source_list()}));
     }
-    let Some(entry) = defaults::get(&format!("webapi.topic_{topic}")) else {
-        let names: Vec<String> = topic_list().iter().filter_map(|t| t["topic"].as_str().map(str::to_string)).collect();
+    let Some(entry) = defaults::get(&format!("webapi.source_{topic}")) else {
+        let names: Vec<String> = source_list().iter().filter_map(|t| t["source"].as_str().map(str::to_string)).collect();
         return Err(defaults::render("webapi.msg_unknown_topic", &[("topic", &topic), ("topics", &names.join(", "))]));
     };
     let spec = &entry.value;
@@ -115,10 +131,19 @@ pub fn query(topic: &str, rest: &[String]) -> Result<Value, String> {
     if spec.str_field("source") == "telemetry_events" {
         rows.reverse();
     }
+    if rest.iter().any(|a| a == "--schema") {
+        return Ok(json!({"source": topic, "doc": entry.doc, "filters": spec.get("filters").map(|f| f.strings()), "params": params, "fields": schema_of(rows.first())}));
+    }
+    // declared filter flags (`--check x`), then `--where field=value,field=value` over any field of the row
     for f in spec.get("filters").map(|f| f.strings()).unwrap_or_default() {
         let (flag_name, field) = f.split_once(':').unwrap_or((f, f));
         let want = flag(rest, flag_name);
         if !want.is_empty() {
+            rows.retain(|r| r.get(field).is_some_and(|v| text_of(v) == want));
+        }
+    }
+    for cond in flag(rest, "where").split(',').filter(|c| !c.is_empty()) {
+        if let Some((field, want)) = cond.split_once('=') {
             rows.retain(|r| r.get(field).is_some_and(|v| text_of(v) == want));
         }
     }
@@ -129,7 +154,7 @@ pub fn query(topic: &str, rest: &[String]) -> Result<Value, String> {
         m.remove(path);
     }
     Ok(json!({
-        "topic": topic, "offset": page.offset, "limit": page.limit, "count": page_rows.len(), "total": total,
+        "source": topic, "offset": page.offset, "limit": page.limit, "count": page_rows.len(), "total": total,
         "has_more": page.offset + page_rows.len() < total, "rows": page_rows, "meta": meta,
     }))
 }
