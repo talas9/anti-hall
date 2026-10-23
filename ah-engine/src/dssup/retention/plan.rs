@@ -15,7 +15,7 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
-use crate::meshw::ident::{Defer, R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, params};
@@ -114,34 +114,40 @@ pub fn store_dir(home: &Path, hash: &str) -> PathBuf {
 /// Open a store read only, the way Node's `openDb(home, hash, true)` does (a busy timeout, no waiting beyond it).
 pub fn open_ro(file: &Path) -> R<Connection> {
     let c =
-        Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| Defer(format!("store-open:{e}")))?;
+        Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
     crate::discard::harmless(c.busy_timeout(defaults::millis("devswarm_sup.rt_busy_ms"))); // keep: the default timeout only makes a busy store fail sooner
     Ok(c)
 }
 
-/// `Number(x)` of a column value; NULL is 0, a blob defers.
+/// An integer JavaScript cannot hold exactly: Node's sqlite binding throws on it, which ends the store's plan with this text.
+pub(super) fn safe_int(i: i64) -> R<i64> {
+    if i.unsigned_abs() > defaults::num("mesh.js_safe_int") { Err(crate::dssup::failure(defaults::render("msg.err_mesh_range", &[("value", &i)]))) } else { Ok(i) }
+}
+
+/// `String(x)` of a column value: a blob is a `Uint8Array`, which joins its bytes with commas.
+pub(super) fn js_text(v: ValueRef<'_>) -> R<Option<String>> {
+    Ok(match v {
+        ValueRef::Null => None,
+        ValueRef::Integer(i) => Some(safe_int(i)?.to_string()),
+        ValueRef::Real(f) => Some(crate::checks::jsport::num::to_js_string(f)),
+        ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => Some(b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")),
+    })
+}
+
+/// `Number(x)` of a column value; NULL is 0, a blob is a `Uint8Array` (its comma-joined bytes read as a number).
 fn number(v: ValueRef<'_>) -> R<f64> {
     match v {
         ValueRef::Null => Ok(0.0),
-        ValueRef::Integer(i) => {
-            if i.unsigned_abs() > defaults::num("mesh.js_safe_int") {
-                return defer("integer-range");
-            }
-            Ok(i as f64)
-        }
+        ValueRef::Integer(i) => Ok(safe_int(i)? as f64),
         ValueRef::Real(f) => Ok(f),
-        ValueRef::Text(t) => Ok(js_number_of_str(&String::from_utf8_lossy(t))),
-        ValueRef::Blob(_) => defer("blob-value"),
+        other => Ok(js_number_of_str(&js_text(other)?.unwrap_or_default())),
     }
 }
 
-/// `x != null ? String(x) : null` for a text column; any other type defers (JavaScript would stringify it its own way).
+/// `x != null ? String(x) : null` for a column.
 fn opt_text(v: ValueRef<'_>) -> R<Option<String>> {
-    match v {
-        ValueRef::Null => Ok(None),
-        ValueRef::Text(t) => Ok(Some(String::from_utf8_lossy(t).into_owned())),
-        _ => defer("non-text-column"),
-    }
+    js_text(v)
 }
 
 /// `Math.min(a, b)`: NaN wins.
@@ -149,16 +155,8 @@ fn js_min(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() { f64::NAN } else { a.min(b) }
 }
 
-/// A body column that is neither text nor NULL is a value JavaScript would stringify its own way: it defers.
-fn text_body(v: ValueRef<'_>) -> R<()> {
-    match v {
-        ValueRef::Text(t) if defaults::list("devswarm_sup.rt_text_types").iter().any(|w| w.as_bytes() == t) => Ok(()),
-        _ => defer("non-text-body"),
-    }
-}
-
 fn e<T>(r: rusqlite::Result<T>, what: &str) -> R<T> {
-    r.map_err(|x| Defer(format!("{what}:{x}")))
+    r.map_err(|x| crate::dssup::failure(format!("{what}:{x}")))
 }
 
 /// What makes two broadcasts one run: sender, body, urgency.
@@ -181,7 +179,7 @@ fn reader_rows(c: &Connection, partition: &str) -> R<Vec<Reader>> {
     let mut st = match c.prepare(crate::sql::RT_READER_ROWS) {
         Ok(s) => s,
         Err(x) if x.to_string().to_lowercase().contains(defaults::text("devswarm_sup.rt_no_table_text")) => return Ok(Vec::new()),
-        Err(x) => return defer(&format!("reader-rows:{x}")),
+        Err(x) => return Err(crate::dssup::failure(format!("reader-rows:{x}"))),
     };
     let mut rows = e(st.query(params![partition]), "reader-rows")?;
     let mut out = Vec::new();
@@ -418,14 +416,9 @@ pub fn plan_store(home: &Path, hash: &str, rules: Rules, now: f64, holds: &[Hold
                         v => Some(number(v)?),
                     };
                     let hb = number(g(4)?)? == 1.0;
-                    text_body(g(10)?)?;
                     let sender = opt_text(g(5)?)?;
                     let urgency = opt_text(g(6)?)?;
-                    let body = match g(11)? {
-                        ValueRef::Null => String::new(),
-                        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-                        _ => return defer("non-text-body"),
-                    };
+                    let body = js_text(g(11)?)?.unwrap_or_default();
                     if hb && let Some(s) = &sender {
                         latest_hb.insert(s.clone(), id);
                     }
@@ -491,7 +484,6 @@ pub fn plan_store(home: &Path, hash: &str, rules: Rules, now: f64, holds: &[Hold
                 let g = |k: usize| e(r.get_ref(k), "rows");
                 let (id, ts) = (number(g(0)?)? as i64, number(g(1)?)?);
                 let hash = opt_text(g(9)?)?;
-                text_body(g(10)?)?;
                 let needs_reply = number(g(3)?)? == 1.0;
                 let tomb = number(g(7)?)? == 1.0;
                 let blen = number(g(8)?)? as i64;

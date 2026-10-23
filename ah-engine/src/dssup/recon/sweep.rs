@@ -31,7 +31,7 @@ use crate::dsact::runner::Runner;
 use crate::dssup::appsync::{plan, snap, state};
 use crate::dssup::tick::Ctx;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use regex::RegexBuilder;
 use serde_json::{Map, Value, json};
@@ -62,7 +62,8 @@ impl Opts<'static> {
 pub enum ProjectEnd {
     /// Node's `cmdReconcile` result object.
     Result(Value),
-    /// The engine did not answer this project; the text says why. Node's `cmdReconcile` does.
+    /// The project could not be answered now (a read the identity layer refused); the text says why. Held and tried again next pass:
+    /// nothing is handed to any other implementation.
     Node(String),
 }
 
@@ -121,7 +122,8 @@ pub struct Descriptor {
 }
 
 /// `readDescriptors(home)` of the supervisor: every `workspaces/*.json` that parses and names a worktree, a session and a
-/// path-safe id, in directory order. A truthy value of a type the engine does not model is a deferral.
+/// path-safe id, in directory order. A session is any truthy value; a worktree that is not text names no directory (Node resolves no
+/// project for it and every path read of it fails), so such a descriptor yields no project and is left out.
 pub fn read_descriptors(home: &Path) -> R<Vec<Descriptor>> {
     let dir = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces"));
     let Some(mut names) = crate::checks::jsport::fsx::read_dir_names(&dir.to_string_lossy()) else { return Ok(Vec::new()) };
@@ -134,13 +136,11 @@ pub fn read_descriptors(home: &Path) -> R<Vec<Descriptor>> {
         }
         let Some(d) = std::fs::read(dir.join(&name)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else { continue };
         let OVal::Obj(_) = d else { continue };
-        let field = |k: &str| match d.get(k) {
-            None | Some(OVal::Null) => Ok(None),
-            Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-            Some(v) if !v.truthy() => Ok(None),
-            Some(_) => defer("descriptor-field-type"),
+        let wt = match d.get(defaults::text("mesh_write.field_worktree_path")) {
+            Some(OVal::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
         };
-        let (wt, sid) = (field(defaults::text("mesh_write.field_worktree_path"))?, field(defaults::text("mesh_write.field_session_id"))?);
+        let sid = d.get(defaults::text("mesh_write.field_session_id")).filter(|v| v.truthy());
         let id = match d.get(defaults::text("mesh_write.field_id")) {
             Some(OVal::Str(s)) if is_safe_id(s) => s.clone(),
             _ => continue,
@@ -199,10 +199,7 @@ fn has_archived_counterpart(home: &Path, id: &str) -> bool {
 fn real_sid(v: Option<&OVal>) -> R<Option<String>> {
     match v {
         None | Some(OVal::Null) => Ok(None),
-        Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-        Some(OVal::Num(n)) => Ok(Some(crate::checks::jsport::num::to_js_string(*n))),
-        Some(OVal::Bool(b)) => Ok(Some(b.to_string())),
-        Some(_) => defer("session-field-type"),
+        Some(other) => Ok(Some(crate::dssup::appsync::plan::js_str(other)).filter(|s| !s.is_empty())),
     }
 }
 
@@ -308,16 +305,14 @@ fn stranded_ids(home: &Path, repo_key: &str) -> R<Vec<String>> {
             continue;
         }
         let Some(d) = ident::read_descriptor(home, id) else { continue };
+        // `!desc.worktreePath` skips a falsy path; a path that is not text exists nowhere and resolves to no key, so the descriptor is
+        // never the project's (`descriptorFreshRepoKey` is null for it)
         let wt = match d.get(defaults::text("mesh_write.field_worktree_path")) {
             Some(OVal::Str(w)) if !w.is_empty() => w.clone(),
-            None | Some(OVal::Null) => continue,
-            Some(v) if !v.truthy() => continue,
-            Some(_) => return defer("descriptor-field-type"),
+            _ => continue,
         };
-        if !matches!(d.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(i)) if i == id) {
-            if d.get(defaults::text("mesh_write.field_id")).is_some_and(|v| !matches!(v, OVal::Str(_))) {
-                return defer("descriptor-field-type");
-            }
+        // `String(desc.id) !== String(id)`
+        if super::heal::js_string(d.get(defaults::text("mesh_write.field_id")))? != id {
             continue;
         }
         if !Path::new(&wt).exists() && has_archived_counterpart(home, id) {
@@ -456,8 +451,11 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     }
     // Claim 3 self-heal pre-pass
     let healed = heal::run(ctx, runner, &repo_key, hooks)?;
-    if !healed.deferred.is_empty() {
-        return defer("heal-deferred");
+    // Node goes on to the listing whatever the heal did; a row whose unit could not apply now (a busy lock, a drifted precondition)
+    // is tried again by the next pass, and is named in the witness log
+    for (id, why) in &healed.deferred {
+        let rec = json!({"ts": ctx.now, "job": defaults::text("devswarm_recon.job_heal"), "repoKey": repo_key, "id": id, "why": why});
+        crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_recon.witness_file")), &rec);
     }
     // label-only rows (a spawn that could not find the app's id) get their app id; the ghost fold retires the label row into it
     let id_filled = super::labelfill::fill(ctx, &repo_key);
@@ -566,7 +564,7 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     let mut drained: Vec<Option<Result<Value, String>>> = pull::drain(ctx, runner, &repo_key, staged, hooks).into_iter().map(Some).collect();
     let mut results: Vec<Value> = Vec::new();
     let unknown_re = re("devswarm_recon.re_repo_unknown_line");
-    let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
+    let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| crate::dssup::failure(e.to_string()))?;
     let is_unknown_text = |texts: &[Option<String>]| {
         texts
             .iter()
