@@ -12667,7 +12667,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `263 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `264 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 

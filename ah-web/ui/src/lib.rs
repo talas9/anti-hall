@@ -887,7 +887,8 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
     let plugin2 = plugin.clone();
     // amber only on a real mismatch: the plugin the engine says it loaded against the plugin this server serves
     let skew = Memo::new(move |_| engine_plugin().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
-    let (n1, n3, n4, n5) = (none.clone(), none.clone(), none.clone(), none.clone());
+    let (n1, n3, n5) = (none.clone(), none.clone(), none.clone());
+    let hook_none = tx("ver_hook_none");
     let p1 = plugin.clone();
     view! {
         <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
@@ -899,7 +900,7 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
                 <dt>{tx("ver_engine_plugin")}</dt><dd>{move || engine_plugin().map(|v| format!("v{v}")).unwrap_or_else(|| n5.clone())}</dd>
                 <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| sha().map_or_else(|| v.clone(), |h| format!("{v} \u{b7} {h}"))).unwrap_or_else(|| n3.clone())}</dd>
                 <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
-                <dt>{tx("ver_hook")}</dt><dd>{move || pulse(|p| p.hook_version.clone()).unwrap_or_else(|| n4.clone())}</dd>
+                <dt>{tx("ver_hook")}</dt><dd>{move || pulse(|p| p.hook_version.clone()).filter(|v| !v.is_empty()).unwrap_or_else(|| hook_none.clone())}</dd>
                 <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
                 <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
             </dl>

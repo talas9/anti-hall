@@ -1008,6 +1008,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
+    // every hook call reaches the daemon as a dispatch request, so the launcher's build version rides in its environment
+    sh.note_hook_version(&meta.env);
     if let Some(ms) = meta.deadline_ms {
         crate::deadline::client_window(ms);
     }
