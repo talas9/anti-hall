@@ -200,6 +200,11 @@ pub(crate) fn raised(a: &Agent) -> Option<super::signals::Raised> {
     (!m.action.is_empty()).then(|| (m.score as u64, format!("{}|{}|{}", m.source, if m.verdict.is_empty() { word("no_goal") } else { &m.verdict }, m.reason)))
 }
 
+/// Whether the mark is at the hard action: the burn breaker blocks the agent exactly as for its own hard flag.
+pub(crate) fn is_hard(a: &Agent) -> bool {
+    !a.waste.action.is_empty() && a.waste.action == word("hard")
+}
+
 /// The advisory text for a raised signal.
 pub(crate) fn text(who: &str, a: &Agent, evidence: u64, stored: &str) -> String {
     let mut parts = stored.splitn(3, '|');

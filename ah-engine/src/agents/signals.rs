@@ -594,7 +594,8 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         sample(&mut a, now);
         super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
-        mark_breaker(env, &a, raised.get("burn_hard"));
+        let waste_hard = super::waste::is_hard(&a).then(|| (a.waste.score as u64, String::new()));
+        mark_breaker(env, &a, raised.get("burn_hard").or(waste_hard.as_ref()));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {
             st.day(env).burned += (a.tin + a.tout).saturating_sub(prev);

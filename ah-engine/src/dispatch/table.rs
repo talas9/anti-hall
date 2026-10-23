@@ -401,7 +401,7 @@ mod tests {
                 "procwatch-advisory",
                 "engine-role-guard",
                 "broad-kill-guard",
-                "burn-breaker"
+                "burn-breaker",
                 "queued-wait-guard",
                 "lane-test-guard"
             ]
