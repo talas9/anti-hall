@@ -443,8 +443,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     let Some(flag) = a.flags.get(sig).cloned() else { return };
     let tg = targets(env, st, a, sig);
     let mut sent = 0;
-    let mut held = why;
     for t in &tg {
+        // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
+        let mut held = why;
         let (sink, key): (Box<dyn Sink>, String) = match t {
             Target::Session(k) => (Box::new(SessionQueue), k.clone()),
             Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
