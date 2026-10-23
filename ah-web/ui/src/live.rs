@@ -278,11 +278,18 @@ impl Inner {
     fn record_jev(&mut self, j: &JevEvt) {
         push_cap(&mut self.jev, j.clone(), self.cfg.panel_rows.max(self.cfg.top_n * 4));
         self.last.insert("mind".into(), j.ts_ms);
+        let ck = node_ck(&j.check);
+        let asked = !j.check.is_empty() && self.checks.ids.iter().flatten().any(|x| *x == ck);
+        if asked {
+            self.seen_edges.insert(format!("j|{}|mind", j.check));
+        }
         self.dirty = true;
         if self.mounted && !self.reduced {
             if let Some(bus) = &self.bus {
                 let color = self.cfg.jev_fx.get(&j.mode).cloned().unwrap_or_default();
-                bus.push(FxEvent { kind: FxKind::Ring, path: vec!["mind".to_string()], color: color.clone(), travel_color: color });
+                // the asking check's particle flows into the mind, which then pulses; without a recorded check only the pulse plays
+                let path = if asked { vec![ck, "mind".to_string()] } else { vec!["mind".to_string()] };
+                bus.push(FxEvent { kind: if asked { FxKind::Decision } else { FxKind::Ring }, path, color: color.clone(), travel_color: color });
             }
         }
     }
@@ -447,12 +454,14 @@ impl Inner {
                 "e" => (node_ev(a), node_ck(b)),
                 "r" => (node_ck(a), node_ru(b)),
                 "q" => (node_ru(a), node_dn(b)),
+                "j" => (node_ck(a), "mind".to_string()),
                 _ => (node_ck(a), node_dn(b)),
             };
             let known = match *kind {
                 "e" => visible_ev.contains(from.as_str()) && visible_ck.contains(to.as_str()),
                 "r" => visible_ck.contains(from.as_str()) && visible_ru.contains(to.as_str()),
                 "q" => visible_ru.contains(from.as_str()),
+                "j" => visible_ck.contains(from.as_str()),
                 _ => visible_ck.contains(from.as_str()),
             };
             if known {

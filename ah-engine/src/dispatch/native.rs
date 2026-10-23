@@ -112,6 +112,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn() -> bool, observe: &d
         let started = std::time::Instant::now();
         crate::deadline::beat();
         let check = e.check.as_deref().unwrap_or("");
+        crate::jev::assist::set_asking_check(check);
         if crate::deadline::note_soft_overrun() {
             // the client's fail-fast wait was over before any check of this request started (it waited in the queue): this and the later
             // checks still run (up to the hard deadline), the Node hook is not needed

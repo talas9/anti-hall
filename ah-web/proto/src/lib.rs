@@ -132,6 +132,9 @@ pub struct JevEvt {
     pub reason: String,
     /// Whether the call changed the outcome.
     pub changed: bool,
+    /// The check that asked, when the engine recorded it.
+    #[serde(default)]
+    pub check: String,
 }
 
 /// The hook wiring for the Live screen: which checks answer which events (from `describe`).

@@ -136,6 +136,7 @@ pub fn new_jev(s: &Settings, offset: &mut Option<u64>) -> Vec<JevEvt> {
                 latency_ms: v.get("ms").and_then(Value::as_u64).unwrap_or(0),
                 cost_usd: v.get("costUsd").and_then(Value::as_f64),
                 reason: t("reason"),
+                check: t("check"),
                 changed: v.get("changed").is_some_and(|c| !c.is_null() && *c != Value::Bool(false)),
             }
         })
