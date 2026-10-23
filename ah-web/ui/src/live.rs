@@ -1,11 +1,11 @@
-//! The Live screen: every hook decision as it happens (event -> check -> decision), every action on its node, on the shared graph
-//! component. The stream's decisions and action-log lines come in through `on_snapshot` / `on_delta` (called by the connection code);
+//! The Live screen: every hook decision as it happens (agent -> check -> rule -> Jev -> decision), every action on its node, on the shared graph
+//! component. A hook event is not a node: the travelling packet is coloured by the hook type and the burst at the end by the decision. The stream's decisions and action-log lines come in through `on_snapshot` / `on_delta` (called by the connection code);
 //! this module keeps a small model of them, turns it into graph data at most every `web.live_tick_ms`, and drops the live effects
 //! into the graph's `FxBus` the moment they arrive. Full draws particles and bursts, Lite flashes the nodes; both show the counters,
 //! the timeline strip and the side panel. Nothing is drawn or timed while the screen is not shown.
 use super::{get_detail, now_ms, open_detail, post_action, since, tier_of, tx, Ctx};
 use ah_web_graph::{ActionCall, ActionDef, FxBus, FxEvent, FxKind, Graph, GraphConfig, GraphData, LayoutMode, NodeDef, Tier};
-use ah_web_proto::{ActionEvt, ActionReq, JevEvt, Agent, Boot, Decision, Delta, LiveCfg, LiveMap, Snapshot, LIVE_MAP_PATH};
+use ah_web_proto::{ActionEvt, ActionReq, JevEvt, Agent, Boot, Decision, Delta, LiveCfg, NumFmt, Snapshot};
 use leptos::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -13,7 +13,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
 
 /// Fixed slots of one column: a node keeps its row; when the column is full the least recently active node gives its row up.
 #[derive(Default)]
@@ -55,6 +54,7 @@ struct Bucket {
     blocks: u32,
     edges: HashMap<String, u32>,
     checks: HashMap<String, u32>,
+    hooks: HashMap<String, u32>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -64,13 +64,14 @@ pub struct Counters {
     blocks: u32,
     top: Vec<(String, u32)>,
     jev_calls: u32,
+    /// Decisions per hook event over the rate window.
+    hooks: Vec<(String, u32)>,
 }
 
 struct Inner {
     cfg: LiveCfg,
     ui: std::collections::BTreeMap<String, String>,
-    map: LiveMap,
-    events: Slots,
+    number: NumFmt,
     checks: Slots,
     rules: Slots,
     agents: Slots,
@@ -124,8 +125,7 @@ pub fn init(boot: &Boot) {
     let inner = Inner {
         cfg: boot.live.clone(),
         ui: boot.ui.clone(),
-        map: LiveMap::default(),
-        events: Slots::default(),
+        number: boot.number.clone(),
         checks: Slots::default(),
         rules: Slots::default(),
         jev: VecDeque::new(),
@@ -181,9 +181,6 @@ pub fn on_delta(d: &Delta) {
     h.ensure_ticking();
 }
 
-fn node_ev(e: &str) -> String {
-    format!("ev:{e}")
-}
 fn node_ck(c: &str) -> String {
     format!("ck:{c}")
 }
@@ -199,11 +196,19 @@ fn edge_cr(c: &str, r: &str) -> String {
 fn edge_rd(r: &str, fx: &str) -> String {
     format!("q|{r}|{fx}")
 }
-fn edge_ec(e: &str, c: &str) -> String {
-    format!("e|{e}|{c}")
+/// The wire from where a hook ran (an agent, else the engine) to the check that answered it.
+fn edge_oc(origin: &str, c: &str) -> String {
+    format!("e|{origin}|{c}")
 }
 fn edge_cd(c: &str, fx: &str) -> String {
     format!("k|{c}|{fx}")
+}
+
+/// A rate per second for display: a thousand and more as 12k / 1.1M by the page's number format, below that one decimal, and never
+/// a negative zero (an empty float sum is -0.0, which `{:.1}` prints as "-0.0").
+fn rate_text(number: &NumFmt, v: f32) -> String {
+    let v = if v > 0.0 { v } else { 0.0 };
+    if v >= 1000.0 { number.fmt(v.round() as u64) } else { format!("{v:.1}") }
 }
 
 fn push_cap<T>(q: &mut VecDeque<T>, v: T, cap: usize) {
@@ -219,6 +224,15 @@ impl Inner {
         self.ui.get(key).cloned().unwrap_or_else(|| key.to_string())
     }
 
+    /// The effect colour key of the packet that carries hook event `e`.
+    fn hook_key(&self, e: &str) -> String {
+        self.cfg.hook_fx.get(e).cloned().unwrap_or_else(|| self.cfg.hook_fx_default.clone())
+    }
+
+    fn rate_text(&self, v: f32) -> String {
+        rate_text(&self.number, v)
+    }
+
     fn fx_key(&self, d: &Decision) -> String {
         if d.fx.is_empty() { self.cfg.travel_fx.clone() } else { d.fx.clone() }
     }
@@ -229,15 +243,16 @@ impl Inner {
         }
         self.last_ts = self.last_ts.max(d.ts_ms);
         let fx = self.fx_key(d);
-        let (ev, ck, dn) = (node_ev(&d.event), node_ck(&d.check), node_dn(&fx));
-        self.events.place(&ev, &self.last, self.cfg.events_max);
+        let (ck, dn) = (node_ck(&d.check), node_dn(&fx));
         self.checks.place(&ck, &self.last, self.cfg.checks_max);
-        for id in [&ev, &ck, &dn] {
+        for id in [&ck, &dn] {
             self.last.insert(id.clone(), d.ts_ms);
             push_cap(self.recent.entry(id.clone()).or_default(), d.clone(), self.cfg.panel_rows);
         }
         self.rule_of.insert(ck.clone(), d.rule.clone());
-        let e1 = edge_ec(&d.event, &d.check);
+        // the agent that ran the hook starts the path, when the engine recorded it and the agent is drawn; else the engine does
+        let origin = Some(format!("a:{}", d.session)).filter(|a| !d.session.is_empty() && self.agents.ids.iter().flatten().any(|x| x == a)).unwrap_or_else(|| "engine".to_string());
+        let e1 = edge_oc(&origin, &d.check);
         // the rule that named the check sits between the check and the decision; a row without one goes straight to the decision
         let (via, tail): (Option<String>, Vec<String>) = if d.rule.is_empty() {
             (None, vec![edge_cd(&d.check, &fx)])
@@ -254,7 +269,7 @@ impl Inner {
         }
         let sec = d.ts_ms / 1000;
         if self.buckets.back().is_none_or(|b| b.sec != sec) {
-            self.buckets.push_back(Bucket { sec, total: 0, blocks: 0, edges: HashMap::new(), checks: HashMap::new() });
+            self.buckets.push_back(Bucket { sec, total: 0, blocks: 0, edges: HashMap::new(), checks: HashMap::new(), hooks: HashMap::new() });
         }
         if let Some(b) = self.buckets.back_mut() {
             b.total += 1;
@@ -264,6 +279,7 @@ impl Inner {
                 *b.edges.entry(e).or_default() += 1;
             }
             *b.checks.entry(d.check.clone()).or_default() += 1;
+            *b.hooks.entry(d.event.clone()).or_default() += 1;
         }
         if live && self.mounted && !self.reduced {
             self.scan();
@@ -271,11 +287,9 @@ impl Inner {
         push_cap(&mut self.timeline, d.clone(), self.cfg.timeline_max);
         self.timeline_rev += 1;
         self.dirty = true;
-        // the agent that ran the hook starts the path, when the engine recorded it and the agent is drawn
-        let agent = Some(format!("a:{}", d.session)).filter(|a| !d.session.is_empty() && self.agents.ids.iter().flatten().any(|x| x == a));
         if live && self.mounted && !self.reduced {
             if let Some(bus) = &self.bus {
-                bus.push(FxEvent { kind: FxKind::Decision, path: [agent, Some(ev), Some(ck), via, Some(dn)].into_iter().flatten().collect(), color: fx, travel_color: self.cfg.travel_fx.clone() });
+                bus.push(FxEvent { kind: FxKind::Decision, path: [Some(origin), Some(ck), via, Some(dn)].into_iter().flatten().collect(), color: fx, travel_color: self.hook_key(&d.event) });
             }
         }
     }
@@ -379,7 +393,43 @@ impl Inner {
         top.truncate(c.top_n);
         let from = (now_ms / 1000).saturating_sub(c.block_window_s) * 1000;
         let jev_calls = self.jev.iter().filter(|j| j.ts_ms >= from).count() as u32;
-        Counters { jev_calls, rate_x10: (total as f32 * 10.0 / c.rate_window_s.max(1) as f32).round() as u32, blocks, top }
+        let from_hooks = (now_ms / 1000).saturating_sub(c.rate_window_s);
+        let mut hooks: HashMap<&str, u32> = HashMap::new();
+        for b in self.buckets.iter().filter(|b| b.sec >= from_hooks) {
+            for (k, v) in &b.hooks {
+                *hooks.entry(k).or_default() += v;
+            }
+        }
+        let hooks = hooks.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        Counters { jev_calls, rate_x10: (total as f32 * 10.0 / c.rate_window_s.max(1) as f32).round() as u32, blocks, top, hooks }
+    }
+
+    /// The Jev node's second line and state, from the Jev log rows: the strongest mode any integration is in (on, then shadow, then
+    /// off) decides the look; it glows (`judging`) only for `jev_glow_ms` after Jev itself answered, not for a cache or baseline row.
+    fn mind(&self, now_ms: u64) -> (String, &'static str) {
+        let rank = |m: &str| match m {
+            "on" => 3,
+            "shadow" => 2,
+            "off" => 1,
+            _ => 0,
+        };
+        let mut latest: HashMap<&str, &JevEvt> = HashMap::new();
+        for j in &self.jev {
+            latest.insert(j.id.as_str(), j);
+        }
+        let Some(top) = latest.values().map(|j| rank(&j.mode)).max().filter(|r| *r > 0) else {
+            return (self.t("live_mind_idle"), "idle");
+        };
+        let row = self.jev.iter().rev().find(|j| rank(&j.mode) == top);
+        let sub = |j: &JevEvt| self.t("live_mind_sub").replace("{id}", &j.id).replace("{conf}", &j.conf.map_or_else(|| self.t("live_unavailable"), |c| format!("{c:.2}"))).replace("{mode}", &self.t(&format!("live_mode_{}", j.mode)));
+        match (top, row) {
+            (1, _) | (_, None) => (self.t("live_mind_off"), "off"),
+            (2, Some(j)) => (sub(j), "shadow"),
+            (_, Some(j)) => {
+                let judging = self.jev.iter().rev().take_while(|x| now_ms.saturating_sub(x.ts_ms) < self.cfg.jev_glow_ms).any(|x| x.mode == "on" && x.backend == "jev");
+                (sub(j), if judging { "judging" } else { "on" })
+            }
+        }
     }
 
     fn graph(&self, now_ms: u64, agents: &[Agent]) -> GraphData {
@@ -388,7 +438,6 @@ impl Inner {
         let (_, _, er, _) = self.window_sums(now_ms, c.rate_window_s);
         let er: HashMap<String, f32> = er.into_iter().map(|(k, v)| (k.to_string(), v as f32 / win)).collect();
         let rate_of = |prefix: &str, id: &str, pos: usize| -> f32 { er.iter().filter(|(k, _)| k.starts_with(prefix) && k.split('|').nth(pos) == Some(id)).map(|(_, v)| *v).sum() };
-        let per_s = self.t("live_per_s");
         let mut nodes = Vec::new();
         let mut node = |id: String, label: String, sub: String, kind: &str, col: f32, row: usize, status: &str| {
             nodes.push(NodeDef {
@@ -403,6 +452,7 @@ impl Inner {
                 ports_out: vec![],
             });
         };
+        let per_s = self.t("live_per_s");
         node("engine".into(), self.t("live_engine"), self.t("live_engine_sub"), "engine", 0.0, 0, "running");
         for (row, id) in self.agents.ids.iter().enumerate() {
             let Some(id) = id else { continue };
@@ -416,41 +466,27 @@ impl Inner {
             };
             node(id.clone(), a.label.clone(), a.step.chars().take(34).collect(), kind, 0.0, row + 1, &a.state);
         }
-        let visible_ev: HashSet<&str> = self.events.ids.iter().flatten().map(String::as_str).collect();
         let visible_ck: HashSet<&str> = self.checks.ids.iter().flatten().map(String::as_str).collect();
         let visible_ru: HashSet<&str> = self.rules.ids.iter().flatten().map(String::as_str).collect();
-        for (row, id) in self.events.ids.iter().enumerate() {
-            let Some(id) = id else { continue };
-            let name = id.trim_start_matches("ev:");
-            let bound = self.map.edges.iter().filter(|(e, _)| e == name).count();
-            let sub = format!("{:.1}{per_s}{}", rate_of("e|", name, 1), if bound > 0 { format!(" · {bound} {}", self.t("live_n_checks")) } else { String::new() });
-            node(id.clone(), name.to_string(), sub, "event", 1.0, row, "ok");
-        }
         for (row, id) in self.checks.ids.iter().enumerate() {
             let Some(id) = id else { continue };
             let name = id.trim_start_matches("ck:");
             let rule = self.rule_of.get(id).filter(|r| !r.is_empty()).map(|r| format!(" · {r}")).unwrap_or_default();
-            node(id.clone(), name.to_string(), format!("{:.1}{per_s}{rule}", rate_of("e|", name, 2)), "check", 2.0, row, "ok");
+            node(id.clone(), name.to_string(), format!("{}{per_s}{rule}", self.rate_text(rate_of("e|", name, 2))), "check", 1.0, row, "ok");
         }
         for (row, id) in self.rules.ids.iter().enumerate() {
             let Some(id) = id else { continue };
             let name = id.trim_start_matches("ru:");
-            node(id.clone(), name.to_string(), format!("{:.1}{per_s}", rate_of("r|", name, 2)), "rule", 3.0, row, "ok");
+            node(id.clone(), name.to_string(), format!("{}{per_s}", self.rate_text(rate_of("r|", name, 2))), "rule", 2.0, row, "ok");
         }
         for (row, key) in ["allow", "advise", "inject", "block"].iter().enumerate() {
             let id = node_dn(key);
-            let sub = format!("{:.1}{per_s}", rate_of("k|", key, 2) + rate_of("q|", key, 2));
-            node(id, self.t(&format!("live_fx_{key}")), sub, key, 5.0, row * 2 + 1, "ok");
+            let sub = format!("{}{per_s}", self.rate_text(rate_of("k|", key, 2) + rate_of("q|", key, 2)));
+            node(id, self.t(&format!("live_fx_{key}")), sub, key, 4.0, row * 2 + 1, "ok");
         }
         {
-            let (sub, status) = match self.jev.back() {
-                None => (self.t("live_mind_idle"), "idle"),
-                Some(j) => (
-                    self.t("live_mind_sub").replace("{id}", &j.id).replace("{conf}", &j.conf.map_or_else(|| self.t("live_unavailable"), |c| format!("{c:.2}"))).replace("{mode}", &self.t(&format!("live_mode_{}", j.mode))),
-                    if now_ms.saturating_sub(j.ts_ms) > c.rate_window_s * 1000 { "idle" } else { match j.mode.as_str() { "on" => "running", "shadow" => "waiting", _ => "idle" } },
-                ),
-            };
-            node("mind".into(), self.t("live_mind"), sub, "jev", 4.0, 4, status);
+            let (sub, status) = self.mind(now_ms);
+            node("mind".into(), self.t("live_mind"), sub, "jev", 3.0, 4, status);
         }
         let mut edges = Vec::new();
         let mut seen = HashSet::new();
@@ -459,24 +495,18 @@ impl Inner {
                 edges.push(ah_web_graph::EdgeDef { id, from, from_port: String::new(), to, to_port: String::new(), label: String::new(), rate });
             }
         };
-        for (e, k) in &self.map.edges {
-            if visible_ev.contains(node_ev(e).as_str()) && visible_ck.contains(node_ck(k).as_str()) {
-                let id = edge_ec(e, k);
-                edge(id.clone(), node_ev(e), node_ck(k), er.get(&id).copied().unwrap_or(0.0));
-            }
-        }
         for id in &self.seen_edges {
             let parts: Vec<&str> = id.split('|').collect();
             let (Some(kind), Some(a), Some(b)) = (parts.first(), parts.get(1), parts.get(2)) else { continue };
             let (from, to) = match *kind {
-                "e" => (node_ev(a), node_ck(b)),
+                "e" => (a.to_string(), node_ck(b)),
                 "r" => (node_ck(a), node_ru(b)),
                 "q" => (node_ru(a), node_dn(b)),
                 "j" => (node_ck(a), "mind".to_string()),
                 _ => (node_ck(a), node_dn(b)),
             };
             let known = match *kind {
-                "e" => visible_ev.contains(from.as_str()) && visible_ck.contains(to.as_str()),
+                "e" => (from == "engine" || self.agents.ids.iter().flatten().any(|x| *x == from)) && visible_ck.contains(to.as_str()),
                 "r" => visible_ck.contains(from.as_str()) && visible_ru.contains(to.as_str()),
                 "q" => visible_ru.contains(from.as_str()),
                 "j" => visible_ck.contains(from.as_str()),
@@ -579,13 +609,6 @@ fn watch_visibility() {
     cb.forget();
 }
 
-async fn fetch_map() -> Option<LiveMap> {
-    let w = web_sys::window()?;
-    let resp: web_sys::Response = JsFuture::from(w.fetch_with_str(LIVE_MAP_PATH)).await.ok()?.dyn_into().ok()?;
-    let text = JsFuture::from(resp.text().ok()?).await.ok()?.as_string()?;
-    serde_json::from_str(&text).ok()
-}
-
 fn fx_class(d: &Decision, cfg: &LiveCfg) -> String {
     format!("tl-{}", if d.fx.is_empty() { cfg.travel_fx.as_str() } else { d.fx.as_str() })
 }
@@ -626,15 +649,6 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
     h.sink.set(Some(sink));
     h.timeline_seen.set(u64::MAX);
     h.ensure_ticking();
-    leptos::task::spawn_local(async move {
-        if let Some(m) = fetch_map().await {
-            if let Some(h) = hub() {
-                h.inner.borrow_mut().map = m;
-                h.inner.borrow_mut().dirty = true;
-                h.ensure_ticking();
-            }
-        }
-    });
     on_cleanup(|| {
         if let Some(h) = hub() {
             h.stop();
@@ -708,6 +722,25 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
     let counters = sink.counters;
     let timeline = sink.timeline;
     let lc2 = lc.clone();
+    // one chip per listed hook event: its packet colour and its live rate over the rate window
+    let legend = {
+        let (lc, cfg, number) = (lc.clone(), cfg.clone(), boot.number.clone());
+        lc.hook_legend
+            .iter()
+            .map(|ev| {
+                let key = lc.hook_fx.get(ev).unwrap_or(&lc.hook_fx_default);
+                let colour = cfg.fx.colors.get(key).cloned().unwrap_or_default();
+                let (name, number, win) = (ev.clone(), number.clone(), lc.rate_window_s.max(1) as f32);
+                let n2 = name.clone();
+                view! {
+                    <span class="live-legend-i" role="listitem" style=format!("--hk:{colour}")>
+                        <i></i><span>{name}</span>
+                        <b>{move || { let n = counters.with(|c| c.hooks.iter().find(|(k, _)| *k == n2).map_or(0, |(_, v)| *v)); format!("{}{}", rate_text(&number, n as f32 / win), tx("live_per_s")) }}</b>
+                    </span>
+                }
+            })
+            .collect_view()
+    };
     view! {
         <div class="live">
             <div class="main-head">
@@ -725,8 +758,12 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
                     <ol>{move || counters.with(|c| c.top.iter().map(|(n, v)| view! { <li><span>{n.clone()}</span><b>{*v}</b></li> }).collect_view())}</ol>
                 </div>
             </div>
+            <div class="live-legend" role="list" aria-label=tx("live_legend_title")>
+                <span class="live-legend-t">{tx("live_legend_title")}</span>
+                {legend}
+            </div>
             <div class="live-cols" aria-hidden="true">
-                <span>{tx("live_col_agents")}</span><span>{tx("live_col_events")}</span><span>{tx("live_col_checks")}</span><span>{tx("live_col_rules")}</span><span></span><span>{tx("live_col_decisions")}</span>
+                <span>{tx("live_col_agents")}</span><span>{tx("live_col_checks")}</span><span>{tx("live_col_rules")}</span><span>{tx("live_col_jev")}</span><span>{tx("live_col_decisions")}</span>
             </div>
             <div class="live-graph">{graph}</div>
             <section class="live-timeline" aria-label=tx("live_timeline")>

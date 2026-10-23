@@ -145,6 +145,9 @@ pub struct JevEvt {
     /// The check that asked, when the engine recorded it.
     #[serde(default)]
     pub check: String,
+    /// Who answered: `jev` (it judged), `cache`, or `baseline-only` (Jev is off and the rule decided alone); empty when not logged.
+    #[serde(default)]
+    pub backend: String,
 }
 
 /// The hook wiring for the Live screen: which checks answer which events (from `describe`).
@@ -400,6 +403,14 @@ pub struct LiveCfg {
     pub scan_gap_ms: u64,
     /// Jev mode -> effect colour key.
     pub jev_fx: std::collections::BTreeMap<String, String>,
+    /// Hook event -> effect colour key of the packet that carries it.
+    pub hook_fx: std::collections::BTreeMap<String, String>,
+    /// Effect colour key of a hook event `hook_fx` does not name.
+    pub hook_fx_default: String,
+    /// The hook events the legend lists, in order.
+    pub hook_legend: Vec<String>,
+    /// How long after a judgement by Jev its node keeps glowing, ms.
+    pub jev_glow_ms: u64,
 }
 
 /// Where the header pills turn amber and red (from `web.toml`).

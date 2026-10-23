@@ -128,6 +128,10 @@ pub struct Settings {
     pub live_rules_max: usize,
     pub live_scan_gap_ms: u64,
     pub live_jev_fx: BTreeMap<String, String>,
+    pub live_hook_fx: BTreeMap<String, String>,
+    pub live_hook_fx_default: String,
+    pub live_hook_legend: Vec<String>,
+    pub live_jev_glow_ms: u64,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
     pub health_cache_ms: u64,
@@ -189,6 +193,10 @@ impl Settings {
             rules_max: self.live_rules_max,
             scan_gap_ms: self.live_scan_gap_ms,
             jev_fx: self.live_jev_fx.clone(),
+            hook_fx: self.live_hook_fx.clone(),
+            hook_fx_default: self.live_hook_fx_default.clone(),
+            hook_legend: self.live_hook_legend.clone(),
+            jev_glow_ms: self.live_jev_glow_ms,
         }
     }
 

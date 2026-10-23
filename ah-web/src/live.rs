@@ -137,6 +137,7 @@ pub fn new_jev(s: &Settings, offset: &mut Option<u64>) -> Vec<JevEvt> {
                 cost_usd: v.get("costUsd").and_then(Value::as_f64),
                 reason: t("reason"),
                 check: t("check"),
+                backend: t("backend"),
                 changed: v.get("changed").is_some_and(|c| !c.is_null() && *c != Value::Bool(false)),
             }
         })

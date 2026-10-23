@@ -7,7 +7,7 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live-top ol { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--font-mono); }
 .live-top li { display: flex; gap: 6px; }
 .live-top li b { color: var(--cyan); font-weight: 600; }
-.live-cols { display: grid; grid-template-columns: repeat(6, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+.live-cols { display: grid; grid-template-columns: repeat(5, 1fr); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
 .live-graph { flex: 1 1 auto; min-height: 520px; height: calc(100vh - 400px); }
 .live .ahg {
   --ah-line: var(--line); --ah-panel: var(--panel); --ah-text: var(--text); --ah-muted: var(--muted);
@@ -36,10 +36,18 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 
 /* sci-fi deck (Full): deep field, luminous core. Every motion below is triggered by data (a judgement, a fired effect); at rest the scene is still. */
 .live .ahg-view { background-color: oklch(0.12 0.03 265); background-image: radial-gradient(900px 500px at 70% 40%, oklch(0.2 0.07 270 / .5), transparent 70%), linear-gradient(var(--ahg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--ahg-grid) 1px, transparent 1px); }
+/* Jev (the AI): its own violet, never red or green. off = grey baseline, shadow = outline only, on = solid, judging = glow. */
 .live .ahg-node[data-kind="jev"] { overflow: visible; border-color: color-mix(in oklch, var(--k) 60%, transparent); }
 .live .ahg-node[data-kind="jev"]::before { content: ""; position: absolute; inset: -7px; border-radius: 18px; border: 2px solid transparent; border-top-color: var(--k); border-bottom-color: color-mix(in oklch, var(--k) 40%, transparent); opacity: .5; }
-.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="running"]::before { animation: ahCoreSpin 3s linear infinite; opacity: 1; box-shadow: 0 0 22px var(--k); }
-.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="waiting"]::before { animation: ahCoreSpin 7s linear infinite; opacity: .8; }
+.live .ahg-node[data-kind="jev"][data-status="off"] { --k: oklch(0.55 0.02 270) !important; opacity: .65; border-color: var(--line-2, var(--line)); }
+.live .ahg-node[data-kind="jev"][data-status="off"]::before { display: none; }
+.live .ahg-node[data-kind="jev"][data-status="shadow"] { background: transparent; border: 1.5px dashed color-mix(in oklch, var(--k) 75%, transparent); box-shadow: none; }
+.live .ahg-node[data-kind="jev"][data-status="shadow"]::before { display: none; }
+.live .ahg-node[data-kind="jev"][data-status="idle"]::before { opacity: .25; }
+.live .ahg-node[data-kind="jev"][data-status="on"] { background: color-mix(in oklch, var(--ahg-panel) 92%, var(--k)); }
+.live .ahg-node[data-kind="jev"][data-status="judging"] { background: color-mix(in oklch, var(--ahg-panel) 85%, var(--k)); box-shadow: 0 0 26px color-mix(in oklch, var(--k) 55%, transparent); }
+.live .ahg[data-tier="full"] .ahg-node[data-kind="jev"][data-status="judging"]::before { animation: ahCoreSpin 3s linear infinite; opacity: 1; box-shadow: 0 0 22px var(--k); }
+.live .ahg[data-tier="lite"] .ahg-node[data-kind="jev"][data-status="judging"]::before { opacity: 1; }
 @keyframes ahCoreSpin { to { transform: rotate(360deg); } }
 .live .stat-v, .live .tl-age, .live .tl-check { font-variant-numeric: tabular-nums; }
 
@@ -49,3 +57,11 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .live .ahg[data-tier="full"] .ahg-view[data-scan="b"]::after { animation: ahScanB var(--ahg-scan-ms, 900ms) ease-out; }
 @keyframes ahScanA { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }
 @keyframes ahScanB { from { top: -90px; opacity: 1; } to { top: 100%; opacity: 0; } }
+
+/* legend: the packet colour is the hook type; each chip carries its live rate */
+.live-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 6px; font: 11px var(--font-mono); color: var(--muted); }
+.live-legend-t { font: 10px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; }
+.live-legend-i { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.live-legend-i i { width: 9px; height: 9px; border-radius: 50%; background: var(--hk); box-shadow: 0 0 7px var(--hk); }
+.live-legend-i b { color: var(--text-hi); font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) { .live-legend { font-size: 10px; } }
