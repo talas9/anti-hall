@@ -7,14 +7,14 @@
 # the process as a whole. `ah-engine status --memory` shows every holder against these numbers.
 
 [mem.global_soft_bytes]
-doc = "Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
-value = 100663296
+doc = "SOFT limit (125 MB, owner decision 2026-10-23; a limit, not a target). Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
+value = 131072000
 min = 1048576
 unit = "bytes"
 
 [mem.global_hard_bytes]
-doc = "Process memory above which every holder is recycled and every cache insert is refused. If it is still above this `mem.global_restart_after_s` later, the daemon is asked to restart cleanly and the reason is recorded in the event log."
-value = 125829120
+doc = "HARD limit (250 MB, owner decision 2026-10-23). Process memory above which every holder is recycled and every cache insert is refused. If it is still above this `mem.global_restart_after_s` later, the daemon is asked to restart cleanly and the reason is recorded in the event log."
+value = 262144000
 min = 1048576
 unit = "bytes"
 

@@ -146,8 +146,8 @@ unit = "ms"
 # ---- resource budgets (reported in `status`, the health event and the health log) ---------------------------------------------------------
 
 [diagnostics.budget_cpu_pct]
-doc = "CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
-value = 2
+doc = "SOFT CPU limit of the daemon (5 percent of one core, owner decision 2026-10-23; the 10 percent hard bar is web.pulse_cpu_bad_permille). A limit, not a target. CPU budget of the daemon, percent of one core. A breach is reported when the CPU over diagnostics.budget_cpu_windows consecutive daemon.cpu_check_ms windows stays at or above it; 0 turns the CPU budget off."
+value = 5
 min = 0
 unit = "%"
 
@@ -158,8 +158,8 @@ min = 1
 max = 100
 
 [diagnostics.budget_mem_mb]
-doc = "Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
-value = 100
+doc = "SOFT memory limit of the daemon (125 MB, owner decision 2026-10-23; hard is mem.global_hard_bytes). Memory budget of the daemon in MB, measured with the figure daemon.mem_metric selects. A breach is reported while the daemon is over it; 0 turns the memory budget off."
+value = 125
 min = 0
 unit = "MB"
 

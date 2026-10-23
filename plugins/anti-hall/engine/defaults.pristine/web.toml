@@ -156,7 +156,7 @@ value = { PreToolUse = "before a tool call", PostToolUse = "after a tool call", 
 
 [web.pulse_cpu_warn_permille]
 doc = "Engine CPU (parts per thousand of one core) at which the CPU pill turns amber."
-value = 20
+value = 50
 
 [web.pulse_cpu_bad_permille]
 doc = "Engine CPU (parts per thousand of one core) at which the CPU pill turns red."
@@ -164,11 +164,11 @@ value = 100
 
 [web.pulse_mem_warn_mb]
 doc = "Engine memory (MB) at which the MEM pill turns amber."
-value = 100
+value = 125
 
 [web.pulse_mem_bad_mb]
 doc = "Engine memory (MB) at which the MEM pill turns red."
-value = 200
+value = 250
 
 [web.pulse_err_warn]
 doc = "Failed engine requests at which the ERR pill turns amber."
