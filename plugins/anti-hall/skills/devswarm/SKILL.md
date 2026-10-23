@@ -348,13 +348,13 @@ skipped for the workspaces the sweep owns. Archive is recoverable: the worktree 
 
 **Prune old archived workspaces (owner-approved only).** Deletion is permanent. The flow is
 fixed, and every step is required:
-1. Dry run: `~/.anti-hall/ah-engine/bin/ah-engine mesh prune-archived --older-than <days>`. It lists every
+1. Dry run: `~/.anti-hall/ah-engine/bin/ah-engine devswarm plan-prune --older-than <days>`. It lists every
    archived workspace with its evidence (archived since, merged?, uncommitted?, unread?,
    worktree size) and blockers, and returns `eligibleIds` plus a plan `nonce` (valid 15 min).
 2. Show the owner a table of the eligible rows.
 3. Ask the owner with the EXACT id list, as one question (AskUserQuestion, or the host's
    ask-the-user tool) with approve / cancel options. Never infer approval.
-4. Only on approval, run `~/.anti-hall/ah-engine/bin/ah-engine mesh prune-archived --confirm-ids <id,id,...> --plan <nonce>`.
+4. Only on approval, run `~/.anti-hall/ah-engine/bin/ah-engine devswarm prune --confirm-ids <id,id,...> --plan <nonce>`.
    The ids must equal the plan's `eligibleIds` exactly. Each row is re-checked right before its
    delete (still archived, not the Primary, clean worktree). Every attempt is logged to
    `~/.anti-hall/logs/devswarm-prune.ndjson`, and anti-hall tombstones its own records for that
@@ -363,7 +363,7 @@ fixed, and every step is required:
    and ask again.
 
 The delete refuses any automated caller (`ANTIHALL_CALLER` set to anything other than
-`interactive`; the supervisor sets `supervisor`). Only the `prune-archived --confirm-ids`
+`interactive`; the supervisor sets `supervisor`). Only the `devswarm prune --confirm-ids`
 dispatch calls it, and a hygiene test enforces that. Never run it from a hook, cron,
 Monitor or background agent. anti-hall never uses the DevSwarm app's local HTTP API.
 
@@ -577,7 +577,7 @@ matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `spawn <branch> [hivecontrol create flags...]` | pass-through — hivecontrol's own flags, unparsed | Thin wrap of `hivecontrol workspace create` (every flag forwards byte-for-byte), then best-effort auto-registers the new worktree in the shared registry (a phantom row, `sessionId:null`, filled in by the child's own first self-register). **Source freshness (0.108.5):** when the source branch (`-s`, else hivecontrol's default) is the repo default branch (origin/HEAD), spawn first runs `git fetch origin <default>` and fast-forwards local `<default>` to it (never rebase/reset/force); offline = warn and continue; behind or diverged and not fast-forwardable (e.g. checked out with local changes) = refused unless `--from-local` (anti-hall's own flag, stripped before forwarding). hivecontrol takes a branch NAME that also becomes the child's parent, so `origin/main` is never passed. Off switch: `devswarm.spawnFromOrigin`. Result carries `sourceCheck`. **Fetch TTL (0.109.0):** the origin fetch is skipped when the remote-tracking ref was updated within `devswarm.spawnFetchTtlSec` (default 300s; 0 = always fetch) — reported as `sourceCheck.fetch`, e.g. `"skipped (fresh, 42s ago)"` vs `"ran"`. When it does fetch, it now passes `--recurse-submodules=on-demand`. **Create timeout (0.109.0):** the `hivecontrol workspace create` call itself is bounded by `devswarm.spawnCreateTimeoutMs` (default 180000ms); a timeout only kills spawn's own child process and is reported in `error`, never left silently hanging. **Timings (0.109.0):** the result carries `timings` (`sourceCheckMs`/`createMs`/`totalMs`), also logged to the shared devswarm-cli log. **Title (0.109.0):** an explicit `-t`/`--title` wins; otherwise the title is derived from the brief's (`-p`/`--prompt`) first line, else falls back to the branch — applied via a separate `update-title` call and cached only once hivecontrol confirms it, so the roster reads the same title everywhere. **Submodule worktree failures (0.109.0):** a `create` that is ok:true overall but failed one of several submodule worktree adds now surfaces `submoduleFailures`/`warnings` (never auto-repaired, never flips `ok`). **The full hivecontrol flag grammar** (`-s/--source`, `-a/--agent`, `-p/--prompt`, `-r/--remote`, `-t/--title`, plus anti-hall's own `--from-local`) is documented verbatim (verified against the installed `hivecontrol workspace create --help`) by `ah-engine mesh help spawn`. | Primary creating a new child workspace — this is the workspace-tier spawn command. | **Writes** (hivecontrol side-effects + a registry phantom row). |
 | `merge [hivecontrol merge-into-source flags...]` | pass-through | Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source` (pass-through, never re-parsed), then `send --broadcast`s the outcome to the mesh. | Child finishing / shipping upstream. | **Writes.** |
 | `auto-archive` | none | **v0.108.0.** Prints the supervisor's auto-archive plan: each tracked child with its proof or its blockers (a done … g idle). Archiving itself only happens in the supervisor sweep (default `devswarm.autoArchive.mode: "on"`) on DevSwarm >= 2.5.3. | "Which done workspaces would be archived, and why not the others?" | **Read-only.** |
-| `prune-archived --older-than <days>` / `--confirm-ids <ids> --plan <nonce>` | `--older-than` (dry run) or both confirm flags | **v0.108.0.** The dry run lists archived workspaces with evidence and stores a 15-min plan nonce. `--confirm-ids` DELETES exactly the plan's eligible ids through `hivecontrol workspace delete` (DevSwarm >= 2.5.3). Only after the owner approves that exact list; refuses automated callers. | Cleaning up old archived workspaces, following the owner-approved flow in "Auto-archive and prune". | **Dry run writes a plan file; `--confirm-ids` is destructive.** |
+| `ah-engine devswarm plan-prune --older-than <days>` / `ah-engine devswarm prune --confirm-ids <ids> --plan <nonce>` (the old `mesh prune-archived` moved here) | `--older-than` (dry run) or both confirm flags | **v0.108.0.** The dry run lists archived workspaces with evidence and stores a 15-min plan nonce. `--confirm-ids` DELETES exactly the plan's eligible ids through `hivecontrol workspace delete` (DevSwarm >= 2.5.3). Only after the owner approves that exact list; refuses automated callers. | Cleaning up old archived workspaces, following the owner-approved flow in "Auto-archive and prune". | **Dry run writes a plan file; `--confirm-ids` is destructive.** |
 
 `roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
 verbs (the "read-only trio") — worth reaching for together when an agent just wants to

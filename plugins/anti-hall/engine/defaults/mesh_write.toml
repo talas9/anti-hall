@@ -2974,3 +2974,115 @@ value = "store for workspace {id} could not be opened: {code}"
 [mesh_write.msg_store_unreadable_code]
 doc = "The text of a mesh partition's store that could not be read. Placeholders: {id} (JSON-quoted) and {code} (the reason)."
 value = "store for workspace {id} could not be fully read ({code})"
+
+# ---- inbox messages / drain-primary-legacy / reconcile / unsupported forms (lane mesh-verbs) ----------------------------------
+
+[mesh_write.verb_messages]
+doc = "The messages subverb of `inbox` (the non-acking history read; with --ack it is `read-primary`)."
+value = "messages"
+
+[mesh_write.verb_drain_primary_legacy]
+doc = "The drain-primary-legacy subverb of `inbox`: `read-primary --legacy-ack-now` under its own name (read and ack in one call)."
+value = "drain-primary-legacy"
+
+[mesh_write.verb_reconcile]
+doc = "The reconcile verb: drain every worktree registered in this project's store once."
+value = "reconcile"
+
+[mesh_write.flag_tail]
+doc = "`inbox messages --tail N`: keep only the newest N rows."
+value = "tail"
+
+[mesh_write.flag_unread]
+doc = "`inbox messages --unread`: scope the history view to the rows after the read position."
+value = "unread"
+
+[mesh_write.since_kind_ts]
+doc = "The `kind` of a --since window given as a time."
+value = "ts"
+
+[mesh_write.since_kind_index]
+doc = "The `kind` of a --since window given as a per-partition message index."
+value = "index"
+
+[mesh_write.reason_bad_tail]
+doc = "The `reason` of an `inbox messages --tail` that is not a positive integer."
+value = "bad-tail"
+
+[mesh_write.msg_bad_tail]
+doc = "The error of an `inbox messages --tail` that is not a positive integer. Placeholder: {got} (JSON-quoted)."
+value = "--tail must be a positive integer (got {got})"
+
+[mesh_write.msg_bad_since]
+doc = "The error of an `inbox messages --since` that is neither an index nor a date. Placeholder: {got} (JSON-quoted)."
+value = "--since must be a non-negative integer (a per-partition message index, the same space `cursor` counts in) or an ISO 8601 date or timestamp such as 2026-10-23 or 2026-10-23T09:30:00Z (got {got})"
+
+[mesh_write.reason_tail_under_truncation]
+doc = "The `reason` of an `inbox messages --tail` refused because the per-source cap withheld rows."
+value = "tail-under-truncation"
+
+[mesh_write.msg_tail_under_truncation]
+doc = "The error of that refusal. Placeholders: {tail}, {limit}, {count}."
+value = "--tail {tail} cannot be honoured: this read was truncated by the {limit}-row per-source cap ({count} row(s) withheld)."
+
+[mesh_write.msg_tail_under_truncation_hint]
+doc = "The hint of that refusal. Placeholder: {limit}."
+value = "use `--since <index|ISO date>` to bound the read to recent mail before the cap applies (or raise --limit above {limit} so nothing is truncated). Nothing was acked; no mail was lost."
+
+[mesh_write.msg_messages_ack_warning]
+doc = "stderr line of `inbox messages <id> --ack` (it returns a read receipt, it does not ack). Placeholder: {id}."
+value = "[devswarm] inbox messages --ack no longer acks: it returns a read receipt — run the returned ackCommand (inbox ack-primary {id} --receipt <id>) after consuming the mail."
+
+[mesh_write.msg_messages_ack_as_owner_warning]
+doc = "stderr line of `inbox messages <id> --ack-as-owner` without --ack (a read does not ack). Placeholders: {idq} (JSON-quoted id), {id}."
+value = "[devswarm] inbox messages {idq} --ack-as-owner did NOT ack — `messages` is read-only. To ack on the owner's behalf run `inbox read-primary {id} --ack-as-owner`, then the `ackCommand` it returns (`inbox ack-primary {id} --receipt <rid> --ack-as-owner`)."
+
+[mesh_write.msg_unknown_inbox_sub]
+doc = "The error of an `inbox` subcommand devswarm.js does not know. Placeholder: {sub} (JSON-quoted)."
+value = "unknown inbox subcommand: {sub} (read|ack|count|pull|messages|read-primary|ack-primary|peek-primary|drain-primary-legacy)"
+
+[mesh_write.reason_no_plugin_root]
+doc = "The `reason` of a reconcile run where the plugin root cannot be found."
+value = "no-plugin-root"
+
+[mesh_write.msg_reconcile_no_plugin_root]
+doc = "The error of that refusal."
+value = "reconcile cannot find the anti-hall plugin root (set AH_ENGINE_PLUGIN_ROOT or run it through the installed ah-hook)"
+
+[mesh_write.reason_reconcile_held]
+doc = "The `reason` of a reconcile whose project could not be answered now (an identity read was refused): nothing was drained."
+value = "reconcile-held"
+
+[mesh_write.retired_verbs]
+doc = "Verbs of the old Node CLI that moved, by verb word, with what to run instead. A verb word in this table is refused with `retired-verb` and the text naming its replacement; a word that is in neither this table nor the CLI is refused with `unsupported-verb`."
+value = { "prune-archived" = "`~/.anti-hall/ah-engine/bin/ah-engine devswarm plan-prune --older-than <days>` for the dry run (it lists the archived workspaces that qualify and returns a plan nonce), then, only on the owner's approval of that exact list, `~/.anti-hall/ah-engine/bin/ah-engine devswarm prune --confirm-ids <id,id,...> --plan <nonce>`" }
+
+[mesh_write.msg_retired_verb]
+doc = "Printed (stderr and stdout) for a retired verb. Nothing was done. Placeholders: {verb}, {use} (what to run instead)."
+value = "`{verb}` is not a mesh verb any more. Use {use}."
+
+[mesh_write.reason_retired_verb]
+doc = "The `reason` of a retired verb's refusal."
+value = "retired-verb"
+
+[mesh_write.msg_unsupported_verb]
+doc = "Printed for a verb form this CLI does not have. Nothing was done. Placeholder: {argv} (the leading words)."
+value = "`{argv}` is not a form of this CLI; `help --short` lists the verbs and `help <verb>` shows one verb's forms."
+
+[mesh_write.reason_unsupported_verb]
+doc = "The `reason` of that refusal."
+value = "unsupported-verb"
+
+[mesh_write.exit_unsupported]
+doc = "Exit code of a retired or unsupported verb form (a refusal, like devswarm.js's unknown-command answer): nothing was done."
+value = 2
+min = 1
+max = 125
+
+[mesh_write.inbox_self_id_subs]
+doc = "The `inbox` subcommands that take a workspace id and read the calling session's own when none is given."
+value = ["count", "read", "ack", "pull", "tick", "messages", "read-primary", "ack-primary", "peek-primary", "drain-primary-legacy"]
+
+[mesh_write.msg_inbox_needs_id]
+doc = "The error of an `inbox` subcommand given no workspace id by a caller that has none of its own. Placeholder: {sub}."
+value = "inbox {sub} needs a workspace id: `inbox {sub} <id>`. Run from a DevSwarm workspace session it reads the session's own id (DEVSWARM_BUILDER_ID), or the id of the checkout it is run in; this caller has neither."

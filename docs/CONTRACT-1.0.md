@@ -100,7 +100,7 @@ and so does the `unknown command:` error, so neither can drift from the dispatch
 |---|---|
 | Identity and status | `primary`, `register`, `ensure`, `register-primary`, `heartbeat`, `done`, `gate`, `gate-intent`, `plan`, `scope` |
 | Messaging | `inbox`, `send`, `relay`, `mesh`, `wake-directive`, `notice` |
-| Lifecycle | `archive`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `auto-archive`, `prune-archived`, `reap-orphans`, `reap-stale`, `respawn`, `correct`, `nudge`, `spawn`, `merge` |
+| Lifecycle | `archive`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `auto-archive`, `prune-archived` (retired: use `devswarm plan-prune`/`prune`), `reap-orphans`, `reap-stale`, `respawn`, `correct`, `nudge`, `spawn`, `merge` |
 | Repair and migration | `migrate`, `migrate-owner-keys`, `reconcile`, `reconcile-registry`, `reconcile-active`, `retention` |
 | Read-only views | `workspaces`, `roster`, `logs`, `diagnose`, `healthcheck`, `ready-check`, `supervision-report`, `app-state`, `app-sync`, `sync-ui` |
 | Guard escape | `skip` |

@@ -684,12 +684,12 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
         return Ok(None); // the caller's own id, not registered yet: an empty partition, read by the plan below
     }
     let has_messages = reader.message_count(id).map_err(|e| store_err("store-read", e))? > 0;
-    Ok(Some(ownership_refusal(inv, &repo_key, id, &caller, own_entry.is_some(), !has_messages, has_messages)?))
+    Ok(Some(ownership_refusal(inv, acking_action(a), &repo_key, id, &caller, own_entry.is_some(), !has_messages, has_messages)?))
 }
 
 /// Node's ownership refusal of an acking read (`read-primary <id> refused (<cause>)`, exit 2, logged): the cause names the leg that
 /// failed, or `unregistered-workspace` when the id has nothing at all behind it (`unbacked`).
-fn ownership_refusal(inv: &Inv, repo_key: &str, id: &str, caller: &ident::Caller, caller_registered: bool, unbacked: bool, _has_messages: bool) -> R<Answer> {
+fn ownership_refusal(inv: &Inv, action: &str, repo_key: &str, id: &str, caller: &ident::Caller, caller_registered: bool, unbacked: bool, _has_messages: bool) -> R<Answer> {
     let cause = if unbacked {
         defaults::text("devswarm_cli.cause_unregistered_workspace")
     } else if caller.kind == defaults::text("mesh_write.kind_unresolvable") {
@@ -699,7 +699,7 @@ fn ownership_refusal(inv: &Inv, repo_key: &str, id: &str, caller: &ident::Caller
     } else {
         defaults::text("devswarm_cli.cause_ownership_mismatch")
     };
-    let verb = defaults::text("mesh_write.action_read_primary");
+    let verb = action;
     let msg = fill_once(defaults::text("devswarm_cli.msg_read_primary_refused"), &[("verb", verb.to_string()), ("cause", cause.to_string()), ("id", format!("\"{id}\"")), ("rid", id.to_string())]);
     let store_path = union::store_dir(&inv.home, repo_key);
     let mut o = Obj::default();
@@ -757,7 +757,7 @@ fn peek_refusal(inv: &Inv, a: &Args, id: &str, peek: bool) -> R<Option<Answer>> 
         .put("id", s(id))
         .put("error", s(&msg));
     crate::meshw::clog::ready(inv)?;
-    let verb = if peek { defaults::text("mesh_write.verb_peek_primary") } else { defaults::text("mesh_write.verb_read_primary") };
+    let verb = read_sub(a, peek);
     crate::meshw::clog::refusal(inv, &format!("{}{verb}", defaults::text("devswarm_cli.window_op_prefix")), Some(&repo_key), Some(id), &msg, Some(cause));
     crate::meshw::mark_committed();
     Ok(Some(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }))
@@ -795,8 +795,11 @@ fn msg_value(m: &Msg) -> Value {
 
 /// The unread rows of the sibling partitions of the group (`cmdInboxMessagesInner`'s mesh widening for an acking read): each from its
 /// read position (the further of its base and the watermark the caller left), at most the never-read cap per partition, rows already
-/// delivered elsewhere in the group left out, the rest merged into `msgs` by time.
-fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str, store_base: f64, msgs: &mut Vec<Msg>) -> R<Siblings> {
+/// delivered elsewhere in the group left out, the rest merged into `msgs` by time. A history view (`unread_only` false) reads each
+/// partition whole, with no cap; an unread view that does not ack (`prefix_cap` false: a peek) keeps the newest rows of a partition over
+/// the cap, since nothing it writes could move the read position past a prefix.
+#[allow(clippy::too_many_arguments)]
+fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str, store_base: f64, msgs: &mut Vec<Msg>, unread_only: bool, prefix_cap: bool) -> R<Siblings> {
     let floor_pos = |x: f64| if x.is_finite() && x > 0.0 { x.floor() } else { 0.0 };
     let family = tick::family_of(id, &o.rows);
     let cap = defaults::num("mesh_write.never_read_sibling_cap") as usize;
@@ -808,15 +811,19 @@ fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str
         let total = o.reader.message_count(pid).map_err(|e| store_err("store-read", e))?;
         let mut rows: Vec<Value> = Vec::new();
         o.reader
-            .for_each_message(pid, floor_pos(since) as u64, |m| {
+            .for_each_message(pid, if unread_only { floor_pos(since) as u64 } else { 0 }, |m| {
                 rows.push(m);
                 true
             })
             .map_err(|e| store_err("store-read", e))?;
-        if rows.len() > cap {
+        if unread_only && rows.len() > cap {
             out.never_read_withheld += rows.len() - cap;
             out.never_read_ids.push(pid.clone());
-            rows.truncate(cap); // a structural prefix: the ack advances exactly this far
+            if prefix_cap {
+                rows.truncate(cap); // a structural prefix: the ack advances exactly this far
+            } else {
+                rows.drain(..rows.len() - cap); // nothing is acked: the newest rows are the ones a reader needs
+            }
         }
         out.added_total += total as f64;
         fetched.push((SiblingPart { id: pid.clone(), cursor, since, delivered_count: 0, consumed_through: Vec::new(), consumed_count: 0.0 }, rows));
@@ -846,7 +853,7 @@ fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str
             m.own = row["sender"].as_str().is_some_and(|f| family.contains(f));
             m.src = format!("sibling:{}", part.id);
             m.src_idx = *pos;
-            if m.own {
+            if m.own && unread_only {
                 out.own_dropped += 1;
             }
             added.push(m);
@@ -860,6 +867,179 @@ fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str
         msgs.sort_by(|x, y| if x.sort_ts == y.sort_ts { std::cmp::Ordering::Equal } else { x.sort_ts.partial_cmp(&y.sort_ts).unwrap_or(std::cmp::Ordering::Equal) });
     }
     Ok(out)
+}
+
+/// What a read withheld, reported in the result so a caller never mistakes a partial read for a whole one: forwardable sibling rows behind
+/// a gap, rows over a sibling's never-read cap, the history window (`window` is `(the window, withheld, undated, index per partition)`),
+/// and the rows over the per-source cap.
+fn put_withheld(out: &mut Obj, sibs: &Siblings, truncated_count: usize, limit: usize, window: Option<(&Window, usize, usize, bool)>) {
+    if sibs.gap_withheld > 0 {
+        out.put("meshGapWithheld", OVal::Bool(true)).put("meshGapWithheldCount", n(sibs.gap_withheld as f64));
+    }
+    if sibs.never_read_withheld > 0 {
+        let mut names: Vec<String> = Vec::new();
+        for x in &sibs.never_read_ids {
+            if !names.contains(x) {
+                names.push(x.clone());
+            }
+        }
+        let reads = names.iter().map(|p| fill_once(defaults::text("mesh_write.mesh_never_read_read_cmd"), &[("pid", p.clone())])).collect::<Vec<_>>().join(defaults::text("mesh_write.mesh_never_read_read_sep"));
+        let cap = defaults::num("mesh_write.never_read_sibling_cap");
+        out.put("meshNeverReadCapped", OVal::Bool(true))
+            .put("meshNeverReadWithheldCount", n(sibs.never_read_withheld as f64))
+            .put("meshNeverReadCapLimit", n(cap as f64))
+            .put(
+                "neverReadCapHint",
+                OVal::Str(fill_once(
+                    defaults::text("mesh_write.mesh_never_read_hint"),
+                    &[("withheld", sibs.never_read_withheld.to_string()), ("n", names.len().to_string()), ("cap", cap.to_string()), ("reads", reads)],
+                )),
+            );
+    }
+    if let Some((w, withheld, undated, per_partition)) = window.filter(|(w, ..)| w.since.is_some() || w.tail.is_some()) {
+        let mut o = Obj::default();
+        o.put(
+            "since",
+            match &w.since {
+                Some(Since::Ts(x)) => Obj(vec![("kind".into(), s(defaults::text("mesh_write.since_kind_ts"))), ("value".into(), n(*x))]).done(),
+                Some(Since::Index(x)) => Obj(vec![("kind".into(), s(defaults::text("mesh_write.since_kind_index"))), ("value".into(), n(*x))]).done(),
+                None => OVal::Null,
+            },
+        )
+        .put("tail", w.tail.map_or(OVal::Null, |t| n(t as f64)))
+        .put("withheld", n(withheld as f64));
+        if undated > 0 {
+            o.put("undatedKept", n(undated as f64));
+        }
+        if matches!(w.since, Some(Since::Index(_))) && per_partition {
+            o.put("indexIsPerPartition", OVal::Bool(true));
+        }
+        out.put("window", o.done());
+    }
+    if truncated_count > 0 {
+        out.put("truncated", OVal::Bool(true)).put("truncatedCount", n(truncated_count as f64)).put("limit", n(limit as f64)).put(
+            "truncatedHint",
+            OVal::Str(fill_once(defaults::text("mesh_write.truncated_hint"), &[("count", truncated_count.to_string()), ("limit", limit.to_string())])),
+        );
+    }
+}
+
+/// `--since` of the history view: an index (a per-partition message position) or a time.
+enum Since {
+    Ts(f64),
+    Index(f64),
+}
+
+/// `--since` / `--tail` of the history view.
+#[derive(Default)]
+struct Window {
+    since: Option<Since>,
+    tail: Option<usize>,
+}
+
+/// `parseInboxSince`: digits are an index; anything else is a date (`Date.parse`: the ISO forms the host writes, and a bare date, which
+/// JavaScript reads as UTC midnight); text no date reading accepts is `None`.
+fn parse_since(raw: &str) -> Option<Since> {
+    let t = js_trim(raw);
+    if t.is_empty() {
+        return None;
+    }
+    if t.bytes().all(|b| b.is_ascii_digit()) {
+        return t.parse::<f64>().ok().filter(|x| x.is_finite()).map(|x| Since::Index(x.floor()));
+    }
+    let date_only = t.len() == 10 && t.as_bytes().get(4) == Some(&b'-') && t.as_bytes().get(7) == Some(&b'-');
+    let text = if date_only { format!("{t}T00:00:00Z") } else { t.to_string() };
+    match crate::checks::guardkit::jsval::date_parse(&text) {
+        crate::checks::guardkit::jsval::DateParse::Ms(x) => Some(Since::Ts(x)),
+        _ => None,
+    }
+}
+
+/// The window flags of `inbox messages`, or the verb's refusal (`bad-tail`, `bad-since`; exit 2).
+fn history_window(a: &Args) -> R<Result<Window, Answer>> {
+    let refuse = |reason: &str, error: String| {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false)).put("error", OVal::Str(error)).put("reason", s(reason));
+        Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }
+    };
+    let mut w = Window::default();
+    if let Some(raw) = a.one(defaults::text("mesh_write.flag_tail")) {
+        let x = crate::checks::guardkit::text::js_number_of_str(raw);
+        if !x.is_finite() || x < 1.0 {
+            return Ok(Err(refuse(defaults::text("mesh_write.reason_bad_tail"), fill_once(defaults::text("mesh_write.msg_bad_tail"), &[("got", OVal::Str(raw.to_string()).stringify())]))));
+        }
+        w.tail = Some(x.floor().max(1.0) as usize);
+    }
+    if let Some(raw) = a.one(defaults::text("mesh_write.flag_since")) {
+        match parse_since(raw) {
+            Some(since) => w.since = Some(since),
+            None => {
+                return Ok(Err(refuse(defaults::text("mesh_write.reason_bad_since"), fill_once(defaults::text("mesh_write.msg_bad_since"), &[("got", OVal::Str(raw.to_string()).stringify())]))));
+            }
+        }
+    }
+    Ok(Ok(w))
+}
+
+/// `--tail N` once the per-source cap has withheld rows (exit 2): refused rather than guessed.
+fn tail_under_truncation(id: &str, truncated_count: usize, limit: usize, tail: usize) -> Answer {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("action", s(defaults::text("mesh_write.verb_messages")))
+        .put("id", s(id))
+        .put("reason", s(defaults::text("mesh_write.reason_tail_under_truncation")))
+        .put("truncated", OVal::Bool(true))
+        .put("truncatedCount", n(truncated_count as f64))
+        .put("limit", n(limit as f64))
+        .put("requestedTail", n(tail as f64))
+        .put(
+            "error",
+            OVal::Str(fill_once(
+                defaults::text("mesh_write.msg_tail_under_truncation"),
+                &[("tail", tail.to_string()), ("limit", limit.to_string()), ("count", truncated_count.to_string())],
+            )),
+        )
+        .put("hint", OVal::Str(fill_once(defaults::text("mesh_write.msg_tail_under_truncation_hint"), &[("limit", limit.to_string())])));
+    Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }
+}
+
+/// `resolveWorkspaceStoreForRead` refused the read, or the store cannot be used: Node's refusal of the read verbs (exit 2) with the
+/// read-side fields, logged, and the stderr line that names the reason.
+fn unavailable_refusal(inv: &Inv, a: &Args, id: &str, peek: bool, why: &tick::Unavail) -> R<Answer> {
+    let repo_key = ident::resolve_context(&inv.cwd, true)?.repo_key;
+    let mut o = Obj::default();
+    let genuine = why.reason == defaults::text("mesh_write.reason_store_unavailable");
+    o.put("repoKey", common::s_or_null(repo_key.as_deref()))
+        .put("storePath", OVal::Null)
+        .put("cwd", s(&inv.cwd))
+        .put("meshPartitionIds", OVal::Arr(vec![s(id)]))
+        .put("known", OVal::Bool(false))
+        .put("storeUnavailable", OVal::Bool(genuine))
+        .put("storeUnavailableReason", OVal::Null)
+        .put("meshGroupUnresolved", OVal::Bool(false))
+        .put("meshGroupError", OVal::Null)
+        .put("totalsPartial", OVal::Bool(true))
+        .put("reason", s(&why.reason))
+        .put("ok", OVal::Bool(false))
+        .put("id", s(id));
+    if genuine {
+        o.put("storeUnavailableReason", common::s_or_null(why.code.as_deref()));
+    }
+    // the fields the open adds come before its error text, as devswarm.js's refusal object lists them
+    if let Some(r) = &why.registered {
+        o.put("registeredRepoKey", s(r));
+    }
+    if why.registered.is_some() || why.caller.is_some() {
+        o.put("callerRepoKey", common::s_or_null(why.caller.as_deref()));
+    }
+    o.put("error", common::s_or_null(why.error.as_deref()));
+    let result = o.done();
+    let msg = why.error.clone().unwrap_or_default();
+    crate::meshw::clog::ready(inv)?;
+    crate::meshw::clog::refusal(inv, &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), read_sub(a, peek)), repo_key.as_deref(), Some(id), &msg, Some(&why.reason));
+    crate::meshw::mark_committed();
+    tick::emit_known_warning(read_sub(a, peek), &result);
+    Ok(Answer { code: 2, stdout: format!("{}\n", result.stringify()), effect: Effect::None })
 }
 
 /// Where a `read-primary <id>` really reads (`cmdInbox`'s id resolution and `cmdInboxMessagesInner`'s retired-redirect hop).
@@ -914,7 +1094,7 @@ fn settle_target(inv: &Inv, a: &Args, id: &str) -> R<Settled> {
             let list = OVal::Arr(ids.iter().map(|x| s(x)).collect());
             let msg = fill_once(
                 defaults::text("devswarm_cli.msg_read_arg_ambiguous"),
-                &[("verb", defaults::text("mesh_write.action_read_primary").to_string()), ("id", format!("\"{id}\"")), ("candidates", list.stringify())],
+                &[("verb", a.positionals.get(1).cloned().unwrap_or_default()), ("id", format!("\"{id}\"")), ("candidates", list.stringify())],
             );
             let reason = defaults::text("devswarm_cli.reason_ambiguous_target");
             let mut o = Obj::default();
@@ -977,6 +1157,23 @@ impl Planned {
     }
 }
 
+/// The verb word a read of this file is run as (`inbox <sub>`): `peek-primary`, `messages`, or the acking read's own word.
+fn read_sub(a: &Args, peek: bool) -> &str {
+    if peek {
+        let messages = defaults::text("mesh_write.verb_messages");
+        if a.positionals.get(1).map(String::as_str) == Some(messages) { messages } else { defaults::text("mesh_write.verb_peek_primary") }
+    } else {
+        acking_action(a)
+    }
+}
+
+/// The verb word an acking read reports itself as: `drain-primary-legacy` is `read-primary --legacy-ack-now` under its own name (Node's
+/// `opts.action`); `messages --ack` and `read-primary` both report `read-primary`.
+fn acking_action(a: &Args) -> &str {
+    let drain = defaults::text("mesh_write.verb_drain_primary_legacy");
+    if a.positionals.get(1).map(String::as_str) == Some(drain) { drain } else { defaults::text("mesh_write.action_read_primary") }
+}
+
 /// Run `inbox read-primary <id>`: plan the read (every deferral is decided here, nothing is written); when the row carries
 /// the `unclaimed:` marker, take it off (the promotion's writes) and plan again over the row as it is now; then file the
 /// receipt.
@@ -987,6 +1184,32 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
 /// Run `inbox peek-primary <id>`: the read of [`run`] without its receipt (nothing is acked, nothing is filed), from any caller.
 pub fn run_peek(inv: &Inv, a: &Args) -> R<Answer> {
     run_mode(inv, a, true)
+}
+
+/// Run `inbox messages <id>`: the history read. With `--ack` it is `read-primary` (it returns a read receipt and acks nothing itself, and
+/// says so on stderr unless the same-call `--legacy-ack-now` was asked for); without it, the whole partition (and its mesh group) is
+/// listed, `--since` / `--tail` / `--limit` / `--unread` / `--with-broadcasts` shape the listing, and nothing is acked.
+pub fn run_messages(inv: &Inv, a: &Args) -> R<Answer> {
+    let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else {
+        return Ok(failure(defaults::text("devswarm_cli.msg_bad_id")));
+    };
+    if a.has(defaults::text("mesh_write.flag_ack")) {
+        if !a.has(defaults::text("mesh_write.flag_legacy_ack_now")) {
+            eprintln!("{}", fill_once(defaults::text("mesh_write.msg_messages_ack_warning"), &[("id", id.to_string())]));
+        }
+        return run(inv, a);
+    }
+    if a.has(defaults::text("mesh_write.flag_ack_as_owner")) {
+        eprintln!(
+            "{}",
+            fill_once(defaults::text("mesh_write.msg_messages_ack_as_owner_warning"), &[("idq", OVal::Str(id.to_string()).stringify()), ("id", id.to_string())])
+        );
+    }
+    let answer = run_history(inv, a)?;
+    if let Some(result) = OVal::parse(answer.stdout.trim_end()) {
+        tick::emit_known_warning(defaults::text("mesh_write.verb_messages"), &result);
+    }
+    Ok(answer)
 }
 
 /// A `{ok:false, error}` answer with exit 2: what `run()` prints for an id that is not usable and for an exception a verb throws.
@@ -1008,6 +1231,17 @@ pub(crate) fn is_store_failure(reason: &str) -> bool {
 }
 
 fn run_mode(inv: &Inv, a: &Args, peek: bool) -> R<Answer> {
+    run_flavor(inv, a, peek, false)
+}
+
+/// Run `inbox messages <id>` (no ack): the history view. The unread-scoped reads of this file, without their scope: every row of the
+/// partition (and of its mesh group), the window flags, the newest rows kept when a group's cap bites, and no NDJSON channel.
+pub fn run_history(inv: &Inv, a: &Args) -> R<Answer> {
+    run_flavor(inv, a, true, true)
+}
+
+/// The reads of this file: `peek` acks nothing; `hist` is the history view of `inbox messages` (it implies `peek`).
+fn run_flavor(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
     // `inbox <sub> <id>`: an id that is not a safe one is refused before anything else; words after the id are ignored
     let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i)) else {
         return Ok(failure(defaults::text("devswarm_cli.msg_bad_id")));
@@ -1021,9 +1255,9 @@ fn run_mode(inv: &Inv, a: &Args, peek: bool) -> R<Answer> {
     } else {
         a
     };
-    let verb = if peek { defaults::text("mesh_write.verb_peek_primary") } else { defaults::text("mesh_write.verb_read_primary") };
+    let verb = read_sub(a, peek);
     let op = format!("{}{verb}", defaults::text("devswarm_cli.window_op_prefix"));
-    match run_inner(inv, a, peek) {
+    match run_inner(inv, a, peek, hist) {
         Err(ident::Defer(reason)) if is_store_failure(&reason) && !crate::meshw::committed() => {
             let eff = a.positionals.get(2).map(String::as_str).unwrap_or(id);
             // a store that cannot be opened is Node's `store-unavailable` refusal (with the read-side meta); any other failure of the
@@ -1076,11 +1310,12 @@ pub(crate) fn store_open_error(_inv: &Inv, reason: &str) -> Option<String> {
     Some(rest.rsplit_once(": ").map_or(rest, |(m, _)| m).to_string())
 }
 
-fn run_inner(inv: &Inv, a: &Args, peek: bool) -> R<Answer> {
+fn run_inner(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
     // `--since` / `--tail` are refused before anything is read
     if a.positionals.len() == 3
+        && !hist
         && let Some(id) = a.positionals.get(2).map(String::as_str).filter(|i| is_safe_id(i))
-        && let Some(refused) = window_refusal(inv, a, id, if peek { defaults::text("mesh_write.verb_peek_primary") } else { defaults::text("mesh_write.verb_read_primary") })?
+        && let Some(refused) = window_refusal(inv, a, id, read_sub(a, peek))?
     {
         return Ok(refused);
     }
@@ -1115,7 +1350,7 @@ fn run_inner(inv: &Inv, a: &Args, peek: bool) -> R<Answer> {
     {
         return Ok(refused);
     }
-    let mut first = plan(inv, a, None, &redirect, peek)?;
+    let mut first = plan(inv, a, None, &redirect, peek, hist)?;
     if let Some(refused) = first.refusal.take() {
         return Ok(refused);
     }
@@ -1125,7 +1360,7 @@ fn run_inner(inv: &Inv, a: &Args, peek: bool) -> R<Answer> {
             let promotion = promote_full(inv, a, a.positionals.get(2).map(String::as_str).unwrap_or_default(), &pc.desc, pc.desc_sid.as_deref(), pc.registry_sid.as_deref(), &pc.marker, &pc.repo_key);
             // the writes are made: from here a deferral is a committed failure
             redirect.registry_error = promotion.registry_error;
-            let mut second = plan(inv, a, promotion.state, &redirect, peek)?;
+            let mut second = plan(inv, a, promotion.state, &redirect, peek, hist)?;
             if let Some(refused) = second.refusal.take() {
                 return Ok(refused);
             }
@@ -1208,15 +1443,17 @@ struct Redirect {
     registry_error: Option<String>,
 }
 
-fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool) -> R<Planned> {
+fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool, hist: bool) -> R<Planned> {
     // (`help` never reaches here: `verb_of` classifies a help request as `simple`'s first; `run_mode` has settled the id's shape)
     let id = a.positionals.get(2).map(String::as_str).unwrap_or_default();
     // Node's flags: `--format text` (read-primary only: `main()` renders only that verb as text) and `--json` are read from argv
     // itself, every other flag the read does not know is ignored, as Node ignores it
     let json_flag = a.raw.iter().any(|w| *w == format!("--{}", defaults::text("mesh_write.flag_json")));
-    let format_text = !peek && text_requested(&a.raw);
+    // `main()` renders only `inbox read-primary` as text, whatever other verb is an acking read
+    let format_text = !peek && text_requested(&a.raw) && a.positionals.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_read_primary"));
     let ack_as_owner = !peek && a.has(defaults::text("mesh_write.flag_ack_as_owner"));
-    let legacy = !peek && a.has(defaults::text("mesh_write.flag_legacy_ack_now"));
+    let drain = a.positionals.get(1).map(String::as_str) == Some(defaults::text("mesh_write.verb_drain_primary_legacy"));
+    let legacy = !peek && (drain || a.has(defaults::text("mesh_write.flag_legacy_ack_now")));
     // ---- reads: everything that can defer happens before the receipt is written ----
     // an id with no descriptor reads as Node's `desc = null`: no NDJSON inbox, no session, no registered project (a descriptor with none of
     // those is the same read), so the store is the only side
@@ -1226,7 +1463,12 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let desc_sid = text_or_null(&desc, defaults::text("mesh_write.field_session_id"));
     let inbox = union::path_field(&desc, defaults::text("mesh_write.field_inbox_path"))?;
     let cursor_file = union::path_field(&desc, defaults::text("mesh_write.field_cursor_path"))?;
-    let o = tick::open_partition(inv, id, &desc)?;
+    // `--unread` of the history view scopes it to the unread tail; the reads that ack (or preview an ack) always are
+    let unread_only = !hist || a.has(defaults::text("mesh_write.flag_unread"));
+    let o = match tick::open_partition_ex(inv, id, &desc)? {
+        tick::PartitionOpen::Open(o) => o,
+        tick::PartitionOpen::Unavailable { why, .. } => return Ok(Planned::refused(unavailable_refusal(inv, a, id, peek, &why)?)),
+    };
     let registry_sid = o.rows.iter().find(|r| r.id == id).and_then(|r| r.session_id.clone());
     // the marker on either side: this pass reads the row as it is, and the promotion is made once every deferral is settled
     let promo = desc_sid.as_deref().is_some_and(|d| d == marker || (!d.is_empty() && registry_sid.as_deref() == Some(marker.as_str()))).then(|| PromoCtx {
@@ -1250,7 +1492,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
             let has_row = o.rows.iter().any(|r| r.id == id);
             let has_messages = o.reader.message_count(id).map_err(|e| store_err("store-read", e))? > 0;
             let unbacked = ident::read_descriptor(&inv.home, id).is_none() && !has_row && !has_messages;
-            return Ok(Planned::refused(ownership_refusal(inv, &o.repo_key, id, &caller, own_entry.is_some(), unbacked, has_messages)?));
+            return Ok(Planned::refused(ownership_refusal(inv, acking_action(a), &o.repo_key, id, &caller, own_entry.is_some(), unbacked, has_messages)?));
         }
     }
     let (store_base, nd_base) = tick::read_bases(inv, &o.reader, id, cursor_file.as_deref())?;
@@ -1266,7 +1508,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let (mut unread_count, mut total_out);
     let mut union_cursors: Option<(f64, f64)> = None;
     let mut nd_op_target: Option<f64> = None;
-    if let Some(inbox) = &inbox {
+    if let Some(inbox) = inbox.as_ref().filter(|_| !hist) {
         // a cursor file that is missing or unreadable (or no cursor path at all) leaves the NDJSON side unknown: its lines are not
         // counted (`known: false` of `readUnread`), the store side is read as ever, and the NDJSON cursor reports the file's own
         // value (`readCursor`: 0 when it gives none)
@@ -1305,7 +1547,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     } else {
         let family = tick::family_of(id, &o.rows);
         o.reader
-            .for_each_message(id, floor_pos(store_base) as u64, |m| {
+            .for_each_message(id, if unread_only { floor_pos(store_base) as u64 } else { 0 }, |m| {
                 let mut x = store_msg(&m, false);
                 x.own = m["sender"].as_str().is_some_and(|f| family.contains(f));
                 x.src_idx = msgs.len();
@@ -1317,21 +1559,68 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         if own_unread > 0 {
             crate::metrics::bump("mesh_own_sends_excluded", &[]);
         }
-        unread_count = ((total_store as f64 - store_base).max(0.0) - own_unread as f64).max(0.0);
+        unread_count = ((total_store as f64 - store_base).max(0.0) - if unread_only { own_unread as f64 } else { 0.0 }).max(0.0);
         total_out = total_store as f64;
     }
     // ---- the sibling partitions of the mesh group ----
     let mut sibs = Siblings::default();
     if group.active {
-        sibs = read_siblings(inv, &o, &group, id, store_base, &mut msgs)?;
+        sibs = read_siblings(inv, &o, &group, id, store_base, &mut msgs, unread_only, !peek)?;
         total_out += sibs.added_total;
         unread_count += sibs.added_unread as f64 - sibs.own_dropped as f64;
     }
-    // the per-source cap: the OLDEST `limit` rows are delivered; the first withheld row of a source and everything after it in
-    // that source stay unread (so the ack never passes a withheld row)
+    // the history view's window (`--since` / `--tail`, only `inbox messages` has them): `--since` narrows the merged set BEFORE the cap, so
+    // a recent window is never emptied by a cap that already discarded the rows it asked for
+    let window = if hist { history_window(a)? } else { Ok(Window::default()) };
+    let window = match window {
+        Ok(w) => w,
+        Err(refusal) => return Ok(Planned::refused(refusal)),
+    };
+    let (mut window_withheld, mut window_undated) = (0usize, 0usize);
+    if let Some(since) = &window.since {
+        let before = msgs.len();
+        msgs.retain(|m| {
+            // a row with nothing to compare (a legacy row with no time or position) is KEPT and counted: hiding mail for missing
+            // metadata is the one failure a "show me recent mail" flag must not have
+            let at = match since {
+                Since::Ts(_) => Some(m.sort_ts).filter(|x| x.is_finite()),
+                Since::Index(_) => m.index.filter(|x| x.is_finite()),
+            };
+            match (at, since) {
+                (None, _) => {
+                    window_undated += 1;
+                    true
+                }
+                (Some(x), Since::Ts(from)) => x >= *from,
+                (Some(x), Since::Index(from)) => x > *from,
+            }
+        });
+        window_withheld = before - msgs.len();
+    }
+    // the per-source cap: an acking or previewing read delivers the OLDEST `limit` rows (the first withheld row of a source and everything
+    // after it stay unread, so the ack never passes a withheld row); the history view acks nothing and delivers the NEWEST, and only
+    // when the partition belongs to a mesh group (a lone partition is read whole)
     let mut truncated_count = 0usize;
     let mut withheld_by_src: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    if msgs.len() > limit {
+    if hist && group.active && msgs.len() > limit {
+        let cut = msgs.len() - limit;
+        let mut max_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for m in msgs.iter().take(cut) {
+            let e = max_idx.entry(m.src.clone()).or_insert(0);
+            *e = (*e).max(m.src_idx);
+        }
+        let before = msgs.len();
+        let mut kept = Vec::with_capacity(limit);
+        for m in msgs {
+            if max_idx.get(&m.src).is_some_and(|&mx| m.src_idx <= mx) {
+                *withheld_by_src.entry(m.src.clone()).or_insert(0) += 1;
+            } else {
+                kept.push(m);
+            }
+        }
+        truncated_count = before - kept.len();
+        msgs = kept;
+    } else if !hist && msgs.len() > limit {
         let mut min_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for m in msgs.iter().skip(limit) {
             let e = min_idx.entry(m.src.clone()).or_insert(usize::MAX);
@@ -1353,8 +1642,24 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let max_index = msgs.iter().filter(|m| m.src == "own").filter_map(|m| m.index).fold(None, |acc: Option<f64>, i| Some(acc.map_or(i, |a| a.max(i))));
     let own_target = max_index.map_or(store_base, |m| store_base.max(m));
     let delivered = msgs.len();
-    // #181: the unread list leaves out the mail the reader's own family sent, as its count does (the targets above already walked it)
-    msgs.retain(|m| !m.own);
+    // #181: the unread list leaves out the mail the reader's own family sent, as its count does (the targets above already walked it);
+    // a history view keeps it
+    if unread_only {
+        msgs.retain(|m| !m.own);
+    }
+    if let Some(tail) = window.tail {
+        // `--tail N` promises the NEWEST N: once the cap has fired it cannot be honoured, so it is refused rather than guessed
+        if truncated_count > 0 {
+            return Ok(Planned::refused(tail_under_truncation(id, truncated_count, limit, tail)));
+        }
+        let before = msgs.len();
+        if msgs.len() > tail {
+            msgs.drain(..msgs.len() - tail);
+        }
+        // rows with no time sort last, which is where the tail is taken from: say how many of the delivered rows are such
+        window_undated = msgs.iter().filter(|m| !m.sort_ts.is_finite()).count();
+        window_withheld += before - msgs.len();
+    }
     // the receipt names the rows the reader was shown
     let hashes: Vec<OVal> = msgs.iter().map(|m| common::s_or_null(m.hash.as_deref())).collect();
     let mut rows: Vec<OVal> = Vec::with_capacity(msgs.len());
@@ -1496,13 +1801,13 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let store_path = union::store_dir(&inv.home, &o.repo_key);
     let mut out = Obj::default();
     out.put("ok", OVal::Bool(true))
-        .put("action", s(defaults::text(if peek { "mesh_write.action_peek_primary" } else { "mesh_write.action_read_primary" })))
+        .put("action", s(if hist { defaults::text("mesh_write.verb_messages") } else if peek { defaults::text("mesh_write.action_peek_primary") } else { acking_action(a) }))
         .put("id", s(id))
         .put("repoKey", s(&o.repo_key))
         .put("storePath", OVal::Str(store_path.to_string_lossy().into_owned()))
         .put("cwd", s(&inv.cwd))
         .put("meshPartitionIds", OVal::Arr(group.ids.iter().map(|x| s(x)).collect()))
-        .put("unreadOnly", OVal::Bool(true))
+        .put("unreadOnly", OVal::Bool(unread_only))
         .put("unreadCount", n(unread_count))
         .put("cursor", n(store_base))
         .put("total", n(total_out))
@@ -1536,7 +1841,11 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         out.put("cursorNdjson", n(nd)).put("cursorStore", n(st));
     }
     if peek {
-        // a peek stops at the cursors: no receipt, no ack command
+        // a peek stops at the cursors: no receipt, no ack command. What it withheld is reported all the same, never silently
+        put_withheld(&mut out, &sibs, truncated_count, limit, hist.then_some((&window, window_withheld, window_undated, sibs.added_total > 0.0)));
+        if let Some(from) = &hops.resolved_from {
+            out.put("resolvedFrom", s(from));
+        }
         return Ok(Planned {
             result: out.done(),
             text: None,
@@ -1574,35 +1883,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     if !live_siblings_skipped.is_empty() {
         out.put("liveSiblingsSkipped", OVal::Arr(live_siblings_skipped.iter().map(|x| s(x)).collect()));
     }
-    if sibs.gap_withheld > 0 {
-        out.put("meshGapWithheld", OVal::Bool(true)).put("meshGapWithheldCount", n(sibs.gap_withheld as f64));
-    }
-    if sibs.never_read_withheld > 0 {
-        let mut names: Vec<String> = Vec::new();
-        for x in &sibs.never_read_ids {
-            if !names.contains(x) {
-                names.push(x.clone());
-            }
-        }
-        let reads = names.iter().map(|p| fill_once(defaults::text("mesh_write.mesh_never_read_read_cmd"), &[("pid", p.clone())])).collect::<Vec<_>>().join(defaults::text("mesh_write.mesh_never_read_read_sep"));
-        let cap = defaults::num("mesh_write.never_read_sibling_cap");
-        out.put("meshNeverReadCapped", OVal::Bool(true))
-            .put("meshNeverReadWithheldCount", n(sibs.never_read_withheld as f64))
-            .put("meshNeverReadCapLimit", n(cap as f64))
-            .put(
-                "neverReadCapHint",
-                OVal::Str(fill_once(
-                    defaults::text("mesh_write.mesh_never_read_hint"),
-                    &[("withheld", sibs.never_read_withheld.to_string()), ("n", names.len().to_string()), ("cap", cap.to_string()), ("reads", reads)],
-                )),
-            );
-    }
-    if truncated_count > 0 {
-        out.put("truncated", OVal::Bool(true)).put("truncatedCount", n(truncated_count as f64)).put("limit", n(limit as f64)).put(
-            "truncatedHint",
-            OVal::Str(fill_once(defaults::text("mesh_write.truncated_hint"), &[("count", truncated_count.to_string()), ("limit", limit.to_string())])),
-        );
-    }
+    put_withheld(&mut out, &sibs, truncated_count, limit, None);
     if let Some(from) = &hops.resolved_from {
         out.put("resolvedFrom", s(from));
     }
