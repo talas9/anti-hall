@@ -420,10 +420,10 @@ fn col(c: &TelCfg, key: &str, label_key: &str, kind: &str) -> Col {
     Col { key: key.into(), label: c.text(label_key), kind: kind.into() }
 }
 
-/// What to call a cost-report agent: its own name, else the tracked agent its id belongs to, else the id.
-fn agent_name(a: &Value, names: &dyn Fn(&str) -> Option<String>) -> String {
+/// What to call a cost-report agent: its own name, else the tracked agent its id belongs to, else plain words (never the raw id).
+fn agent_name(a: &Value, names: &dyn Fn(&str) -> Option<String>, unknown: String) -> String {
     let id = a["agent"].as_str().unwrap_or_default();
-    a["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).or_else(|| names(id)).unwrap_or_else(|| id.to_string())
+    a["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).or_else(|| names(id)).unwrap_or(unknown)
 }
 
 fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str) -> Option<String>) -> Vec<Table> {
@@ -488,7 +488,7 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
             .iter()
             .take(cap)
             .map(|a| {
-                let who = agent_name(a, names);
+                let who = agent_name(a, names, c.text("agent_unknown"));
                 vec![Cell::Text(who), cell_text(&a["kind"]), cell_num(&a["tokens"]), cell_num(&a["outcomes"]), cell_num(&a["tokens_per_outcome"]), cell_num(&a["commits"]), cell_num(&a["guard_fires"]), cell_num(&a["files_edited"]), cell_num(&a["tests_passed"])]
             })
             .collect(),
@@ -619,7 +619,7 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Opt
         let committers = list.iter().filter(|a| num(&a["commits"]) > 0.0).count();
         doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_agents", &[("agents", n(num(&cost["totals"]["agents"]))), ("tokens", n(num(&cost["totals"]["tokens"]))), ("committers", committers.to_string())]) });
         if let Some(top) = list.first() {
-            let who = agent_name(top, names);
+            let who = agent_name(top, names, c.text("agent_unknown"));
             doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_cost_top", &[("agent", who.chars().take(24).collect()), ("tokens", n(num(&top["tokens"]))), ("outcomes", n(num(&top["outcomes"])))]) });
         }
     } else {

@@ -191,8 +191,8 @@ unit = "ms"
 min = 1
 
 [web.io_buckets]
-doc = "Number of latency buckets of the dashboard's served-call histogram; bucket b holds calls of 2^b up to 2^(b+1) microseconds and the last bucket takes everything slower."
-value = 16
+doc = "Number of latency buckets of the dashboard's served-call histogram; bucket b holds calls of 2^b up to 2^(b+1) microseconds and the last bucket takes everything slower (24 buckets reach about 17 s, so a slow call is told apart from an overflow)."
+value = 24
 min = 2
 max = 64
 

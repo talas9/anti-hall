@@ -48,18 +48,20 @@ impl Hist {
     }
 }
 
-/// The bucket's upper bound in microseconds (bucket `b` holds `2^b ..< 2^(b+1)`).
-fn quantile_us(counts: &[u64], pct: u64) -> u64 {
+/// The percentile as a bucket bound in microseconds, and whether it fell in the last (overflow) bucket. A histogram has no exact
+/// percentile: an ordinary bucket `b` holds `2^b ..< 2^(b+1)` and its UPPER bound is returned (the real value is at most that); the
+/// overflow bucket takes everything slower, so it has no upper bound and its LOWER bound is returned (the real value is at least that).
+fn quantile_us(counts: &[u64], pct: u64) -> (u64, bool) {
     let total: u64 = counts.iter().sum();
     let want = ((total * pct) as f64 / 100.0).ceil().max(1.0) as u64;
     let mut seen = 0;
     for (b, n) in counts.iter().enumerate() {
         seen += n;
         if total > 0 && seen >= want {
-            return 1u64 << (b + 1);
+            return if b + 1 == counts.len() { (1u64 << b, true) } else { (1u64 << (b + 1), false) };
         }
     }
-    0
+    (0, false)
 }
 
 #[derive(Default)]
@@ -246,13 +248,13 @@ pub fn snapshot(args: &str) -> Value {
     let stores: Vec<Value> = r.stores.iter().enumerate().filter(|(i, _)| want("store=").is_none_or(|w| r.ids[*i] == w)).map(|(i, s)| {
         let h = s.hist.counts();
         json!({"id": r.ids[i], "reads": s.reads.load(Relaxed), "writes": s.writes.load(Relaxed), "bytes_in": s.bytes_in.load(Relaxed), "bytes_out": s.bytes_out.load(Relaxed),
-            "errors": s.errors.load(Relaxed), "last_ms": s.last_ms.load(Relaxed), "p50_us": quantile_us(&h, 50), "p95_us": quantile_us(&h, 95)})
+            "errors": s.errors.load(Relaxed), "last_ms": s.last_ms.load(Relaxed), "p50_us": quantile_us(&h, 50).0, "p50_over": quantile_us(&h, 50).1, "p95_us": quantile_us(&h, 95).0, "p95_over": quantile_us(&h, 95).1})
     }).collect();
     let names = r.names.lock().map(|n| n.clone()).unwrap_or_default();
     let clients: Vec<Value> = r.clients.iter().enumerate().filter(|(i, c)| c.key.load(Relaxed) != 0 && want("client=").is_none_or(|w| names[*i] == w)).map(|(i, c)| {
         let h = c.hist.counts();
         json!({"id": names[i], "calls": c.calls.load(Relaxed), "timeouts": c.timeouts.load(Relaxed), "fail_open": c.fail_open.load(Relaxed),
-            "cold_starts": c.cold_starts.load(Relaxed), "last_ms": c.last_ms.load(Relaxed), "p50_us": quantile_us(&h, 50), "p95_us": quantile_us(&h, 95), "hist": h})
+            "cold_starts": c.cold_starts.load(Relaxed), "last_ms": c.last_ms.load(Relaxed), "p50_us": quantile_us(&h, 50).0, "p50_over": quantile_us(&h, 50).1, "p95_us": quantile_us(&h, 95).0, "p95_over": quantile_us(&h, 95).1, "hist": h})
     }).collect();
     json!({"enabled": true, "at_ms": crate::health::now_ms(), "mem_bytes": r.mem_bytes, "budget": {"mem_soft_kb": defaults::num("io.mem_soft_kb"), "mem_hard_kb": defaults::num("io.mem_hard_kb"),
         "op_ns_soft": defaults::num("io.op_ns_soft"), "op_ns_hard": defaults::num("io.op_ns_hard")}, "bench": bench, "stores": stores, "clients": clients})

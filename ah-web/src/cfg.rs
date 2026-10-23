@@ -99,6 +99,7 @@ pub struct Settings {
     pub placeholder_kind: String,
     pub placeholder_state: String,
     pub placeholder_label: String,
+    pub client_label: String,
     pub placeholder_id_chars: usize,
     pub project_home_label: String,
     pub project_none_label: String,

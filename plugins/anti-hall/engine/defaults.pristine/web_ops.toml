@@ -119,8 +119,12 @@ doc = "The text drawn in front of an agent's name in the cost table to show who 
 value = { branch = "\u251c\u2500 ", last = "\u2514\u2500 ", pipe = "\u2502  ", gap = "   " }
 
 [web.ops.cost_name_fallback]
-doc = "What an agent with no title is called in the cost table. {dir} is the folder it works in (a workspace's branch folder), {id} the start of its id. Used only when no title exists in the tracker or the DevSwarm name cache."
-value = "{dir} ({id})"
+doc = "What an agent with no title is called in the cost table. {dir} is the folder it works in (a workspace's branch folder). Used only when no title exists in the tracker or the DevSwarm name cache."
+value = "{dir}"
+
+[web.ops.cost_name_unknown]
+doc = "What an agent is called in the cost table when it has no title and no folder is known (never its raw id)."
+value = "Agent (not tracked)"
 
 [web.ops.poll_accounts_ms]
 doc = "How often the Accounts screen asks for fresh numbers while it is shown and the tab is visible."

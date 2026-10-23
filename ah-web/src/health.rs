@@ -32,7 +32,7 @@ pub fn reduce(s: &Settings, pulse: &Value, status: Option<&Value>, io: Option<&V
         .and_then(|d| d["clients"].as_array())
         .map(|l| {
             l.iter()
-                .map(|c| ClientRow { id: text(c, "id"), calls: num(c, "calls"), timeouts: num(c, "timeouts"), fail_open: num(c, "fail_open"), cold_starts: num(c, "cold_starts"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us") })
+                .map(|c| ClientRow { id: text(c, "id"), label: String::new(), calls: num(c, "calls"), timeouts: num(c, "timeouts"), fail_open: num(c, "fail_open"), cold_starts: num(c, "cold_starts"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us"), p50_over: c["p50_over"].as_bool().unwrap_or(false), p95_over: c["p95_over"].as_bool().unwrap_or(false) })
                 .collect()
         })
         .unwrap_or_default();
@@ -40,7 +40,7 @@ pub fn reduce(s: &Settings, pulse: &Value, status: Option<&Value>, io: Option<&V
         .and_then(|d| d["stores"].as_array())
         .map(|l| {
             l.iter()
-                .map(|c| StoreRow { id: text(c, "id"), reads: num(c, "reads"), writes: num(c, "writes"), bytes_in: num(c, "bytes_in"), bytes_out: num(c, "bytes_out"), errors: num(c, "errors"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us") })
+                .map(|c| StoreRow { id: text(c, "id"), reads: num(c, "reads"), writes: num(c, "writes"), bytes_in: num(c, "bytes_in"), bytes_out: num(c, "bytes_out"), errors: num(c, "errors"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us"), p50_over: c["p50_over"].as_bool().unwrap_or(false), p95_over: c["p95_over"].as_bool().unwrap_or(false) })
                 .collect()
         })
         .unwrap_or_default();
@@ -91,10 +91,16 @@ pub async fn read(app: &App) -> Health {
     let timeout = Duration::from_millis(s.ctl_timeout_ms);
     let call = |req: &'static str| ctl::call(&app.socket, req, timeout, s.ctl_max_bytes);
     let (pulse, status, io) = tokio::join!(call("pulse"), call("status"), call("io"));
-    let h = match pulse {
+    let mut h = match pulse {
         Ok(p) => reduce(&s, &p, status.as_ref().ok(), io.as_ref().ok(), now_ms()),
         Err(_) => Health { at_ms: now_ms(), ..Health::default() },
     };
+    // a client is a session id: name it by the project and the title the tracker knows it by (the id stays the hover detail)
+    for c in &mut h.clients {
+        if let Some(a) = app.model().lookup(&c.id, s.placeholder_id_chars) {
+            c.label = if a.project_name.is_empty() || a.project_name == a.label { a.label } else { s.client_label.replace("{project}", &a.project_name).replace("{name}", &a.label) };
+        }
+    }
     *app.health.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), h.clone()));
     h
 }

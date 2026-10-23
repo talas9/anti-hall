@@ -139,6 +139,12 @@ fn fill(t: String, pairs: &[(&str, String)]) -> String {
 }
 
 /// "4 ms" / "380 us"; a dash where nothing was measured.
+/// A histogram bound with its direction: "at most" for an ordinary bucket, "at least" for the slowest one (which has no ceiling).
+fn lat_q(us: u64, over: bool) -> String {
+    if us == 0 { return lat(0) }
+    format!("{}{}", tx(if over { "h_lat_atleast" } else { "h_lat_atmost" }), lat(us))
+}
+
 fn lat(us: u64) -> String {
     match us {
         0 => "\u{2014}".into(),
@@ -225,8 +231,18 @@ fn short(id: &str) -> String {
     if id.len() > 10 && id.contains('-') { id.chars().take(8).collect() } else { id.to_string() }
 }
 
-fn client_label(id: &str) -> String {
-    if id == "unknown" { tx("topo_unknown_client") } else { short(id) }
+/// A client by name: what the tracker knows it as; the calls that named no session, in plain words; a session the tracker no longer
+/// follows, as that; any other name as it is. The raw id is only ever the hover detail.
+fn client_label(c: &ClientRow) -> String {
+    if c.id == "unknown" {
+        tx("topo_unknown_client")
+    } else if !c.label.is_empty() {
+        c.label.clone()
+    } else if c.id.len() >= 8 && c.id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
+        tx("h_client_ended")
+    } else {
+        short(&c.id)
+    }
 }
 
 fn fail_pct(failed: u64, calls: u64) -> f64 {
@@ -304,7 +320,7 @@ fn HealthBody() -> impl IntoView {
                         <thead><tr><th>{tx("h_col_client")}</th><th>{tx("h_col_calls")}</th><th>{tx("h_col_p50")}</th><th>{tx("h_col_p95")}</th><th>{tx("h_col_timeouts")}</th><th>{tx("h_col_failopen")}</th><th>{tx("h_col_last")}</th></tr></thead>
                         <tbody>
                             {clients.into_iter().map(|c| view! {
-                                <tr><td title=c.id.clone()>{client_label(&c.id)}</td><td>{compact(c.calls)}</td><td>{lat(c.p50_us)}</td><td>{lat(c.p95_us)}</td>
+                                <tr><td title=c.id.clone()>{client_label(&c)}</td><td>{compact(c.calls)}</td><td>{lat_q(c.p50_us, c.p50_over)}</td><td>{lat_q(c.p95_us, c.p95_over)}</td>
                                     <td class={if c.timeouts > 0 { "t-warn" } else { "" }}>{compact(c.timeouts)}</td><td class={if c.fail_open > 0 { "t-warn" } else { "" }}>{compact(c.fail_open)}</td>
                                     <td>{if c.last_ms == 0 { tx("topo_never") } else { since(c.last_ms) }}</td></tr>
                             }).collect_view()}
@@ -382,8 +398,8 @@ fn topo_graph(h: &Health, rates: &Rates, t: &TopoCfg, gap: (f32, f32)) -> GraphD
     for (i, c) in clients.iter().enumerate() {
         let r = rates.clients.get(&c.id).copied().unwrap_or(0.0);
         let status = health_status(c.timeouts + c.fail_open, c.calls, c.last_ms, t);
-        let sub = format!("{} \u{b7} p95 {}", if r > 0.0 { rate_text(r) } else { tx("topo_idle") }, lat(c.p95_us));
-        nodes.push(node(format!("c:{}", c.id), client_label(&c.id), sub, "client", status, COL_CLIENT, centre(clients.len(), i), gap));
+        let sub = format!("{} \u{b7} p95 {}", if r > 0.0 { rate_text(r) } else { tx("topo_idle") }, lat_q(c.p95_us, c.p95_over));
+        nodes.push(node(format!("c:{}", c.id), client_label(&c), sub, "client", status, COL_CLIENT, centre(clients.len(), i), gap));
         edges.push(edge(&format!("c:{}", c.id), "e:engine", r));
     }
     let mut row = 0usize;
@@ -391,7 +407,7 @@ fn topo_graph(h: &Health, rates: &Rates, t: &TopoCfg, gap: (f32, f32)) -> GraphD
         let r = rates.stores.get(&s.id).copied().unwrap_or(0.0);
         let status = health_status(s.errors, s.reads + s.writes, s.last_ms, t);
         let kind = if t.databases.contains(&s.id) { "service" } else { "store" };
-        let sub = format!("{} \u{b7} p95 {}", if r > 0.0 { rate_text(r) } else { tx("topo_idle") }, lat(s.p95_us));
+        let sub = format!("{} \u{b7} p95 {}", if r > 0.0 { rate_text(r) } else { tx("topo_idle") }, lat_q(s.p95_us, s.p95_over));
         (node(format!("f:{}", s.id), s.id.clone(), sub, kind, status, COL_STORE, centre(stores_total, row), gap), status, r)
     };
     for (pi, (p, members)) in parts.iter().enumerate() {
@@ -511,10 +527,10 @@ fn NodePanel(id: String) -> impl IntoView {
         match kind {
             "client" => h.clients.iter().find(|c| c.id == inner).map(|c| {
                 vec![
-                    (tx("topo_kind_client"), c.id.clone()),
+                    (tx("topo_kind_client"), client_label(c)),
                     (tx("h_col_calls"), format!("{} ({})", compact(c.calls), rate_text(rates.clients.get(&c.id).copied().unwrap_or(0.0)))),
-                    (tx("h_col_p50"), lat(c.p50_us)),
-                    (tx("h_col_p95"), lat(c.p95_us)),
+                    (tx("h_col_p50"), lat_q(c.p50_us, c.p50_over)),
+                    (tx("h_col_p95"), lat_q(c.p95_us, c.p95_over)),
                     (tx("h_col_timeouts"), compact(c.timeouts)),
                     (tx("h_col_failopen"), compact(c.fail_open)),
                     (tx("topo_last"), if c.last_ms == 0 { tx("topo_never") } else { since(c.last_ms) }),

@@ -196,6 +196,9 @@ pub struct Holder {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClientRow {
     pub id: String,
+    /// What to call it: the project and the session or agent title the tracker knows it by; empty when the tracker does not know it.
+    #[serde(default)]
+    pub label: String,
     pub calls: u64,
     pub timeouts: u64,
     pub fail_open: u64,
@@ -203,6 +206,11 @@ pub struct ClientRow {
     pub last_ms: u64,
     pub p50_us: u64,
     pub p95_us: u64,
+    /// The percentile fell in the histogram's last bucket: the figure is then a lower bound ("at least"), not a ceiling.
+    #[serde(default)]
+    pub p50_over: bool,
+    #[serde(default)]
+    pub p95_over: bool,
 }
 
 /// One store (a file or a database) of the engine's I/O registry.
@@ -217,6 +225,10 @@ pub struct StoreRow {
     pub last_ms: u64,
     pub p50_us: u64,
     pub p95_us: u64,
+    #[serde(default)]
+    pub p50_over: bool,
+    #[serde(default)]
+    pub p95_over: bool,
 }
 
 /// The Health and Topology screens' data: one reduced reading of the engine (`pulse`, `status` and `io`). A field the engine does not

@@ -100,6 +100,7 @@ pub struct Ops {
     cost_rows: usize,
     cost_tree: TreeGlyphs,
     cost_name_fallback: String,
+    cost_name_unknown: String,
     poll_accounts_ms: u64,
     tick_ms: u64,
     update_args: Vec<String>,
@@ -341,9 +342,8 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
     let by_id: HashMap<&str, usize> = agents.iter().enumerate().map(|(i, a)| (a.id.as_str(), i)).collect();
     for (row, a) in rows.iter_mut().zip(&agents) {
         if row.name.is_empty() {
-            let id: String = row.agent.chars().take(st.placeholder_id_chars).collect();
             let dir = a.project.rsplit('/').find(|p| !p.is_empty()).unwrap_or_default();
-            row.name = if dir.is_empty() { id } else { o.cost_name_fallback.replace("{dir}", dir).replace("{id}", &id) };
+            row.name = if dir.is_empty() { o.cost_name_unknown.clone() } else { o.cost_name_fallback.replace("{dir}", dir) };
         }
     }
     // projects, biggest spender first; inside each, the tree
