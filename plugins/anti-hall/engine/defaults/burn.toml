@@ -49,12 +49,24 @@ doc = "Tools whose command text is checked against burn.allowed_bash_re while th
 value = ["Bash"]
 
 [burn.allowed_bash_re]
-doc = "A command a blocked subagent may still run: it must start with git commit, add, push, status, log, diff, show, rev-parse or branch (optionally after `git -C <dir>`). Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to \"\"."
-value = '^\s*git(?:\s+-C\s+\S+)?\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)\b'
+doc = "A segment of a command a blocked subagent may still run: git (optionally with any number of `-C <dir>` and `-c <key=value>` options) followed by commit, add, push, status, log, diff, show, rev-parse or branch. Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)\b'''
+
+[burn.allowed_cd_re]
+doc = "The other segment a blocked subagent may run: `cd <dir>` (so `cd <dir> && git ...` passes). Regular expression (Rust syntax), tested like burn.allowed_bash_re."
+value = '''^\s*cd\s+\S+\s*$'''
+
+[burn.separator_re]
+doc = "What splits a command into segments that are judged one by one: `&&` and `;`. Every segment must be allowed (burn.allowed_bash_re or burn.allowed_cd_re) for the command to pass. Regular expression (Rust syntax)."
+value = '''&&|;'''
+
+[burn.allowed_suffix_re]
+doc = "A harmless tail of a segment, removed before the segment is judged: `2>&1`, optionally piped into tail or head with a line count. Any other pipe or redirect stays forbidden. Regular expression (Rust syntax)."
+value = '''\s+2>&1(?:\s*\|\s*(?:tail|head)(?:\s+-n?\s*\d+)?)?\s*$'''
 
 [burn.forbidden_bash_re]
-doc = "What makes an otherwise allowed command a chain or a hidden command: a separator, pipe, redirect, background, backtick, newline or $( outside quoted text. Regular expression (Rust syntax), tested on the command with its plain quoted strings reduced to \"\"."
-value = '[;&|`<>\n\r]|\$\('
+doc = "What makes an otherwise allowed segment a hidden command: a pipe, lone `&` (background), redirect, backtick, newline or dollar-paren outside quoted text. (`&&` and `;` are separators, see burn.separator_re.) Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''[&|`<>\n\r]|\$\('''
 
 [burn.quoted_re]
 doc = "Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by \"\" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax)."
@@ -77,8 +89,8 @@ doc = "Why the breaker blocks."
 value = "Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about 60% of a weekly limit waiting on build locks, re-reading files and re-running suites). Parallel agents are fine; spending with nothing to show is not."
 
 [burn.msg_instead]
-doc = "What to do instead."
-value = "Commit what works (plain `git commit -m` with a quoted message), report (SendMessage) what is done and what is not, and stop. A commit, finished step, passing check or new file resets the count."
+doc = "What to do instead, with the exact allowed command forms."
+value = "Commit what works, report (SendMessage) what is done and what is not, and stop. Allowed while blocked: `git commit -m \"msg\"`, `git add ...`, `git push`, `git status|log|diff|show|rev-parse|branch`, the same with `git -C <dir> ...` or `git -c k=v ...`, `cd <dir> && git ...`, several of these joined by `&&` or `;`, and a trailing `2>&1` (optionally `| tail -N`). Other pipes and redirects, backticks and dollar-paren stay blocked. A commit, push, finished step, passing check or new file resets the count."
 
 [burn.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

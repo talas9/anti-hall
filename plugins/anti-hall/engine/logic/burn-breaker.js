@@ -6,10 +6,19 @@
 // Every name, number, pattern and text is in burn.toml. A failure of this script allows (script.failure_mode_by_check).
 'use strict';
 
-// Reduces plain quoted strings to "" so a commit message may hold `;` or `&`, then judges the command.
+// Reduces plain quoted strings to "" so a commit message may hold `;` or `&`, splits the command on `&&` and `;`, and judges each segment:
+// a harmless tail (2>&1, | tail -N) is dropped, then the segment must be an allowed git command or a cd, with nothing hidden in it.
 function bbAllowedBash(cmd) {
   var plain = cmd.replace(new RegExp(ah.cfg('burn.quoted_re'), 'g'), '""');
-  return ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', plain) && !ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', plain);
+  var parts = plain.split(new RegExp(ah.cfg('burn.separator_re'))), seen = 0;
+  for (var i = 0; i < parts.length; i++) {
+    var seg = parts[i].replace(new RegExp(ah.cfg('burn.allowed_suffix_re')), '');
+    if (seg.replace(/\s+/g, '') === '') continue;
+    if (ah.re.test(ah.cfg('burn.forbidden_bash_re'), 'r', seg)) return false;
+    if (!ah.re.test(ah.cfg('burn.allowed_bash_re'), 'r', seg) && !ah.re.test(ah.cfg('burn.allowed_cd_re'), 'r', seg)) return false;
+    seen++;
+  }
+  return seen > 0;
 }
 
 function decide(p) {
