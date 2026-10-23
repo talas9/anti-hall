@@ -1,6 +1,6 @@
 //! What the server knows, and the changes between its states. Every change gets a sequence number and is kept in a short ring, so a
 //! stream asks "what moved since n" and is answered with one merged [`Delta`]; a stream that fell behind the ring gets a snapshot.
-use ah_web_proto::{ActionEvt, Agent, Decision, Delta, FeedItem, Pulse, Snapshot};
+use ah_web_proto::{JevEvt, ActionEvt, Agent, Decision, Delta, FeedItem, Pulse, Snapshot};
 use std::collections::{BTreeMap, VecDeque};
 
 /// What one poll found (every field is "unchanged" when `None` / empty).
@@ -14,6 +14,7 @@ pub struct Found {
     pub feed: Vec<(u64, String, String)>,
     pub decisions: Vec<Decision>,
     pub actions: Vec<ActionEvt>,
+    pub jev: Vec<JevEvt>,
     pub rev: Option<String>,
 }
 
@@ -44,6 +45,7 @@ pub struct Model {
     pub mesh_reads_after: i64,
     /// Where the action log was read up to (`None` before the first read).
     pub actions_off: Option<u64>,
+    pub jev_off: Option<u64>,
     /// False until the first poll has been folded in: a tab connecting before it would be shown an engine that "does not answer".
     pub ready: bool,
 }
@@ -68,6 +70,7 @@ impl Model {
             mesh_after: -1,
             mesh_reads_after: 0,
             actions_off: None,
+            jev_off: None,
             ready: false,
         }
     }
@@ -114,7 +117,8 @@ impl Model {
             d.decisions.push(x);
         }
         d.actions = f.actions;
-        if d.engine_ok.is_none() && d.generated_ms.is_none() && d.pulse.is_none() && d.upsert.is_empty() && d.removed.is_empty() && d.feed.is_empty() && d.decisions.is_empty() && d.actions.is_empty() {
+        d.jev = f.jev;
+        if d.engine_ok.is_none() && d.generated_ms.is_none() && d.pulse.is_none() && d.upsert.is_empty() && d.removed.is_empty() && d.feed.is_empty() && d.decisions.is_empty() && d.actions.is_empty() && d.jev.is_empty() {
             return;
         }
         self.seq += 1;
@@ -168,6 +172,7 @@ impl Model {
             out.feed.extend(d.feed.iter().cloned());
             out.decisions.extend(d.decisions.iter().cloned());
             out.actions.extend(d.actions.iter().cloned());
+            out.jev.extend(d.jev.iter().cloned());
         }
         out.upsert = up.into_values().collect();
         Out::Delta(out)

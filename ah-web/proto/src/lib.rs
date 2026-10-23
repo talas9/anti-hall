@@ -106,6 +106,25 @@ pub struct ActionEvt {
     pub reason: String,
 }
 
+/// One row of the engine's Jev decision log (what was asked, not the prompt: the log holds hashes, verdicts, confidences, latencies, costs).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JevEvt {
+    pub ts_ms: u64,
+    /// The integration that asked (`agentWaste`, `stopClaim`, ...).
+    pub id: String,
+    /// Jev's answer as the log wrote it (JSON text); empty when it gave none.
+    pub verdict: String,
+    pub conf: Option<f64>,
+    /// `on` (may change the outcome), `shadow` (logged only) or `off`.
+    pub mode: String,
+    pub latency_ms: u64,
+    pub cost_usd: Option<f64>,
+    /// Why Jev did not act, when the log says (`reason`).
+    pub reason: String,
+    /// Whether the call changed the outcome.
+    pub changed: bool,
+}
+
 /// The hook wiring for the Live screen: which checks answer which events (from `describe`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LiveMap {
@@ -203,6 +222,10 @@ pub struct LiveCfg {
     /// Node sizes and gaps of the three columns, in graph units.
     pub col_gap: f32,
     pub row_gap: f32,
+    /// Most rule nodes drawn.
+    pub rules_max: usize,
+    /// Jev mode -> effect colour key.
+    pub jev_fx: std::collections::BTreeMap<String, String>,
 }
 
 /// Where the header pills turn amber and red (from `web.toml`).
@@ -245,6 +268,9 @@ pub struct Delta {
     /// New lines of the action log.
     #[serde(default)]
     pub actions: Vec<ActionEvt>,
+    /// New rows of the Jev decision log.
+    #[serde(default)]
+    pub jev: Vec<JevEvt>,
 }
 
 /// One action on one agent, from the menu.

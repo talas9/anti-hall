@@ -100,6 +100,9 @@ pub struct Settings {
     pub live_map_parts: Vec<String>,
     pub live_graph_rel: String,
     pub plugin_manifest_rel: String,
+    pub live_jev_log_rel: String,
+    pub live_rules_max: usize,
+    pub live_jev_fx: BTreeMap<String, String>,
     pub live_col_gap: f32,
     pub live_row_gap: f32,
 }
@@ -134,6 +137,8 @@ impl Settings {
             travel_fx: self.live_travel_fx.clone(),
             col_gap: self.live_col_gap,
             row_gap: self.live_row_gap,
+            rules_max: self.live_rules_max,
+            jev_fx: self.live_jev_fx.clone(),
         }
     }
 

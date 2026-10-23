@@ -32,3 +32,4 @@ button.nav-item { background: transparent; cursor: pointer; font-size: 10px; }
 .chip-completed { color: var(--green); border-color: color-mix(in oklch, var(--green) 50%, transparent); }
 .chip-blocked { color: var(--red); border-color: color-mix(in oklch, var(--red) 50%, transparent); }
 .chip-pending { color: var(--amber); border-color: color-mix(in oklch, var(--amber) 50%, transparent); }
+.jev-row { display: flex; flex-direction: column; gap: 2px; font: 12px var(--font-mono); padding: 4px 0; border-bottom: 1px solid var(--line); }

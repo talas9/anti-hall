@@ -169,6 +169,7 @@ async fn read_round(app: &App, s: &Settings, due: Due) -> Found {
                 let mut m = app.model();
                 m.decisions_seq = if num(&doc, "last_seq") < dseq { 0 } else { last.max(dseq) };
                 f.actions = crate::live::new_actions(s, &app.socket, &mut m.actions_off);
+                f.jev = crate::live::new_jev(s, &mut m.jev_off);
             }
             Err(_) => {
                 f.engine_ok = Some(false);
