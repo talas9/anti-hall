@@ -2,7 +2,7 @@
 # engine-deploy.sh: put a new ah-engine binary live together with its plugin defaults, in the one safe order.
 #
 #   sh scripts/engine-deploy.sh --check    <new-binary> <new-defaults> [--hook <ah-hook>]       read-only pre-check
-#   sh scripts/engine-deploy.sh --deploy   <new-binary> <new-defaults> [--hook <ah-hook>] [--yes] [--allow-drop] [--scope tree|defaults]
+#   sh scripts/engine-deploy.sh --deploy   <new-binary> <new-defaults> [--hook <ah-hook>] [--yes] [--allow-drop] [--allow-entry-leftovers] [--scope tree|defaults]
 #   sh scripts/engine-deploy.sh --rollback [--from <backup-dir>] [--yes]
 #
 # --hook <path> is the thin client (ah-hook) to install or upgrade together with the engine; default: the `ah-hook` next to <new-binary>
@@ -31,6 +31,10 @@
 #           Maintenance hold: the launcher's own "daemon down" marker (files.daemon_down_marker in the state dir) is set to a time
 #           in the future, so hooks pass through and start nothing while the engine is stopped and the binary is swapped. It
 #           carries a TTL (AH_DEPLOY_HOLD_TTL_S, refreshed at every step) so a crashed deploy can never leave the guards off.
+# Entry-path gate: when <new-defaults> is a plugin root (scope tree), --check and --deploy run `ah-engine audit entry-paths --no-live` of
+#           the NEW binary against that tree before anything is swapped. Any js/sh/wrong-entry leftover (files, command strings,
+#           generated launchers) is a PROBLEM: the deploy is refused and the table is printed. --allow-entry-leftovers is the explicit
+#           owner override; it is logged (a note, a step line in the deploy log and a line in $BK_ROOT/entry-leftovers-override.log).
 # --rollback  dry run by default; with --yes restores the .prev binary and every backed-up defaults file of the chosen deploy
 #           (default: the latest). Files the deploy added are moved aside, not deleted; the files being replaced are kept too.
 #
@@ -316,7 +320,27 @@ old_misses() {
 
 # --- check ------------------------------------------------------------------------------------------------------------
 ALLOW_DROP=0
+ALLOW_LEFTOVERS=0; LEFTOVER_OVERRIDE=
 OLD_MISS=0
+
+# entry_gate: the entry-path audit of the plugin tree being deployed, by the new binary, against the new tree's own audit rules. Exit 0
+# of the audit = clean; 1 = findings (table printed, deploy refused unless --allow-entry-leftovers); anything else = it could not run.
+entry_gate() {
+  if [ -z "$SRC_TREE" ]; then note "entry-path audit: skipped (--scope defaults: no plugin tree is being deployed)"; return 0; fi
+  out=$(eng_scratch "$NEW" "$SRC_TREE" audit entry-paths --root "$SRC_TREE" --no-live); rc=$?
+  case $rc in
+    0) note "entry-path audit: clean ($SRC_TREE)" ;;
+    1)
+      printf '%s\n' "$out"
+      if [ "$ALLOW_LEFTOVERS" = 1 ]; then
+        note "entry-path audit: LEFTOVERS ALLOWED by --allow-entry-leftovers (owner override): $(printf '%s\n' "$out" | grep -c ' | ') row(s)"
+        LEFTOVER_OVERRIDE=$(printf '%s\n' "$out" | grep '^entry-path audit:' | head -n 1)
+      else
+        problem "entry-path audit: the plugin tree $SRC_TREE has js/sh/wrong-entry leftovers (table above); fix them, or pass --allow-entry-leftovers as the explicit owner override"
+      fi ;;
+    *) problem "entry-path audit could not run (rc $rc): $(printf '%s' "$out" | head -n 1 | cut -c1-240)" ;;
+  esac
+}
 do_check() {
   NEW=$1
   [ -f "$NEW" ] && [ -x "$NEW" ] || die "new binary missing or not executable: $NEW"
@@ -334,6 +358,7 @@ do_check() {
   v=$(eng_scratch "$NEW" "$SCRATCH/none" version --json) || true
   note "new binary version: $(printf '%s' "$v" | head -c 120)"
   note "new defaults: $SRC_DEF  (pristine: $SRC_PRI); scope: $SCOPE$([ "$SCOPE" = tree ] && echo " ($SRC_TREE)")"
+  entry_gate
   i=0
   for r in $ROOTS; do
     i=$((i + 1))
@@ -625,6 +650,10 @@ do_deploy() {
   BK=$BK_ROOT/$ts
   mkdir -p "$BK" || die "cannot create the backup dir $BK"
   DLOG=$BK/deploy.log; MAN=$BK/manifest.tsv; : >"$MAN"
+  if [ -n "$LEFTOVER_OVERRIDE" ]; then
+    step "OWNER OVERRIDE --allow-entry-leftovers: deploying a plugin tree with entry-path leftovers ($LEFTOVER_OVERRIDE)"
+    printf '%s override --allow-entry-leftovers tree=%s new=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SRC_TREE" "$NEWSHA" "$LEFTOVER_OVERRIDE" >>"$BK_ROOT/entry-leftovers-override.log"
+  fi
   printf '%s\n' "$ts" >"$BK_ROOT/latest" 2>/dev/null
   step "deploy start: new sha $NEWSHA, backup $BK, scope $SCOPE"
   mkscratch
@@ -790,6 +819,7 @@ while [ $# -gt 0 ]; do
     --check|--deploy|--rollback) [ -z "$mode" ] || usage; mode=$1 ;;
     --yes) YES=1 ;;
     --allow-drop) ALLOW_DROP=1 ;;
+    --allow-entry-leftovers) ALLOW_LEFTOVERS=1 ;;
     --scope) shift; SCOPE=${1:-}; [ -n "$SCOPE" ] || usage ;;
     --hook) shift; HOOK_ARG=${1:-}; [ -n "$HOOK_ARG" ] || usage ;;
     --from) shift; FROM=${1:-}; [ -n "$FROM" ] || usage ;;

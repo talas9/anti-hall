@@ -86,6 +86,7 @@ value = [
   { section = "files", path = '(^|/)hooks/install\.sh$', reason = "the one allowed shell file: the installer" },
   { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
   { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
+  { section = "commands", path = '(^|/)engine/defaults/entry_audit\.toml$', reason = "the audit's own rule file names the patterns it forbids" },
   { section = "live", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file" },
   { section = "live", rule = "live-process", text = '/private/tmp/claude-\d+/', reason = "the tool shell of a Claude Code session: its scratch path names the project directory, it is not an anti-hall script" },
 ]
