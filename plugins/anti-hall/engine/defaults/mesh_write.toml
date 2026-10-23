@@ -1409,6 +1409,26 @@ value = "no progress yet"
 doc = "The done count of a finish label."
 value = "{done}/{total} done"
 
+[mesh_write.lbl_live]
+doc = "Appended to a plan's finish label when the workspace's tracked work is ahead of its plan. `{parts}` is the list of live facts."
+value = " (plan behind, live: {parts})"
+
+[mesh_write.lbl_live_tasks]
+doc = "A live fact: task-list items the workspace completed; `{n}` is the count."
+value = "{n} task(s) done"
+
+[mesh_write.lbl_live_commits]
+doc = "A live fact: commits; `{n}` is the count."
+value = "{n} commit(s)"
+
+[mesh_write.lbl_live_shipped]
+doc = "A live fact: merges and deploys; `{n}` is the count."
+value = "{n} merge/deploy(s)"
+
+[mesh_write.lbl_live_last]
+doc = "A live fact: when the workspace last committed, pushed, merged or deployed; `{dur}` is the time since."
+value = "last ship {dur} ago"
+
 [mesh_write.lbl_plan_changed]
 doc = "Appended to the done count after the plan was replaced or a done step re-opened."
 value = " (plan changed)"

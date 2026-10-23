@@ -35,6 +35,11 @@ pub trait Sink {
     fn backlog(&self, _env: &Env, _target: &str) -> u64 {
         0
     }
+    /// Whether a reminder of `signal` about `agent` is already queued for `target` and not yet taken (false when the channel cannot
+    /// tell): the same notice is never queued twice in front of one prompt.
+    fn has_pending(&self, _env: &Env, _target: &str, _signal: &str, _agent: &str) -> bool {
+        false
+    }
 }
 
 pub(super) fn append(path: &PathBuf, row: &Value) -> Result<(), String> {
@@ -81,6 +86,14 @@ impl Sink for SessionQueue {
         cur.push(pth("cursor_ext"));
         let taken: u64 = std::fs::read_to_string(PathBuf::from(cur)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
         lines_in(&q).saturating_sub(taken)
+    }
+    fn has_pending(&self, env: &Env, target: &str, signal: &str, agent: &str) -> bool {
+        let q = Self::file(env, target);
+        let mut cur = q.clone().into_os_string();
+        cur.push(pth("cursor_ext"));
+        let taken: usize = std::fs::read_to_string(PathBuf::from(cur)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        let text = std::fs::read_to_string(&q).unwrap_or_default();
+        text.lines().skip(taken).filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|v| v["signal"] == signal && v["agent"] == agent)
     }
 }
 

@@ -192,12 +192,12 @@ pub(crate) fn cost_json(st: &State) -> Value {
         .values()
         .filter_map(|a| {
             let tokens = a.tin + a.tout;
-            let outcomes = a.commits + a.pushes + a.steps_done + a.tests_pass + a.files.len() as u64;
+            let outcomes = a.commits + a.pushes + a.shipped + a.steps_done + a.tests_pass + a.files.len() as u64;
             (tokens > 0).then(|| {
                 (
                     tokens,
                     json!({
-                        "agent": a.id, "name": a.name, "kind": a.kind, "tokens": tokens, "commits": a.commits, "pushes": a.pushes,
+                        "agent": a.id, "name": a.name, "kind": a.kind, "tokens": tokens, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped,
                         "guard_fires": a.guard_fires, "steps_done": a.steps_done, "tests_passed": a.tests_pass, "files_edited": a.files.len(),
                         "outcomes": outcomes, "tokens_per_outcome": per(tokens, outcomes),
                     }),

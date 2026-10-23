@@ -583,7 +583,7 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     let rows = outbox(&h);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!((rows[0]["workspace"].as_str(), rows[0]["to_parent"].as_bool()), (Some("ws1"), Some(false)));
-    assert!(rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT=\"/plug\"") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
+    assert!(rows[0]["text"].as_str().unwrap().contains("exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\"") && !rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
     assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
@@ -1362,6 +1362,40 @@ fn a_stopped_teammate_stays_done_after_the_stop_left_the_scan_window() {
     assert!(agent(&st, "aquiet-2").flags.contains_key("hung"), "an alive teammate that is truly silent still alerts");
     assert!(!agent(&st, "aidle-3").finished, "an idle teammate on the roster is not finished");
     assert_eq!(signals::state_of(agent(&st, "sub9")), "done", "a subagent that ended its turn");
+}
+
+/// The real answer to a `TaskStop` of an in-process teammate (session 44895798, 2026-10-22): the host's own task id plus the task's
+/// description, nothing that names the agent. The teammate is still on the roster at that moment, so only the answer ends it.
+#[test]
+fn a_taskstop_answer_names_the_teammate_by_its_launch_description() {
+    let h = home("stopanswer");
+    let n = now0();
+    let cwd = h.to_string_lossy().to_string(); // a missing working directory reads as dead
+    let launch = |ts: u64, tuid: &str, name: &str, desc: &str| {
+        asst(ts, &format!("m{tuid}"), 5, 5, json!([{"type": "tool_use", "id": tuid, "name": "Agent", "input": {"name": name, "description": desc}}]), None)
+    };
+    let stop_answer = |ts: u64, tuid: &str, desc: &str| {
+        json!({"type": "user", "timestamp": iso(ts),
+               "toolUseResult": {"message": "Successfully stopped task", "task_id": "tzzz", "task_type": "in_process_teammate", "command": desc},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tuid, "content": "ok"}]}})
+        .to_string()
+    };
+    let parent = vec![
+        prompt(n - 80 * MIN, &cwd),
+        launch(n - 70 * MIN, "toolu_a0", "stopped", "Fix the stopped thing"),
+        launch(n - 70 * MIN + 1, "toolu_a1", "kept", "Fix the kept thing"),
+        tool(n - 50 * MIN, "p3", 5, "toolu_s1", "TaskStop", json!({"task_id": "tzzz"})),
+        stop_answer(n - 50 * MIN + 1000, "toolu_s1", "Fix the stopped thing"),
+    ];
+    write(&sess(&h, "parent"), &parent);
+    let silent = vec![prompt(n - 70 * MIN, &cwd), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), None)];
+    mate(&h, "astopped-1", "stopped", "team-r", &silent);
+    mate(&h, "akept-2", "kept", "team-r", &[prompt(n - 70 * MIN, &cwd), asst(n - MIN, "s2", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
+    roster(&h, "team-r", &["stopped", "kept"]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "astopped-1")), "done", "the stop answer carries the launch description");
+    { let k = agent(&st, "akept-2"); assert_eq!(signals::state_of(k), "running", "a teammate no stop names stays running; cwd={:?} last={} now={} run={} fin={} pend={}", k.cwd, k.last_output_ms, n, k.running, k.finished, k.pending.len()); }
 }
 
 /// Prevention: every way the host says an agent has ended must end an agent whose own transcript still reads "running and silent".

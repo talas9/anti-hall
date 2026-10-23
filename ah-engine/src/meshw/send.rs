@@ -405,7 +405,8 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let heal = common::self_heal(inv)?;
     let to = a.one(to_key);
     if !a.has(defaults::text("mesh_write.flag_cc_primary")) {
-        let out = finish_send(inv, defaults::text("mesh_write.action_send"), to, cmd_send_mode(inv, a, false)?, &heal)?;
+        let mut out = finish_send(inv, defaults::text("mesh_write.action_send"), to, cmd_send_mode(inv, a, false)?, &heal)?;
+        wake_target(inv, &mut out);
         return Ok(answer_of(a, out));
     }
     // --cc-primary: the copy to the Primary is written after the send, so both are settled before the first write
@@ -418,6 +419,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     }
     crate::meshw::clog::ready(inv)?;
     let mut out = finish_send(inv, defaults::text("mesh_write.action_send"), to, cmd_send_mode(inv, a, false)?, &heal)?;
+    wake_target(inv, &mut out);
     let was_direct = matches!(out.0.iter().find(|(k, _)| k == "type").map(|(_, v)| v), Some(OVal::Str(t)) if t == defaults::text("mesh_write.mtype_direct"));
     if copy && is_ok(&out) && was_direct {
         let c = finish_send(
@@ -453,6 +455,21 @@ fn finish_send(inv: &Inv, op: &str, to: Option<&str>, mut out: Obj, heal: &[(Str
         crate::meshw::mark_committed();
     }
     Ok(out)
+}
+
+/// A direct send that landed in a workspace's inbox cannot reach the workspace while it sits idle at its prompt: when the tracker reads
+/// it as idle, DevSwarm is asked to wake it (`workspace reactivate-child`, see `agents::native_wake`). The answer gains `nativeWake`
+/// only when a wake was attempted.
+fn wake_target(inv: &Inv, out: &mut Obj) {
+    if !is_ok(out) || !matches!(out.0.iter().find(|(k, _)| k == "type").map(|(_, v)| v), Some(OVal::Str(t)) if t == defaults::text("mesh_write.mtype_direct")) {
+        return;
+    }
+    let Some(OVal::Str(to)) = out.0.iter().find(|(k, _)| k == "toId").map(|(_, v)| v.clone()) else { return };
+    if let Some(w) = crate::agents::native_wake::wake(&inv.home, &to, "", &inv.env, Some(&inv.cwd))
+        && let Some(v) = OVal::parse(&w.to_string())
+    {
+        out.put("nativeWake", v);
+    }
 }
 
 /// The printed answer of a single send result.
@@ -527,7 +544,8 @@ fn run_multi(inv: &Inv, a: &Args, recipients: &[String]) -> R<Answer> {
     let mut rows: Vec<OVal> = Vec::new();
     let mut failed = 0usize;
     for (to, x) in recipients.iter().zip(&args_for) {
-        let r = finish_send(&inv2, defaults::text("mesh_write.action_send"), Some(to), cmd_send_mode(&inv2, x, false)?, &heal)?;
+        let mut r = finish_send(&inv2, defaults::text("mesh_write.action_send"), Some(to), cmd_send_mode(&inv2, x, false)?, &heal)?;
+        wake_target(&inv2, &mut r);
         let ok = is_ok(&r);
         let mut row = Obj::default();
         row.put("to", s(to)).put("ok", OVal::Bool(ok));

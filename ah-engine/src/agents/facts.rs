@@ -298,6 +298,10 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         push = pat("push").is_some_and(|r| r.is_match(arg));
         if pat("commit").is_some_and(|r| r.is_match(arg)) {
             class = "commit".into();
+        } else if pat("merge").is_some_and(|r| r.is_match(arg)) {
+            class = "merge".into();
+        } else if pat("deploy").is_some_and(|r| r.is_match(arg)) {
+            class = "deploy".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
             class = "test".into();
         } else if pat("build").is_some_and(|r| r.is_match(arg)) {
@@ -399,10 +403,17 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
         push_ring(&mut a.errs, (crate::health::fnv(&head), cap(&text, lim("text_cap")), ts), lim("error_window"));
         return;
     }
+    if p.push || p.class == "commit" || p.class == "merge" || p.class == "deploy" {
+        a.last_ship_ms = ts;
+    }
     if p.push {
         a.pushes += 1;
         a.progress += weight("push");
         a.waste.reset_at = ts;
+    }
+    if p.class == "merge" || p.class == "deploy" {
+        a.shipped += 1;
+        a.progress += weight(&p.class);
     }
     if p.class == "commit" {
         a.commits += 1;

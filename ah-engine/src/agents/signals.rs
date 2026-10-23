@@ -133,6 +133,18 @@ fn spent(base: &Sample, cur: &Sample) -> u64 {
     (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct")
 }
 
+/// Everything the agent has spent, counted the way the burn and waste figures count (cache reads at their configured share), so the
+/// total a nudge shows never reads smaller than the part of it spent with no outcome.
+pub(crate) fn total_spent(a: &Agent) -> u64 {
+    a.tin + a.tout + a.tcw + a.tcr * lim("cache_read_pct") / fmtn("pct")
+}
+
+/// Whether the agent's latest calls wait on CI (a `ci_wait` command among the last `ci_wait_calls`).
+pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
+    let Some(re) = defaults::raw("agent_tracker.patterns").get("ci_wait").and_then(V::as_str).and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok()) else { return false };
+    a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
+}
+
 /// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
 /// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
 pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
@@ -350,7 +362,7 @@ enum Target {
     Owner,
 }
 
-fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
+fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
     let who = label(a);
     let kind: &str = &a.kind;
     let t = match sig {
@@ -374,9 +386,7 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         ),
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            let root = env.plugin_root.as_ref().map_or_else(|| defaults::text("agent_tracker.wake_root_fallback").to_string(), |r| r.to_string_lossy().to_string());
-            let command = defaults::render("agent_tracker.wake_command", &[("root", &root)]);
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &command)])
+            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
         _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
     };
@@ -467,6 +477,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         if held.is_none() && sink.backlog(env, &key) >= spam("max_pending") {
             held = Some("pending");
         }
+        if held.is_none() && sink.has_pending(env, &key, sig, &a.id) {
+            held = Some("pending");
+        }
         let f = base(a).tok("channel", sink.channel()).tok("result", held.unwrap_or("queued")).num("evidence", flag.evidence);
         if let Some(h) = held {
             let quiet = a.last_sent.get(&format!("held:{sig}")).is_some_and(|t| now.saturating_sub(*t) < cool.max(1));
@@ -482,7 +495,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             ts: now,
             signal: sig.into(),
             agent: a.id.clone(),
-            text: text_for(env, a, sig, &flag),
+            text: text_for(a, sig, &flag),
         };
         match sink.deliver(env, &key, &r) {
             Ok(()) => {

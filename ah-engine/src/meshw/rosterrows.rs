@@ -1226,6 +1226,48 @@ fn current_step(plan_doc: &OVal) -> Option<&OVal> {
     best.or(first_open)
 }
 
+/// What the tracker saw the workspace do (see `agents::sources::live_plan`) when that is ahead of its plan: more task-list completions
+/// than the plan counts done, or a commit, push, merge or deploy after the plan's last report. The label text to append, and the facts
+/// for the row's `live` field. `None`: no such file, or the plan is as current as the work.
+fn live_work(inv: &Inv, plan_doc: &OVal, now: f64) -> Option<(String, OVal)> {
+    let cfg = defaults::raw("agent_tracker.live_plan");
+    let paths = defaults::raw("agent_tracker.paths");
+    let id = ident::js_to_string(plan_doc.get("id")?);
+    if !is_safe_id(&id) {
+        return None;
+    }
+    let file = inv.home.join(paths.str_field("base")).join(paths.str_field("dir")).join(cfg.str_field("dir")).join(format!("{id}{}", paths.str_field("json_ext")));
+    let facts = read_obj(&file)?;
+    let facts = facts.get("facts")?.clone();
+    let get = |k: &str| {
+        let n = number_of(facts.get(k));
+        if n.is_finite() { n } else { 0.0 }
+    };
+    let (tasks, commits, shipped, last_ship) = (get("tasks_done"), get("commits"), get("shipped"), get("last_ship_ms"));
+    let stale_ms = cfg.get("stale_ms").and_then(defaults::V::as_integer).unwrap_or(0) as f64;
+    let reported = ["step_ts", "activity_ts"].iter().map(|k| number_of(plan_doc.get(k))).filter(|n| n.is_finite()).fold(0.0, f64::max);
+    let ahead_tasks = tasks > plan::steps_done(plan_doc) as f64;
+    let ahead_ship = last_ship > reported + stale_ms;
+    if !ahead_tasks && !ahead_ship {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if tasks > 0.0 {
+        parts.push(defaults::render("mesh_write.lbl_live_tasks", &[("n", &tasks)]));
+    }
+    if commits > 0.0 {
+        parts.push(defaults::render("mesh_write.lbl_live_commits", &[("n", &commits)]));
+    }
+    if shipped > 0.0 {
+        parts.push(defaults::render("mesh_write.lbl_live_shipped", &[("n", &shipped)]));
+    }
+    if last_ship > 0.0 {
+        parts.push(defaults::render("mesh_write.lbl_live_last", &[("dur", &plan::dur(now - last_ship))]));
+    }
+    let text = defaults::render("mesh_write.lbl_live", &[("parts", &parts.join(defaults::text("mesh_write.lbl_sep")))]);
+    Some((text, facts))
+}
+
 /// The `plan` field of a roster row (roster-diag.js `cmdRoster`, plan tracking): label, current step, counts, extras, the token burn
 /// once the supervisor has read the child's transcript, and the straying warnings with any Jev recommendation. An `Err` is a plan
 /// Node's code would throw on.
@@ -1233,6 +1275,10 @@ fn plan_fields(inv: &Inv, found: &plan::Found, now: f64) -> Result<OVal, ()> {
     let plan_doc = &found.plan;
     let cur = current_step(plan_doc);
     let mut label = plan::finish_label(plan_doc, now).map_err(|_| ())?;
+    let live = live_work(inv, plan_doc, now);
+    if let (Some((text, _)), true) = (&live, label.truthy()) {
+        label = s(&format!("{}{text}", ident::js_to_string(&label)));
+    }
     let mut o = Obj::default();
     let put_label = |o: &mut Obj, l: &OVal| {
         o.put("label", l.clone());
@@ -1247,6 +1293,9 @@ fn plan_fields(inv: &Inv, found: &plan::Found, now: f64) -> Result<OVal, ()> {
         None => {
             o.put("step", OVal::Null);
         }
+    }
+    if let Some((_, facts)) = live {
+        o.put("live", facts);
     }
     o.put("of", OVal::Num(plan::steps_of(plan_doc).len() as f64)).put("done", OVal::Num(plan::steps_done(plan_doc) as f64));
     match cur {

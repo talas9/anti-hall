@@ -190,7 +190,26 @@ fn devswarm(env: &Env, st: &mut State) {
         // a Primary's DevSwarm watcher arms only while it has a live child (its idle-skip), so "unarmed" says nothing about it
         let armed = (!id.starts_with(defaults::text("agent_tracker.primary_prefix"))).then(|| watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done });
+        live_plan(env, &id, a, done);
     }
+}
+
+/// The live facts of a workspace's work (task-list completions, commits, pushes, merges and deploys, and when it last shipped), kept in
+/// one small file per workspace for the roster: its plan is the workspace's own report (`heartbeat --step`) and stays as stale as the
+/// last report, so the roster shows these facts next to it. Written only when they change.
+fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
+    if !env.act || (a.steps_done == 0 && a.commits == 0 && a.shipped == 0 && a.pushes == 0) {
+        return;
+    }
+    let path = env.dir().join(defaults::raw("agent_tracker.live_plan").str_field("dir")).join(format!("{id}{}", pth("json_ext")));
+    let facts = serde_json::json!({"tasks_done": a.steps_done, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped, "last_ship_ms": a.last_ship_ms, "plan_done": plan_done});
+    if json_of(&path).is_some_and(|v| v["facts"] == facts) {
+        return;
+    }
+    if let Some(d) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports a missing directory
+    }
+    crate::discard::harmless(crate::atomic::write(path, serde_json::json!({"ts": env.now_ms, "facts": facts}).to_string())); // keep: the next tick writes it again
 }
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
@@ -300,6 +319,68 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     }
 }
 
+/// The teammates a launching session stopped, by name: the host answers a `TaskStop` of an in-process teammate with its own task id (not
+/// the agent id or the name) plus the task's description, so the stop is tied back to the `Agent` call that launched the teammate under
+/// that description. Only the stops after the latest launch of the name count (a teammate launched again under it is a new one).
+fn teammate_stops(parent: &str) -> std::collections::HashSet<String> {
+    use std::collections::{HashMap, HashSet};
+    let cfg = defaults::raw("agent_tracker.stop_result");
+    let field = |k: &str| cfg.str_field(k);
+    let launch = defaults::raw("agent_scan.launch_tools").strings();
+    let stop_tool = defaults::text("agent_scan.stop_tool");
+    let Some(text) = tail_of(parent, defaults::num("agent_scan.tail_bytes")) else { return HashSet::new() };
+    let (mut launched, mut stop_calls): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
+    let (mut by_desc, mut stopped): (HashMap<String, String>, HashSet<String>) = (HashMap::new(), HashSet::new());
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        let blocks = v["message"]["content"].as_array().map_or(&[][..], Vec::as_slice);
+        for b in blocks.iter().filter(|b| b["type"] == field("use_type")) {
+            let id = b["id"].as_str().unwrap_or_default().to_string();
+            let name = b["name"].as_str().unwrap_or_default();
+            if name == stop_tool {
+                stop_calls.insert(id);
+            } else if launch.contains(&name) {
+                let (n, d) = (b["input"][field("name")].as_str().unwrap_or_default(), b["input"][field("desc")].as_str().unwrap_or_default());
+                if !n.is_empty() && !d.is_empty() {
+                    stopped.remove(n);
+                    by_desc.insert(d.to_string(), n.to_string());
+                    launched.insert(id, n.to_string());
+                }
+            }
+        }
+        let res = &v[field("result")];
+        let answers_stop = blocks.iter().any(|b| b["tool_use_id"].as_str().is_some_and(|i| stop_calls.contains(i)));
+        if answers_stop && res[field("kind")] == field("teammate")
+            && let Some(name) = res[field("command")].as_str().and_then(|d| by_desc.get(d))
+        {
+            stopped.insert(name.clone());
+        }
+    }
+    stopped
+}
+
+fn tail_of(path: &str, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A teammate its launching session stopped with `TaskStop` is finished at once, without waiting for the host to drop it from the team
+/// roster (which [`off_roster`] reads, later and only for a team that has a roster).
+fn stopped_teammates(st: &mut State) {
+    let mut seen: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished && !a.name.is_empty()) {
+        let Some(dir) = Path::new(&a.path).parent().and_then(Path::parent) else { continue };
+        let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
+        if seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent)).contains(&a.name) {
+            a.finished = true;
+        }
+    }
+}
+
 /// A teammate the host's team roster (`agent_tracker.roster`) no longer lists - or lists as joined after this agent started, so the name
 /// belongs to a newer spawn - was stopped or finished. The host writes nothing into such a teammate's own transcript, and the scan of
 /// the launching session's transcript only sees a stop still inside its window, so the roster is the one record that stays true. A
@@ -349,7 +430,9 @@ fn mark_dead(env: &Env, st: &mut State) {
         let silent = limit > 0 && env.now_ms.saturating_sub(a.last_output_ms) > limit;
         let was = a.dead;
         // a session also needs the host to call it gone, so a host without a registry never reads an idle session as dead
-        a.dead = !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
+        // a child that finished (the host's meta says so) or ended its turn with no call open completed: it is done, never dead
+        let completed = !session && (a.finished || (!a.running && a.pending.is_empty()));
+        a.dead = !completed && !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
         if a.dead && !was {
             super::signals::rec(env, "state", super::state_name("dead"), crate::telemetry::event::Outcome::Allow, super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")));
         }
@@ -403,6 +486,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
         live::codex_state(env, a, a.last_output_ms);
     }
     stopped_subagents(env, st);
+    stopped_teammates(st);
     off_roster(env, st);
     heartbeats(env, st);
     devswarm(env, st);
