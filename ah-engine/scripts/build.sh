@@ -45,15 +45,15 @@ cflags="-ffile-prefix-map=${root}=. -ffile-prefix-map=${cargo_home}=/cargo"
 [ "$root_phys" = "$root" ] || cflags="$cflags -ffile-prefix-map=${root_phys}=."
 export CFLAGS="${CFLAGS:+$CFLAGS }$cflags"
 
-marker="$(mktemp "${TMPDIR:-/tmp}/ah-build-start.XXXXXX")"
-trap 'rm -f "$marker"' EXIT
-# mtimes can tie within one clock tick: make sure a binary written right after the marker still compares newer.
-sleep 1
-cargo build --release --locked --target "$target"
+# The artifact path is cargo's own answer: the compiler-artifact line for the ah-engine bin, emitted even when the build is fresh.
+msgs="$(mktemp "${TMPDIR:-/tmp}/ah-build-msgs.XXXXXX")"
+trap 'rm -f "$msgs"' EXIT
+cargo build --release --locked --target "$target" --message-format=json-render-diagnostics >"$msgs"
 
+bin="$(artifact_from_messages "$msgs" ah-engine)" || { echo "build.sh: cargo reported no ah-engine bin artifact" >&2; exit 1; }
 tdir="$(cargo_target_dir "$root")" || { echo "build.sh: cannot resolve the cargo target directory" >&2; exit 1; }
-bin="$tdir/$target/release/ah-engine"
-require_fresh "$bin" "$marker" || { echo "build.sh: artifact check failed" >&2; exit 1; }
+[ "$bin" = "$tdir/$target/release/ah-engine" ] || { echo "build.sh: cargo reports $bin but the target directory implies $tdir/$target/release/ah-engine" >&2; exit 1; }
+[ -f "$bin" ] || { echo "build.sh: missing artifact $bin" >&2; exit 1; }
 
 # The binary must not contain the checkout or cargo home path. Each is matched as a path prefix ("$p/"),
 # so a short root such as /src cannot match unrelated strings; a root under 8 characters is not checked.

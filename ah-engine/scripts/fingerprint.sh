@@ -7,7 +7,7 @@
 #   Cargo.lock        resolved dependencies
 #   rust-toolchain.toml  pinned toolchain
 #   targets.json      the target set
-#   scripts/build.sh, scripts/package.sh, scripts/package-src.sh   build flags and archive layout
+#   scripts/build.sh, scripts/lib-target.sh, scripts/package.sh, scripts/package-src.sh   build flags and archive layout
 #   README.md, ../LICENSE   packed into the archives
 # Not covered: tests/, other docs, CI workflows (they do not change the release assets), and the engine's settings, tables,
 # messages and rules: those live in the plugin (plugins/anti-hall/engine/) and are read at run time, so editing them never
@@ -21,7 +21,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-inputs=(src build.rs Cargo.toml Cargo.lock rust-toolchain.toml targets.json scripts/build.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE)
+inputs=(src build.rs Cargo.toml Cargo.lock rust-toolchain.toml targets.json scripts/build.sh scripts/lib-target.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE)
 present=()
 for p in "${inputs[@]}"; do [ -e "$p" ] && present+=("$p"); done
 

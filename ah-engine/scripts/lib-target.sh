@@ -10,12 +10,11 @@ cargo_target_dir() {
   printf '%s\n' "$_dir"
 }
 
-# require_fresh <artifact> <marker>: fails unless the artifact is newer than the marker file (touched just before the build).
-require_fresh() {
-  if [ ! -f "$1" ]; then echo "missing artifact $1" >&2; return 1; fi
-  if [ ! "$1" -nt "$2" ]; then
-    echo "stale artifact $1: it is older than the start of this build, so cargo wrote the binary elsewhere or rebuilt nothing." >&2
-    echo "Check CARGO_TARGET_DIR / --target-dir; if nothing changed, touch a source file to force a rebuild." >&2
-    return 1
-  fi
+# artifact_from_messages <json-file> <bin-name>: prints the executable path of the last compiler-artifact line for that bin target
+# (cargo --message-format=json); fails if there is none. Fresh (cached) builds emit the line too.
+artifact_from_messages() {
+  _exe=$(grep -F '"reason":"compiler-artifact"' "$1" | grep -F "\"kind\":[\"bin\"]" | grep -F "\"name\":\"$2\"" \
+    | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -n 1)
+  case "$_exe" in ''|*\\*) return 1 ;; esac
+  printf '%s\n' "$_exe"
 }
