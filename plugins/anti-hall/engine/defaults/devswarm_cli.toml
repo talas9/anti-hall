@@ -1389,6 +1389,22 @@ value = "retention-run"
 doc = "The reason a store has no legacy journal to fold."
 value = "no-journal"
 
+[devswarm_cli.ret_skip_disabled]
+doc = "The `skipped` value of a store's retention result while retention is switched off (days = 0)."
+value = "disabled"
+
+[devswarm_cli.ret_skip_not_sqlite]
+doc = "The `skipped` value of a store whose backend is the journal, not sqlite."
+value = "not-a-sqlite-store"
+
+[devswarm_cli.ret_skip_no_store]
+doc = "The `skipped` value of a store with no database file."
+value = "no-store"
+
+[devswarm_cli.ret_msg_archive_unreadable]
+doc = "The retention restore error when the archive month cannot be read or inflated. Placeholders: {file}, {why}."
+value = "cannot read archive {file}: {why}"
+
 [devswarm_cli.sr_day_chars]
 doc = "How many characters of an ISO timestamp name its UTC day (YYYY-MM-DD)."
 value = 10

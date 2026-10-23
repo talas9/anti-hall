@@ -258,7 +258,7 @@ fn a_row_that_stopped_being_eligible_after_the_plan_is_not_tombstoned() {
     let mut state = ah_engine::checks::guardkit::ojson::OVal::parse(r#"{"stores":{},"holds":{},"phase":"armed"}"#).unwrap();
     let mut run = Run { home: &h, hash: HASH, settings: s, now: c.now as f64, budget_ms: 600_000.0, state: &mut state, commit: false };
     let bytes = apply::store_bytes(&h, HASH);
-    let r = apply::prune(&mut run, &p, chosen.clone(), 0, chosen.list.len(), bytes, false).unwrap();
+    let r = apply::prune(&mut run, &p, chosen.clone(), 0, chosen.list.len(), bytes, false);
     let after = bodies(&h);
     assert!(after[&c1.id].is_some(), "an open question lost its body");
     assert!(after[&c2.id].is_some(), "a row moved to another partition lost its body");
@@ -346,7 +346,7 @@ impl Runner for Rec {
 }
 
 #[test]
-fn a_body_the_engine_cannot_read_like_node_hands_the_whole_sweep_to_node() {
+fn a_blob_body_is_read_like_node_reads_it_and_the_sweep_answers_natively() {
     if !have_node_sqlite() {
         return;
     }
@@ -355,14 +355,12 @@ fn a_body_the_engine_cannot_read_like_node_hands_the_whole_sweep_to_node() {
     let conn = rusqlite::Connection::open(plan::db_path(&h, HASH)).unwrap();
     conn.execute("UPDATE messages SET body = x'00ff10' WHERE id = (SELECT MIN(id) FROM messages WHERE body IS NOT NULL)", []).unwrap();
     drop(conn);
-    let before = bodies_raw(&h);
-    // there is no Node to hand the sweep to: the sweep is HELD (counted, nothing written), and no process is run
+    // Node reads a blob as a Uint8Array: `String()` joins its bytes, `JSON.stringify` keys them by index. No process is run, and the
+    // sweep is neither handed over nor held for the value.
     let rec = Rec(Mutex::new(vec![]));
     let out = engine_duty(&h, c.now, &env_of("30", "5", "100", "true"), &rec);
     assert!(rec.0.lock().unwrap().is_empty(), "{:?}", rec.0.lock().unwrap());
-    assert_eq!(out["outcome"], "held", "{out}");
-    assert_eq!(before, bodies_raw(&h), "the engine wrote before holding");
-    assert!(!h.join(".anti-hall/devswarm/archive").exists());
+    assert_eq!(out["outcome"], "ran", "{out}");
 }
 
 fn bodies_raw(home: &Path) -> Vec<(i64, String)> {

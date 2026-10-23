@@ -15,7 +15,7 @@
 use super::plan::{self, Cand, Plan};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{Defer, R, defer};
+use crate::meshw::ident::{Defer, R};
 use crate::meshw::idlock::devswarm_root;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, params};
@@ -191,18 +191,14 @@ struct Row {
     body_bytes: i64,
 }
 
+/// A column as `JSON.stringify` prints it: a blob is a `Uint8Array`, which prints as an object keyed by index.
 fn value_of(v: ValueRef<'_>) -> R<OVal> {
     Ok(match v {
         ValueRef::Null => OVal::Null,
-        ValueRef::Integer(i) => {
-            if i.unsigned_abs() > defaults::num("mesh.js_safe_int") {
-                return defer("integer-range");
-            }
-            OVal::Num(i as f64)
-        }
+        ValueRef::Integer(i) => OVal::Num(plan::safe_int(i)? as f64),
         ValueRef::Real(f) => OVal::Num(f),
         ValueRef::Text(t) => OVal::Str(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(_) => return defer("blob-value"),
+        ValueRef::Blob(b) => OVal::Obj(b.iter().enumerate().map(|(i, x)| (i.to_string(), OVal::Num(f64::from(*x)))).collect()),
     })
 }
 
@@ -218,12 +214,16 @@ fn full_rows(c: &Connection, ids: &[i64]) -> R<Vec<Row>> {
         let mut cols = Vec::new();
         let (mut id, mut ts, mut body_bytes) = (0i64, 0f64, 0i64);
         for (i, n) in names.iter().enumerate() {
-            let v = value_of(r.get_ref(i).map_err(|e| Defer(format!("full-rows:{e}")))?)?;
+            let raw = r.get_ref(i).map_err(|e| Defer(format!("full-rows:{e}")))?;
+            let v = value_of(raw)?;
             match (i, &v) {
                 (0, OVal::Num(x)) => id = *x as i64,
                 (2, OVal::Num(x)) => ts = *x,
-                (4, OVal::Str(s)) => body_bytes = s.len() as i64,
                 _ => {}
+            }
+            if i == 4 {
+                // `Buffer.byteLength(String(r.body))`
+                body_bytes = plan::js_text(raw)?.map_or(0, |s| s.len() as i64);
             }
             cols.push(((*n).to_string(), v));
         }
@@ -527,12 +527,10 @@ pub fn obj_mut<'a>(o: &'a mut OVal, key: &str) -> Option<&'a mut OVal> {
     Some(slot)
 }
 
-/// The write half of `pruneStore` for rows chosen from an agreed plan. `Err` only before or between batches, never inside the
-/// tombstoning transaction (which is rolled back first): the rows already committed stay committed and Node's own sweep
-/// resumes the rest, as it would after its own crash.
-pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, age_n: usize, bytes_before: u64, over_limit: bool) -> R<Pruned> {
-    let t0 = Instant::now();
-    let max_bytes = run.settings.max_bytes();
+/// The write half of `pruneStore` for rows chosen from an agreed plan. A failure before or between batches (never inside the
+/// tombstoning transaction, which is rolled back first) ends the store the way Node's `catch` does: `ok: false`, the error text
+/// and a `prune-error` log line; the rows already committed stay committed and the next sweep resumes the rest.
+pub fn prune(run: &mut Run, plan: &Plan, chosen: Chosen, size_added: usize, age_n: usize, bytes_before: u64, over_limit: bool) -> Pruned {
     let mut res = Pruned {
         hash: run.hash.to_string(),
         ok: true,
@@ -543,11 +541,28 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
         candidate_bytes: chosen.bytes(),
         ..Pruned::default()
     };
+    if let Err(Defer(why)) = prune_into(run, plan, chosen, &mut res) {
+        res.ok = false;
+        res.error = Some(why.clone());
+        log_event(
+            run.home,
+            &[("event", OVal::Str(defaults::text("devswarm_sup.rt_ev_prune_error").into())), ("store", OVal::Str(run.hash.into())), ("error", OVal::Str(why))],
+        );
+    }
+    if res.bytes_after == 0 {
+        res.bytes_after = store_bytes(run.home, run.hash);
+    }
+    res
+}
+
+fn prune_into(run: &mut Run, plan: &Plan, mut chosen: Chosen, res: &mut Pruned) -> R<()> {
+    let t0 = Instant::now();
+    let max_bytes = run.settings.max_bytes();
     let c = open_rw(run.home, run.hash)?;
     let cutoff = run.now - run.settings.days * defaults::num("devswarm_sup.rt_day_ms") as f64;
     let mut ordered = chosen.list.clone();
     ordered.sort_by_key(|x| x.id);
-    let mut finished = do_batches(&c, run, cutoff, &ordered, &t0, &mut res)?;
+    let mut finished = do_batches(&c, run, cutoff, &ordered, &t0, res)?;
     res.vacuum = maybe_vacuum(&c, res.tombstoned_bytes, res.bytes_before, res.over_limit);
     res.bytes_after = store_bytes(run.home, run.hash);
     // size rounds: the body-bytes estimate can undershoot the real reclaim
@@ -563,7 +578,7 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
             break;
         }
         res.size_candidates += extra.len();
-        finished = do_batches(&c, run, cutoff, &extra, &t0, &mut res)?;
+        finished = do_batches(&c, run, cutoff, &extra, &t0, res)?;
         if let Some(v) = maybe_vacuum(&c, res.tombstoned_bytes - pruned_so_far, res.bytes_after, true) {
             res.vacuum = Some(v);
         }
@@ -583,5 +598,5 @@ pub fn prune(run: &mut Run, plan: &Plan, mut chosen: Chosen, size_added: usize, 
             ],
         );
     }
-    Ok(res)
+    Ok(())
 }

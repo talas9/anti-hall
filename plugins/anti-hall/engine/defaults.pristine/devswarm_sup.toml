@@ -1078,6 +1078,26 @@ value = "prune-batch"
 doc = "The log event of a store still over its limit after a visit."
 value = "over-limit"
 
+[devswarm_sup.rt_err_gzip]
+doc = "The error of a failed gzip step of the retention archive (spawn, pipe, exit status). Placeholder: {why}."
+value = "gzip failed: {why}"
+
+[devswarm_sup.rt_err_gzip_stdin]
+doc = "The gzip failure detail when the child's input pipe is missing."
+value = "no input pipe"
+
+[devswarm_sup.rt_err_gzip_feeder]
+doc = "The gzip failure detail when the thread feeding gzip panicked."
+value = "input writer failed"
+
+[devswarm_sup.rt_err_gzip_roundtrip]
+doc = "The gzip failure detail when a compressed archive member does not inflate back to the bytes it was made from."
+value = "the compressed member does not match its source"
+
+[devswarm_sup.rt_ev_prune_error]
+doc = "The log event of a store whose sweep failed (Node: prune-error); the store's result carries ok false and the error text."
+value = "prune-error"
+
 [devswarm_sup.rt_ev_over_limit_protected]
 doc = "The log event of a store over its limit with nothing more that may be pruned."
 value = "over-limit-protected"
@@ -1094,10 +1114,6 @@ value = "no such table"
 [devswarm_sup.rt_msg_unstable]
 doc = "Why nothing was tombstoned: the store changed while the plan was compared."
 value = "the store changed during the comparison"
-
-[devswarm_sup.rt_text_types]
-doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
-value = ["text", "null"]
 
 # ---- the dry-run report phase, the journal fold and the archive cap, native (src/dssup/retention/{dry,fold,cap}.rs) -----------------
 
@@ -1148,8 +1164,8 @@ value = "changed while it was archived"
 
 
 [devswarm_sup.rt_msg_report_shape]
-doc = "Why the first-run dry-run phase is left to Node: the existing report is not a shape the engine writes over."
-value = "dry-run report shape"
+doc = "The sweep error when the existing dry-run report is a scalar: Node cannot set `stores` on it and the sweep answers `{ran: false, error}`."
+value = "Cannot create property 'stores' on a dry-run report that is not an object"
 
 
 # ---- the app sync, native (src/dssup/appsync/) ------------------------------------------------------------------------------------
