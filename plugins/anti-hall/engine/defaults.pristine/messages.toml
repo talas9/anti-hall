@@ -105,6 +105,10 @@ value = "daemon pid {pid} died without a clean exit; last context {context}"
 doc = "Panic payload text when Rust did not carry a string."
 value = "non-string panic payload"
 
+[msg.panic_row]
+doc = "Event-log detail for a panic: message and source location first so the row's length cap never cuts them; the backtrace lives only in the crash file. Placeholders: {message}, {location}, {thread}, {context}."
+value = "{message} @ {location} (thread {thread}, context {context})"
+
 [msg.thread_unknown]
 doc = "Thread name used in panic reports for unnamed threads."
 value = "unnamed"

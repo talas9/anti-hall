@@ -765,9 +765,13 @@ fn ref_end(text: &str, tag: &str) -> Option<usize> {
     }
     (0..=b.len() - n).find_map(|i| {
         let hit = b[i..i + n].eq_ignore_ascii_case(tag.as_bytes()) && text.is_char_boundary(i) && text.is_char_boundary(i + n);
+        // only a hit on char boundaries may be sliced; slicing a non-hit byte offset inside a multi-byte char (e.g. an en dash) panics
+        if !hit {
+            return None;
+        }
         let before = text[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
         let after = text[i + n..].chars().next().is_none_or(|c| c == ':' || c.is_whitespace());
-        (hit && before && after).then_some(i + n)
+        (before && after).then_some(i + n)
     })
 }
 
