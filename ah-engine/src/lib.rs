@@ -64,7 +64,6 @@ pub mod migrate;
 pub mod migration;
 pub mod operator;
 pub mod nodeback;
-pub mod nodeops;
 pub mod obs;
 pub mod ops;
 pub mod paths;
@@ -87,9 +86,9 @@ pub mod store;
 pub mod telemetry;
 pub mod threads;
 pub mod tier;
-pub mod topology;
 pub mod transcript;
 pub mod wakew;
+pub mod web;
 pub mod watch;
 pub mod wire;
 

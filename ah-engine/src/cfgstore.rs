@@ -566,11 +566,7 @@ pub fn restart_only(key: &str) -> bool {
 
 fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
     let read = std::fs::read_to_string(path);
-    crate::topology::store_read(
-        &format!("{}/{}", defaults::text("topology.label_config"), path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()),
-        read.as_ref().map_or(0, |t| t.len() as u64),
-        read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
-    );
+    crate::web::io::path_op(path, read.as_ref().map_or(0, |t| t.len() as u64), read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound), false, None);
     match read {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

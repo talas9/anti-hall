@@ -51,13 +51,9 @@ value = { args = "", read_only = true, status = "implemented" }
 doc = "Send a control verb (with its arguments) to the daemon: ping, reload, stop, status, or profile (switch per-check CPU and allocation profiling on for a limited time, off, or report it)."
 value = { args = "<ping|reload|stop|status|profile on [sample|full] [--for <dur>]|profile off|profile status>", read_only = false, status = "implemented" }
 
-[cmd.topology]
-doc = "The system topology for the dashboard: the hook clients, the engine, its stores (config, state, logs, databases, transcript reads) and its thread groups as nodes and links, with per-client calls, latency p50/p95, timeouts, fail-opens and cold starts, per-store reads, writes, bytes, errors and last access, per-worker busy time and queue depth, a health word per node, and the registry's own measured overhead. The registry lives in the daemon, so with none running it says so."
-value = { args = "[--json]", read_only = true, status = "implemented" }
-
-[cmd.node]
-doc = "Dashboard node actions, each audited in telemetry and the action log: `agent request-progress <session> [--text <t>]` queues a progress request through the reminder and wake route, `agent ping-heartbeat <session>` reports whether the session is live, its wake stamp and its reminder backlog; `proc list|status [name]` shows the engine's managed processes and `proc stop|restart <name> --confirm` acts on the recorded pid only (verified against its start stamp and executable, SIGTERM only); `engine reload-config` asks the running daemon to reload its configuration."
-value = { args = "<agent|proc|engine> <action> [target] [--confirm] [--text <t>] [--json]", read_only = false, status = "implemented" }
+[cmd.proc]
+doc = "Dashboard process actions by pid, audited: `list` shows the engine family's records (the wake watchers and the web server), `status <pid>` reads one, `stop <pid> --confirmed` sends SIGTERM and `restart <pid> --confirmed` stops it and starts it again from its recorded command. Only a pid with a record of an engine-family process is accepted, it must still have the recorded start stamp and executable, an agent session is refused, and nothing is found by name or killed with SIGKILL."
+value = { args = "<list|status|stop|restart> [<pid>] [--confirmed] [--json]", read_only = false, read_only_args = ["list", "status"], status = "implemented" }
 
 [cmd.stop]
 doc = "Ask the daemon to drain and exit."
@@ -87,8 +83,8 @@ doc = "The scheduled agent tracker tick (the `agent_tick` job): one tracker tick
 value = { args = "", read_only = false, status = "implemented" }
 
 [cmd.agents]
-doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute); `wake-watch [--auto]` is the Monitor armed at session start that wakes an idle session when the tracker queues a wake row for it. It never stops or kills an agent."
-value = { args = "<status|tick|wake-watch> [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
+doc = "The agent tracker (feature 21): `status` lists every tracked agent (main sessions, subagents and background tasks, DevSwarm workspaces) with tokens, progress, last output, state and flags, plus today's reminder and recovery totals; `tick` runs one tracker tick now (the scheduled job `agent_tick` does the same every minute); `wake-watch [--auto]` is the Monitor armed at session start that wakes an idle session when the tracker queues a wake row for it. `send <id> [--progress-request|--ping|--stop-request|--text <message>]` puts a reminder in one agent's queue (and wakes it when a watcher is armed) or reads its heartbeat; it is audited. It never stops or kills an agent."
+value = { args = "<status|tick|wake-watch|send> [<id>] [--json]", read_only = false, read_only_args = ["status"], status = "implemented" }
 [cmd.gh]
 doc = "GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the repos of the working directories of live sessions, their pull request, review, CI and mergeability), the rate-limit budget, the hold in force (backoff, budget, gh missing, logged out or offline) and the measured rate-limit cost of 200 and 304 answers; `segment [--cwd <dir>]` prints the statusline piece for the repo that holds the directory (empty when there is nothing to say); `poll [--force]` runs one tick now."
 value = { args = "<status|segment|poll> [--cwd <dir>] [--force]", read_only = false, read_only_args = ["status", "segment"], status = "implemented" }

@@ -30,7 +30,7 @@ thread_local! {
 /// A check scanned `bytes` of a transcript on this thread (a tail reader calls it); the worker adds it to the request's sample
 /// and the check that is running gets it too (see [`take_check_scan`]).
 pub fn note_scan(bytes: u64) {
-    crate::topology::store_read(defaults::text("topology.label_transcripts"), bytes, true);
+    crate::web::io::transcript_read(bytes);
     SCAN_BYTES.with(|c| c.set(c.get().saturating_add(bytes)));
     CHECK_SCAN_BYTES.with(|c| c.set(c.get().saturating_add(bytes)));
 }

@@ -466,12 +466,23 @@ impl Shared {
         )
     }
 
-    /// The topology report (src/topology.rs) with the pool's queue and busy workers; the in-process call for the web server.
-    pub fn topology_json(&self) -> serde_json::Value {
-        crate::topology::report(crate::topology::Gauges {
+    /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
+    pub fn pulse_json(&self) -> serde_json::Value {
+        crate::web::pulse::build(&crate::web::pulse::Inputs {
+            version: &self.own,
+            uptime_s: self.started.elapsed().as_secs(),
+            rss_kb: limits::rss_kb(),
+            cpu_s: limits::process_cpu_secs(),
+            requests: self.stats.requests.load(SeqCst),
+            busy_replies: self.stats.busy.load(SeqCst),
+            slow_replies: SLOW_REPLIES.load(SeqCst),
+            errors: self.stats.errors.load(SeqCst),
+            panics: self.stats.panics.load(SeqCst),
             queue_depth: self.depth.load(SeqCst) as u64,
-            busy_workers: self.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64,
             workers: self.busy_since.len() as u64,
+            budget_mask: lk(&self.budget).mask(),
+            restarts: self.starts.saturating_sub(1),
+            config_version: self.config.snapshot().version,
         })
     }
 
@@ -690,7 +701,8 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
         Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
-        Some(v) if v == defaults::text("topology.ctl_verb") => (Reply::Ok(sh.topology_json().to_string()), After::Continue),
+        Some("pulse") => (Reply::Ok(sh.pulse_json().to_string()), After::Continue),
+        Some(v) if crate::web::dispatch(v, args).is_some() => (Reply::Ok(crate::web::dispatch(v, args).unwrap_or_default()), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("profile") => (Reply::Ok(crate::obs::profile::ctl(args)), After::Continue),
@@ -1462,12 +1474,12 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         );
     }
     let how = match &reply {
-        Reply::Busy => crate::topology::Served::FailOpen,
-        Reply::Err(why) if !why.is_empty() => crate::topology::Served::FailOpen,
-        _ if late => crate::topology::Served::Timeout,
-        _ => crate::topology::Served::Ok,
+        Reply::Busy => crate::web::io::Served::FailOpen,
+        Reply::Err(why) if !why.is_empty() => crate::web::io::Served::FailOpen,
+        _ if late => crate::web::io::Served::Timeout,
+        _ => crate::web::io::Served::Ok,
     };
-    crate::topology::served(session.as_deref(), how, started.elapsed().as_micros() as u64);
+    crate::web::io::client(session.as_deref(), how, started.elapsed().as_micros() as u64);
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,

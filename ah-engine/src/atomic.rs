@@ -62,11 +62,12 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
 /// As [`write()`]; with `leave_temp_on_rename_failure` the temporary file stays after a failed rename.
 pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Style) -> std::io::Result<()> {
     let path = path.as_ref();
+    let t0 = std::time::Instant::now();
     let tmp = tmp_path(path, style);
     let bytes_len = bytes.as_ref().len() as u64;
     if let Err(e) = stage(&tmp, bytes, style) {
         if !style.bootstrap {
-            crate::topology::file_write(path, 0, false);
+            crate::web::io::path_op(path, 0, false, true, None);
         }
         // Best effort: the original error is the one worth returning; a leftover temp file is swept later.
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
@@ -74,7 +75,7 @@ pub fn write_styled(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style: Styl
     }
     let r = replace(&tmp, path, style);
     if !style.bootstrap {
-        crate::topology::file_write(path, bytes_len, r.is_ok());
+        crate::web::io::path_op(path, bytes_len, r.is_ok(), true, Some(t0.elapsed().as_micros() as u64));
     }
     r
 }
@@ -97,13 +98,13 @@ pub fn write_after_reply(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>, style:
     let bytes_len = bytes.as_ref().len() as u64;
     if let Err(e) = stage(&tmp, bytes, style) {
         if !style.bootstrap {
-            crate::topology::file_write(path, 0, false);
+            crate::web::io::path_op(path, 0, false, true, None);
         }
         crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: cleanup that raced; an absent file is the goal state
         return Err(e);
     }
     if !style.bootstrap {
-        crate::topology::file_write(path, bytes_len, true);
+        crate::web::io::path_op(path, bytes_len, true, true, None);
     }
     crate::deadline::stage(tmp, path.to_path_buf(), style);
     Ok(())

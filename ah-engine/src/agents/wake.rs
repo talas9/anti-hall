@@ -109,7 +109,7 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     // SAFETY: getppid(2) takes no arguments and cannot fail.
     let start_ppid = unsafe { libc::getppid() };
     let poll = Duration::from_millis(setting_num("agent_tracker.wake_poll_ms"));
-    crate::nodeops::register(&format!("{}-{}", defaults::text("node.watcher_name"), super::sinks::key_of(&sid)), defaults::text("node.watcher_kind"), &[]);
+    crate::web::actions::register(&format!("{}-{}", defaults::text("act.watcher_name"), super::sinks::key_of(&sid)), defaults::text("act.watcher_kind"), &[]);
     pump(&env, &sid, poll, &mut |l| emit(l), &|| parent_gone(start_ppid));
     0
 }
