@@ -52,12 +52,8 @@ doc = "When no session variable is set (a Monitor's shell has none), how many pa
 value = 8
 
 [agent_tracker.wake_command]
-doc = "The Monitor command that arms the DevSwarm wake-watch, as the plugin's monitors.json runs it. {root}: the plugin root (the host's variable when the engine does not know it)."
-value = "AH_ENGINE_PLUGIN_ROOT=\"{root}\" exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" devswarm wake-watch --auto"
-
-[agent_tracker.wake_root_fallback]
-doc = "What {root} reads as when the plugin root is unknown."
-value = "${CLAUDE_PLUGIN_ROOT}"
+doc = "The Monitor command that arms the DevSwarm wake-watch. It names the stable engine path and no plugin root: the engine finds the plugin itself, and a root pinned to one cached version goes stale at the next update."
+value = "exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" devswarm wake-watch --auto"
 
 [agent_tracker.primary_prefix]
 doc = "The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch."

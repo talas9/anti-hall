@@ -386,9 +386,7 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         ),
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            let root = env.plugin_root.as_ref().map_or_else(|| defaults::text("agent_tracker.wake_root_fallback").to_string(), |r| r.to_string_lossy().to_string());
-            let command = defaults::render("agent_tracker.wake_command", &[("root", &root)]);
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &command)])
+            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", defaults::text("agent_tracker.wake_command"))])
         }
         _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
     };
@@ -477,6 +475,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             Target::Owner => (Box::new(OwnerNotices), String::new()),
         };
         if held.is_none() && sink.backlog(env, &key) >= spam("max_pending") {
+            held = Some("pending");
+        }
+        if held.is_none() && sink.has_pending(env, &key, sig, &a.id) {
             held = Some("pending");
         }
         let f = base(a).tok("channel", sink.channel()).tok("result", held.unwrap_or("queued")).num("evidence", flag.evidence);

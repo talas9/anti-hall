@@ -540,7 +540,7 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     let rows = outbox(&h);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!((rows[0]["workspace"].as_str(), rows[0]["to_parent"].as_bool()), (Some("ws1"), Some(false)));
-    assert!(rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT=\"/plug\"") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
+    assert!(rows[0]["text"].as_str().unwrap().contains("exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\"") && !rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
     assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
