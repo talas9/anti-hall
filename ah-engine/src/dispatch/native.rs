@@ -451,7 +451,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("ah-native-vf-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(d.join("plugin/hooks")).unwrap();
-        std::fs::write(d.join("plugin/hooks/ah-hook.sh"), "").unwrap();
+        std::fs::write(d.join("plugin/hooks/install.sh"), "").unwrap();
         std::fs::create_dir_all(d.join("home")).unwrap();
         let root = std::fs::canonicalize(d.join("plugin")).unwrap().to_string_lossy().to_string();
         let env = crate::reqenv::RequestEnv::from_pairs([("HOME", d.join("home").to_string_lossy().to_string())]);

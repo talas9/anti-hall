@@ -37,15 +37,14 @@ anti-hall writes per-project session notes under `.anti-hall/`. Add `.anti-hall/
 
 ## How the hooks run (the engine)
 
-Same as on Claude Code: `codex/hooks/hooks.json` (and what `install-codex.js` writes) holds one thin trigger per Codex event,
-`sh ".../hooks/ah-hook.sh" <Event> --host codex`, for all ten events. The core is the `ah-engine` binary
-(`~/.anti-hall/ah-engine/bin/ah-engine`, downloaded once by the shared bootstrap and checked against the sha256 pinned in
-`ah-engine.lock`), the trigger asks it: the engine answers natively what it can prove identical to the Node hook and hands
-every other case, during the migration, to that temporary Node compatibility hook (removed in v0.301, when the engine is the only runtime). With no binary, or when the engine cannot answer, those Node
-hooks run. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
+Same as on Claude Code: `codex/hooks/hooks.json` holds one thin trigger per Codex event,
+`~/.anti-hall/ah-engine/bin/ah-hook <Event> --host codex`, for all ten events. The thin client hands the event to the
+`ah-engine` binary (`~/.anti-hall/ah-engine/bin/ah-engine`); both are installed by the plugin's one shell file,
+`hooks/install.sh`, and checked against the sha256 pinned in `ah-engine.lock`. No Node runs on a hook path. With no engine,
+or when it cannot answer, the hook lets the call through and prints one notice per session. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
 Claude, hot-reloaded, with last-known-good and pristine copies). `PermissionRequest`, `PostCompact` and `SubagentStart` have a
-thin trigger but no hook entries yet, so they answer with the neutral no-op. Opt out of the download with
-the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`. Full description, rollback and the list of what still runs on Node:
+thin trigger but no hook entries yet, so they answer with the neutral no-op. The download is off by default (the setup skill or `sh hooks/install.sh --download` installs on request; the setting
+`engine.bootstrap` = true or `AH_ENGINE_BOOTSTRAP=1` makes it automatic). Full description and rollback:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md). Telemetry is local only and read with
 `ah-engine telemetry summary`.
 

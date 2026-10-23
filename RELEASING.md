@@ -18,7 +18,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - [ ] `llms.txt` — hooks list, skills, disciplines, docs list.
    - [ ] `README.md` (root) and `plugins/anti-hall/README.md` — only if the change touches what they cover (overview, privacy/network table, escape hatch).
    - [ ] relevant other `docs/*.md` (and `docs/KB.md` topic map).
-4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall-node/hooks/doctor.js --check` (anti-hall ACTIVE). Never claim done without these THIS change.
+4. - [ ] Verify: `node --test` (all pass) and `~/.anti-hall/ah-engine/bin/ah-hook doctor --check` (anti-hall ACTIVE). Never claim done without these THIS change.
 5. - [ ] Commit on `dev` (NO AI-credit / Co-Authored-By trailer — git-guard blocks them) and push `dev`. Pushes to `dev` run no CI.
 6. - [ ] **Optional full-matrix gate on `dev`.** Pull-request CI runs a reduced matrix (ubuntu × Node 22/24 plus macOS × Node 24). For a release that needs the full matrix, push a candidate tag at the `dev` commit — `test.yml` runs on `rc-v*` tags (ubuntu + macOS × Node 22/24, each cell sharded; `v*` tags do not trigger it):
    - `git tag rc-v<version>` then `git push origin rc-v<version>`
@@ -40,7 +40,7 @@ The plugin pins one exact engine build in `ah-engine.lock` (root) and its byte-i
 3. Continue the normal checklist through the `dev` → `main` pull request and its merge.
 4. **Tag `ah-engine-v<engine version>` on the merge commit right after the merge and push it.** The publish job checks the tagged commit is on `main`, so it cannot run earlier; until the Release exists, users who updated get a 404, the bootstrap logs a failure, retries after 6 hours and the Node hooks stay in use (harmless, so keep the window short).
 5. Wait for the publish run to go green and the GitHub Release to list the archives, `SHA256SUMS` and the attestation. Only then push `v<version>` and create the plugin's GitHub Release.
-6. Smoke test on a clean HOME: SessionStart installs `~/.anti-hall/ah-engine/bin/ah-engine` and `bootstrap.log` shows `ok:`; with the network off the Node hooks still answer.
+6. Smoke test on a clean HOME: SessionStart installs `~/.anti-hall/ah-engine/bin/ah-engine` and `bootstrap.log` shows `ok:`; with the network off (no engine) every hook passes through with one notice per session.
 
 The engine's `Cargo.toml` version changes only when engine source changes (the lock's fingerprint must match the source at the tag); a plugin-only release does not touch it.
 

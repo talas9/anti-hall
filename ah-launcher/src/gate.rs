@@ -92,12 +92,15 @@ pub enum Right {
     Unavailable,
 }
 
-/// `fresh_ms`: an ask newer than this means the daemon is still coming up. `window_s`/`max`: the crash-loop rule.
+/// `fresh_ms`: an ask newer than this means the daemon is still coming up. `sock_ms`: when a socket file nobody listens on was left
+/// behind, the time it was last changed; an ask older than that file started the daemon that bound it and then died, so it no longer
+/// means "still coming up". `window_s`/`max`: the crash-loop rule.
 pub fn acquire(
     dir: &Path,
     lock_name: &str,
     log_name: &str,
     fresh_ms: u64,
+    sock_ms: Option<u64>,
     window_s: u64,
     max: u64,
 ) -> Right {
@@ -124,7 +127,7 @@ pub fn acquire(
         .filter_map(|l| l.trim().parse().ok())
         .filter(|t: &u64| now.saturating_sub(*t) < window_s.saturating_mul(1000))
         .collect();
-    if recent.iter().any(|t| now.saturating_sub(*t) < fresh_ms) {
+    if recent.iter().any(|t| now.saturating_sub(*t) < fresh_ms && sock_ms.is_none_or(|m| *t >= m)) {
         return Right::WaitOnly;
     }
     if recent.len() as u64 >= max {
@@ -153,6 +156,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn an_ask_older_than_the_stale_socket_no_longer_means_still_coming_up() {
+        let d = dir("sk");
+        let now = now_ms();
+        std::fs::write(d.join("l.spawns"), format!("{}\n", now - 100)).unwrap();
+        // no stale socket: the ask is fresh, wait only
+        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 5), Right::WaitOnly));
+        // the socket file is newer than the ask: that daemon died, ask again
+        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5), Right::Kick(_)));
+        // the socket file is older than the newest ask: its daemon has not bound yet, wait only
+        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5), Right::WaitOnly));
     }
 
     #[test]
@@ -191,30 +207,30 @@ mod tests {
     #[test]
     fn one_asker_then_wait_then_trip() {
         let d = dir("g");
-        let first = acquire(&d, "l.lock", "l.spawns", 10_000, 60, 3);
+        let first = acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 3);
         assert!(matches!(first, Right::Kick(_)));
         // lock held by the first: a second launcher only waits
         assert!(matches!(
-            acquire(&d, "l.lock", "l.spawns", 10_000, 60, 3),
+            acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 3),
             Right::WaitOnly
         ));
         drop(first);
         // lock free but the ask is fresh: still only waits
         assert!(matches!(
-            acquire(&d, "l.lock", "l.spawns", 10_000, 60, 3),
+            acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 3),
             Right::WaitOnly
         ));
         // not fresh any more: may ask again, up to the window cap
         assert!(matches!(
-            acquire(&d, "l.lock", "l.spawns", 0, 60, 3),
+            acquire(&d, "l.lock", "l.spawns", 0, None, 60, 3),
             Right::Kick(_)
         ));
         assert!(matches!(
-            acquire(&d, "l.lock", "l.spawns", 0, 60, 3),
+            acquire(&d, "l.lock", "l.spawns", 0, None, 60, 3),
             Right::Kick(_)
         ));
         assert!(matches!(
-            acquire(&d, "l.lock", "l.spawns", 0, 60, 3),
+            acquire(&d, "l.lock", "l.spawns", 0, None, 60, 3),
             Right::Tripped
         ));
         // the spawn log never grows past the cap
@@ -230,7 +246,7 @@ mod tests {
     #[test]
     fn unusable_state_dir_is_unavailable() {
         assert!(matches!(
-            acquire(Path::new("/proc/none/x"), "l", "s", 0, 60, 3),
+            acquire(Path::new("/proc/none/x"), "l", "s", 0, None, 60, 3),
             Right::Unavailable
         ));
     }

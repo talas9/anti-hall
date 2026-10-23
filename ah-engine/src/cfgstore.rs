@@ -1052,7 +1052,7 @@ mod tests {
             "script.",                      // the interpreter switch and deadline are process-wide, not per request
             "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
             "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
-            "rollback.", // the binary roll-back and install lock: read by the integrity script and the install paths once per run, not per request
+            "rollback.", // the binary roll-back and install lock: read by the integrity check and the install paths once per run, not per request
             "refresh.every_ms", // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request
             "wire.ack",  // the hook client's opt-in to the ack protocol (client.rs): read by each client process from its own environment, never by the daemon
             "diagnostics.threads_window_ms", // the sampling window of `status --threads`: read once by that command-line run

@@ -197,17 +197,17 @@ test('manifest-drift: every file referenced by either hooks.json exists on disk'
   assert.deepStrictEqual(missing, [], 'hooks.json references a hook file that does not exist on disk: ' + JSON.stringify(missing));
 });
 
-test('manifest-drift: install-codex.js ANTI_HALL_HOOKS names only the wrapper, and the wrapper exists on disk', () => {
+test('manifest-drift: install-codex.js ANTI_HALL_HOOKS names only the direct-form trigger, and its installer exists on disk', () => {
   delete require.cache[require.resolve(path.join(REPO, 'plugins', 'anti-hall-node', 'codex', 'install-codex.js'))];
   const { ANTI_HALL_HOOKS } = require(path.join(REPO, 'plugins', 'anti-hall-node', 'codex', 'install-codex.js'));
   const bad = [];
   for (const [event, groups] of Object.entries(ANTI_HALL_HOOKS || {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g && g.hooks) ? g.hooks : []) {
-        const m = ((h && h.command) || '').match(/^sh "([^"]+\/ah-hook\.sh)" (\w+) --host codex$/);
-        if (!m || m[2] !== event || !fs.existsSync(m[1])) bad.push(`${event} -> ${h && h.command}`);
+        const m = ((h && h.command) || '').match(/^\[ -x "\$HOME\/\.anti-hall\/ah-engine\/bin\/ah-hook" \] && exec "\$HOME\/\.anti-hall\/ah-engine\/bin\/ah-hook" (\w+) --host codex \|\| exec sh "([^"]+\/hooks\/install\.sh)" (\w+) --host codex$/);
+        if (!m || m[1] !== event || m[3] !== event || !fs.existsSync(m[2])) bad.push(`${event} -> ${h && h.command}`);
       }
     }
   }
-  assert.deepStrictEqual(bad, [], 'install-codex.js registers something other than an existing wrapper trigger: ' + JSON.stringify(bad));
+  assert.deepStrictEqual(bad, [], 'install-codex.js registers something other than an existing direct-form trigger: ' + JSON.stringify(bad));
 });

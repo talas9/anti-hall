@@ -55,15 +55,6 @@
             "timeout": 10
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
-            "timeout": 10
-          }
-        ]
       }
     ],
     "PostToolUseFailure": [
@@ -249,60 +240,6 @@
             "timeout": 10
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/uncommitted-guard\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/queued-wait-guard\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard\"",
-            "timeout": 10
-          }
-        ]
       }
     ],
     "SessionEnd": [
@@ -376,11 +313,6 @@
           },
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js\"",
             "timeout": 10
           },
@@ -402,16 +334,6 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
             "timeout": 10
           }
         ]
@@ -474,11 +396,6 @@
             "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js\"",
             "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
-            "timeout": 10
           }
         ]
       }
@@ -489,22 +406,6 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-subagent.js\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
             "timeout": 10
           }
         ]
@@ -562,11 +463,6 @@
           },
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js\"",
             "timeout": 10
           },
@@ -578,21 +474,6 @@
           {
             "type": "command",
             "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
             "timeout": 10
           }
         ]

@@ -13,8 +13,8 @@ right and this document gets a fix.
 | Settings keys | 332 in 20 sections | `plugins/anti-hall-node/hooks/lib/settings-schema.js` (`SECTIONS`) |
 | `devswarm.js` verbs | 47 | `plugins/anti-hall-node/scripts/devswarm.js` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
-| Hook scripts | 62 (84 registrations, 12 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
-| Codex hook scripts | 44 (60 registrations, 7 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
+| Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
+| Codex hook scripts | 44 (47 registrations, 6 events) | `plugins/anti-hall/codex/hooks/hooks.registry.json` (`hooks.json`: one thin trigger per event) |
 | Skills | 29 Claude, 32 Codex | `plugins/anti-hall/skills/`, `plugins/anti-hall/codex/skills/` |
 
 ## 1. Settings keys

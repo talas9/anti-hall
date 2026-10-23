@@ -131,9 +131,11 @@ Hooks are small per call but not free. On a quiet machine a bare `node -e 0` cos
 
 `ah-engine`, a small Rust program, is the core component: it answers the hook calls without starting Node per call. The plugin's hooks are one
 thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node (never
-weaker than Node). The Node hooks are a temporary fallback for a missing or failed binary and are removed in v0.301. The binary is downloaded once
-from the GitHub Release by a shell bootstrap and installed only if its sha256 equals the one pinned in the plugin's `ah-engine.lock`
-(the setting `engine.bootstrap` = false, or `AH_ENGINE_BOOTSTRAP=0`, skips it). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
+weaker than Node). Every hook command in `hooks.json` runs the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook <Event>`) directly, and runs
+the plugin's one shell file, `hooks/install.sh`, only while the thin client is missing (one notice per session, the call passes
+through). The binaries are installed from the GitHub Release by `sh hooks/install.sh --download` (the setup skill runs it) and only if
+their sha256 equals the one pinned in the plugin's `ah-engine.lock`; the automatic download on SessionStart is opt-in (the setting
+`engine.bootstrap` = true, or `AH_ENGINE_BOOTSTRAP=1`; default false). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
 time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
 missing key. Still on Node: the DevSwarm mesh writes and daemons, every call that consults Jev, the semantic judge's model call and the
 statusline. macOS and Linux only; Windows is not supported yet.
@@ -145,8 +147,8 @@ Full description (install, go-live, rollback, failover, telemetry, what runs on 
 The short form is in the README; the full table is [PRIVACY.md](../PRIVACY.md). Nothing
 here goes beyond it: no analytics and nothing reported to anyone; one default-on update check (a tag-list request to
 `github.com/talas9/anti-hall`, no project data; off via `versionAlerts.antiHall` or
-`ANTIHALL_VERSION_ALERT=off`); a one-time download of the `ah-engine` binary from the GitHub Release
-(sha256-pinned in the plugin, nothing about you sent; off via the setting `engine.bootstrap` or `AH_ENGINE_BOOTSTRAP=0`); local-only engine usage counters
+`ANTIHALL_VERSION_ALERT=off`); the `ah-engine` binary download from the GitHub Release, which happens only when you ask for it
+(sha256-pinned in the plugin, nothing about you sent; automatic only with the setting `engine.bootstrap` = true or `AH_ENGINE_BOOTSTRAP=1`); local-only engine usage counters
 (identifiers and counts, never content; `telemetry.enabled`; read with `ah-engine telemetry summary`); the Jev classifier, the semantic judge
 (`jev.semanticJudge` or `ANTIHALL_SEMANTIC_JUDGE=1`) and mesh message triage are off by default and send the
 text they judge only to the provider you configure. API keys come from sensitive plugin
@@ -211,12 +213,12 @@ If an older anti-hall statusline is still configured, remove it first with `unin
 
 ## Requirements
 
-**The `ah-engine` binary.** Every hook command runs the thin POSIX-sh wrapper `hooks/ah-hook.sh`, which calls the
-engine at `~/.anti-hall/ah-engine/bin/ah-engine` (installed and verified by `hooks/ah-engine-bootstrap.sh`; an
-`ah-engine` on `PATH` is used when the home install is not executable). No working engine means the hooks do not
-run — check with `~/.anti-hall/ah-engine/bin/ah-engine doctor`, or `sh hooks/ah-hook.sh --doctor` when the binary
-itself cannot start. Node.js is optional: it is used only for the few paths the engine still hands back to Node
-(the doctor names them). No npm install, no other config.
+**The `ah-engine` binary.** Every hook command runs the thin Rust client `~/.anti-hall/ah-engine/bin/ah-hook`, which
+calls the engine at `~/.anti-hall/ah-engine/bin/ah-engine` (both installed and verified against `ah-engine.lock` by the
+plugin's one shell file, `hooks/install.sh`; an `ah-engine` on `PATH` is used when the home install is not executable).
+No working engine means the hooks let every call through with one notice per session — check with
+`~/.anti-hall/ah-engine/bin/ah-hook doctor`, or `~/.anti-hall/ah-engine/bin/ah-hook --selftest` when the engine itself
+cannot start. Node.js is not needed. No npm install, no other config.
 
 **Supported systems:** macOS and Linux (both CI-tested), including WSL on Windows,
 which runs the Linux build. Native Windows is not supported yet.
@@ -1596,8 +1598,8 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Legacy renderer option: suppress the email segment. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
-| `engine.bootstrap` | `true` | `AH_ENGINE_BOOTSTRAP` | Download and install the sha256-pinned ah-engine binary from the GitHub Release on SessionStart (once per pinned release). Off: nothing is downloaded and the Node hooks answer everything. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
-| `engine.autoUpdate` | `off` [off, stable, dev] | `AH_ENGINE_AUTO_UPDATE` | Update the engine binary on its own, at most once a day: off (default), stable (latest release) or dev (latest dev pre-release; also syncs the plugin files of a live kit). Runs `hooks/ah-update.sh --auto`; the previous binary is kept (`--rollback`). URLs and timeouts: `engine/ah-update.toml`. |
+| `engine.bootstrap` | `false` | `AH_ENGINE_BOOTSTRAP` | Opt in to the automatic download: install the sha256-pinned ah-engine and ah-hook binaries from the GitHub Release on SessionStart (once per pinned release). Off (default): nothing is downloaded on its own; `hooks/install.sh` prints one notice per session and hooks pass through until you run `sh hooks/install.sh --download`. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
+| `engine.autoUpdate` | `off` [off, stable, dev] | `AH_ENGINE_AUTO_UPDATE` | Update the engine binary on its own, at most once a day: off (default), stable (latest release) or dev (latest dev pre-release; also syncs the plugin files of a live kit). Runs `ah-hook engine-update --auto`; the previous binary is kept (`--rollback`). URLs and timeouts: `engine/ah-update.toml`. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
 | `procwatch.enabled` | `true` | `ANTIHALL_PROCWATCH` | procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process. |
 | `procwatch.devServerMode` | `report` | `ANTIHALL_PROCWATCH_DEV_SERVER` | dev_server class of the process watch: dev servers and watchers an agent started. off \| report (list only, the default) \| kill (stop them one pid at a time after a grace period). |

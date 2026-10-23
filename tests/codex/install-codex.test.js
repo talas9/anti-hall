@@ -58,7 +58,7 @@ test('install-codex: writes the generated thin trigger (one wrapper call per eve
       assert.strictEqual(hooks[ev][0].matcher, undefined, ev);
       const want = JSON.stringify(thin[ev]).split('${PLUGIN_ROOT}').join(root);
       assert.strictEqual(JSON.stringify(hooks[ev]), want, ev);
-      assert.match(hooks[ev][0].hooks[0].command, new RegExp('ah-hook\\.sh" ' + ev + ' --host codex$'));
+      assert.match(hooks[ev][0].hooks[0].command, new RegExp('hooks/install\\.sh" ' + ev + ' --host codex$'));
     }
     assert.doesNotMatch(JSON.stringify(hooks), /\$\{PLUGIN_ROOT\}|\.js/, 'no per-hook node registration is written');
 
@@ -86,7 +86,7 @@ test('install-codex: preserves non anti-hall hooks and replaces stale anti-hall 
     const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
     assert.ok(commands.includes('echo keep-me'));
     assert.ok(!commands.some(c => c.includes('/old.js')));
-    assert.ok(commands.some(c => /ah-hook\.sh" PreToolUse --host codex$/.test(c)));
+    assert.ok(commands.some(c => /hooks\/install\.sh" PreToolUse --host codex$/.test(c)));
   } finally { t.cleanup(); }
 });
 
@@ -113,7 +113,7 @@ test('install-codex: dedups stale anti-hall groups that used backslash (Windows)
     const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
     assert.ok(commands.includes('echo keep-me'));
     assert.ok(!commands.some(c => /git-guard\.js/.test(c)), 'the stale per-hook group is gone');
-    const wrapperCount = commands.filter(c => /ah-hook\.sh" PreToolUse/.test(c)).length;
+    const wrapperCount = commands.filter(c => /hooks\/install\.sh" PreToolUse/.test(c)).length;
     assert.strictEqual(wrapperCount, 1, `expected exactly one PreToolUse trigger after dedup, got ${wrapperCount}: ${JSON.stringify(commands)}`);
   } finally { t.cleanup(); }
 });
@@ -144,7 +144,7 @@ test('install-codex: migrates a full old per-hook registry install to the thin t
     assert.ok(all.includes('echo keep-me'));
     assert.ok(!all.some(c => /\/hooks\/[a-z-]+\.js/.test(c)), 'no old per-hook registration survives');
     for (const ev of ['SessionStart', 'PreToolUse', 'Stop']) {
-      assert.strictEqual(hooks[ev].filter(g => g.hooks.some(h => /ah-hook\.sh"/.test(h.command))).length, 1, ev);
+      assert.strictEqual(hooks[ev].filter(g => g.hooks.some(h => /hooks\/install\.sh"/.test(h.command))).length, 1, ev);
     }
   } finally { t.cleanup(); }
 });

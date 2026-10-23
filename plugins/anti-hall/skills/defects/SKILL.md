@@ -19,13 +19,13 @@ layer).
 
 ## The five core verbs
 
-All invocations are `sh plugins/anti-hall/scripts/ah-run.sh defect <verb> ...` run from an
-anti-hall checkout, or `sh <plugin-root>/scripts/ah-run.sh defect <verb> ...` when resolving
+All invocations are `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect <verb> ...` run from an
+anti-hall checkout, or `"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root <plugin-root> defect <verb> ...` when resolving
 the plugin root generically (mirrors the `doctor`/`debt` skills' invocation style).
 
 1. **report** — file a new defect (or add an occurrence to an existing one via dedup).
    ```
-   sh plugins/anti-hall/scripts/ah-run.sh defect report \
+   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect report \
      --class hook-crash --sev p1 \
      --sym "command-guard throws on empty argv" \
      --repro "run command-guard.js with stdin ''" \
@@ -44,8 +44,8 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
    defect 001e6bb600c5's `partial` status to make `list --open` report 0 while real
    P0/P1 defects sat unresolved). `--json` for machine output.
    ```
-   sh plugins/anti-hall/scripts/ah-run.sh defect list --mine --json
-   sh plugins/anti-hall/scripts/ah-run.sh defect list --unfinished --json
+   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect list --mine --json
+   "$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect list --unfinished --json
    ```
 3. **show `<fp>`** — every line of one defect (its fingerprint), open or archived.
 4. **rule `<fp>` --status ack|fixed|partial|wontfix|notabug|dup** — MAINTAINER-ONLY.
@@ -67,10 +67,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-sh plugins/anti-hall/scripts/ah-run.sh defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-sh plugins/anti-hall/scripts/ah-run.sh defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-sh plugins/anti-hall/scripts/ah-run.sh defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status

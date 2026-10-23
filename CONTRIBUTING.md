@@ -1,12 +1,15 @@
 # Contributing to anti-hall
 
-Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and runs on macOS and Linux. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
+Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin client (`ah-hook`), with its rules as plugin JS run inside the engine and every value and text in plugin TOML; it runs on macOS and Linux. The original Node hooks are a backup outside the published plugin (`plugins/anti-hall-node`) and get bug fixes only: no new Node code. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## Project layout
 
 | Path | What lives there |
 |---|---|
-| `plugins/anti-hall/hooks/` | The Claude hooks, `hooks.json` (registration), `doctor.js`, and `lib/` (including `settings-schema.js`) |
+| `plugins/anti-hall/hooks/` | `hooks.json` (one thin trigger per event, generated from `engine/defaults/dispatch.toml`) and `install.sh`, the plugin's one shell file (first install only) |
+| `plugins/anti-hall/engine/` | The engine's plugin files: `logic/*.js` (rule logic run by the engine's script host, not Node) and `defaults/*.toml` (every setting, table and text; `defaults.pristine/` is the byte-identical read-only copy) |
+| `ah-engine/`, `ah-launcher/` | The Rust engine and the thin client `ah-hook` |
+| `plugins/anti-hall-node/` | The Node backup (not published): the original hooks, `doctor.js`, `lib/` |
 | `plugins/anti-hall/codex/` | The Codex port: `hooks/hooks.json`, `skills/`, `scripts/`, `install-codex.js` |
 | `plugins/anti-hall/skills/`, `agents/`, `scripts/`, `companion/`, `monitors/`, `statusline/` | Claude skills, agents, CLIs, opt-in companions, monitors, statusline |
 | `plugins/anti-hall-node/scripts/devswarm.js`, `scripts/devswarm-lib/` | `devswarm.js` is only the CLI dispatcher (`run`, `runArmed`'s verb switch, `main`, help text, the export object). The verb and helper implementations live in `scripts/devswarm-lib/*.js` (core, identity, cursors, fold, register, send, repair, archive, misc-verbs, roster-diag, spawn, reconcile, inbox-read, inbox-cmd, heartbeat-plan). Every lib file must stay at or below 256 KiB (262,144 bytes); `tests/hygiene/devswarm-lib-size.test.js` enforces it. Tests that assert on the source text read the whole unit through `tests/scripts/lib/devswarm-source.js`. |
@@ -38,7 +41,7 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 
 ## Adding or changing a guard
 
-1. Implement the hook in `plugins/anti-hall/hooks/<name>.js`, pure Node, and register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
+1. Implement the check in the engine: its logic in `plugins/anti-hall/engine/logic/<name>.js` (run by the engine's script host) or a Rust built-in under `ah-engine/src/checks/`, with every value and text in `plugins/anti-hall/engine/defaults/*.toml` (both defaults directories). Do not add a Node hook. Register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
 2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall-node/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
 3. Add the user-facing setting to `plugins/anti-hall-node/hooks/lib/settings-schema.js`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
@@ -47,7 +50,7 @@ Tests must never touch the real home directory or the real `~/.anti-hall`. Anyth
 
 ### Fail-open
 
-Hooks are pure Node and fail-open: a parse, read or state error exits 0 without blocking or wedging a turn ([AGENTS.md](AGENTS.md), `docs/GUIDE.md`). The docs define no separate fail-closed mode, so a guard should block only on a positive match of the dangerous form; if you think one needs different behaviour, discuss it in an issue first. Never widen a guard's allow path without tests showing the dangerous forms stay blocked.
+Hooks fail open: a parse, read or state error exits 0 without blocking or wedging a turn ([AGENTS.md](AGENTS.md), `docs/GUIDE.md`). The docs define no separate fail-closed mode, so a guard should block only on a positive match of the dangerous form; if you think one needs different behaviour, discuss it in an issue first. Never widen a guard's allow path without tests showing the dangerous forms stay blocked.
 
 ### Settings
 

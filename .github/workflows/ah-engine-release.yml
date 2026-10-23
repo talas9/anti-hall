@@ -189,7 +189,7 @@ jobs:
       - name: Update ah-engine.lock
         run: |
           ah-engine/scripts/update-lock.sh dist ah-engine.lock "$GITHUB_RUN_ID"
-          # The plugin installs only plugins/anti-hall, so its bootstrap (hooks/ah-engine-bootstrap.sh) reads this copy.
+          # The plugin installs only plugins/anti-hall, so its installer (hooks/install.sh, `ah-hook install`) reads this copy.
           cp ah-engine.lock plugins/anti-hall/ah-engine.lock
       - name: Open PR
         env:

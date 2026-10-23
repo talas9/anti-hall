@@ -1,12 +1,8 @@
-//! The thin launcher (`plugins/anti-hall/scripts/ah-run.sh`), the status line command the engine's installer writes (the
-//! engine's own `"<engine>" statusline`, no launcher and no Node script), and the migration that moves an existing install
-//! (Node-only or launcher form) to it.
-//!
-//! The launcher runs the engine and nothing else: the legacy Node script it is given is ignored, every engine exit (75, 64,
-//! 70, 126/127 included) is the command's own, and with no engine the status line stays silent (exit 0) while any other command
-//! says so on stderr and exits 127. With `--stdin` the host's JSON is handed to the engine unchanged. Without it (a Monitor)
-//! the engine runs as a child and SIGTERM/SIGINT are passed on. The migration is engine-only (Node's repair pass has no such step); it is idempotent, fail-open and keeps the
-//! one-time backup. Nothing here touches the real home.
+//! The status line command the engine's installer writes (the engine's own `"<engine>" statusline`, no launcher and no Node
+//! script), and the recognition of the forms earlier installers wrote (Node-only, and the retired launcher
+//! `scripts/ah-run.sh --stdin statusline -- <dispatcher>`). The launcher itself is retired: engine commands go through the thin
+//! client (`hooks/ah-hook.sh <verb>` -> `ah-hook <verb>`, tested in ah-launcher/tests/cli.rs); the script is kept, unshipped,
+//! in plugins/anti-hall-node/legacy-sh/. Nothing here touches the real home.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use ah_engine::db::TempDir;
 use std::fs;
@@ -19,18 +15,6 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 
 fn plugin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins").join("anti-hall").canonicalize().unwrap()
-}
-
-/// A PATH with node's directory and the system ones, and no directory that might hold an `ah-engine`.
-fn bare_path() -> String {
-    let node = Command::new("sh").args(["-c", "command -v node"]).output().unwrap();
-    let node = String::from_utf8_lossy(&node.stdout).trim().to_string();
-    let dir = Path::new(&node).parent().map(|d| d.display().to_string()).unwrap_or_default();
-    format!("{dir}:/usr/bin:/bin")
-}
-
-fn have_node() -> bool {
-    Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success())
 }
 
 struct Out {
@@ -55,142 +39,6 @@ fn finish(mut cmd: Command, stdin: &str) -> Out {
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
         code: o.status.code().unwrap_or(-1),
     }
-}
-
-fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-    let p = dir.join(name);
-    fs::write(&p, body).unwrap();
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-    p
-}
-
-/// The launcher run in a scratch home, with `engine` as the engine binary (`None`: none installed) and `node_js` as the Node script.
-fn launch(t: &TempDir, engine: Option<&Path>, stdin_mode: bool, node_js: &Path, words: &[&str], args: &[&str], stdin: &str) -> Out {
-    let home = t.0.join("home");
-    fs::create_dir_all(&home).unwrap();
-    let mut cmd = Command::new("sh");
-    cmd.arg(plugin().join("scripts/ah-run.sh"));
-    if stdin_mode {
-        cmd.arg("--stdin");
-    }
-    cmd.args(words).arg("--").arg(node_js).args(args).env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &home);
-    if let Some(e) = engine {
-        cmd.env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", e);
-    }
-    finish(cmd, stdin)
-}
-
-fn node_echo(dir: &Path) -> PathBuf {
-    // a stand-in Node script: names its arguments and echoes its stdin
-    let p = dir.join("node-echo.js");
-    fs::write(&p, "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{process.stdout.write('NODE['+process.argv.slice(2).join(',')+']'+s)});").unwrap();
-    p
-}
-
-#[test]
-fn the_engine_answers_and_the_node_script_never_runs() {
-    if !have_node() {
-        return;
-    }
-    let t = TempDir::new("launch-engine");
-    let eng = script(&t.0, "eng.sh", "#!/bin/sh\nprintf 'ENGINE[%s]' \"$*\"\ncat\n");
-    let o = launch(&t, Some(&eng), true, &node_echo(&t.0), &["statusline"], &[], "{\"a\":1}\n\n");
-    assert_eq!((o.code, o.stdout.as_str()), (0, "ENGINE[statusline]{\"a\":1}\n\n"), "stdin reaches the engine byte for byte, trailing newlines included");
-}
-
-#[test]
-fn a_former_deferral_exit_is_the_commands_own_and_node_never_runs() {
-    if !have_node() {
-        return;
-    }
-    for code in [75, 64, 70, 126, 127] {
-        let t = TempDir::new("launch-defer");
-        let eng = script(&t.0, "eng.sh", &format!("#!/bin/sh\ncat >/dev/null\nexit {code}\n"));
-        let o = launch(&t, Some(&eng), true, &node_echo(&t.0), &["devswarm", "wake-watch"], &["--auto"], "{\"b\":2}\n");
-        assert_eq!((o.code, o.stdout.as_str()), (code, ""), "exit {code} is passed on; the legacy Node script is not run");
-    }
-}
-
-#[test]
-fn any_other_engine_exit_is_the_commands_own() {
-    if !have_node() {
-        return;
-    }
-    for code in [1, 2, 3, 124] {
-        let t = TempDir::new("launch-own");
-        let eng = script(&t.0, "eng.sh", &format!("#!/bin/sh\ncat >/dev/null\necho partial\nexit {code}\n"));
-        let o = launch(&t, Some(&eng), true, &node_echo(&t.0), &["statusline"], &[], "x");
-        assert_eq!((o.code, o.stdout.as_str()), (code, "partial\n"), "exit {code} is passed on and Node is not run");
-    }
-}
-
-#[test]
-fn without_an_engine_nothing_runs() {
-    if !have_node() {
-        return;
-    }
-    let t = TempDir::new("launch-none");
-    // the status line is cosmetic: with no engine it stays silent and exits 0 (no Node, whatever the machine has installed)
-    let mut cmd = Command::new("sh");
-    cmd.arg(plugin().join("scripts/ah-run.sh")).args(["--stdin", "statusline", "--"]).arg(node_echo(&t.0));
-    cmd.env_clear().env("PATH", bare_path()).env("HOME", t.0.join("home2"));
-    let o = finish(cmd, "in");
-    assert_eq!((o.code, o.stdout.as_str()), (0, ""));
-    // any other command says so on stderr and exits 127
-    let mut cmd = Command::new("sh");
-    cmd.arg(plugin().join("scripts/ah-run.sh")).args(["devswarm", "wake-watch", "--"]).arg(node_echo(&t.0));
-    cmd.env_clear().env("PATH", bare_path()).env("HOME", t.0.join("home2"));
-    let o = finish(cmd, "");
-    assert_eq!((o.code, o.stdout.as_str()), (127, ""), "{}", o.stderr);
-    assert!(!o.stderr.is_empty(), "the missing engine is said on stderr");
-}
-
-#[test]
-fn a_monitor_run_passes_a_former_deferral_exit_on_and_forwards_a_signal() {
-    if !have_node() {
-        return;
-    }
-    // a former deferral exit is the engine's own: no Node runs in the launcher's place
-    let t = TempDir::new("launch-monitor");
-    let eng = script(&t.0, "eng.sh", "#!/bin/sh\nexit 75\n");
-    let o = launch(&t, Some(&eng), false, &node_echo(&t.0), &["devswarm", "wake-watch"], &["--auto"], "");
-    assert_eq!((o.code, o.stdout.as_str()), (75, ""));
-    // a running engine gets SIGTERM and the launcher exits with its code, without running Node
-    let t = TempDir::new("launch-signal");
-    let marker = t.0.join("got-term");
-    let eng =
-        script(&t.0, "eng.sh", &format!("#!/bin/sh\ntrap 'echo term > \"{}\"; exit 7' TERM\necho armed\nwhile :; do sleep 0.1; done\n", marker.display()));
-    let home = t.0.join("home");
-    fs::create_dir_all(&home).unwrap();
-    let mut cmd = Command::new("sh");
-    cmd.arg(plugin().join("scripts/ah-run.sh")).args(["devswarm", "wake-watch", "--"]).arg(node_echo(&t.0));
-    cmd.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &home).env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", &eng);
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().unwrap();
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.as_mut().unwrap()), &mut line).unwrap();
-    assert_eq!(line, "armed\n");
-    // SAFETY: SIGTERM to the launcher we started.
-    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-    let st = child.wait().unwrap();
-    assert_eq!(st.code(), Some(7), "the engine's own exit code, not a Node fallback");
-    assert_eq!(fs::read_to_string(&marker).unwrap().trim(), "term", "the engine received the signal");
-}
-
-#[test]
-fn the_test_only_engine_override_is_ignored_without_the_test_flag() {
-    if !have_node() {
-        return;
-    }
-    let t = TempDir::new("launch-knob");
-    let eng = script(&t.0, "eng.sh", "#!/bin/sh\necho ENGINE\n");
-    let home = t.0.join("home");
-    fs::create_dir_all(&home).unwrap();
-    let mut cmd = Command::new("sh");
-    cmd.arg(plugin().join("scripts/ah-run.sh")).args(["--stdin", "statusline", "--"]).arg(node_echo(&t.0));
-    cmd.env_clear().env("PATH", bare_path()).env("HOME", &home).env("AH_ENGINE_BIN", &eng);
-    let o = finish(cmd, "z");
-    assert_eq!((o.code, o.stdout.as_str()), (0, ""), "a stray AH_ENGINE_BIN must not replace the engine (and no Node runs: the status line stays silent)");
 }
 
 // ---- the installer's command and the migration -------------------------------------------------------------------------------
@@ -305,29 +153,66 @@ fn the_engine_uninstaller_recognises_the_engine_command() {
     assert_eq!(command_in(&settings_text(&h)), "echo mine", "the wrapped line 1 comes back: {}", o.stdout);
 }
 
+/// The thin client a migrated status line command runs: a stand-in executable at the installed path.
+fn install_client(h: &Home) -> String {
+    let p = h.home.join(".anti-hall/ah-engine/bin/ah-hook");
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    p.display().to_string()
+}
+
+fn migrate(h: &Home, extra: &[&str]) -> Out {
+    let mut a = vec!["migrate", "--json", "--home", h.home.to_str().unwrap(), "--cwd", h.cwd.to_str().unwrap()];
+    a.extend_from_slice(extra);
+    engine(h, &a, &[])
+}
+
+fn statusline_rows(o: &Out) -> Vec<serde_json::Value> {
+    let report: serde_json::Value = serde_json::from_str(o.stdout.lines().last().unwrap()).unwrap();
+    report["repairs"].as_array().unwrap().iter().filter(|r| r["id"].as_str().is_some_and(|i| i.contains("statusline"))).cloned().collect()
+}
+
 #[test]
-fn migrations_no_longer_upgrade_or_write_statusline_settings() {
-    for (tag, old) in [("mig-node", format!("node \"{}\"", dispatcher())), ("mig-launcher", launcher_command())] {
-        let h = home_with_settings(tag, Some(&settings_with(&old)));
-        let before = settings_text(&h);
-        let o = engine(&h, &["migrate", "--json", "--home", h.home.to_str().unwrap(), "--cwd", h.cwd.to_str().unwrap()], &[]);
-        assert_eq!(o.code, 0, "{tag}: {}{}", o.stdout, o.stderr);
-        let report: serde_json::Value = serde_json::from_str(o.stdout.lines().last().unwrap()).unwrap();
-        let rows: Vec<&serde_json::Value> = report["repairs"].as_array().unwrap().iter().filter(|r| r["id"] == "migrate-statusline-engine").collect();
-        assert!(rows.is_empty(), "{tag}: migration/update path must not report an upgrade row: {}", o.stdout);
-        assert_eq!(settings_text(&h), before, "{tag}: existing statusLine left untouched");
-        assert!(!h.home.join(".claude/settings.json.bak-antihall").exists(), "{tag}: no backup for an untouched file");
-        // idempotent: a second run still reports no row and writes nothing
-        let o = engine(&h, &["migrate", "--json", "--home", h.home.to_str().unwrap(), "--cwd", h.cwd.to_str().unwrap()], &[]);
-        assert!(!o.stdout.contains("migrate-statusline-engine"), "{tag}: {}", o.stdout);
-        assert_eq!(settings_text(&h), before);
-    }
-    // the retired installer also does not upgrade an older form
-    let h = home_with_settings("inst-upgrade", Some(&settings_with(&launcher_command())));
-    let before = settings_text(&h);
-    let o = engine(&h, &["install-statusline"], &[]);
+fn the_migration_rewrites_a_statusline_that_runs_the_retired_wrapper_to_the_thin_client_and_nothing_else() {
+    // the Node-only form is not the shell wrapper: left exactly as it is
+    let node = settings_with(&format!("node \"{}\"", dispatcher()));
+    let h = home_with_settings("mig-node", Some(&node));
+    install_client(&h);
+    let o = migrate(&h, &[]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert_eq!(settings_text(&h), before);
+    assert!(statusline_rows(&o).is_empty(), "{}", o.stdout);
+    assert_eq!(settings_text(&h), node);
+    // the retired shell wrapper form becomes the thin client's command: one string changes, the backup is kept, nothing is deleted
+    let old = settings_with(&launcher_command());
+    let h = home_with_settings("mig-launcher", Some(&old));
+    // no thin client installed: nothing to point the status line at, the file is left alone
+    assert_eq!(migrate(&h, &[]).code, 0);
+    assert_eq!(settings_text(&h), old, "no client, no change");
+    let client = install_client(&h);
+    // a dry run reports what it would do and writes nothing
+    let o = migrate(&h, &["--dry-run"]);
+    assert_eq!(statusline_rows(&o).len(), 1, "{}", o.stdout);
+    assert_eq!(settings_text(&h), old);
+    assert!(!h.home.join(".claude/settings.json.bak-antihall").exists());
+    let o = migrate(&h, &[]);
+    let rows = statusline_rows(&o);
+    assert_eq!(rows.len(), 1, "{}", o.stdout);
+    assert_eq!(rows[0]["status"], "fixed", "{}", o.stdout);
+    let after = settings_text(&h);
+    assert_eq!(command_in(&after), format!("\"{client}\" statusline"));
+    assert_eq!(after, old.replace(&serde_json::to_string(&launcher_command()).unwrap(), &serde_json::to_string(&format!("\"{client}\" statusline")).unwrap()), "only the command string changed");
+    assert_eq!(fs::read_to_string(h.home.join(".claude/settings.json.bak-antihall")).unwrap(), old, "the backup is the original");
+    // idempotent: the new form is not an old one
+    let o = migrate(&h, &[]);
+    assert!(statusline_rows(&o).is_empty(), "{}", o.stdout);
+    assert_eq!(settings_text(&h), after);
+    // the retired installer still writes no statusLine
+    let h2 = home_with_settings("inst-upgrade", Some(&old));
+    let before = settings_text(&h2);
+    let o = engine(&h2, &["install-statusline"], &[]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert_eq!(settings_text(&h2), before);
 }
 
 #[test]
@@ -364,7 +249,7 @@ fn the_migration_leaves_what_it_cannot_be_sure_of_exactly_as_it_is() {
     a.push("--dry-run".into());
     let a: Vec<&str> = a.iter().map(String::as_str).collect();
     let o = engine(&h, &a, &[]);
-    assert!(!o.stdout.contains("migrate-statusline-engine"), "{}", o.stdout);
+    assert!(statusline_rows(&o).is_empty(), "{}", o.stdout);
     assert_eq!(settings_text(&h), legacy);
     // a backup that already exists is never overwritten because no migration writes
     let h = home_with_settings("bak", Some(&legacy));
@@ -379,6 +264,6 @@ fn the_migration_leaves_what_it_cannot_be_sure_of_exactly_as_it_is() {
     let o = run(&h, &[]);
     fs::set_permissions(h.home.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(settings_text(&h), legacy, "unchanged");
-    assert!(!o.stdout.contains("migrate-statusline-engine"), "{}", o.stdout);
+    assert!(statusline_rows(&o).is_empty(), "{}", o.stdout);
     drop(h.t);
 }

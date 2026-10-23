@@ -378,8 +378,8 @@ doc = "Read the plan's steps from a file instead of `--steps` (`mesh plan set`).
 value = "--steps-file"
 
 [docs.external_flags]
-doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to its shell wrappers, so the flag drift test does not ask for a `[flag.*]` entry."
-value = ["--allow-empty", "--detach", "--doctor", "--exact", "--ignored", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--is-ancestor", "--porcelain", "--help", "--reparent-children"]
+doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry."
+value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version"]
 
 
 [flag.key]

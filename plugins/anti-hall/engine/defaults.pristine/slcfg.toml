@@ -60,6 +60,30 @@ value = "settings.local.json"
 doc = "Appended to a settings file's name for its one-time backup."
 value = ".bak-antihall"
 
+[slcfg.client_bin_rel]
+doc = "The thin client inside the engine state directory (paths.base_dir/paths.state_dir under the home directory): the program the migrated status line command runs."
+value = "bin/ah-hook"
+
+[slcfg.mig_fixed]
+doc = "Migration row: an existing status line command that ran the retired shell wrapper now runs the thin client. {path} {command}."
+value = "statusLine in {path} now runs the thin client: {command}"
+
+[slcfg.mig_dry_run]
+doc = "Migration row (dry run): what would change. {path} {command}."
+value = "would update the statusLine in {path} to run the thin client: {command}"
+
+[slcfg.mig_ambiguous]
+doc = "Migration row: the command appears other than once in the file's text, or the edit does not read back as intended, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its command text is not a single plain string the migration can replace in place)"
+
+[slcfg.mig_backup_failed]
+doc = "Migration row: the one-time backup could not be made, so the file is left exactly as it is. {path}."
+value = "left the statusLine in {path} as it is (its one-time backup could not be written)"
+
+[slcfg.mig_write_failed]
+doc = "Migration row: the settings file could not be written. {path}."
+value = "could not write {path}; the statusLine there is unchanged"
+
 [slcfg.install_retired]
 doc = "Message printed by install-statusline after the anti-hall statusline was retired; the command is kept as a no-op so old docs and habits do not re-add statusLine."
 value = "anti-hall statusline installation has been retired; no statusLine setting was written. Use uninstall-statusline to clean up old installs."
@@ -557,7 +581,7 @@ doc = "A field name the engine does not merge (JavaScript treats it as the objec
 value = "__proto__"
 
 [slcfg.launcher_rel]
-doc = "The launcher an earlier engine installer named in the statusLine command, relative to the directory of the status line dispatcher. Legacy recognition only; no migration writes it."
+doc = "The launcher an earlier engine installer named in the statusLine command, relative to the directory of the status line dispatcher. Legacy recognition only (the migration rewrites it to the thin client's command, hooks_form.statusline_template)."
 value = "../scripts/ah-run.sh"
 
 [slcfg.command_launcher]
@@ -571,15 +595,15 @@ doc = "The legacy engine statusLine command recognised by uninstall/cleanup; the
 value = '"{engine}" statusline'
 
 [slcfg.engine_command_re]
-doc = "Recognises a statusLine command in the engine's own form (installer, uninstaller)."
-value = '^"[^"]+/ah-engine" statusline$'
+doc = "Recognises a statusLine command in the engine's own form or the thin client's form (uninstaller, migration)."
+value = '^"[^"]+/(?:ah-engine|ah-hook)" statusline$'
 
 [slcfg.launcher_form_re]
 doc = "Recognises the launcher form an earlier engine installer wrote; named groups launcher and dispatcher (checked again against slcfg.command_launcher)."
 value = '^sh "(?<launcher>[^"]+)" --stdin statusline -- "(?<dispatcher>[^"]+)"$'
 
 [slcfg.engine_bin_rel]
-doc = "The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the hook wrappers look for it first."
+doc = "The engine executable inside the engine state directory (paths.base_dir/paths.state_dir under the home directory), where the thin client looks for it first."
 value = "bin/ah-engine"
 
 [slcfg.engine_line]

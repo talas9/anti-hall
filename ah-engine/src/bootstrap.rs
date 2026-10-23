@@ -36,11 +36,14 @@ pub const LKG_STAMP: &str = "STAMP";
 pub const INDEX_FILE: &str = "index.toml";
 /// Environment variables naming the plugin root, in order of precedence.
 pub const ROOT_ENVS: &[&str] = &["AH_ENGINE_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"];
-/// The hook wrapper, relative to the plugin root: what the doctor hands over to when the defaults cannot load (the shell doctor
-/// has its own texts). Like the other names in this file it is needed before any defaults exist.
-pub const WRAPPER_REL: &str = "hooks/ah-hook.sh";
-/// The wrapper argument that runs the shell doctor.
-pub const SHELL_DOCTOR_ARG: &str = "--doctor";
+/// The installed thin client (`ah-hook`), relative to the home directory: what the doctor hands over to when the defaults cannot load
+/// (its built-in diagnosis needs neither the engine nor its defaults and has its own texts). Like the other names in this file it is
+/// needed before any defaults exist.
+pub const CLIENT_REL: &str = ".anti-hall/ah-engine/bin/ah-hook";
+/// The thin client's arguments that run its built-in diagnosis.
+pub const CLIENT_DOCTOR_ARGS: &[&str] = &["doctor", "--builtin"];
+/// The thin client's argument that names the plugin root.
+pub const CLIENT_ROOT_ARG: &str = "--plugin-root";
 /// The variable that carries the reason the defaults failed to load to the shell doctor.
 pub const DEFAULTS_ERROR_ENV: &str = "AH_DOCTOR_DEFAULTS_ERROR";
 /// The snapshot cache file inside the state directory.
@@ -57,7 +60,7 @@ pub const UNAVAILABLE_EXIT: i32 = 75;
 /// The state directory override (the same variable `env.dir` names in the defaults; a test keeps them equal).
 const STATE_ENV: &str = "AH_ENGINE_DIR";
 /// The home variable and the state directory below it (the same as `paths.base_dir` / `paths.state_dir`; a test keeps them equal).
-const HOME_ENV: &str = "HOME";
+pub const HOME_ENV: &str = "HOME";
 const STATE_REL: [&str; 2] = [".anti-hall", "ah-engine"];
 
 /// The engine state directory, before any defaults are loaded.

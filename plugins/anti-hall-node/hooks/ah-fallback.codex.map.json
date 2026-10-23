@@ -1,6 +1,5 @@
 {
   "PostToolUse": {
-    "agent-reminders": "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"",
     "devswarm-child-drain": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-drain.js\"",
     "devswarm-parent-reply-tracker": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-reply-tracker.js\"",
     "git-guard:audit": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\" --audit",
@@ -11,21 +10,14 @@
   },
   "PreToolUse": {
     "api-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
-    "broad-kill-guard": "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"",
-    "burn-breaker": "sh \"${PLUGIN_ROOT}/hooks/burn-breaker\"",
     "command-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
-    "engine-role-guard": "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"",
     "git-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
-    "lane-test-guard": "sh \"${PLUGIN_ROOT}/hooks/lane-test-guard\"",
     "merge-gate": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
     "merge-side-pick": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
-    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-    "queued-wait-guard": "sh \"${PLUGIN_ROOT}/hooks/queued-wait-guard\"",
-    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
-    "uncommitted-guard": "sh \"${PLUGIN_ROOT}/hooks/uncommitted-guard\""
+    "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\""
   },
   "SessionStart": {
     "claude-cli-version": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/claude-cli-version.js\"",
@@ -34,12 +26,9 @@
     "devswarm-child-role": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-role.js\"",
     "devswarm-version": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-version.js\"",
     "emit-dedupe-reset": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/emit-dedupe-reset.js\"",
-    "engine-role-note": "sh \"${PLUGIN_ROOT}/hooks/engine-role-note\"",
-    "handover-hygiene": "sh \"${PLUGIN_ROOT}/hooks/handover-hygiene\"",
     "handover-resume": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js\"",
-    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "progress-prune": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/progress-prune.js\"",
     "repair-on-reload": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
     "repo-self-drift": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repo-self-drift.js\"",
@@ -53,26 +42,18 @@
     "compact-advice-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js\"",
     "devswarm-child-gate": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-gate.js\"",
     "devswarm-parent-gate": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-gate.js\"",
-    "sibling-sweep": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\"",
     "silent-agent-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/silent-agent-nudge.js\"",
     "speculation-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-guard.js\"",
     "speculation-judge": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-judge.js\"",
     "task-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/task-guard.js\"",
     "tasklist-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/tasklist-guard.js\""
   },
-  "SubagentStop": {
-    "sibling-sweep": "sh \"${PLUGIN_ROOT}/hooks/sibling-sweep\""
-  },
   "UserPromptSubmit": {
-    "agent-reminders": "sh \"${PLUGIN_ROOT}/hooks/agent-reminders\"",
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js\"",
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-inbox.js\"",
-    "devswarm-rt-advisory": "sh \"${PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
-    "gh-rt-advisory": "sh \"${PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
     "idle-agent-sweep": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js\"",
-    "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "repair-on-reload": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
     "task-tracker": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js\"",
     "verify-first": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js\""

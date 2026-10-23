@@ -1,6 +1,5 @@
 {
   "PostToolUse": {
-    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
     "codex-quota-detect": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/codex-quota-detect.js\"",
     "coordinator-work-guard:post": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js\" --post",
     "devswarm-child-drain": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-drain.js\"",
@@ -19,17 +18,13 @@
   "PreToolUse": {
     "api-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
     "ask-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ask-guard.js\"",
-    "broad-kill-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"",
-    "burn-breaker": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker\"",
     "command-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
     "compact-declaration-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
     "coordinator-work-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js\"",
     "devswarm-comms-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-comms-guard.js\"",
     "edit-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
-    "engine-role-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"",
     "git-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
     "inbox-read-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/inbox-read-guard.js\"",
-    "lane-test-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard\"",
     "merge-gate": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
     "merge-side-pick": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "model-routing-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/model-routing-guard.js\"",
@@ -37,14 +32,11 @@
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
     "phase-tracker": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
     "phase-tracker#2": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
-    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
-    "queued-wait-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/queued-wait-guard\"",
     "scan-throttle": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/scan-throttle.js\"",
     "ship-it-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
     "stale-agent-stop-note": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/stale-agent-stop-note.js\"",
     "swarm-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/swarm-guard.js\"",
-    "swarm-guard#2": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/swarm-guard.js\"",
-    "uncommitted-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/uncommitted-guard\""
+    "swarm-guard#2": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/swarm-guard.js\""
   },
   "SessionEnd": {
     "session-end-mcp-reaper": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/session-end-mcp-reaper.js\""
@@ -56,13 +48,10 @@
     "devswarm-child-role": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-role.js\"",
     "devswarm-version": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-version.js\"",
     "emit-dedupe-reset": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/emit-dedupe-reset.js\"",
-    "engine-role-note": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
     "fable-availability": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/fable-availability.js\"",
-    "handover-hygiene": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene\"",
     "handover-resume": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/handover-resume.js\"",
     "jev-review-reminder": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-review-reminder.js\"",
     "jev-weekly-scorecard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js\"",
-    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "progress-prune": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/progress-prune.js\"",
     "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
     "repo-self-drift": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repo-self-drift.js\"",
@@ -77,7 +66,6 @@
     "compact-advice-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js\"",
     "devswarm-child-gate": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-gate.js\"",
     "devswarm-parent-gate": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-gate.js\"",
-    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\"",
     "silent-agent-nudge": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/silent-agent-nudge.js\"",
     "speculation-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-guard.js\"",
     "speculation-judge": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-judge.js\"",
@@ -85,11 +73,7 @@
     "tasklist-guard": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/tasklist-guard.js\""
   },
   "SubagentStart": {
-    "engine-role-note": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note\"",
     "verify-first-subagent": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-subagent.js\""
-  },
-  "SubagentStop": {
-    "sibling-sweep": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep\""
   },
   "TaskCompleted": {
     "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js\""
@@ -98,15 +82,11 @@
     "task-lifecycle-log": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js\""
   },
   "UserPromptSubmit": {
-    "agent-reminders": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders\"",
     "auto-handover": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js\"",
     "devswarm-child-turn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js\"",
     "devswarm-parent-inbox": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-inbox.js\"",
-    "devswarm-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory\"",
-    "gh-rt-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory\"",
     "idle-agent-sweep": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js\"",
     "limit-conserve-inject": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js\"",
-    "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
     "repair-on-reload": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
     "task-tracker": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js\"",
     "verify-first": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js\""

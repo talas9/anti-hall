@@ -5,7 +5,7 @@
 set -u
 repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 src=$repo/plugins/anti-hall
-tmp=${AH_TEST_SCRATCH:-${TMPDIR:-/tmp}}/ah-update-errors.$$
+tmp=/tmp/ahu-e.$$ # short: the launcher self-test needs a socket path under 100 bytes
 mkdir -p "$tmp/www"
 server_pid=
 trap '[ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null; rm -rf "$tmp"' EXIT HUP INT TERM
@@ -13,9 +13,13 @@ trap '[ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null; rm -rf "$tmp"' EXI
 pass=0; fail=0
 plug=$tmp/plugin
 mkdir -p "$plug/hooks" "$plug/engine"
-cp "$src/hooks/ah-update.sh" "$src/hooks/ah-engine-bootstrap.sh" "$plug/hooks/"
-cp "$src/engine/ah-update.toml" "$plug/engine/"
-upd=$plug/hooks/ah-update.sh
+hookbin=${AH_HOOK_BIN:-}
+for c in "$repo/ah-launcher/target/release/ah-hook" "$repo/ah-launcher/target/debug/ah-hook"; do
+  [ -n "$hookbin" ] || { [ -x "$c" ] && hookbin=$c; }
+done
+[ -x "$hookbin" ] || { echo "FAIL no ah-hook binary: build ah-launcher or set AH_HOOK_BIN" >&2; exit 1; }
+cp -R "$src/engine/defaults" "$plug/engine/"
+updc="$hookbin --plugin-root $plug update"
 home=$tmp/home
 bin=$home/.anti-hall/ah-engine/bin/ah-engine
 triple=x86_64-unknown-linux-gnu
@@ -45,7 +49,7 @@ port=$(cat "$tmp/port")
 mkeng "$tmp/v1" 1.0.0
 cp "$tmp/v1/ah-engine" "$bin"
 env_base="HOME=$home AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE=$triple AH_UPDATE_NO_ATTEST=1 AH_UPDATE_API_BASE=http://127.0.0.1:$port AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:$port/dl"
-run() { env $env_base sh "$upd" "$@"; }
+run() { env $env_base $updc "$@"; }
 
 # expect NAME CODE KIND WHAT_RE STATE_RE NEXT_RE -- cmd...   (KIND: fail = what/state/next, usage = what/usage)
 expect() {
@@ -81,10 +85,11 @@ expect "bad --sha256" 2 usage "--sha256 must be 64" "" "" -- run --from "$tmp/v1
 expect "missing --from file" 2 usage "no such file: $tmp/nope" "" "" -- run --from "$tmp/nope"
 
 # ---- start-up failures (exit 1, stderr) ----------------------------------------------------------------------------------------
-expect "settings file missing" 1 fail "settings file is missing" "nothing changed" "claude plugin update anti-hall|--config" -- run --config "$tmp/none.toml" --rollback
-expect "HOME unset" 1 fail "HOME is not set" "nothing changed" "HOME=" -- env -u HOME AH_WRAPPER_TEST=1 sh "$upd" --rollback
-printf 'repo = "x"\n' >"$tmp/short.toml"
-expect "settings missing keys" 1 fail "missing required keys" "nothing changed" "restore the file" -- run --config "$tmp/short.toml" --rollback
+mkdir -p "$tmp/emptyplug"
+expect "settings missing" 1 fail "settings are missing or incomplete" "nothing changed" "claude plugin update anti-hall" -- env $env_base "$hookbin" --plugin-root "$tmp/emptyplug" update --rollback
+expect "HOME unset" 1 fail "HOME is not set" "nothing changed" "HOME=" -- env -u HOME AH_WRAPPER_TEST=1 $updc --rollback
+mkdir -p "$tmp/shortplug/engine/defaults"; printf '[updater.repo]\nvalue = "x"\n' >"$tmp/shortplug/engine/defaults/engine.toml"
+expect "settings missing keys" 1 fail "settings are missing or incomplete" "nothing changed" "reinstall the anti-hall plugin" -- env $env_base "$hookbin" --plugin-root "$tmp/shortplug" update --rollback
 
 # ---- lock held ------------------------------------------------------------------------------------------------------------------
 mkdir -p "$home/.anti-hall/ah-engine/update.lock"
@@ -93,9 +98,9 @@ rmdir "$home/.anti-hall/ah-engine/update.lock"
 
 # ---- rollback ---------------------------------------------------------------------------------------------------------------------
 rm -f "$bin.prev"
-expect "rollback without .prev" 1 fail "nothing to roll back to" "nothing changed - engine 1.0.0 is still active" "run one first|ah-update.sh --channel" -- run --rollback
+expect "rollback without .prev" 1 fail "nothing to roll back to" "nothing changed - engine 1.0.0 is still active" "run one first|update --channel" -- run --rollback
 mkeng "$tmp/vb" 9.9.9 broken; cp "$tmp/vb/ah-engine" "$bin.prev"
-expect "rollback to a .prev that does not run" 1 fail "does not run on this machine" "nothing changed - engine 1.0.0" "ah-update.sh --channel stable" -- run --rollback
+expect "rollback to a .prev that does not run" 1 fail "does not run on this machine" "nothing changed - engine 1.0.0" "update --channel stable" -- run --rollback
 engine_still && pass=$((pass + 1)) || { fail=$((fail + 1)); echo "FAIL engine changed by a failed rollback" >&2; }
 rm -f "$bin.prev"
 
@@ -110,7 +115,7 @@ printf 'not an archive' >"$tmp/junk.tar.gz"; tar -czf "$tmp/nomember.tar.gz" -C 
 expect "archive without an engine member" 1 fail "has no <dir>/ah-engine member" "nothing changed" "bare binary|release" -- run --from "$tmp/nomember.tar.gz" --yes
 
 # ---- online -----------------------------------------------------------------------------------------------------------------------
-expect "network down" 1 fail "cannot reach http://127.0.0.1:1/repos/talas9/anti-hall/releases" "nothing changed - engine 1.0.0" "check the connection.*--channel dev" -- env $env_base AH_UPDATE_API_BASE=http://127.0.0.1:1 sh "$upd" --channel dev
+expect "network down" 1 fail "cannot reach http://127.0.0.1:1/repos/talas9/anti-hall/releases" "nothing changed - engine 1.0.0" "check the connection.*--channel dev" -- env $env_base AH_UPDATE_API_BASE=http://127.0.0.1:1 $updc --channel dev
 mkdir -p "$tmp/www/repos/talas9/anti-hall"
 printf '[\n  {\n    "tag_name": "v0.300.0"\n  }\n]\n' >"$tmp/www/repos/talas9/anti-hall/releases"
 expect "dev channel not published yet" 1 fail "no dev build is published yet" "nothing changed - engine 1.0.0" "retry after a build is published|--channel stable" -- run --channel dev
@@ -126,17 +131,17 @@ expect "release checksum mismatch" 1 fail "checksum of the downloaded $asset doe
 printf '%s  %s\n' "$(sha "$tmp/www/dl/ah-engine-dev-abcd1234/$asset")" "ah-engine-dev-abcd1234-$triple.tar.gz.other" >"$tmp/www/dl/ah-engine-dev-abcd1234/SHA256SUMS"
 expect "checksum file has no entry" 1 fail "has no entry for $asset" "nothing changed - engine 1.0.0" "still being assembled" -- run --channel dev
 printf '%s  %s\n' "$(sha "$tmp/www/dl/ah-engine-dev-abcd1234/$asset")" "$asset" >"$tmp/www/dl/ah-engine-dev-abcd1234/SHA256SUMS"
-expect "unsupported platform" 1 fail "no ah-engine build is published for this platform" "nothing changed - engine 1.0.0" "--from FILE" -- env $env_base AH_UPDATE_TRIPLE=unsupported sh "$upd" --channel dev
+expect "unsupported platform" 1 fail "no ah-engine build is published for this platform" "nothing changed - engine 1.0.0" "--from FILE" -- env $env_base AH_UPDATE_TRIPLE=unsupported $updc --channel dev
 # a gh that is logged in and rejects the attestation
 mkdir -p "$tmp/fakebin"
 printf '#!/bin/sh\ncase "$1 $2" in "attestation verify") echo "no matching attestation" >&2; exit 1 ;; "auth status") exit 0 ;; esac\nexit 0\n' >"$tmp/fakebin/gh"; chmod 755 "$tmp/fakebin/gh"
-expect "attestation rejected" 1 fail "attestation check failed for $asset" "nothing changed - engine 1.0.0.*discarded" "do not install this build" -- env PATH="$tmp/fakebin:$PATH" HOME=$home AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE=$triple AH_UPDATE_API_BASE=http://127.0.0.1:$port AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:$port/dl sh "$upd" --channel dev
+expect "attestation rejected" 1 fail "attestation check failed for $asset" "nothing changed - engine 1.0.0.*discarded" "do not install this build" -- env PATH="$tmp/fakebin:$PATH" HOME=$home AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE=$triple AH_UPDATE_API_BASE=http://127.0.0.1:$port AH_UPDATE_DOWNLOAD_BASE=http://127.0.0.1:$port/dl $updc --channel dev
 # no curl or wget on PATH: a farm of just the tools the script needs
 mkdir -p "$tmp/tools"
 for t in sh sed head tr cat date mkdir rmdir find rm wc tail awk grep ls mv cp tar sort dirname basename shasum sleep kill chmod uname env printf; do
   p=$(command -v "$t" 2>/dev/null) && [ -n "$p" ] && ln -sf "$p" "$tmp/tools/$t"
 done
-expect "no download tool" 1 fail "neither curl nor wget is installed" "nothing changed - engine 1.0.0" "install curl" -- env -i PATH="$tmp/tools" HOME=$home AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE=$triple sh "$upd" --channel dev
+expect "no download tool" 1 fail "neither curl nor wget is installed" "nothing changed - engine 1.0.0" "install curl" -- env -i PATH="$tmp/tools" HOME=$home AH_WRAPPER_TEST=1 AH_UPDATE_TRIPLE=$triple $updc --channel dev
 
 # ---- live kit ---------------------------------------------------------------------------------------------------------------------
 kit=$tmp/kit
@@ -144,7 +149,7 @@ mkdir -p "$kit/state" "$kit/bundle/plugin/engine/defaults"
 echo '{}' >"$kit/state/live.json"
 mkeng "$kit/bundle" 1.0.0; echo old >"$kit/bundle/plugin/marker.txt"
 printf '#!/bin/sh\nKIT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)\n[ -e "$KIT/fail" ] && { echo "go-live: boom" >&2; exit 1; }\nexit 0\n' >"$kit/go-live.sh"
-lrun() { env $env_base AH_LIVE_KIT=$kit sh "$upd" "$@"; }
+lrun() { env $env_base AH_LIVE_KIT=$kit $updc "$@"; }
 expect "live rollback with no earlier bundle" 1 fail "nothing to roll back to" "nothing changed - engine 1.0.0" "update first" -- lrun --rollback
 touch "$kit/fail"
 expect "live update: go-live fails" 1 fail "live kit could not apply the new bundle" "rolled back: the bundle that was current is back in place" "tail -n 30 .*go-live.sh" -- lrun --from "$tmp/v2/ah-engine" --yes

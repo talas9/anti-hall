@@ -113,12 +113,15 @@ impl World {
         let st = Command::new("cp").arg("-R").arg(plugin_src()).arg(&plugin).status().unwrap();
         assert!(st.success(), "copying the plugin failed");
 
-        // the engine, installed where ah-hook.sh and ah-run.sh look first
+        // the engine and the thin client, installed where the hook command (hooks.json, direct form) looks for them
         let engine_dir = home.join(".anti-hall").join("ah-engine").join("bin");
         fs::create_dir_all(&engine_dir).unwrap();
         let engine = engine_dir.join("ah-engine");
         fs::copy(env!("CARGO_BIN_EXE_ah-engine"), &engine).unwrap();
         fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
+        let client = engine_dir.join("ah-hook");
+        fs::copy(crate::common::launcher_bin(), &client).unwrap();
+        fs::set_permissions(&client, fs::Permissions::from_mode(0o755)).unwrap();
         let state = home.join(".anti-hall").join("ah-engine");
 
         // PATH: symlinks to the system tools minus the exclusions; no Node anywhere
@@ -296,8 +299,8 @@ impl World {
         let payload = self.subst(&payload.to_string());
         let mut cmd = self.command(&self.engine, &format!("daemon-ready-{host}"));
         cmd.arg("hook").args(["--event", "PreToolUse", "--tool", "Bash", "--host", host, "--fallback-map"]).arg(match host {
-            "codex" => self.plugin.join("hooks").join("ah-fallback.codex.map.json"),
-            _ => self.plugin.join("hooks").join("ah-fallback.map.json"),
+            "codex" => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.codex.map.json"),
+            _ => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.map.json"),
         });
         if host == "codex" {
             cmd.env("PLUGIN_ROOT", &self.plugin);

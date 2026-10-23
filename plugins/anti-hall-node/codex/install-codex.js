@@ -79,7 +79,7 @@ function isAntiHallGroup(g) {
   // hook() builds paths with path.join, which emits backslashes on Windows;
   // normalize separators before matching so a prior Windows-installed group
   // is still recognized as stale and deduped, not appended alongside a fresh one.
-  return hooks.some((h) => h && typeof h.command === 'string' && /\/plugins\/anti-hall(?:\/\.\.\/anti-hall-node|-node)?\/hooks\/|\/hooks\/ah-hook\.sh"/.test(h.command.replace(/\\/g, '/')));
+  return hooks.some((h) => h && typeof h.command === 'string' && /\/plugins\/anti-hall(?:\/\.\.\/anti-hall-node|-node)?\/hooks\/|\/hooks\/(?:ah-hook|install)\.sh"|\/ah-engine\/bin\/ah-hook" /.test(h.command.replace(/\\/g, '/')));
 }
 
 function mergeHooks(existing) {

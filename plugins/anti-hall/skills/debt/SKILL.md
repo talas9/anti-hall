@@ -55,9 +55,9 @@ It runs `plugins/anti-hall-node/scripts/harvest-debt.js` (pure Node, cross-platf
 Invoke:
 
 ```
-sh plugins/anti-hall/scripts/ah-run.sh harvest              # human table
-sh plugins/anti-hall/scripts/ah-run.sh harvest --json       # machine-readable
-sh plugins/anti-hall/scripts/ah-run.sh harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest              # human table
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest --json       # machine-readable
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest --dir src --stale-days 60
 ```
 
 ## Reading the report

@@ -142,12 +142,12 @@ fi
 now=$(date +%s 2>/dev/null || echo 0)
 tmp=
 lockdir=$dir/bootstrap.lock
-# The install lock is shared with the integrity script and ah-update (ONE lock for every writer of bin/); the integrity script owns
-# it (its lock/unlock verbs, its settings). bootstrap.lock above only keeps two bootstraps from downloading at once.
-integ=$here/ah-engine-integrity.sh
+# The install lock is shared with the integrity check and ah-update (ONE lock for every writer of bin/); the thin client's
+# `integrity` verbs own it (lock/unlock, its settings). bootstrap.lock above only keeps two bootstraps from downloading at once.
+integ=$dir/bin/ah-hook
 itok="$$ $now"
 ilocked=0
-integrity() { AH_ENGINE_DIR=$dir AH_ENGINE_INSTALL_LOCK_TOKEN=$itok sh "$integ" "$@" </dev/null >/dev/null 2>&1; }
+integrity() { AH_ENGINE_DIR=$dir AH_ENGINE_INSTALL_LOCK_TOKEN=$itok "$integ" --plugin-root "$here/.." integrity "$@" </dev/null >/dev/null 2>&1; }
 cleanup() {
   if [ "$ilocked" -eq 1 ]; then integrity unlock "$itok"; ilocked=0; fi
   [ -n "$tmp" ] && rm -rf "$tmp"
@@ -271,7 +271,7 @@ case "$reported" in *"$version"*) ;; *) fail "downloaded binary does not run or 
 
 # Hold the shared install lock from here to the record, so an integrity roll-back cannot act on the binary being replaced; a held
 # lock is not a failed attempt (no rate limit): the next session tries again.
-if [ -f "$integ" ]; then
+if [ -x "$integ" ]; then
   integrity lock "$itok" || { say "skip: the engine install lock is held by another install or roll-back; the next session tries again"; exit 0; }
   ilocked=1
 fi
@@ -292,7 +292,7 @@ fi
 printf '%s %s\n' "$want" "$binsha" >"$marker"
 # remember this binary as the expected one (under this install's hold, so no check runs between the swap and the record), so a
 # later damaged copy can be told apart (and rolled back); never fails the install
-[ ! -f "$integ" ] || integrity record
+[ ! -x "$integ" ] || integrity record
 rm -f "$attempt"
 say "ok: installed ah-engine $version ($triple) at $bin"
 exit 0

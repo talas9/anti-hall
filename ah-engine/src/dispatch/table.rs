@@ -14,6 +14,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// One hook entry of an event, as `hooks.json` registers it.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,7 +23,8 @@ pub struct Entry {
     pub id: String,
     /// The `hooks.json` matcher (`""` = every occurrence).
     pub matcher: String,
-    /// The Node hook command, exactly as `hooks.json` has it (or as the fallback map overrides it).
+    /// The Node hook command: the entry's id in the host's commands file (the fallback map in the Node backup plugin, or
+    /// the `--fallback-map` file when one is given). Empty for an engine-only entry, which has no Node twin.
     pub command: String,
     /// The `hooks.json` timeout in seconds.
     pub timeout_s: u64,
@@ -48,23 +50,53 @@ pub fn hosts() -> Vec<&'static str> {
 pub enum Row {
     /// No `dispatch.hooks_<host>_<event>` key.
     Missing,
-    /// The key holds something other than a list of entry tables, each with a string `id` and `command`.
+    /// The key holds something other than a list of entry tables, each with a string `id`.
     Malformed,
     /// The entries, in table order.
     Entries(Vec<Entry>),
 }
 
-/// The entry tables of a row's value, when it is a list of tables that each name a string `id` and `command`.
+/// The entry tables of a row's value, when it is a list of tables that each name a string `id` (and, when present, a string
+/// `command`: the table holds no Node text, the commands file does).
 pub(crate) fn rows_of(v: &'static V) -> Option<&'static [V]> {
     let a = v.as_array()?;
-    a.iter().all(|e| e.as_table().is_some() && e.get("id").and_then(V::as_str).is_some() && e.get("command").and_then(V::as_str).is_some()).then_some(a)
+    a.iter().all(|e| e.as_table().is_some() && e.get("id").and_then(V::as_str).is_some() && e.get("command").is_none_or(|c| c.as_str().is_some())).then_some(a)
 }
 
-fn entry_of(e: &V) -> Entry {
+type Commands = HashMap<String, HashMap<String, String>>;
+type CommandsCache = HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, u64, Arc<Commands>)>;
+
+/// The commands file of `host` (event, then entry id, to the Node command), read from the plugin the active defaults came from.
+/// The parsed file is cached by path, modification time and length, so a hot path costs one `stat`; a missing or unreadable file
+/// is no commands (an entry without a command and without a built-in check then cannot run, which the dispatcher already handles).
+fn commands(host: &str) -> Arc<Commands> {
+    static CACHE: Mutex<Option<CommandsCache>> = Mutex::new(None);
+    let empty = Arc::new(Commands::new());
+    let Some(path) = defaults::root().map(|r| r.join(defaults::text("nodeback.node_dir")).join(defaults::text(&format!("launcher.fallback_map_{host}")))) else { return empty };
+    let meta = std::fs::metadata(&path).ok();
+    let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
+    let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if let Some((m, l, c)) = cache.get(&path)
+        && (*m, *l) == stamp
+    {
+        return c.clone();
+    }
+    let parsed = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Commands>(&t).ok()).map_or(empty, Arc::new);
+    cache.insert(path, (stamp.0, stamp.1, parsed.clone()));
+    parsed
+}
+
+fn entry_of(host: &str, event: &str, e: &V) -> Entry {
+    let id = e.str_field("id");
+    let command = match e.str_field("command") {
+        "" => commands(host).get(event).and_then(|m| m.get(id)).cloned().unwrap_or_default(),
+        c => c.to_string(),
+    };
     Entry {
-        id: e.str_field("id").to_string(),
+        id: id.to_string(),
         matcher: e.str_field("matcher").to_string(),
-        command: e.str_field("command").to_string(),
+        command,
         timeout_s: e.get("timeout").and_then(V::as_integer).unwrap_or(0).max(0) as u64,
         check: Some(e.str_field("check")).filter(|c| !c.is_empty()).map(str::to_string),
         when: e.get("when").and_then(|w| crate::hookcfg::when::When::from_v(w).ok()),
@@ -75,7 +107,7 @@ fn entry_of(e: &V) -> Entry {
 pub fn row(host: &str, event: &str) -> Row {
     let Some(e) = defaults::get(&key(host, event)) else { return Row::Missing };
     match rows_of(&e.value) {
-        Some(a) => Row::Entries(a.iter().map(entry_of).collect()),
+        Some(a) => Row::Entries(a.iter().map(|e| entry_of(host, event, e)).collect()),
         None => Row::Malformed,
     }
 }

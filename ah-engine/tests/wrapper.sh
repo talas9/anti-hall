@@ -4,8 +4,9 @@ AH_WRAPPER_TEST=1
 export AH_WRAPPER_TEST
 
 repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
-# AH_WRAPPER_UNDER_TEST runs the suite against another implementation of the same contract (the ah-hook launcher shim)
-wrapper=${AH_WRAPPER_UNDER_TEST:-$repo/plugins/anti-hall/hooks/ah-hook.sh}
+# The suite runs the thin client (ah-hook, via ah-launcher/tests/shim.sh: AH_LAUNCHER_BIN, else the release build); the plugin ships
+# no wrapper script. AH_WRAPPER_UNDER_TEST points it at another implementation of the same contract.
+wrapper=${AH_WRAPPER_UNDER_TEST:-$repo/ah-launcher/tests/shim.sh}
 tmp=${TMPDIR:-/tmp}/ah-wrapper-test.$$
 mkdir -p "$tmp"
 : >"$tmp/homefile"
@@ -296,15 +297,6 @@ test_normal_passthrough() {
   [ "$rc" -eq 2 ] && cmp -s "$payload" "$out" && grep -q '^engine-err$' "$err"
 }
 
-test_tool_from_payload_reaches_engine() {
-  e=$(make_engine args args)
-  : >"$tmp/empty-tool.list"
-  out=$tmp/tool.out
-  err=$tmp/tool.err
-  AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/empty-tool.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  grep -q -- '--tool Bash' "$out"
-}
-
 test_exit_75_fallback() {
   # the engine hands the call back (exit 75): no hook command exists to run, so the call passes through unchecked with the notice
   sentinel=$tmp/75-ran
@@ -461,77 +453,6 @@ test_missing_engine_and_missing_defaults_fail_open() {
 
 
 
-test_temp_modes_and_owner() {
-  parent=$tmp/private-parent
-  mkdir "$parent"
-  e=$(engine_script tempmodes 'mode(){ stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }; owner(){ stat -c "%u" "$1" 2>/dev/null || stat -f "%u" "$1"; }; root="$TMPDIR/ah-hook-$(id -u)"; set -- "$root"/ah-wrapper-run.*/payload; payload=$1; d=$(dirname "$payload"); [ "$(mode "$root")" = 700 ] && [ "$(mode "$d")" = 700 ] && [ "$(mode "$payload")" = 600 ] && [ "$(owner "$root")" = "$(id -u)" ] && printf ok')
-  out=$tmp/tempmodes.out
-  err=$tmp/tempmodes.err
-  TMPDIR="$parent" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/tempmodes.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  [ "$(cat "$out")" = ok ]
-}
-
-test_temp_refuses_bad_base_and_symlink_parent() {
-  uid_now=$(id -u)
-  badparent=$tmp/badparent
-  mkdir "$badparent" "$badparent/ah-hook-$uid_now"
-  chmod 777 "$badparent/ah-hook-$uid_now"
-  h=$(hook_script badbase 'printf badbase')
-  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/badbase.list"
-  out=$tmp/badbase.out
-  err=$tmp/badbase.err
-  set +e
-  TMPDIR="$badparent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  rc1=$?
-  set -e
-  realparent=$tmp/realparent
-  linkparent=$tmp/linkparent
-  mkdir "$realparent"
-  ln -s "$realparent" "$linkparent"
-  set +e
-  TMPDIR="$linkparent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/symlink.out" 2>"$tmp/symlink.err"
-  rc2=$?
-  hostile=$tmp/hostile
-  elsewhere=$tmp/elsewhere
-  mkdir -m 700 "$hostile" "$elsewhere"
-  ln -s "$elsewhere" "$hostile/ah-hook-$uid_now"
-  TMPDIR="$hostile" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/hostile.out" 2>"$tmp/hostile.err"
-  rc3=$?
-  open_parent=$tmp/openparent
-  mkdir "$open_parent"
-  chmod 777 "$open_parent"
-  TMPDIR="$open_parent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/open.out" 2>"$tmp/open.err"
-  rc4=$?
-  sticky_parent=$tmp/stickyparent
-  mkdir "$sticky_parent"
-  chmod 1777 "$sticky_parent"
-  TMPDIR="$sticky_parent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/badbase.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/sticky.out" 2>"$tmp/sticky.err"
-  rc5=$?
-  set -e
-  # bad base mode refused; symlinked parent is canonicalised and works; symlinked final component refused;
-  # world-writable parent without sticky refused; with sticky accepted
-  # (a refused private base no longer locks the user out: without a usable engine, the wrapper fail-opens before handoff)
-  [ "$rc1" -eq 0 ] && grep -q 'no private temp dir' "$err" && [ ! -s "$out" ] && [ "$rc2" -eq 0 ] && [ ! -s "$tmp/symlink.out" ] \
-    && [ "$rc3" -eq 0 ] && grep -q 'no private temp dir' "$tmp/hostile.err" && [ ! -s "$tmp/hostile.out" ] \
-    && [ "$rc4" -eq 0 ] && grep -q 'no private temp dir' "$tmp/open.err" && [ ! -s "$tmp/open.out" ] \
-    && [ "$rc5" -eq 0 ] && ! grep -q 'no private temp dir' "$tmp/sticky.err" && [ ! -s "$tmp/sticky.out" ]
-}
-
-test_temp_sweep_old_keeps_fresh() {
-  parent=$tmp/sweepparent
-  mkdir "$parent"
-  root=$parent/ah-hook-$(id -u)
-  mkdir -m 700 "$root" "$root/ah-wrapper-run.old" "$root/ah-wrapper-run.fresh"
-  old=$root/ah-wrapper-run.old
-  fresh=$root/ah-wrapper-run.fresh
-  touch -t 200001010000 "$old"
-  h=$(hook_script sweep 'printf sweep')
-  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/sweep.list"
-  e=$(make_engine sweep-engine seventyfive)
-  TMPDIR="$parent" AH_HOOK_SWEEP_AGE_S=1 AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/sweep.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/sweep.out" 2>"$tmp/sweep.err"
-  [ ! -e "$old" ] && [ -d "$fresh" ]
-}
-
 test_temp_term_cleanup_kills_child() {
   parent=$tmp/termparent
   mkdir "$parent"
@@ -558,25 +479,6 @@ test_temp_term_cleanup_kills_child() {
   root=$parent/ah-hook-$(id -u)
   set -- "$root"/ah-wrapper-run.*
   [ "$wrapper_rc" -eq 143 ] && [ "$1" = "$root/ah-wrapper-run.*" ]
-}
-
-test_temp_unusable_guard_blocks() {
-  parent=$tmp/unusableparent
-  mkdir "$parent"
-  root=$parent/ah-hook-$(id -u)
-  mkdir -m 700 "$root"
-  chmod 500 "$root"
-  h=$(hook_script unusable 'printf bad')
-  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/unusable.list"
-  out=$tmp/unusable.out
-  err=$tmp/unusable.err
-  set +e
-  TMPDIR="$parent" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/unusable.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$out" 2>"$err"
-  rc=$?
-  set -e
-  chmod 700 "$root"
-  # degraded: the unusable private base is skipped with a warning; without a usable engine, no Node handoff runs
-  [ "$rc" -eq 0 ] && [ ! -s "$out" ] && grep -q 'no private temp dir' "$err"
 }
 
 test_env_timeout_validation_guard_blocks() {
@@ -708,19 +610,6 @@ test_ah_knobs_honored_with_wrapper_test() {
   [ -e "$tmp/knob2-engine-ran" ] && ! grep -q 'ignoring test-only' "$tmp/knob2.err"
 }
 
-test_temp_base_prefers_home_then_xdg() {
-  home=$tmp/prefer-home
-  xdg=$tmp/prefer-xdg
-  mkdir -p "$home" "$xdg"
-  chmod 700 "$xdg"
-  e=$(engine_script preferhome 'mode(){ stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }; d="$HOME/.anti-hall/tmp"; set -- "$d"/ah-wrapper-run.*/payload; [ -f "$1" ] && [ "$(mode "$d")" = 700 ] && printf home-ok')
-  HOME="$home" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/preferhome.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferhome.out" 2>"$tmp/preferhome.err" || return 1
-  [ "$(cat "$tmp/preferhome.out")" = home-ok ] || return 1
-  e2=$(engine_script preferxdg 'set -- "$XDG_RUNTIME_DIR"/ah-hook-*/ah-wrapper-run.*/payload; [ -f "$1" ] && printf xdg-ok')
-  HOME="$home" XDG_RUNTIME_DIR="$xdg" TMPDIR="$tmp/never-used" AH_ENGINE_BIN="$e2" AH_FALLBACK_LIST="$tmp/preferxdg.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/preferxdg.out" 2>"$tmp/preferxdg.err" || return 1
-  [ "$(cat "$tmp/preferxdg.out")" = xdg-ok ]
-}
-
 # Regression: GNU stat treats `-f` as --file-system. The wrapper must pick the flavour once and never emit the other form's
 # output, so the private temp dir is still made and the hooks run under GNU semantics.
 test_gnu_stat_flavour_still_makes_private_tmp() {
@@ -732,40 +621,7 @@ test_gnu_stat_flavour_still_makes_private_tmp() {
 }
 
 # Degraded path: the private base cannot be made (unwritable TMPDIR, no usable HOME). The guard hook still runs and decides.
-test_unwritable_temp_base_guards_still_run() {
-  ro=$tmp/ro-base
-  mkdir -p "$ro"
-  chmod 500 "$ro"
-  h=$(hook_script degblock 'cat >/dev/null; printf "degraded-block\n" >&2; exit 2')
-  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/degblock.list"
-  set +e
-  TMPDIR="$ro" AH_ENGINE_BIN=/no/such/engine AH_FALLBACK_LIST="$tmp/degblock.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/degblock.out" 2>"$tmp/degblock.err"
-  rc=$?
-  set -e
-  chmod 700 "$ro"
-  [ "$rc" -eq 0 ] && [ ! -s "$tmp/degblock.out" ] && ! grep -q 'degraded-block' "$tmp/degblock.err" \
-    && grep -q 'no private temp dir' "$tmp/degblock.err"
-}
-
 # Last resort: no temp dir can be made anywhere (mktemp shimmed to fail). Payload goes to each hook through a pipe.
-test_no_temp_anywhere_in_memory_guard_still_blocks() {
-  nb=$tmp/nomktemp-bin
-  mkdir -p "$nb"
-  printf '#!/bin/sh\nexit 1\n' >"$nb/mktemp"
-  chmod +x "$nb/mktemp"
-  ro=$tmp/ro-base2
-  mkdir -p "$ro"
-  chmod 500 "$ro"
-  e=$(engine_script memblock 'grep -q Bash && { printf "mem-block\n" >&2; exit 2; }; exit 0')
-  printf '{"tool_name":"Bash","tool_input":{"command":"x"}}' >"$tmp/memblock.payload"
-  set +e
-  PATH=$nb:$PATH TMPDIR="$ro" HOME=/nonexistent AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/memblock.list" sh "$wrapper" PreToolUse --tool-from-payload <"$tmp/memblock.payload" >"$tmp/memblock.out" 2>"$tmp/memblock.err"
-  rc=$?
-  set -e
-  chmod 700 "$ro"
-  [ "$rc" -eq 2 ] && grep -q 'mem-block' "$tmp/memblock.err" && grep -q 'in-memory payload' "$tmp/memblock.err"
-}
-
 now_ms() {
   if command -v perl >/dev/null 2>&1; then
     perl -MTime::HiRes=time -e 'printf "%d\n", time() * 1000'
@@ -894,22 +750,6 @@ test_killed_wrapper_orphans_are_reaped() {
   return 1
 }
 
-test_sweep_removes_dead_owner_dirs_keeps_live_owner() {
-  parent=$tmp/ownersweep
-  mkdir "$parent"
-  root=$parent/ah-hook-$(id -u)
-  mkdir -m 700 "$root"
-  dead=99999
-  while kill -0 "$dead" 2>/dev/null; do dead=$((dead + 1)); done
-  mkdir -m 700 "$root/ah-wrapper-run.$dead.AAAA" "$root/ah-wrapper-run.$$.BBBB"
-  printf x >"$root/ah-wrapper-run.$dead.AAAA/payload"
-  h=$(hook_script ownersweep 'printf sweep')
-  printf '@PreToolUse\t%s\nBash\t%s\t%s\n' "$large_timeout" "$large_timeout" "$h" >"$tmp/ownersweep.list"
-  e=$(make_engine ownersweep-engine seventyfive)
-  TMPDIR="$parent" AH_ENGINE_BIN="$e" AH_FALLBACK_LIST="$tmp/ownersweep.list" sh "$wrapper" PreToolUse --tool-from-payload <"$payload" >"$tmp/ownersweep.out" 2>"$tmp/ownersweep.err"
-  [ ! -e "$root/ah-wrapper-run.$dead.AAAA" ] && [ -d "$root/ah-wrapper-run.$$.BBBB" ]
-}
-
 run_signal_cleanup_case() {
   # run_signal_cleanup_case <label> <signal|NONE> <expected-rc>: the private run dir must be gone afterwards
   sc_label=$1; sc_sig=$2; sc_rc=$3
@@ -971,7 +811,6 @@ test_temp_removed_on_int() { run_signal_cleanup_case int INT 130; }
 check normal_passthrough test_normal_passthrough
 check hooks_own_exit_code_passes_through_after_done_mark test_a_hooks_own_exit_code_passes_through_once_the_engine_marked_the_dispatch_done
 check engine_exit_without_done_mark_is_a_failure test_an_engine_exit_code_without_the_done_mark_is_an_engine_failure
-check tool_from_payload_reaches_engine test_tool_from_payload_reaches_engine
 check exit_75_fallback test_exit_75_fallback
 check missing_binary_fallback test_missing_binary_fallback
 check signal_fallback test_signal_fallback
@@ -980,11 +819,7 @@ check timeout_fallback test_timeout_fallback
 check timeout_kills_engine_process test_timeout_kills_engine_process
 check cold_engine_does_not_hold_host_stderr_open test_cold_engine_does_not_hold_host_stderr_open
 check missing_engine_and_missing_defaults_fail_open test_missing_engine_and_missing_defaults_fail_open
-check temp_modes_and_owner test_temp_modes_and_owner
-check temp_refuses_bad_base_and_symlink_parent test_temp_refuses_bad_base_and_symlink_parent
-check temp_sweep_old_keeps_fresh test_temp_sweep_old_keeps_fresh
 check temp_term_cleanup_kills_child test_temp_term_cleanup_kills_child
-check temp_unusable_guard_blocks test_temp_unusable_guard_blocks
 check env_timeout_validation_guard_blocks test_env_timeout_validation_guard_blocks
 check stop_active_synthetic_fail_closed_opens test_stop_active_synthetic_fail_closed_opens
 check guard_fail_closed_without_engine_or_nodes test_guard_fail_closed_without_engine_or_nodes
@@ -994,15 +829,11 @@ check engine_lookup_prefers_home_install_over_path test_engine_lookup_prefers_ho
 check engine_lookup_uses_path test_engine_lookup_uses_path
 check ah_knobs_ignored_without_wrapper_test test_ah_knobs_ignored_without_wrapper_test
 check ah_knobs_honored_with_wrapper_test test_ah_knobs_honored_with_wrapper_test
-check temp_base_prefers_home_then_xdg test_temp_base_prefers_home_then_xdg
 check healthy_engine_returns_immediately_every_shell test_healthy_engine_returns_immediately_every_shell
 check hanging_engine_is_cut_at_timeout_not_before test_hanging_engine_is_cut_at_timeout_not_before
 check block_stderr_is_exactly_the_hooks_text_every_shell test_block_stderr_is_exactly_the_hooks_text_every_shell
 check killed_wrapper_orphans_are_reaped test_killed_wrapper_orphans_are_reaped
-check sweep_removes_dead_owner_dirs_keeps_live_owner test_sweep_removes_dead_owner_dirs_keeps_live_owner
 check gnu_stat_flavour_still_makes_private_tmp test_gnu_stat_flavour_still_makes_private_tmp
-check unwritable_temp_base_guards_still_run test_unwritable_temp_base_guards_still_run
-check no_temp_anywhere_in_memory_guard_still_blocks test_no_temp_anywhere_in_memory_guard_still_blocks
 check temp_removed_on_normal_exit test_temp_removed_on_normal_exit
 check temp_removed_on_hup test_temp_removed_on_hup
 check temp_removed_on_int test_temp_removed_on_int
@@ -1249,61 +1080,52 @@ test_timeout_override_needs_the_test_gate() {
 }
 check timeout_override_needs_the_test_gate test_timeout_override_needs_the_test_gate
 
-# Launcher hand-off: with the thin launcher installed under $HOME it is exec'd with the args and the resolved plugin root;
-# --doctor skips it; a missing or non-executable launcher keeps the old path (fail open, exit 0).
-test_launcher_handoff() {
-  lh=$tmp/lh-home
-  mkdir -p "$lh/.anti-hall/ah-engine/bin"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"%s/lh.args"\nexit 7\n' "$tmp" >"$lh/.anti-hall/ah-engine/bin/ah-hook"
-  chmod +x "$lh/.anti-hall/ah-engine/bin/ah-hook"
-  set +e
-  HOME=$lh sh "$wrapper" PreToolUse --host codex <"$payload" >/dev/null 2>&1
-  rc=$?
-  set -e
-  [ "$rc" -eq 7 ] || return 1
-  grep -q '^PreToolUse --host codex --plugin-root .*/\.\.$' "$tmp/lh.args" || return 1
-  # launcher not executable: the wrapper's own path, fail open
-  rm -f "$tmp/lh.args"
-  chmod -x "$lh/.anti-hall/ah-engine/bin/ah-hook"
-  set +e
-  HOME=$lh sh "$wrapper" Stop <"$payload" >/dev/null 2>&1
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] && [ ! -f "$tmp/lh.args" ]
+# ---- the direct form: the command hooks.json runs (hooks_form.template), tried as the host runs it (`sh -c <command>`) ----------------
+# The plugin ships no wrapper: the command runs the installed thin client with exec (so its exit code, a block's 2 included, is the
+# hook's), or, while it is missing, hooks/install.sh (one stderr notice, empty stdout, exit 0, nothing downloaded without opt-in).
+hook_command_of() { # hook_command_of FILE EVENT: the event's command, JSON-unescaped (the file is the generator's pretty form)
+  awk -v ev="\"$2\": [" 'index($0, ev) { f = 1 } f && /"command":/ { sub(/^[^:]*: "/, ""); sub(/",?$/, ""); gsub(/\\"/, "\""); print; exit }' "$1"
 }
-check launcher_handoff test_launcher_handoff
 
-# Node fallback switch (stage 2 of the Node backup): while the marker `fallback.node` exists in the state directory the wrapper (and the
-# launcher shim in front of it) runs the original Node hooks directly: a force push is blocked by the Node git-guard (exit 2), the
-# launcher and the engine are never started, and the verdict is in the shadow ledger with source node. Without the marker the launcher
-# is used again. Needs Node on PATH (the case is skipped without it: the no_node suite proves the engine path needs none).
-test_fallback_switch_runs_node_hooks() {
-  command -v node >/dev/null 2>&1 || return 0
-  fh=$tmp/fb-home
-  mkdir -p "$fh/.anti-hall/ah-engine/bin"
-  printf '#!/bin/sh\n: >"%s/fb.launcher-ran"\nexit 7\n' "$tmp" >"$fh/.anti-hall/ah-engine/bin/ah-hook"
-  chmod +x "$fh/.anti-hall/ah-engine/bin/ah-hook"
-  fbp=$tmp/fb-payload.json
-  printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push --force origin main"},"cwd":"%s","session_id":"fb"}' "$tmp" >"$fbp"
-  : >"$fh/.anti-hall/ah-engine/fallback.node"
-  rm -f "$tmp/fb.launcher-ran"
+test_direct_form_execs_the_installed_client_and_keeps_its_exit_code() {
+  dh=$tmp/df-home
+  mkdir -p "$dh/.anti-hall/ah-engine/bin"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >"%s/df.args"\ncat >/dev/null\nexit 2\n' "$tmp" >"$dh/.anti-hall/ah-engine/bin/ah-hook"
+  chmod +x "$dh/.anti-hall/ah-engine/bin/ah-hook"
+  cmd=$(hook_command_of "$repo/plugins/anti-hall/hooks/hooks.json" PreToolUse) || return 1
   set +e
-  HOME=$fh sh "$wrapper" PreToolUse <"$fbp" >"$tmp/fb.out" 2>"$tmp/fb.err"
+  HOME=$dh CLAUDE_PLUGIN_ROOT=$repo/plugins/anti-hall sh -c "$cmd" <"$payload" >/dev/null 2>&1
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || return 1
-  grep -q 'force push' "$tmp/fb.out" "$tmp/fb.err" || return 1
-  [ ! -f "$tmp/fb.launcher-ran" ] || return 1
-  grep -q '"src":"node".*"chk":"git-guard","v":"block"' "$fh/.anti-hall/ah-engine/shadow.ndjson" || return 1
-  # switch off: the launcher is handed the call again
-  rm -f "$fh/.anti-hall/ah-engine/fallback.node"
+  [ "$(cat "$tmp/df.args")" = "PreToolUse" ] || return 1
+  # Codex: the host argument follows the event
+  cmd=$(hook_command_of "$repo/plugins/anti-hall/codex/hooks/hooks.json" PreToolUse) || return 1
   set +e
-  HOME=$fh sh "$wrapper" PreToolUse <"$fbp" >/dev/null 2>&1
+  HOME=$dh PLUGIN_ROOT=$repo/plugins/anti-hall sh -c "$cmd" <"$payload" >/dev/null 2>&1
   rc=$?
   set -e
-  [ "$rc" -eq 7 ] && [ -f "$tmp/fb.launcher-ran" ]
+  [ "$rc" -eq 2 ] && [ "$(cat "$tmp/df.args")" = "PreToolUse --host codex" ]
 }
-check fallback_switch_runs_node_hooks test_fallback_switch_runs_node_hooks
+check direct_form_execs_the_installed_client_and_keeps_its_exit_code test_direct_form_execs_the_installed_client_and_keeps_its_exit_code
+
+test_direct_form_without_the_client_runs_the_installer_once_and_fails_open() {
+  dh=$tmp/df-none
+  mkdir -p "$dh"
+  cmd=$(hook_command_of "$repo/plugins/anti-hall/hooks/hooks.json" PreToolUse) || return 1
+  for n in 1 2; do
+    set +e
+    HOME=$dh CLAUDE_PLUGIN_ROOT=$repo/plugins/anti-hall AH_WRAPPER_TEST=1 sh -c "$cmd" <"$payload" >"$tmp/df.out" 2>"$tmp/df.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || return 1
+    [ ! -s "$tmp/df.out" ] || return 1
+    if [ "$n" -eq 1 ]; then [ "$(wc -l <"$tmp/df.err" | tr -d ' ')" -eq 1 ] || return 1; else [ ! -s "$tmp/df.err" ] || return 1; fi
+  done
+  # nothing was downloaded or installed
+  [ ! -e "$dh/.anti-hall/ah-engine/bin/ah-hook" ]
+}
+check direct_form_without_the_client_runs_the_installer_once_and_fails_open test_direct_form_without_the_client_runs_the_installer_once_and_fails_open
 
 printf 'wrapper tests: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

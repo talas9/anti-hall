@@ -89,15 +89,15 @@ test('exactly the EXPOSED_HOOKS entries carry the flags; every other command kee
   for (const f of Object.keys(EXPOSED_HOOKS)) assert.ok(fs.existsSync(path.join(NODE_PLUGIN, 'hooks', f)), f);
 });
 
-// Since the engine, install-codex registers thin triggers (`ah-hook.sh <Event> --host codex`), not direct node
+// Since the engine, install-codex registers thin triggers (`ah-hook <Event> --host codex`, the direct form), not direct node
 // commands. Node is now launched only by the wrapper fallback (ah-fallback*.list / .map.json) and the engine
 // dispatcher (engine/defaults/dispatch.toml), both generated from the registry. The flags must be present there.
-test('install-codex registers only thin ah-hook.sh triggers (no direct node command)', () => {
+test('install-codex registers only direct-form thin triggers (no direct node command)', () => {
   const { ANTI_HALL_HOOKS } = require(path.join(NODE_PLUGIN, 'codex', 'install-codex.js'));
   const cmds = [];
   for (const groups of Object.values(ANTI_HALL_HOOKS)) for (const g of groups) for (const h of g.hooks) cmds.push(h.command);
   assert.ok(cmds.length >= 5);
-  const bad = cmds.filter((c) => !/^sh "[^"]*\/hooks\/ah-hook\.sh" [A-Za-z]+ --host codex$/.test(c));
+  const bad = cmds.filter((c) => !/^\[ -x "\$HOME\/\.anti-hall\/ah-engine\/bin\/ah-hook" \] && exec "\$HOME\/\.anti-hall\/ah-engine\/bin\/ah-hook" [A-Za-z]+ --host codex \|\| exec sh "[^"]*\/hooks\/install\.sh" [A-Za-z]+ --host codex$/.test(c));
   assert.deepStrictEqual(bad, []);
 });
 
@@ -115,13 +115,12 @@ function launchCommands(file) {
   return out.filter((c) => /^node /.test(c) && /hooks\/[\w-]+\.js"/.test(c));
 }
 
-test('every path that still launches a Node hook (dispatch.toml, fallback lists and maps) carries the flags exactly for EXPOSED_HOOKS', () => {
+test('every path that still launches a Node hook (fallback lists and maps; dispatch.toml holds no Node text) carries the flags exactly for EXPOSED_HOOKS', () => {
   const files = [
-    path.join(PLUGIN, 'engine', 'defaults', 'dispatch.toml'),
-    path.join(HOOKS, 'ah-fallback.list'),
-    path.join(HOOKS, 'ah-fallback.codex.list'),
-    path.join(HOOKS, 'ah-fallback.map.json'),
-    path.join(HOOKS, 'ah-fallback.codex.map.json'),
+    path.join(NODE_PLUGIN, 'hooks', 'ah-fallback.list'),
+    path.join(NODE_PLUGIN, 'hooks', 'ah-fallback.codex.list'),
+    path.join(NODE_PLUGIN, 'hooks', 'ah-fallback.map.json'),
+    path.join(NODE_PLUGIN, 'hooks', 'ah-fallback.codex.map.json'),
   ];
   for (const f of files) {
     const cmds = launchCommands(f);

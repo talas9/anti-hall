@@ -279,9 +279,9 @@ test('Claude and Codex hooks.json: only the Claude verify-first-orch command car
   const inst = [];
   for (const g of Object.values(ANTI_HALL_HOOKS)) for (const x of g) for (const hk of x.hooks) inst.push(hk.command);
   assert.deepStrictEqual(inst.filter((c) => /--host=/.test(c)), []);
-  // the installer registers the thin wrapper (the engine/fallback does the per-hook dispatch); PROTOCOL.md sits at the plugin root it lives under
-  const m = inst[0].match(/"([^"]+ah-hook\.sh)"/);
-  assert.ok(m, 'install-codex output calls the thin ah-hook.sh wrapper');
+  // the installer registers the thin client (the engine/fallback does the per-hook dispatch); PROTOCOL.md sits at the plugin root it lives under
+  const m = inst[0].match(/exec sh "([^"]+install\.sh)"/);
+  assert.ok(m, 'install-codex output falls back to the plugin installer while the thin client is missing');
   assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(m[1])), 'PROTOCOL.md')), 'install-codex output reaches PROTOCOL.md');
 });
 

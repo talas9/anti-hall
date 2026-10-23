@@ -83,7 +83,7 @@ impl Soak {
     fn map(&self) -> PathBuf {
         let p = self.dir.join("map.json");
         let table: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks/ah-fallback.map.json")).unwrap(),
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/ah-fallback.map.json")).unwrap(),
         )
         .unwrap();
         let noop: serde_json::Map<String, serde_json::Value> = table

@@ -164,7 +164,7 @@ value = "exit {code}"
 # ---- the engine unit -----------------------------------------------------------------------------------------------------------
 
 [units.engine_bin_rel]
-doc = "The engine binary the unit runs, relative to the home directory (where the bootstrap installs it and the hook wrapper finds it)."
+doc = "The engine binary the unit runs, relative to the home directory (where the installer puts it and the thin client finds it)."
 value = ".anti-hall/ah-engine/bin/ah-engine"
 
 [units.os_launchd]

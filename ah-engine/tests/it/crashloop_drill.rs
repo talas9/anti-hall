@@ -3,7 +3,8 @@
 //! * `spawn_storm_*`: a daemon that exits at once reports no crash, so only the spawn count can stop the respawning. The scratch
 //!   plugin starts the daemon with an argument the binary rejects (`health.serve_arg`), which is an instant-exit daemon.
 //! * `crashloop_*`: the breaker ends by cooldown, by a replaced binary and by an operator reset, and never re-trips on old events.
-//! * `rollback_*`: `hooks/ah-engine-integrity.sh` puts the known-good binary back only for a damaged, never-healthy, failing one.
+//! * the end-to-end roll-back drills: the engine's trip asks the thin client (`ah-hook integrity check`) to put the known-good binary back,
+//!   which it does only for a damaged, never-healthy, failing one (the verbs themselves are tested in `ah-launcher/tests/integrity.rs`).
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,6 +14,19 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 
 fn repo_plugin() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall")
+}
+
+/// The built thin client (`ah-launcher`): AH_HOOK_BIN, else its release or debug build in this checkout.
+fn launcher_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
+        return p;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+    ["release", "debug"]
+        .iter()
+        .map(|b| root.join(b).join("ah-hook"))
+        .find(|p| p.is_file())
+        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
 }
 
 fn scratch(tag: &str) -> PathBuf {
@@ -57,6 +71,7 @@ impl World {
             copy_tree(&repo_plugin().join(sub), &plugin.join(sub));
         }
         std::fs::copy(BIN, state.join("bin/ah-engine")).unwrap();
+        std::fs::copy(launcher_bin(), state.join("bin/ah-hook")).unwrap(); // the thin client runs the integrity check
         let toml = plugin.join("engine/defaults/engine.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
         assert!(text.contains("value = \"serve\"\n"), "the daemon argument is where the drill expects it");
@@ -83,13 +98,13 @@ impl World {
         c
     }
 
-    /// One hook call through the shell wrapper: (exit code, seconds taken).
+    /// One hook call through the thin client: (exit code, seconds taken).
     fn hook(&self) -> (i32, f64) {
         let payload = self.root.join("payload.json");
         std::fs::write(&payload, r#"{"hook_event_name":"UserPromptSubmit","prompt":"x","session_id":"drill"}"#).unwrap();
         let t = Instant::now();
         let out =
-            self.cmd("sh").arg(self.plugin.join("hooks/ah-hook.sh")).arg("UserPromptSubmit").stdin(std::fs::File::open(&payload).unwrap()).output().unwrap();
+            self.cmd(launcher_bin().to_str().unwrap()).arg("UserPromptSubmit").arg("--plugin-root").arg(&self.plugin).stdin(std::fs::File::open(&payload).unwrap()).output().unwrap();
         (out.status.code().unwrap_or(-1), t.elapsed().as_secs_f64())
     }
 
@@ -186,11 +201,11 @@ fn sha_of(p: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap().to_string()
 }
 
-/// Waits for the detached integrity script the engine started.
-fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+/// Waits for the detached integrity check the engine started.
+fn wait_for(what: &str, mut done: impl FnMut() -> bool, evidence: impl Fn() -> String) {
     let t = Instant::now();
     while !done() {
-        assert!(t.elapsed() < crate::common::scaled(Duration::from_secs(20)), "timed out waiting for {what}");
+        assert!(t.elapsed() < crate::common::scaled(Duration::from_secs(20)), "timed out waiting for {what}\n{}", evidence());
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -211,8 +226,8 @@ fn crashloop_trip_on_a_tampered_never_healthy_binary_rolls_it_back_end_to_end() 
     std::fs::write(w.state.join("bin/ah-engine.good.sha256"), format!("{good_sha}\n")).unwrap();
     std::fs::write(w.state.join("bin/ah-engine.expected"), format!("{}\n", "a".repeat(64))).unwrap();
     w.run_to_trip(12);
-    // the script sets the bad binary aside first and records the roll-back last: wait for the record, not the rename
-    wait_for("the roll-back", || asides(&w) == 1 && w.state.join("rollback.last").exists());
+    // the thin client sets the bad binary aside first and records the roll-back last: wait for the record, not the rename
+    wait_for("the roll-back", || asides(&w) == 1 && w.state.join("rollback.last").exists(), || format!("integrity.log:\n{}\nengine log:\n{}", std::fs::read_to_string(w.state.join("integrity.log")).unwrap_or_default(), w.log()));
     assert!(w.state.join("rollback.last").exists(), "the roll-back is recorded");
     assert_eq!(sha_of(&w.state.join("bin/ah-engine")), good_sha, "the known-good binary is back in place");
     assert!(w.log().contains("\trollback_request\tcrashloop\t"), "{}", w.log());
@@ -241,178 +256,4 @@ fn crashloop_trip_leaves_a_healthy_or_installer_matching_binary_alone() {
     w.run_to_trip(12);
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(asides(&w), 0, "a binary that matches the installer's record is never set aside");
-}
-
-// ---- hooks/ah-engine-integrity.sh ----------------------------------------------------------------------------------------
-
-struct Kit {
-    root: PathBuf,
-    state: PathBuf,
-}
-
-impl Kit {
-    fn new(tag: &str) -> Kit {
-        let root = scratch(tag);
-        let state = root.join("state");
-        std::fs::create_dir_all(state.join("bin")).unwrap();
-        Kit { root, state }
-    }
-
-    fn put(&self, name: &str, body: &str) -> PathBuf {
-        let p = self.state.join("bin").join(name);
-        std::fs::write(&p, body).unwrap();
-        p
-    }
-
-    fn sh(&self, verb: &str) -> String {
-        let out = Command::new("sh")
-            .arg(repo_plugin().join("hooks/ah-engine-integrity.sh"))
-            .arg(verb)
-            .env("AH_ENGINE_DIR", &self.state)
-            .env("AH_ENGINE_PLUGIN_ROOT", repo_plugin())
-            .env_remove("AH_ENGINE_ROLLBACK_ON_MISMATCH")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "the script never fails a session: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
-
-    fn text(&self, rel: &str) -> String {
-        std::fs::read_to_string(self.state.join(rel)).unwrap_or_default()
-    }
-
-    fn aside(&self) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(self.state.join("bin"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with("ah-engine.rolledback-"))
-            .collect();
-        v.sort();
-        v
-    }
-
-    fn sha(&self, body: &str) -> String {
-        let f = self.root.join("sha.tmp");
-        std::fs::write(&f, body).unwrap();
-        let out = Command::new("shasum").args(["-a", "256"]).arg(&f).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap().to_string()
-    }
-
-    /// An installed binary that ran healthy (so `check` promotes it), then a damaged one in its place.
-    fn good_then_damaged(&self) -> (String, String) {
-        self.put("ah-engine", "GOOD-BINARY");
-        self.sh("record");
-        let good = self.sha("GOOD-BINARY");
-        std::fs::write(self.state.join("healthy.binary"), format!("{good}\n")).unwrap();
-        self.sh("check");
-        assert_eq!(self.text("bin/ah-engine.good"), "GOOD-BINARY", "a binary that ran healthy is promoted to known-good");
-        self.put("ah-engine", "DAMAGED-BINARY");
-        (good, self.sha("DAMAGED-BINARY"))
-    }
-}
-
-impl Drop for Kit {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.root).ok(); // keep: the scratch dir of this test; absent is the goal state
-    }
-}
-
-#[test]
-fn rollback_restores_the_known_good_binary_and_keeps_the_damaged_one() {
-    let k = Kit::new("rb1");
-    let (good, bad) = k.good_then_damaged();
-    std::fs::write(k.state.join("rollback.request"), format!("{bad}\n")).unwrap(); // the engine's crash-loop trip asked for it
-    k.sh("check");
-    assert_eq!(k.text("bin/ah-engine"), "GOOD-BINARY");
-    let aside = k.aside();
-    assert_eq!(aside.len(), 1, "{aside:?}");
-    assert!(aside[0].ends_with(&format!("-{}", &bad[..8])), "named by time and sha prefix: {aside:?}");
-    assert_eq!(k.text(&format!("bin/{}", aside[0])), "DAMAGED-BINARY", "the damaged binary is renamed, never deleted");
-    assert!(k.text("rollback.last").contains(&good), "{}", k.text("rollback.last"));
-    assert_eq!(k.text("bin/ah-engine.expected").trim(), good);
-    assert!(!k.state.join("rollback.request").exists());
-    // idempotent: a second check changes nothing
-    k.sh("check");
-    assert_eq!(k.aside().len(), 1);
-    assert_eq!(k.text("bin/ah-engine"), "GOOD-BINARY");
-}
-
-#[test]
-fn rollback_counts_wrapper_failures_and_needs_all_of_them() {
-    let k = Kit::new("rb2");
-    k.good_then_damaged();
-    for _ in 0..2 {
-        k.sh("fail");
-    }
-    assert_eq!(k.text("bin/ah-engine"), "DAMAGED-BINARY", "two failures are below rollback.fail_n");
-    k.sh("fail");
-    assert_eq!(k.text("bin/ah-engine"), "GOOD-BINARY", "the third failure inside the window rolls back");
-    assert_eq!(k.aside().len(), 1);
-}
-
-#[test]
-fn rollback_leaves_alone_what_is_not_damaged_or_not_failing() {
-    // matches the expected checksum: the installer's own binary is never swapped, even with a request
-    let k = Kit::new("rb3");
-    k.put("ah-engine", "GOOD-BINARY");
-    k.sh("record");
-    let good = k.sha("GOOD-BINARY");
-    std::fs::write(k.state.join("healthy.binary"), format!("{good}\n")).unwrap();
-    k.sh("check");
-    std::fs::write(k.state.join("rollback.request"), format!("{good}\n")).unwrap();
-    k.sh("check");
-    assert_eq!(k.text("bin/ah-engine"), "GOOD-BINARY");
-    assert!(k.aside().is_empty());
-    // a hand-built binary that is not failing (just differs): left alone
-    let k = Kit::new("rb3b");
-    k.good_then_damaged();
-    k.sh("check");
-    assert_eq!(k.text("bin/ah-engine"), "DAMAGED-BINARY");
-    // a hand-built binary that has run healthy: left alone however much it fails
-    let (_, bad) = k.good_then_damaged();
-    std::fs::write(k.state.join("healthy.binary"), format!("{bad}\n")).unwrap();
-    for _ in 0..5 {
-        k.sh("fail");
-    }
-    assert_eq!(k.text("bin/ah-engine"), "DAMAGED-BINARY");
-    assert!(k.aside().is_empty());
-}
-
-#[test]
-fn rollback_never_replaces_an_accepted_binary_and_needs_a_verified_good_copy() {
-    let k = Kit::new("rb4");
-    k.good_then_damaged();
-    k.sh("accept");
-    for _ in 0..4 {
-        k.sh("fail");
-    }
-    assert_eq!(k.text("bin/ah-engine"), "DAMAGED-BINARY", "accept vouches for the installed binary");
-    // no verified known-good copy: nothing to restore, nothing moved
-    let k = Kit::new("rb4b");
-    k.put("ah-engine", "FIRST");
-    k.sh("record");
-    k.put("ah-engine", "SECOND");
-    for _ in 0..4 {
-        k.sh("fail");
-    }
-    assert_eq!(k.text("bin/ah-engine"), "SECOND");
-    assert!(k.aside().is_empty());
-    // a known-good copy that no longer matches its checksum is not trusted
-    let k = Kit::new("rb4c");
-    k.good_then_damaged();
-    k.put("ah-engine.good", "TAMPERED");
-    for _ in 0..4 {
-        k.sh("fail");
-    }
-    assert_eq!(k.text("bin/ah-engine"), "DAMAGED-BINARY");
-    assert!(k.aside().is_empty());
-}
-
-#[test]
-fn rollback_status_prints_what_is_known() {
-    let k = Kit::new("rb5");
-    k.good_then_damaged();
-    let s = k.sh("status");
-    assert!(s.contains("expected") && s.contains("good"), "{s}");
 }

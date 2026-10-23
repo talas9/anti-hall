@@ -87,7 +87,7 @@ rosetta_marker=/Library/Apple/usr/libexec/oah/libRosettaRuntime
 [ "$test_mode" -eq 1 ] && rosetta_marker=${AH_DOCTOR_ROSETTA:-$rosetta_marker}
 [ "$host_os" = macos ] && [ "$host_arch" = aarch64 ] && [ -e "$rosetta_marker" ] && rosetta=1
 eng_dir=${AH_ENGINE_DIR:-$home/.anti-hall/ah-engine}
-bootstrap="$root/hooks/ah-engine-bootstrap.sh"
+bootstrap="$root/hooks/install.sh"
 
 printf 'anti-hall doctor v%s\n' "$version"
 
@@ -157,10 +157,10 @@ bin=$home/.anti-hall/ah-engine/bin/ah-engine
 engine_usable=0
 hex_of() { od -An -v -tx1 -N "$2" "$1" 2>/dev/null | tr -d ' \n'; }
 if [ ! -e "$bin" ] && [ ! -L "$bin" ]; then
-  warnl "engine binary not installed at $bin (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh $bootstrap -v"
+  warnl "engine binary not installed at $bin (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh $bootstrap --download -v"
 elif [ ! -f "$bin" ]; then
   kind="not a file"; [ -d "$bin" ] && kind="a directory"; [ -L "$bin" ] && [ ! -e "$bin" ] && kind="a symlink to nothing"
-  bad "$bin is not a regular file ($kind) - Fix: move it aside, then run: sh $bootstrap -v"
+  bad "$bin is not a regular file ($kind) - Fix: move it aside, then run: sh $bootstrap --download -v"
 else
   size=$(wc -c <"$bin" 2>/dev/null | tr -d ' ')
   hex=$(hex_of "$bin" 200)
@@ -196,10 +196,10 @@ else
   esac
   if [ -n "$why" ]; then
     halted=1
-    bad "$bin is not a runnable program ($why) - Fix: reinstall: sh $bootstrap -v"
+    bad "$bin is not a runnable program ($why) - Fix: reinstall: sh $bootstrap --download -v"
   elif [ -n "$bin_os" ] && [ "$bin_os" != "$host_os" ]; then
     halted=1
-    bad "$bin was built for $bin_os but this machine runs $host_os - Fix: reinstall: sh $bootstrap -v"
+    bad "$bin was built for $bin_os but this machine runs $host_os - Fix: reinstall: sh $bootstrap --download -v"
   else
     engine_usable=1
     case " $bin_archs " in
@@ -207,14 +207,14 @@ else
       *)
         shown=$(printf '%s' "$bin_archs" | tr ' ' '/')
         if [ "$host_os" = macos ] && [ "$host_arch" = aarch64 ] && [ "$bin_archs" = x86_64 ] && [ "$rosetta" -eq 1 ]; then
-          warnl "$bin is an $shown build running under Rosetta on this $host_arch Mac (slower) - Fix: sh $bootstrap -v installs the native build"
+          warnl "$bin is an $shown build running under Rosetta on this $host_arch Mac (slower) - Fix: sh $bootstrap --download -v installs the native build"
         elif [ "$host_os" = macos ] && [ "$host_arch" = aarch64 ] && [ "$bin_archs" = x86_64 ]; then
           halted=1
-          bad "$bin is an $shown build and Rosetta is not installed on this $host_arch Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh $bootstrap -v for the native build"
+          bad "$bin is an $shown build and Rosetta is not installed on this $host_arch Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh $bootstrap --download -v for the native build"
           engine_usable=0
         else
           halted=1
-          bad "$bin was built for $shown but this $host_os machine is $host_arch; it cannot run - Fix: reinstall: sh $bootstrap -v"
+          bad "$bin was built for $shown but this $host_os machine is $host_arch; it cannot run - Fix: reinstall: sh $bootstrap --download -v"
           engine_usable=0
         fi ;;
     esac
@@ -256,7 +256,7 @@ else
   if [ -n "$m_bin" ] && [ "$halted" -eq 0 ]; then
     have=$(sha256_of "$bin")
     if [ -n "$have" ] && [ "$have" != "$m_bin" ]; then
-      warnl "$bin differs from the build the bootstrap installed (sha256 $(printf '%s' "$have" | cut -c1-12)... vs $(printf '%s' "$m_bin" | cut -c1-12)...): a local build, or damaged - Fix: to restore the pinned build: mv $bin $bin.local && sh $bootstrap -v"
+      warnl "$bin differs from the build the bootstrap installed (sha256 $(printf '%s' "$have" | cut -c1-12)... vs $(printf '%s' "$m_bin" | cut -c1-12)...): a local build, or damaged - Fix: to restore the pinned build: mv $bin $bin.local && sh $bootstrap --download -v"
     fi
   fi
   # does it run
@@ -274,18 +274,18 @@ else
         if [ "$rc" -eq 124 ]; then wy="timed out"
         elif [ "$rc" -gt 128 ]; then wy="killed by signal $((rc - 128)) $out"
         else wy="exit $rc $out"; fi
-        bad "$bin does not run: $wy - Fix: reinstall: sh $bootstrap -v"
+        bad "$bin does not run: $wy - Fix: reinstall: sh $bootstrap --download -v"
       fi
     fi
   fi
   if [ -n "$reported" ]; then
     if [ -n "$pinned" ] && ! printf '%s' "$reported" | grep -qF -- "$pinned"; then
-      warnl "engine $reported is installed but the plugin pins $pinned - Fix: it updates at the next session start, or run: sh $bootstrap -v"
+      warnl "engine $reported is installed but the plugin pins $pinned - Fix: it updates at the next session start, or run: sh $bootstrap --download -v"
     else
       ok "engine binary $bin ($host_arch-$host_os) runs and reports $reported"
     fi
   elif [ -n "$m_ver" ] && [ -n "$pinned" ] && [ "$m_ver" != "$pinned" ]; then
-    warnl "engine $m_ver is installed but the plugin pins $pinned - Fix: it updates at the next session start, or run: sh $bootstrap -v"
+    warnl "engine $m_ver is installed but the plugin pins $pinned - Fix: it updates at the next session start, or run: sh $bootstrap --download -v"
   fi
 fi
 # the hook wrapper runs ah-engine from PATH when the home install is not executable (ah-hook.sh): that engine counts
@@ -392,7 +392,7 @@ else
   [ "$grc" -eq 0 ] || warnl "git is on PATH but does not run (exit $grc $(printf '%s' "$gv" | first_line)) - Fix: xcode-select --install (macOS) or reinstall git"
 fi
 command -v gh >/dev/null 2>&1 || infol "gh is not on PATH; only the optional PR/CI helpers need it"
-[ "$engine_usable" -eq 1 ] || bad "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v)"
+[ "$engine_usable" -eq 1 ] || bad "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/install.sh --download -v)"
 
 # ---- verdict -------------------------------------------------------------------------------------------------------------------
 echo

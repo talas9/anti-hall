@@ -584,12 +584,12 @@ doc = "The plugin's pin of the engine release, relative to the plugin root."
 value = "ah-engine.lock"
 
 [doctor.bootstrap_script]
-doc = "The engine bootstrap, relative to the plugin root (shown in fixes)."
-value = "hooks/ah-engine-bootstrap.sh"
+doc = "The engine installer (the plugin's one shell file), relative to the plugin root (shown in fixes)."
+value = "hooks/install.sh"
 
 [doctor.wrapper_file]
-doc = "The hook wrapper, relative to the plugin root."
-value = "hooks/ah-hook.sh"
+doc = "The installer every hook command falls back to while the thin client is not installed (the plugin's one shell file), relative to the plugin root."
+value = "hooks/install.sh"
 
 [doctor.claude_hooks_file]
 doc = "The Claude hooks file, relative to a plugin's root."
@@ -669,7 +669,7 @@ doc = "Arguments that only GNU/busybox stat accepts, to tell the userland flavou
 value = ["-c", "%s", "/"]
 
 [doctor.required_tools]
-doc = "Programs the hook wrapper and bootstrap need on PATH."
+doc = "Programs the hook command and the installer need on PATH."
 value = ["sh", "ps", "tr", "sed", "awk", "od", "find", "tar", "uname", "id", "kill", "mkdir", "mv", "date", "head", "tail", "wc", "cut", "grep"]
 
 [doctor.arch_aliases]
@@ -767,15 +767,15 @@ value = "Node witness"
 
 [doctor_msg.bin_missing]
 doc = "BIN-01. Placeholders: {path}, {bootstrap}."
-value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} -v"
+value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_not_file]
 doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
-value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {bootstrap} -v"
+value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_unreadable]
 doc = "The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}."
-value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh {bootstrap} -v"
+value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_not_exec]
 doc = "BIN-03. Placeholders: {path}, {mode}."
@@ -783,7 +783,7 @@ value = "{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engi
 
 [doctor_msg.bin_corrupt]
 doc = "BIN-04. Placeholders: {path}, {why}, {bootstrap}."
-value = "{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} -v"
+value = "{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} --download -v"
 
 [doctor_msg.why_empty]
 doc = "BIN-04 reason."
@@ -799,19 +799,19 @@ value = "unrecognised header"
 
 [doctor_msg.bin_wrong_os]
 doc = "BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}."
-value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: sh {bootstrap} -v"
+value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_wrong_arch]
 doc = "BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}."
-value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: sh {bootstrap} -v"
+value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_rosetta]
 doc = "BIN-06b. Same placeholders."
-value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: sh {bootstrap} -v installs the native build"
+value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: sh {bootstrap} --download -v installs the native build"
 
 [doctor_msg.bin_no_rosetta]
 doc = "BIN-06c. Same placeholders."
-value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh {bootstrap} -v for the native build"
+value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh {bootstrap} --download -v for the native build"
 
 [doctor_msg.bin_quarantined]
 doc = "BIN-11. Placeholder: {path}."
@@ -823,15 +823,15 @@ value = "{path} was not installed by the bootstrap (a local build); the bootstra
 
 [doctor_msg.bin_hash_differs]
 doc = "BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}."
-value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} -v"
+value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} --download -v"
 
 [doctor_msg.bin_version_differs]
 doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
-value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} -v"
+value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_no_run]
 doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
-value = "{path} does not run: {why} - Fix: reinstall: sh {bootstrap} -v"
+value = "{path} does not run: {why} - Fix: reinstall: sh {bootstrap} --download -v"
 
 [doctor_msg.bin_ok]
 doc = "BIN-14. Placeholders: {path}, {triple}, {ver}."
@@ -1056,7 +1056,7 @@ value = "plugin {key} v{version} is registered and enabled"
 
 [doctor_msg.wrapper_missing]
 doc = "HK-03. Placeholder: {file}."
-value = "{file} is missing; every hook command fails (non-blocking) - Fix: reinstall the plugin"
+value = "{file} is missing; the hook commands cannot install the thin client - Fix: reinstall the plugin"
 
 [doctor_msg.thin_missing]
 doc = "HK-01. Placeholder: {file}."
@@ -1104,7 +1104,7 @@ value = "PATH has {entry} entry, resolved against the current directory - Fix: r
 
 [doctor_msg.path_lacks]
 doc = "EV-08. Placeholder: {dirs}."
-value = "PATH lacks {dirs}; the hook wrapper may not find its tools - Fix: add them to PATH"
+value = "PATH lacks {dirs}; the hook command may not find its tools - Fix: add them to PATH"
 
 [doctor_msg.tools_missing]
 doc = "EV-10. Placeholder: {tools}."
@@ -1139,12 +1139,12 @@ doc = "EV-07."
 value = "gh is not on PATH; only the optional PR/CI helpers need it"
 
 [doctor_msg.engine_on_path]
-doc = "The home install is not executable and the hook wrapper runs ah-engine from PATH instead (ah-hook.sh), so that engine counts as working. The ah-doctor.sh fallback prints the same text. Placeholder: {path}."
+doc = "The home install is not executable and the thin client runs ah-engine from PATH instead, so that engine counts as working. The thin client's built-in doctor prints the same text. Placeholder: {path}."
 value = "the hooks run ah-engine from PATH ({path}) because the home install is not executable"
 
 [doctor_msg.no_engine]
-doc = "ND-04: no working engine. The ah-doctor.sh fallback prints the same text."
-value = "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/ah-engine-bootstrap.sh -v)"
+doc = "ND-04: no working engine. The thin client's built-in doctor prints the same text."
+value = "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/install.sh --download -v)"
 
 [doctor_msg.log_huge]
 doc = "LG-01. Placeholders: {file}, {mb}, {cap_mb}."
@@ -2229,3 +2229,270 @@ value = "(warn) {count} DevSwarm store(s) use the legacy journal backend (Node o
 [doctor_msg.legacy_split]
 doc = "Stores split between a journal and SQLite. Placeholders: {count}, {shown}."
 value = "(warn) {count} DevSwarm store(s) are split between the legacy journal and SQLite: {shown}. The update's merge-split-backend-stores stage folds the journal side into SQLite (neither side is deleted); run the anti-hall update."
+
+# ---- the thin client's built-in doctor (`ah-hook doctor`, ah-launcher/src/doctor.rs) ---------------------------------------------------
+# It shares the doctor_msg.* texts above; the keys below are read only by it.
+
+[doctor_l.line_chars]
+doc = "How many characters of a command's output a finding quotes."
+value = 160
+min = 1
+
+[doctor_l.excerpt_chars]
+doc = "How many characters of a hook command or a file's first line a finding quotes."
+value = 120
+min = 1
+
+[doctor_l.kill_grace_s]
+doc = "How long a timed-out command the doctor ran gets after TERM before it is killed."
+value = 1
+unit = "s"
+
+[doctor_l.poll_ms]
+doc = "How often the doctor looks at a command it started."
+value = 50
+min = 10
+unit = "ms"
+
+[doctor_l.header_bytes]
+doc = "How many bytes of the engine binary the doctor reads to tell what kind of program it is (ELF and Mach-O headers fit in 200)."
+value = 200
+min = 64
+unit = "bytes"
+
+[doctor_l.xattr_cmd]
+doc = "The macOS command that reads a file attribute (exit 0 = the attribute is set). Placeholders: {attr}, {path}."
+value = ["xattr", "-p", "{attr}", "{path}"]
+
+[doctor_l.arch_label_arm]
+doc = "The architecture name printed for 64-bit ARM."
+value = "arm64"
+
+[doctor_l.arch_label_x86]
+doc = "The architecture name printed for x86-64."
+value = "x64"
+
+[doctor_l.os_label_macos]
+doc = "The OS name printed for macOS."
+value = "darwin"
+
+[doctor_l.os_label_linux]
+doc = "The OS name printed for Linux."
+value = "linux"
+
+[doctor_l.other_arch_name]
+doc = "Said of an architecture the doctor does not know."
+value = "other"
+
+[doctor_l.backup_infix]
+doc = "Infix of the backup a repair keeps of a file it changes: <file><infix><UTC time>."
+value = ".bak-antihall-"
+
+[doctor_l.claude_settings_rel]
+doc = "Claude Code's settings file, relative to HOME."
+value = ".claude/settings.json"
+
+[doctor_l.cmd_word]
+doc = "The engine verb the thin client hands over to when the engine runs."
+value = "doctor"
+
+[doctor_l.defaults_dir]
+doc = "The plugin's defaults directory, relative to the plugin root."
+value = "engine/defaults"
+
+[doctor_l.pristine_dir]
+doc = "The pristine copy of the defaults, relative to the plugin root."
+value = "engine/defaults.pristine"
+
+[doctor_l.defaults_index]
+doc = "The file that marks a defaults directory as complete."
+value = "index.toml"
+
+[doctor_l.engine_serve_word]
+doc = "The word in the command line of a running engine daemon."
+value = "serve"
+
+[doctor_l.git_name]
+doc = "The git program."
+value = "git"
+
+[doctor_l.gh_name]
+doc = "The GitHub CLI program."
+value = "gh"
+
+[doctor_l.version_flag]
+doc = "The flag with which git prints its version."
+value = "--version"
+
+[doctor_l.hooks_claude_rel]
+doc = "Claude's hooks file, relative to the plugin root."
+value = "hooks/hooks.json"
+
+[doctor_l.hooks_codex_rel]
+doc = "Codex's hooks file, relative to the plugin root."
+value = "codex/hooks/hooks.json"
+
+[doctor_l.install_health_fail]
+doc = "1 = a failed install-health check (old-form hook commands, Node on an entry path, extra shell files, a bad launcher shim, a missing thin client) fails the doctor; 0 = it only warns."
+value = 1
+
+[doctor_l.probe_prefix]
+doc = "Prefix of the scratch file the doctor creates (and removes) to test that a directory is writable."
+value = ".doctor-probe-"
+
+[doctor_l.run_s]
+doc = "Hard limit for one command the doctor runs (the engine's version, git)."
+value = 5
+
+[doctor_l.scan_skip_dirs]
+doc = "Directories the scan for shell files does not enter."
+value = [".git", "node_modules"]
+
+[doctor_l.shell_ext]
+doc = "File extension of a shell file."
+value = "sh"
+
+[doctor_l.shim_dir]
+doc = "The directory of the launcher shims, below the base directory (~/.anti-hall)."
+value = "bin"
+
+[doctor_l.shim_shebang]
+doc = "The first line of an sh shim."
+value = "#!/bin/sh"
+
+[doctor_l.wrapper_name]
+doc = "File name of the retired shell wrapper."
+value = "ah-hook.sh"
+
+[doctor_l.wsl_word_upper]
+doc = "The other spelling of the WSL marker in the kernel release."
+value = "WSL"
+
+[doctor_l.path_wanted]
+doc = "Directories of which PATH should contain at least one."
+value = ["/usr/bin", "/bin"]
+
+[doctor_l.ps_cmd]
+doc = "The command that prints the command line of one process. Placeholder: {pid}."
+value = ["ps", "-p", "{pid}", "-o", "command="]
+
+[doctor_l.hook_files]
+doc = "The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment."
+value = ["{root}/hooks/hooks.json", "{root}/codex/hooks/hooks.json", "{home}/.codex/hooks.json", "{home}/.claude/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/codex/hooks/hooks.json"]
+
+[doctor_l.msg_builtin_daemon_note]
+doc = "Informational line of the built-in doctor."
+value = "the built-in doctor reads the daemon's files only; it never contacts or signals a process"
+
+[doctor_l.msg_builtin_defaults_missing]
+doc = "The defaults index is missing. Placeholder: {path}."
+value = "{path} is missing; the engine has no settings and the hooks pass through - Fix: reinstall the plugin"
+
+[doctor_l.msg_builtin_defaults_ok]
+doc = "The defaults and their pristine copy are present."
+value = "the plugin's defaults and their pristine copy are present"
+
+[doctor_l.msg_err_eacces]
+doc = "The reason text for a lock file that exists but cannot be read."
+value = "Permission denied (os error 13)"
+
+[doctor_l.msg_err_enoent]
+doc = "The reason text for a lock file that does not exist."
+value = "No such file or directory (os error 2)"
+
+[doctor_l.msg_head_health]
+doc = "Heading of the install-health checks."
+value = "Install health"
+
+[doctor_l.msg_health_client_missing]
+doc = "Placeholders: {path}, {install}."
+value = "the thin client {path} is not installed - Fix: sh {install} --download -v"
+
+[doctor_l.msg_health_client_not_exec]
+doc = "Placeholders: {path}, {mode}."
+value = "the thin client {path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-hook doctor --repair does this)"
+
+[doctor_l.msg_health_client_differs]
+doc = "Placeholders: {path}, {have}, {want}, {install}."
+value = "the thin client {path} differs from the build the installer put there (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {install} --download -v"
+
+[doctor_l.msg_health_client_ok]
+doc = "Placeholder: {path}."
+value = "the thin client {path} is installed and executable"
+
+[doctor_l.msg_health_hooks_old]
+doc = "Placeholders: {file}, {n}, {first}."
+value = "{file} still runs {n} hook command(s) through the retired shell wrapper (first: {first}) - Fix: ah-hook doctor --repair (a backup is kept)"
+
+[doctor_l.msg_health_node_entry]
+doc = "Placeholders: {file}, {n}, {first}."
+value = "{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: update the plugin, or ah-hook doctor --repair"
+
+[doctor_l.msg_health_hooks_ok]
+doc = "Placeholder: {file}."
+value = "{file}: every hook command is the direct form"
+
+[doctor_l.msg_health_shipped_sh]
+doc = "Placeholders: {n}, {first}."
+value = "the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) - Fix: update or reinstall the plugin"
+
+[doctor_l.msg_health_shipped_sh_ok]
+doc = "Said when the plugin ships only hooks/install.sh."
+value = "the plugin ships no shell file besides hooks/install.sh"
+
+[doctor_l.msg_health_shim_bad]
+doc = "Placeholders: {path}, {first}."
+value = "{path} is not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine doctor --repair regenerates it, or move it aside and the next session recreates it"
+
+[doctor_l.msg_health_shims_ok]
+doc = "Placeholders: {n}, {dir}."
+value = "{n} launcher shim(s) in {dir} are sh shims"
+
+[doctor_l.msg_health_statusline_old]
+doc = "Placeholders: {file}, {command}."
+value = "the statusLine in {file} still runs the retired shell wrapper ({command}) - Fix: ah-hook doctor --repair rewrites it to the thin client (a backup is kept)"
+
+[doctor_l.msg_repair_exec]
+doc = "Placeholder: {path}."
+value = "made {path} executable"
+
+[doctor_l.msg_repair_state_dir]
+doc = "Placeholder: {dir}."
+value = "created the state directory {dir} (mode 700)"
+
+[doctor_l.msg_repair_hooks_would]
+doc = "Dry run. Placeholders: {n}, {file}."
+value = "would rewrite {n} hook command(s) in {file} to the direct form (the previous file is kept)"
+
+[doctor_l.msg_repair_hooks_form]
+doc = "Placeholders: {n}, {file}, {backup}."
+value = "rewrote {n} hook command(s) in {file} to the direct form; the previous file is kept as {backup}"
+
+[doctor_l.msg_repair_statusline_would]
+doc = "Dry run. Placeholders: {file}, {command}."
+value = "would rewrite the statusLine in {file} to the thin client ({command}); the previous file is kept"
+
+[doctor_l.msg_repair_statusline_form]
+doc = "Placeholders: {file}, {command}, {backup}."
+value = "rewrote the statusLine in {file} to the thin client ({command}); the previous file is kept as {backup}"
+
+[doctor_l.msg_repair_statusline_ambiguous]
+doc = "The statusLine command is not one plain string the repair can replace in place, so the file is left as it is. Placeholder: {file}."
+value = "left the statusLine in {file} as it is (its command text is not a single plain string the repair can replace in place)"
+
+[doctor_l.msg_repair_statusline_nobackup]
+doc = "Placeholder: {file}."
+value = "the statusLine in {file} was not changed: no backup could be kept"
+
+[doctor_l.msg_repair_statusline_nowrite]
+doc = "Placeholder: {file}."
+value = "{file} could not be written; the statusLine there is unchanged and the backup is untouched"
+
+[doctor_l.msg_repair_hooks_nobackup]
+doc = "Placeholder: {file}."
+value = "{file} was not changed: no backup could be kept"
+
+[doctor_l.msg_repair_hooks_nowrite]
+doc = "Placeholder: {file}."
+value = "{file} could not be written; the backup is untouched"
+

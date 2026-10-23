@@ -758,28 +758,24 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
     assert_eq!(guarded_again, guarded, "the switch of one client does not stick to the daemon");
 }
 
-/// The wrapper (`ah-hook.sh`) in front of the real engine and a payload serde_json rejects (a lone surrogate escape, `{bad`,
-/// invalid UTF-8): the engine cannot decide a guard event it cannot read, and no Node hook exists to leave it to, so it fails
-/// closed (stricter than Node, which allowed the first two). With the engine absent the wrapper passes the call through (C9).
+/// The real engine and a payload serde_json rejects (a lone surrogate escape, `{bad`, invalid UTF-8): the engine cannot decide a guard
+/// event it cannot read, and no Node hook exists to leave it to, so it fails closed (stricter than Node, which allowed the first two).
+/// (With the engine absent the thin client passes the call through: ah-launcher/tests/behaviour.rs.)
 #[test]
-fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
-    let e = Env::new("wrapper-unparsable");
-    let hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/hooks");
-    let wrapper = hooks.join("ah-hook.sh");
+fn the_engine_fails_closed_on_unparsable_guard_payloads() {
+    let e = Env::new("engine-unparsable");
     let surrogate = br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"s","cwd":"/tmp","tool_input":{"command":"echo hi \ud83d"}}"#.to_vec();
     let invalid_utf8 =
         b"{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"session_id\":\"s\",\"cwd\":\"/tmp\",\"tool_input\":{\"command\":\"echo \xffhi\"}}"
             .to_vec();
-    let run = |engine: &str, payload: &[u8]| -> (i32, String) {
-        let mut c = Command::new("sh");
-        c.arg(&wrapper)
-            .args(["PreToolUse", "--tool-from-payload"])
+    let run = |payload: &[u8]| -> (i32, String) {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(["hook", "--event", "PreToolUse"])
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.dir.join("home"))
             .env("AH_ENGINE_DIR", e.state())
-            .env("AH_WRAPPER_TEST", "1")
-            .env("AH_ENGINE_BIN", engine)
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -788,15 +784,12 @@ fn wrapper_and_engine_agree_on_unparsable_guard_payloads() {
         let o = ch.wait_with_output().unwrap();
         (o.status.code().unwrap(), String::from_utf8_lossy(&o.stderr).to_string())
     };
-    let engine = env!("CARGO_BIN_EXE_ah-engine");
     for (name, payload) in [("lone surrogate", surrogate), ("not JSON", b"{bad".to_vec())] {
-        let with_engine = run(engine, &payload);
-        let no_engine = run("/nonexistent/ah-engine", &payload);
-        assert_eq!(with_engine.0, 2, "{name}, engine in front: it cannot read the payload, so the guard event is closed: {}", with_engine.1);
-        assert!(with_engine.1.contains("could not run the guards for PreToolUse"), "{name}: {}", with_engine.1);
-        assert_eq!(no_engine.0, 0, "{name}, absent engine passes the call through: {}", no_engine.1);
+        let r = run(&payload);
+        assert_eq!(r.0, 2, "{name}: the engine cannot read the payload, so the guard event is closed: {}", r.1);
+        assert!(r.1.contains("could not run the guards for PreToolUse"), "{name}: {}", r.1);
     }
-    let (code, err) = run(engine, &invalid_utf8);
+    let (code, err) = run(&invalid_utf8);
     assert_eq!(code, 2, "invalid UTF-8: the engine fails closed (D74), stricter than Node: {err}");
     assert!(err.contains("not valid UTF-8"), "{err}");
 }

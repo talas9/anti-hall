@@ -8,7 +8,6 @@ Bash	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-drain
 Bash	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/coordinator-work-guard.js" --post
 Agent	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/codex-quota-detect.js"
 TaskCreate|TaskUpdate	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/dispatch-tier.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders"
 @PostToolUseFailure	10
 Bash	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/failure-root-cause-nudge.js"
 @PreCompact	10
@@ -35,13 +34,6 @@ Agent|Task|Workflow	10	node --no-concurrent-recompilation --no-concurrent-sparkp
 SendMessage	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-comms-guard.js"
 AskUserQuestion	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ask-guard.js"
 TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/stale-agent-stop-note.js"
-Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
-Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard"
-Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/burn-breaker"
-Write|Edit|MultiEdit|NotebookEdit	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/uncommitted-guard"
-Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/queued-wait-guard"
-Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard"
 @SessionEnd	5
 *	5	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/session-end-mcp-reaper.js"
 @SessionStart	10
@@ -56,14 +48,11 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repo-self-drift.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/progress-prune.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/handover-resume.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/handover-hygiene"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/jev-review-reminder.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/emit-dedupe-reset.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/defect-nudge.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note"
 @Stop	30
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-guard.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/tasklist-guard.js"
@@ -76,12 +65,9 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover-pause-nag.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/silent-agent-nudge.js"
 *	30	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
 @SubagentStart	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-subagent.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-note"
-@SubagentStop	10
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/sibling-sweep"
+@SubagentStop	10	empty
 @TaskCompleted	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js"
 @TaskCreated	10
@@ -92,13 +78,9 @@ Bash	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-inbox.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-rt-advisory"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/agent-reminders"
-*	10	sh "${CLAUDE_PLUGIN_ROOT}/hooks/gh-rt-advisory"
 @Setup	10	empty
 @UserPromptExpansion	10	empty
 @PermissionRequest	10	empty

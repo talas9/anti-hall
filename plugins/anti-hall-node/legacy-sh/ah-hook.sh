@@ -1,8 +1,8 @@
 #!/bin/sh
-# thin launcher shim: hand the call to the Rust launcher when it is installed and the fallback switch (the fallback.node marker) is off; otherwise (or for --doctor, which the launcher
-# itself delegates back here) run this wrapper unchanged. Builtins only (no dirname/cd/pwd forks) on the hot path.
+# thin launcher shim: hand the call to the Rust launcher when it is installed (it also runs the Node fallback itself while the fallback.node marker is set);
+# otherwise (or for --doctor, which the launcher itself delegates back here) run this wrapper unchanged. Builtins only (no dirname/cd/pwd forks) on the hot path.
 ah_l=${HOME:-}/.anti-hall/ah-engine/bin/ah-hook
-if [ -x "$ah_l" ] && [ ! -e "${AH_ENGINE_DIR:-${HOME:-}/.anti-hall/ah-engine}/fallback.node" ]; then
+if [ -x "$ah_l" ]; then
   case " $* " in
     *" --doctor "*) ;;
     *)
@@ -30,15 +30,15 @@ fi
 # AH_HOOK_SWEEP_AGE_S. The engine is otherwise located only at $HOME/.anti-hall/ah-engine/bin/ah-engine
 # or on PATH. Honored values are validated so bad values cannot turn a guard into a silent allow.
 
-# `ah-hook.sh --doctor [flags]`: the shell doctor (hooks/ah-doctor.sh), the diagnosis that needs neither the engine nor Node. It is
-# not an event, so it is handled before anything else (the test-only variables below are not read for it).
+# `ah-hook.sh --doctor [flags]`: the built-in diagnosis of the thin client (`ah-hook doctor --builtin`), which needs neither the engine nor
+# Node. It is not an event, so it is handled before anything else (the test-only variables below are not read for it).
 if [ "${1:-}" = --doctor ]; then
   shift
   doctor_dir=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || doctor_dir=.
-  if [ -f "$doctor_dir/ah-doctor.sh" ]; then
-    exec sh "$doctor_dir/ah-doctor.sh" "$@"
+  if [ -x "$ah_l" ]; then
+    exec "$ah_l" --plugin-root "$doctor_dir/.." doctor --builtin "$@"
   fi
-  printf 'anti-hall: ah-doctor.sh is missing next to ah-hook.sh; reinstall the plugin\n' >&2
+  printf 'anti-hall: the thin client is not installed; run: sh %s/install.sh --download\n' "$doctor_dir" >&2
   exit 1
 fi
 
@@ -92,8 +92,8 @@ if [ -z "${AH_ENGINE_PLUGIN_ROOT:-}" ] && [ -f "$dir/../engine/defaults/index.to
 fi
 # the per-event hook timeouts of the host (the `@<Event>` rows of its list file); no command in it is ever run
 case "$host" in
-  codex) list_default=$dir/ah-fallback.codex.list ;;
-  *) list_default=$dir/ah-fallback.list ;;
+  codex) list_default=$dir/../../anti-hall-node/hooks/ah-fallback.codex.list ;;
+  *) list_default=$dir/../../anti-hall-node/hooks/ah-fallback.list ;;
 esac
 list=${AH_FALLBACK_LIST:-"$list_default"}
 uid=$(id -u 2>/dev/null || printf '0')
@@ -676,20 +676,21 @@ else
   engine=$(command -v ah-engine 2>/dev/null || true)
 fi
 
-# The integrity script (ah-engine-integrity.sh) counts engine failures and rolls a damaged, never-healthy binary back to the known-good
+# The thin client's integrity verbs (`ah-hook integrity`) count engine failures and rolls a damaged, never-healthy binary back to the known-good
 # one. Detached and silent: it never delays the hook. Only for the installed engine, never for an AH_ENGINE_BIN test double.
 integrity_run() {
-  [ -z "${AH_ENGINE_BIN:-}" ] && [ -f "$dir/ah-engine-integrity.sh" ] || return 0
-  { sh "$dir/ah-engine-integrity.sh" "$1" </dev/null >/dev/null 2>&1 & } 2>/dev/null
+  ir_client=${AH_ENGINE_DIR:-"$HOME/.anti-hall/ah-engine"}/bin/ah-hook
+  [ -z "${AH_ENGINE_BIN:-}" ] && [ -x "$ir_client" ] || return 0
+  { "$ir_client" --plugin-root "$dir/.." integrity "$1" </dev/null >/dev/null 2>&1 & } 2>/dev/null
   return 0
 }
 
 [ "$event" = SessionStart ] && integrity_run check
 
-# Keep the engine installed and current: once per SessionStart, detached (never delays or fails the hook). The script
-# compares the plugin's ah-engine.lock with what is installed and does nothing when they match; see ah-engine-bootstrap.sh.
-if [ "$event" = SessionStart ] && [ -z "${AH_ENGINE_BIN:-}" ] && [ -f "$dir/../ah-engine.lock" ] && [ -f "$dir/ah-engine-bootstrap.sh" ]; then
-  { sh "$dir/ah-engine-bootstrap.sh" </dev/null >/dev/null 2>&1 & } 2>/dev/null
+# Keep the engine installed and current: once per SessionStart, detached (never delays or fails the hook). `ah-hook install --auto`
+# compares the plugin's ah-engine.lock with what is installed, does nothing when they match, and installs only on opt-in.
+if [ "$event" = SessionStart ] && [ -z "${AH_ENGINE_BIN:-}" ] && [ -f "$dir/../ah-engine.lock" ] && [ -x "${AH_ENGINE_DIR:-"$HOME/.anti-hall/ah-engine"}/bin/ah-hook" ]; then
+  { "${AH_ENGINE_DIR:-"$HOME/.anti-hall/ah-engine"}/bin/ah-hook" --plugin-root "$dir/.." install --auto </dev/null >/dev/null 2>&1 & } 2>/dev/null
 fi
 
 event_timeout() {
@@ -1085,8 +1086,8 @@ node_fallback_on() {
 # The ledger id of a hook: the dispatch-table id the map file gives its command (the engine rows use the same ids), else the script name.
 nf_id_of() {
   nf_esc=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  nf_map=$dir/ah-fallback.map.json
-  [ "$host" = codex ] && nf_map=$dir/ah-fallback.codex.map.json
+  nf_map=$dir/../../anti-hall-node/hooks/ah-fallback.map.json
+  [ "$host" = codex ] && nf_map=$dir/../../anti-hall-node/hooks/ah-fallback.codex.map.json
   nf_id=
   [ -r "$nf_map" ] && nf_id=$(awk -v ev="$event" -v want="$nf_esc" '
     $0 ~ "^  \"" ev "\": \\{" { in_ev = 1; next }

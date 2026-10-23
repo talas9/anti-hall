@@ -19,7 +19,7 @@ this page is how it does it.
 ## The core: one engine, one thin trigger
 
 `ah-engine` is a small program that stays running in the background, one per user. Each
-hook event in the plugin's `hooks.json` is one thin trigger, `hooks/ah-hook.sh <Event>`,
+hook event in the plugin's `hooks.json` is one thin trigger, the Rust client `ah-hook <Event>`,
 that hands the event to the engine. The engine decides which checks apply to that event
 and answers from memory.
 
@@ -27,7 +27,7 @@ and answers from memory.
 Claude Code / Codex
    │  hook event, JSON payload
    ▼
-thin trigger    hooks/ah-hook.sh <Event>      (one per event)
+thin trigger    ah-hook <Event>               (one per event, Rust)
    ▼
 engine client ──socket──▶ ah-engine (one resident process per user)
                               │ reads at run time, from the plugin:
@@ -56,27 +56,33 @@ binary.
 Changing a rule or a message means editing a plugin file, not rebuilding the engine. Your
 own overrides live in `~/.anti-hall/settings.json`; see [Settings](../settings/index.md).
 
-## The temporary Node fallback
+## How a hook call runs
 
-While checks are still being moved into the engine, the trigger keeps a compatibility
-fallback so a guard is never weaker than before:
+Every hook command in `hooks.json` (31 Claude Code events, 10 Codex events) is generated from one template, so it is the
+same for each event:
 
-| Situation | Who decides |
+```sh
+[ -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" ] && exec "$HOME/.anti-hall/ah-engine/bin/ah-hook" <Event> [--host codex] \
+  || exec sh "${CLAUDE_PLUGIN_ROOT}/hooks/install.sh" <Event> [--host codex]
+```
+
+| Situation | What runs |
 |---|---|
-| Engine installed, check handled by the engine | Engine, from memory |
-| Check not yet moved into the engine, or the engine cannot decide it exactly | The original Node.js hook, for that one event |
-| Engine missing, busy, slow or broken | The original Node.js hooks, with a one-line note |
+| Thin client installed | `ah-hook` takes the call (`exec`, so a block's exit code 2 reaches the host unchanged). It hands the event to the engine and returns the engine's answer. |
+| Engine busy, slow, restarting or broken | `ah-hook` lets the call through and prints one note per session; it never blocks because something failed. |
+| Thin client not installed | `hooks/install.sh`, the plugin's only shell file: stdout stays empty, exit 0, one stderr notice per session. It downloads nothing unless you opted in. |
+| Node fallback switch on (`ah-engine fallback node`, a manual diagnostic) | `ah-hook` itself runs the original Node.js hooks from the separate `anti-hall-node` backup, directly and without a shell. It never switches on by itself. |
 
-This is a migration aid, not a mode you choose. It goes away in v1.0, together with the
-Node.js prerequisite.
+No Node.js and no shell script is on a normal hook path. The commands are checked by tests
+(`ah-engine/tests/it/hooks_files.rs`): the plugin ships exactly one `.sh` file and every command equals the template.
 
-The engine binary is downloaded by a small bootstrap script and checked against a sha256
-checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS and
+The engine binary and the thin client are installed by `sh hooks/install.sh --download` (the setup skill runs it) and
+checked against a sha256 checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS and
 Linux, including WSL.
 
 ## Binary download and verification
 
-The engine is a prebuilt binary that the plugin fetches itself, so it is worth knowing exactly
+The engine is a prebuilt binary, installed on request or by your opt-in, so it is worth knowing exactly
 what that does. Every point below is read from the code in this repository.
 
 | Question | Answer |
@@ -85,23 +91,23 @@ what that does. Every point below is read from the code in this repository.
 | From where | `https://github.com/talas9/anti-hall/releases/download/ah-engine-vX.Y.Z/` over HTTPS (TLS 1.2 or newer, 120 s limit, 128 MB cap). Nothing about you or your project is sent. |
 | Which version | The one pinned in `plugins/anti-hall/ah-engine.lock`, which ships inside the plugin. The version and the sha256 of every asset come from that file, never from the network. |
 | How it is verified | The download is installed only if its sha256 equals the lock's entry. There is no trust on first use. The extracted binary must also run and report the pinned version. |
-| If it fails | A download error, a checksum mismatch, a binary that does not run, or an unsupported platform installs nothing. The reason goes to `~/.anti-hall/ah-engine/bootstrap.log`, the session carries on, and the temporary Node.js hooks keep answering. A failed attempt is retried after 6 hours. |
+| If it fails | A download error, a checksum mismatch, a binary that does not run, or an unsupported platform installs nothing. The reason goes to `~/.anti-hall/ah-engine/bootstrap.log` and the session carries on; until a binary is installed the hooks pass through with one notice per session. |
 | Install location | `~/.anti-hall/ah-engine/bin/ah-engine`, replaced atomically, previous copy kept as `ah-engine.prev`. |
 | Provenance | Each release carries `SHA256SUMS` and a GitHub build-provenance attestation, created by `.github/workflows/ah-engine-release.yml`. Check one with `gh attestation verify <archive> --repo talas9/anti-hall`. |
 | Immutability | Tags `v*` and `ah-engine-v*` are covered by a repository ruleset that blocks deletion and updates, and the repository has immutable releases enabled, so a published release's assets and tag cannot be changed. |
-| Opt out | The setting `engine.bootstrap` = false, or `AH_ENGINE_BOOTSTRAP=0` (which overrides the setting). The Node.js hooks then do everything. |
+| Opt in | Nothing is downloaded on its own. You install it with `/anti-hall:setup` or `sh hooks/install.sh --download`; the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`, which overrides the setting) makes the download happen automatically on SessionStart. |
 
 **What the binary does on the network.** The engine runs as a per-user background process that
 listens only on a private Unix socket. Its only HTTP client (`ureq` with `rustls`) lives in the
 opt-in Jev module, which is off by default; with Jev off the engine makes no network
-connections. The download above is done by the shell script, not by the engine. The sources
+connections. The download above is done by `hooks/install.sh` (first install) or `ah-hook install` (later installs and updates), not by the engine. The sources
 are in `ah-engine/` and the dependency list is `ah-engine/Cargo.toml`.
 
-**Build from source.** There is no switch that makes the bootstrap build or fetch from a
-different place. What is supported is a binary you put in place yourself: the bootstrap never
+**Build from source.** There is no switch that makes the installer build or fetch from a
+different place. What is supported is a binary you put in place yourself: the installer never
 overwrites `~/.anti-hall/ah-engine/bin/ah-engine` when it did not install it (or when it no
-longer matches what it installed), and the trigger runs that file. Turn the download off too,
-so a pinned release is not fetched when the file is absent.
+longer matches what it installed), and the thin client runs that file. Leave `engine.bootstrap` at its default
+(false) so a pinned release is not fetched when the file is absent.
 
 ```bash
 git clone --branch ah-engine-vX.Y.Z --depth 1 https://github.com/talas9/anti-hall.git
@@ -109,7 +115,7 @@ cd anti-hall/ah-engine
 scripts/build.sh                     # cargo build --release --locked; prints the binary's path and sha256
 mkdir -p ~/.anti-hall/ah-engine/bin
 cp target/<triple>/release/ah-engine ~/.anti-hall/ah-engine/bin/ah-engine   # <triple> as printed by build.sh
-export AH_ENGINE_BOOTSTRAP=0         # or set engine.bootstrap = false
+export AH_ENGINE_BOOTSTRAP=0         # forces the automatic download off (it is off by default)
 ```
 
 The `AH_ENGINE_BIN` variable is a test-only override and is ignored in normal use. Full

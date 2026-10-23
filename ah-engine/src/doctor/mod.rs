@@ -205,13 +205,12 @@ fn flags(p: &Parsed) -> Flags {
     }
 }
 
-/// The engine the hook wrapper falls back to: `ah-engine` on PATH, used only when the home install is not executable
-/// (`ah-hook.sh`). True (and an info line naming it) when that engine exists, so a PATH-installed engine is not "no engine".
+/// The engine the thin client falls back to: `ah-engine` on PATH, used only when the home install is not executable. True (and an info line naming it) when that engine exists, so a PATH-installed engine is not "no engine".
 fn path_engine(doc: &mut Doc, ctx: &migrate::Ctx) -> bool {
     let name = defaults::text("doctor.bin_name");
     let home_bin = install::engine_dir(&ctx.home).join(defaults::text("doctor.bin_dir")).join(name);
     if system::which(name, home_bin.parent().map(|p| p.to_string_lossy().into_owned()).as_deref().unwrap_or("")).is_some() {
-        return false; // the wrapper runs the home install, executable but unusable: nothing else is tried
+        return false; // the thin client runs the home install, executable but unusable: nothing else is tried
     }
     let Some(found) = system::which(name, ctx.env.get("PATH").map(String::as_str).unwrap_or("")) else { return false };
     doc.infol(defaults::render("doctor_msg.engine_on_path", &[("path", &found.display())]));
@@ -561,16 +560,25 @@ fn no_context(p: &Parsed, why: &str) -> i32 {
     1
 }
 
-/// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the shell
-/// doctor next to the hook wrapper (its own texts, POSIX sh only) gives the diagnosis. `err` is why the load failed.
+/// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the thin client's
+/// built-in diagnosis (`ah-hook doctor --builtin`, its own texts) gives the diagnosis. `err` is why the load failed.
 pub fn degraded(p: &Parsed, err: &str) -> i32 {
-    let root = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).map(PathBuf::from).or_else(crate::bootstrap::env_root);
-    let wrapper = root.as_deref().map(|r| r.join(crate::bootstrap::WRAPPER_REL)).filter(|w| w.is_file());
+    let root = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).map(PathBuf::from).or_else(crate::bootstrap::env_root).filter(|r| r.is_dir());
+    let client = std::env::var_os(crate::bootstrap::HOME_ENV).map(|h| PathBuf::from(h).join(crate::bootstrap::CLIENT_REL)).filter(|c| c.is_file());
     eprintln!("ah-engine: defaults unavailable: {err}");
-    let Some(w) = wrapper else { return 70 };
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg(&w).arg(crate::bootstrap::SHELL_DOCTOR_ARG).args(p.rest.iter().filter(|a| a.starts_with("--")));
-    cmd.env(crate::bootstrap::ROOT_ENVS[0], root.unwrap_or_default());
+    let (Some(c), Some(root)) = (client, root) else { return 70 };
+    let mut cmd = std::process::Command::new(c);
+    cmd.arg(crate::bootstrap::CLIENT_ROOT_ARG).arg(&root).args(crate::bootstrap::CLIENT_DOCTOR_ARGS);
+    // the flags of the call (not the plugin root and its value, which the client already got)
+    let mut rest = p.rest.iter();
+    while let Some(a) = rest.next() {
+        if a == crate::bootstrap::CLIENT_ROOT_ARG {
+            rest.next();
+        } else if a.starts_with("--") {
+            cmd.arg(a);
+        }
+    }
+    cmd.env(crate::bootstrap::ROOT_ENVS[0], &root);
     cmd.env(crate::bootstrap::DEFAULTS_ERROR_ENV, err.split_whitespace().collect::<Vec<_>>().join(" "));
     cmd.status().map_or(70, |s| s.code().unwrap_or(70))
 }

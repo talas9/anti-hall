@@ -39,7 +39,7 @@ esac
 EOF
   chmod +x "$1"
 }
-mk_root() { # dir: a plugin root with defaults, pristine, hook wrapper and integrity stubs
+mk_root() { # dir: a plugin root with defaults, pristine, hook wrapper stub
   mkdir -p "$1/engine/defaults" "$1/engine/defaults.pristine" "$1/hooks"
   for d in defaults defaults.pristine; do
     printf '[index]\nvalue = 1\n' >"$1/engine/$d/index.toml"
@@ -52,12 +52,6 @@ D=${AH_ENGINE_DIR:-$HOME/.anti-hall/ah-engine}
 u=$(cat "$D/daemon.down.until" 2>/dev/null)
 if [ -n "$u" ] && [ "$u" -gt $(( $(date +%s) * 1000 )) ] 2>/dev/null; then echo passthrough >>"$D/hold.passthrough"; exit 0; fi
 exec "$HOME/.anti-hall/ah-engine/bin/ah-engine" hook "$@"
-EOF
-  cat >"$1/hooks/ah-engine-integrity.sh" <<'EOF'
-#!/bin/sh
-sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-[ "$1" = accept ] && sha "$AH_ENGINE_DIR/bin/ah-engine" >"$AH_ENGINE_DIR/bin/ah-engine.expected"
-exit 0
 EOF
 }
 mk_new_defaults() { # dir, with-wire(1|0)
@@ -75,6 +69,13 @@ setup() { # fresh fake machine under $T/$1
   CACHE=$H/.claude/plugins/cache/live/anti-hall/1
   mkdir -p "$E/bin" "$H/.claude/plugins"
   mk_engine "$E/bin/ah-engine" "a.old"
+  cat >"$E/bin/ah-hook" <<'EOF'
+#!/bin/sh
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+[ "$1 $2" = "integrity accept" ] && sha "$AH_ENGINE_DIR/bin/ah-engine" >"$AH_ENGINE_DIR/bin/ah-engine.expected"
+exit 0
+EOF
+  chmod +x "$E/bin/ah-hook"
   mk_root "$MKT"; mk_root "$CACHE"
   printf '{\n "plugins": {\n  "anti-hall@other": [{"installPath": "%s/wrong"}],\n  "anti-hall@anti-hall-engine-live": [\n   {\n    "scope": "user",\n    "installPath": "%s",\n    "version": "1"\n   }\n  ]\n }\n}\n' "$H" "$CACHE" >"$H/.claude/plugins/installed_plugins.json"
   mkdir -p "$W/new"

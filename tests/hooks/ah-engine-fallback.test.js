@@ -1,6 +1,6 @@
 'use strict';
-// The plugin must work with no engine binary: ah-hook.sh fails open without running the Node fallback hooks when the engine
-// is absent. List overrides need AH_WRAPPER_TEST=1; the other cases use only the isolated HOME and a PATH
+// The plugin must work with no engine binary: the hook command (hooks.json, direct form) runs hooks/install.sh while the thin client
+// is missing, and that fails open without running any Node hook. The cases use only the isolated HOME and a PATH
 // without ah-engine. Also pins the shipped engine lock: when the plugin ships ah-engine.lock it
 // must byte-equal the root lock and list every release target. Every spawn runs in an isolated temp HOME.
 
@@ -14,68 +14,66 @@ const { spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PLUGIN = path.join(ROOT, 'plugins', 'anti-hall');
-const WRAPPER = path.join(PLUGIN, 'hooks', 'ah-hook.sh');
 const HAS_SH = fs.existsSync('/bin/sh');
 
 function scratch() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ah-engine-fallback-')));
 }
 
-function runWrapper(event, payload, extraEnv, args = []) {
+// The command the host runs for `event`: the event's one handler in the shipped hooks.json (the direct form), run with `sh -c`.
+function hookCommand(event) {
+  const j = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'hooks', 'hooks.json'), 'utf8'));
+  return j.hooks[event][0].hooks[0].command;
+}
+
+function runHook(event, payload, extraEnv) {
   const home = scratch();
   const env = {
-    PATH: '/usr/bin:/bin', // no ah-engine on PATH
+    PATH: '/usr/bin:/bin', // no ah-engine on PATH, no thin client under HOME
     HOME: home,
     USERPROFILE: home,
     AH_ENGINE_BOOTSTRAP: '0',
     CLAUDE_PLUGIN_ROOT: PLUGIN,
     ...extraEnv,
   };
-  const r = spawnSync('sh', [WRAPPER, event, ...args], {
+  const r = spawnSync('sh', ['-c', hookCommand(event)], {
     input: JSON.stringify(payload), env, encoding: 'utf8', timeout: 60000,
   });
+  const installed = fs.existsSync(path.join(home, '.anti-hall', 'ah-engine', 'bin', 'ah-hook'));
   fs.rmSync(home, { recursive: true, force: true });
-  return r;
+  return { ...r, installed };
 }
 
-// With no engine the wrapper may say once that the call went through unchecked; it must say nothing else.
-const NO_ENGINE_STDERR = /^(anti-hall: the engine did not answer this \w+ call \(no engine is installed\); it went through unchecked[^\n]*\n)?$/;
-
-test('no engine, guard event, no usable fallback list: fails open without hooks', { skip: !HAS_SH }, () => {
-  const dir = scratch();
-  const missing = path.join(dir, 'absent.list');
-  const r = runWrapper('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } },
-    { AH_WRAPPER_TEST: '1', AH_ENGINE_BIN: '/no/such/engine', AH_FALLBACK_LIST: missing }, ['--tool-from-payload']);
-  fs.rmSync(dir, { recursive: true, force: true });
+// With no thin client the installer may say once that anti-hall is not installed; it must say nothing else, print nothing on stdout,
+// start no Node hook and download nothing (the download is opt-in: AH_ENGINE_BOOTSTRAP=1 or the engine.bootstrap setting).
+function assertFailsOpenQuietly(r) {
   assert.strictEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, NO_ENGINE_STDERR); // nothing, or only the wrapper's one-line unchecked notice
+  assert.strictEqual(r.stdout, '', 'a hook with no thin client prints nothing on stdout');
+  assert.ok(r.stderr.split('\n').filter(Boolean).length <= 1, `at most one notice line: ${r.stderr}`);
+  assert.strictEqual(r.installed, false, 'nothing is downloaded without the opt-in');
+}
+
+test('no thin client, guard event: the hook command fails open with at most one notice line', { skip: !HAS_SH }, () => {
+  assertFailsOpenQuietly(runHook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: 'fallback-test' }, {}));
 });
 
-test('no engine, guard event, real Node fallback: a harmless call is allowed without hand-over', { skip: !HAS_SH }, () => {
-  const r = runWrapper('PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/etc/hosts' }, session_id: 'fallback-test', cwd: os.tmpdir() },
-    {}, ['--tool-from-payload']);
-  assert.strictEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, NO_ENGINE_STDERR); // nothing, or only the wrapper's one-line unchecked notice
+test('no thin client, guard event, a harmless call: allowed without hand-over', { skip: !HAS_SH }, () => {
+  assertFailsOpenQuietly(runHook('PreToolUse', { tool_name: 'Read', tool_input: { file_path: '/etc/hosts' }, session_id: 'fallback-test', cwd: os.tmpdir() }, {}));
 });
 
-test('no engine, non-guard event: the Node fallback hooks do not run', { skip: !HAS_SH }, () => {
-  const dir = scratch();
-  const sentinel = path.join(dir, 'ran');
-  const hook = path.join(dir, 'hook.sh');
-  fs.writeFileSync(hook, `#!/bin/sh\ncat >/dev/null\nprintf ran > '${sentinel}'\n`, { mode: 0o755 });
-  const list = path.join(dir, 'x.list');
-  fs.writeFileSync(list, `@UserPromptSubmit\t10\n*\t10\tsh ${hook}\n`);
-  const r = runWrapper('UserPromptSubmit', { prompt: 'hi', session_id: 'fallback-test' }, { AH_WRAPPER_TEST: '1', AH_ENGINE_BIN: '/no/such/engine', AH_FALLBACK_LIST: list });
-  const ran = fs.existsSync(sentinel);
-  fs.rmSync(dir, { recursive: true, force: true });
-  assert.strictEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, NO_ENGINE_STDERR); // nothing, or only the wrapper's one-line unchecked notice
-  assert.strictEqual(ran, false, 'the fallback hook should not run when the engine is absent');
+test('no thin client, non-guard event: exits 0 and never blocks', { skip: !HAS_SH }, () => {
+  assertFailsOpenQuietly(runHook('UserPromptSubmit', { prompt: 'hello', session_id: 'fallback-test', cwd: os.tmpdir() }, {}));
 });
 
-test('no engine, non-guard event, real Node fallback: exits 0 and never blocks', { skip: !HAS_SH }, () => {
-  const r = runWrapper('UserPromptSubmit', { prompt: 'hello', session_id: 'fallback-test', cwd: os.tmpdir() }, {});
-  assert.strictEqual(r.status, 0, r.stderr);
+test('no thin client: the notice is said once per session', { skip: !HAS_SH }, () => {
+  const home = scratch();
+  const env = { PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, AH_ENGINE_BOOTSTRAP: '0', CLAUDE_PLUGIN_ROOT: PLUGIN };
+  const run = () => spawnSync('sh', ['-c', hookCommand('Stop')], { input: JSON.stringify({ session_id: 'same-session' }), env, encoding: 'utf8', timeout: 60000 });
+  const first = run();
+  const second = run();
+  fs.rmSync(home, { recursive: true, force: true });
+  assert.strictEqual(first.stderr.split('\n').filter(Boolean).length, 1, first.stderr);
+  assert.strictEqual(second.stderr, '', 'the same session is told once');
 });
 
 const TARGETS = [

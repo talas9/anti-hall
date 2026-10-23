@@ -97,10 +97,10 @@ if [ -f "$log" ] && [ "$(wc -c <"$log" 2>/dev/null || echo 0)" -gt 65536 ]; then
 fi
 
 tmp=; lockdir=$dir/update.lock; have_lock=0; live=0; kit=${AH_LIVE_KIT:-$HOME/.anti-hall/ah-engine-live}
-# The install lock is shared with the integrity script and the bootstrap (ONE lock for every writer of bin/); the integrity
-# script owns it (its lock/unlock verbs, its settings). update.lock above only keeps two updates from downloading at once.
-integ=$here/ah-engine-integrity.sh; itok="$$ $(date +%s 2>/dev/null)"; ilocked=0
-integrity() { AH_ENGINE_DIR=$dir AH_ENGINE_PLUGIN_ROOT=$proot AH_ENGINE_INSTALL_LOCK_TOKEN=$itok sh "$integ" "$@" </dev/null >/dev/null 2>&1; }
+# The install lock is shared with the integrity check and the bootstrap (ONE lock for every writer of bin/); the thin client's
+# `integrity` verbs own it (lock/unlock, its settings). update.lock above only keeps two updates from downloading at once.
+integ=$dir/bin/ah-hook; itok="$$ $(date +%s 2>/dev/null)"; ilocked=0
+integrity() { AH_ENGINE_DIR=$dir AH_ENGINE_PLUGIN_ROOT=$proot AH_ENGINE_INSTALL_LOCK_TOKEN=$itok "$integ" --plugin-root "$proot" integrity "$@" </dev/null >/dev/null 2>&1; }
 install_unlock() { [ "$ilocked" -eq 1 ] || return 0; integrity unlock "$itok"; ilocked=0; return 0; }
 cleanup() {
   install_unlock
@@ -247,9 +247,9 @@ smoke() {
 }
 
 # install_lock: hold the shared install lock before bin/ is touched, so an integrity roll-back cannot act on a binary this update
-# is replacing; a held lock fails the update with the old binary kept. Without the integrity script there is nothing to share it with.
+# is replacing; a held lock fails the update with the old binary kept. Without the thin client there is nothing to share it with.
 install_lock() {
-  [ -f "$integ" ] || return 0
+  [ -x "$integ" ] || return 0
   integrity lock "$itok" || fail "the engine install lock is held by another install or roll-back" "$(unchanged)" "wait for it to finish, then run this again (its holder is in $dir/integrity.log)"
   ilocked=1
 }
@@ -293,7 +293,7 @@ if [ "$do_rollback" -eq 1 ]; then
       mv "$kit/bundle" "$kit/bundle.failed-$ts"; mv "$kit/bundle.pre-rollback-$ts" "$kit/bundle"
       fail "the live kit could not re-apply the previous bundle (go-live.sh exited with an error; its last lines are above)" "rolled back: the bundle that was current is back in place at $kit/bundle; the previous one is kept as $kit/bundle.failed-$ts" "read the log (tail -n 30 $log), fix what go-live reports, then run ah-update.sh --rollback again; to re-apply the current bundle by hand: sh $kit/go-live.sh $live_select"
     fi
-    [ ! -f "$integ" ] || integrity record || true
+    [ ! -x "$integ" ] || integrity record || true
     install_unlock
     say "rolled back: live kit re-applied with the previous bundle (engine $smoke_version); the replaced one is kept as $kit/bundle.pre-rollback-$ts"
     exit 0
@@ -305,7 +305,7 @@ if [ "$do_rollback" -eq 1 ]; then
   if [ -f "$bin" ]; then cp -p "$bin" "$bin.swap.$$" || fail "cannot copy $bin aside to swap it with .prev" "$(unchanged)" "free some disk space or fix the permissions of $bindir, then run ah-update.sh --rollback again"; fi
   mv -f "$bin.prev" "$bin" || fail "cannot move $bin.prev into place as $bin" "nothing was replaced: $bin is as it was" "fix the permissions of $bindir, then run ah-update.sh --rollback again"
   [ ! -f "$bin.swap.$$" ] || mv -f "$bin.swap.$$" "$bin.prev"
-  [ ! -f "$integ" ] || integrity record || true
+  [ ! -x "$integ" ] || integrity record || true
   install_unlock
   say "rolled back: $bin is now engine $smoke_version (the replaced binary is kept as .prev; --rollback again toggles)"
   restart_daemon
@@ -316,7 +316,7 @@ fi
 if [ "$test_mode" -eq 1 ] && [ -n "${AH_UPDATE_TRIPLE:-}" ]; then
   triple=$AH_UPDATE_TRIPLE
 else
-  triple=$(AH_ENGINE_BOOTSTRAP=1 sh "$here/ah-engine-bootstrap.sh" --print-target 2>/dev/null)
+  triple=; [ ! -x "$integ" ] || triple=$("$integ" --plugin-root "$proot" install --print-target 2>/dev/null)
 fi
 case "$triple" in ""|unsupported) [ -z "$from_file" ] && fail "no ah-engine build is published for this platform" "$(unchanged)" "install a binary you built or obtained for this platform: ah-update.sh --from FILE --sha256 <sha256 of FILE>" ;; esac
 
@@ -514,7 +514,7 @@ if [ "$live" -eq 1 ]; then
     fail "the live kit could not apply the new bundle (go-live.sh exited with an error; its last lines are above)" "rolled back: the bundle that was current is back in place at $kit/bundle; the new one is kept as $kit/bundle.failed-$ts" "read the log (tail -n 30 $log), fix what go-live reports, then run again; to re-apply the current bundle by hand: sh $kit/go-live.sh $live_select"
   fi
   printf '%s live %s %s\n' "$(date +%s 2>/dev/null)" "$src_label" "$newsha" >"$dir/update.installed" 2>/dev/null
-  [ ! -f "$integ" ] || integrity record || true
+  [ ! -x "$integ" ] || integrity record || true
   install_unlock
   say "updated through the live kit: engine $smoke_version${commit:+, plugin $commit}; previous bundle kept as $kit/bundle.pre-update-$ts (undo: ah-update.sh --rollback)"
   restart_daemon
@@ -533,7 +533,7 @@ if [ -f "$bin" ]; then
 fi
 mv -f "$bin.new.$$" "$bin" || { rm -f "$bin.new.$$"; fail "cannot move the new engine into place as $bin" "$(unchanged); the previous binary is kept as $bin.prev" "fix the permissions of $bindir, then run again; to put the previous binary back: ah-update.sh --rollback"; }
 printf '%s %s %s\n' "$(date +%s 2>/dev/null)" "$src_label" "$newsha" >"$dir/update.installed" 2>/dev/null
-[ ! -f "$integ" ] || integrity record || true # under this update's hold: no check can run between the swap and the record
+[ ! -x "$integ" ] || integrity record || true # under this update's hold: no check can run between the swap and the record
 install_unlock
 say "updated: $bin is engine $smoke_version from $src_label (sha256 $newsha)${cursha:+; previous kept as $bin.prev (undo: ah-update.sh --rollback)}"
 restart_daemon

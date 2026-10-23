@@ -29,11 +29,11 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Use the existing pure-Node update helper:
+Use the thin client's update helper (`ah-hook update`):
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update --check
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" update --check
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" update
 ```
 
 This is already the STALE-VERSION-SAFE path — `$ANTI_HALL_ROOT` is derived
@@ -49,13 +49,13 @@ freshly-pulled version's own copy internally as a second line of defense.
 For Codex, also re-run the Codex hook installer after a successful update:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
 ```
 
 or for global Codex hooks:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex --global
 ```
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
@@ -147,7 +147,7 @@ call to make progress on those stages.
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" capability-scan
+"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" capability-scan
 ```
 
 Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:

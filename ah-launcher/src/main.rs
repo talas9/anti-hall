@@ -1,4 +1,5 @@
-//! ah-hook: the thin hook launcher in front of `ah-engine hook --event <Event>`.
+//! ah-hook: the thin hook launcher in front of `ah-engine hook --event <Event>`, and the thin client of every engine command
+//! (`ah-hook <verb> [args...]` runs `ah-engine <verb> [args...]`, see `cli.rs`).
 //!
 //! The bootloader and front door of every hook call, so it is held to a stricter standard than the engine:
 //! - it never panics out: `catch_unwind` around everything, every Result handled; an internal failure lets the hook through
@@ -14,11 +15,18 @@
 mod blog;
 mod builtin;
 mod cfg;
+mod cli;
+mod doctor;
 mod gate;
+mod install;
+mod integrity;
+mod rec;
 mod launcher;
 mod limits;
+mod nodeback;
 mod proc;
 mod selftest;
+mod update;
 mod util;
 
 use std::io::Write;

@@ -63,9 +63,49 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the suffix of the one rotated log file: the log keeps exactly one previous file",
     ),
     (
+        "src/nodeback.rs",
+        "std::env::var_os(\"PATH\")",
+        "PATH is the operating system's own search-path variable, not an anti-hall setting",
+    ),
+    (
+        "src/nodeback.rs",
+        "const HSO",
+        "a field name of the host's hook JSON answer (hookSpecificOutput): the host's protocol, not a tunable; the engine's combiner names the same field",
+    ),
+    (
+        "src/nodeback.rs",
+        "const CTX",
+        "a field name of the host's hook JSON answer (additionalContext): the host's protocol, not a tunable",
+    ),
+    (
+        "src/nodeback.rs",
+        "const MSG",
+        "a field name of the host's hook JSON answer (systemMessage): the host's protocol, not a tunable",
+    ),
+    (
+        "src/nodeback.rs",
+        "const EVENT_NAME",
+        "a field name of the host's hook JSON answer (hookEventName): the host's protocol, not a tunable",
+    ),
+    (
+        "src/nodeback.rs",
+        "old.push(\".1\")",
+        "the suffix of the one rotated ledger file: the ledger keeps exactly one previous generation, as the engine's ledger does",
+    ),
+    (
         "src/launcher.rs",
         "event={}",
         "key=value diagnostic and log records for developers and the integrity tooling, not messages shown to a user or an agent",
+    ),
+    (
+        "src/doctor.rs",
+        "hex.len() <",
+        "byte offsets in the executable file formats (ELF e_machine, Mach-O cputype, the fat architecture table): the formats' own layout, not tunables",
+    ),
+    (
+        "src/install.rs",
+        "std::env::var_os(\"PATH\")",
+        "PATH is the operating system's own search-path variable, not an anti-hall setting",
     ),
     (
         "src/launcher.rs",
@@ -357,6 +397,8 @@ fn value<'a>(docs: &'a [(&str, toml::Table)], key: &str) -> Option<&'a toml::Val
     let file = match first {
         "dispatch" => "dispatch.toml",
         "msg" => "messages.toml",
+        "nodeback" => "nodeback.toml",
+        _ if key == "files.shadow_ledger" => "nodeback.toml",
         _ => "engine.toml",
     };
     let doc = &docs.iter().find(|(f, _)| *f == file)?.1;
@@ -373,6 +415,7 @@ fn builtin_equals_shipped_defaults() {
         ("engine.toml", shipped("engine.toml")),
         ("dispatch.toml", shipped("dispatch.toml")),
         ("messages.toml", shipped("messages.toml")),
+        ("nodeback.toml", shipped("nodeback.toml")),
     ];
     for (k, v) in builtin::NUMS {
         let got = value(&docs, k).and_then(toml::Value::as_integer);

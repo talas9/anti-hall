@@ -19,7 +19,7 @@
 #           Exits non-zero on any problem.
 # --deploy  dry run by default (runs --check and prints the plan); with --yes: check, set the maintenance hold, stop the
 #           engine, sync into every root (each replaced file is copied to the backup first, never deleted), swap the binary
-#           (the old one stays as bin/ah-engine.prev), record it with the integrity script, stop AGAIN (kills any daemon a hook
+#           (the old one stays as bin/ah-engine.prev), record it with `ah-hook integrity accept`, stop AGAIN (kills any daemon a hook
 #           started from the old binary in the window), re-sync, release the hold, start the new binary, then verify: sha
 #           matches, the RUNNING daemon is a new process whose executable is the new binary, force-push probe blocked through
 #           the plugin root Claude runs, `status --json` running with no new defaults fallback since the start, defaults.error not
@@ -469,7 +469,7 @@ verify_live() { # returns 0 when every check passes; prints each
   exp=$ENGINE_DIR/bin/ah-engine.expected
   if [ -f "$exp" ]; then
     if [ "$(tr -d ' \n' <"$exp")" = "$NEWSHA" ]; then step "verify: integrity record is the new sha"; else step "verify FAILED: $exp does not hold the new sha"; ok=1; fi
-  else step "verify: no $exp (integrity script absent?)"; fi
+  else step "verify: no $exp (thin client absent?)"; fi
   # roots identical (the two trees must serve the same defaults); backup files (*.bak*) are not part of the comparison
   first=; for r in $ROOTS; do
     if [ -z "$first" ]; then first=$r; continue; fi
@@ -542,7 +542,7 @@ do_deploy() {
   note "1 stop the engine ($BIN stop)"
   i=0; for r in $ROOTS; do i=$((i + 1)); note "2.$i sync engine/defaults + engine/defaults.pristine$([ "$SCOPE" = tree ] && echo " + the whole plugin tree$([ -n "$SRC_NODE" ] && echo " + the Node backup tree at $r/$NODE_REL")") of $r (replaced files copied to the backup first, nothing deleted)"; done
   note "3 binary: $BIN -> keep as $BIN.prev; install $NEW"
-  note "4 integrity record (accept) with the first root's hooks/ah-engine-integrity.sh"
+  note "4 integrity record (accept) with $ENGINE_DIR/bin/ah-hook integrity accept"
   note "5 stop AGAIN, re-sync every root, release the hold, start the new binary"
   note "6 verify: sha, integrity record, roots identical after the re-sync, running daemon = new process on the new sha, force-push probe x$PROBE_N via $PROBE_ROOT, status running, no defaults fallback since the start, defaults.error unchanged"
   if [ "$YES" != 1 ]; then note ""; note "dry run: nothing was changed. Add --yes to deploy."; exit 0; fi
@@ -605,9 +605,9 @@ do_deploy() {
   mv "$BIN.new.$$" "$BIN" || fail_deploy "cannot install the new binary at $BIN"
   step "swap done"
 
-  integ=$(printf '%s\n' "$ROOTS" | head -n 1)/hooks/ah-engine-integrity.sh
-  if [ -f "$integ" ]; then
-    ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$(printf '%s\n' "$ROOTS" | head -n 1); export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim sh "$integ" accept >/dev/null 2>&1 )
+  integ=$ENGINE_DIR/bin/ah-hook
+  if [ -x "$integ" ]; then
+    ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$(printf '%s\n' "$ROOTS" | head -n 1); export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim "$integ" integrity accept >/dev/null 2>&1 )
     step "integrity record accepted ($integ)"
   else step "no $integ: integrity record not updated"; fi
   window_cmd swap
@@ -669,8 +669,8 @@ do_rollback() {
     cp -p "$BIN.prev" "$BIN.rb.$$" && mv "$BIN.rb.$$" "$BIN" || die "cannot restore the binary from $BIN.prev"
     step "binary restored from $BIN.prev (sha $(sha "$BIN" | cut -c1-12))"
     r1=${rr:+$(dirname "$(dirname "$rr")")}
-    if [ -n "$r1" ] && [ -f "$r1/hooks/ah-engine-integrity.sh" ]; then
-      ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$r1; export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim sh "$r1/hooks/ah-engine-integrity.sh" accept >/dev/null 2>&1 )
+    if [ -n "$r1" ] && [ -x "$ENGINE_DIR/bin/ah-hook" ]; then
+      ( HOME=$H AH_ENGINE_DIR=$ENGINE_DIR AH_ENGINE_PLUGIN_ROOT=$r1; export HOME AH_ENGINE_DIR AH_ENGINE_PLUGIN_ROOT; lim "$ENGINE_DIR/bin/ah-hook" integrity accept >/dev/null 2>&1 )
       step "integrity record accepted for the restored binary"
     fi
   fi

@@ -1,5 +1,6 @@
 //! Every command line the skills (both ports) and agents tell an agent to run. A direct `node <script>` is a Node path as
-//! written (surface `doc`). A launcher line (`sh .../scripts/ah-run.sh <verb> ...`) is run in the no-Node world when it is a
+//! written (surface `doc`). A thin-client line (`"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "<root>" <verb> ...`) is run in the no-Node
+//! world when it is a
 //! concrete command (no placeholder), and the Node starts it makes are its Node paths (surface `run/<verb>`). Launcher lines
 //! with placeholders are inventoried in the report. Unit files the runs leave in HOME are checked too (surface `unit/<file>`).
 
@@ -20,7 +21,7 @@ pub struct Site {
 pub enum Kind {
     /// `node <script>`: the plugin-relative script (as the text names it, root spelling removed)
     Node(String),
-    /// an `ah-run.sh` launcher line: the arguments after the launcher
+    /// a thin-client line (`.../bin/ah-hook" --plugin-root "<root>" <verb> ...`): the arguments after the plugin root
     Launcher(String),
 }
 
@@ -54,7 +55,7 @@ fn resolve(plugin: &Path, script: &str) -> String {
 pub fn extract(plugin: &Path, cfg: &toml::Table) -> Vec<Site> {
     let spellings = cfg_list(cfg, "callsites", "root_spellings");
     let node_re = regex::Regex::new(r#"(?:^|[\s`(;&|])node\s+(?:--?[\w-]+\s+)*("?[^\s"`]+\.[mc]?js"?)"#).unwrap();
-    let run_re = regex::Regex::new(r#"(?:^|[\s`(;&|])sh\s+"?[^\s"`]*scripts/ah-run\.sh"?\s+([^`\n]*)"#).unwrap();
+    let run_re = regex::Regex::new(r#"(?:^|[\s`(;&|])"?[^\s"`]*/bin/ah-hook"?\s+--plugin-root\s+"[^"]*"\s+([a-z][^`\n]*)"#).unwrap();
     let mut files = Vec::new();
     for r in cfg_list(cfg, "callsites", "roots") {
         harness::files_with_ext(&plugin.join(r), "md", &mut files);
@@ -95,7 +96,7 @@ fn the_extractor_finds_both_kinds_of_call_site() {
     let sites = extract(&harness::plugin_src(), &cfg);
     let launchers = sites.iter().filter(|s| matches!(s.kind, Kind::Launcher(_))).count();
     let runnable_n = sites.iter().filter(|s| matches!(&s.kind, Kind::Launcher(a) if runnable(a, &cfg))).count();
-    assert!(launchers > 0 && runnable_n > 0, "no ah-run.sh launcher lines found ({launchers} launchers, {runnable_n} runnable)");
+    assert!(launchers > 0 && runnable_n > 0, "no ah-hook command lines found ({launchers} launchers, {runnable_n} runnable)");
     for s in &sites {
         if let Kind::Node(script) = &s.kind {
             assert!(!script.contains('$'), "{}: the root spelling of `{script}` is not in harness.toml", s.at);
@@ -125,12 +126,13 @@ fn skill_and_agent_call_sites_run_without_node() {
                     continue; // the same command line in another skill: run once
                 }
                 let verb = args.split_whitespace().next().unwrap().to_string();
-                let launcher = w.plugin.join("scripts").join("ah-run.sh");
+                // `ah-hook <verb> [args]` replaces itself with `ah-engine <verb> [args]` and the plugin root (ah-launcher/tests/cli.rs);
+                // the thin client is another crate, so the line runs the engine the same way
                 let mut cmd = w.command("/bin/sh", &s.at);
-                cmd.arg("-c").arg(format!("sh '{}' {args}", launcher.display()));
+                cmd.arg("-c").arg(format!("'{}' {args}", w.engine.display())).env("AH_ENGINE_PLUGIN_ROOT", &w.plugin);
                 let o = w.run(cmd, None, timeout);
                 if o.timed_out {
-                    problems.push(format!("`ah-run.sh {args}` ({}) did not finish within {timeout:?}", s.at));
+                    problems.push(format!("`ah-hook {args}` ({}) did not finish within {timeout:?}", s.at));
                 }
                 rows.push((
                     format!("run/{verb}"),

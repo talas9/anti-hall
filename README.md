@@ -20,11 +20,9 @@
 - Blocks risky git actions outright: force-pushes, and AI credit lines in commit messages and GitHub PR/issue/release text.
 - Keeps the main conversation responsive by pushing heavy commands and file edits to helper agents, and caps runaway agent spawning.
 - Adds skills you can call by name for debugging to a proven root cause, reviewing risky changes, and writing a session handover.
-- Works with Claude Code (plugin) and Codex (separate port). The core is a small Rust engine (`ah-engine`), downloaded once and checked against a pinned sha256; it answers hook calls without starting Node. The Node hooks are a temporary compatibility fallback during the migration and are removed in v0.301, when the engine becomes the only runtime.
+- Works with Claude Code (plugin) and Codex (separate port). The core is a small Rust engine (`ah-engine`), downloaded once and checked against a pinned sha256; a small Rust client, `ah-hook`, hands it every hook call. Node.js is not needed.
 
 ## Install
-
-Needs **Node.js 22+** on your `PATH` (`node --version`).
 
 **Supported systems:** macOS and Linux, including WSL on Windows (it runs the Linux build). Native Windows is not supported yet.
 
@@ -60,7 +58,7 @@ Add `.anti-hall/` to your project's `.gitignore`: anti-hall keeps per-project se
 
 ## Network and data
 
-No analytics and nothing is reported to anyone. Two requests are on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`) and a one-time download of the `ah-engine` binary from the GitHub Release (sha256-pinned; skip it with the setting `engine.bootstrap` = false or `AH_ENGINE_BOOTSTRAP=0`). The engine keeps local-only usage counters (hook name, outcome, latency, never content; `telemetry.enabled`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
+No analytics and nothing is reported to anyone. One request is on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`). Downloading the `ah-engine` binary from the GitHub Release (sha256-pinned) is opt-in: the setup skill or `sh hooks/install.sh --download` does it on request, and the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`) makes it automatic. The engine keeps local-only usage counters (hook name, outcome, latency, never content; `telemetry.enabled`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
 
 ### What it runs and writes
 
@@ -79,8 +77,8 @@ These are the notable things it runs and writes outside the project. Hook state 
 
 | | What happens |
 |---|---|
-| **Runs** | Hooks run on Claude Code tool events (one thin trigger per event, `hooks/ah-hook.sh`). They read the event, decide, and print a verdict or a note. No hook sends project content anywhere. |
-| **Fetches** | The `ah-engine` binary is downloaded once at install, only from this repository's GitHub releases. Its SHA-256 is pinned in `ah-engine.lock` and verified before the binary runs; a mismatch means it is not used and the Node fallback runs instead. The only other request is the optional update check (a GitHub tag-list request, no project data). |
+| **Runs** | Hooks run on Claude Code tool events (one thin trigger per event: the `ah-hook` client, a small Rust binary). They read the event, decide, and print a verdict or a note. No hook sends project content anywhere. |
+| **Fetches** | The `ah-engine` binary is downloaded once at install, only from this repository's GitHub releases. Its SHA-256 is pinned in `ah-engine.lock` and verified before the binary runs; a mismatch means it is not installed, and hooks let every call through with one notice per session. The only other request is the optional update check (a GitHub tag-list request, no project data). |
 | **Sends** | Only if you turn on Jev (opt-in, off by default): review questions go to the one vendor whose API key you entered in the plugin options, and to no other. Nothing else is sent. No analytics, no telemetry upload; usage counters stay on your machine. |
 
 Details and every setting: [PRIVACY.md](PRIVACY.md).
