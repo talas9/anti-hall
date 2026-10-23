@@ -45,10 +45,10 @@ fn tpl(key: &str, args: &[(&str, &str)]) -> String {
 }
 
 /// The answer of a verb whose Node code threw: `run()` catches the exception and prints `{ ok: false, error: <message> }` with exit 2.
-fn thrown(e: &dyn std::fmt::Display) -> Answer {
+fn thrown(e: &dyn std::fmt::Display) -> String {
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false)).put("error", s(&e.to_string()));
-    answer(2, o.done())
+    o.done().stringify()
 }
 
 fn strs(v: &[String]) -> OVal {
@@ -276,7 +276,7 @@ pub fn reconcile_registry(inv: &Inv, _a: &Args) -> R<Answer> {
     let st = common::open_store(inv, &repo_key)?;
     let roster = match st.reader().roster() {
         Ok(r) => r,
-        Err(e) => return Ok(thrown(&e)),
+        Err(e) => return ident::refuse(&thrown(&e)),
     };
     // regById: `registry.filter(d => d && d.id != null)` as a Map keyed by String(id) (an empty id is a key of its own)
     let mut registry: Vec<(String, Option<String>)> = Vec::new();
@@ -1686,7 +1686,7 @@ mod tests {
     /// The `park/<branch>-<yyyymmdd-hhmmss>` name, the next respawn branch and the credential filter.
     #[test]
     fn respawn_names_and_filters_follow_the_node_helpers() {
-        assert_eq!(park_branch_name("feat-x", 1_790_000_000_000), "park/feat-x-20260922-133320");
+        assert_eq!(park_branch_name("feat-x", 1_790_000_000_000), "park/feat-x-20260921-141320");
         let taken = |names: &'static [&'static str]| move |n: &str| names.contains(&n);
         assert_eq!(next_branch("feat-x", &taken(&[])), "feat-x-r2");
         assert_eq!(next_branch("feat-x-r2", &taken(&[])), "feat-x-r3");

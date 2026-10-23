@@ -374,7 +374,7 @@ pub fn app_state_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
             Err(Thrown(error)) => {
                 let mut o = Obj::default();
                 o.put("ok", OVal::Bool(false)).put("error", s(&error));
-                return Ok(answer(2, o.done().stringify()));
+                return crate::meshw::ident::refuse(&o.done().stringify());
             }
         }
     }
@@ -469,20 +469,7 @@ pub fn app_sync_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
 }
 
 #[cfg(test)]
-mod short_tests {
-    use super::short;
-
-    #[test]
-    fn a_mesh_id_keeps_its_hash_and_a_uuid_keeps_eight() {
-        assert_eq!(short("primary-d7a18d81").unwrap(), "primary-d7a18d81");
-        assert_eq!(short("primary-d7a18d81ffee").unwrap(), "primary-d7a18d81");
-        assert_eq!(short("48f38c9e-8dc2-426a-adb2-f9401ab84e99").unwrap(), "48f38c9e");
-        assert_eq!(short("abc").unwrap(), "abc");
-    }
-}
-
-#[cfg(test)]
-mod format_tests {
+mod tests {
     use super::*;
 
     /// A state result as `cmdAppState` builds it, with the given fields replaced by JSON text.
@@ -546,5 +533,13 @@ mod format_tests {
         let order: Vec<usize> = ["gap → 9:", "gap → 10:", "gap → feat:"].iter().map(|k| t.find(k).unwrap_or_else(|| panic!("{k} in {t}"))).collect();
         assert!(order.windows(2).all(|w| w[0] < w[1]), "{t}");
         assert!(t.contains("gap → 0: 4"), "an array lists its indices: {t}");
+    }
+
+    #[test]
+    fn a_mesh_id_keeps_its_hash_and_a_uuid_keeps_eight() {
+        assert_eq!(short("primary-d7a18d81").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("primary-d7a18d81ffee").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("48f38c9e-8dc2-426a-adb2-f9401ab84e99").unwrap(), "48f38c9e");
+        assert_eq!(short("abc").unwrap(), "abc");
     }
 }
