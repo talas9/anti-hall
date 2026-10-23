@@ -731,8 +731,8 @@ doc = "The two ways an installer lists the function among its exports (a shortha
 value = ["{name},", "{name}:"]
 
 [setup.cap_companion_dir]
-doc = "The directory of a plugin tree that holds the companion installers."
-value = "companion"
+doc = "The directory that holds the companion installers, relative to the plugin root."
+value = "../anti-hall-node/companion"
 
 [setup.cap_installer_prefix]
 doc = "What a companion installer's file name starts with."

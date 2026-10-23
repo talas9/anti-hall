@@ -371,7 +371,35 @@ fn subcommands(txt: &str) -> Vec<String> {
     cmds
 }
 
+/// What the engine's own registry says about the hook commands it dispatches: (script file, the command's text after the
+/// file, purpose = the summary of the check that answers it). Read from the dispatch table and the check registry, never from
+/// the hook scripts, so a briefing still has its purposes when no script is shipped next to the plugin.
+fn registry_purposes() -> Vec<(String, String, String)> {
+    use crate::dispatch::table;
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for host in table::hosts() {
+        for event in table::events(host) {
+            for e in table::entries(host, event) {
+                let Some(file) = first_js_file(&e.command) else { continue };
+                let Some(check) = e.check.as_deref().and_then(crate::checks::get) else { continue };
+                let args = e.command.split_once(file.as_str()).map(|(_, a)| a.trim().to_string()).unwrap_or_default();
+                if !out.iter().any(|(f, a, _)| *f == file && *a == args) {
+                    out.push((file, args, check.summary().to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The registry purpose of a hook command (exact arguments first, then any command of the same script), else `None`.
+fn registry_purpose(reg: &[(String, String, String)], file: &str, cmd: &str) -> Option<String> {
+    let args = cmd.split_once(file).map(|(_, a)| a.trim()).unwrap_or_default();
+    reg.iter().find(|(f, a, _)| f == file && a == args).or_else(|| reg.iter().find(|(f, _, _)| f == file)).map(|(_, _, p)| p.clone())
+}
+
 fn gather(root: &str) -> Briefing {
+    let reg = registry_purposes();
     let hooks_dir = join(root, defaults::text("setup.brief_hooks_dir"));
     let depth = defaults::num("setup.json_max_depth") as usize;
     // `JSON.parse(...).version`: a non-object that is not null has no such member (undefined); null throws, and so does a
@@ -397,7 +425,7 @@ fn gather(root: &str) -> Briefing {
                             let cmd = h.get(defaults::text("setup.brief_command_key")).filter(|c| truthy(Some(c))).map(js_string).unwrap_or_default();
                             let Some(file) = first_js_file(&cmd) else { continue };
                             registered.push(file.clone());
-                            let purpose = purpose_of(&join(&hooks_dir, &file));
+                            let purpose = registry_purpose(&reg, &file, &cmd).unwrap_or_else(|| purpose_of(&join(&hooks_dir, &file)));
                             seen.push(Entry { file, matcher: Some(matcher.clone()), purpose });
                         }
                     }
@@ -434,8 +462,8 @@ fn gather(root: &str) -> Briefing {
     let entry_of = |rel: String| Entry { purpose: purpose_of(&join(root, &rel)), file: rel, matcher: None };
     let mechanical = defaults::list("setup.brief_mechanical_hooks")
         .into_iter()
-        .filter(|f| is_file(&join(&hooks_dir, f)))
-        .map(|f| Entry { file: f.to_string(), matcher: None, purpose: purpose_of(&join(&hooks_dir, f)) })
+        .filter(|f| is_file(&join(&hooks_dir, f)) || registry_purpose(&reg, f, "").is_some())
+        .map(|f| Entry { file: f.to_string(), matcher: None, purpose: registry_purpose(&reg, f, "").unwrap_or_else(|| purpose_of(&join(&hooks_dir, f))) })
         .collect();
     let store_rel = defaults::text("setup.brief_store_file");
     let store = is_file(&join(root, store_rel)).then(|| entry_of(store_rel.to_string()));
