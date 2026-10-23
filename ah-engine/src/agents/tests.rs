@@ -78,6 +78,14 @@ fn queue(h: &Path, key: &str) -> Vec<Value> {
     std::fs::read_to_string(p).map(|t| t.lines().map(|l| serde_json::from_str(l).unwrap()).collect()).unwrap_or_default()
 }
 
+/// The prompt that takes a session's queued reminders: the queue's cursor moves to the end of the file.
+fn take_queue(h: &Path, key: &str) {
+    let q = h.join(".anti-hall/agent-tracker/reminders").join(format!("{key}.ndjson"));
+    let mut cur = q.clone().into_os_string();
+    cur.push(super::pth("cursor_ext"));
+    std::fs::write(cur, queue(h, key).len().to_string()).unwrap();
+}
+
 fn ticks(h: &Path, st: &mut State, at: &[u64]) {
     for n in at {
         tick(&env(h, *n), st);
@@ -701,6 +709,7 @@ fn a_cooldown_holds_the_next_reminder_back_and_says_so_once() {
     let evs = emit::take_queued();
     let held = evs.iter().filter(|e| e.h.as_str() == "reminder" && e.o == crate::telemetry::event::Outcome::Skip).count();
     assert_eq!(held, 1, "the suppression is recorded once per cooldown, not once per tick");
+    take_queue(&h, "s1"); // a reminder still waiting for its prompt is never queued twice, so the first one is taken before the cooldown ends
     ticks(&h, &mut st, &[n + 40 * MIN]);
     assert_eq!(queue(&h, "s1").len(), 2, "after the cooldown it is queued again");
     assert_eq!(st.today(&env(&h, n)).queued, 2);
@@ -708,11 +717,11 @@ fn a_cooldown_holds_the_next_reminder_back_and_says_so_once() {
 }
 
 #[test]
-fn an_agent_with_undelivered_reminders_is_not_flooded() {
+fn an_agent_with_an_undelivered_reminder_is_not_flooded() {
     let (h, n, _) = hung_home("pending-cap");
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 35 * MIN, n + 70 * MIN, n + 105 * MIN, n + 140 * MIN]);
-    assert_eq!(queue(&h, "s1").len(), 3, "max_pending undelivered reminders, then they are held back");
+    assert_eq!(queue(&h, "s1").len(), 1, "the same reminder about the same agent waits for its prompt instead of stacking");
 }
 
 #[test]
