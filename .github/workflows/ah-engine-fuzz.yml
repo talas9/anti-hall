@@ -31,6 +31,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup toolchain install nightly --profile minimal
+      # The fuzz crate is its own workspace; its dependency build (with the sanitizer flags) is cached on Cargo.lock + the toolchain.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ah-engine/fuzz
+          shared-key: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/engine-proto' || github.ref == 'refs/heads/dev' }}
+          cache-on-failure: true
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-fuzz
@@ -39,9 +46,10 @@ jobs:
           path: ah-engine/fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
+      # --target: the cargo-fuzz binary installed above is a musl build, so without it cargo-fuzz defaults to the musl target, which a sanitizer cannot link (statically linked libc).
       # -timeout: a single input slower than this is a hang; -rss_limit_mb: more memory than this is an OOM; -max_len bounds the input.
       - name: Fuzz
-        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || '600' }} -timeout=10 -rss_limit_mb=2048 -max_len=4096
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ inputs.seconds || '600' }} -timeout=10 -rss_limit_mb=2048 -max_len=4096
       - name: Keep the reproducer of a crash
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
