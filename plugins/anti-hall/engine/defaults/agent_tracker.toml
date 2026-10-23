@@ -314,3 +314,11 @@ value = { transcript = "transcript", heartbeat = "heartbeat", process = "process
 [env.claude_bin]
 doc = "Overrides the Claude Code program the agent tracker asks for its session listing (tests point it at a stand-in)."
 value = "AH_ENGINE_CLAUDE_BIN"
+
+[agent_tracker.progress_request_text]
+doc = "The reminder an agent gets when the dashboard asks it for progress."
+value = "Progress requested from the dashboard: reply with a short status (what is done, what is running, what is blocked) before you continue."
+
+[agent_tracker.stop_request_text]
+doc = "The reminder an agent gets when the dashboard asks it to stop on its own."
+value = "Stop requested from the dashboard: finish or park what you are doing, report where you stopped, and do not start new work until told."

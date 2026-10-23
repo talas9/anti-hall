@@ -16,6 +16,7 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod ctl;
 mod facts;
 mod live;
 mod lockwatch;
@@ -36,7 +37,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, transcript_path};
 pub use status::run_cmd;
+pub(crate) use status::document as status_document;
 
 pub(crate) fn lim(k: &str) -> u64 {
     defaults::raw("agent_tracker.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64

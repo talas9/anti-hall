@@ -98,9 +98,13 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("codex-activate", crate::ops::cmd_codex_activate),
         ("handovers", crate::handovers::run_cmd),
         ("devswarm", crate::dswire::cli::run),
+        ("web", crate::webcli::run_cmd),
         ("refresh", crate::refresh::run_cmd),
         ("units", crate::setup::units::cmd_units),
         ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
+        ("describe", crate::web::cmd_describe),
+        ("query", crate::web::cmd_query),
+        ("proc", crate::web::actions::run_proc),
     ]
 }
 
@@ -480,7 +484,7 @@ fn cmd_diag(p: &Parsed) -> i32 {
         emit(p, msg.clone(), json!({"error": msg}));
         return 64;
     }
-    let report = crate::obs::diagverbs::local(topic).or_else(|| client::ctl_json(&format!("diag {topic}")));
+    let report = crate::obs::diagverbs::local(topic, p.rest.get(1).map_or("", String::as_str)).or_else(|| client::ctl_json(&format!("diag {topic}")));
     match report {
         Some(v) => emit(p, human(&v), v),
         None if topic == "trace" => {
@@ -626,6 +630,9 @@ fn cmd_proj(p: &Parsed) -> i32 {
 /// `config [--json]`: the effective config and where each value comes from (the running daemon's active version when
 /// one is up, else what a fresh start would load from the files); `config validate <file>`: check a user TOML file.
 fn cmd_config(p: &Parsed) -> i32 {
+    if let Some(code) = crate::web::cmd_config_write(p) {
+        return code;
+    }
     match p.rest.first().map(String::as_str) {
         None => {
             let mut v = client::ctl_json("config").map(|mut v| {

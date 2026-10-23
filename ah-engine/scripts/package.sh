@@ -14,14 +14,22 @@ tdir="$(cargo_target_dir "$root")" || { echo "package.sh: cannot resolve the car
 bin="$tdir/$triple/release/ah-engine"
 [ -f "$bin" ] || { echo "package.sh: build $triple first ($bin missing)" >&2; exit 1; }
 
+# The Command Center server (ah-web, GH #266) ships in the same archive, next to ah-engine, so `ah-engine web open` finds it.
+# AH_WEB_BIN overrides the build path; when no binary is there the archive is the engine alone (the engine then reports the server missing).
+webbin="${AH_WEB_BIN:-$root/../ah-web/target/$triple/release/ah-web}"
+[ -f "$webbin" ] || webbin=""
+
 name="ah-engine-v${version}-${triple}"
 mkdir -p "$out"
-python3 - "$name" "$bin" "$root/../LICENSE" "$root/README.md" "$out/$name.tar.gz" <<'PY'
+python3 - "$name" "$bin" "$root/../LICENSE" "$root/README.md" "$out/$name.tar.gz" "$webbin" <<'PY'
 import gzip, sys, tarfile
-name, bin_, lic, readme, dest = sys.argv[1:]
+name, bin_, lic, readme, dest, webbin = sys.argv[1:]
 with open(dest, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as gz, \
      tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
-    for arc, src, mode in sorted([(f"{name}/ah-engine", bin_, 0o755), (f"{name}/LICENSE", lic, 0o644), (f"{name}/README.md", readme, 0o644)]):
+    members = [(f"{name}/ah-engine", bin_, 0o755), (f"{name}/LICENSE", lic, 0o644), (f"{name}/README.md", readme, 0o644)]
+    if webbin:
+        members.append((f"{name}/ah-web", webbin, 0o755))
+    for arc, src, mode in sorted(members):
         ti = tar.gettarinfo(src, arcname=arc)
         ti.uid = ti.gid = 0; ti.uname = ti.gname = ""; ti.mtime = 0; ti.mode = mode; ti.pax_headers = {}
         with open(src, "rb") as fh:

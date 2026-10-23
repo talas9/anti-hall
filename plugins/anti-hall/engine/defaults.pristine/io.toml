@@ -1,0 +1,262 @@
+# ah-engine shipped defaults for the I/O and connection registry (`CTL io`, src/web/io.rs) and the dashboard's engine action verbs
+# (`agents send`, `proc`, src/web/actions.rs, src/agents/ctl.rs). Format: see the header of engine.toml.
+#
+# The registry is fixed tables of relaxed atomics (no lock, no allocation and no log line per call). Its memory and per-op cost have
+# a soft limit (warn) and a hard limit (the registry switches itself off for that daemon run and logs it).
+
+[io.enabled]
+doc = "1 = the registry counts calls and store operations; 0 = it counts nothing (`CTL io` then says it is disabled)."
+value = 1
+min = 0
+max = 1
+
+[io.max_stores]
+doc = "Most store rows (the ids of `io.stores` plus the `other` row); ids past it are not given a row."
+value = 64
+min = 2
+
+[io.max_clients]
+doc = "Client rows; a new client replaces the least recently used one."
+value = 128
+min = 1
+
+[io.client_name_max]
+doc = "Most characters of a client name kept for display."
+value = 64
+min = 8
+
+[io.mem_soft_kb]
+doc = "Soft limit of the registry's fixed memory, in KB (reported against, not enforced)."
+value = 64
+min = 1
+
+[io.mem_hard_kb]
+doc = "Hard limit of the registry's fixed memory, in KB: a table set larger than this is not built and the registry stays off."
+value = 128
+min = 1
+
+[io.op_ns_soft]
+doc = "Soft limit of the cost of one counter update, in nanoseconds, as measured by `CTL io bench=1`."
+value = 50
+min = 1
+
+[io.op_ns_hard]
+doc = "Hard limit of the cost of one counter update, in nanoseconds: a measurement above it switches the registry off for that daemon run."
+value = 200
+min = 1
+
+[io.bench_ops]
+doc = "How many counter updates `CTL io bench=1` times."
+value = 1000000
+min = 1000
+
+[io.stores]
+doc = "The stores, as `id|needle`: an operation on a file belongs to the first row whose needle its path contains; a row with an empty needle is a store reached by name only (the database, the transcript reads). Anything else counts as the `other` store."
+value = [
+  "hot.db|hot.db",
+  "archive.db|archive.db",
+  "transcripts|",
+  "config.toml|/config.toml",
+  "settings.json|/settings.json",
+  "defaults.lkg|defaults.lkg",
+  "crash-breadcrumb|crash-breadcrumb",
+  "daemon-files|daemon.",
+  "agent-state|/agent-tracker/",
+  "reminders|/reminders/",
+  "wake-feed|/wake/",
+  "telemetry-inbox|telemetry-inbox",
+  "actions-log|actions.ndjson",
+  "engine-log|ah-engine.log",
+  "managed-procs|/procs/",
+  "mesh|mesh",
+]
+
+[io.other_id]
+doc = "Id of the store that counts every operation no `io.stores` row matches."
+value = "other"
+
+[io.id_transcripts]
+doc = "Id of the store that counts the transcript scans of the checks."
+value = "transcripts"
+
+[io.id_hot_db]
+doc = "Id of the hot database store."
+value = "hot.db"
+
+[io.unknown_client]
+doc = "Client name used for a call that named no session."
+value = "unknown"
+
+[io.msg_mem_hard]
+doc = "Logged when the registry's tables would pass the hard memory limit."
+value = "the I/O registry would need {bytes} bytes, over io.mem_hard_kb; it stays off"
+
+[io.msg_op_hard]
+doc = "Logged when the measured cost of a counter update passes the hard limit."
+value = "an I/O registry counter update cost {ns} ns, over io.op_ns_hard ({hard}); the registry is off for this daemon run"
+
+# ---- dashboard action verbs --------------------------------------------------------------------------------------------------------
+
+[act.feature]
+doc = "The feature name every dashboard action is audited under (the action log and the telemetry `act` event)."
+value = "web_action"
+
+[act.procs_dir]
+doc = "Directory under the state directory that holds one record per managed process (pid, start stamp, executable, restart command)."
+value = "procs"
+
+[act.proc_keep_ms]
+doc = "How long the record of a managed process that is gone is kept (milliseconds) before registering another process sweeps it."
+value = 604800000
+min = 1000
+
+[act.stop_wait_ms]
+doc = "How long a stop or restart waits for the process to exit after SIGTERM before it reports it still running; it never escalates to SIGKILL."
+value = 3000
+min = 100
+
+[act.stop_poll_ms]
+doc = "Poll interval while a stop or restart waits for the process to exit."
+value = 50
+min = 10
+
+[act.watcher_name]
+doc = "Name prefix of the managed-process record of a session's wake watcher (the session key follows it)."
+value = "wake-watch"
+
+[act.watcher_kind]
+doc = "Kind shown for a managed wake watcher."
+value = "watcher"
+
+[act.progress_signal]
+doc = "Signal name on a progress request put in an agent's reminder queue."
+value = "progress_request"
+
+[act.stop_signal]
+doc = "Signal name on a stop request put in an agent's reminder queue."
+value = "stop_request"
+
+[act.message_signal]
+doc = "Signal name on a free message put in an agent's reminder queue."
+value = "dashboard_message"
+
+[act.flag_confirmed]
+doc = "The flag that confirms a destructive proc action."
+value = "--confirmed"
+
+[act.flag_text]
+doc = "The flag that carries the text of an agent message."
+value = "--text"
+
+[act.flag_progress]
+doc = "The `agents send` flag that asks the agent for progress."
+value = "--progress-request"
+
+[act.flag_ping]
+doc = "The `agents send` flag that only reads the agent's liveness and heartbeat."
+value = "--ping"
+
+[act.flag_stop]
+doc = "The `agents send` flag that asks the agent to stop on its own (never a kill)."
+value = "--stop-request"
+
+[act.msg_proc_usage]
+doc = "Usage line of `proc`."
+value = "usage: ah-engine proc <status|stop|restart> <pid> [--confirmed] | proc list [--json]"
+
+[act.msg_send_usage]
+doc = "Usage line of `agents send`."
+value = "usage: ah-engine agents send <id> [--progress-request|--ping|--stop-request|--text <message>] [--json]"
+
+[act.msg_confirm]
+doc = "Said when a destructive action is run without --confirmed; nothing was done."
+value = "{what} changes state: run it again with --confirmed. Nothing was done."
+
+[act.msg_not_family]
+doc = "Said when the pid is not a process of the engine family (no record of one the engine started or registered)."
+value = "pid {pid} is not a process of the engine family; nothing was signalled"
+
+[act.msg_session]
+doc = "Said when the pid belongs to a Claude or Codex session: never signalled from here."
+value = "pid {pid} is an agent session; ask it with `agents send --stop-request` instead"
+
+[act.msg_gone]
+doc = "Said when the recorded process is no longer the process that was recorded (exited, or the pid was reused): nothing was signalled."
+value = "{name} is not running as recorded (pid {pid}); nothing was signalled"
+
+[act.msg_self]
+doc = "Said when the target is this very process: never signalled."
+value = "refusing to signal the process running this command"
+
+[act.msg_still_running]
+doc = "Said when SIGTERM was sent and the process is still alive after the wait."
+value = "{name} (pid {pid}) is still running after {ms} ms; it was sent SIGTERM and not escalated"
+
+[act.msg_no_restart]
+doc = "Said when a process cannot be restarted because it recorded no restart command."
+value = "{name} recorded no restart command, so it can be stopped but not restarted from here"
+
+[act.msg_no_session]
+doc = "Said when `agents send` names no agent."
+value = "agents send needs an agent id"
+
+[act.msg_no_env]
+doc = "Said when the agent tracker has no home directory to work in."
+value = "no home directory: the agent tracker cannot be reached"
+
+[act.msg_bad_pid]
+doc = "Said when a proc action names no valid pid."
+value = "proc needs a numeric pid"
+
+[act.msg_unknown]
+doc = "Said for an unknown action."
+value = "unknown action: {what}"
+
+# ---- mesh traffic (CTL mesh-events, CTL mesh-msg) ------------------------------------------------------------------------------------
+
+[mesh_events.dir_component]
+doc = "The directory name a mesh store path must pass through (stores live under `~/.anti-hall/devswarm/store/<repo>/`)."
+value = "devswarm"
+
+[mesh_events.limit]
+doc = "Most message rows one `CTL mesh-events` call returns."
+value = 500
+min = 1
+
+[mesh_events.body_max]
+doc = "Most characters of a message body `CTL mesh-msg` returns."
+value = 4000
+min = 1
+
+[mesh_events.msg_no_db]
+doc = "Said when a mesh call names no store."
+value = "mesh calls need db=<path to a devswarm.db>"
+
+[mesh_events.msg_bad_db]
+doc = "Said when the store path is not a mesh store."
+value = "db is not a mesh store (a devswarm.db under a devswarm directory)"
+
+[mesh_events.msg_unreadable]
+doc = "Said when the mesh store cannot be opened read-only."
+value = "the mesh store could not be opened"
+
+[mesh_events.msg_no_id]
+doc = "Said when `mesh-msg` names no message id."
+value = "mesh-msg needs id=<message id>"
+
+# ---- decisions ring (CTL decisions) --------------------------------------------------------------------------------------------------
+
+[decisions.ring]
+doc = "Rows the check-decision ring keeps; the oldest is overwritten."
+value = 2048
+min = 1
+
+[decisions.sample_n]
+doc = "Record one check run in this many (1 = every run)."
+value = 1
+min = 1
+
+[decisions.page]
+doc = "Most rows one `CTL decisions` call returns."
+value = 500
+min = 1

@@ -26,7 +26,7 @@ doc = "Group the report by `project` or `session` (`jev-report`)."
 value = "--by"
 
 [flag.check]
-doc = "Name of one check to limit the output to (`metrics`), or a read-only check without repairs (`doctor`, `update`)."
+doc = "Name of one check to limit the output to (`metrics`), a read-only check without repairs (`doctor`, `update`), or validation only without writing (`config set`)."
 value = "--check"
 
 [flag.clear]
@@ -380,3 +380,34 @@ value = "--steps-file"
 [docs.external_flags]
 doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to its shell wrappers, so the flag drift test does not ask for a `[flag.*]` entry."
 value = ["--allow-empty", "--detach", "--doctor", "--exact", "--ignored", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--is-ancestor", "--porcelain", "--help", "--reparent-children"]
+
+
+[flag.key]
+doc = "Limit the history to one setting key (`config history`)."
+value = "--key"
+
+
+[flag.offset]
+doc = "Rows to skip before the page starts (`query`)."
+value = "--offset"
+
+
+[flag.part]
+doc = "Comma-separated parts of the self-description to return (`describe`)."
+value = "--part"
+
+[flag.coverage]
+doc = "Report which features a dashboard screen covers, which it cannot edit and which selectors are stale (`describe`)."
+value = "--coverage"
+
+[flag.schema]
+doc = "Show the row fields of one source instead of its rows (`query`)."
+value = "--schema"
+
+[flag.verb]
+doc = "Limit the history to one verb: set, reset or undo (`config history`)."
+value = "--verb"
+
+[flag.where]
+doc = "Keep the rows whose fields equal the values: `field=value,field=value` (`query`)."
+value = "--where"

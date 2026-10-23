@@ -565,7 +565,9 @@ pub fn restart_only(key: &str) -> bool {
 }
 
 fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
+    let read = std::fs::read_to_string(path);
+    crate::web::io::path_op(path, read.as_ref().map_or(0, |t| t.len() as u64), read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound), false, None);
+    match read {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ConfigError::Io { path: path.to_path_buf(), source: e }),
