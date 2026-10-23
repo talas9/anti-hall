@@ -54,9 +54,10 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if tr.now_ms.saturating_sub(last_wake(&tr, &desc.id)) < num("cooldown_ms") {
         return None;
     }
-    // the wake only points at mail that exists: with no real unread message (wake rows are not counted) there is nothing to wake for
-    // (an unreadable store is not "none": the wake goes ahead)
-    if crate::devswarm_rt::sources::Probe::unread(&crate::devswarm_rt::sources::FsProbe::new(home, tr.now_ms as i64), &desc.id) == Some(0) {
+    // wake only for a real pending delivery: unread mesh mail (wake rows are not counted) or a reminder still queued for the session
+    // (an unreadable mail store is not "none": the wake goes ahead)
+    let no_mail = crate::devswarm_rt::sources::Probe::unread(&crate::devswarm_rt::sources::FsProbe::new(home, tr.now_ms as i64), &desc.id) == Some(0);
+    if no_mail && super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session) == 0 {
         return None;
     }
     let call = |args: &[&str]| hivecontrol::call_full(args, env, cwd, Duration::from_millis(num("timeout_ms")));
