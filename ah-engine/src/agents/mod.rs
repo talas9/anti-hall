@@ -23,6 +23,7 @@ mod sinks;
 mod sources;
 mod status;
 mod wake;
+pub mod waste;
 #[cfg(test)]
 mod tests;
 
@@ -306,6 +307,9 @@ pub struct Agent {
     pub samples: Vec<Sample>,
     /// When the last series record was written.
     pub last_series: u64,
+    /// The waste sensor's last evaluation of this agent (score, judge verdict, action).
+    #[serde(default)]
+    pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
     /// When each signal was last reminded.

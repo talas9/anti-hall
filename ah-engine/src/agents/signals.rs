@@ -192,6 +192,7 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "hung" => hung(a, now),
             "looping" => looping(a),
             "token_waste" => token_waste(a, now),
+            "agent_waste" => super::waste::raised(a),
             "drift" => drift(a),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
@@ -208,11 +209,11 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
 
 // ---- telemetry ----------------------------------------------------------------------------------------------
 
-fn base(a: &Agent) -> Fields {
+pub(crate) fn base(a: &Agent) -> Fields {
     Fields::new().tok("agent", &a.id).tok("akind", &a.kind).tok("state", state_of(a))
 }
 
-fn rec(env: &Env, class: &str, name: &str, outcome: Outcome, fields: Fields) {
+pub(crate) fn rec(env: &Env, class: &str, name: &str, outcome: Outcome, fields: Fields) {
     if env.act {
         emit::event(emit::agent_call(AgentRec { class, name, outcome, fields }));
     }
@@ -278,6 +279,7 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         "token_waste" => {
             defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
         }
+        "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
         "heartbeat_stale" => defaults::render("msg.agent_heartbeat_stale", &[("agent", &who), ("age", &age(f.evidence * fmtn("ms_per_s"))), ("step", &f.text)]),
         "idle_open_task" => defaults::render(
@@ -514,11 +516,13 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let now = env.now_ms;
     take_deliveries(env, st);
     let mut queued = 0;
+    let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
         sample(&mut a, now);
+        super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {

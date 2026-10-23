@@ -55,6 +55,8 @@ struct Cfg {
     false_meaning: String,
     unknown_label: String,
     unknown_meaning: String,
+    /// A pick-one over fixed labels (`choices`, label then meaning): the question is a Choice and the answer one of the labels.
+    choices: Vec<(String, String)>,
     step_text_cap: usize,
     sections: Vec<String>,
     required: Vec<(String, f64)>,
@@ -106,6 +108,11 @@ impl Cfg {
             false_meaning: s("false_meaning"),
             unknown_label: s("unknown_label"),
             unknown_meaning: s("unknown_meaning"),
+            choices: t
+                .get("choices")
+                .and_then(defaults::V::as_array)
+                .map(|a| a.iter().filter_map(|c| c.as_array().map(|p| (p.first().and_then(defaults::V::as_str), p.get(1).and_then(defaults::V::as_str)))).filter_map(|(l, m)| Some((l?.to_string(), m?.to_string()))).collect())
+                .unwrap_or_default(),
             step_text_cap: int_of(&t, "step_text_cap") as usize,
             sections: strings_of(&t, "sections"),
             required,
@@ -317,7 +324,9 @@ fn norm(s: &str) -> String {
 /// The question the model is asked, with the caller's duration filled in.
 fn question_of(cfg: &Cfg, dur: &str, step_labels: &[(i64, String)]) -> Question {
     let text = cfg.question.replace(defaults::text("evidence.dur_placeholder"), dur);
-    if cfg.steps {
+    if !cfg.choices.is_empty() {
+        Question::choice(&text, cfg.choices.clone())
+    } else if cfg.steps {
         let mut opts: Vec<(String, String)> = step_labels.iter().map(|(n, t)| (n.to_string(), slice16_lossy(t, cfg.step_text_cap))).collect();
         opts.push((cfg.unknown_label.clone(), cfg.unknown_meaning.clone()));
         Question::choice(&text, opts)
