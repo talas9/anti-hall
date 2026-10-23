@@ -1221,3 +1221,15 @@ doc = "Most characters of the first output line a failed hivecontrol call's desc
 value = 160
 min = 20
 max = 1000
+
+[devswarm_recon.lf_op]
+doc = "The central-log operation of a label-only registry row that got its app id."
+value = "fill-app-id"
+
+[devswarm_recon.lf_msg]
+doc = "The central-log line of a label-only registry row that got its app id. {id} {label} {worktree}."
+value = "registered {id} for the label-only row {label} ({worktree}): the app database names it, the label row folds into it"
+
+[devswarm_recon.lf_report_key]
+doc = "The reconcile answer's field counting the label-only rows that got their app id (present only when above zero)."
+value = "appIdsFilled"

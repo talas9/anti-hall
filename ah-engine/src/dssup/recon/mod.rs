@@ -31,6 +31,7 @@ pub mod dup;
 pub mod fold;
 pub mod gate;
 pub mod heal;
+pub mod labelfill;
 pub mod mirror;
 pub mod norm;
 pub mod orphans;

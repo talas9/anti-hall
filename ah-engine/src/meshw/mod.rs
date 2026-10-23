@@ -25,6 +25,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 pub mod actverbs;
 pub mod appdb;
+pub mod appid;
 pub mod appverbs;
 pub mod archiveverb;
 pub mod args;
