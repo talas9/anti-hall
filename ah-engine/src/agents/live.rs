@@ -7,7 +7,7 @@
 use super::sources::{json_of, read_dir};
 use super::{Agent, Env, State, kind_name, lim, pth};
 use crate::checks::agent_scan::mtime_ms;
-use crate::defaults;
+use crate::defaults::{self, V};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -164,17 +164,59 @@ fn first_line(path: &str) -> Option<Value> {
     serde_json::from_slice(&buf[..end]).ok()
 }
 
-/// A Codex session's state from its rollout file: running while it is being written, waiting after. Its transcript format is not the
-/// Claude one, so no tokens or tool calls are read: only the state, the working directory and the age.
+/// The end of a rollout, bounded.
+fn tail(path: &str) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(lim("codex_tail_bytes")))).ok()?;
+    let mut buf = Vec::new();
+    f.take(lim("codex_tail_bytes")).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Whether the last turn marked in `text` has ended: the latest record of a start or a terminal type decides.
+fn turn_ended(cx: &V, text: &str) -> bool {
+    let at = |kind: &str| -> Option<usize> {
+        let types = cx.get(kind).map(V::strings).unwrap_or_default();
+        types.iter().filter_map(|t| text.rfind(&cx.str_field("marker").replace("{}", t))).max()
+    };
+    match (at("terminal_types"), at("start_types")) {
+        (Some(t), Some(s)) => t > s,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// A Codex session's state from its rollout file: running while it is being written, waiting after, done when its one-shot run
+/// ended or it has been quiet too long. Its transcript format is not the Claude one, so no tokens or tool calls are read: only the
+/// state, the working directory and the age. The file is read again only when its mtime or size changed.
 pub(super) fn codex_state(env: &Env, a: &mut Agent, mtime: u64) {
     let cx = defaults::raw("agent_tracker.codex");
     a.source = defaults::raw("agent_tracker.sources").str_field("codex").into();
     a.last_output_ms = mtime;
-    a.running = env.now_ms.saturating_sub(mtime) <= lim("codex_running_ms");
-    if a.cwd.is_empty()
-        && let Some(v) = first_line(&a.path)
-        && v.get(cx.str_field("type_key")).and_then(Value::as_str) == Some(cx.str_field("meta_type"))
-    {
-        a.cwd = v.get(cx.str_field("payload")).and_then(|p| p.get(cx.str_field("cwd"))).and_then(Value::as_str).unwrap_or("").to_string();
+    let quiet = env.now_ms.saturating_sub(mtime);
+    a.running = quiet <= lim("codex_running_ms");
+    let size = std::fs::metadata(&a.path).map(|m| m.len()).unwrap_or(0);
+    if a.codex_stamp != (mtime, size) {
+        if let Some(v) = first_line(&a.path)
+            && v.get(cx.str_field("type_key")).and_then(Value::as_str) == Some(cx.str_field("meta_type"))
+        {
+            let p = v.get(cx.str_field("payload"));
+            if a.cwd.is_empty() {
+                a.cwd = p.and_then(|p| p.get(cx.str_field("cwd"))).and_then(Value::as_str).unwrap_or("").to_string();
+            }
+            let origin = p.and_then(|p| p.get(cx.str_field("originator"))).and_then(Value::as_str).unwrap_or("");
+            a.codex_exec = cx.get("exec_originators").map(V::strings).unwrap_or_default().iter().any(|o| *o == origin);
+        }
+        a.codex_terminal = tail(&a.path).is_some_and(|t| turn_ended(&cx, &t));
+        a.codex_stamp = (mtime, size);
+    }
+    // done: a one-shot run whose turn ended, a one-shot run quiet past codex_done_after_ms, or any rollout quiet past codex_stale_after_ms
+    // (a limit of 0 is off: it is what a missing key reads as)
+    let past = |k: &str| lim(k) > 0 && quiet > lim(k);
+    a.finished |= (a.codex_exec && (a.codex_terminal || past("codex_done_after_ms"))) || past("codex_stale_after_ms");
+    if a.finished {
+        a.running = false;
     }
 }

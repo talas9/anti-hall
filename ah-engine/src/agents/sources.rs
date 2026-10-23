@@ -369,6 +369,10 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
             a.kind = kind_name("main").into();
         }
     }
+    // a rollout that aged out of the scan is no longer found, so its row is judged again from its last write
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {
+        live::codex_state(env, a, a.last_output_ms);
+    }
     stopped_subagents(env, st);
     off_roster(env, st);
     heartbeats(env, st);
