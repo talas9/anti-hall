@@ -132,7 +132,7 @@ pub(crate) fn pump(env: &Env, sid: &str, poll: Duration, out: &mut dyn FnMut(&st
             offset = next;
             let mut cur = feed.clone().into_os_string();
             cur.push(pth("cursor_ext"));
-            crate::discard::harmless(std::fs::write(cur, drain_count(&feed, offset).to_string())); // keep: only delays the compaction of the feed
+            crate::discard::harmless(crate::atomic::write_styled(cur, drain_count(&feed, offset).to_string(), crate::atomic::Style { skip_sync: true, ..Default::default() })); // keep: only delays the compaction of the feed
         }
         if stop() {
             crate::discard::harmless(std::fs::remove_file(&armed)); // keep: a stale stamp expires on its own

@@ -105,7 +105,7 @@ pub fn install_shims(home: &std::path::Path) -> std::io::Result<usize> {
         }
         std::fs::create_dir_all(&dir)?;
         let tmp = dest.with_extension(format!("tmp.{}", std::process::id()));
-        std::fs::write(&tmp, &src)?;
+        crate::atomic::stage(&tmp, &src, crate::atomic::Style { mode: Some(0o755), ..Default::default() })?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         std::fs::rename(&tmp, &dest)?;
         written += 1;

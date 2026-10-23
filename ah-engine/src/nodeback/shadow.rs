@@ -89,7 +89,7 @@ fn ended() -> bool {
     if !marker.exists() {
         let msg = defaults::render("nodeback.msg_shadow_ended", &[("date", &end)]);
         crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create here
-        crate::discard::harmless(std::fs::write(&marker, end)); // keep: without the marker the notice repeats, nothing else
+        crate::discard::harmless(crate::atomic::write(&marker, end)); // keep: without the marker the notice repeats, nothing else
         crate::health::log_event(defaults::text("nodeback.log_kind"), "ended", &msg);
         crate::discard::harmless(std::io::Write::write_all(&mut std::io::stderr(), format!("{msg}\n").as_bytes())); // keep: a closed pipe leaves nobody to tell
     }
@@ -411,7 +411,7 @@ pub fn hold(breached: bool) {
     }
     let marker = super::state_file("files.shadow_hold");
     if breached {
-        crate::discard::logged("nodeback_hold_set", std::fs::write(&marker, b""));
+        crate::discard::logged("nodeback_hold_set", crate::atomic::write(&marker, b""));
     } else if let Err(e) = std::fs::remove_file(&marker)
         && e.kind() != std::io::ErrorKind::NotFound
     {

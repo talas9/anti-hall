@@ -98,5 +98,6 @@ fn the_override_hint_names_the_configured_plugin_root() {
     let e = Env::new("root");
     let (_, err, code) = e.hook(&format!("git {P} --delete origin b"));
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("node '/plugin/scripts/devswarm.js' skip git-guard"), "{err}");
+    // the CLI the hint names is the Node tree beside the configured plugin root (`nodeback.node_dir`)
+    assert!(err.contains("node '/plugin/../anti-hall-node/scripts/devswarm.js' skip git-guard"), "{err}");
 }

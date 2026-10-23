@@ -787,7 +787,8 @@ fn coordinator_work_baseline_matches_node() -> R {
         ("git add -A && git commit -m d", false, false),
         ("git commit -m side", false, true),
         ("git rebase --abort", false, false),
-        ("gh pr merge 12", false, false),
+        // not `gh pr merge`: the engine counts it as work on purpose (irreversible gh writes, GH #263) and the Node classifier does not
+        ("git cherry-pick abc", false, false),
         ("git commit -m e", false, false),
         ("git commit -m f", false, false),
         ("git commit -m g", false, false),

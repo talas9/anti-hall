@@ -28,7 +28,7 @@ pub fn run(p: &Parsed) -> i32 {
     };
     if word == w(0) {
         let made =
-            crate::limits::ensure_private_dir(&crate::paths::dir()).map_err(std::io::Error::other).and_then(|()| std::fs::write(&marker, format!("{word}\n")));
+            crate::limits::ensure_private_dir(&crate::paths::dir()).map_err(std::io::Error::other).and_then(|()| crate::atomic::write(&marker, format!("{word}\n")));
         if let Err(e) = made {
             return fail(e);
         }

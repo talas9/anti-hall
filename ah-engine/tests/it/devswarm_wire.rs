@@ -1559,11 +1559,15 @@ fn the_transcript_gate_acts_on_growth_once_per_interval_and_never_loses_held_bac
     assert!(!g.observe("ws-1", std::slice::from_ref(&f), t0 + Duration::from_millis(500)), "inside the interval that began at the deadline");
     std::fs::write(&f, "").unwrap();
     assert!(g.tick(t0 + Duration::from_secs(5)).is_empty());
-    // a rotated file (a new inode) is growth, and a second workspace has its own interval
+    // a rotated file (a new inode) is growth, and a second workspace has its own interval. The old file stays open while the new one
+    // is created: Linux filesystems hand a freed inode number to the next file at once, and a "new" file with the old number and a
+    // size at or under the baseline is indistinguishable from a truncation (macOS does not reuse numbers, so only CI saw it)
+    let old = std::fs::File::open(&f).unwrap();
     std::fs::remove_file(&f).unwrap();
     std::fs::write(&f, "{}\n").unwrap();
     assert!(g.observe("ws-1", std::slice::from_ref(&f), t0 + Duration::from_secs(10)));
     assert!(g.observe("ws-2", std::slice::from_ref(&f), t0 + Duration::from_secs(10)));
+    drop(old);
 }
 
 // ---- the scale test: the budget -------------------------------------------------------------------------------------------
