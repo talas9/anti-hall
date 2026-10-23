@@ -1,6 +1,7 @@
 //! The engine side of the dashboard's data plane and actions (plan v3): `CTL pulse`, `CTL agents`, `CTL io`, and the audited action
 //! verbs. The daemon has one delegating arm ([`dispatch`]); each module owns its verb.
 pub mod actions;
+pub mod decisions;
 pub mod io;
 pub mod mesh_events;
 pub mod pulse;
@@ -12,6 +13,7 @@ pub fn dispatch(verb: &str, args: &str) -> Option<String> {
     match verb {
         "mesh-events" => Some(mesh_events::events(args).to_string()),
         "mesh-msg" => Some(mesh_events::message(args).to_string()),
+        "decisions" => Some(decisions::snapshot(args).to_string()),
         "io" => Some(io::snapshot(args).to_string()),
         "agents" => Some(crate::agents::web_document(want("since=").as_deref(), want("agent=").as_deref()).to_string()),
         _ => None,

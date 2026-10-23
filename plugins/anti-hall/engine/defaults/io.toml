@@ -243,3 +243,20 @@ value = "the mesh store could not be opened"
 [mesh_events.msg_no_id]
 doc = "Said when `mesh-msg` names no message id."
 value = "mesh-msg needs id=<message id>"
+
+# ---- decisions ring (CTL decisions) --------------------------------------------------------------------------------------------------
+
+[decisions.ring]
+doc = "Rows the check-decision ring keeps; the oldest is overwritten."
+value = 2048
+min = 1
+
+[decisions.sample_n]
+doc = "Record one check run in this many (1 = every run)."
+value = 1
+min = 1
+
+[decisions.page]
+doc = "Most rows one `CTL decisions` call returns."
+value = 500
+min = 1

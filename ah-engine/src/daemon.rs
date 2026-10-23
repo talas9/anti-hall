@@ -791,6 +791,7 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
         crate::memdiag::note_check(check);
         observe_check_cost_in(self.t, self.event, check, micros);
         crate::obs::trace::push("check", check, telemetry::decision_name(verdict), micros);
+        crate::web::decisions::push(self.event, check, rule_id, verdict, micros);
         if matches!(verdict, crate::checks::Verdict::Defer) {
             crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
         }
