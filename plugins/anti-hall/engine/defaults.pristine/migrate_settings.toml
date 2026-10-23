@@ -131,6 +131,7 @@ value = [
   "{\"section\":\"agents\",\"key\":\"ownerNotify\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_AGENT_OWNER_NOTIFY\"}",
   "{\"section\":\"agents\",\"key\":\"burnBreaker\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_BURN_BREAKER\"}",
   "{\"section\":\"guards\",\"key\":\"uncommittedWork\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_UNCOMMITTED_GUARD\"}",
+  "{\"section\":\"agents\",\"key\":\"wasteSense\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_WASTE_SENSE\"}",
   "{\"section\":\"versionAlerts\",\"key\":\"antiHall\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_VERSION_ALERT\",\"pluginOption\":\"version_alerts_anti_hall\"}",
   "{\"section\":\"versionAlerts\",\"key\":\"claudeCli\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_CLAUDE_CLI_VERSION_ALERT\",\"pluginOption\":\"version_alerts_claude_cli\"}",
   "{\"section\":\"versionAlerts\",\"key\":\"devswarm\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_VERSION_ALERT\",\"pluginOption\":\"version_alerts_devswarm\"}",

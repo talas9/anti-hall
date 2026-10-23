@@ -69,6 +69,7 @@ files = [
     "resource_watch.toml",
     "disk_watch.toml",
     "agent_tracker.toml",
+    "agent_waste.toml",
     "devswarm_act.toml",
     "devswarm_wire.toml",
     "actions.toml",

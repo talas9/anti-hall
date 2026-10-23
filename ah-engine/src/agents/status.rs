@@ -28,7 +28,7 @@ fn row(a: &super::Agent, now: u64, all: &std::collections::BTreeMap<&str, &super
         "agent": a.id, "name": a.name, "kind": a.kind, "state": state_of(a), "source": a.source, "host_state": a.host,
         "tokens_in": a.tin, "tokens_out": a.tout, "cache_read": a.tcr, "cache_write": a.tcw, "tool_calls": a.tools,
         "progress": a.progress, "commits": a.commits, "files_edited": a.files.len(), "tests_passed": a.tests_pass, "steps_done": a.steps_done,
-        "errors": a.errors, "step": a.step, "last_output_s": last, "partial": a.partial,
+        "errors": a.errors, "step": a.step, "waste": {"score": a.waste.score.round(), "verdict": a.waste.verdict, "confidence": a.waste.confidence, "source": a.waste.source, "action": a.waste.action, "judge_calls": a.waste.judge_calls, "cell": super::waste::cell(a)}, "last_output_s": last, "partial": a.partial,
         "flags": a.flags.iter().map(|(k, f)| json!({"signal": k, "since": f.since, "evidence": f.evidence, "text": f.text, "reminded_at": f.reminded_at, "delivered_at": f.delivered_at})).collect::<Vec<_>>(),
         "workspace": a.ws.as_ref().map(|w| json!({"id": w.id, "watcher_armed": w.armed, "step": w.step})),
         "parent": parent, "children": mine, "project": project, "transcript": a.path, "team": a.team, "pid": (a.pid != 0).then_some(a.pid),
@@ -111,6 +111,7 @@ pub(crate) fn render(doc: &Value) -> String {
             cell(a, "tool_calls"),
             cell(a, "progress"),
             last,
+            a["waste"]["cell"].as_str().unwrap_or("").to_string(),
             flags,
         ]);
     }
