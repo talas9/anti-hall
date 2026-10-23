@@ -1078,6 +1078,26 @@ value = "prune-batch"
 doc = "The log event of a store still over its limit after a visit."
 value = "over-limit"
 
+[devswarm_sup.rt_err_gzip]
+doc = "The error of a failed gzip step of the retention archive (spawn, pipe, exit status). Placeholder: {why}."
+value = "gzip failed: {why}"
+
+[devswarm_sup.rt_err_gzip_stdin]
+doc = "The gzip failure detail when the child's input pipe is missing."
+value = "no input pipe"
+
+[devswarm_sup.rt_err_gzip_feeder]
+doc = "The gzip failure detail when the thread feeding gzip panicked."
+value = "input writer failed"
+
+[devswarm_sup.rt_err_gzip_roundtrip]
+doc = "The gzip failure detail when a compressed archive member does not inflate back to the bytes it was made from."
+value = "the compressed member does not match its source"
+
+[devswarm_sup.rt_ev_prune_error]
+doc = "The log event of a store whose sweep failed (Node: prune-error); the store's result carries ok false and the error text."
+value = "prune-error"
+
 [devswarm_sup.rt_ev_over_limit_protected]
 doc = "The log event of a store over its limit with nothing more that may be pruned."
 value = "over-limit-protected"
@@ -1094,10 +1114,6 @@ value = "no such table"
 [devswarm_sup.rt_msg_unstable]
 doc = "Why nothing was tombstoned: the store changed while the plan was compared."
 value = "the store changed during the comparison"
-
-[devswarm_sup.rt_text_types]
-doc = "The SQLite storage types a message body may have for the engine to plan it (text, or NULL for a tombstone); any other type (a blob, a number) is a value Node would turn into text its own way, so the sweep is Node's."
-value = ["text", "null"]
 
 # ---- the dry-run report phase, the journal fold and the archive cap, native (src/dssup/retention/{dry,fold,cap}.rs) -----------------
 
@@ -1148,8 +1164,8 @@ value = "changed while it was archived"
 
 
 [devswarm_sup.rt_msg_report_shape]
-doc = "Why the first-run dry-run phase is left to Node: the existing report is not a shape the engine writes over."
-value = "dry-run report shape"
+doc = "The sweep error when the existing dry-run report is a scalar: Node cannot set `stores` on it and the sweep answers `{ran: false, error}`."
+value = "Cannot create property 'stores' on a dry-run report that is not an object"
 
 
 # ---- the app sync, native (src/dssup/appsync/) ------------------------------------------------------------------------------------
@@ -1301,10 +1317,6 @@ value = "isPinned"
 [devswarm_sup.as_c_last_selected]
 doc = "The last selected time column."
 value = "lastSelectedAt"
-
-[devswarm_sup.as_c_last_accessed]
-doc = "The last accessed time column."
-value = "lastAccessed"
 
 [devswarm_sup.as_key_sep]
 doc = "The separator inside the pull request by repository and branch key."
@@ -2010,3 +2022,35 @@ value = "mode-off-or-jev-disabled"
 [devswarm_sup.jv_default_trigger]
 doc = "The trigger key of an off-scope signal that has neither a key nor a step."
 value = "off-scope"
+
+[metric.dssup_appdb_date_unread]
+doc = "Dates read from the DevSwarm app database that are a form Date.parse accepts but the engine does not reproduce: that stamp counts as absent (the row is otherwise read in full)."
+value = { kind = "counter", unit = "dates", labels = [] }
+
+[devswarm_sup.as_js_null]
+doc = "JavaScript's String(null), the text of a descriptor's null id."
+value = "null"
+
+[devswarm_sup.as_js_object]
+doc = "JavaScript's String({}), the text of an object where an id or path is expected."
+value = "[object Object]"
+
+[devswarm_sup.as_collate_order]
+doc = "The order in which ICU's root collation (Intl.Collator, the default of localeCompare) ranks the ASCII characters that are not letters: space, punctuation and symbols, then digits, then letters (case-folded here; at the same letter lower case sorts before upper)."
+value = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+
+[devswarm_sup.as_err_reduce_undefined]
+doc = "The error of the gap total when the kept gaps carry no repos (TypeError text of JavaScript)."
+value = "Cannot read properties of undefined (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_null]
+doc = "The error of the gap total when the kept gaps' repos is null."
+value = "Cannot read properties of null (reading 'reduce')"
+
+[devswarm_sup.as_err_reduce_fn]
+doc = "The error of the gap total when the kept gaps' repos is no array."
+value = "gaps.repos.reduce is not a function"
+
+[devswarm_sup.as_err_read_gap_null]
+doc = "The error of the gap total when a kept repos row is null."
+value = "Cannot read properties of null (reading 'gap')"

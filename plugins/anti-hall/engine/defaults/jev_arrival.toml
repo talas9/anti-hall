@@ -1,0 +1,111 @@
+# ah-engine shipped defaults for Jev arrival labelling (the `jev::arrival` module, `ah-engine jev arrival`, the scheduled job
+# `jev_arrival`). Format: see the header of engine.toml. A freshly sent direct message is queued here; the job drains the queue
+# in small batches through the triage labeller and writes the labels into the shared label cache that the mesh summary reads
+# (jevQuestionCandidates). Port of hooks/lib/jev-triage.js enqueueArrival / runArrivalWorker / triageMessagesSync. Every cap,
+# interval, file name and word below is tuned here, never in Rust.
+
+[job.jev_arrival]
+doc = "Drain the Jev arrival queue: label the direct messages that were sent since the last run, in small batches under the drain lock and the batch, wall-time and attempt caps of [jev_arrival.limits]. Runs as a subprocess (`ah-engine jev arrival`) so a timeout kills it and every model call it started; skipped while the queue is empty; 0 turns it off."
+value = { kind = "engine", action = "jev_arrival", every_key = "schedule.jev_arrival_ms", jitter_ms = 0, timeout_ms = 180000, retries = 1, backoff_ms = 5000, backoff_max_ms = 60000, cooldown_ms = 60000, catch_up = "skip", persist = false }
+
+[schedule.jev_arrival_ms]
+doc = "Interval of the jev_arrival job (how soon a queued arrival is labelled); the job does nothing while the queue is empty. 0 turns it off."
+value = 5000
+env = "AH_ENGINE_JEV_ARRIVAL_MS"
+unit = "ms"
+
+[jev_arrival.limits]
+doc = "Bounds of arrival labelling (Node: the ARRIVAL_* and MAX_CACHE_ENTRIES constants of jev-triage.js). queue_max_bytes: over this size the queue takes no more arrivals (they are labelled when a reader asks). text_max_chars: a longer body (UTF-16 units) is not queued. batch_size: messages per triage call (keeps a batch inside the triage budget). max_batches, max_wall_ms: the most one worker run does. max_attempts: how often a message the budget or a claim skipped is retried within one run. cache_max_entries: the label cache keeps this many labels, the lowest _seq going first."
+value = { queue_max_bytes = 262144, text_max_chars = 16000, batch_size = 3, max_batches = 60, max_wall_ms = 120000, max_attempts = 3, cache_max_entries = 500 }
+
+[jev_arrival.files]
+doc = "File names under the anti-hall cache directory: the arrival queue (one JSON line {h, t} per message), the drain lock, the directory of per-hash in-flight claims, and the infix of a worker's private copy of the queue (<queue><infix><pid>.<n>) which is deleted only once its messages are handled, so a worker that dies hands them to the next one."
+value = { queue = "jev-triage-arrival.queue", lock = "jev-triage-arrival.lock", claims = "jev-triage.claims", work_infix = ".work." }
+
+[jev_arrival_drain.lock_stale_ms]
+doc = "The drain lock: a lock not refreshed for this long belongs to a dead worker and is taken over (Node: ARRIVAL_LOCK_STALE_MS)."
+value = 30000
+unit = "ms"
+
+[jev_arrival_drain.lock_wait_ms]
+doc = "The drain lock: how long to keep trying a lock held by a live worker (0: one look, the holder drains the queue)."
+value = 0
+unit = "ms"
+
+[jev_arrival_drain.lock_step_ms]
+doc = "The drain lock: the pause between tries."
+value = 5
+unit = "ms"
+
+[jev_arrival_drain.lock_reclaim_stale_ms]
+doc = "The drain lock: a takeover marker older than this is itself taken over."
+value = 5000
+unit = "ms"
+
+[jev_arrival_drain.lock_release_tries]
+doc = "The drain lock: how many times a release tries to take the takeover marker."
+value = 5
+
+[jev_arrival_drain.lock_release_step_ms]
+doc = "The drain lock: the pause between those tries."
+value = 10
+unit = "ms"
+
+[jev_arrival_drain.lock_boot_slop_s]
+doc = "The drain lock: two boot times closer than this many seconds are the same boot."
+value = 5
+unit = "s"
+
+[jev_arrival_claim.lock_stale_ms]
+doc = "A per-hash in-flight claim older than this belongs to a dead process and is taken over (Node: CLAIM_STALE_MS)."
+value = 15000
+unit = "ms"
+
+[jev_arrival_claim.lock_wait_ms]
+doc = "A claim: how long to keep trying a claim another process holds (0: one look, the loser skips the message; the winner's label lands in the shared cache)."
+value = 0
+unit = "ms"
+
+[jev_arrival_claim.lock_step_ms]
+doc = "A claim: the pause between tries."
+value = 5
+unit = "ms"
+
+[jev_arrival_claim.lock_reclaim_stale_ms]
+doc = "A claim: a takeover marker older than this is itself taken over."
+value = 5000
+unit = "ms"
+
+[jev_arrival_claim.lock_release_tries]
+doc = "A claim: how many times a release tries to take the takeover marker."
+value = 5
+
+[jev_arrival_claim.lock_release_step_ms]
+doc = "A claim: the pause between those tries."
+value = 10
+unit = "ms"
+
+[jev_arrival_claim.lock_boot_slop_s]
+doc = "A claim: two boot times closer than this many seconds are the same boot."
+value = 5
+unit = "s"
+
+[jev_arrival.outcomes]
+doc = "The `outcome` label of the jev_arrival counter. Enqueue: queued, disabled, cached, full, too_long, failed. Worker run: drained, busy, off, capped, lost_lock. Per message: labelled, no_label, skipped (the budget or a claim cut it off)."
+value = { queued = "queued", disabled = "disabled", cached = "cached", full = "full", too_long = "too_long", failed = "failed", drained = "drained", busy = "busy", off = "off", capped = "capped", lost_lock = "lost_lock", labelled = "labelled", no_label = "no_label", skipped = "skipped" }
+
+[jev_arrival.metric]
+doc = "The name of the arrival-labelling counter."
+value = "jev_arrival"
+
+[jev_arrival.transports]
+doc = "The Jev vendor names a triage log row records as `transport` (Node: vercel, typesafe); any other is left out."
+value = ["vercel", "typesafe"]
+
+[metric.jev_arrival]
+doc = "Jev arrival labelling, by outcome: what became of a queued message or of a worker run (see jev_arrival.outcomes)."
+value = { kind = "counter", unit = "events", labels = ["outcome"] }
+
+[msg.jev_arrival_done]
+doc = "The one line `ah-engine jev arrival` prints: the outcome word of the run and its counts."
+value = "jev arrival: {outcome} (batches {batches}, labelled {labelled}, no label {no_label}, skipped {skipped})"

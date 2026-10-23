@@ -54,7 +54,12 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.childGate` = true: Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)
 - `devswarm.parentReplyTracker` = true: Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)
 - `devswarm.receiptWindowMs` = 300000: The setting devswarm.receiptWindowMs: how recent a send receipt must be to credit a reply this turn
+- `devswarm.tickRosterEvery` = 0: The setting devswarm.tickRosterEvery: every Nth quiet tick of a Primary appends the compact roster after the first line
 - `devswarm.sendMultiRecipient` = true: Where devswarm.sendMultiRecipient is read from (send accepts several recipients when it is not false)
+- `devswarm.screenshotSync` = true: Where the screenshot-sync switch is read from (devswarm.screenshotSync, default on): off makes sync-ui refuse and change nothing
+- `devswarm.archivedGraceMs` = 600000: How much older than the active-list snapshot a row must be before its absence from that snapshot reads as archived in the app (Node:...
+- `devswarm.respawnGraceMin` = 20: Minutes after a `correct` warning (the plan's warned_at) before the Primary may run respawn
+- `devswarm.respawnWipWaitSec` = 120: Seconds respawn waits for the child to commit and push its work after being asked
 - `devswarm.wakeWatch` = true: The setting devswarm.wakeWatch: off refuses to arm (the cron wake fallback is unaffected)
 - `devswarm.wakeWatchIdleSkip` = true: The setting devswarm.wakeWatchIdleSkip: a Primary with no live child workspace need not arm (Node prints its one idle line)
 - `devswarm.wakeWatchPollMs` = 2000: The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads)
@@ -62,5 +67,6 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.inboxGraceSec` = 120: Setting devswarm.inboxGraceSec: seconds a fresh unread message to a live child is not yet neglect
 - `devswarm.maintainerNotice.show` = true: Setting devswarm.maintainerNotice.show: whether unseen maintainer notices are shown
 - `devswarm.archiveRequestRenagHours` = 24: Setting devswarm.archiveRequestRenagHours: hours a pending archive-request suppresses the nag before it repeats
+- `devswarm.maintainerNotice.post` = false: Setting devswarm.maintainerNotice.post: whether this checkout may post a maintainer notice (a mistake guard, locked, off by default)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

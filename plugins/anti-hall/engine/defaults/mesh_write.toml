@@ -805,10 +805,6 @@ value = "merged_verified"
 doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
 value = "devswarm-merged@"
 
-[mesh_write.settings_devswarm_section]
-doc = "The settings.json section of the DevSwarm settings."
-value = "devswarm"
-
 [mesh_write.csv_separator]
 doc = "Separator of a comma-separated setting."
 value = ","
@@ -1159,8 +1155,6 @@ max = 31536000000
 doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
 value = "DEVSWARM_SOURCE_BRANCH"
 
-
-
 [mesh_write.plugin_manifest_dir]
 doc = "Directory of the plugin manifest under the plugin root."
 value = ".claude-plugin"
@@ -1270,7 +1264,7 @@ doc = "How long a locked app database is waited for: Node's node:sqlite waits no
 value = 0
 
 [mesh_write.app_max_exact_int]
-doc = "Integers beyond this magnitude are not exact JavaScript numbers; a database holding one in a column the verdict reads defers."
+doc = "Integers beyond this magnitude are not exact JavaScript numbers; node:sqlite throws on one in any column it selects, so a database holding one reads as no snapshot."
 value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
@@ -1455,21 +1449,9 @@ value = "correction-followed"
 doc = "Supervision event type: first step progress in a respawned workspace."
 value = "respawn-progress"
 
-[mesh_write.step_stall_env]
-doc = "The environment variable of the devswarm.stepStallMin setting."
-value = "ANTIHALL_DEVSWARM_STEP_STALL_MIN"
-
 [mesh_write.step_stall_key]
 doc = "The settings.json key (in the devswarm section) of the step stall window."
 value = "stepStallMin"
-
-[mesh_write.step_stall_option]
-doc = "The plugin option name of the step stall window."
-value = "devswarm_step_stall_min"
-
-[mesh_write.step_stall_default_min]
-doc = "Minutes of the step stall window when no setting is given (devswarm.stepStallMin)."
-value = 30
 
 [mesh_write.plan_status_doing]
 doc = "The step status word for a step in progress."
@@ -1664,10 +1646,6 @@ doc = "The reason `emitKnownWarning` names when the result carries no more speci
 value = "unknown"
 
 # ---- plain roster (scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHumanText; companion/lib/devswarm-pull.js defaultRun) ----
-
-[mesh_write.roster_flags]
-doc = "The flags plain `roster` may carry for the engine to answer it; any other flag is Node's."
-value = ["all", "json"]
 
 [mesh_write.roster_flag_all]
 doc = "The roster flag that includes archived rows in the text rendering."
@@ -1891,7 +1869,7 @@ min = 1
 max = 65536
 
 [mesh_write.file_read_max_bytes]
-doc = "Largest mesh file a read through a path from a descriptor or a session record may take (a durable inbox, a cursor file, a harness session record). A larger file, and anything that is no regular file (a FIFO, socket or device, whose read could block a worker for good), is not read: the hook's answer goes to Node."
+doc = "Soft limit on a mesh file read through a path from a descriptor or a session record (a durable inbox, a cursor file, a harness session record). A larger regular file is still read, but counted and logged (`mesh_descriptor_read_skipped`, reason `read_why_over_soft`); see `file_read_hard_max_bytes` for the hard limit."
 value = 16777216
 min = 1024
 
@@ -1950,6 +1928,7 @@ value = ".gitmodules"
 [mesh_write.gitmodules_path_key]
 doc = "The key of a submodule's path in .gitmodules."
 value = "path"
+
 [mesh_write.msg_descriptor_read_skipped]
 doc = "The log line when a file named by a descriptor (or a receipt) was not read because it is no regular file or is over the read cap. {site} {reason} {path}."
 value = "mesh read skipped: site={site}, reason={reason}, path={path}"
@@ -2224,7 +2203,7 @@ value = "store failure: {reason}"
 
 [mesh_write.store_failure_prefixes]
 doc = "The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node."
-value = ["store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
+value = ["store-unreadable:", "store-create", "store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
 
 [mesh_write.flag_with_broadcasts]
 doc = "The flag that merges the project's broadcasts into a non-acking read."
@@ -2385,3 +2364,593 @@ value = "unable to open database file"
 [mesh_write.msg_store_unreadable]
 doc = "The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}."
 value = "store for workspace {id} could not be opened: {error}"
+
+# ---- inbox tick: the parts around the count (cmdInboxTick) -------------------------------------------------------------------
+
+[mesh_write.tick_refused_line]
+doc = "The line `inbox tick --quiet` prints for a refused tick (inboxTickQuietLine of an ok:false result); `{error}` is the reason."
+value = "ok:false {error}"
+
+[mesh_write.id_mismatch_warning]
+doc = "The stderr warning of warnIdMismatch: a child workspace addressing an id other than its own builder id; `{id}` is the addressed id, `{env_id}` its builder id."
+value = "⚠️ anti-hall · devswarm: addressing id \"{id}\" but this workspace's real DEVSWARM_BUILDER_ID is \"{env_id}\" — addressing the meshId row counts the wrong partition; use \"{env_id}\" unless you deliberately mean a different workspace"
+
+[mesh_write.child_repos_dir]
+doc = "The DevSwarm worktree layout under the home directory: a cwd below it corroborates a child workspace (devswarm-role.js isChildWorkspaceCorroborated)."
+value = ".devswarm/repos"
+
+[mesh_write.anchor_reason_unknown]
+doc = "The reason a refused anchor refresh reports when the registration named none."
+value = "unknown"
+
+[mesh_write.armed_archived_skip]
+doc = "The watcherArmed word of a child whose own workspace is archived (its watcher stays silent on purpose)."
+value = "archived-skip"
+
+[mesh_write.armed_idle_skip]
+doc = "The watcherArmed word of a Primary with no live child workspace (devswarm.wakeWatchIdleSkip)."
+value = "idle-skip"
+
+[mesh_write.armed_limit_skip]
+doc = "The watcherArmed word while limit conservation is active."
+value = "limit-skip"
+
+[mesh_write.file_rearm_cues]
+doc = "The re-arm cue measurement under the DevSwarm state directory (core.js rearmMetricsPath)."
+value = "rearm-cues.jsonl"
+
+[mesh_write.rearm_cues_cap]
+doc = "How many lines the re-arm cue measurement keeps."
+value = 1000
+min = 1
+
+[mesh_write.rearm_trigger_tick]
+doc = "The re-arm cue bucket of a tick that found no live watcher."
+value = "tick"
+
+[mesh_write.rearm_trigger_archived]
+doc = "The re-arm cue bucket of an archived child's tick."
+value = "archived-skip"
+
+[mesh_write.rearm_trigger_idle]
+doc = "The re-arm cue bucket of a Primary's idle skip."
+value = "idle-skip"
+
+[mesh_write.rearm_trigger_limit]
+doc = "The re-arm cue bucket of a limit skip."
+value = "limit-skip"
+
+[mesh_write.wal_alert_ms]
+doc = "A pending delivery batch older than this many milliseconds is an alert (devswarm-read-wal.js PENDING_ALERT_MS)."
+value = 3600000
+min = 1
+
+[mesh_write.wal_alert_bytes]
+doc = "Pending delivery batches over this many bytes are an alert (devswarm-read-wal.js PENDING_ALERT_BYTES)."
+value = 1048576
+min = 1
+
+[mesh_write.wal_unknown_code]
+doc = "The error code the delivery-log health names for an I/O error without a well-known code."
+value = "EUNKNOWN"
+
+[mesh_write.wal_reason_unreadable]
+doc = "The health reason of a delivery log that cannot be read; `{code}` is the error code."
+value = "unreadable ({code})"
+
+[mesh_write.wal_reason_spilled]
+doc = "The health reason of spilled batches; `{n}` is how many."
+value = "{n} spilled batch(es) — WAL was not writable; destructive reads blocked"
+
+[mesh_write.wal_reason_old]
+doc = "The health reason of an old pending batch; `{minutes}` is its age."
+value = "oldest pending batch {minutes}m old"
+
+[mesh_write.wal_reason_bytes]
+doc = "The health reason of too many pending bytes; `{bytes}` is the size."
+value = "{bytes} pending bytes"
+
+[mesh_write.wal_reason_last_resort]
+doc = "The health reason of a last-resort batch; `{dir}` is the temp directory that holds it."
+value = "LAST-RESORT batch in {dir} — WAL and spill both failed; destructive reads blocked"
+
+[mesh_write.set_tick_roster]
+doc = "The setting devswarm.tickRosterEvery: every Nth quiet tick of a Primary appends the compact roster after the first line."
+value = { section = "devswarm", key = "tickRosterEvery", type = "number", min = 0, env = "ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY", default = 0 }
+
+[mesh_write.tick_failed]
+doc = "The reason the quiet tick line names for a failed result that carries none."
+value = "inbox tick failed"
+
+[mesh_write.js_object_string]
+doc = "String(object) in JavaScript: what Number() converts an object (or an array holding one) from."
+value = "[object Object]"
+
+[mesh_write.store_unknown_code]
+doc = "The code a store failure reports when the error carries none (Node: EUNKNOWN)."
+value = "EUNKNOWN"
+
+[mesh_write.store_backend_code]
+doc = "The code reported for a store whose backend (the journal) this engine does not read."
+value = "EBACKEND"
+
+[mesh_write.reason_store_open_failed]
+doc = "The refusal reason of a store whose open failed outright."
+value = "store-open-failed"
+
+[mesh_write.reason_store_read_error]
+doc = "The reason of a store whose rows could not be read."
+value = "store-read-error"
+
+[mesh_write.reason_ctx_mismatch]
+doc = "The refusal reason of an id registered under another project than the caller's."
+value = "project-context-mismatch"
+
+[mesh_write.msg_ctx_mismatch_head]
+doc = "The first part of the project-context-mismatch text; `{id}` and `{registered}` are JSON-quoted."
+value = "workspace {id} is registered under project {registered}"
+
+[mesh_write.msg_ctx_mismatch_other]
+doc = "The project-context-mismatch text when the caller's directory resolves to another project; `{caller}` is JSON-quoted."
+value = ", but the current context resolves to a DIFFERENT project {caller}"
+
+[mesh_write.msg_ctx_mismatch_none]
+doc = "The project-context-mismatch text when the caller's directory resolves to no project."
+value = ", but the current context could not resolve a project (non-git cwd?)"
+
+[mesh_write.msg_ctx_mismatch_tail]
+doc = "The end of the project-context-mismatch text."
+value = " — run this from within that project's worktree to read its inbox"
+
+[mesh_write.msg_store_read_error]
+doc = "The text of a store read that failed; `{id}` is JSON-quoted, `{why}` the reason."
+value = "store for workspace {id} could not be read: {why}"
+
+[mesh_write.msg_mesh_unresolved]
+doc = "The meshGroupError of a mesh group that could not be resolved or read; `{id}` is JSON-quoted, `{why}` the reason."
+value = "mesh group of {id} could not be read: {why}"
+
+[mesh_write.known_reason_store]
+doc = "The known:false reason of a store that could not be used; `{code}` is the error code."
+value = "store-unavailable ({code})"
+
+[mesh_write.known_reason_flag]
+doc = "The known:false reason word of a store flagged unavailable."
+value = "storeUnavailable"
+
+[mesh_write.known_reason_kind]
+doc = "The kind appended to that word; `{kind}` is the refusal reason."
+value = " ({kind})"
+
+[mesh_write.known_reason_mesh]
+doc = "The known:false reason word of a mesh group that could not be resolved."
+value = "meshGroupUnresolved"
+
+[mesh_write.known_reason_colon]
+doc = "What joins that word to its error text."
+value = ": "
+
+[mesh_write.known_reason_partial]
+doc = "The known:false reason word of totals that are partial."
+value = "totalsPartial"
+
+# ---- inbox pull: the ensure's refusals (cmdInboxPull / cmdRegister) -----------------------------------------------------------
+
+[mesh_write.action_pull]
+doc = "The action word an `inbox pull` result carries (every refusal of the ensure is reported under it)."
+value = "pull"
+
+[mesh_write.msg_pull_app_archived]
+doc = "The refusal of an ensure for a workspace the DevSwarm app has archived; `{id}` is the plain id."
+value = "workspace {id} is archived in the DevSwarm app (isActive=0, isHidden=1); registration is refused regardless of any local marker or heartbeat — the app DB is ground truth over anti-hall's own markers (owner rule). A live session is still running in this archived workspace: close its DevSwarm tab, or run `hivecontrol workspace archive <full id>`, to stop it retrying."
+
+[mesh_write.reason_reserved_id_token]
+doc = "The reason of an ensure refused for an id that carries a reserved token."
+value = "reserved-id-token"
+
+[mesh_write.msg_reserved_id]
+doc = "The refusal text for such an id; `{id}` and `{token}` are JSON-quoted."
+value = "refusing to register workspace id {id} — it contains the reserved token {token}, which anti-hall uses for its own cursor namespaces under cursors/. Choose an id without it."
+
+[mesh_write.reserved_suffix_token]
+doc = "The reserved token reported for an id that ends with the reserved suffix."
+value = ".base"
+
+[mesh_write.msg_pull_archived_skip]
+doc = "The refusal of a routine auto-ensure for an id whose archived record is the same workspace; `{id}` is the plain id."
+value = "workspace {id} is archived; routine auto-ensure does not revive it (run `devswarm register {id} ...` to explicitly re-register)"
+
+[mesh_write.msg_ensure_not_ours]
+doc = "The refusal of an ensure over a descriptor that belongs to another project."
+value = "existing descriptor does not belong to the current project"
+
+[mesh_write.msg_ctx_mismatch_ensure_tail]
+doc = "The end of the project-context-mismatch text of an ensure."
+value = "run this from within that project's worktree to ensure it"
+
+[mesh_write.msg_cross_project_register]
+doc = "The refusal of an ensure that would register a worktree of another project; `{worktree}` is JSON-quoted, `{worktree_key}` and `{current}` are the two project keys."
+value = "register --worktree {worktree} belongs to a different project ({worktree_key}) than the current cwd ({current}) — cross-project registration is refused"
+
+[mesh_write.msg_id_lock_busy]
+doc = "The refusal of a mutation whose workspace lock stays busy; `{id}` is JSON-quoted."
+value = "workspace {id} is locked by another operation in progress; retry shortly"
+
+[mesh_write.msg_descriptor_malformed]
+doc = "The refusal for a descriptor whose field has a type the registry cannot take; `{id}` is JSON-quoted, `{field}` the field name."
+value = "descriptor for {id} has a field of the wrong type: {field}"
+
+[mesh_write.reason_child_label]
+doc = "The reason of a pull refused for the worktree label of a child workspace."
+value = "child-label-id"
+
+[mesh_write.msg_child_label_retired]
+doc = "The refusal text for a retired worktree label; `{id}` and `{to}` are JSON-quoted."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[mesh_write.msg_child_label]
+doc = "The refusal text for the worktree label of a child; `{id}` is JSON-quoted, `{worktree}` the child's checkout, `{hint}` what to use instead."
+value = "{id} is the worktree label of a CHILD workspace ({worktree}), not an identity — {hint}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[mesh_write.msg_child_label_use]
+doc = "The hint when the child has a workspace id; `{child}` is JSON-quoted."
+value = "use its workspace id {child}"
+
+[mesh_write.msg_child_label_unregistered]
+doc = "The hint when the child has not registered a workspace id yet."
+value = "the child has not registered its workspace id yet"
+
+[mesh_write.msg_wal_unreadable]
+doc = "The text of a pull whose delivery log cannot be read; `{code}` is the error code and `{wal}` the log."
+value = "delivery WAL unreadable ({code}): {wal}"
+
+[mesh_write.msg_wal_spill_blocked]
+doc = "The text of a pull whose spilled batches cannot go back into a writable log; `{why}` is the reason and `{dir}` the spill directory."
+value = "delivery WAL not writable ({why}) — spilled batch(es) kept in {dir}; no destructive native read until the WAL is writable"
+
+[mesh_write.msg_wal_replay_failed]
+doc = "The text of a pull whose replay of an open batch failed; `{why}` is the reason."
+value = "WAL replay failed (batch kept pending, no new native read): {why}"
+
+[mesh_write.heal_engine_owned_note]
+doc = "The note under which a stale ingest daemon the engine owns is not healed by this pull (no installer runs)."
+value = "engine owns ingest"
+
+[mesh_write.self_heal_dir]
+doc = "The directory under the DevSwarm state directory that holds the self-heal cooldown files."
+value = "self-heal"
+
+[mesh_write.self_heal_file_prefix]
+doc = "The file-name prefix of a self-heal cooldown file (followed by the repository key)."
+value = "ingest-"
+
+[mesh_write.self_heal_cooldown_ms]
+doc = "How long after one self-heal attempt another may be made."
+value = 60000
+min = 1000
+
+[mesh_write.ingest_owner_file]
+doc = "The file under the DevSwarm state directory that says which process owns the ingest of the projects."
+value = "ingest-owner.json"
+
+[mesh_write.ingest_owner_engine]
+doc = "The owner word of that file when the engine owns the ingest."
+value = "engine"
+
+[mesh_write.heal_cooldown_key]
+doc = "The result key a self-heal cooldown adds."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_attempted_key]
+doc = "The result key a self-heal attempt adds."
+value = "daemonHealAttempted"
+
+[mesh_write.heal_retry_key]
+doc = "The result key carrying the remaining cooldown."
+value = "retryAfterMs"
+
+[mesh_write.heal_disabled_key]
+doc = "The result key of an ingest unit the owner disabled in launchd."
+value = "daemonDisabled"
+
+[mesh_write.heal_disabled_label_key]
+doc = "The result key naming that unit."
+value = "daemonDisabledLabel"
+
+[mesh_write.launchd_label_prefix]
+doc = "The label prefix of a project's ingest unit in launchd (followed by the repository key)."
+value = "com.anti-hall.devswarm-ingest."
+
+# ---- inbox ack-primary: the refusals of cmdInboxAckPrimary --------------------------------------------------------------------
+
+[mesh_write.msg_store_not_opened]
+doc = "The refusal text of an ack whose store could not be opened and that named no reason."
+value = "store could not be opened"
+
+[mesh_write.reason_receipt_owner_mismatch]
+doc = "The reason of an ack for a receipt another identity or another reader was issued."
+value = "receipt-owner-mismatch"
+
+[mesh_write.msg_receipt_owner]
+doc = "The refusal text of an ack for a receipt issued to another identity; `{owner}` is JSON-quoted."
+value = "receipt belongs to {owner}"
+
+[mesh_write.cause_not_registered]
+doc = "The reason of an ack by a caller that resolves fine but has no registry entry of its own."
+value = "caller-not-registered"
+
+[mesh_write.msg_ack_primary_not_owner]
+doc = "The refusal text of an `inbox ack-primary` by a caller that does not own the id; `{id}` is JSON-quoted."
+value = "ack-primary refused: this caller does not own {id} (use --ack-as-owner to override)"
+
+[mesh_write.ms_per_hour]
+doc = "Milliseconds in an hour."
+value = 3600000
+min = 1
+
+[mesh_write.log_op_inbox_ack_primary]
+doc = "The central-log operation of an `inbox ack-primary` that did not succeed."
+value = "inbox-ack-primary"
+
+[mesh_write.msg_ctx_mismatch_ack_tail]
+doc = "The end of the project-context-mismatch text of an `inbox ack`; `{id}` is the plain id."
+value = "run this from within that project's worktree to ack it (`inbox read {id}` is read-only and works from anywhere)"
+
+[mesh_write.msg_no_cursor_path]
+doc = "The refusal text of an `inbox ack` for a descriptor without a cursor file; `{id}` is JSON-quoted."
+value = "no cursorPath for workspace {id}"
+
+# ---- JavaScript values and errors a plan verb reproduces (no hand-off to Node) ------------------------------------------
+
+[mesh_write.js_err_null_read]
+doc = "The TypeError text JavaScript raises when code reads a property of null (a plan step that is null). Placeholder: {prop}."
+value = "Cannot read properties of null (reading '{prop}')"
+
+[mesh_write.js_err_create_prop]
+doc = "The TypeError text strict-mode JavaScript raises when code assigns a property to a primitive (a plan step that is a string, number or boolean). Placeholders: {prop}, {kind} (the typeof word) and {value}."
+value = "Cannot create property '{prop}' on {kind} '{value}'"
+
+[mesh_write.js_kind_string]
+doc = "The typeof word of a string, in the TypeError text of an assignment to a primitive."
+value = "string"
+
+[mesh_write.js_kind_number]
+doc = "The typeof word of a number, in the TypeError text of an assignment to a primitive."
+value = "number"
+
+[mesh_write.js_kind_boolean]
+doc = "The typeof word of a boolean, in the TypeError text of an assignment to a primitive."
+value = "boolean"
+
+[mesh_write.js_prop_status]
+doc = "The step property whose read or assignment fails in the TypeError text (the step's status)."
+value = "status"
+
+[mesh_write.js_prop_text]
+doc = "The step property whose read fails in the TypeError text when a plan is replaced (the step's text)."
+value = "text"
+
+[mesh_write.js_prop_glob]
+doc = "The extra property whose read fails in the TypeError text when an extra is added (the extra's glob)."
+value = "glob"
+
+[mesh_write.js_array_sep]
+doc = "The separator JavaScript's String(array) joins elements with."
+value = ","
+
+[mesh_write.plan_reason_corrupt]
+doc = "The reason word of a heartbeat's plan field when the plan file holds a shape Node's code throws on (a null step)."
+value = "plan-corrupt"
+
+[mesh_write.msg_plan_refused]
+doc = "The log line of a plan the engine refused because Node's code throws on it. Placeholders: {key} (the plan key) and {error} (the TypeError text)."
+value = "plan {key} refused, Node throws on it: {error}"
+
+[mesh_write.msg_settings_unreadable]
+doc = "The log line of a settings file the engine's parser cannot read while JavaScript can; the setting is read from the tiers below the file. Placeholder: {setting}."
+value = "settings file not readable by the engine's parser, {setting} read from the tiers below it"
+
+[mesh_write.json_unicode_escape]
+doc = "The two characters that open a JSON unicode escape."
+value = "\\u"
+
+[mesh_write.lone_mark]
+doc = "The noncharacter that marks a lone surrogate inside an engine string (a Rust string cannot hold one): the mark is followed by one private-use character that names the code unit. JavaScript keeps lone surrogates (a string cut inside an emoji); the plan file carries them as a unicode escape."
+value = "\uFDD0"
+
+[mesh_write.lone_base]
+doc = "The first private-use character (plane 15) that names a lone surrogate after the mark; the code unit minus surrogate_first is added to it."
+value = 983040
+
+[mesh_write.lone_range]
+doc = "How many code units are surrogates (high and low halves together)."
+value = 2048
+
+[mesh_write.surrogate_first]
+doc = "The first UTF-16 surrogate code unit (the first high half)."
+value = 55296
+
+[mesh_write.astral_base]
+doc = "The first code point outside the Basic Multilingual Plane, subtracted before the surrogate halves are cut."
+value = 65536
+
+[mesh_write.surrogate_shift]
+doc = "How many bits the high half of a surrogate pair holds below its prefix (the code point minus astral_base is shifted right by this)."
+value = 10
+
+[mesh_write.lone_escape]
+doc = "The JSON text of a lone surrogate. Placeholder: {unit} (four lowercase hex digits)."
+value = "\\u{unit}"
+
+[mesh_write.jev_triage_log_file]
+doc = "Jev triage's own log under anti-hall's logs directory (jev-triage.js logPath): one row per answered labeled message."
+value = "jev-triage.ndjson"
+
+[mesh_write.jev_triage_log_max_bytes]
+doc = "Size past which the Jev triage log is rotated before a row is appended (jev-triage.js CACHE_LOG_MAX_BYTES)."
+value = 1048576
+min = 1
+
+[mesh_write.jev_answered_type]
+doc = "The `type` of the Jev triage log row written when a labeled message is answered."
+value = "answered"
+
+[mesh_write.jev_outcome_id]
+doc = "The integration id of the Jev outcome row an answered labeled message records."
+value = "triage"
+
+[mesh_write.jev_outcome_value]
+doc = "The outcome of that row."
+value = "answered"
+
+[mesh_write.jev_outcome_source]
+doc = "The source of that row."
+value = "triage-answer-latency"
+
+[mesh_write.file_read_hard_max_bytes]
+doc = "Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`)."
+value = 536870888
+min = 1024
+
+[mesh_write.site_read_bounded]
+doc = "The site named in the count and log of a bounded mesh file read made without a more specific site."
+value = "read_bounded"
+
+[mesh_write.read_why_not_regular]
+doc = "The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device)."
+value = "not-a-regular-file"
+
+[mesh_write.read_why_over_hard]
+doc = "The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`."
+value = "file-over-hard-cap"
+
+[mesh_write.read_why_over_soft]
+doc = "The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read."
+value = "file-over-soft-cap"
+
+[mesh_write.refusal_prefix]
+doc = "What starts the reason of a deferral that is really the verb's own refusal (Node's `{ ok: false, ... }` result, exit `exit_refused`): the rest of the reason is the refusal's JSON body. Such a reason is printed, never handed on."
+value = "refusal:"
+
+[mesh_write.exit_refused]
+doc = "Exit code of a verb's own refusal (Node's `{ ok: false }` result)."
+value = 2
+min = 1
+max = 255
+
+[mesh_write.result_refused]
+doc = "Log result of a call the verb refused itself."
+value = "refused"
+
+[mesh_write.reason_seat_conflict]
+doc = "The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat."
+value = "primary-seat-conflict"
+
+[mesh_write.reason_legacy_journal_store]
+doc = "The reason a verb refuses a project whose mesh store is pinned to (or forced onto) the legacy journal backend, which only a Node older than 22.5 wrote and which no longer has a reader."
+value = "legacy-journal-store"
+
+[mesh_write.msg_legacy_journal_store]
+doc = "The refusal text of that case: {repo_key} is the project's store."
+value = "the mesh store of project {repo_key} uses the legacy journal backend (written by a Node older than 22.5), which this version cannot read or write; nothing was done. Move its data into the sqlite store with `doctor --repair`, or remove the BACKEND marker and the journal directory if the store holds nothing you need"
+
+[mesh_write.heal_cooldown_flag]
+doc = "The self-heal result field set while the cooldown of an earlier installer attempt has not elapsed (`daemonHealCooldown`)."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_retry_after]
+doc = "The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`)."
+value = "retryAfterMs"
+
+[mesh_write.msg_registry_unreadable]
+doc = "The refusal text of a verb whose workspace registry could not be read; `{why}` is the reason."
+value = "the workspace registry could not be read: {why}"
+
+[mesh_write.msg_descriptor_field_shape]
+doc = "The refusal text of a workspace descriptor whose field is not text; `{field}` is the field."
+value = "workspace descriptor field {field} is not text"
+
+[mesh_write.held_wal_unreadable]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log cannot be read."
+value = "wal-unreadable"
+
+[mesh_write.held_wal_spilled]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log holds spilled batches (the pull itself absorbs them under its lock)."
+value = "wal-spilled"
+
+[mesh_write.ingest_owner_name]
+doc = "The `owner` word of that marker while the engine drains ingest."
+value = "engine"
+
+[mesh_write.forward_prefix_end]
+doc = "The text that closes the provenance marker a forwarded archived row's body starts with, after the archived id."
+value = "] "
+
+[mesh_write.settings_devswarm_section]
+doc = "The settings.json section of the DevSwarm settings."
+value = "devswarm"
+
+[mesh_write.jev_outcome_hash_len]
+doc = "How many hex characters of the SHA-256 name an answered-label outcome row (jev-triage.js hashMessage)."
+value = 32
+min = 1
+
+[mesh_write.msg_store_unavailable]
+doc = "The refusal text of that case: {what} names the thing, {detail} is the operating system's or database's own message."
+value = "{what} is unavailable ({detail}); nothing was done"
+
+[mesh_write.what_store_dir]
+doc = "What the refusal names when a project's store directory cannot be created."
+value = "the mesh store directory"
+
+[mesh_write.what_store]
+doc = "What the refusal names when a project's store cannot be opened."
+value = "the mesh store"
+
+[mesh_write.what_registry]
+doc = "What the refusal names when a project's registry cannot be read."
+value = "the workspace registry"
+
+[mesh_write.what_append]
+doc = "What the refusal names when a message cannot be appended to the store."
+value = "the message table"
+
+[mesh_write.what_messages]
+doc = "What the refusal names when the broadcast messages cannot be read."
+value = "the broadcast messages"
+
+[mesh_write.msg_not_regular]
+doc = "The refusal text of a mesh file that is a FIFO, socket or device: {path}."
+value = "{path} is not a regular file (a FIFO, socket or device); it was not read and nothing was done"
+
+[mesh_write.held_wal_foreign]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: another reader holds open batches in the delivery log."
+value = "wal-foreign"
+
+[mesh_write.loud_json]
+doc = "Stdout object printed next to every mesh failure line on stderr when the verb ran with --json (so a caller reading stdout never sees a silent no-op). Placeholders: {error} (a JSON string, the site), {reason} (a JSON string, the stderr text), {exit} (the exit code)."
+value = '{"ok":false,"error":{error},"reason":{reason},"exit":{exit}}'
+
+[mesh_write.loud_text]
+doc = "Stdout line printed next to every mesh failure line on stderr when the verb did not run with --json. Placeholders: {error}, {reason}, {exit}."
+value = "ERROR {error} (exit {exit}): {reason}"
+
+[mesh_write.msg_empty_failure]
+doc = "Reason when a mesh verb exits non-zero having printed nothing. Placeholder: {exit}."
+value = "ah-engine mesh: the verb refused (exit {exit}) and printed no answer; nothing was done."
+
+[mesh_write.site_empty_failure]
+doc = "Error code (site) for a non-zero mesh exit that printed nothing."
+value = "meshw:refused"
+
+[mesh_write.site_committed_failure]
+doc = "Error code (site) for a mesh write that was committed and then failed before printing."
+value = "meshw:committed_failure"
+
+[mesh_write.msg_store_unopened_code]
+doc = "The text of a mesh partition's store that could not be opened. Placeholders: {id} (JSON-quoted) and {code} (the error code)."
+value = "store for workspace {id} could not be opened: {code}"
+
+[mesh_write.msg_store_unreadable_code]
+doc = "The text of a mesh partition's store that could not be read. Placeholders: {id} (JSON-quoted) and {code} (the reason)."
+value = "store for workspace {id} could not be fully read ({code})"

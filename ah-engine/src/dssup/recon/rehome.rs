@@ -66,7 +66,7 @@ fn reason(out: &mut Moved, key: &str) {
 
 /// `openStore({ home, hash })` for a store the engine can open: sqlite (pinned by its marker, or by a non-empty database), a new store
 /// (marked sqlite, as Node's open does). A journal store is `Err(legacy)`.
-fn open_store(home: &Path, key: &str) -> Result<MeshStore, String> {
+pub(super) fn open_store(home: &Path, key: &str) -> Result<MeshStore, String> {
     let dir = rc::store_dir(home, key);
     let marker_file = dir.join(defaults::text("mesh.backend_marker"));
     let marker = std::fs::read_to_string(&marker_file).map(|s| s.trim().to_lowercase()).unwrap_or_default();
@@ -140,7 +140,7 @@ fn fresh_repo_key(d: &OVal) -> Option<String> {
 }
 
 /// The two paths name the same worktree (the registry's id-collision guard): equal, or equal once resolved.
-fn same_worktree(a: &str, b: &str) -> bool {
+pub(super) fn same_worktree(a: &str, b: &str) -> bool {
     a == b || ident::realpath(a).is_some_and(|ra| ident::realpath(b) == Some(ra))
 }
 
@@ -182,9 +182,13 @@ pub fn across_stores_locked(ctx: &Ctx, id: &str, from: &str, to: &str) -> Moved 
         None => rc::floor_store(&cx, &from_h, id),
     };
     // the source's whole unread tail is read before the first destination write: a torn read must not pass the verify below
-    let Ok(all) = view::messages_of(from_h.rd(), id) else {
-        reason(&mut out, "devswarm_recon.reason_source_unreadable");
-        return out;
+    // (a timestamp that is not a whole number cannot be copied exactly: the move waits, the source stays authoritative)
+    let all = match view::messages_of(from_h.rd(), id) {
+        Ok(all) if all.iter().all(|m| m.exact_ts) => all,
+        _ => {
+            reason(&mut out, "devswarm_recon.reason_source_unreadable");
+            return out;
+        }
     };
     let msgs: Vec<Msg> = all.into_iter().skip(since.max(0) as usize).collect();
     // 2) the destination registry row, through the id-collision guard

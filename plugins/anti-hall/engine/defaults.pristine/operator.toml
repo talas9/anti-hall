@@ -4,10 +4,6 @@
 # The message texts are the Node tools' own, word for word, because the parity tests compare the commands' output with the
 # scripts' byte for byte. Generated once during the port; edit this file directly from now on.
 
-[ops.defer_exit]
-doc = "Exit code of an operator command that leaves the work to the Node tool because it cannot reproduce the Node behaviour exactly (nothing is written)."
-value = 75
-
 [ops.list_sep]
 doc = "Separator of the values listed in a settings message."
 value = ", "

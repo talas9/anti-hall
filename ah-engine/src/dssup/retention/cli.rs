@@ -12,13 +12,13 @@
 //!
 //! `restore` puts the bodies of tombstoned rows back from a month's archive ([`restore`]), under the same lock, and holds them for a week.
 use super::apply::{Pruned, Settings};
-use super::{Ended, Store, cap, dry, fold, read_settings, read_state, sqlite_stores, write_state};
+use super::{Ended, Store, cap, dry, read_settings, read_state, sqlite_stores, write_state};
 use crate::checks::guardkit::nodelock;
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::meshw::ident::{Defer, defer};
+use crate::meshw::ident::Defer;
 use serde_json::Value;
 
 fn n(x: f64) -> OVal {
@@ -37,7 +37,7 @@ fn truthy_or_null(v: Option<&OVal>) -> OVal {
 /// `retention status`.
 pub fn status(ctx: &Ctx) -> Result<OVal, Defer> {
     let st = settings_of(ctx);
-    let state = read_state(ctx.home)?;
+    let state = read_state(ctx.home);
     let mut stores: Vec<Store> = sqlite_stores(ctx.home);
     stores.sort_by_key(|x| std::cmp::Reverse(x.bytes));
     let max = st.max_bytes();
@@ -75,7 +75,7 @@ fn settings_of(ctx: &Ctx) -> Settings {
 }
 
 /// The summary of a store the engine pruned (`summarize(r)` of a real run).
-fn real_summary(r: &Pruned) -> OVal {
+fn real_summary(r: &Pruned, legacy: OVal) -> OVal {
     let names = defaults::list("devswarm_sup.rt_protected_names");
     let protected = OVal::Obj(names.iter().zip(r.protected).map(|(k, v)| ((*k).to_string(), n(v as f64))).collect());
     OVal::Obj(vec![
@@ -97,82 +97,116 @@ fn real_summary(r: &Pruned) -> OVal {
         ("vacuum".into(), r.vacuum.clone().unwrap_or(OVal::Null)),
         ("budgetExhausted".into(), OVal::Bool(r.budget_exhausted)),
         ("protected".into(), protected),
-        (
-            "legacy".into(),
-            OVal::Obj(vec![
-                ("eligible".into(), OVal::Bool(false)),
-                ("reason".into(), s(defaults::text("devswarm_cli.ret_reason_no_journal"))),
-                ("files".into(), n(0.0)),
-            ]),
-        ),
+        ("legacy".into(), legacy),
     ])
 }
 
-/// `retention run [--dry-run] [--store X]`: `(ok, result)` or the hand-over to Node.
-pub fn run(ctx: &Ctx, runner: &dyn Runner, dry_run: bool, store: Option<&str>) -> Result<(bool, OVal), Defer> {
-    let st_settings = settings_of(ctx);
-    if !st_settings.enabled() {
-        return defer("disabled");
-    }
-    let Some(held) = nodelock::acquire(&super::lock_path(ctx.home), super::lock_params()) else { return defer("lock-busy") };
-    let out = locked(ctx, runner, &st_settings, dry_run, store);
-    held.release();
-    out
+/// `legacy: r.legacy ? { eligible, reason, files: r.legacy.files.length } : null` of `summarize`, from the fold's own record
+/// (`held` is the owner-gated fold that did not run: not eligible, and the record says why).
+fn legacy_summary(v: &Value) -> OVal {
+    let (eligible, reason, files) = if v.is_null() {
+        (false, Some(defaults::text("devswarm_cli.ret_reason_no_journal").to_string()), 0)
+    } else if let Some(why) = v.get("held").and_then(Value::as_str) {
+        (false, Some(why.to_string()), 0)
+    } else {
+        (v["eligible"].as_bool().unwrap_or(false), v["reason"].as_str().map(str::to_string), v["files"].as_array().map_or(0, Vec::len))
+    };
+    OVal::Obj(vec![
+        ("eligible".into(), OVal::Bool(eligible)),
+        ("reason".into(), reason.map_or(OVal::Null, |r| OVal::Str(r))),
+        ("files".into(), n(files as f64)),
+    ])
 }
 
-fn locked(ctx: &Ctx, runner: &dyn Runner, s_: &Settings, dry_run: bool, store: Option<&str>) -> Result<(bool, OVal), Defer> {
-    let mut state = read_state(ctx.home)?;
-    let stores = sqlite_stores(ctx.home);
+/// What `pruneStore` answers before it opens anything: `disabled`, `not-a-sqlite-store` (a journal-backed store) or `no-store` (no
+/// database file); `None` when the store is for pruning.
+fn skipped_why(ctx: &Ctx, s_: &Settings, hash: &str) -> Option<&'static str> {
+    if !s_.enabled() {
+        return Some(defaults::text("devswarm_cli.ret_skip_disabled"));
+    }
+    let dir = super::plan::store_dir(ctx.home, hash);
+    let marker = std::fs::read_to_string(dir.join(defaults::text("devswarm_sup.rt_backend_marker"))).map(|m| m.trim().to_lowercase()).unwrap_or_default();
+    if marker == defaults::text("devswarm_sup.rt_backend_journal") {
+        return Some(defaults::text("devswarm_cli.ret_skip_not_sqlite"));
+    }
+    if std::fs::metadata(super::plan::db_path(ctx.home, hash)).map_or(0, |m| m.len()) == 0 {
+        return Some(defaults::text("devswarm_cli.ret_skip_no_store"));
+    }
+    None
+}
+
+/// `retention run [--dry-run] [--store X]`: `(ok, result)`, exactly `run` of `devswarm-retention.js` (the lock busy is its own
+/// `{ok: false, error}` answer).
+pub fn run(ctx: &Ctx, runner: &dyn Runner, dry_run: bool, store: Option<&str>) -> Result<(bool, OVal), Defer> {
+    let st_settings = settings_of(ctx);
+    let Some(held) = nodelock::acquire(&super::lock_path(ctx.home), super::lock_params()) else {
+        let msg = defaults::text("devswarm_cli.ret_msg_lock_busy");
+        return Ok((false, OVal::Obj(vec![("ok".into(), OVal::Bool(false)), ("error".into(), s(msg))])));
+    };
+    let out = locked(ctx, runner, &st_settings, dry_run, store);
+    held.release();
+    Ok(out)
+}
+
+fn locked(ctx: &Ctx, runner: &dyn Runner, s_: &Settings, dry_run: bool, store: Option<&str>) -> (bool, OVal) {
+    let mut state = read_state(ctx.home);
     let targets: Vec<String> = match store {
-        Some(x) => {
-            if !stores.iter().any(|y| y.hash == x) {
-                return defer("unknown-store");
+        Some(x) => vec![x.to_string()],
+        None => sqlite_stores(ctx.home).iter().map(|y| y.hash.clone()).collect(),
+    };
+    let mut rows = Vec::new();
+    for hash in &targets {
+        let bytes = super::apply::store_bytes(ctx.home, hash);
+        if let Some(why) = skipped_why(ctx, s_, hash) {
+            let legacy = if dry_run { dry::legacy_of(ctx, hash) } else { super::legacy_fold(ctx, hash) };
+            rows.push(dry::skipped_summary(hash, bytes, dry_run, Some(why), legacy));
+            continue;
+        }
+        if dry_run {
+            rows.push(dry::summary(ctx, runner, &state, s_, hash));
+            continue;
+        }
+        let pruned = match super::one_store(ctx, runner, &mut state, s_, hash, false, true) {
+            Ended::Pruned(r) => r,
+            // the two plans disagreed: the store moved while it was read; nothing was written, the row says so
+            Ended::Held(why) => {
+                let mut row = dry::skipped_summary(hash, bytes, false, None, Value::Null);
+                if let OVal::Obj(v) = &mut row {
+                    for (k, x) in v.iter_mut() {
+                        match k.as_str() {
+                            "ok" => *x = OVal::Bool(false),
+                            "error" => *x = s(&why),
+                            _ => {}
+                        }
+                    }
+                }
+                rows.push(row);
+                continue;
             }
-            vec![x.to_string()]
-        }
-        None => stores.iter().map(|y| y.hash.clone()).collect(),
-    };
-    if dry_run {
-        let mut rows = Vec::new();
-        for h in &targets {
-            rows.push(dry::summary(ctx, runner, &state, s_, h)?);
-        }
-        let ok = rows.iter().all(|r| !matches!(r.get("ok"), Some(OVal::Bool(false))));
-        return Ok((ok, result(true, s_, rows, cap::plan(ctx.home, s_).oval(true))));
+            Ended::DryRun(_) => continue, // one_store answers a dry run only when asked for one
+        };
+        let legacy = super::legacy_fold(ctx, hash);
+        super::record_store(&mut state, hash, &pruned, ctx.now);
+        rows.push(real_summary(&pruned, legacy_summary(&legacy)));
     }
-    if targets.len() != 1 {
-        return defer("several-stores");
-    }
-    let hash = &targets[0];
-    if !fold::items(ctx.home, hash).is_empty() {
-        return defer("legacy-journal");
-    }
-    let pruned = match super::one_store(ctx, runner, &mut state, s_, hash, false, true) {
-        Ended::Pruned(r) => r,
-        Ended::Held(why) => return Err(Defer(why)),
-        Ended::Fallback(d) => return Err(d),
-        Ended::DryRun(_) => return defer("unexpected-dry-run"),
-    };
-    super::record_store(&mut state, hash, &pruned, ctx.now);
-    write_state(ctx.home, &state);
+    let ok = rows.iter().all(|r| !matches!(r.get("ok"), Some(OVal::Bool(false))));
     let plan = cap::plan(ctx.home, s_);
+    if dry_run {
+        return (ok, result(true, s_, rows, plan.oval(true)));
+    }
     let cap_val = if plan.removed.is_empty() {
         plan.oval(false)
     } else {
-        // archive files over the cap are evicted only on Node's exact list; the rows are already tombstoned, so a hold-up is
-        // a committed failure
+        // archive files over the cap are evicted only when the owner-gated switch is on; off, the answer says they were held
         let v = super::archive_cap(ctx, runner, s_);
         let done: Vec<(String, u64)> = v["removed"]
             .as_array()
             .map(|a| a.iter().filter_map(|x| Some((x["file"].as_str()?.to_string(), x["bytes"].as_u64()?))).collect())
             .unwrap_or_default();
-        if v.get("held").is_some() || done != plan.removed {
-            return defer("archive-cap");
-        }
-        plan.oval(false)
+        if v.get("held").is_none() && done == plan.removed { plan.oval(false) } else { OVal::parse(&v.to_string()).unwrap_or(OVal::Null) }
     };
-    let ok = pruned.ok;
-    Ok((ok, result(false, s_, vec![real_summary(&pruned)], cap_val)))
+    write_state(ctx.home, &state);
+    (ok, result(false, s_, rows, cap_val))
 }
 
 fn result(dry_run: bool, s_: &Settings, stores: Vec<OVal>, cap: OVal) -> OVal {
@@ -216,8 +250,15 @@ pub fn restore(ctx: &Ctx, hash: &str, month: &str) -> Result<(bool, OVal), Defer
     if super::apply::store_bytes(ctx.home, hash) == 0 || std::fs::metadata(super::plan::db_path(ctx.home, hash)).map_or(0, |m| m.len()) == 0 {
         return fail(&defaults::render("devswarm_cli.ret_msg_no_store", &[("hash", &hash)]));
     }
-    let raw = std::fs::read(&file).map_err(|e| Defer(format!("archive-read:{e}")))?;
-    let text = super::gz::decompress(&raw)?;
+    // Node's `readArchiveFile` throws on an archive it cannot read or inflate; the answer here is the refusal with the reason
+    let raw = match std::fs::read(&file) {
+        Ok(r) => r,
+        Err(e) => return fail(&defaults::render("devswarm_cli.ret_msg_archive_unreadable", &[("file", &rel), ("why", &e)])),
+    };
+    let text = match super::gz::decompress(&raw) {
+        Ok(x) => x,
+        Err(Defer(why)) => return fail(&defaults::render("devswarm_cli.ret_msg_archive_unreadable", &[("file", &rel), ("why", &why)])),
+    };
     let mut by_id: Vec<(i64, OVal)> = Vec::new();
     let mut lines = 0u64;
     for line in String::from_utf8_lossy(&text).split('\n') {
@@ -243,7 +284,9 @@ pub fn restore(ctx: &Ctx, hash: &str, month: &str) -> Result<(bool, OVal), Defer
 }
 
 fn restore_locked(ctx: &Ctx, hash: &str, month: &str, lines: u64, by_id: &[(i64, OVal)]) -> Result<(bool, OVal), Defer> {
-    let c = super::apply::open_rw(ctx.home, hash).map_err(|e| Defer(format!("store-open:{}", e.0)))?;
+    // Node opens the store inside its `try`: a store that will not open is the result's `error`, nothing restored
+    let opened = super::apply::open_rw(ctx.home, hash);
+    let mut error: Option<String> = None;
     let (mut restored, mut already, mut missing, mut mismatched) = (0u64, 0u64, 0u64, 0u64);
     let (mut min_id, mut max_id) = (i64::MAX, i64::MIN);
     let text_of = |v: Option<&OVal>| match v {
@@ -251,8 +294,8 @@ fn restore_locked(ctx: &Ctx, hash: &str, month: &str, lines: u64, by_id: &[(i64,
         Some(OVal::Str(x)) => Some(x.clone()),
         Some(o) => Some(o.stringify()),
     };
-    let mut error: Option<String> = None;
     let work = (|| -> rusqlite::Result<()> {
+        let Ok(c) = &opened else { return Ok(()) };
         c.execute_batch("BEGIN IMMEDIATE;")?;
         let r = (|| -> rusqlite::Result<()> {
             for (id, r) in by_id {
@@ -295,13 +338,16 @@ fn restore_locked(ctx: &Ctx, hash: &str, month: &str, lines: u64, by_id: &[(i64,
         ("archiveLines".into(), n(lines as f64)),
         ("unique".into(), n(by_id.len() as f64)),
     ];
+    if let Err(Defer(why)) = &opened {
+        error = Some(why.clone());
+    }
     if let Err(e) = work {
         error = Some(e.to_string());
     }
     let mut hold_until = None;
     if error.is_none() && restored > 0 {
         let now = ctx.now as f64;
-        let mut st = read_state(ctx.home)?;
+        let mut st = read_state(ctx.home);
         let mut list: Vec<OVal> = match st.get("holds").and_then(|h| h.get(hash)) {
             Some(OVal::Arr(a)) => a
                 .iter()
@@ -388,7 +434,7 @@ mod tests {
         let c = rusqlite::Connection::open(&db).unwrap();
         let body = |id: i64| c.query_row("SELECT body FROM messages WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
         assert_eq!((body(1), body(2), body(3)), (Some("one".into()), Some("kept".into()), None));
-        let state = read_state(&home).unwrap();
+        let state = read_state(&home);
         assert!(matches!(state.get("holds").and_then(|h| h.get(hash)), Some(OVal::Arr(a)) if a.len() == 1));
         // refusals keep Node's words
         assert_eq!(restore(&ctx, "../x", "2026-09").unwrap().1.get("error"), Some(&s("bad --store")));

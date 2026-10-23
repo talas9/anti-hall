@@ -134,7 +134,7 @@ fn parse_reader(reader: &str) -> Option<(f64, f64)> {
 }
 
 /// `legacyShortFor(reader)`: the tag the pre-Phase-3 build minted for the same harness, `sha1("anc:<pid>:<startMs>")`.
-fn legacy_short_for(reader: &str) -> Option<String> {
+pub(crate) fn legacy_short_for(reader: &str) -> Option<String> {
     let (pid, start) = parse_reader(reader)?;
     Some(cursors::short_nonce(&format!("{}{}:{}", defaults::text("update_post.anchor_prefix"), to_js_string(pid), to_js_string(start))))
 }
@@ -148,7 +148,7 @@ fn provably_ended(reader: &str, table: Option<&ProcTable>) -> bool {
 }
 
 /// `listLegacy(home, id, sep)`: `(short, value)` for every `<id><sep><short6>.json`; an unreadable file counts as 0.
-fn list_legacy(home: &Path, id: &str, sep: &str) -> Vec<(String, f64)> {
+pub(crate) fn list_legacy(home: &Path, id: &str, sep: &str) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     if !cursors::legacy_safe(id) {
         return out;
@@ -339,11 +339,10 @@ fn cwd_in_partition(cx: &mut Cx, cwd: Option<&str>, ids: &HashSet<String>) -> Op
         return Some(false);
     }
     match ident::resolve_context(cwd, false) {
-        Ok(c) => Some(c.worktree_root.is_some_and(|r| ids.contains(&ident::mesh_id_for_real_path(&r)))),
         // a resolution git could not answer (a failed or timed-out superproject query) is Node's `c.uncertain`: `null`, which every
-        // caller reads as "keep / include", never as a confident "no". Any other reason (a relative path Node would resolve against
-        // its own working directory) is not reproducible: Node's.
-        Err(d) if d.0 == "git-superproject" => None,
+        // caller reads as "keep / include", never as a confident "no"
+        Ok(c) if c.uncertain => None,
+        Ok(c) => Some(c.worktree_root.is_some_and(|r| ids.contains(&ident::mesh_id_for_real_path(&r)))),
         Err(_) => {
             cx.deferred = true;
             None

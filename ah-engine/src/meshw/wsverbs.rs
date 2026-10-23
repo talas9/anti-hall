@@ -6,10 +6,10 @@
 //! ([`crate::meshw::summary`]). `gate` appends one row per name to the `gates` table and refreshes the summary file, then
 //! prints the workspace's row of the refreshed projection; `workspaces list` is a pure read.
 //!
-//! Deferred BEFORE the first write (Node then runs the verb): setting the `merged` gate (Node asks git for the merge
-//! proof), a re-home the engine cannot prove to be a no-op, a caller outside any project (Node would open the legacy
-//! per-id bucket), a store that is not the SQLite backend, a summary the engine cannot reproduce. The gate rows are the
-//! first write; after them nothing defers.
+//! `gate --set merged` records git's merge proof beside the gate (`merged_verified`, bound to the HEAD it was computed at); a
+//! caller outside any project gates in the legacy per-id bucket; a descriptor stranded in that bucket is re-homed into the project
+//! before `workspaces list` reads. A store write that fails answers `{ ok: false, error }` with exit 2, as Node's `run()` does with
+//! the exception. The gate rows are the first write.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
@@ -18,7 +18,7 @@ use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::{Answer, Effect, hash_from_workspace_id, rehome_is_noop};
 use crate::meshw::summary;
@@ -113,23 +113,39 @@ pub(crate) fn gate_core(inv: &Inv, id: &str, set_names: &[String], clear_names: 
     {
         return Ok((false, mismatch(id, &registered, caller.as_deref())));
     }
-    // `merged` asks git for the merge proof (and warns on stderr): Node's
-    if set_names.iter().any(|x| x == defaults::text("devswarm_cli.gate_merged")) {
-        return defer("merged-proof");
-    }
     rehome_is_noop(inv, id)?;
-    // no project: Node opens the legacy per-id bucket
-    let Some(repo_key) = caller else { return defer("no-project") };
+    // no project: Node opens the legacy per-id bucket (`hashFromWorkspaceId(id)`), creating its store where it is absent
+    let repo_key = match caller {
+        Some(k) => k,
+        None => {
+            let k = hash_from_workspace_id(id);
+            common::init_new_store(inv, &k)?;
+            k
+        }
+    };
     let st = common::open_store(inv, &repo_key)?;
     summary::check(&st, inv, None)?;
     let now = inv.now;
     let mut first = true;
+    let wrote = |e: &dyn std::fmt::Display| {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false)).put("error", s(&defaults::render("devswarm_cli.msg_gate_write_failed", &[("error", &e)])));
+        (false, o.done())
+    };
     for (name, value) in set_names.iter().map(|x| (x, true)).chain(clear_names.iter().map(|x| (x, false))) {
-        st.set_gate(id, name, value, set_by, now).map_err(|e| ident::Defer(format!("gate-write:{e}")))?;
+        if let Err(e) = st.set_gate(id, name, value, set_by, now) {
+            return Ok(wrote(&e));
+        }
         if first {
             crate::meshw::mark_committed();
             first = false;
         }
+    }
+    // `merged` also records git's merge proof (report-only: the gate above is set whatever the proof says)
+    if set_names.iter().any(|x| x == defaults::text("devswarm_cli.gate_merged"))
+        && let Err(e) = record_merge_proof(&st, id, desc.as_ref(), now)
+    {
+        return Ok(wrote(&e));
     }
     let (sum, failed) = summary::derive_value(&st, inv, &repo_key)?;
     if let Some(why) = failed {
@@ -155,6 +171,23 @@ pub(crate) fn gate_core(inv: &Inv, id: &str, set_names: &[String], clear_names: 
     Ok((ws.is_some(), o.done()))
 }
 
+/// The `merged_verified` gate of `gate --set merged`: `gitMergeProof(descriptor.worktreePath)` says whether HEAD is an ancestor of the remote default
+/// branch. A proof that is not a yes or a no (no worktree, no default branch, git failing) records nothing; the verdict is stored
+/// bound to the HEAD it was computed at, and a no is also said on stderr.
+fn record_merge_proof(st: &crate::meshw::store::MeshStore, id: &str, desc: Option<&OVal>, now: i64) -> Result<(), String> {
+    let Some(OVal::Str(wt)) = desc.and_then(|d| d.get(defaults::text("mesh_write.field_worktree_path"))).filter(|w| w.truthy()) else { return Ok(()) };
+    let runner = crate::dsact::runner::System::configured();
+    let git = crate::dswire::facts::Git { runner: &runner };
+    let Some(head) = git.head(wt) else { return Ok(()) };
+    let Some(verdict) = git.merge_proof(wt, &head).0 else { return Ok(()) };
+    let by = format!("{}{head}", defaults::text("mesh_write.merged_setby_prefix"));
+    st.set_gate(id, defaults::text("mesh_write.gate_merged_verified"), verdict, &by, now).map_err(|e| e.to_string())?;
+    if !verdict {
+        eprintln!("{}", defaults::text("devswarm_cli.msg_gate_merged_unverified"));
+    }
+    Ok(())
+}
+
 /// Record the project's summary file as written by this verb (its content as it is now; a later write replaces it).
 pub(crate) fn note_summary(inv: &Inv, repo_key: &str) {
     let rel = format!(
@@ -171,13 +204,17 @@ pub(crate) fn note_summary(inv: &Inv, repo_key: &str) {
 
 // ---- workspaces list ----------------------------------------------------------------------------------------------------
 
-/// `rehomeStrandedProjectDescriptors(home, ctx)` does nothing: no descriptor of the workspaces directory is stranded in the
-/// legacy hash bucket of another project (its persisted owner key is the hash of its id and not this project's key).
-/// Whatever could be stranded defers; nothing is ever moved here.
-fn rehome_sweep_is_noop(inv: &Inv, repo_key: &str) -> R<()> {
+/// `rehomeStrandedProjectDescriptors(home, ctx)`: a descriptor of the workspaces directory that sits in the legacy hash bucket of its
+/// own id (its persisted owner key is the hash of its id) while its worktree belongs to THIS project is moved into the project's
+/// store, under the id's lock. A move that cannot be made leaves the descriptor where it is (fail-open: the list read goes on).
+fn rehome_stranded(inv: &Inv, repo_key: &str) -> R<()> {
     let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(()) };
     let suffix = defaults::text("mesh_write.json_suffix");
+    let st = inv.settings();
+    // the sync context carries the plugin root, which the move does not read
+    let root = defaults::root().unwrap_or_default();
+    let ctx = crate::dssup::tick::Ctx { home: &inv.home, root: &root, st: &st, now: inv.now, engine_pokes: false };
     for e in rd.flatten() {
         let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
         let Some(id) = name.strip_suffix(suffix) else { continue };
@@ -185,13 +222,15 @@ fn rehome_sweep_is_noop(inv: &Inv, repo_key: &str) -> R<()> {
             continue;
         }
         let Some(d) = ident::read_descriptor(&inv.home, id) else { continue };
-        match d.get("id") {
-            Some(OVal::Str(x)) if x == id => {}
-            Some(OVal::Str(_)) => continue,
-            // `String(desc.id)` of anything else: not reproduced
-            _ => return defer("descriptor-shape"),
+        // `String(desc.id) !== String(id)`
+        if crate::meshw::appverbs::concat(d.get("id")) != id {
+            continue;
         }
-        if !d.get(defaults::text("mesh_write.field_worktree_path")).is_some_and(OVal::truthy) {
+        // a worktree path that is not a string cannot resolve to a project (`descriptorFreshRepoKey` is null for it)
+        let Some(OVal::Str(wt)) = d.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy()) else { continue };
+        // a descriptor whose worktree is gone and that already has an archived marker is the stale shape this sweep leaves to the owner
+        let archived = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_archived")).join(format!("{id}{suffix}"));
+        if !std::path::Path::new(wt).exists() && archived.exists() {
             continue;
         }
         let owner = match d.get(defaults::text("mesh_write.field_owner_key")) {
@@ -202,7 +241,11 @@ fn rehome_sweep_is_noop(inv: &Inv, repo_key: &str) -> R<()> {
         if owner != Some(hash_key.as_str()) || hash_key == repo_key {
             continue;
         }
-        return defer("rehome");
+        if ident::repo_key_for_worktree(wt)?.as_deref() != Some(repo_key) {
+            continue;
+        }
+        crate::meshw::mark_committed();
+        crate::dssup::recon::rehome::core(&ctx, id, repo_key);
     }
     Ok(())
 }
@@ -234,7 +277,7 @@ pub fn run_workspaces(inv: &Inv, a: &Args) -> R<Answer> {
         None => caller_repo_key(inv)?,
     };
     if let Some(k) = &sweep_key {
-        rehome_sweep_is_noop(inv, k)?;
+        rehome_stranded(inv, k)?;
     }
     // outside a project, Node reads the default bucket (`hashFromWorkspaceId(undefined)`), creating its store where it is absent
     let repo_key = match repo_key {
@@ -247,11 +290,12 @@ pub fn run_workspaces(inv: &Inv, a: &Args) -> R<Answer> {
     };
     let st = common::open_store(inv, &repo_key)?;
     let sum = summary::compute(&st, inv, None)?;
-    let Some(OVal::Obj(all)) = sum.get("workspaces") else { return defer("summary-shape") };
-    if all.iter().any(|(k, _)| crate::checks::guardkit::ojson::is_array_index_key(k)) {
-        return defer("integer-keys");
-    }
-    let rows: Vec<OVal> = all.iter().map(|(_, v)| v.clone()).collect();
+    // `Object.values(sum.workspaces || {})`: the summary always holds the workspaces object (`summary::compute` builds it), and
+    // the values come in JavaScript's key order (integer-like keys first)
+    let rows: Vec<OVal> = match sum.get("workspaces") {
+        Some(OVal::Obj(all)) => crate::meshw::appverbs::js_entries(all).into_iter().map(|(_, v)| v.clone()).collect(),
+        _ => Vec::new(),
+    };
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(true))
         .put("action", s(defaults::text("devswarm_cli.action_workspaces")))
@@ -261,4 +305,155 @@ pub fn run_workspaces(inv: &Inv, a: &Args) -> R<Answer> {
     }
     o.put("count", n(rows.len() as f64)).put("workspaces", OVal::Arr(rows));
     Ok(answer(0, o.done()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meshw::store::MeshStore;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-wsverbs-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::canonicalize(&d).unwrap()
+    }
+
+    fn inv(home: &Path, cwd: &Path) -> Inv {
+        Inv {
+            home: home.to_path_buf(),
+            write_home: home.to_path_buf(),
+            env: Default::default(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            now: 1_000_000,
+            stdin: None,
+            store_override: None,
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn descriptor(home: &Path, id: &str, worktree: &Path, extra: &str) {
+        let dir = devswarm_root(home).join("workspaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = format!(r#"{{"id":"{id}","worktreePath":"{}","sessionId":"s1"{extra}}}"#, worktree.display());
+        std::fs::write(dir.join(format!("{id}.json")), text).unwrap();
+    }
+
+    fn args(words: &[&str]) -> Args {
+        crate::meshw::args::parse(&words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>())
+    }
+
+    /// A caller outside any project gates in the legacy per-id bucket (`hashFromWorkspaceId(id)`), which Node creates on the way.
+    #[test]
+    fn a_gate_outside_any_project_lands_in_the_legacy_bucket() {
+        let home = scratch("noproject-home");
+        let cwd = scratch("noproject-cwd");
+        descriptor(&home, "ws-1", &cwd, "");
+        let ans = run_gate(&inv(&home, &cwd), &args(&["gate", "ws-1", "--set", "done"])).unwrap();
+        assert!(ans.stdout.contains(r#""tracked":false"#), "{}", ans.stdout);
+        let bucket = devswarm_root(&home).join("store").join(hash_from_workspace_id("ws-1"));
+        let conn = rusqlite::Connection::open(bucket.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let gate: (String, i64) = conn.query_row("SELECT gate_name, value FROM gates WHERE workspace_id = 'ws-1'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(gate, ("done".to_string(), 1));
+    }
+
+    /// `gate --set merged` records git's proof beside the gate, bound to the HEAD it was computed at: a yes when HEAD is in the remote
+    /// default branch, a no (also said on stderr) when it is not, nothing when git cannot say.
+    #[test]
+    fn setting_merged_records_the_merge_proof_bound_to_head() {
+        let root = scratch("merged");
+        let (origin, work) = (root.join("origin.git"), root.join("work"));
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+        git(&root, &["clone", "-q", origin.to_str().unwrap(), "work"]);
+        git(&work, &["config", "user.email", "t@example.invalid"]);
+        git(&work, &["config", "user.name", "t"]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        git(&work, &["remote", "set-head", "origin", "main"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let st = MeshStore::open(&root.join("store.db")).unwrap();
+        let desc = OVal::parse(&format!(r#"{{"id":"w","worktreePath":"{}"}}"#, work.display())).unwrap();
+        let verified = || -> Vec<(bool, String)> {
+            let conn = rusqlite::Connection::open(root.join("store.db")).unwrap();
+            let mut q = conn.prepare("SELECT value, set_by FROM gates WHERE workspace_id = 'w' AND gate_name = 'merged_verified' ORDER BY rowid").unwrap();
+            q.query_map([], |r| Ok((r.get::<_, i64>(0)? == 1, r.get::<_, String>(1)?))).unwrap().map(Result::unwrap).collect()
+        };
+        record_merge_proof(&st, "w", Some(&desc), 5).unwrap();
+        let prefix = defaults::text("mesh_write.merged_setby_prefix");
+        assert_eq!(verified(), vec![(true, format!("{prefix}{head}"))]);
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let head2 = git(&work, &["rev-parse", "HEAD"]);
+        record_merge_proof(&st, "w", Some(&desc), 6).unwrap();
+        assert_eq!(verified().last(), Some(&(false, format!("{prefix}{head2}"))));
+        let before = verified().len();
+        record_merge_proof(&st, "w", None, 7).unwrap();
+        record_merge_proof(&st, "w", Some(&OVal::parse(r#"{"worktreePath":5}"#).unwrap()), 7).unwrap();
+        assert_eq!(verified().len(), before, "no worktree, or one that is no path: no proof, nothing recorded");
+    }
+
+    /// `Object.values` lists integer-like workspace ids first, ascending; a workspace list answers instead of handing the order to Node.
+    #[test]
+    fn workspaces_list_orders_integer_like_ids_first() {
+        let home = scratch("list-home");
+        let cwd = scratch("list-cwd");
+        let db = home.join("fixture.db");
+        let st = MeshStore::open(&db).unwrap();
+        for id in ["beta", "10", "9", "alpha"] {
+            st.upsert_registry(
+                &crate::meshw::store::RegistryRow { id: id.into(), worktree_path: Some(format!("/w/{id}")), ..Default::default() },
+                1,
+                |a, b| a == b,
+            )
+            .unwrap();
+        }
+        let mut i = inv(&home, &cwd);
+        i.store_override = Some(db);
+        let ans = run_workspaces(&i, &args(&["workspaces", "list"])).unwrap();
+        let ids: Vec<String> = OVal::parse(ans.stdout.trim())
+            .and_then(|v| match v.get("workspaces") {
+                Some(OVal::Arr(rows)) => Some(rows.iter().map(|r| crate::meshw::appverbs::concat(r.get("id"))).collect()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert_eq!(ids, ["9", "10", "alpha", "beta"], "{}", ans.stdout);
+    }
+
+    /// A descriptor stranded in the legacy hash bucket whose worktree belongs to this project is moved into the project's store before
+    /// `workspaces list` reads, as `rehomeStrandedProjectDescriptors` does; a descriptor of another project stays where it is.
+    #[test]
+    fn workspaces_list_rehomes_a_stranded_descriptor_of_this_project() {
+        let home = scratch("rehome-home");
+        let repo = scratch("rehome-repo");
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let i = inv(&home, &repo);
+        let key = ident::repo_key_for_worktree(repo.to_str().unwrap()).unwrap().unwrap();
+        let bucket = hash_from_workspace_id("stranded-1");
+        assert_ne!(key, bucket);
+        descriptor(&home, "stranded-1", &repo, &format!(r#","ownerKey":"{bucket}""#));
+        common::init_new_store(&i, &bucket).unwrap();
+        let from = common::open_store(&i, &bucket).unwrap();
+        let row = crate::meshw::store::RegistryRow {
+            id: "stranded-1".into(),
+            worktree_path: Some(repo.to_string_lossy().into_owned()),
+            session_id: Some("s1".into()),
+            ..Default::default()
+        };
+        from.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        let ids = |k: &str| -> Vec<String> {
+            common::open_store(&i, k).unwrap().reader().roster().unwrap().iter().filter_map(|r| r["id"].as_str().map(str::to_string)).collect()
+        };
+        assert_eq!(ids(&bucket), ["stranded-1"]);
+        let ans = run_workspaces(&i, &args(&["workspaces", "list"])).unwrap();
+        assert!(ans.stdout.contains(r#""ok":true"#), "{}", ans.stdout);
+        assert_eq!(ids(&key), ["stranded-1"], "the row now lives in the project's store");
+        assert!(ids(&bucket).is_empty(), "and no longer in the legacy bucket");
+    }
 }

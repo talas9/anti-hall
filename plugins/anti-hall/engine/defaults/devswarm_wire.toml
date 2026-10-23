@@ -233,6 +233,35 @@ value = ".jsonl"
 
 # ---- consumers --------------------------------------------------------------------------------------------------------------
 
+[devswarm_wire.idle_tail_bytes]
+doc = "How much of the end of a candidate's transcript the idle check reads (Node: TAIL_BYTES of devswarm-idle.js)."
+value = 2097152
+unit = "bytes"
+
+[devswarm_wire.idle_background_marker]
+doc = "Text in a transcript's tail that shows the child launched background work; the idle check then holds the workspace, because Node waits for that work to report."
+value = "\"run_in_background\":true"
+
+[devswarm_wire.idle_type_assistant]
+doc = "The transcript entry type of the model's turn."
+value = "assistant"
+
+[devswarm_wire.idle_type_user]
+doc = "The transcript entry type of a prompt or a tool result."
+value = "user"
+
+[devswarm_wire.idle_stop_pointer]
+doc = "Where an assistant entry records why it stopped."
+value = "/message/stop_reason"
+
+[devswarm_wire.idle_stop_end_turn]
+doc = "The stop reason of an assistant entry that finished its turn."
+value = "end_turn"
+
+[devswarm_wire.msg_idle_uncertain]
+doc = "The log line when an auto-archive candidate is held because its idleness cannot be proven. {id}."
+value = "auto-archive candidate {id} held: idle uncertain"
+
 [devswarm_wire.advisory_enabled]
 doc = "Inject a one-paragraph note of the DevSwarm workspace changes a session has not seen yet (the `devswarm-rt-advisory` hook check). Off turns the injection off; the state is still kept."
 value = true

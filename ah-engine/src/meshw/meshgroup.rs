@@ -239,17 +239,20 @@ pub struct Dedup {
 
 impl Dedup {
     /// `consumedDedupSeed(store, id, cursor, cap)`: the newest `cap` rows of the caller's own partition below its read position.
+    ///
+    /// A store read that fails gives an EMPTY seed, as Node's `try { rows = s.listMessages(id) || []; } catch (_) { return out; }`
+    /// does (`devswarm-lib/fold.js` `consumedDedupSeed`): a seed is only a dedup hint, so an unreadable history dedups less, never loses a row.
     pub fn seed(reader: &MeshReader, id: &str, cursor: f64) -> R<Dedup> {
         let mut d = Dedup { hashes: HashSet::new(), logical: HashSet::new() };
         let c = if cursor.is_finite() && cursor > 0.0 { cursor.floor() as u64 } else { 0 };
         if c == 0 {
             return Ok(d);
         }
-        let total = reader.message_count(id).map_err(|e| ident::Defer(format!("store-read:{e}")))?;
+        let Ok(total) = reader.message_count(id) else { return Ok(d) };
         let end = c.min(total);
         let start = end.saturating_sub(defaults::num("mesh_write.consumed_hash_seed_cap") as u64);
         let mut seen = start;
-        reader
+        let read = reader
             .for_each_message(id, start, |row| {
                 if seen >= end {
                     return false;
@@ -265,8 +268,10 @@ impl Dedup {
                     d.logical.insert(k);
                 }
                 true
-            })
-            .map_err(|e| ident::Defer(format!("store-read:{e}")))?;
+            });
+        if read.is_err() {
+            d = Dedup { hashes: HashSet::new(), logical: HashSet::new() }; // Node returns the empty seed, not a partial one
+        }
         Ok(d)
     }
 
@@ -349,6 +354,15 @@ mod tests {
 
     fn row(hash: &str, sender: &str, ts: f64, body: &str) -> Value {
         json!({"hash": hash, "sender": sender, "recipient": "me", "mtype": "direct", "isHeartbeat": false, "ts": ts, "body": body, "urgency": "normal", "needsReply": false, "origHash": null})
+    }
+
+    /// Node's `consumedDedupSeed` returns the empty seed when the store read throws; it never hands the verb to Node.
+    #[test]
+    fn an_unreadable_store_gives_an_empty_seed_not_a_deferral() {
+        let reader = MeshReader::from_conn(rusqlite::Connection::open_in_memory().unwrap()); // no tables: every read fails
+        assert!(reader.message_count("w1").is_err());
+        let d = Dedup::seed(&reader, "w1", 5.0).expect("an unreadable history is an empty seed");
+        assert!(d.hashes.is_empty() && d.logical.is_empty());
     }
 
     #[test]

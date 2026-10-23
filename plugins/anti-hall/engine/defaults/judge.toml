@@ -110,6 +110,14 @@ value = 1048576
 doc = "The backend name a telemetry row gives a call through the Claude CLI."
 value = "haiku-cli"
 
+[judge.backend_api]
+doc = "The backend name a telemetry row gives a call that needed the Anthropic Messages API, which the engine never makes."
+value = "anthropic-api"
+
+[judge.err_api_refused]
+doc = "Telemetry error word: a label the Jev answer left open would have been asked of the Anthropic Messages API (a key is visible), which the engine does not call; the label stays open, as it does when no key is visible."
+value = "api-not-called"
+
 [judge.backend_jev]
 doc = "The backend name a telemetry row gives a Jev call."
 value = "jev"
@@ -309,7 +317,7 @@ doc = "A call starts only with more than this much of the budget left, and gets 
 value = 50
 
 [triage.backend_setting]
-doc = "Which backend labels mesh messages: jev (default, today's behaviour: Jev first, the Anthropic API fills a missing label when a key is visible) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND."
+doc = "Which backend labels mesh messages: jev (default: Jev first; a label Jev leaves open stays open, because the engine never calls the Anthropic API, and with a key visible it counts an api-not-called row in the judge telemetry) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND."
 value = { section = "jev", key = "triageBackend", env = "ANTIHALL_JEV_TRIAGE_BACKEND", aliases = [], option = "", default = "jev", values = ["jev", "haiku", "cascade"] }
 
 [triage.backend_haiku]
@@ -331,10 +339,6 @@ value = "unknown"
 [triage.integration]
 doc = "The integration name telemetry rows of triage calls carry."
 value = "triage"
-
-[msg.jev_triage_defer]
-doc = "Said on stderr when `jev triage` leaves the run to the Node worker (it would need the Anthropic API, which only Node calls); the exit code is dispatch.defer_exit."
-value = "ah-engine jev triage: this run needs the Anthropic API, which the engine does not call; run hooks/lib/jev-triage-worker.js"
 
 # ---- the Jev cascade (ah-engine src/jev/cascade.rs): Jev first, the model when Jev is unsure ------------------------
 

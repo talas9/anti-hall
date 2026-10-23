@@ -357,21 +357,21 @@ fn relay_matches_node() {
         r("relay-with-an-empty-note", &["relay", "1", "--to", "child-2", "--note-file", &empty_s], "child", true),
         r("relay-seq-as-a-float-is-floored", &["relay", "1.9", "--to", "child-2"], "child", true),
         r("relay-a-primary-message-to-a-child", &["relay", "7", "--to", "child-1"], "main", true),
-        r("relay-to-the-primary-id-is-node", &["relay", "1", "--to", &primary], "child", false),
-        r("relay-an-unreadable-note", &["relay", "1", "--to", "child-2", "--note-file", &missing_s], "child", false),
-        r("relay-seq-not-in-my-inbox", &["relay", "2", "--to", "child-2"], "child", false),
-        r("relay-unknown-seq", &["relay", "999", "--to", "child-2"], "child", false),
-        r("relay-negative-seq", &["relay", "-1", "--to", "child-2"], "child", false),
-        r("relay-seq-not-a-number", &["relay", "abc", "--to", "child-2"], "child", false),
-        r("relay-a-receipt-is-node", &["relay", "r123abc", "--to", "child-2"], "child", false),
-        r("relay-no-recipient", &["relay", "1"], "child", false),
-        r("relay-no-seq", &["relay", "--to", "child-2"], "child", false),
-        r("relay-unregistered-recipient", &["relay", "1", "--to", "nobody"], "child", false),
-        r("relay-to-myself", &["relay", "1", "--to", "child-1"], "child", false),
-        r("relay-several-recipients", &["relay", "1", "--to", "child-1,child-2"], "child", false),
-        r("relay-outside-a-project", &["relay", "1", "--to", "child-2"], "nongit", false),
+        r("relay-to-the-primary-id-is-node", &["relay", "1", "--to", &primary], "child", true),
+        r("relay-an-unreadable-note", &["relay", "1", "--to", "child-2", "--note-file", &missing_s], "child", true),
+        r("relay-seq-not-in-my-inbox", &["relay", "2", "--to", "child-2"], "child", true),
+        r("relay-unknown-seq", &["relay", "999", "--to", "child-2"], "child", true),
+        r("relay-negative-seq", &["relay", "-1", "--to", "child-2"], "child", true),
+        r("relay-seq-not-a-number", &["relay", "abc", "--to", "child-2"], "child", true),
+        r("relay-a-receipt-is-node", &["relay", "r123abc", "--to", "child-2"], "child", true),
+        r("relay-no-recipient", &["relay", "1"], "child", true),
+        r("relay-no-seq", &["relay", "--to", "child-2"], "child", true),
+        r("relay-unregistered-recipient", &["relay", "1", "--to", "nobody"], "child", true),
+        r("relay-to-myself", &["relay", "1", "--to", "child-1"], "child", true),
+        r("relay-several-recipients", &["relay", "1", "--to", "child-1,child-2"], "child", true),
+        r("relay-outside-a-project", &["relay", "1", "--to", "child-2"], "nongit", true),
     ];
-    check(&fx, &cases, &[], 7, 8);
+    check(&fx, &cases, &[], 27, 0);
 }
 
 // ---- archive-request -----------------------------------------------------------------------------------------------------
@@ -399,23 +399,23 @@ fn archive_request_matches_node() {
         ar("ar-prefix-resolves-to-one", &["archive-request", "child-2"], "main", true),
         ar("ar-ambiguous-prefix", &["archive-request", "child-"], "main", true),
         ar("ar-mesh-label-resolves", &["archive-request", &fx.child_mesh], "main", true),
-        ar("ar-unknown-id-makes-an-orphan-partition-is-node", &["archive-request", "nope"], "main", false),
-        ar("ar-archived-id-with-mail-is-node", &["archive-request", "child-3"], "main", false),
+        ar("ar-unknown-id-makes-an-orphan-partition-is-node", &["archive-request", "nope"], "main", true),
+        ar("ar-archived-id-with-mail-is-node", &["archive-request", "child-3"], "main", true),
         ar("ar-from-a-child", &["archive-request", "child-2"], "child", true),
         ar("ar-live-target-with-a-descriptor", &["archive-request", "child-1"], "main", true).setup(move |h| {
             descriptor(h);
             fresh(h);
         }),
-        ar("ar-stale-target-is-node", &["archive-request", "child-1"], "main", false).setup(move |h| {
+        ar("ar-stale-target-is-node", &["archive-request", "child-1"], "main", true).setup(move |h| {
             d2(h);
             stale(h);
         }),
-        ar("ar-target-without-a-heartbeat-is-node", &["archive-request", "child-1"], "main", false).setup(d3),
+        ar("ar-target-without-a-heartbeat-is-node", &["archive-request", "child-1"], "main", true).setup(d3),
         ar("ar-unsafe-id", &["archive-request", "../x"], "main", true),
         ar("ar-no-id", &["archive-request"], "main", true),
-        ar("ar-outside-a-project", &["archive-request", "child-1"], "nongit", false),
+        ar("ar-outside-a-project", &["archive-request", "child-1"], "nongit", true),
     ];
-    check(&fx, &cases, &[], 10, 5);
+    check(&fx, &cases, &[], 15, 0);
 }
 
 // ---- nudge ---------------------------------------------------------------------------------------------------------------
@@ -439,12 +439,12 @@ fn nudge_matches_node() {
         nu("nudge-unknown-id-from-a-child-worktree", &["nudge", "nobody"], "child", true),
         // the id is resolved through the project's store first (Node's `resolveTargetId`); outside a project Node opens a store
         // under an empty key, which the engine leaves to Node
-        nu("nudge-outside-a-project", &["nudge", "nobody"], "nongit", false),
-        nu("nudge-a-registered-id-without-a-descriptor-is-node", &["nudge", "child-1"], "main", false),
-        nu("nudge-a-mesh-label-is-node", &["nudge", &fx.child_mesh], "main", false),
-        nu("nudge-with-a-descriptor-is-node", &["nudge", "child-1"], "main", false).setup(with_descriptor),
+        nu("nudge-outside-a-project", &["nudge", "nobody"], "nongit", true),
+        nu("nudge-a-registered-id-without-a-descriptor-is-node", &["nudge", "child-1"], "main", true),
+        nu("nudge-a-mesh-label-is-node", &["nudge", &fx.child_mesh], "main", true),
+        nu("nudge-with-a-descriptor-is-node", &["nudge", "child-1"], "main", true).setup(with_descriptor),
     ];
-    check(&fx, &cases, &[], 4, 3);
+    check(&fx, &cases, &[], 8, 0);
 }
 
 // ---- supervision-report --------------------------------------------------------------------------------------------------

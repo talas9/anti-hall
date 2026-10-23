@@ -83,6 +83,7 @@ mod mesh_parity;
 mod migrate_parity;
 mod model_routing_parity;
 mod native_session_checks;
+mod mesh_no_node_defers;
 mod no_compiled_config;
 mod no_hardcoded_tunables;
 mod nodeback;

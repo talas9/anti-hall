@@ -646,7 +646,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             extra: vec![],
             ack: none(),
             union: none(),
-            native: false,
+            native: true,
             expect: vec!["\"action\":\"heartbeat\""],
         },
         Case {
@@ -656,7 +656,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             extra: vec![("DEVSWARM_SOURCE_BRANCH", s("feat")), ("DEVSWARM_BUILDER_ID", s("other-builder"))],
             ack: none(),
             union: none(),
-            native: false,
+            native: true,
             expect: vec!["\"action\":\"heartbeat\""],
         },
         Case {
@@ -678,7 +678,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
                 vec![],
             ),
             union: none(),
-            native: false,
+            native: true,
             expect: vec!["\"ok\":true"],
         },
         Case {
@@ -711,7 +711,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
                 let wt = wt.clone();
                 move |_| json!({"files": [{"rel": ".anti-hall/devswarm/workspaces/child-1.json", "text": json!({"id": "someone-else", "worktreePath": wt.to_string_lossy()}).to_string()}]})
             }),
-            native: false,
+            native: true,
             expect: vec!["\"ok\":true"],
         },
         Case {
@@ -724,7 +724,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
                 let key = fx.repo_key.clone();
                 move |_| json!({"files": [{"rel": format!(".anti-hall/devswarm/store/{key}/BACKEND"), "text": "journal"}]})
             }),
-            native: false,
+            native: true,
             expect: vec!["\"ok\":true"],
         },
         Case {
@@ -734,7 +734,7 @@ fn cases(fx: &Fx) -> Vec<Case> {
             extra: vec![],
             ack: none(),
             union: none(),
-            native: false,
+            native: true,
             expect: vec!["invalid or missing workspace id"],
         },
     ]
@@ -791,7 +791,7 @@ fn heartbeat_matches_node_byte_for_byte_and_defers_without_writing() {
         }
     }
     eprintln!("heartbeat parity: {} cases, {native} answered by the engine and identical to Node, {deferred} deferred with nothing written", list.len());
-    assert!(native >= 37 && deferred >= 6, "{native} native, {deferred} deferred");
+    assert!(native >= 43, "{native} native, {deferred} deferred");
 }
 
 /// Input faults: whatever the engine cannot read exactly like Node, it must leave untouched for Node.
@@ -849,7 +849,7 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
                 |_| json!({"files": [{"rel": "inbox/child-1.ndjson", "text": "{\"message\":\"x\"}\n"}, {"rel": "cursors-nd/child-1.txt", "text": "{\"line\":[1]}"}]}),
             ),
             floors: floors("child-1", 2, 0),
-            native: false,
+            native: true,
         },
         Fault {
             name: "cursor-file-negative",
@@ -865,7 +865,7 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
                 |_| json!({"files": [{"rel": "inbox/child-1.ndjson", "text": "{\"message\":\"x\"}\n"}, {"rel": "cursors-nd/child-1.txt", "text": "99999999999999999999999"}]}),
             ),
             floors: floors("child-1", 2, 0),
-            native: false,
+            native: true,
         },
         Fault {
             name: "inbox-line-with-array-hash",
@@ -873,7 +873,7 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
                 |_| json!({"files": [{"rel": "inbox/child-1.ndjson", "text": "{\"_h\":[1],\"message\":\"x\"}\n"}, {"rel": "cursors-nd/child-1.txt", "text": "0"}]}),
             ),
             floors: floors("child-1", 2, 0),
-            native: false,
+            native: true,
         },
         Fault {
             name: "inbox-line-with-numeric-hash",
@@ -907,7 +907,7 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
                 move |_| json!({"files": [{"rel": format!(".anti-hall/devswarm/store/{key}/devswarm.db"), "text": "this is not sqlite"}, {"rel": "inbox/child-1.ndjson", "text": "{\"message\":\"x\"}\n"}, {"rel": "cursors-nd/child-1.txt", "text": "0"}]})
             }),
             floors: vec![],
-            native: false,
+            native: true,
         },
         Fault {
             name: "backend-marker-missing",
@@ -920,7 +920,7 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
                 }
             }),
             floors: floors("child-1", 2, 0),
-            native: false,
+            native: true,
         },
     ];
     let (mut native, mut deferred) = (0, 0);
@@ -958,5 +958,5 @@ fn faulty_inputs_are_reproduced_or_deferred_without_a_write() {
         }
     }
     eprintln!("heartbeat fault parity: {native} reproduced exactly, {deferred} deferred untouched");
-    assert!(native >= 7 && deferred >= 5);
+    assert!(native >= 12);
 }

@@ -343,10 +343,12 @@ fn s1_repo_unknown_matches_node() {
     j.scope.files.push(rel);
     agreed(&f, &j);
     t.case(true);
-    // a cut through a surrogate pair is the engine's deferral, not a guess
+    // a cut through a surrogate pair leaves a lone surrogate in JavaScript, which a Rust string cannot hold: the engine cuts one unit
+    // earlier (the same cut every time), and answers
     let long = format!("{}{}", "a".repeat(299), "\u{1F600}");
-    assert!(side::plan_repo_unknown_record(&f.home, "rk4", "list", &long, NOW).is_err());
-    t.case(false);
+    let p = side::plan_repo_unknown_record(&f.home, "rk4", "list", &long, NOW).unwrap();
+    assert!(!p.unit.ops.is_empty(), "the marker is written with the cut text");
+    t.case(true);
     t.print();
 }
 
@@ -405,7 +407,7 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     j.scope.files.push(rel.clone());
     agreed(&f, &j);
     t.case(true);
-    // a second project, a relative worktree (deferred)
+    // a second project, a relative worktree (resolved against the process directory)
     let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2)), ("rk2".into(), recs(1))], NOW + 4, 0.0).unwrap();
     let mut j = job_for("ac5", vec![p], &[]);
     j.scope.files.push(rel);
@@ -415,8 +417,11 @@ fn s1_active_cache_matches_node_including_the_floor_guard() {
     agreed(&f, &j);
     t.case(true);
     let rel_wt = OVal::Arr(vec![OVal::Obj(vec![("id".into(), OVal::Str("i".into())), ("worktreePath".into(), OVal::Str("relative/p".into()))])]);
-    assert!(side::plan_active_cache(&f.home, &[("rk".into(), rel_wt)], NOW, floor).is_err());
-    t.case(false);
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), rel_wt)], NOW, floor).unwrap();
+    let written = p.unit.ops.iter().find_map(|o| if let ah_engine::dssup::recon::Op::Write { bytes, .. } = o { Some(String::from_utf8_lossy(bytes).into_owned()) } else { None });
+    let cwd = std::env::current_dir().unwrap().join("relative/p");
+    assert!(written.is_some_and(|w| w.contains(&cwd.to_string_lossy().into_owned())), "the relative worktree is resolved against the process directory");
+    t.case(true);
     t.print();
 }
 
@@ -972,7 +977,12 @@ fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
             }
             (got, want) => panic!("{}: got {:?} want {want:?}", c.name, got.map(|r| (r.verdict, r.result)).map_err(|d| d.0)),
         }
-        assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+        // message rows are only ever added (a forward into a survivor), never removed; a case without a forward adds none
+        if c.want.is_ok() {
+            assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+        } else {
+            assert!(msg_count(&f, &key) >= before_msgs, "{}: a message row was removed", c.name);
+        }
     }
     t.print();
 }
@@ -1795,9 +1805,13 @@ fn s6_ghost_rows_match_nodes_ghost_registry_rows() {
     // the age bar comes from the environment, as in Node
     let mut env = HashMap::new();
     env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "2".to_string());
-    assert_eq!(fold::ghost_age_ms(&env).unwrap(), 7_200_000.0);
-    env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "0x10".to_string());
-    assert!(fold::ghost_age_ms(&env).is_err());
+    assert_eq!(fold::ghost_age_ms(&env), 7_200_000.0);
+    // `Number(raw)`: hex and exponent spellings read as JavaScript reads them; anything not a positive number is the default
+    let default_ms = ah_engine::defaults::num("devswarm_recon.ghost_age_default_h") as f64 * 3_600_000.0;
+    for (raw, want) in [("0x10", 16.0 * 3_600_000.0), ("1e1", 36_000_000.0), (" 3 ", 3.0 * 3_600_000.0), ("-3", default_ms), ("abc", default_ms), ("", default_ms)] {
+        env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), raw.to_string());
+        assert_eq!(fold::ghost_age_ms(&env), want, "{raw:?}");
+    }
 }
 
 #[test]
@@ -2122,4 +2136,80 @@ fn no_message_row_is_deleted_or_updated() {
     // and no op of the vocabulary can address a message row
     let ops = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
     assert!(!ops.contains("Message"));
+}
+
+// ---- the orphan heal answers every shape itself (no hand-off) -----------------------------------------------------------------
+
+/// A live registry row `w1` with a descriptor on the worktree: the family survivor of the orphan cases below.
+fn family_with_survivor(f: &Fix) -> (String, String) {
+    let (p, k, _) = base(f);
+    f.row(&k, "w1", &p, "s1");
+    f.descriptor("w1", &desc_json("w1", &p, "s1", None, None));
+    (p, k)
+}
+
+#[test]
+fn an_archived_orphan_forwards_its_unread_into_the_live_survivor_of_its_family() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-arch-fwd");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(0), Some(1)), "{}", run.result);
+    assert_eq!(run.result["detail"][0]["action"], "forwarded-only", "{}", run.result);
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["[forwarded from archived o1] hello".to_string()]);
+    assert!(!f.rows(&k).contains(&"o1".to_string()), "an archived id is never adopted");
+    // idempotent: the same hash is ignored the second time
+    let again = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(again.result["forwarded"], 0, "{}", again.result);
+    assert_eq!(f.msgs_in(&k, "w1").len(), 1);
+}
+
+#[test]
+fn an_archived_orphan_without_unread_a_family_or_fresh_rows_is_classified_not_handed_back() {
+    if !have("git") {
+        return;
+    }
+    // drained: only a cursor known, nothing unread
+    let f = fix("orph-arch-drained");
+    let (p, k) = family_with_survivor(&f);
+    f.store(&k).set_cursor("o1", 0, 10).unwrap();
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedDrained"].as_u64(), run.result["unhealable"].as_u64()), (Some(1), Some(0)), "{}", run.result);
+    // no family at all
+    let g = fix("orph-arch-nofam");
+    let (p, k, _) = base(&g);
+    g.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    g.put(&g.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&g.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(run.result["detail"][0]["reason"], "archived-no-family", "{}", run.result);
+    // every unread row past the age cap: archived-stale, nothing forwarded
+    let h = fix("orph-arch-stale");
+    let (p, k) = family_with_survivor(&h);
+    h.msg_at(&k, "o1", NOW - 90 * 86_400_000, "old", "x");
+    h.put(&h.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&h.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedStale"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(0)), "{}", run.result);
+    assert!(h.msgs_in(&k, "w1").is_empty());
+}
+
+#[test]
+fn an_adopted_orphan_in_a_family_forwards_its_unread_into_the_survivor() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-adopt-fam");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o2", NOW - 1_000, "for the family", "x");
+    f.descriptor("o2", &desc_json("o2", &p, "so2", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(1)), "{}", run.result);
+    assert!(f.rows(&k).contains(&"o2".to_string()), "the descriptor-backed row is adopted and stays");
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["for the family".to_string()]);
 }

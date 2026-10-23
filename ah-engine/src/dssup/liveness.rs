@@ -22,7 +22,7 @@ use crate::defaults;
 use crate::dsact::runner::{RunSpec, Runner};
 use crate::mesh::MeshReader;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::union;
 use std::os::unix::fs::MetadataExt;
@@ -88,11 +88,10 @@ pub fn read_descriptors(home: &Path) -> Vec<Desc> {
     out
 }
 
-fn text_field(d: &Desc, key: &str) -> R<String> {
-    match d.raw.get(defaults::text(key)) {
-        Some(OVal::Str(s)) => Ok(s.clone()),
-        _ => defer("descriptor-field-type"),
-    }
+/// `String(d.field)`: the sweep only reads descriptors whose worktree and session are truthy, and Node joins them into paths as text
+/// whatever their JSON type (a number, an array, an object).
+fn text_field(d: &Desc, key: &str) -> String {
+    d.raw.get(defaults::text(key)).map(super::appsync::plan::js_str).unwrap_or_default()
 }
 
 fn finite(v: Option<&OVal>) -> Option<f64> {
@@ -138,11 +137,11 @@ pub(crate) fn transcript_mtime(home: &Path, wt: &str, session: &str) -> R<Option
     if session.is_empty() {
         return Ok(None);
     }
-    if session.contains('/') || session.contains('\\') || session.contains("..") {
-        return defer("session-path");
-    }
+    // `path.join(projectDir, sessionId + '.jsonl')` resolves `..` and `.` segments lexically, so a session text that climbs out of the
+    // project directory is stat'd where Node would stat it (a read of the mtime and nothing else)
     let dir = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("devswarm_sup.lv_projects_dir")).join(encode_worktree(wt));
-    Ok(std::fs::metadata(dir.join(format!("{session}{}", defaults::text("devswarm_sup.lv_transcript_ext")))).ok().map(|m| mtime_ms(&m)))
+    let joined = format!("{}/{session}{}", dir.to_string_lossy(), defaults::text("devswarm_sup.lv_transcript_ext"));
+    Ok(std::fs::metadata(crate::checks::git::util::posix_normalize(&joined)).ok().map(|m| mtime_ms(&m)))
 }
 
 /// The path of a session's transcript (`projectDirFor(wt)/<session>.jsonl`); `None` for a session name that could leave the directory.
@@ -233,14 +232,16 @@ fn run_git_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
 }
 
 /// `Number(rec.pid)` for the JSON value of a session record.
-fn js_pid(v: Option<&OVal>) -> R<f64> {
+fn js_pid(v: Option<&OVal>) -> f64 {
     match v {
-        None => Ok(f64::NAN),
-        Some(OVal::Null) => Ok(0.0),
-        Some(OVal::Num(n)) => Ok(*n),
-        Some(OVal::Bool(b)) => Ok(f64::from(u8::from(*b))),
-        Some(OVal::Str(s)) => Ok(js_number_of_str(s)),
-        Some(_) => defer("session-pid-type"),
+        None => f64::NAN,
+        Some(OVal::Null) => 0.0,
+        Some(OVal::Num(n)) => *n,
+        Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
+        Some(OVal::Str(s)) => js_number_of_str(s),
+        // an array reads as its joined text (`Number([5])` is 5, `Number([])` 0, `Number([1, 2])` NaN); an object is NaN
+        Some(a @ OVal::Arr(_)) => js_number_of_str(&super::appsync::plan::js_str(a)),
+        Some(OVal::Obj(_)) => f64::NAN,
     }
 }
 
@@ -292,16 +293,13 @@ pub(crate) fn session_state(home: &Path, session: &str) -> R<Option<bool>> {
         }
         let sid = match rec.get(defaults::text("mesh_write.field_session_id")) {
             None | Some(OVal::Null) => continue,
-            Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
-            Some(OVal::Bool(b)) => b.to_string(),
-            Some(_) => return defer("session-record-type"),
+            Some(v) => super::appsync::plan::js_str(v), // `String(rec.sessionId)`
         };
         if sid != session {
             continue;
         }
         let since = std::fs::metadata(&file).ok().map(|m| mtime_ms(&m)).filter(|t| t.is_finite());
-        match pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid")))?, since) {
+        match pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid"))), since) {
             Some(true) => return Ok(Some(true)),
             Some(false) => verdict = Some(false),
             None => {}
@@ -332,16 +330,13 @@ pub(crate) fn session_worktree_coherent(home: &Path, session: &str, worktree: &s
         }
         let sid = match rec.get(defaults::text("mesh_write.field_session_id")) {
             None | Some(OVal::Null) => continue,
-            Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
-            Some(OVal::Bool(b)) => b.to_string(),
-            Some(_) => return defer("session-record-type"),
+            Some(v) => super::appsync::plan::js_str(v), // `String(rec.sessionId)`
         };
         if sid != session {
             continue;
         }
         let since = std::fs::metadata(&file).ok().map(|m| mtime_ms(&m)).filter(|t| t.is_finite());
-        if pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid")))?, since) == Some(false) {
+        if pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid"))), since) == Some(false) {
             continue;
         }
         any_live = true;
@@ -451,8 +446,8 @@ pub struct Env<'a> {
 pub fn compute(e: &Env, d: &Desc) -> R<Computed> {
     let home = e.inv.home.as_path();
     let now = e.inv.now as f64;
-    let wt = text_field(d, "mesh_write.field_worktree_path")?;
-    let session = text_field(d, "mesh_write.field_session_id")?;
+    let wt = text_field(d, "mesh_write.field_worktree_path");
+    let session = text_field(d, "mesh_write.field_session_id");
     let prev = std::fs::read(path_of(home, "devswarm_sup.liveness_dir", &d.id)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
     let pf = |k: &str| prev.as_ref().and_then(|p| p.get(k));
     let k = |i: usize| defaults::list("devswarm_sup.lv_keys")[i];
@@ -736,7 +731,7 @@ pub fn forced_notices(inv: &Inv, stale: &[(String, Option<f64>)], grace_ms: f64)
     let mut out = Vec::new();
     for (id, since) in stale {
         let Some(d) = descs.iter().find(|d| &d.id == id) else { continue };
-        let (Ok(wt), Ok(session)) = (text_field(d, "mesh_write.field_worktree_path"), text_field(d, "mesh_write.field_session_id")) else { continue };
+        let (wt, session) = (text_field(d, "mesh_write.field_worktree_path"), text_field(d, "mesh_write.field_session_id"));
         let entry = summary_entry(&inv.home, &wt, id);
         if let Some(why) = suppressed(inv, d, &wt, &session, entry.as_ref(), grace_ms) {
             out.push((id.clone(), why.to_string()));
@@ -827,8 +822,7 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     if !stood_down.is_empty() {
         detail["standDown"] = json!(stood_down);
     }
-    // the workspaces the engine defers on (a store it will not read exactly like Node, a descriptor field of an unexpected type) are
-    // held, counted, and named in the record
+    // the workspaces whose verdict could not be computed (a read that failed) are held, counted, and named in the record
     if !dry && !out.full.is_empty() {
         detail["fullHeld"] = json!({"count": out.full.len(), "held": super::tick::held("dssup:verdicts:full", defaults::text("devswarm_sup.lv_why_full"))["held"]});
     }

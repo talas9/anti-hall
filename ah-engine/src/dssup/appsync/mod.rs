@@ -11,8 +11,8 @@
 //! * retiring a marker restores the descriptor and revives the registry row through the recon planner's own restore, and only then
 //!   moves the marker to `archived-retired/` with a `retired` record (never a delete); a marker that cannot be restored stays and
 //!   is named as pending;
-//! * anything the engine cannot read exactly like JavaScript holds the whole sync before the first write, and every step is
-//!   idempotent, so the next tick repeats nothing.
+//! * a failure inside the sync ends it as `{ ok: false, error }` the way Node's does (the steps before it stay done), and every step
+//!   is idempotent, so the next tick repeats nothing.
 pub mod plan;
 pub mod snap;
 pub mod state;
@@ -77,10 +77,22 @@ fn pass(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Pass, Defer> {
     pass_with(ctx, runner, Opts { dry, ..Opts::default() })
 }
 
-/// [`pass`] with its options given.
-pub fn pass_with(ctx: &Ctx, _runner: &dyn Runner, o: Opts) -> Result<Pass, Defer> {
-    let dry = o.dry;
+/// [`pass`] with its options given. Node's `syncAppState` never throws: whatever goes wrong inside it ends the sync as
+/// `{ ok: false, error }` (the steps before it stay done), which is the record here too.
+pub fn pass_with(ctx: &Ctx, runner: &dyn Runner, o: Opts) -> Result<Pass, Defer> {
     let started = std::time::Instant::now();
+    Ok(match pass_inner(ctx, runner, o, &started) {
+        Ok(p) => p,
+        Err(Defer(why)) => {
+            let rec = json!({"ran": true, "ok": false, "appDb": false, "reason": null, "elapsedMs": started.elapsed().as_millis() as u64, "archived": null, "names": null,
+                "unknownToAntiHall": null, "gapTotal": null, "gapsScanned": false, "schemaMissing": null, "error": why});
+            Pass { record: rec, state: None, retired: None }
+        }
+    })
+}
+
+fn pass_inner(ctx: &Ctx, _runner: &dyn Runner, o: Opts, started: &std::time::Instant) -> Result<Pass, Defer> {
+    let dry = o.dry;
     let elapsed = || started.elapsed().as_millis() as u64;
     let env: ident::Env = ctx.st.env.clone();
     let file = ident::app_db_path(ctx.home, &env);
@@ -106,10 +118,6 @@ pub fn pass_with(ctx: &Ctx, _runner: &dyn Runner, o: Opts) -> Result<Pass, Defer
             "unknownToAntiHall": null, "gapTotal": null, "gapsScanned": false, "schemaMissing": null, "error": null});
         return Ok(Pass { record: rec, state: None, retired: None });
     };
-    // whatever the engine cannot read exactly like JavaScript must hand the sync over BEFORE the first write, so Node's own run
-    // then reports the same counts it would have alone
-    plan::read_json_dir(&plan::dir_of(ctx.home, "devswarm_sup.as_dir_workspaces"))?;
-    plan::read_json_dir(&plan::dir_of(ctx.home, "devswarm_sup.as_dir_archived"))?;
     // 1. the archived markers
     let marks = plan::plan_marks(ctx.home, &snap)?;
     let (mut marked, mut deleted, mut errors) = (0u64, 0u64, 0u64);
@@ -206,11 +214,12 @@ pub fn pass_with(ctx: &Ctx, _runner: &dyn Runner, o: Opts) -> Result<Pass, Defer
     };
     let names_summary = obj(vec![("checked", n(checked as f64)), ("refreshed", n(refreshed as f64))]);
     // 4. the gaps, at most every cooldown
-    let (gaps, scanned) = match state::previous_gaps(&prev, ctx.now, o.cooldown)? {
+    let (gaps, scanned) = match state::previous_gaps(&prev, ctx.now, o.cooldown) {
         Some(g) => (g, false),
         None => (file.as_deref().map_or(Ok(None), |f| state::message_gaps(ctx.home, f, &snap, ctx.now))?.unwrap_or(OVal::Null), true),
     };
-    let total = if matches!(gaps, OVal::Null) { None } else { Some(state::gap_total(&gaps)) };
+    // the total throws (before anything is written) on a kept `gaps` of a shape `reduce` cannot walk
+    let total = if matches!(gaps, OVal::Null) { None } else { Some(state::gap_total(&gaps)?) };
     let built = state::build(
         &snap,
         &state::Inputs { home: ctx.home, now: ctx.now, descs: &descs, archived: &archived, archived_summary, retired_summary, names_summary, gaps },
@@ -218,12 +227,17 @@ pub fn pass_with(ctx: &Ctx, _runner: &dyn Runner, o: Opts) -> Result<Pass, Defer
     write_state(&built.state);
     let rec = json!({"ran": true, "ok": true, "appDb": true, "reason": null, "elapsedMs": elapsed(),
         "archived": {"marked": marked, "pending": pending, "deletedInApp": deleted, "errors": errors},
-        "names": {"checked": checked, "refreshed": refreshed}, "unknownToAntiHall": built.unknown, "gapTotal": total.map(|g| if g.fract() == 0.0 { json!(g as i64) } else { json!(g) }),
+        "names": {"checked": checked, "refreshed": refreshed}, "unknownToAntiHall": built.unknown, "gapTotal": total.map(|g| match g {
+            OVal::Num(x) if x.is_finite() && x.fract() == 0.0 => json!(x as i64),
+            OVal::Num(x) if x.is_finite() => json!(x),
+            OVal::Num(_) => Value::Null,
+            other => json!(plan::js_str(&other)),
+        }),
         "gapsScanned": scanned, "schemaMissing": snap.missing.len(), "error": null});
     Ok(Pass { record: rec, state: Some(built.state), retired: Some(retired_out) })
 }
 
-/// The duty: native. Data the engine cannot read exactly like JavaScript holds the sync (nothing written, counted, tried again next tick).
+/// The duty: native.
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     if !enabled(ctx) {
         return json!({"duty": "app_sync", "outcome": "ran", "detail": {"ran": false, "reason": defaults::text("devswarm_sup.as_reason_disabled")}});

@@ -105,6 +105,7 @@ pub fn check(env: &Env, ops: &[Op]) -> Result<(), String> {
             | Op::Log { .. }
             | Op::UnlinkLinked { .. }
             | Op::Forward { .. }
+            | Op::Mkdir { .. }
             | Op::RaiseCursors { .. }
             | Op::ImportCursors { .. }
             | Op::Pull { .. } => {}
@@ -192,11 +193,12 @@ fn open_store(env: &Env, store: &str) -> Result<MeshStore, String> {
 }
 
 /// `appendIntoPartition` for mesh rows: the destination's id lock, a recheck that it is still registered, then the inserts.
-fn forward(env: &Env, store: &str, dest: &str, rows: &[crate::meshw::store::MeshRow]) -> Result<(), String> {
+fn forward(env: &Env, store: &str, dest: &str, rows: &[crate::meshw::store::MeshRow], allow_archived: bool) -> Result<(), String> {
     let Some(held) = crate::meshw::idlock::acquire(env.home, dest) else { return Err(skip(defaults::text("devswarm_recon.why_lock_busy"))) };
     let done = (|| -> Result<bool, String> {
         let st = open_store(env, store)?;
-        if !st.is_registered(dest).map_err(|e| e.to_string())? {
+        let registered = st.is_registered(dest).map_err(|e| e.to_string())?;
+        if !registered && !(allow_archived && crate::meshw::summary::archive_complete_ids(env.home).contains(dest)) {
             return Ok(false);
         }
         for m in rows {
@@ -352,7 +354,8 @@ fn run_op(env: &Env, op: &Op, hook: &dyn Fn(&str)) -> Result<(), String> {
             std::fs::rename(at(rel), at(to)).map_err(|e| e.to_string())
         }
         Op::Upsert { store, row, pre } => upsert(env, store, row, pre),
-        Op::Forward { store, dest, rows } => forward(env, store, dest, rows),
+        Op::Forward { store, dest, rows, allow_archived } => forward(env, store, dest, rows, *allow_archived),
+        Op::Mkdir { rel } => std::fs::create_dir_all(at(rel)).map_err(|e| e.to_string()),
         Op::ImportCursors { store, partition } => import_cursors(env, store, partition),
         Op::RaiseCursors { store, partition, value } => raise(env, store, partition, *value),
         Op::RemoveRegistryIf { store, id, session_id, updated_at, write_seq, .. } => remove_if(env, store, id, session_id, *updated_at, *write_seq),
