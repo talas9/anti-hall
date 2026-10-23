@@ -5,8 +5,8 @@
 doc = "Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option."
 value = [
   "{\"section\":\"autoHandover\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"auto_handover_enabled\",\"headline\":true}",
-  "{\"section\":\"autoHandover\",\"key\":\"pct\",\"type\":\"number\",\"default\":85,\"min\":1,\"max\":99,\"env\":\"ANTIHALL_AUTO_HANDOVER_PCT\",\"pluginOption\":\"auto_handover_pct\",\"headline\":true}",
-  "{\"section\":\"autoHandover\",\"key\":\"maxTokens\",\"type\":\"number\",\"default\":0,\"min\":0,\"env\":\"ANTIHALL_AUTO_HANDOVER_MAX_TOKENS\",\"pluginOption\":\"auto_handover_max_tokens\"}",
+  "{\"section\":\"autoHandover\",\"key\":\"pct\",\"type\":\"number\",\"default\":93,\"min\":1,\"max\":99,\"env\":\"ANTIHALL_AUTO_HANDOVER_PCT\",\"pluginOption\":\"auto_handover_pct\",\"headline\":true}",
+  "{\"section\":\"autoHandover\",\"key\":\"maxTokens\",\"type\":\"number\",\"default\":500000,\"min\":0,\"env\":\"ANTIHALL_AUTO_HANDOVER_MAX_TOKENS\",\"pluginOption\":\"auto_handover_max_tokens\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nag\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"auto_handover_nag\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nagStepPct\",\"type\":\"number\",\"default\":5,\"min\":1,\"max\":100,\"pluginOption\":\"auto_handover_nag_step_pct\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nagQuietMin\",\"type\":\"number\",\"default\":15,\"min\":1,\"pluginOption\":\"auto_handover_nag_quiet_min\"}",

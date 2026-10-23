@@ -30,8 +30,8 @@ value = [
 doc = "Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description."
 value = [
   "{\"section\":\"autoHandover\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"description\":\"Write an automatic handover before context runs out.\"}",
-  "{\"section\":\"autoHandover\",\"key\":\"pct\",\"type\":\"number\",\"default\":85,\"description\":\"Context-usage percent that triggers an automatic handover.\"}",
-  "{\"section\":\"autoHandover\",\"key\":\"maxTokens\",\"type\":\"number\",\"default\":0,\"description\":\"Opt-in absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 0 (the default) = no ceiling — the real per-session context window size (85% of it) is the only trigger unless a user explicitly sets this.\"}",
+  "{\"section\":\"autoHandover\",\"key\":\"pct\",\"type\":\"number\",\"default\":93,\"description\":\"Context-usage percent that triggers an automatic handover.\"}",
+  "{\"section\":\"autoHandover\",\"key\":\"maxTokens\",\"type\":\"number\",\"default\":500000,\"description\":\"Absolute context-token ceiling that also triggers the handover, whichever of pct/maxTokens fires first; 500000 (the default) only bites on 1M-window sessions, so 200k models are governed by pct alone; 0 = no ceiling.\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nag\",\"type\":\"boolean\",\"default\":true,\"description\":\"Nag (remind) the user when a handover is due but not yet written.\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nagStepPct\",\"type\":\"number\",\"default\":5,\"description\":\"Percent increments between successive handover nags.\"}",
   "{\"section\":\"autoHandover\",\"key\":\"nagQuietMin\",\"type\":\"number\",\"default\":15,\"description\":\"Minutes to wait before repeating a handover nag.\"}",
