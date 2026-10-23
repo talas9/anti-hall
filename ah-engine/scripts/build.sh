@@ -18,6 +18,8 @@ done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# shellcheck source=lib-target.sh
+. "$root/scripts/lib-target.sh"
 
 if [ -z "$target" ]; then
   target="$(rustc -vV | sed -n 's/^host: //p')"
@@ -28,7 +30,7 @@ if [ "$checks" = 1 ]; then
   cargo clippy --all-targets --locked -- -D warnings
   RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
   # The tests build their own binary: keep it out of the release target directory.
-  CARGO_TARGET_DIR="$root/target/checks" cargo test --locked
+  CARGO_TARGET_DIR="$(cargo_target_dir "$root")/checks" cargo test --locked
 fi
 
 # Build-path independence: strip the checkout and cargo home from embedded paths.
@@ -43,10 +45,15 @@ cflags="-ffile-prefix-map=${root}=. -ffile-prefix-map=${cargo_home}=/cargo"
 [ "$root_phys" = "$root" ] || cflags="$cflags -ffile-prefix-map=${root_phys}=."
 export CFLAGS="${CFLAGS:+$CFLAGS }$cflags"
 
+marker="$(mktemp "${TMPDIR:-/tmp}/ah-build-start.XXXXXX")"
+trap 'rm -f "$marker"' EXIT
+# mtimes can tie within one clock tick: make sure a binary written right after the marker still compares newer.
+sleep 1
 cargo build --release --locked --target "$target"
 
-bin="$root/target/$target/release/ah-engine"
-[ -f "$bin" ] || { echo "build.sh: missing artifact $bin" >&2; exit 1; }
+tdir="$(cargo_target_dir "$root")" || { echo "build.sh: cannot resolve the cargo target directory" >&2; exit 1; }
+bin="$tdir/$target/release/ah-engine"
+require_fresh "$bin" "$marker" || { echo "build.sh: artifact check failed" >&2; exit 1; }
 
 # The binary must not contain the checkout or cargo home path. Each is matched as a path prefix ("$p/"),
 # so a short root such as /src cannot match unrelated strings; a root under 8 characters is not checked.
