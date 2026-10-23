@@ -65,7 +65,7 @@ fn layered(data: &GraphData, cfg: &GraphConfig) -> Pos {
 }
 
 fn forced(data: &GraphData, cfg: &GraphConfig) -> Pos {
-    let l = &cfg.layout;
+    let (g, l) = (&cfg.geometry, &cfg.layout);
     let idx = index(data);
     let mut fg: ForceGraph<(), ()> = ForceGraph::default();
     // Deterministic spiral start so a reload does not reshuffle the picture.
@@ -98,18 +98,40 @@ fn forced(data: &GraphData, cfg: &GraphConfig) -> Pos {
     for _ in 0..l.force_iterations {
         sim.update(l.force_dt);
     }
-    let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
-    for nid in &ids {
-        let p = sim.get_graph()[*nid].location;
-        min_x = min_x.min(p.x);
-        min_y = min_y.min(p.y);
+    let raw: Vec<(f32, f32)> = ids.iter().map(|nid| { let p = sim.get_graph()[*nid].location; (p.x, p.y) }).collect();
+    let (min_x, min_y) = raw.iter().fold((f32::MAX, f32::MAX), |a, p| (a.0.min(p.0), a.1.min(p.1)));
+    let (max_x, max_y) = raw.iter().fold((f32::MIN, f32::MIN), |a, p| (a.0.max(p.0), a.1.max(p.1)));
+    // The simulation only decides the topology of the picture; the scale comes from the card size, so the result is the same
+    // density whatever the force constants do.
+    let (bw, bh) = ((max_x - min_x).max(1.0), (max_y - min_y).max(1.0));
+    let s = (data.nodes.len() as f32 * g.node_w * g.node_h * l.force_density / (bw * bh)).sqrt();
+    let mut p: Vec<(f32, f32)> = raw.iter().map(|(x, y)| ((x - min_x) * s, (y - min_y) * s)).collect();
+    // fdg-sim has no collision handling: push overlapping cards apart along the axis of least penetration.
+    let (cw, ch) = (g.node_w + l.force_collide_pad, g.node_h + l.force_collide_pad);
+    for _ in 0..l.force_collide_passes {
+        let mut moved = false;
+        for i in 0..p.len() {
+            for j in (i + 1)..p.len() {
+                let (dx, dy) = (p[j].0 - p[i].0, p[j].1 - p[i].1);
+                let (ox, oy) = (cw - dx.abs(), ch - dy.abs());
+                if ox > 0.0 && oy > 0.0 {
+                    moved = true;
+                    if ox < oy {
+                        let d = ox / 2.0 * if dx >= 0.0 { 1.0 } else { -1.0 };
+                        p[i].0 -= d;
+                        p[j].0 += d;
+                    } else {
+                        let d = oy / 2.0 * if dy >= 0.0 { 1.0 } else { -1.0 };
+                        p[i].1 -= d;
+                        p[j].1 += d;
+                    }
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
     }
-    data.nodes
-        .iter()
-        .zip(&ids)
-        .map(|(nd, nid)| {
-            let p = sim.get_graph()[*nid].location;
-            (nd.id.clone(), ((p.x - min_x) * l.force_spread, (p.y - min_y) * l.force_spread))
-        })
-        .collect()
+    let (mx, my) = p.iter().fold((f32::MAX, f32::MAX), |a, q| (a.0.min(q.0), a.1.min(q.1)));
+    data.nodes.iter().zip(&p).map(|(nd, q)| (nd.id.clone(), (q.0 - mx, q.1 - my))).collect()
 }

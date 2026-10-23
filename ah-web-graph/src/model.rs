@@ -137,8 +137,10 @@ pub struct LayoutCfg {
     pub force_cooloff: f32,
     pub force_iterations: usize,
     pub force_dt: f32,
-    /// Output scale: force units -> px.
-    pub force_spread: f32,
+    /// Canvas area per node as a multiple of one card's area.
+    pub force_density: f32,
+    pub force_collide_passes: usize,
+    pub force_collide_pad: f32,
     pub component_gap: f32,
 }
 

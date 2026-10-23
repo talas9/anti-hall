@@ -166,8 +166,8 @@ fn Card(id: String) -> impl IntoView {
         move || {
             let (x, y) = ctx.pos.with(|p| p.get(&id).copied()).unwrap_or((0.0, 0.0));
             let (w, h) = size();
-            let kind = nd().map(|n| n.kind).unwrap_or_default();
-            format!("left:{x}px;top:{y}px;width:{w}px;height:{h}px;--k:var(--ahg-k-{kind}, var(--ahg-k-{}));anchor-name:--ahg{}-n{}", ctx.cfg.theme.fallback_kind, ctx.inst, idx())
+            let (kind, status) = nd().map(|n| (n.kind, n.status)).unwrap_or_default();
+            format!("left:{x}px;top:{y}px;width:{w}px;height:{h}px;--k:var(--ahg-k-{kind}, var(--ahg-k-{}));--st:var(--ahg-s-{status}, transparent);anchor-name:--ahg{}-n{}", ctx.cfg.theme.fallback_kind, ctx.inst, idx())
         }
     };
     let on_down = {
@@ -263,7 +263,7 @@ fn Card(id: String) -> impl IntoView {
     };
     let more_title = ctx.cfg.texts.menu_button.clone();
     view! {
-        <div class="ahg-node" role="button" tabindex="0" style=style
+        <div class="ahg-node" role="button" tabindex="0" style=style data-id=id.clone()
             data-kind=move || nd1().map(|n| n.kind).unwrap_or_default()
             data-status=move || nd2().map(|n| n.status).unwrap_or_default()
             data-sel=move || (ctx_s.sel.get().as_deref() == Some(id_s.as_str())).to_string()
