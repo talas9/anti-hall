@@ -303,6 +303,7 @@ fn UpdatesScreen() -> impl IntoView {
                 <button type="button" class="btn primary ops-btn" disabled=move || busy.get() on:click=check>{move || if busy.get() { tx("ops_checking") } else { tx("ops_check_button") }}</button>
             </div>
             {move || match result.get() {
+                None if busy.get() => view! { <p class="soft-note" role="status">{tx("ops_checking_note")}</p> }.into_any(),
                 None => view! { <p class="soft-note">{tx("ops_check_never")}</p> }.into_any(),
                 Some(c) if !c.ok => view! { <p class="fb fb-bad" role="status">{tx("ops_check_failed")} " " <span class="fb-note">{c.message.clone()}</span></p> }.into_any(),
                 Some(c) => view! {
