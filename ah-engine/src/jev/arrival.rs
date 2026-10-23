@@ -68,8 +68,26 @@ impl Limits {
             max_wall_ms: n("max_wall_ms") as u128,
             max_attempts: n("max_attempts"),
             cache_max_entries: (n("cache_max_entries") as usize).max(1),
-            drain: Params::from_group("jev_arrival_drain").unwrap_or_else(Params::swarm),
-            claim: Params::from_group("jev_arrival_claim").unwrap_or_else(Params::swarm),
+            drain: Params {
+                stale_ms: defaults::num("jev_arrival_drain.lock_stale_ms"),
+                wait_ms: defaults::num("jev_arrival_drain.lock_wait_ms"),
+                step_ms: defaults::num("jev_arrival_drain.lock_step_ms"),
+                reclaim_stale_ms: defaults::num("jev_arrival_drain.lock_reclaim_stale_ms"),
+                release_tries: defaults::num("jev_arrival_drain.lock_release_tries"),
+                release_step_ms: defaults::num("jev_arrival_drain.lock_release_step_ms"),
+                boot_slop_s: defaults::num("jev_arrival_drain.lock_boot_slop_s"),
+                steal_dead: false,
+            },
+            claim: Params {
+                stale_ms: defaults::num("jev_arrival_claim.lock_stale_ms"),
+                wait_ms: defaults::num("jev_arrival_claim.lock_wait_ms"),
+                step_ms: defaults::num("jev_arrival_claim.lock_step_ms"),
+                reclaim_stale_ms: defaults::num("jev_arrival_claim.lock_reclaim_stale_ms"),
+                release_tries: defaults::num("jev_arrival_claim.lock_release_tries"),
+                release_step_ms: defaults::num("jev_arrival_claim.lock_release_step_ms"),
+                boot_slop_s: defaults::num("jev_arrival_claim.lock_boot_slop_s"),
+                steal_dead: false,
+            },
         }
     }
 }
@@ -714,7 +732,16 @@ mod tests {
     }
 
     fn lim() -> Limits {
-        Limits { queue_max_bytes: 1 << 20, text_max_chars: 1000, batch_size: 2, max_batches: 50, max_wall_ms: 60_000, max_attempts: 3, cache_max_entries: 500, ..Limits::shipped() }
+        Limits {
+            queue_max_bytes: 1 << 20,
+            text_max_chars: 1000,
+            batch_size: 2,
+            max_batches: 50,
+            max_wall_ms: 60_000,
+            max_attempts: 3,
+            cache_max_entries: 500,
+            ..Limits::shipped()
+        }
     }
 
     fn label(kind: &str, urgency: &str) -> Label {
@@ -945,7 +972,9 @@ mod tests {
             (262144, 16000, 3, 60, 120000, 3, 500)
         );
         assert_eq!((l.drain.stale_ms, l.claim.stale_ms), (30000, 15000));
-        for k in ["queued", "disabled", "cached", "full", "too_long", "failed", "drained", "busy", "off", "capped", "lost_lock", "labelled", "no_label", "skipped"] {
+        for k in
+            ["queued", "disabled", "cached", "full", "too_long", "failed", "drained", "busy", "off", "capped", "lost_lock", "labelled", "no_label", "skipped"]
+        {
             assert!(!defaults::raw("jev_arrival.outcomes").str_field(k).is_empty(), "{k}");
         }
         assert!(crate::metrics::is_registered(defaults::text("jev_arrival.metric")));
