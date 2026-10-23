@@ -362,7 +362,7 @@ enum Target {
     Owner,
 }
 
-fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
+fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
     let who = label(a);
     let kind: &str = &a.kind;
     let t = match sig {
@@ -386,7 +386,7 @@ fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
         ),
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", defaults::text("agent_tracker.wake_command"))])
+            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
         _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
     };
@@ -495,7 +495,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             ts: now,
             signal: sig.into(),
             agent: a.id.clone(),
-            text: text_for(env, a, sig, &flag),
+            text: text_for(a, sig, &flag),
         };
         match sink.deliver(env, &key, &r) {
             Ok(()) => {
