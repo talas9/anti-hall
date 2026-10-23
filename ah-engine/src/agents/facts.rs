@@ -121,6 +121,9 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
         }
         for b in blocks {
+            if a.watch {
+                turn(a, b, ts);
+            }
             if str_of(b, tr("type_key")) == tr("tool_use") {
                 a.running = true;
                 tool_use(a, b, ts);
@@ -138,6 +141,87 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
             }
         }
     }
+}
+
+/// Keep one assistant block of a watched agent (a parent with an open nudge) for the nudge's turn matching: a reply's text, or a tool
+/// call as `<tool>\t<value>\t...` with the configured input fields (`agent_nudge.match`). A Bash command is kept only when it holds
+/// one of the verbs that stop or message an agent.
+fn turn(a: &mut Agent, b: &Value, ts: u64) {
+    let m = defaults::raw("agent_nudge.match");
+    let kind = |k: &str| defaults::text(k);
+    let max = lim_n("turns_max");
+    if str_of(b, tr("type_key")) == tr("text") {
+        let t = str_of(b, tr("text"));
+        if !t.is_empty() {
+            push_ring(&mut a.turns, (ts, kind("agent_nudge.match_text_kind").to_string(), cap(t, lim_n("turn_text_cap"))), max);
+        }
+        return;
+    }
+    if str_of(b, tr("type_key")) != tr("tool_use") {
+        return;
+    }
+    let name = str_of(b, tr("name"));
+    let listed = |k: &str| m.get(k).map(V::strings).unwrap_or_default().contains(&name);
+    if !(listed("stop_tools") || listed("msg_tools") || listed("spawn_tools") || listed("shell_tools")) {
+        return;
+    }
+    let input = b.get(tr("input")).unwrap_or(&Value::Null);
+    let shell = listed("shell_tools");
+    let fields = m.get("fields").map(V::strings).unwrap_or_default();
+    let mut text = name.to_string();
+    for f in fields.iter().filter(|f| (**f == tr("command")) == shell) {
+        let v = str_of(input, f);
+        if !v.is_empty() {
+            text.push('\t');
+            text.push_str(&cap(v, lim_n("turn_text_cap")));
+        }
+    }
+    if shell {
+        let verbs = [kind("agent_nudge.match_stop_cmd"), kind("agent_nudge.match_send_cmd")];
+        if !verbs.iter().any(|v| text.contains(v)) {
+            return;
+        }
+    }
+    push_ring(&mut a.turns, (ts, kind("agent_nudge.match_tool_kind").to_string(), text), max);
+}
+
+/// Keep the turns of `a` after `since` from the part of its transcript already consumed (the `replay_bytes` before `a.offset`), so a
+/// parent that starts being watched late loses nothing it said after the delivery. Lines past `a.offset` are left to `ingest`.
+pub(crate) fn replay_turns(a: &mut Agent, since: u64) {
+    let (end, max) = (a.offset, lim_n("replay_bytes"));
+    if a.path.is_empty() || end == 0 {
+        return;
+    }
+    let start = end.saturating_sub(max);
+    let Ok(mut f) = std::fs::File::open(&a.path) else { return };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if f.take(end - start).read_to_end(&mut buf).is_err() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines = text.lines();
+    if start > 0 {
+        lines.next(); // it may start mid-line
+    }
+    for l in lines {
+        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        let Some(ts) = agent_scan::date_parse(str_of(&v, tr("ts"))).ok().filter(|t| t.is_finite()).map(|t| t as u64).filter(|t| *t > since) else { continue };
+        if str_of(&v, tr("type_key")) != tr("assistant") {
+            continue;
+        }
+        let blocks: &[Value] = v.get(tr("message")).and_then(|m| m.get(tr("content"))).and_then(Value::as_array).map_or(&[], Vec::as_slice);
+        for b in blocks {
+            turn(a, b, ts);
+        }
+    }
+}
+
+/// A cap of the nudge loop (`agent_nudge.limits`).
+fn lim_n(k: &str) -> u64 {
+    defaults::raw("agent_nudge.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }
 
 /// Terminal task notices in a user line that name a background shell task the agent started: the task ended.

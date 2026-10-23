@@ -33,6 +33,8 @@ use serde_json::{Value, json};
 pub struct Nudge {
     /// The nudge id.
     pub id: String,
+    /// The short token the parent starts its answer with (unique among open nudges).
+    pub ref_id: String,
     /// The child agent's id.
     pub child: String,
     /// The child's name (its description), as the nudge shows it.
@@ -89,6 +91,10 @@ pub struct Nudge {
     pub answer: String,
     /// The class the current answer counts as (empty while none is pending).
     pub answer_class: String,
+    /// Where the current answer came from: verb, tool (a matched tool call), prose (a matched reply); empty while none.
+    pub answer_source: String,
+    /// The newest parent turn already matched against this nudge (turns at or before it are not read again).
+    pub turns_from: u64,
     /// When the current answer came.
     pub answer_at: u64,
     /// When the first answer came.
@@ -129,6 +135,9 @@ fn word(k: &str) -> &'static str {
 }
 fn ans(k: &str) -> &'static str {
     defaults::raw("agent_nudge.answers").str_field(k)
+}
+fn src(k: &str) -> &'static str {
+    defaults::raw("agent_nudge.sources").str_field(k)
 }
 fn out(k: &str) -> &'static str {
     defaults::raw("agent_nudge.outcomes").str_field(k)
@@ -212,6 +221,7 @@ fn ev(n: &Nudge) -> Fields {
         .tok("parent", &n.parent)
         .tok("trigger", &n.trigger)
         .tok("answer", &n.answer_class)
+        .tok("answer_source", if n.answer_source.is_empty() { src("none") } else { &n.answer_source })
         .tok("outcome", &n.outcome)
         .tok("path", &n.path)
         .tok("health", &n.health)
@@ -236,7 +246,7 @@ fn emit(env: &Env, event: &str, n: &Nudge) {
 }
 
 fn answer_line(n: &Nudge) -> String {
-    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child)])
+    defaults::render("msg.agent_nudge_answer", &[("cmd", &defaults::text("agent_nudge.cmd")), ("child", &n.child), ("ref", &n.ref_id)])
 }
 
 /// Put `text` in front of session `to`: its reminder queue (its hook delivers it at its next turn) and, while a wake-watch covers
@@ -373,6 +383,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         let (direct, to, walked) = target(env, st, &a);
         let mut n = Nudge {
             id: format!("{:x}", crate::health::fnv(&format!("{}{now}", a.id))),
+            ref_id: new_ref(st, &a.id, now),
             child: a.id.clone(),
             child_name: if a.name.is_empty() { a.id.clone() } else { super::cap(&a.name, lim("name_cap")) },
             child_kind: kind_word(&a).into(),
@@ -434,7 +445,7 @@ fn follow(env: &Env, st: &mut State) {
         let Some(mut n) = st.nudges.get(&id).cloned() else { continue };
         let a = st.agents.get(&id).cloned();
         let stopped_word = ans("stop");
-        let said_stop = n.answer_class == stopped_word;
+        let said_stop = n.answer_class == stopped_word || n.answer_class == ans("acted");
         let Some(a) = a else {
             close(env, st, &id, if said_stop { out("acted_stopped") } else { out("child_died") });
             continue;
@@ -562,67 +573,255 @@ fn take_answers(env: &Env, st: &mut State) {
     let Ok(t) = std::fs::read_to_string(env.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"))) else { return };
     let all: Vec<&str> = t.lines().collect();
     let from = (st.nudge_answer_lines as usize).min(all.len());
-    let now = env.now_ms;
     for l in all.iter().skip(from).take(lim("answers_max") as usize) {
         st.nudge_answer_lines += 1;
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         let child = v["child"].as_str().unwrap_or("");
-        let key = st.nudges.keys().find(|k| *k == child).cloned().or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
+        let key = st.nudges.keys().find(|k| *k == child).cloned().or_else(|| st.nudges.iter().find(|(_, n)| !n.ref_id.is_empty() && n.ref_id.eq_ignore_ascii_case(child)).map(|(k, _)| k.clone())).or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
         let Some(key) = key else { continue };
-        let Some(mut n) = st.nudges.get(&key).cloned() else { continue };
-        let a = st.agents.get(&key).cloned().unwrap_or_default();
-        let (mut class, text) = (v["answer"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
-        n.answer = class.clone();
-        if class == ans("prose") {
-            let req = json!({"id": defaults::text("agent_nudge.reply_integration"), "child": key, "facts": {}, "sections": {"reply": [text], "child": [n.child_name, n.ev_text]}, "blocking": false});
-            let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
-            class = o.label.filter(|_| o.actionable).unwrap_or_default();
-            n.reason.clone_from(&text);
-        }
-        if class.is_empty() {
-            emit(env, word("ev_answered"), &n);
-            st.nudges.insert(key, n);
-            continue; // an unclassified reply counts as no answer
-        }
-        n.answer_class.clone_from(&class);
-        n.answer_at = now;
-        if n.first_answer_at == 0 {
-            n.first_answer_at = now;
-        }
-        n.out_mark = a.last_output_ms;
-        if class == ans("msg") {
-            n.reason.clone_from(&text);
-        }
-        if class == ans("snooze") || class == ans("other") {
-            if class == ans("other") || !text.is_empty() {
-                n.reason.clone_from(&text);
-            }
-            let asked = v["min"].as_u64().filter(|m| *m > 0 && class == ans("snooze")).unwrap_or(lim("snooze_default_min"));
-            let mut min = asked.clamp(lim("snooze_min_min"), lim("snooze_max_min"));
-            if !n.reason.is_empty() {
-                let calls: Vec<String> = a.recent.iter().rev().take(lim("health_calls") as usize).rev().map(|r| super::cap(&r.1, lim("step_cap"))).collect();
-                let req = json!({"id": defaults::text("agent_nudge.reason_integration"), "child": key, "facts": {"tool_calls": calls.len()}, "sections": {"reason": [n.reason], "tool_calls": calls, "signals": [n.ev_text]}, "blocking": false});
-                let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
-                if let Some(l) = o.label.filter(|_| o.actionable) {
-                    let ok = l == defaults::text("agent_nudge.reason_plausible");
-                    n.reason_plausible = Some(ok);
-                    if !ok {
-                        min = lim("snooze_min_min");
-                    }
-                }
-            }
-            n.snooze_min = min;
-            n.snoozes += 1;
-            n.snooze_until = now + min * super::fmtn("ms_per_s") * 60;
-            n.last_sent = now;
-            n.answer_class.clear(); // a snooze ends in a reminder, not a verification
-            n.outcome = out("snoozed").into();
-            if n.snoozes >= lim("snoozes_escalate") {
-                escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_snoozed"));
-            }
-        }
+        let (class, text) = (v["answer"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
+        record(env, st, &key, class, text, v["min"].as_u64().unwrap_or(0), src("verb"));
+    }
+}
+
+/// Take one answer for the nudge about `key`: `class` is an answer word, or the prose word (classified by the nudgeReply judge, no
+/// verdict = no answer). `source` says where it came from (verb, tool, prose).
+fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String, asked_min: u64, source: &str) {
+    let now = env.now_ms;
+    let Some(mut n) = st.nudges.get(key).cloned() else { return };
+    let key = key.to_string();
+    let a = st.agents.get(&key).cloned().unwrap_or_default();
+    n.answer = class.clone();
+    if class == ans("prose") {
+        let req = json!({"id": defaults::text("agent_nudge.reply_integration"), "child": key, "facts": {}, "sections": {"reply": [text], "child": [n.child_name, n.ev_text]}, "blocking": false});
+        let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
+        class = o.label.filter(|_| o.actionable).unwrap_or_default();
+        n.reason.clone_from(&text);
+    }
+    if class.is_empty() {
         emit(env, word("ev_answered"), &n);
         st.nudges.insert(key, n);
+        return; // an unclassified reply counts as no answer
+    }
+    n.answer_class.clone_from(&class);
+    n.answer_source = source.to_string();
+    n.answer_at = now;
+    if n.first_answer_at == 0 {
+        n.first_answer_at = now;
+    }
+    n.out_mark = a.last_output_ms;
+    if class == ans("msg") {
+        n.reason.clone_from(&text);
+    }
+    if class == ans("snooze") || class == ans("other") {
+        if class == ans("other") || !text.is_empty() {
+            n.reason.clone_from(&text);
+        }
+        let asked = Some(asked_min).filter(|m| *m > 0 && class == ans("snooze")).unwrap_or(lim("snooze_default_min"));
+        let mut min = asked.clamp(lim("snooze_min_min"), lim("snooze_max_min"));
+        if !n.reason.is_empty() {
+            let calls: Vec<String> = a.recent.iter().rev().take(lim("health_calls") as usize).rev().map(|r| super::cap(&r.1, lim("step_cap"))).collect();
+            let req = json!({"id": defaults::text("agent_nudge.reason_integration"), "child": key, "facts": {"tool_calls": calls.len()}, "sections": {"reason": [n.reason], "tool_calls": calls, "signals": [n.ev_text]}, "blocking": false});
+            let o = crate::jev::evidence::evaluate(&env.home, &crate::jev::Env::process(), &req);
+            if let Some(l) = o.label.filter(|_| o.actionable) {
+                let ok = l == defaults::text("agent_nudge.reason_plausible");
+                n.reason_plausible = Some(ok);
+                if !ok {
+                    min = lim("snooze_min_min");
+                }
+            }
+        }
+        n.snooze_min = min;
+        n.snoozes += 1;
+        n.snooze_until = now + min * super::fmtn("ms_per_s") * 60;
+        n.last_sent = now;
+        n.answer_class.clear(); // a snooze ends in a reminder, not a verification
+        n.outcome = out("snoozed").into();
+        if n.snoozes >= lim("snoozes_escalate") {
+            escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_snoozed"));
+        }
+    }
+    emit(env, word("ev_answered"), &n);
+    st.nudges.insert(key, n);
+}
+
+/// The parents of open nudges are watched: their transcript reads keep the turns after the nudge (`facts::line`); an agent no open
+/// nudge names stops being watched and drops its turns.
+fn watch_parents(st: &mut State) {
+    let parents: std::collections::HashSet<String> = st.nudges.values().map(|n| n.parent.clone()).collect();
+    for a in st.agents.values_mut() {
+        a.watch = parents.contains(&a.id);
+        if !a.watch {
+            a.turns.clear();
+        }
+    }
+}
+
+/// A short token for a new nudge: `limits.ref_len` characters of `agent_nudge.ref_alphabet`, unique among the open nudges.
+fn new_ref(st: &State, child: &str, now: u64) -> String {
+    let alpha: Vec<char> = defaults::text("agent_nudge.ref_alphabet").chars().collect();
+    if alpha.is_empty() {
+        return String::new();
+    }
+    for salt in 0..lim("ref_tries") {
+        let mut h = crate::health::fnv(&format!("{child}{now}{salt}"));
+        let r: String = (0..lim("ref_len")).map(|_| {
+            let c = alpha[(h % alpha.len() as u64) as usize];
+            h /= alpha.len() as u64;
+            c
+        }).collect();
+        if !st.nudges.values().any(|o| o.ref_id == r) {
+            return r;
+        }
+    }
+    String::new()
+}
+
+/// Parse a reply that starts with the nudge's ref: the text after the ref is `stop`, `msg <text>`, `snooze [N] [reason]` or `other
+/// <reason>` (no model), or free words (returned as the prose word for the nudgeReply judge). Returns (class, text, minutes).
+fn parse_ref_reply(after: &str) -> (String, String, u64) {
+    let rest = after.trim_start_matches(|c: char| c.is_whitespace() || ":-,.;".contains(c)).trim();
+    let (first, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let (first, tail) = (first.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase(), tail.trim());
+    if first == ans("stop") {
+        return (first, String::new(), 0);
+    }
+    if first == ans("msg") && !tail.is_empty() {
+        return (first, tail.to_string(), 0);
+    }
+    if first == ans("snooze") {
+        let (num, reason) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
+        return match num.parse::<u64>() {
+            Ok(m) => (first, reason.trim_start_matches(|c: char| c.is_whitespace() || "-:,.".contains(c) || c == '\u{2014}').to_string(), m),
+            Err(_) => (first, tail.to_string(), 0),
+        };
+    }
+    if first == ans("other") && !tail.is_empty() {
+        return (first, tail.to_string(), 0);
+    }
+    (ans("prose").to_string(), rest.to_string(), 0)
+}
+
+/// Where the text after the nudge's ref starts, when the ref stands as a whole token: at the start of the text or after a character
+/// that is not a letter or digit, and followed by `:`, whitespace or the end.
+fn ref_end(text: &str, tag: &str) -> Option<usize> {
+    let (b, n) = (text.as_bytes(), tag.len());
+    if n == 0 || b.len() < n {
+        return None;
+    }
+    (0..=b.len() - n).find_map(|i| {
+        let hit = b[i..i + n].eq_ignore_ascii_case(tag.as_bytes()) && text.is_char_boundary(i) && text.is_char_boundary(i + n);
+        let before = text[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = text[i + n..].chars().next().is_none_or(|c| c == ':' || c.is_whitespace());
+        (hit && before && after).then_some(i + n)
+    })
+}
+
+fn match_words(k: &str) -> Vec<String> {
+    defaults::raw("agent_nudge.match").get(k).map(V::strings).unwrap_or_default().into_iter().map(|w| w.to_lowercase()).collect()
+}
+
+/// Whether free text names the child: its id, or its name when the name is long enough to be unambiguous.
+fn names_child(n: &Nudge, text: &str) -> bool {
+    let t = text.to_lowercase();
+    let (id, name) = (n.child.to_lowercase(), n.child_name.to_lowercase());
+    (!id.is_empty() && t.contains(&id)) || (name.chars().count() >= lim("match_name_min") as usize && t.contains(&name))
+}
+
+/// The answer a recorded tool turn gives about the child: stop (TaskStop, KillShell, `agents stop`), msg (SendMessage, `agents send`),
+/// acted (a spawn that replaces it). A tool turn is `<tool>\t<value>\t<value>...` (see `facts::turn`); the child is matched on id, name
+/// or label as a whole value, or inside a command.
+fn tool_answer(n: &Nudge, turn: &str) -> Option<&'static str> {
+    let mut parts = turn.split('\t');
+    let tool = parts.next()?.to_lowercase();
+    let vals: Vec<&str> = parts.collect();
+    let (id, name) = (n.child.to_lowercase(), n.child_name.to_lowercase());
+    let whole = |v: &str| {
+        let v = v.to_lowercase();
+        !v.is_empty() && (v == id || v == name || (v.chars().count() >= lim("match_id_prefix_min") as usize && id.starts_with(&v)))
+    };
+    let in_tools = |k: &str| match_words(k).contains(&tool);
+    if in_tools("shell_tools") {
+        let cmd = vals.join(" ");
+        if !names_child(n, &cmd) {
+            return None;
+        }
+        let lc = cmd.to_lowercase();
+        let has = |k: &str| defaults::text(&format!("agent_nudge.match_{k}")).to_lowercase();
+        return if lc.contains(&has("stop_cmd")) {
+            Some(ans("stop"))
+        } else if lc.contains(&has("send_cmd")) {
+            Some(ans("msg"))
+        } else {
+            None
+        };
+    }
+    if in_tools("stop_tools") && vals.iter().any(|v| whole(v)) {
+        return Some(ans("stop"));
+    }
+    if in_tools("msg_tools") && vals.iter().any(|v| whole(v)) {
+        return Some(ans("msg"));
+    }
+    if in_tools("spawn_tools") && vals.iter().any(|v| whole(v) || (id.len() >= lim("match_id_prefix_min") as usize && v.to_lowercase().contains(&id))) {
+        return Some(ans("acted"));
+    }
+    None
+}
+
+/// Match the parent's turns after the nudge was delivered to the nudge: a tool call that stops, messages or replaces the child (no
+/// model), else a reply that mentions it (classified by nudgeReply). The verb is handled first (`take_answers`); a nudge with an
+/// answer pending takes none here.
+fn take_turns(env: &Env, st: &mut State) {
+    let mut budget = lim("prose_per_tick");
+    let ids: Vec<String> = st.nudges.keys().cloned().collect();
+    let refs = match_words("ref_words");
+    for id in ids {
+        let Some(n) = st.nudges.get(&id).cloned() else { continue };
+        if n.delivered_at == 0 || !n.answer_class.is_empty() || n.snooze_until > env.now_ms {
+            continue;
+        }
+        // a parent not watched yet (a nudge that went further up, or one open before the watch existed): read its turns since the
+        // delivery straight from the part of its transcript the tracker already consumed
+        if let Some(p) = st.agents.get_mut(&n.parent).filter(|p| !p.watch) {
+            p.watch = true;
+            super::facts::replay_turns(p, n.delivered_at);
+        }
+        let Some(parent) = st.agents.get(&n.parent) else { continue };
+        let from = n.delivered_at.max(n.turns_from);
+        let new: Vec<(u64, String, String)> = parent.turns.iter().filter(|t| t.0 > from).cloned().collect();
+        let Some(newest) = new.iter().map(|t| t.0).max() else { continue };
+        if let Some(n) = st.nudges.get_mut(&id) {
+            n.turns_from = newest;
+        }
+        let tag = n.ref_id.to_lowercase();
+        let tagged = new.iter().rev().filter(|t| t.1 == defaults::text("agent_nudge.match_text_kind")).find_map(|t| {
+            let after = ref_end(&t.2, &tag)?;
+            Some(parse_ref_reply(&t.2[after..]))
+        });
+        if let Some((class, text, min)) = tagged {
+            if class != ans("prose") || budget > 0 {
+                if class == ans("prose") {
+                    budget -= 1;
+                }
+                record(env, st, &id, class, super::cap(&text, lim("reason_cap")), min, src("ref"));
+                continue;
+            }
+        }
+        let tool = new.iter().filter(|t| t.1 == defaults::text("agent_nudge.match_tool_kind")).find_map(|t| tool_answer(&n, &t.2).map(|c| (c, t.2.replace('\t', " "))));
+        if let Some((class, text)) = tool {
+            record(env, st, &id, class.into(), super::cap(&text, lim("reason_cap")), 0, src("tool"));
+            continue;
+        }
+        // a reply that does not name the child still counts when this parent has just this one nudge open
+        let alone = st.nudges.values().filter(|o| o.parent == n.parent).count() == 1;
+        let prose = new.iter().rev().filter(|t| t.1 == defaults::text("agent_nudge.match_text_kind")).find(|t| {
+            let l = t.2.to_lowercase();
+            names_child(&n, &t.2) || (alone && refs.iter().any(|w| l.contains(w.as_str())))
+        });
+        if let Some(t) = prose.filter(|_| budget > 0) {
+            budget -= 1;
+            record(env, st, &id, ans("prose").into(), super::cap(&t.2, lim("reason_cap")), 0, src("prose"));
+        }
     }
 }
 
@@ -644,10 +843,12 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
         return;
     }
     take_answers(env, st);
+    take_turns(env, st);
     follow(env, st);
     dead_notices(env, st);
     let mut budget = lim("health_per_tick");
     open_new(env, st, &mut budget);
+    watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
 }
@@ -722,6 +923,10 @@ fn rollup(all: &[&Nudge], since: u64) -> Value {
     let mut top: Vec<(&str, u64)> = ignorers.into_iter().filter(|(_, c)| *c > 0).collect();
     top.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
     top.truncate(lim("top_parents") as usize);
+    let by_source: serde_json::Map<String, Value> = [src("verb"), src("ref"), src("tool"), src("prose"), src("none")]
+        .iter()
+        .map(|k| ((*k).to_string(), json!(count(&|n| if n.answer_source.is_empty() { *k == src("none") } else { n.answer_source == *k }))))
+        .collect();
     let resolved_acted = |n: &Nudge| acted.contains(&n.outcome.as_str());
     json!({
         "since_ms": since, "sent": total, "by_trigger": by_trigger,
@@ -731,6 +936,7 @@ fn rollup(all: &[&Nudge], since: u64) -> Value {
         "other_pct": pct(count(&|n| n.snoozes > 0 && !n.reason.is_empty())),
         "ignored_pct": pct(count(&|n| n.ignored > 0 && n.first_answer_at == 0)),
         "escalated_pct": pct(count(&|n| n.escalated_at > 0)),
+        "by_answer_source": by_source,
         "open": count(&|n| n.outcome_at == 0),
         "median_answer_s": median(ns.iter().filter(|n| n.first_answer_at > 0).map(|n| (n.first_answer_at - n.sent_at) / super::fmtn("ms_per_s")).collect()),
         "median_act_s": median(ns.iter().filter(|n| resolved_acted(n)).map(|n| n.outcome_at.saturating_sub(n.sent_at) / super::fmtn("ms_per_s")).collect()),
