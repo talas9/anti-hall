@@ -32,6 +32,10 @@ pub fn router(app: Shared) -> Router {
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
         .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
+        .route(ah_web_proto::ops::OPS_CFG_PATH, get(crate::ops::config))
+        .route(ah_web_proto::ops::OPS_ACCOUNTS_PATH, get(crate::ops::accounts))
+        .route(ah_web_proto::ops::OPS_UPDATE_PATH, post(crate::ops::update_check))
+        .route(ah_web_proto::ops::OPS_LOGS_PATH, get(crate::ops::logs))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -41,7 +45,7 @@ fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
+pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
     let name = app.settings().cookie_name.clone();
     headers
         .get_all(header::COOKIE)
@@ -73,7 +77,7 @@ async fn guard(State(app): State<Shared>, req: Request, next: Next) -> Response 
     resp
 }
 
-fn refuse(app: &App) -> Response {
+pub(crate) fn refuse(app: &App) -> Response {
     (StatusCode::UNAUTHORIZED, app.settings().msg_unauthorized.clone()).into_response()
 }
 
@@ -103,7 +107,7 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
     };
     let boot = Boot {
-        ui: s.ui.clone(),
+        ui: crate::ops::merged_ui(&app, &s.ui),
         heartbeat_warn_s: s.heartbeat_warn_s,
         heartbeat_stale_s: s.heartbeat_stale_s,
         kind_order: s.kind_order.clone(),

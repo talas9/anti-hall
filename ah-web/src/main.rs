@@ -9,6 +9,7 @@ mod ctl;
 mod data;
 mod live;
 mod model;
+mod ops;
 mod server;
 
 use app::App;

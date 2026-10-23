@@ -513,3 +513,7 @@ value = 2500
 min = 100
 max = 60000
 unit = "ms"
+
+[web.ops_cfg_rel]
+doc = "The Accounts, Updates and Logs screens config file, relative to the plugin root; the server reads its [web.ops.*] values and merges its texts into the page labels."
+value = "engine/defaults/web_ops.toml"
