@@ -190,6 +190,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`KB-false-completion.md`](./KB-false-completion.md) | **[APPENDED 2026-08-21] False task completion** — reward hacking/specification gaming, claimed-vs-verified benchmark gaps, verification-before-completion mitigations | 360 ln | **Living — snapshot** | (date unknown; not re-verified this pass) | 21 sources per §3 topic-map entry |
 | [`KB-goal-setting.md`](./KB-goal-setting.md) | **[APPENDED 2026-08-21] Goal-setting / acceptance-criteria wording** — classical theory + AI goal-misspecification as a reward-hacking root cause | 372 ln | **Living — snapshot** | (date unknown; not re-verified this pass) | see §3 topic-map entry |
 | [`CODEX-KB-MIGRATION-MAP.md`](./CODEX-KB-MIGRATION-MAP.md) | **[APPENDED 2026-08-21] Codex KB migration map** — cross-reference between Claude-side and Codex-side KB docs | 32 ln | **Reference** | (date unknown; not re-verified this pass) | this repo |
+| [`KB-account-hotswap-gates.md`](./KB-account-hotswap-gates.md) | **Account hot-swap gate assessment** — Gate 1-3 assessment (ToS compliance, OS Keychain safety, and live session boundaries) for Claude Code/Codex hot-swapping from the Command Center (#268) | 88 ln | **Living — design gate** | 2026-10-23 | Issue #268 + Anthropic/OpenAI ToS |
 | [`2026-06-06-context-opt-test-design.md`](./archive/2026-06-06-context-opt-test-design.md) | **[APPENDED 2026-08-21] Context-optimization test design** — dated design artifact | 65 ln | **Historical — design doc** | 2026-06-06 | this repo |
 
 **Reading order for a new contributor:** `KB.md` → `KB-claude-codex.md` (the
@@ -229,6 +230,7 @@ docs are background; their actionable content is already in the synthesis.
 | **[APPENDED 2026-08-21] `Monitor` tool / event-driven wake** (background watcher registration, DevSwarm mailbox-delta wake-watch) | **KB-claude-monitor-tool** (855 ln); usage in `monitors/monitors.json` + `companion/lib/devswarm-wake-watch.js` |
 | **[NEW 0.78.0] Defect channel** (agent-filed bug reports against anti-hall itself, maintainer rulings, derived-state/no-index/write-verified design) | No dedicated KB doc yet — component reference in [Plugin README §Features](../plugins/anti-hall/README.md) (`defect-nudge.js`, `hooks/lib/defect-store.js`, `scripts/defect.js`); design rationale in the `feat(defects)` commit message (`604314d`) |
 | **[NEW] Jev classifier** (TypeSafe System One opt-in classifier backend for `speculation-guard.js`, regex fallback, default OFF, benchmark evidence, fallback semantics, data/privacy, observability) | **[KB-jev-classifier.md](./KB-jev-classifier.md)** |
+| **Account hot-swap architecture & ToS gates** (multi-account Command Center switching, OS Keychain security, live session process boundaries) | **[KB-account-hotswap-gates.md](./KB-account-hotswap-gates.md)** |
 
 ---
 
