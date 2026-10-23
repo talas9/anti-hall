@@ -305,6 +305,17 @@ fn audit_section(doc: &mut Doc) {
     }
 }
 
+/// The entry-path audit's summary line (`ah-engine audit entry-paths` has the table): a warning when the plugin tree or the machine has a
+/// js/sh/wrong-entry leftover, an ok line otherwise.
+fn entry_paths_section(doc: &mut Doc, root: Option<&Path>, home: &str) {
+    let Some(root) = root else { return };
+    doc.head(defaults::text("audit_msg.doctor_head"));
+    match crate::audit::doctor_line(root, Path::new(home)) {
+        Some(line) => doc.warnl(line),
+        None => doc.ok(defaults::text("audit_msg.doctor_clean").to_string()),
+    }
+}
+
 fn workflows_section(doc: &mut Doc, ctx: &migrate::Ctx, home: &str, cwd: &str) {
     doc.head(defaults::text("doctor_msg.head_workflows"));
     let patterns: Vec<regex::Regex> = defaults::list("doctor.workflow_patterns").iter().map(|p| crate::checks::lit_re(p)).collect();
@@ -518,6 +529,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
         logs::section(&mut doc, &ctx);
     }
     audit_section(&mut doc);
+    entry_paths_section(&mut doc, root_path, &ctx.home);
     jev::section(&mut doc, Path::new(&ctx.home), &ctx.env);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);

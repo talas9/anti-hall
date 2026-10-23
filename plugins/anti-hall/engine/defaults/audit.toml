@@ -1,0 +1,264 @@
+# ah-engine shipped defaults for `ah-engine audit entry-paths`: the mechanical inspection that no js/sh/wrong-entry leftover ships.
+# Owner design rule: no js and no sh in the plugin except the installer hooks/install.sh; `ah-hook` is only the hook trigger (hooks.json
+# runs `ah-hook <Event>`); every agent-facing command calls the engine directly (`ah-engine <verb>`); the QuickJS logic files under
+# engine/logic run in-process and are not entry points; the retired Node backup tree is out of scope and nothing in scope may point
+# into it. Everything the audit looks for, allows and prints is here (D88): editing this file changes the audit, never a rebuild.
+# Format: see the header of engine.toml. Regexes use the Rust `regex` syntax; `\x22` is a double quote, `\x27` a single quote.
+
+[audit.sections]
+doc = "The sections of the report, in order: files (executable / shebang / script-extension files of the plugin tree), commands (every command string an agent or hook is told to run), generated (every file the engine itself writes into a launcher directory), live (read-only look at the running machine)."
+value = ["files", "commands", "generated", "live"]
+
+[audit.subcommand]
+doc = "The word after `audit` that runs the entry-path inventory."
+value = "entry-paths"
+
+[audit.plugin_rel]
+doc = "The plugin directory under a repository checkout. `audit entry-paths --root <dir>` takes a repository root (this directory is under it) or a plugin root (the directory itself)."
+value = "plugins/anti-hall"
+
+[audit.repo_cmd_roots]
+doc = "Paths under a repository root, besides the plugin directory, whose files are scanned for command strings (docs, README, llms.txt)."
+value = ["docs", "README.md", "llms.txt"]
+
+[audit.skip_dirs]
+doc = "Directory names the tree walks never enter (version control, dependency and build directories)."
+value = [".git", "node_modules", "target"]
+
+[audit.file_exts]
+doc = "Extensions (with the dot, lower case) that make a file a script for the files section and for the launcher directories."
+value = [".sh", ".js", ".mjs", ".cjs", ".py"]
+
+[audit.shebang]
+doc = "The first bytes of an interpreter-run file."
+value = "#!"
+
+[audit.cmd_files]
+doc = "Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults, skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file."
+value = [
+  '(^|/)hooks/hooks(\.registry)?\.json$',
+  '(^|/)engine/defaults(\.pristine)?/[^/]+\.toml$',
+  '(^|/)engine/rules\.json$',
+  '(^|/)skills/.+\.(md|txt|json)$',
+  '(^|/)monitors/[^/]+\.json$',
+  '(^|/)PROTOCOL\.md$',
+  '(^|/)README\.md$',
+  '(^|/)SECURITY\.md$',
+  '(^|/)statusline/.+\.md$',
+  '^llms\.txt$',
+  '^docs/.+\.(md|txt)$',
+]
+
+[audit.max_file_bytes]
+doc = "A file larger than this is not read for command strings."
+value = 4194304
+
+[audit.text_max]
+doc = "The table cuts the offending text to this many characters (the JSON report keeps the whole trimmed line)."
+value = 90
+
+# ---- the rules -------------------------------------------------------------------------------------------------------------
+# A forbidding rule has `re`: a line it matches is a finding. A requiring rule has `path`, `line` and `must`: a line of a file whose
+# path matches `path` that matches `line` but not `must` is a finding. `scope` (default: all) names the sections the rule applies to
+# (commands, generated, live). `not_path` exempts the files whose path matches it.
+
+[audit.rules]
+doc = "The command-string rules. Allowed forms: `ah-hook <Event>` in hooks.json; `ah-engine <verb>` everywhere else."
+value = [
+  { id = "node-invocation", re = '(?:^|[\s\x22\x27`(;&|=])node\s+(?:(?:-[\w-]+\s+)*[\x22\x27]?(?:[~$./]|[\w.-]*/|[\w.-]*\.(?:c|m)?js\b)|-[ep]\s)', reason = "runs a Node script; agent-facing commands call the engine directly" },
+  { id = "shell-invocation", re = '(?:^|[\s\x22\x27`(;&|=])(?:sh|bash|zsh)\s+(?:-\w+\s+)*[\x22\x27]?(?:[~$./]|[\w.-]*/|[\w.-]*\.sh\b)', reason = "runs a shell script; only the installer hooks/install.sh may be a shell file" },
+  { id = "script-path", re = '(?:[\w.${}~@-]+/)+[\w.-]*\.(?:sh|js|mjs|cjs|py)\b', reason = "names a js/sh/py file; commands call the engine directly" },
+  { id = "named-launcher", re = '\b(?:devswarm|wake-watch)\.js\b', reason = "names a retired Node launcher; use `ah-engine devswarm ...` / `ah-engine mesh ...`" },
+  { id = "node-dir", re = 'anti-hall-node', reason = "points into the retired Node backup tree" },
+  { id = "hook-verb", re = '(?:^|[/\x22\x27`])ah-hook\\?[\x22\x27`]?\s+[a-z][\w-]*', reason = "ah-hook is only the hook trigger (`ah-hook <Event>` in hooks.json), not a CLI; call `ah-engine <verb>`" },
+  { id = "hooks-form", path = '(^|/)hooks/hooks(\.registry)?\.json$', line = '"command"\s*:', must = 'ah-hook\\?"\s+[A-Z]\w+', scope = ["commands", "live"], reason = "a hook command must run `ah-hook <Event>`" },
+  { id = "interp-arg", re = '<string>(?:[^<\s]*/)?(?:node|sh|bash|zsh)</string>', scope = ["live"], reason = "a unit runs an interpreter" },
+]
+
+# ---- the allowlist ---------------------------------------------------------------------------------------------------------
+# A finding is dropped when an entry matches: its `section`, and every one of `path` (regex on the path), `text` (regex on the
+# offending line) and `rule` (the rule id) that the entry names. Every entry carries its reason.
+
+[audit.allow]
+doc = "What the audit lets through, each with its reason."
+value = [
+  { section = "files", path = '(^|/)engine/logic/.+\.js$', reason = "QuickJS logic files: the engine runs them in-process; they are not entry points (owner design rule)" },
+  { section = "files", path = '(^|/)hooks/install\.sh$', reason = "the one allowed shell file: the installer" },
+  { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
+  { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
+  { section = "live", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file" },
+]
+
+# ---- generated output ------------------------------------------------------------------------------------------------------
+# `kind = "shim"`: install_shims (checks/devswarm_role): the launcher files written under the home directory's devswarm_role.bin_dir,
+# named by the `name` of the devswarm_role row `row`; `watcher` picks the shim source. `kind = "unit"`: setup/units: the unit files of
+# the engine for the manager `os_key` names (a units.os_* setting).
+
+[audit.generators]
+doc = "Every generator of files the engine itself writes outside the plugin tree: the launcher shims and the service units."
+value = [
+  { id = "devswarm-cli-shim", kind = "shim", row = "devswarm_role.launcher_cli", watcher = false },
+  { id = "devswarm-watcher-shim", kind = "shim", row = "devswarm_role.launcher_watcher", watcher = true },
+  { id = "engine-unit-launchd", kind = "unit", os_key = "units.os_launchd" },
+  { id = "engine-unit-systemd", kind = "unit", os_key = "units.os_systemd" },
+]
+
+# ---- live ------------------------------------------------------------------------------------------------------------------
+
+[audit.live_ps]
+doc = "The command that lists the running processes: one `<pid> <command line>` per line."
+value = ["ps", "-axo", "pid=,command="]
+
+[audit.live_proc_tokens]
+doc = "How many leading words of a process command line are matched against audit.live_proc_re (the interpreter and its script, not the arguments of a long prompt)."
+value = 3
+
+[audit.live_proc_re]
+doc = "A process whose leading words match is an interpreter running an anti-hall script, or such a script itself."
+value = '(?i)^(?:\S*/)?(?:node|sh|bash|zsh|python3?)\s+(?:-\S+\s+)*\S*(?:anti-hall|devswarm|wake-watch)\S*|^\S*(?:anti-hall|devswarm|wake-watch)\S*\.(?:sh|c?m?js|py)\b'
+
+[audit.live_crontab]
+doc = "The command that prints the user's crontab."
+value = ["crontab", "-l"]
+
+[audit.live_plist_dir]
+doc = "The LaunchAgents directory under the home directory."
+value = "Library/LaunchAgents"
+
+[audit.live_plist_re]
+doc = "The file names in the LaunchAgents directory that are anti-hall's."
+value = '(?i)anti-hall|devswarm'
+
+[audit.live_installed_json]
+doc = "The host's installed-plugins file under the home directory."
+value = ".claude/plugins/installed_plugins.json"
+
+[audit.live_plugin_key_re]
+doc = "The keys of the installed-plugins file that are anti-hall's; each one's installPath is a live plugin root."
+value = '^anti-hall@'
+
+[audit.live_roots_extra]
+doc = "Other live plugin roots, relative to the home directory."
+value = [".anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall"]
+
+[audit.live_root_files]
+doc = "The files of a live plugin root whose commands are checked."
+value = ["hooks/hooks.json", "hooks/hooks.registry.json", "codex/hooks/hooks.json", "codex/hooks/hooks.registry.json", "monitors/monitors.json"]
+
+[audit.live_bin_dirs]
+doc = "Launcher directories under the home directory: a file there with a script extension or a shebang is a finding."
+value = [".anti-hall/bin", ".anti-hall/ah-engine/bin"]
+
+[audit.live_settings]
+doc = "Host settings files under the home directory whose statusLine command is checked when it is anti-hall's."
+value = [".claude/settings.json"]
+
+[audit.live_settings_re]
+doc = "A statusLine command that matches is anti-hall's."
+value = '(?i)anti-hall'
+
+# ---- messages --------------------------------------------------------------------------------------------------------------
+
+[audit_msg.usage]
+doc = "Usage of the audit command."
+value = "usage: ah-engine audit entry-paths [--json] [--root <repo-or-plugin-root>] [--home <dir>] [--no-live]"
+
+[audit_msg.no_root]
+doc = "No plugin root could be found. {hint}."
+value = "audit: no plugin root: pass --root <repo-or-plugin-root>"
+
+[audit_msg.bad_regex]
+doc = "A pattern of audit.toml is not a valid regex; it is skipped. {id} {error}."
+value = "audit: skipped an invalid pattern in audit.toml ({id}): {error}"
+
+[audit_msg.head]
+doc = "The column headings of the findings table (joined by the column separator)."
+value = ["section", "path:line", "offending text", "rule"]
+
+[audit_msg.col_sep]
+doc = "Between the table columns."
+value = " | "
+
+[audit_msg.ellipsis]
+doc = "Marks an offending text the table cut."
+value = "..."
+
+[audit_msg.summary]
+doc = "The result line. {n} {files} {commands} {generated} {live}."
+value = "entry-path audit: {n} finding(s): files {files}, commands {commands}, generated {generated}, live {live}"
+
+[audit_msg.clean]
+doc = "The result line of a clean audit."
+value = "entry-path audit: clean (0 findings)"
+
+[audit_msg.generators_head]
+doc = "Heading of the generator list."
+value = "generators (files the engine writes outside the plugin tree):"
+
+[audit_msg.generator_row]
+doc = "One generator. {id} {kind} {path}."
+value = "  {id} ({kind}) -> {path}"
+
+[audit_msg.file_exec]
+doc = "Rule label: the file has an execute bit."
+value = "exec-bit"
+
+[audit_msg.file_shebang]
+doc = "Rule label: the file starts with an interpreter line."
+value = "shebang"
+
+[audit_msg.file_ext]
+doc = "Rule label: the file has a script extension."
+value = "script-ext"
+
+[audit_msg.file_join]
+doc = "Joins the rule labels of one file."
+value = "+"
+
+[audit_msg.file_mode]
+doc = "The offending text of a file that is neither a shebang file nor named: its mode. {mode}."
+value = "mode {mode}"
+
+[audit_msg.link_text]
+doc = "The offending text of a symbolic link: its target. {target}."
+value = "-> {target}"
+
+[audit_msg.gen_name]
+doc = "Rule label: a generated file has a script extension."
+value = "generated-script-name"
+
+[audit_msg.gen_shebang]
+doc = "Rule label: a generated file starts with an interpreter line."
+value = "generated-shebang"
+
+[audit_msg.live_proc]
+doc = "Rule label: a running process is an interpreter running an anti-hall script."
+value = "live-process"
+
+[audit_msg.live_proc_path]
+doc = "The path column of a process finding. {pid}."
+value = "pid {pid}"
+
+[audit_msg.live_cron_path]
+doc = "The path column of a crontab finding."
+value = "crontab"
+
+[audit_msg.live_bin]
+doc = "Rule label: a launcher directory holds a script."
+value = "live-launcher"
+
+[audit_msg.live_status_path]
+doc = "The path column of a statusLine finding. {file}."
+value = "{file} statusLine"
+
+[audit_msg.doctor_head]
+doc = "The doctor section heading."
+value = "Entry paths"
+
+[audit_msg.doctor_clean]
+doc = "The doctor line when the audit is clean."
+value = "no js/sh/wrong-entry leftovers (ah-engine audit entry-paths)"
+
+[audit_msg.doctor_found]
+doc = "The doctor line when the audit has findings. {n} {files} {commands} {generated} {live}."
+value = "{n} entry-path leftover(s): files {files}, commands {commands}, generated {generated}, live {live}; run `ah-engine audit entry-paths` for the table"

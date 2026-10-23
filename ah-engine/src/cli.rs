@@ -105,6 +105,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("describe", crate::web::cmd_describe),
         ("query", crate::web::cmd_query),
         ("proc", crate::web::actions::run_proc),
+        ("audit", crate::audit::run_cmd),
     ]
 }
 
