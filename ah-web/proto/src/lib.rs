@@ -59,6 +59,12 @@ pub struct Pulse {
     /// The engine's version text (`CTL pulse` `version`).
     #[serde(default)]
     pub version: String,
+    /// First 8 hex digits of the engine executable's SHA-256 (`CTL pulse` `build_sha`); empty from an engine that does not report it.
+    #[serde(default)]
+    pub build_sha: String,
+    /// The plugin version the engine loaded (`CTL pulse` `plugin_version`); empty when not reported.
+    #[serde(default)]
+    pub plugin_version: String,
 }
 
 /// One line of the activity feed, already in plain language.

@@ -684,19 +684,23 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
     let boot = expect_context::<Arc<Boot>>();
     let (plugin, web) = (boot.plugin_version.clone(), boot.web_version.clone());
     let none = tx("ver_unavailable");
-    let engine = move || snap.with(|s| s.pulse.as_ref().map(|p| p.version.clone()).filter(|v| !v.is_empty()));
+    let pulse = move |f: fn(&Pulse) -> String| snap.with(|s| s.pulse.as_ref().map(f)).filter(|v| !v.is_empty());
+    let sha = move || pulse(|p| p.build_sha.clone());
+    let engine_plugin = move || pulse(|p| p.plugin_version.clone());
     let plugin2 = plugin.clone();
-    let skew = Memo::new(move |_| engine().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
-    let (n1, n2, n3) = (none.clone(), none.clone(), none.clone());
+    // amber only on a real mismatch: the plugin the engine says it loaded against the plugin this server serves
+    let skew = Memo::new(move |_| engine_plugin().is_some_and(|e| !plugin2.is_empty() && e != plugin2));
+    let (n1, n3) = (none.clone(), none.clone());
     let p1 = plugin.clone();
+    let badge_plugin = plugin.clone();
     view! {
         <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
-            {move || engine().map(|e| format!("v{e}")).unwrap_or_else(|| n1.clone())}
+            {move || format!("{}{}", if badge_plugin.is_empty() { String::new() } else { format!("v{badge_plugin} \u{b7} ") }, sha().map(|s| format!("{} {s}", tx("ver_engine"))).unwrap_or_else(|| n1.clone()))}
         </button>
         <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
             <dl class="kv">
-                <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { n2.clone() } else { p1.clone() }}</dd>
-                <dt>{tx("ver_engine")}</dt><dd>{move || engine().unwrap_or_else(|| n3.clone())}</dd>
+                <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
+                <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| format!("{v} \u{b7} {}", sha().unwrap_or_default())).unwrap_or_else(|| n3.clone())}</dd>
                 <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
                 <dt>{tx("ver_hook")}</dt><dd>{none.clone()}</dd>
                 <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
