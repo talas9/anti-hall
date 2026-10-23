@@ -7,6 +7,7 @@ mod app;
 mod cfg;
 mod ctl;
 mod data;
+mod live;
 mod model;
 mod server;
 

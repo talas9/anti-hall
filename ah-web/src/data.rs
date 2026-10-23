@@ -5,7 +5,7 @@ use crate::app::App;
 use crate::cfg::Settings;
 use crate::ctl;
 use crate::model::Found;
-use ah_web_proto::{Agent, Pulse};
+use ah_web_proto::{Agent, Decision, Pulse};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -80,6 +80,14 @@ fn decision_line(s: &Settings, row: &Value) -> Option<(u64, String, String)> {
     Some((num(row, "ts_ms"), decision.clone(), fill(template, &[("check", &text(row, "check")), ("event", &event), ("rule", &text(row, "rule"))])))
 }
 
+/// A decision row, ready for the Live screen: with the effect colour its decision plays in.
+fn decision_of(s: &Settings, row: &Value) -> Decision {
+    let decision = text(row, "decision");
+    let injected_bytes = num(row, "injected_bytes");
+    let fx = if decision == s.live_inject_decision && injected_bytes > 0 { s.live_inject_fx.clone() } else { s.live_decision_fx.get(&decision).cloned().unwrap_or_default() };
+    Decision { seq: num(row, "seq"), ts_ms: num(row, "ts_ms"), event: text(row, "event"), check: text(row, "check"), decision, rule: text(row, "rule"), us: num(row, "us"), injected_bytes, fx }
+}
+
 /// A mesh message row as a plain sentence. The store keeps times in seconds or milliseconds; both are taken.
 fn mesh_line(s: &Settings, row: &Value) -> Option<(u64, String, String)> {
     let who = |k: &str, none: &str| row.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map_or_else(|| s.feed_text.get(none).cloned().unwrap_or_default(), str::to_string);
@@ -134,8 +142,13 @@ async fn read_round(app: &App, s: &Settings, mesh_due: bool, pulse_due: bool) ->
     if let Ok(doc) = decisions {
         let rows = doc.get("rows").and_then(Value::as_array).cloned().unwrap_or_default();
         f.feed.extend(rows.iter().filter_map(|r| decision_line(s, r)));
+        f.decisions = rows.iter().map(|r| decision_of(s, r)).collect();
         let last = rows.iter().map(|r| num(r, "seq")).max().unwrap_or(dseq);
         app.model().decisions_seq = last.max(dseq);
+    }
+    {
+        let mut m = app.model();
+        f.actions = crate::live::new_actions(s, &app.socket, &mut m.actions_off);
     }
     if mesh_due && let Some(db) = mesh_db(s) {
         // the first read takes only the newest rows; later reads continue after the last id seen

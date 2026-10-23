@@ -31,6 +31,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/stream", get(stream))
         .route("/api/action", post(action))
         .route("/api/agent/{id}", get(detail))
+        .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
@@ -110,6 +111,8 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         limits: s.limits(),
         actions: s.menu(),
         feed_max: s.feed_max,
+        graph: crate::cfg::graph_json(&app.root.join(&s.live_graph_rel)).unwrap_or_default(),
+        live: s.live(),
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
     let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
@@ -287,4 +290,13 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
         }
     }
     Json(Detail { rows }).into_response()
+}
+
+/// `GET /api/live/map`: which checks answer which hook events, for the Live screen.
+async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    Json(crate::live::map(&app, &s).await).into_response()
 }

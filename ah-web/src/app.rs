@@ -24,11 +24,13 @@ pub struct App {
     pub lite_streams: AtomicUsize,
     pub polling: AtomicBool,
     pub model: Mutex<Model>,
+    /// The hook wiring read from `describe`, with the time it was read.
+    pub live_map: Mutex<Option<(Instant, ah_web_proto::LiveMap)>>,
 }
 
 impl App {
     pub fn new(settings: Settings, config_path: PathBuf, root: PathBuf, engine: PathBuf, socket: PathBuf, token: String, port: u16) -> App {
-        let model = Model::new(settings.delta_ring, settings.feed_max);
+        let model = Model::new(settings.delta_ring, settings.feed_max, settings.live_backfill);
         App {
             settings: RwLock::new(Arc::new(settings)),
             config_path,
@@ -43,6 +45,7 @@ impl App {
             lite_streams: AtomicUsize::new(0),
             polling: AtomicBool::new(false),
             model: Mutex::new(model),
+            live_map: Mutex::new(None),
         }
     }
 
