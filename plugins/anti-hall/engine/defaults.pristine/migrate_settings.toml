@@ -59,6 +59,8 @@ value = [
   "{\"section\":\"guards\",\"key\":\"noBlockingQuestions\",\"type\":\"enum\",\"default\":\"off\",\"values\":[\"off\",\"advise\",\"block\"],\"env\":\"ANTIHALL_NO_BLOCKING_QUESTIONS\"}",
   "{\"section\":\"guards\",\"key\":\"questionAgentsNote\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_QUESTION_AGENTS_NOTE\"}",
   "{\"section\":\"guards\",\"key\":\"sharedTreeAgentNote\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_SHARED_TREE_AGENT_NOTE\"}",
+  "{\"section\":\"guards\",\"key\":\"spawnCeiling\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_SPAWN_CEILING\"}",
+  "{\"section\":\"guards\",\"key\":\"usageAwareDispatch\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_USAGE_AWARE_DISPATCH\"}",
   "{\"section\":\"guards\",\"key\":\"mergeSidePickAdvisory\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_MERGE_SIDE_PICK_ADVISORY\"}",
   "{\"section\":\"guards\",\"key\":\"updateInSession\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_UPDATE_IN_SESSION\",\"pluginOption\":\"guards_update_in_session\"}",
   "{\"section\":\"guards\",\"key\":\"modelRoutingDeployFloor\",\"type\":\"enum\",\"default\":\"sonnet\",\"values\":[\"sonnet\",\"opus\",\"off\"],\"env\":\"ANTIHALL_MODEL_ROUTING_DEPLOY_FLOOR\",\"pluginOption\":\"guards_model_routing_deploy_floor\"}",

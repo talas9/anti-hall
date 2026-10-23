@@ -150,6 +150,98 @@ function swgDescribe(p) {
   return atype ? tool + ':' + atype : tool;
 }
 
+
+// ---- usage-aware dispatch and the fan-out ceiling (GH #270). Both read what the engine already has: the usage cache the limit-conserve
+// check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
+// metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
+
+function swgUsageBuckets(home) {
+  var rel = ah.cfg('ctxbudget.usage_cache'), path = ah.path.join(home, rel), size = ah.fs.size(path);
+  if (size === null) return null;
+  if (size > ah.cfgNum('script.read_max_bytes')) { ah.unable('swarm-guard:usage_big'); return null; }
+  var raw = ah.fs.readText(path), parsed;
+  if (raw === null) return null;
+  try { parsed = JSON.parse(raw); } catch (e) { return null; }
+  if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
+  var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
+  var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names'), out = [];
+  for (var i = 0; i < pcts.length; i++) {
+    var at = typeof d[resets[i]] === 'string' ? d[resets[i]] : null, pct = typeof d[pcts[i]] === 'number' ? d[pcts[i]] : 0;
+    if (at) { var rt = new Date(at).getTime(); if (isFinite(rt) && rt < now) pct = 0; } // a window that already reset counts as empty
+    else if (ts > 0 && (now - ts) > ah.cfgNum('ctxbudget.usage_max_stale_ms')) pct = 0; // a stale reading with no reset time
+    out.push({ name: names[i], pct: pct, resetsAt: at });
+  }
+  return out;
+}
+
+// The fullest bucket {name, pct, resetsAt}, or null when there is no reading.
+function swgFullest(buckets) {
+  if (!buckets || !buckets.length) return null;
+  return buckets.reduce(function (a, b) { return b.pct > a.pct ? b : a; });
+}
+
+function swgResetText(b) {
+  var t = b.resetsAt ? new Date(b.resetsAt).getTime() : NaN;
+  return isFinite(t) ? text.render(ah.cfg('spawn_usage.msg_resets_at'), { at: new Date(t).toISOString().slice(0, 16) + 'Z' }) : ah.cfg('spawn_usage.msg_resets_unknown');
+}
+
+// The ceiling at this usage: the base, less the reduce of the highest step whose percent the fullest bucket has reached, never under the floor.
+function swgCeiling(full) {
+  var ceil = ah.cfgNum('spawn_ceiling.base'), at = ah.cfg('spawn_ceiling.step_pct'), cut = ah.cfg('spawn_ceiling.step_reduce');
+  if (full) for (var i = 0; i < at.length; i++) if (full.pct >= at[i]) ceil = ah.cfgNum('spawn_ceiling.base') - cut[i];
+  return Math.max(ah.cfgNum('spawn_ceiling.floor'), ceil);
+}
+
+// The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
+function swgRunning(p) {
+  var tp = p.transcript_path;
+  if (typeof tp !== 'string' || tp === '') return null;
+  var found = ah.transcript.agents(hookProc.open(p, tp));
+  if (found === null) return null;
+  if (found.unsure) { ah.unable('swarm-guard:ceiling_agents_unsure'); return null; }
+  var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
+  var names = found.rows.slice(0, max).map(function (a) {
+    return String(a.description || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
+  });
+  return { n: found.rows.length, names: names };
+}
+
+// A block reason, an advisory line to ride an allowed spawn ('' for none).
+function swgBudgetGates(p, home) {
+  var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
+  var ceilOn = ah.settings.bool('spawn_ceiling.setting') && !ah.settings.skipped(ah.cfg('spawn_ceiling.guard_name'));
+  if (!usageOn && !ceilOn) return { block: null, note: '' };
+  full = swgFullest(swgUsageBuckets(home));
+  var note = '';
+  if (usageOn && full) {
+    if (full.pct >= ah.cfgNum('spawn_usage.block_pct')) {
+      ah.advisory('flagged', 'spawn_usage_block');
+      return { block: text.message('block', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_block_what'), { limit: full.name, pct: Math.round(full.pct), cap: ah.cfgNum('spawn_usage.block_pct'), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_block_why'), instead: ah.cfg('spawn_usage.msg_block_instead'),
+      }), note: '' };
+    }
+    if (full.pct >= ah.cfgNum('spawn_usage.soft_pct')) {
+      ah.advisory('injected', 'spawn_usage_soft');
+      note = text.message('warn', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_soft_what'), { limit: full.name, pct: Math.round(full.pct), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_soft_why'), instead: ah.cfg('spawn_usage.msg_soft_instead'),
+      });
+    }
+  }
+  if (ceilOn) {
+    var run = swgRunning(p), ceil = swgCeiling(full);
+    if (run !== null && run.n >= ceil) {
+      ah.advisory('flagged', 'spawn_ceiling_block');
+      return { block: text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+        what: text.render(ah.cfg('spawn_ceiling.msg_what'), { n: run.n, ceiling: ceil, names: run.names.join(ah.cfg('spawn_ceiling.join')), more: run.n > run.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: run.n - run.names.length }) : '' }),
+        why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_instead'),
+      }), note: '' };
+    }
+  }
+  return { block: null, note: note };
+}
+
 function swgBlock(reason) { return { exact: { code: 2, out: text.blockJson(reason), err: '' } }; }
 
 function decide(p) {
@@ -167,8 +259,12 @@ function decide(p) {
     return swgBlock(text.render(ah.cfg('swarm_guard.msg_mem'), { avail: mb(mem.available), total: mb(mem.total) }));
   }
 
+  var gates = swgBudgetGates(p, home);
+  if (gates.block !== null) return swgBlock(gates.block);
+
   var note = swgSharedTreeNote(p);
   if (note === null) { ah.unable('swarm-guard:shared_tree_note_unsure'); note = ''; }
+  if (gates.note) note = note ? gates.note + '\n' + note : gates.note;
 
   var dir = ah.cfg('swarm_guard.state_dir');
   var logRel = dir + '/' + ah.cfg('swarm_guard.log_file');

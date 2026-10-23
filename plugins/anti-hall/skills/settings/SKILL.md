@@ -171,6 +171,8 @@ task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off
 agents are in flight, independent of that mode;
 `guards.sharedTreeAgentNote` (default on) adds one advisory sentence when a write-capable agent is
 spawned without `isolation:"worktree"` while another write-capable agent runs in the same working tree;
+`guards.spawnCeiling` (default on) blocks an agent spawn when the session already runs too many agents (default 12, shrinking in steps as the 5-hour or weekly limit nears; skip entry `spawn-ceiling`);
+`guards.usageAwareDispatch` (default on) advises cheaper models and fewer agents at the soft usage threshold and blocks new spawns at the hard one (skip entry `spawn-usage`);
 `guards.mergeSidePickAdvisory` (default on) adds one advisory to a push when a conflict was resolved by
 taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`) and no test run followed;
 `guards.idleAgentSweep` (default on) lists, once per prompt, agents that finished but were never stopped

@@ -100,6 +100,7 @@ mod schedule;
 mod session_e2e;
 mod setup_parity;
 mod sibling_sweep_reload;
+mod spawn_budget;
 mod spawn_ctx_parity;
 mod spool;
 mod stop_scripts_guardrail;

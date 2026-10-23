@@ -386,3 +386,143 @@ value = 'pass isolation:"worktree", serialize them, or give each its own scratch
 [swarm_guard.msg_shared_instead_no_worktrees]
 doc = "What to do instead, when the repo forbids worktrees."
 value = "serialize them or give each its own scratch clone."
+
+# ---- spawn-ceiling: the fan-out safety ceiling (GH #270) ---------------------------------------------------------
+# Parallelism is fine; this is a generous safety net, not a throttle. It counts the agents the session transcript shows as running
+# and blocks a spawn past the ceiling, naming them. The ceiling shrinks in steps as the 5-hour or weekly limit nears.
+
+[spawn_ceiling.setting]
+doc = "The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op."
+value = { section = "guards", key = "spawnCeiling", type = "boolean", env = "ANTIHALL_SPAWN_CEILING", option = "", default = true }
+
+[spawn_ceiling.guard_name]
+doc = "Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json)."
+value = "spawn-ceiling"
+
+[spawn_ceiling.base]
+doc = "The ceiling at full usage headroom: a spawn is blocked when this many agents already run."
+value = 12
+min = 1
+max = 1000
+
+[spawn_ceiling.step_pct]
+doc = "Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce."
+value = [70, 85, 92]
+
+[spawn_ceiling.step_reduce]
+doc = "How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies)."
+value = [3, 6, 9]
+
+[spawn_ceiling.floor]
+doc = "The ceiling never drops below this, whatever the usage."
+value = 2
+min = 1
+max = 1000
+
+[spawn_ceiling.list_max]
+doc = "How many running agents the block message names."
+value = 8
+min = 1
+max = 100
+
+[spawn_ceiling.desc_max]
+doc = "How many characters of an agent description the message keeps."
+value = 60
+min = 10
+max = 500
+
+[spawn_ceiling.unnamed]
+doc = "The name of a running agent with no description."
+value = "(unnamed)"
+
+[spawn_ceiling.control_re]
+doc = "JavaScript regex source (global): control characters cut from an agent description before it is shown."
+value = '[\x00-\x1f\x7f]+'
+
+[spawn_ceiling.join]
+doc = "The separator between the listed agent names."
+value = "; "
+
+[spawn_ceiling.msg_what]
+doc = "What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause."
+value = "{n} agents are already running (ceiling now {ceiling}): {names}{more}."
+
+[spawn_ceiling.msg_more]
+doc = "The remainder clause when more agents run than are listed; {n} is how many are not listed."
+value = " and {n} more"
+
+[spawn_ceiling.msg_why]
+doc = "Why the ceiling block applies."
+value = "More agents than that rarely add outcome; each one costs tokens whether or not it finishes anything."
+
+[spawn_ceiling.msg_instead]
+doc = "What to do instead of spawning past the ceiling."
+value = "wait for or stop a finished or idle agent above, then spawn; the ceiling rises again when usage headroom returns. The owner can lift it for this session with a skip entry for spawn-ceiling."
+
+# ---- spawn-usage: usage-aware dispatch (GH #270) -----------------------------------------------------------------
+# Reads the usage cache the limit-conserve check reads. Soft: allow, plus advice to use cheaper models and fewer agents (counted).
+# Hard (block_pct): block the spawn, naming the limit near and its reset.
+
+[spawn_usage.setting]
+doc = "The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op."
+value = { section = "guards", key = "usageAwareDispatch", type = "boolean", env = "ANTIHALL_USAGE_AWARE_DISPATCH", option = "", default = true }
+
+[spawn_usage.guard_name]
+doc = "Guard name in the messages and the skip file."
+value = "spawn-usage"
+
+[spawn_usage.soft_pct]
+doc = "Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents."
+value = 75
+min = 1
+max = 100
+
+[spawn_usage.block_pct]
+doc = "Hard threshold (spawn_block_pct): at or above this usage percent new agent spawns are blocked until the limit resets."
+value = 92
+min = 1
+max = 100
+
+[spawn_usage.bucket_pct]
+doc = "The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool)."
+value = ["fiveHourPercent", "weeklyPercent"]
+
+[spawn_usage.bucket_resets]
+doc = "The usage-cache fields holding each bucket reset time, parallel to bucket_pct."
+value = ["fiveHourResetsAt", "weeklyResetsAt"]
+
+[spawn_usage.bucket_names]
+doc = "The name each bucket has in the messages, parallel to bucket_pct."
+value = ["5-hour", "weekly"]
+
+[spawn_usage.msg_resets_at]
+doc = "The reset clause when the reset time is known; {at} is an ISO time to the minute (UTC)."
+value = "resets at {at}"
+
+[spawn_usage.msg_resets_unknown]
+doc = "The reset clause when the reset time is not in the usage cache."
+value = "reset time unknown"
+
+[spawn_usage.msg_block_what]
+doc = "What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause."
+value = "the {limit} usage limit is at {pct}% (hard threshold {cap}%, {resets}); new agent spawns are blocked."
+
+[spawn_usage.msg_block_why]
+doc = "Why the hard block applies."
+value = "A spawn past this point can exhaust the limit and stop all work, including agents already running."
+
+[spawn_usage.msg_block_instead]
+doc = "What to do instead of the blocked spawn."
+value = "finish the work already running, do small steps inline, or wait for the reset. The owner can lift this for the session with a skip entry for spawn-usage."
+
+[spawn_usage.msg_soft_what]
+doc = "What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what."
+value = "the {limit} usage limit is at {pct}% ({resets})."
+
+[spawn_usage.msg_soft_why]
+doc = "Why the soft advice applies."
+value = "Headroom is getting short; tokens spent without a matching outcome (commits, finished steps, passing checks) are the ones to avoid."
+
+[spawn_usage.msg_soft_instead]
+doc = "What to do instead, in the soft advice."
+value = "use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents, and give each a tight brief with a clear finish."
