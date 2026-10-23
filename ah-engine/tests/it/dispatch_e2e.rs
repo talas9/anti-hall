@@ -48,6 +48,7 @@ impl Env {
             "procwatch-advisory",
             "engine-role-guard",
             "broad-kill-guard",
+            "queued-wait-guard",
             "lane-test-guard",
         ];
         let m: serde_json::Map<String, serde_json::Value> =

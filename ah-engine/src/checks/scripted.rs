@@ -254,6 +254,9 @@ pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "rol
 /// `broad-kill-guard` (PreToolUse on Bash, every agent; engine-only): blocks pkill, killall, `kill -9 -1` and the pattern kills.
 pub static BROAD_KILL_GUARD: Scripted = Scripted::new("broad-kill-guard", "broad_kill.summary");
 
+/// `queued-wait-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
+pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "queued_wait.summary");
+
 /// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
 

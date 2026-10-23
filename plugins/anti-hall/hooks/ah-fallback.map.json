@@ -37,6 +37,7 @@
     "phase-tracker": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
     "phase-tracker#2": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/phase-tracker.js\"",
     "procwatch-advisory": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+    "queued-wait-guard": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/queued-wait-guard\"",
     "scan-throttle": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/scan-throttle.js\"",
     "ship-it-guard": "node \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
     "stale-agent-stop-note": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/stale-agent-stop-note.js\"",

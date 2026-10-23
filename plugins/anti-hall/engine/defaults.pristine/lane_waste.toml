@@ -127,3 +127,83 @@ value = "run cargo check, commit, verification happens at deploy; a filtered sin
 [lane_test.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
 value = "the user sets guards.allowTestSuites, turns the guard off with guards.laneTestGuard, or skips it for a session in skip.json as lane-test-guard."
+
+# ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
+
+[queued_wait.sw]
+doc = "Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops."
+value = { section = "guards", key = "queuedWaitGuard", type = "boolean", env = "ANTIHALL_QUEUED_WAIT_GUARD", option = "", default = true }
+
+[queued_wait.guard_name]
+doc = "The guard id the queued-wait guard answers to in skip.json and in its messages."
+value = "queued-wait-guard"
+
+[queued_wait.summary]
+doc = "One-line description of the queued-wait-guard check in the generated reference."
+value = "PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds."
+
+[queued_wait.heavy_res]
+doc = "Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it."
+value = [
+  '^cargo\s(?:\+\S+\s)?(?:build|b|check|c|test|t|nextest|clippy|run|r|bench|doc|install|llvm-cov|miri)(?:\s|$)',
+  '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:build|test|lint|ci|install|i)(?:\s|$)',
+  '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)',
+  '^(?:\S*/)?(?:test|build|gate|replay|soak)[-_.\w]*\.sh(?:\s|$)',
+  '^make(?:\s|$)',
+  '^(?:xcodebuild|gradle|gradlew|\./gradlew|mvn|flutter\s(?:build|test)|dart\s(?:test|compile)|go\s(?:build|test)|swift\s(?:build|test)|pytest|tox|ctest|cmake\s--build)(?:\s|$)',
+  '^(?:\S*/)?ah-engine\s(?:\S+\s)*?(?:replay|soak)(?:\s|$)',
+]
+
+[queued_wait.sleep_commands]
+doc = "Commands that only wait. Their duration arguments are summed."
+value = ["sleep"]
+
+[queued_wait.sleep_max_s]
+doc = "A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground)."
+value = 30
+unit = "s"
+min = 1
+max = 3600
+
+[queued_wait.loop_sleep_max_s]
+doc = "A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs."
+value = 5
+unit = "s"
+min = 0
+max = 3600
+
+[queued_wait.duration_unit_s]
+doc = "Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds."
+value = { s = 1, m = 60, h = 3600, d = 86400 }
+
+[queued_wait.bg_field]
+doc = "The Bash tool input field that starts the command in the background."
+value = "run_in_background"
+
+[queued_wait.msg_what_bg]
+doc = "Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written."
+value = "`{cmd}` is blocked: a subagent does not start build or test commands in the background."
+
+[queued_wait.msg_what_sleep]
+doc = "Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit."
+value = "`{cmd}` is blocked: it waits {secs}s (limit {max}s)."
+
+[queued_wait.msg_what_loop]
+doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."
+value = "`{cmd}` is blocked: a poll loop sleeping {secs}s per round (limit {max}s)."
+
+[queued_wait.msg_why]
+doc = "Why background heavy commands and poll loops are blocked."
+value = "An agent that waits keeps acting: every poll or re-read re-sends its whole context, so waiting costs as much as working (the 2026-10-23 token burn was agents polling for builds queued behind one lock)."
+
+[queued_wait.msg_instead_bg]
+doc = "What to do instead of a background heavy command."
+value = "run it in the foreground under the lock (`lockf <lockfile> ...`): if the lock is held the command just waits, and waiting costs nothing."
+
+[queued_wait.msg_instead_sleep]
+doc = "What to do instead of a long sleep or poll loop."
+value = "run the command in the foreground, or end your turn and let the completion notification wake you; do not poll."
+
+[queued_wait.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "the user turns the guard off with guards.queuedWaitGuard, or skips it for a session in skip.json as queued-wait-guard."

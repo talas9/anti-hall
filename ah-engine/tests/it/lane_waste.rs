@@ -1,6 +1,7 @@
 //! GH #270: `lane-test-guard` (PreToolUse on Bash, subagents only, Claude and Codex; engine-only) blocks suite-scale test commands
 //! a lane agent runs while it waits on the shared build lock, and lets `cargo check` and a filtered single-module test through.
-//! The table below is the decision record. Tests run under a scratch HOME.
+//! `queued-wait-guard` (same shape) blocks a build or test command started with run_in_background and a long sleep or poll loop.
+//! The tables below are the decision record. Tests run under a scratch HOME.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::{Value, json};
@@ -168,4 +169,118 @@ fn the_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
     let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
     assert!(schema.contains("key: 'laneTestGuard'") && schema.contains("ANTIHALL_LANE_TEST_GUARD"), "guards.laneTestGuard is a registered setting");
     assert!(schema.contains("key: 'allowTestSuites'") && schema.contains("ANTIHALL_ALLOW_TEST_SUITES"), "guards.allowTestSuites is a registered setting");
+}
+
+// ---- queued-wait-guard ------------------------------------------------------------------------------------
+
+/// One Bash tool call, optionally started with run_in_background, from the caller `who`.
+fn wait_guard(cmd: &str, who: &str, background: bool, env_pairs: &[(&str, &str)]) -> (i32, String, String) {
+    let mut p = payload(cmd, who);
+    if background {
+        p["tool_input"]["run_in_background"] = json!(true);
+    }
+    run(&["check", "queued-wait-guard"], env_pairs, &p.to_string())
+}
+
+/// (command, started in the background, None = allowed, Some(text of the block heading)).
+fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
+    const BG: &str = "does not start build or test commands in the background";
+    vec![
+        ("cargo test", true, Some(BG)),
+        ("cargo check -j4", true, Some(BG)),
+        ("CARGO_TARGET_DIR=/x lockf /x/l nice -n 10 cargo check -j4", true, Some(BG)),
+        ("npm run build", true, Some(BG)),
+        ("node --test tests/", true, Some(BG)),
+        ("./build.sh", true, Some(BG)),
+        ("make", true, Some(BG)),
+        ("sh -c 'cargo build'", true, Some(BG)),
+        // the same commands in the foreground wait for free
+        ("cargo test", false, None),
+        ("CARGO_TARGET_DIR=/x lockf /x/l nice -n 10 cargo check -j4", false, None),
+        ("npm run build", false, None),
+        // a background command that is not heavy
+        ("tail -f /tmp/x.log", true, None),
+        ("git status", true, None),
+        ("echo cargo test", true, None),
+        // sleeps
+        ("sleep 60", false, Some("waits 60s (limit 30s)")),
+        ("sleep 1m", false, Some("waits 60s (limit 30s)")),
+        ("sleep 31", false, Some("waits 31s")),
+        ("sleep 30", false, None),
+        ("sleep 5", false, None),
+        ("sleep 0.5", false, None),
+        ("cargo check && sleep 120", false, Some("waits 120s")),
+        ("until [ -f /tmp/done ]; do sleep 30; done", false, Some("a poll loop sleeping 30s per round (limit 5s)")),
+        ("while true; do ls; sleep 10; done", false, Some("a poll loop sleeping 10s per round")),
+        ("for i in 1 2 3; do sleep 6; done", false, Some("a poll loop sleeping 6s per round")),
+        ("until [ -f /tmp/done ]; do sleep 5; done", false, None),
+        ("until [ -f /tmp/done ]; do sleep 2; done", false, None),
+        ("sleep 20; echo hi", false, None),
+        ("echo 'sleep 600'", false, None),
+        ("git commit -m 'no sleep 600 here'", false, None),
+        ("sleep", false, None),
+        ("sleep abc", false, None),
+    ]
+}
+
+#[test]
+fn the_wait_table_holds_for_a_subagent_on_both_hosts() {
+    for who in ["subagent", "codex-subagent"] {
+        for (cmd, bg, want) in wait_table() {
+            let (code, out, _) = wait_guard(cmd, who, bg, &[]);
+            match want {
+                None => assert_eq!(code, 0, "{who}: {cmd} (background {bg}) must be allowed: {out}"),
+                Some(text) => {
+                    assert_eq!(code, 2, "{who}: {cmd} (background {bg}) must be blocked");
+                    assert!(out.contains(text), "{who}: {cmd}: {out}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_main_session_may_wait_and_background() {
+    for who in ["main", "codex"] {
+        assert_eq!(wait_guard("cargo test", who, true, &[]).0, 0, "{who}: background build");
+        assert_eq!(wait_guard("sleep 600", who, false, &[]).0, 0, "{who}: sleep");
+    }
+}
+
+#[test]
+fn a_wait_block_names_the_foreground_remedy_and_reaches_both_channels() {
+    let (code, out, err) = wait_guard("cargo check", "subagent", true, &[]);
+    assert_eq!(code, 2);
+    let v: Value = serde_json::from_str(out.trim()).unwrap();
+    let reason = v["reason"].as_str().unwrap();
+    assert_eq!(err.trim(), reason);
+    assert!(reason.starts_with("⛔ anti-hall · queued-wait-guard: `cargo check` is blocked"), "{reason}");
+    assert!(reason.contains("run it in the foreground under the lock") && reason.contains("waiting costs nothing"), "{reason}");
+    assert!(reason.contains("guards.queuedWaitGuard"), "{reason}");
+    let (_, out, _) = wait_guard("sleep 99", "subagent", false, &[]);
+    assert!(out.contains("do not poll"), "{out}");
+}
+
+#[test]
+fn the_wait_guard_is_a_setting() {
+    assert_eq!(wait_guard("sleep 99", "subagent", false, &[("ANTIHALL_QUEUED_WAIT_GUARD", "0")]).0, 0, "guards.queuedWaitGuard off");
+    assert_eq!(wait_guard("sleep 99", "subagent", false, &[]).0, 2, "default on");
+    let mut p = payload("", "subagent");
+    p["tool_input"] = json!({});
+    assert_eq!(run(&["check", "queued-wait-guard"], &[], &p.to_string()).0, 0, "no command: nothing to judge");
+}
+
+#[test]
+fn the_wait_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
+    use ah_engine::dispatch::table as t;
+    let has = |host: &str, id: &str| t::entries(host, "PreToolUse").iter().any(|e| e.id == id);
+    assert!(has("claude", "queued-wait-guard") && has("codex", "queued-wait-guard"));
+    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json", "hooks/ah-fallback.list", "hooks/ah-fallback.codex.list"] {
+        let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
+        assert!(text.contains("hooks/queued-wait-guard"), "{rel} names the fallback no-op");
+    }
+    let script = std::fs::read_to_string(plugin().join("hooks/queued-wait-guard")).unwrap();
+    assert!(script.contains("exit 0"), "the fallback is a no-op");
+    let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
+    assert!(schema.contains("key: 'queuedWaitGuard'") && schema.contains("ANTIHALL_QUEUED_WAIT_GUARD"), "guards.queuedWaitGuard is a registered setting");
 }

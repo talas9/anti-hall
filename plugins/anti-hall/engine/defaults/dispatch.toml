@@ -535,6 +535,7 @@ value = [
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
   { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
+  { id = "queued-wait-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/queued-wait-guard\"", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", command = "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/lane-test-guard\"", timeout = 10, check = "lane-test-guard" },
 ]
 
@@ -627,6 +628,7 @@ value = [
   { id = "procwatch-advisory", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/engine-role-guard\"", timeout = 10, check = "engine-role-guard" },
   { id = "broad-kill-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/broad-kill-guard\"", timeout = 10, check = "broad-kill-guard" },
+  { id = "queued-wait-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/queued-wait-guard\"", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", command = "sh \"${PLUGIN_ROOT}/hooks/lane-test-guard\"", timeout = 10, check = "lane-test-guard" },
 ]
 

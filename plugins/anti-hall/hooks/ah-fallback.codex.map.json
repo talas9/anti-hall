@@ -22,6 +22,7 @@
     "merge-side-pick": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
     "orch-on-spawn": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
     "procwatch-advisory": "sh \"${PLUGIN_ROOT}/hooks/procwatch-advisory\"",
+    "queued-wait-guard": "sh \"${PLUGIN_ROOT}/hooks/queued-wait-guard\"",
     "ship-it-guard": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\""
   },
   "SessionStart": {
