@@ -276,16 +276,14 @@ impl MeshReader {
     }
 
     /// How many messages of workspace `id` were not sent by one of `senders` (its own identity family); a message with no sender
-    /// counts, and with no senders this is [`message_count`](Self::message_count).
-    pub fn message_count_from_others(&self, id: &str, senders: &std::collections::HashSet<String>) -> Res<u64> {
-        if senders.is_empty() {
-            return self.message_count(id);
-        }
-        let marks = vec!["?"; senders.len()].join(",");
+    /// counts. Rows whose body starts with `skip_prefix` (the engine's own wake prompts, which DevSwarm stores as mail) are not counted.
+    pub fn message_count_from_others(&self, id: &str, senders: &std::collections::HashSet<String>, skip_prefix: &str) -> Res<u64> {
+        let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
         let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS.replace("%s", &marks);
         let mut st = self.conn.prepare(&q)?;
         let mut args: Vec<&str> = vec![id];
         args.extend(senders.iter().map(String::as_str));
+        args.extend([skip_prefix; 3]);
         Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
     }
 
@@ -789,8 +787,8 @@ mod tests {
         c.execute("UPDATE messages SET sender = 'peer' WHERE hash = 'h2'", []).unwrap();
         drop(c);
         let me: std::collections::HashSet<String> = ["me".to_string()].into();
-        assert_eq!(r.message_count_from_others("w", &me).unwrap(), 3, "the own send is not inbound; a row with no sender counts");
-        assert_eq!(r.message_count_from_others("w", &std::collections::HashSet::new()).unwrap(), 4, "no family: the plain count");
+        assert_eq!(r.message_count_from_others("w", &me, "").unwrap(), 3, "the own send is not inbound; a row with no sender counts");
+        assert_eq!(r.message_count_from_others("w", &std::collections::HashSet::new(), "").unwrap(), 4, "no family: the plain count");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 

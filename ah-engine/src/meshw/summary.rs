@@ -794,7 +794,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         let direct_unread = (unread - own_unread as f64).max(0.0);
         // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
         let direct_from_others =
-            if family.is_empty() { total } else { st.reader().message_count_from_others(&d.id, &family).unwrap_or_else(|e| soft("count", e)) as f64 };
+            st.reader().message_count_from_others(&d.id, &family, defaults::text("agent_tracker.wake_prefix")).unwrap_or_else(|e| soft("count", e)) as f64;
         let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
         let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
         let mut working_on = OVal::Null;

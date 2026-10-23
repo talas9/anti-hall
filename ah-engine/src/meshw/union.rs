@@ -338,8 +338,18 @@ pub fn unread_at(
     now: i64,
 ) -> R<Unread> {
     let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now })?;
-    let own_nd = union.nd_unread_lines.iter().filter(|l| line_sender(l).is_some_and(|s| family.contains(&s))).count();
-    let own_store = union.store_only_unread.iter().filter(|r| r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s))).count();
+    // the engine's own wake prompts (stored by DevSwarm as direct mail) are not mail: never unread, like the family's own sends
+    let wake = defaults::text("agent_tracker.wake_prefix");
+    let own_nd = union
+        .nd_unread_lines
+        .iter()
+        .filter(|l| line_sender(l).is_some_and(|s| family.contains(&s)) || line_body(l).is_some_and(|b| b.starts_with(wake)))
+        .count();
+    let own_store = union
+        .store_only_unread
+        .iter()
+        .filter(|r| r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s)) || r.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(wake)))
+        .count();
     let own_excluded = own_nd + own_store;
     Ok(Unread { unread: union.unread - own_excluded, own_excluded, union, store_base, nd_base })
 }
@@ -391,6 +401,14 @@ pub fn live_base_of(rows: &[Value]) -> Option<LiveBase> {
 pub fn line_sender(line: &str) -> Option<String> {
     match OVal::parse(line)?.get(defaults::text("mesh_write.ndjson_sender_field")) {
         Some(OVal::Str(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// The body an NDJSON line carries.
+pub fn line_body(line: &str) -> Option<String> {
+    match OVal::parse(line)?.get(defaults::text("mesh_write.ndjson_message_field")) {
+        Some(OVal::Str(s)) => Some(s.clone()),
         _ => None,
     }
 }

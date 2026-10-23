@@ -326,7 +326,7 @@ pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mt
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
 /// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
 /// message with no sender counts.
-pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s))";
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR substr(COALESCE(body, ''), 1, length(?)) <> ?)";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.

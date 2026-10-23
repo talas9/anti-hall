@@ -54,13 +54,18 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if tr.now_ms.saturating_sub(last_wake(&tr, &desc.id)) < num("cooldown_ms") {
         return None;
     }
+    // the wake only points at mail that exists: with no real unread message (wake rows are not counted) there is nothing to wake for
+    // (an unreadable store is not "none": the wake goes ahead)
+    if crate::devswarm_rt::sources::Probe::unread(&crate::devswarm_rt::sources::FsProbe::new(home, tr.now_ms as i64), &desc.id) == Some(0) {
+        return None;
+    }
     let call = |args: &[&str]| hivecontrol::call_full(args, env, cwd, Duration::from_millis(num("timeout_ms")));
     let info = call(&["workspace", "info", &desc.id]);
     let branch = serde_json::from_str::<Value>(&info.call.raw).ok().and_then(|v| v["branch"].as_str().map(str::to_string)).filter(|b| !b.is_empty());
     let Some(branch) = branch else {
         return Some(json!({"workspace": desc.id, "woken": false, "step": "info", "error": why(&info)}));
     };
-    let prompt = defaults::render("msg.native_wake_prompt", &[("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))]);
+    let prompt = defaults::render("msg.native_wake_prompt", &[("prefix", &defaults::text("agent_tracker.wake_prefix")), ("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))]);
     let done = call(&["workspace", "reactivate-child", &branch, &prompt]);
     let woken = done.call.ok;
     if woken {
