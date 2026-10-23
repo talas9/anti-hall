@@ -9,6 +9,7 @@ mod ctl;
 mod data;
 mod health;
 mod live;
+mod manage;
 mod model;
 mod server;
 

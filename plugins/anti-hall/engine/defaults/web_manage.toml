@@ -1,0 +1,91 @@
+# ah-engine shipped defaults for the Command Center's Settings screens (settings, config files, checks and guards, Jev, history).
+# Format: see the header of engine.toml. `ah-web` reads this file next to web.toml on every request of these screens and sends the
+# page its texts and limits; the WASM page compiles in none of them.
+
+[web.manage.describe_timeout_ms]
+doc = "Longest the server waits for `describe` or `query` to answer."
+value = 15000
+min = 1000
+max = 120000
+unit = "ms"
+
+[web.manage.write_timeout_ms]
+doc = "Longest the server waits for a `config` write to answer."
+value = 20000
+min = 1000
+max = 120000
+unit = "ms"
+
+[web.manage.history_limit]
+doc = "Most history rows the History tab asks for."
+value = 100
+min = 10
+max = 1000
+
+[web.manage.stats_limit]
+doc = "Most per-check rows read for the fire counts of the Checks tab."
+value = 400
+min = 50
+max = 2000
+
+[web.manage.key_max_chars]
+doc = "Longest setting key or history id the server passes to the engine."
+value = 120
+min = 16
+max = 512
+
+[web.manage.value_max_chars]
+doc = "Longest setting value the server passes to the engine."
+value = 4000
+min = 16
+max = 65536
+
+[web.manage.actor]
+doc = "Who the history records for a write made from this page (set as the engine's history actor)."
+value = "web"
+
+[web.manage.actor_env]
+doc = "The environment variable the engine reads the history actor from (`webapi.history_actor_env`)."
+value = "AH_WEB_ACTOR"
+
+[web.manage.rows_max]
+doc = "Most keys of one config file drawn at once (the filter narrows the rest)."
+value = 100
+min = 10
+max = 2000
+
+[web.manage.jev_setting_prefix]
+doc = "The registry key prefix of a Jev integration's mode setting (the integration id follows)."
+value = "jevIntegrations."
+
+[web.manage.jev_modes]
+doc = "The modes a Jev integration can be in, in the order the page shows them."
+value = ["on", "shadow", "off"]
+
+[web.manage.safety_categories]
+doc = "Registry categories whose settings always ask for a confirmation before a change."
+value = ["Safety Guards"]
+
+[web.manage.guard_categories]
+doc = "Registry categories the Checks tab lists as guards (their switch is a safety switch)."
+value = ["Guards", "Safety Guards"]
+
+[web.manage.msg_bad_request]
+doc = "Said when a request to these screens is malformed or names something the engine does not know."
+value = "That request could not be understood."
+
+[web.manage.msg_flag_value]
+doc = "Said when a value would be read by the engine as an option."
+value = "A value cannot start with two dashes."
+
+[web.manage.msg_timeout]
+doc = "Said when the engine did not answer in time."
+value = "The engine did not answer in time."
+
+[web.manage.msg_engine_failed]
+doc = "Said when the engine answered something that is not a result."
+value = "The engine gave no usable answer."
+
+[web.manage.ui]
+doc = "The texts of the Settings screens, by key. {n}, {key}, {old}, {new}, {when} and {who} are filled in by the page."
+value = { title = "Settings", hint = "Every option comes with its description, default and limits from the engine. A change is validated by the engine first, written to your settings and kept in the history, where it can be undone.", tab_settings = "Settings", tab_config = "Config", tab_checks = "Checks and guards", tab_jev = "Jev", tab_history = "History", tabs_label = "Settings sections", loading = "Loading...", load_failed = "The engine did not answer. Is it running?", retry = "Try again", filter = "Filter by name or description", filter_label = "Filter", all = "All", categories = "Categories", empty = "Nothing matches.", default = "default", current = "now", changed = "changed", safety = "safety", locked = "needs confirmation", range = "range", min = "min", max = "max", values = "values", unit = "unit", env = "env var", restart_only = "takes effect at the next engine start", source = "value from", src_default = "shipped defaults", src_file = "your settings", src_env = "environment", advanced = "advanced", show_advanced = "Show advanced", save = "Save", check = "Check only", reset = "Reset to default", reset_confirm = "Reset {key} to its shipped value?", running = "Working...", done = "Done", failed = "Failed", checked_ok = "Valid: would be saved as {new}", checked_bad = "Not valid", saved = "Saved. Was {old}.", reset_done = "Reset to the shipped value.", undone = "Restored.", on = "on", off = "off", shadow = "shadow", mode_on = "Acts on its decision", mode_shadow = "Decides and records, changes nothing", mode_off = "Not asked", confirm_title = "Confirm this change", confirm_yes = "Yes, change it", confirm_no = "Cancel", confirm_generic = "This is a safety setting.", confirm_consequence = "If you change it: {note}.", config_files = "Config files", config_keys = "keys", config_changed = "changed", config_pick = "Pick a file to see its keys.", config_doc = "What it does", config_pristine = "The shipped copy is never edited. A change is written to your settings and wins over the shipped value.", config_table = "This is a table: edit its file instead.", config_locked = "Locked: it always uses the shipped value.", config_list_hint = "A JSON list of texts, for example [\"a\",\"b\"]", checks_title = "Checks", checks_guards = "Guards", checks_all = "Other checks", checks_events = "Runs on", checks_fires = "fires", checks_block = "blocked", checks_no_switch = "No switch: always on", checks_switch = "Switch", checks_off_note = "{key} is switched off.", checks_p50 = "typical", checks_none = "No checks.", checks_fire_none = "no fires recorded", jev_title = "Jev integrations", jev_hint = "Pick what each Jev integration does. Shadow lets it decide and records the result without changing anything.", jev_log = "Log", history_title = "Recent changes", history_empty = "No changes yet.", history_who = "who", history_what = "what", history_when = "when", history_undo = "Undo", history_undone = "undone", history_force = "Undo anyway", history_failed = "failed", history_undo_row = "Undo this change", history_none_old = "(shipped value)", history_set = "set", history_reset = "reset", history_undo_verb = "undo", refresh = "Refresh", ago = "ago", just_now = "just now" }

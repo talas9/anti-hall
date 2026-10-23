@@ -5,6 +5,7 @@
 //! whether anything moves.
 mod health;
 mod live;
+mod manage;
 use ah_web_proto::{ActionReq, ActionRes, Agent, Boot, Delta, Detail, FeedItem, Pulse, PulseLimits, Snapshot, ACTION_PATH, BOOT_ELEMENT_ID, DELTA_EVENT, DETAIL_PATH, SNAPSHOT_EVENT, STREAM_PATH};
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
@@ -368,12 +369,14 @@ fn App(boot: Boot) -> impl IntoView {
     let live_on = RwSignal::new(false);
     let health_on = RwSignal::new(false);
     let topo_on = RwSignal::new(false);
+    let manage_on = RwSignal::new(manage::hash().is_some());
     // the agents view is shown unless another screen is chosen
-    let other_on = Memo::new(move |_| live_on.get() || health_on.get() || topo_on.get());
-    let go = move |live: bool, health: bool, topo: bool| {
+    let other_on = Memo::new(move |_| live_on.get() || health_on.get() || topo_on.get() || manage_on.get());
+    let go = move |live: bool, health: bool, topo: bool, manage: bool| {
         live_on.set(live);
         health_on.set(health);
         topo_on.set(topo);
+        manage_on.set(manage);
     };
     let dark = RwSignal::new(stored_dark().unwrap_or(true));
     if let Some(d) = stored_dark() {
@@ -468,12 +471,12 @@ fn App(boot: Boot) -> impl IntoView {
             </header>
             <div class="body">
                 <nav class="nav" aria-label=tx("nav_label")>
-                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| go(false, false, false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
-                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(true, false, false)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
-                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, true, false)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
-                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, true)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
+                    <button type="button" class=move || if other_on.get() { "nav-item" } else { "nav-item on" } on:click=move |_| go(false, false, false, false)><span class="glyph">"\u{25C9}"</span><span>{tx("nav_agents")}</span></button>
+                    <button type="button" class=move || if live_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(true, false, false, false)><span class="glyph">"\u{26A1}"</span><span>{tx("nav_live")}</span></button>
+                    <button type="button" class=move || if health_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, true, false, false)><span class="glyph">"\u{2665}"</span><span>{tx("nav_health")}</span></button>
+                    <button type="button" class=move || if topo_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, true, false)><span class="glyph">"\u{2B21}"</span><span>{tx("nav_topology")}</span></button>
                     <span class="nav-item soft"><span class="glyph">"\u{224B}"</span><span>{tx("nav_logs")}</span></span>
-                    <span class="nav-item soft"><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></span>
+                    <button type="button" class=move || if manage_on.get() { "nav-item on" } else { "nav-item" } on:click=move |_| go(false, false, false, true)><span class="glyph">"\u{2699}"</span><span>{tx("nav_settings")}</span></button>
                     <span class="nav-item soft"><span class="glyph">"\u{21EA}"</span><span>{tx("nav_updates")}</span></span>
                 </nav>
                 <main class="main" hidden=move || other_on.get()>
@@ -524,6 +527,9 @@ fn App(boot: Boot) -> impl IntoView {
                     <health::TopologyScreen mode=mode active=topo_on.into() />
                 </main>
                 <Show when=move || health_on.get() || topo_on.get()><health::Poller mode=mode /></Show>
+                <main class="main manage-main" hidden=move || !manage_on.get()>
+                    <manage::ManageScreen active=manage_on.into() />
+                </main>
                 <aside class="detail" aria-label=tx("selected_label") hidden=move || other_on.get()>
                     {move || match current.get() {
                         None => view! { <p class="empty">{tx("pick_prompt")}</p> }.into_any(),

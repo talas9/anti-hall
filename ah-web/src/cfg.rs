@@ -120,6 +120,7 @@ pub struct Settings {
     pub live_map_ttl_s: u64,
     pub live_map_timeout_ms: u64,
     pub live_map_parts: Vec<String>,
+    pub manage_file: String,
     pub live_graph_rel: String,
     pub plugin_manifest_rel: String,
     pub live_jev_log_rel: String,
