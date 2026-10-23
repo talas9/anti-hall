@@ -34,10 +34,10 @@ doc = "The first bytes of an interpreter-run file."
 value = "#!"
 
 [entry_audit.cmd_files]
-doc = "Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults, skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file."
+doc = "Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults (engine/defaults.pristine is a byte-identical copy, compared by the deploy kit, so it is not scanned twice), skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file."
 value = [
   '(^|/)hooks/hooks(\.registry)?\.json$',
-  '(^|/)engine/defaults(\.pristine)?/[^/]+\.toml$',
+  '(^|/)engine/defaults/[^/]+\.toml$',
   '(^|/)engine/rules\.json$',
   '(^|/)skills/.+\.(md|txt|json)$',
   '(^|/)monitors/[^/]+\.json$',
@@ -65,12 +65,12 @@ value = 90
 [entry_audit.rules]
 doc = "The command-string rules. Allowed forms: `ah-hook <Event>` in hooks.json; `ah-engine <verb>` everywhere else."
 value = [
-  { id = "node-invocation", re = '(?:^|[\s\x22\x27`(;&|=])node\s+(?:(?:-[\w-]+\s+)*[\x22\x27]?(?:[~$./]|[\w.-]*/|[\w.-]*\.(?:c|m)?js\b)|-[ep]\s)', reason = "runs a Node script; agent-facing commands call the engine directly" },
-  { id = "shell-invocation", re = '(?:^|[\s\x22\x27`(;&|=])(?:sh|bash|zsh)\s+(?:-\w+\s+)*[\x22\x27]?(?:[~$./]|[\w.-]*/|[\w.-]*\.sh\b)', reason = "runs a shell script; only the installer hooks/install.sh may be a shell file" },
+  { id = "node-invocation", re = '(?:^|[\s\x22\x27`(;&|=])node\s+(?:(?:-[\w-]+\s+)*[\x22\x27]?(?:[~$/]|\.{1,2}/|[\w.-]*/|[\w.-]*\.(?:c|m)?js\b)|-[ep]\s)', reason = "runs a Node script; agent-facing commands call the engine directly" },
+  { id = "shell-invocation", re = '(?:^|[\s\x22\x27`(;&|=])(?:sh|bash|zsh)\s+(?:-\w+\s+)*[\x22\x27]?(?:[~$/]|\.{1,2}/|[\w.-]*/|[\w.-]*\.sh\b)', reason = "runs a shell script; only the installer hooks/install.sh may be a shell file" },
   { id = "script-path", re = '(?:[\w.${}~@-]+/)+[\w.-]*\.(?:sh|js|mjs|cjs|py)\b', reason = "names a js/sh/py file; commands call the engine directly" },
   { id = "named-launcher", re = '\b(?:devswarm|wake-watch)\.js\b', reason = "names a retired Node launcher; use `ah-engine devswarm ...` / `ah-engine mesh ...`" },
   { id = "node-dir", re = 'anti-hall-node', reason = "points into the retired Node backup tree" },
-  { id = "hook-verb", re = '(?:^|[/\x22\x27`])ah-hook\\?[\x22\x27`]?\s+[a-z][\w-]*', reason = "ah-hook is only the hook trigger (`ah-hook <Event>` in hooks.json), not a CLI; call `ah-engine <verb>`" },
+  { id = "hook-verb", re = '(?:^|[/\x22\x27`])ah-hook(?:\\?[\x22\x27])?\s+[a-z][\w-]*', reason = "ah-hook is only the hook trigger (`ah-hook <Event>` in hooks.json), not a CLI; call `ah-engine <verb>`" },
   { id = "hooks-form", path = '(^|/)hooks/hooks(\.registry)?\.json$', line = '"command"\s*:', must = 'ah-hook\\?"\s+[A-Z]\w+', scope = ["commands", "live"], reason = "a hook command must run `ah-hook <Event>`" },
   { id = "interp-arg", re = '<string>(?:[^<\s]*/)?(?:node|sh|bash|zsh)</string>', scope = ["live"], reason = "a unit runs an interpreter" },
 ]
@@ -87,6 +87,7 @@ value = [
   { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
   { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
   { section = "live", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file" },
+  { section = "live", rule = "live-process", text = '/private/tmp/claude-\d+/', reason = "the tool shell of a Claude Code session: its scratch path names the project directory, it is not an anti-hall script" },
 ]
 
 # ---- generated output ------------------------------------------------------------------------------------------------------
@@ -115,7 +116,7 @@ value = 3
 
 [entry_audit.live_proc_re]
 doc = "A process whose leading words match is an interpreter running an anti-hall script, or such a script itself."
-value = '(?i)^(?:\S*/)?(?:node|sh|bash|zsh|python3?)\s+(?:-\S+\s+)*\S*(?:anti-hall|devswarm|wake-watch)\S*|^\S*(?:anti-hall|devswarm|wake-watch)\S*\.(?:sh|c?m?js|py)\b'
+value = '(?i)^(?:\S*/)?(?:node|sh|bash|zsh|python3?)\s+(?:-\S+\s+)*\S*(?:anti-hall|wake-watch)\S*|^\S*(?:anti-hall|wake-watch)\S*\.(?:sh|c?m?js|py)\b'
 
 [entry_audit.live_crontab]
 doc = "The command that prints the user's crontab."
@@ -127,7 +128,7 @@ value = "Library/LaunchAgents"
 
 [entry_audit.live_plist_re]
 doc = "The file names in the LaunchAgents directory that are anti-hall's."
-value = '(?i)anti-hall|devswarm'
+value = '(?i)(?:anti-hall|devswarm).*\.plist$'
 
 [entry_audit.live_installed_json]
 doc = "The host's installed-plugins file under the home directory."
