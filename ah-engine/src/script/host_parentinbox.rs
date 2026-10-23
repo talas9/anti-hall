@@ -408,6 +408,7 @@ fn derive_text(inv: &Inv, key: &str) -> R<Value> {
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// A session of the worktree: its id and the last time its transcript was written.
+#[derive(Clone)]
 pub(super) struct Session {
     pub(super) id: String,
     pub(super) last_ms: f64,
@@ -451,6 +452,51 @@ fn head_cwd(file: &Path) -> R<Option<String>> {
 
 /// `sessionsForWorktree(worktree, { home })`, newest activity first.
 pub(super) fn sessions_for(home: &Path, worktree: &str) -> R<Vec<Session>> {
+    // the listing (a directory read, a stat of every transcript and the head of the newest ones) is reused for
+    // `devswarm_parent.drift_cache_ms`: a notice about a newer session is no worse for being a few seconds old, and the walk ran on every
+    // prompt of a parent session
+    type Cache = std::collections::HashMap<(std::path::PathBuf, String), (std::time::Instant, Vec<Session>)>;
+    static CACHE: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+    let key = (project_dir(home, worktree), worktree.to_string());
+    let ttl = std::time::Duration::from_millis(defaults::num("devswarm_parent.drift_cache_ms"));
+    if let Some((at, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&key))
+        && at.elapsed() < ttl
+    {
+        return Ok(v.clone());
+    }
+    let fresh = sessions_uncached(home, worktree)?;
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let c = g.get_or_insert_with(Default::default);
+    if c.len() >= defaults::num("devswarm_parent.drift_cache_keys_max") as usize {
+        c.clear();
+    }
+    c.insert(key, (std::time::Instant::now(), fresh.clone()));
+    Ok(fresh)
+}
+
+/// The first-line `cwd` of a transcript, read once per file (inode and length 0 excluded): the head of a transcript never changes.
+fn head_cwd_cached(file: &Path) -> R<Option<String>> {
+    use std::os::unix::fs::MetadataExt;
+    static CWDS: std::sync::Mutex<Option<std::collections::HashMap<(u64, u64), Option<String>>>> = std::sync::Mutex::new(None);
+    let id = std::fs::metadata(file).ok().filter(|m| m.len() > 0).map(|m| (m.dev(), m.ino()));
+    if let Some(id) = id
+        && let Some(hit) = CWDS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.get(&id))
+    {
+        return Ok(hit.clone());
+    }
+    let cwd = head_cwd(file)?;
+    if let Some(id) = id {
+        let mut g = CWDS.lock().unwrap_or_else(|e| e.into_inner());
+        let c = g.get_or_insert_with(Default::default);
+        if c.len() >= defaults::num("devswarm_parent.drift_cache_keys_max") as usize * 64 {
+            c.clear();
+        }
+        c.insert(id, cwd.clone());
+    }
+    Ok(cwd)
+}
+
+fn sessions_uncached(home: &Path, worktree: &str) -> R<Vec<Session>> {
     let dir = project_dir(home, worktree);
     let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(Vec::new()) };
     let mut names: Vec<String> = rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
@@ -469,7 +515,7 @@ pub(super) fn sessions_for(home: &Path, worktree: &str) -> R<Vec<Session>> {
     files.sort_by(|a, b| b.last_ms.partial_cmp(&a.last_ms).unwrap_or(std::cmp::Ordering::Equal));
     let mut out: Vec<Session> = Vec::new();
     for s in files.into_iter().take(defaults::num("devswarm_parent.drift_max_scan") as usize) {
-        let Some(cwd) = head_cwd(&dir.join(format!("{}{ext}", s.id)))? else { continue };
+        let Some(cwd) = head_cwd_cached(&dir.join(format!("{}{ext}", s.id)))? else { continue };
         let sep_prefix = format!("{worktree}{}", std::path::MAIN_SEPARATOR);
         if !(cwd == worktree || cwd.starts_with(&sep_prefix)) {
             continue;
