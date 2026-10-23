@@ -479,7 +479,7 @@ doc = "A command without this text cannot name a stable launcher."
 value = ".anti-hall"
 
 [command.launcher_scripts]
-doc = "The stable launcher scripts under ~/.anti-hall/bin that are light."
+doc = "The old stable launcher scripts under ~/.anti-hall/bin (retired: the engine no longer creates them). Kept only so the command guard still recognises a leftover file by name; no text advertises them."
 value = ["devswarm.js", "wake-watch.js"]
 
 [command.tmp_env_names]

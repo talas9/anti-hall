@@ -3466,11 +3466,11 @@ doc = "The text form of the background flag that counts as true (the boolean tru
 value = "true"
 
 [devswarm_cli.rr_mb_cli_script]
-doc = "The file name of the DevSwarm CLI a mailbox command runs (a bare name or any path ending in it)."
+doc = "The file name of the old Node DevSwarm CLI a mailbox command runs (a bare name or any path ending in it). Recognition only: it identifies mailbox crons armed by older builds; no text advertises it."
 value = "devswarm.js"
 
 [devswarm_cli.rr_mb_watch_script]
-doc = "The file name of the wake watcher a mailbox monitor runs."
+doc = "The file name of the old Node wake watcher a mailbox monitor runs. Recognition only: it identifies monitors armed by older builds; no text advertises it."
 value = "devswarm-wake-watch.js"
 
 [devswarm_cli.rr_mb_inbox_word]

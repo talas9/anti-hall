@@ -1322,14 +1322,7 @@ fn the_resurrected_report_removes_nothing() {
 
 // ---- wake-monitor (roadmap #61 G3) -----------------------------------------------------------------------------------------------
 //
-// The one documented difference from Node: `wakeMonitorPostUpdate` decides `shipped` by loading the watcher script with require();
-// the engine runs no Node and decides it by the script being present and naming both exports it needs (`resolveIdentity`,
-// `lockPathFor`). They differ only for a script that names both exports yet does not load (a syntax error): Node answers
-// shipped:false with its load-error detail and stops before the state directory; the engine answers shipped:true and goes on.
-// So `unloadable_watcher` leaves out exactly that branch: the answer members `shipped`, `detail` and `stateDirEnsured`, and the
-// `.anti-hall/devswarm/wake/` directory the engine goes on to make. Everything else is compared.
-
-const WATCHER_REL: &str = ".claude/plugins/marketplaces/anti-hall/plugins/anti-hall-node/companion/lib/devswarm-wake-watch.js";
+// The watcher is the engine itself, so the stage no longer looks for a script file (Node did): it reports shipped and checks the lock.
 
 /// A registered workspace whose worktree is the working directory (the stage resolves its identity from it).
 fn wake_workspace(home: &Path) {
@@ -1357,41 +1350,11 @@ fn seed_wake_dead(home: &Path) {
     wake_lock(home, 2_147_483_000);
 }
 
-fn seed_wake_no_exports(home: &Path) {
-    wake_workspace(home);
-    put(home, WATCHER_REL, "module.exports = {};\n");
-}
-
-fn seed_wake_missing(home: &Path) {
-    wake_workspace(home);
-    let p = home.join(WATCHER_REL);
-    fs::rename(&p, p.with_extension("js.moved")).unwrap();
-}
-
-fn seed_wake_unloadable(home: &Path) {
-    wake_workspace(home);
-    put(home, WATCHER_REL, "module.exports = { resolveIdentity: 1, lockPathFor: 1 };\n)(\n");
-}
-
 case!(wake_monitor_without_an_identity_reports_shipped_and_asks_for_a_manual_arm, "wake-monitor", "unresolved", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_unresolved, live: true, markers: false);
 case!(wake_monitor_not_live_names_the_arm_command, "wake-monitor", "not_live", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_idle, live: true, markers: false);
 case!(wake_monitor_sees_a_live_watcher_lock, "wake-monitor", "live", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_live, live: true, markers: false);
 case!(wake_monitor_ignores_a_lock_of_a_dead_process, "wake-monitor", "dead_lock", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_dead, live: true, markers: false);
-case!(wake_monitor_reports_a_watcher_without_its_exports_as_not_shipped, "wake-monitor", "no_exports", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_no_exports, live: true, markers: false);
-case!(wake_monitor_reports_a_missing_watcher_as_not_shipped, "wake-monitor", "missing_watcher", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_missing, live: true, markers: false);
 case!(wake_monitor_runs_the_same_under_the_ingest_dry_run_switch, "wake-monitor", "dry_run_switch", "wake-monitor", "wakeMonitor", "wakeMonitorPostUpdate", seed_wake_live, live: false, markers: false);
-
-/// The documented difference: everything but the branch a non-loading watcher takes equals the frozen Node result; that branch is
-/// Node's load-failure answer on one side and the engine's presence-and-exports answer on the other.
-#[test]
-fn wake_monitor_differs_from_node_only_in_shipped_for_a_watcher_that_does_not_load() {
-    let c = Case { stage: "wake-monitor", name: "unloadable_watcher", row: "wake-monitor", key: "wakeMonitor", func: "wakeMonitorPostUpdate", seed: seed_wake_unloadable, live: true, markers: false, nested: false, mask: &["shipped", "detail", "stateDirEnsured"] };
-    let (got, _, _) = replay(&c);
-    let want: Value = serde_json::from_str(&fs::read_to_string(fixture_path(c.stage, c.name)).unwrap()).unwrap();
-    assert_eq!(want["answer"]["shipped"], json!(false), "Node reads a script that does not load as not shipped");
-    assert!(want["answer"]["detail"].as_str().unwrap().contains("failed to load"), "{want}");
-    assert_eq!(got["answer"]["shipped"], json!(true), "the engine decides shipped without loading the script");
-}
 
 /// The stage arms nothing and removes nothing: no lock is written, no workspace or lock file goes, no Node runs.
 #[test]

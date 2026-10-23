@@ -16,8 +16,6 @@ pub struct Stale {
     /// Its plugin root when the build is complete on disk (its manifest exists): the handoff target. The engine itself runs
     /// again with this root, so no interpreter is involved.
     pub root: Option<PathBuf>,
-    /// Its Node watcher script path, only for the re-arm instruction the refused-handoff line prints.
-    pub script: PathBuf,
     /// The harness registry itself names it.
     pub registered: bool,
     /// The version the registry names.
@@ -136,9 +134,8 @@ pub fn check(p: &Proc, own: Option<&str>) -> Option<Stale> {
     let newest = newest.filter(|n| compare_versions(own, n) < 0)?;
     let registered = registry.as_deref().is_some_and(|j| compare_versions(j, &newest) >= 0);
     let build = install.cache.join(&newest);
-    let script = build.join(t("wake_watch.stale_script_rel"));
     let root = build.join(t("wake_watch.manifest_rel")).is_file().then_some(build);
-    Some(Stale { root, script, registered, registered_version: registry, newest })
+    Some(Stale { root, registered, registered_version: registry, newest })
 }
 
 /// `canHandoff(ownVersion, newestVersion, env)`: strictly newer than this build, and strictly newer than the previous handoff's

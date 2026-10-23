@@ -175,10 +175,6 @@ value = { section = "devswarm", key = "archivedGraceMs", type = "number", min = 
 doc = "The plugin manifest that names the build the watcher runs, relative to the plugin root."
 value = ".claude-plugin/plugin.json"
 
-[wake_watch.stale_script_rel]
-doc = "The Node watcher script of another build, relative to that build's cache directory: named only in the re-arm line printed when a handoff is refused. A handoff itself needs only that build's manifest and never runs this script."
-value = "../anti-hall-node/companion/lib/devswarm-wake-watch.js"
-
 [wake_watch.plugins_rel]
 doc = "The harness's plugins directory, relative to the home: its cache, registry and marketplace records."
 value = ".claude/plugins"

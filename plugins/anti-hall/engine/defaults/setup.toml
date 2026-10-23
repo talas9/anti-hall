@@ -217,7 +217,7 @@ value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/companion/{file}"'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/scripts/migrate-state.js"'
+value = "~/.anti-hall/ah-engine/bin/ah-engine migrate"
 
 # ---- briefing ------------------------------------------------------------------------------------
 
@@ -846,7 +846,7 @@ doc = "The DevSwarm store module, relative to the plugin root."
 value = "../anti-hall-node/companion/lib/devswarm-store.js"
 
 [setup.brief_cli_file]
-doc = "The DevSwarm command-line script, relative to the plugin root."
+doc = "The old Node DevSwarm command-line script, relative to the plugin root. Read only to list its documented subcommands in the briefing; absent once the Node tree is retired (the briefing then lists none)."
 value = "../anti-hall-node/scripts/devswarm.js"
 
 [setup.brief_companion_dir]
