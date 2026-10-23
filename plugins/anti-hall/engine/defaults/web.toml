@@ -157,7 +157,40 @@ value = "Command Center: running (pid {pid}) {url}"
 doc = "Usage line of `ah-engine web`."
 value = "usage: ah-engine web [open|status] [--no-open] [--json]"
 
+[web.csp]
+doc = "Content-Security-Policy header sent with every page and file."
+value = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+[web.mime]
+doc = "Content type by file extension for the files the server serves; any other extension is refused."
+value = { html = "text/html; charset=utf-8", css = "text/css; charset=utf-8", js = "text/javascript; charset=utf-8", mjs = "text/javascript; charset=utf-8", wasm = "application/wasm", json = "application/json", svg = "image/svg+xml", woff2 = "font/woff2", png = "image/png", ico = "image/x-icon" }
+
+[web.boot_marker]
+doc = "The text in the index file that the server replaces with the page's boot data (texts and thresholds as JSON)."
+value = "__AH_BOOT__"
+
+[web.step_max_chars]
+doc = "Longest 'doing now' text sent per agent, in characters."
+value = 240
+min = 20
+
+[web.kind_order]
+doc = "Order of agent kinds in the tree (first = top)."
+value = ["main", "workspace", "subagent", "teammate", "codex", "heartbeat"]
+
+[web.msg_unauthorized]
+doc = "Body of the refusal sent to a request without the session token."
+value = "Open the Command Center with `ah-hook web`."
+
+[web.msg_busy]
+doc = "Body sent when too many event streams are open."
+value = "Too many open dashboard tabs."
+
+[web.msg_not_found]
+doc = "Body sent for a file that does not exist."
+value = "Not found."
+
 # The page's texts. The compiled page carries none of its own: it asks /api/ui for this table.
 [web.ui]
 doc = "Every label the page shows, by key. Edit here; reload the page."
-value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", running = "RUNNING", stopped = "STOPPED", search = "Search agents, sessions, messages", search_label = "Search agents", nav_agents = "Agents", nav_health = "Health", nav_logs = "Logs", nav_settings = "Settings", nav_updates = "Updates", nav_label = "Views", title_agents = "Live agents", layout_label = "Layout", tab_graph = "Graph", tab_tree = "Tree", live = "live", idle = "idle", projects = "projects", graph_placeholder = "Graph view: a later slice", graph_hint = "The agent graph arrives with the WebGPU slice. The tree is live now.", col_name = "Agent", col_kind = "Kind", col_hb = "Heartbeat", col_brief = "Doing now", empty = "No agents tracked.", connecting = "Connecting...", reconnecting = "Reconnecting...", selected_label = "Selected agent", pick_prompt = "Pick an agent in the tree.", heartbeat = "Heartbeat", running_for = "Tokens out", model = "State", doing_now = "Doing now", recent = "Recent activity", recent_placeholder = "Activity feed: a later slice", send_label = "Send a message", send_placeholder = "Message or command for this agent", send = "Send", nudge = "Nudge", stop = "Stop...", controls_note = "Controls arrive with the actions slice.", placeholder_title = "Coming later", kind_main = "Primary", kind_workspace = "Workspace", kind_subagent = "Subagent", kind_teammate = "Teammate", kind_codex = "Codex", kind_heartbeat = "Heartbeat", kind_other = "Agent", legend_primary = "Primary", legend_workspace = "Workspace", legend_subagent = "Subagent", legend_codex = "Codex", theme_light = "Light", theme_dark = "Dark", theme_label = "Theme" }
+value = { brand = "anti-hall", product = "Command Center", engine = "ENGINE", running = "RUNNING", stopped = "STOPPED", search = "Search agents, sessions, messages", search_label = "Search agents", nav_agents = "Agents", nav_health = "Health", nav_logs = "Logs", nav_settings = "Settings", nav_updates = "Updates", nav_label = "Views", title_agents = "Live agents", layout_label = "Layout", tab_graph = "Graph", tab_tree = "Tree", live = "live", idle = "idle", projects = "projects", graph_placeholder = "Graph view: a later slice", graph_hint = "The agent graph arrives with the WebGPU slice. The tree is live now.", col_name = "Agent", col_kind = "Kind", col_hb = "Heartbeat", col_brief = "Doing now", empty = "No agents tracked.", connecting = "Connecting...", reconnecting = "Reconnecting...", selected_label = "Selected agent", pick_prompt = "Pick an agent in the tree.", heartbeat = "Heartbeat", running_for = "Tokens out", model = "State", doing_now = "Doing now", recent = "Recent activity", recent_placeholder = "Activity feed: a later slice", send_label = "Send a message", send_placeholder = "Message or command for this agent", send = "Send", nudge = "Nudge", stop = "Stop...", controls_note = "Controls arrive with the actions slice.", placeholder_title = "Coming later", kind_main = "Primary", kind_workspace = "Workspace", kind_subagent = "Subagent", kind_teammate = "Teammate", kind_codex = "Codex", kind_heartbeat = "Heartbeat", kind_other = "Agent", legend_primary = "Primary", legend_workspace = "Workspace", legend_subagent = "Subagent", legend_codex = "Codex", claude = "Claude", codex = "Codex", theme_light = "Light", theme_dark = "Dark", theme_label = "Theme" }
