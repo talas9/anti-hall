@@ -1646,8 +1646,8 @@ value = "could not resolve this workspace's id"
 # ---- roster with rows (lane l8f): scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHints, rosterHumanText -----------------
 
 [devswarm_cli.rr_set_dormant_ms]
-doc = "How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is not read by the engine (Node skips it); the roster then goes to Node."
-value = { type = "number", section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", exact = true, default = 1800000 }
+doc = "How long a workspace whose session transcript resolves may stay silent before the roster calls it dormant (Node: devswarm.dormantMs, a positive number; liveness.js dormantThresholdMs). A value of zero or below is no reading of the setting, as in Node (`exclusiveMin`): the next tier answers, last the default."
+value = { type = "number", section = "devswarm", key = "dormantMs", env = "ANTIHALL_DEVSWARM_DORMANT_MS", exact = true, exclusive_min = 0, default = 1800000 }
 
 [devswarm_cli.rr_env_idle_ms]
 doc = "The environment variable that sets the wide idle window of a workspace whose transcript does not resolve (liveness.js idleThresholdMs)."
@@ -1857,7 +1857,7 @@ doc = "Stands for the text of a prompt block whose text is a number, true or an 
 value = "-"
 
 [devswarm_cli.rr_tr_defer_errors]
-doc = "Parser error texts for a transcript line JavaScript would still read (a lone surrogate escape, a number out of range, nesting past the parser limit): the roster is then answered by Node."
+doc = "Parser error texts for a transcript line JavaScript would still read (a lone surrogate escape, a number out of range, nesting past the parser limit): the line is read after a repair that changes only that part (see `rr_tr_lone_surrogate`, `rr_tr_big_number`, `rr_tr_max_depth`)."
 value = ["hex escape", "out of range", "recursion limit"]
 
 [devswarm_cli.rr_tr_expecting]
@@ -1865,7 +1865,7 @@ doc = "What the transcript parser names as the thing it reads, in its own error 
 value = "a transcript value"
 
 [devswarm_cli.rr_tr_iso_pattern]
-doc = "The form of an entry time the roster is sure JavaScript's Date.parse reads: an ISO stamp in UTC (day 1..28 so every month is valid). An entry time of another form is left to Node unless another entry has one of this form."
+doc = "The form of an entry time the roster is sure JavaScript's Date.parse reads: an ISO stamp in UTC (day 1..28 so every month is valid). An entry time of another form is read by the `Date.parse` rules."
 value = '^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|1\d|2[0-8])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,9})?Z$'
 
 [devswarm_cli.rr_app_live_message]
@@ -3745,3 +3745,102 @@ value = "no-primary-worktree"
 [devswarm_cli.msg_send_no_primary_worktree]
 doc = "The refusal text of that case."
 value = "send --to-primary: cwd is not inside a resolvable git worktree"
+
+[devswarm_cli.msg_roster_no_project]
+doc = "The refusal text of `roster` run outside any project."
+value = "roster must run from inside a git worktree of a DevSwarm project (the mesh store is per-project) — cd into the repo first"
+
+[devswarm_cli.rr_set_archived_grace_ms]
+doc = "How much older than the active-list snapshot a row must be before its absence from that snapshot reads as archived in the app (Node: devswarm.archivedGraceMs, devswarm-archived-cache.js resolveArchivedGraceMs)."
+value = { type = "number", section = "devswarm", key = "archivedGraceMs", env = "ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS", exact = true, min = 0, default = 600000 }
+
+[devswarm_cli.rr_env_active_max_age]
+doc = "The variable that sets how old the supervisor's active-list snapshot may be and still be believed (positive integer milliseconds); otherwise twice the reconcile sweep interval."
+value = "ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS"
+
+[devswarm_cli.rr_active_max_age_mult]
+doc = "How many reconcile sweep intervals old the active-list snapshot may be (resolveArchivedCacheMaxAgeMs: twice the sweep)."
+value = 2
+min = 1
+
+[devswarm_cli.rr_sweep_fallback_ms]
+doc = "The reconcile sweep interval used when the setting reads as no positive number (FALLBACK_SWEEP_INTERVAL_MS)."
+value = 900000
+min = 1000
+
+[devswarm_cli.log_level_warn]
+doc = "The level of a warning entry of the central log."
+value = "warn"
+
+[devswarm_cli.rr_native_fold_op]
+doc = "The central-log operation of a native child dropped from the roster."
+value = "roster-native-fold"
+
+[devswarm_cli.msg_roster_native_dropped]
+doc = "The warning when native children of another repository are dropped from the roster: {count}."
+value = "dropped {count} native child(ren) whose repositoryId did not match this repo (cross-repo env hijack guard)"
+
+[devswarm_cli.rr_tok_suffix]
+doc = "What follows the token total on a roster plan label."
+value = " tok"
+
+[devswarm_cli.rr_tok_sep]
+doc = "What separates the plan label from the token total on a roster plan label."
+value = " · "
+
+[devswarm_cli.rr_tok_mega]
+doc = "The unit of a token total of a million or more (devswarm-token-usage.js fmt)."
+value = "M"
+
+[devswarm_cli.rr_tok_kilo]
+doc = "The unit of a token total of a thousand or more."
+value = "k"
+
+[devswarm_cli.rr_tok_mega_at]
+doc = "The token total from which fmt counts in millions."
+value = 1000000
+min = 1
+
+[devswarm_cli.rr_tok_kilo_at]
+doc = "The token total from which fmt counts in thousands."
+value = 1000
+min = 1
+
+[devswarm_cli.rr_tok_tenth_div]
+doc = "fmt rounds a million-count to a tenth: the total is divided by this (a tenth of a million), rounded, then divided by `rr_tok_tenths`."
+value = 100000
+min = 1
+
+[devswarm_cli.rr_tok_tenths]
+doc = "The number of tenths in a whole, in that rounding."
+value = 10
+min = 1
+
+[devswarm_cli.rr_source_native]
+doc = "The `source` of a roster row for a native hivecontrol child no store row represents."
+value = "native"
+
+[devswarm_cli.rr_source_fallback]
+doc = "The `source` of the roster row of a Primary found in the legacy hash bucket's summary (the split-brain fold)."
+value = "store-fallback"
+
+[devswarm_cli.rr_dir_token_usage]
+doc = "Directory under the DevSwarm state directory of the supervisor's per-plan token usage files (devswarm-token-usage.js statePath)."
+value = "token-usage"
+
+[devswarm_cli.rr_tr_max_depth]
+doc = "How deeply nested a transcript line may be and still be read (JavaScript's JSON.parse has no such limit; no real transcript line nests anywhere near this). A deeper line is skipped, counted and logged."
+value = 1000
+min = 16
+
+[devswarm_cli.rr_tr_big_number]
+doc = "What a number past the range of a double becomes in a transcript line (JavaScript reads it as Infinity; only its being non-zero is ever looked at)."
+value = "1e308"
+
+[devswarm_cli.rr_tr_lone_surrogate]
+doc = "What a lone surrogate escape in a transcript line becomes (JavaScript keeps the lone surrogate; text here cannot)."
+value = "\\ufffd"
+
+[devswarm_cli.rr_tr_metric_skipped]
+doc = "Counter bumped when a transcript line is skipped because it could not be read."
+value = "mesh_roster_transcript_line_skipped"
