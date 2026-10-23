@@ -190,6 +190,11 @@ pub fn event_as(inv: &Inv, component: &str, op: &str, msg: &str, ctx: Vec<(&str,
     write_entry(inv, component, op, defaults::text("devswarm_cli.log_level_info"), None, None, msg, None, ctx);
 }
 
+/// `alog.logEvent('devswarm-cli', op, 'warn', msg, ctx)`: a warning entry without an error payload.
+pub fn warn_event(inv: &Inv, op: &str, msg: &str, ctx: Vec<(&str, OVal)>) {
+    write_entry(inv, op, defaults::text("devswarm_cli.log_level_warn"), None, None, msg, None, ctx);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

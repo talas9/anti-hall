@@ -51,6 +51,21 @@ pub fn refuse<T>(body: &str) -> Result<T, Defer> {
     Err(Defer(format!("{}{body}", defaults::text("mesh_write.refusal_prefix"))))
 }
 
+/// The verb's own refusal for a store, registry or table that cannot be opened, read or written (Node throws there too): exit 2,
+/// reason `store-unavailable`, `what` the `mesh_write.what_*` key naming the thing and `detail` the error's own text.
+pub fn unavailable<T>(what_key: &str, detail: &dyn std::fmt::Display) -> Result<T, Defer> {
+    let mut body = common_obj();
+    body.push(("ok".to_string(), OVal::Bool(false)));
+    body.push(("reason".to_string(), OVal::Str(defaults::text("mesh_write.reason_store_unavailable").to_string())));
+    let what = defaults::text(what_key);
+    body.push(("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_store_unavailable", &[("what", &what), ("detail", detail)]))));
+    refuse(&OVal::Obj(body).stringify())
+}
+
+fn common_obj() -> Vec<(String, OVal)> {
+    Vec::new()
+}
+
 /// The JSON body of a refusal carried by [`refuse`]; `None` for any other deferral.
 pub fn refusal_body(d: &Defer) -> Option<&str> {
     d.0.strip_prefix(defaults::text("mesh_write.refusal_prefix"))
@@ -66,9 +81,9 @@ pub type R<T> = Result<T, Defer>;
 /// is read as absent, counted and logged. Opened non-blocking, and read no further than the hard limit, so a file that grows or is
 /// swapped after the check cannot make it allocate without bound.
 ///
-/// A FIFO, socket or device is the one refusal left: Node's read of a FIFO blocks for good (a socket or device fails), so there is no
-/// answer of Node's to reproduce, and a mutating caller must never open such a path to append. It is a deferral with a reason naming
-/// the cause; [`read_or_skip`] is for the callers that carry on without the file.
+/// A FIFO, socket or device is the one refusal: Node's read of a FIFO blocks for good (a socket or device fails), so there is no
+/// answer of Node's to copy, and a mutating caller must never open such a path to append. It is the verb's own refusal (exit 2,
+/// `not-a-regular-file`); [`read_or_skip`] is for the callers that carry on without the file.
 pub fn read_bounded(path: &Path) -> R<Option<Vec<u8>>> {
     read_with_site(path, defaults::text("mesh_write.site_read_bounded"))
 }
@@ -82,6 +97,16 @@ fn note_read_limit(path: &Path, site: &str, reason: &str) {
     );
 }
 
+/// The verb's own refusal for a path that is a FIFO, socket or device (a read would block for good; Node's blocks too): exit 2,
+/// reason `not-a-regular-file`.
+fn not_regular<T>(path: &Path) -> R<T> {
+    let mut body = Vec::new();
+    body.push(("ok".to_string(), OVal::Bool(false)));
+    body.push(("reason".to_string(), OVal::Str(defaults::text("mesh_write.read_why_not_regular").to_string())));
+    body.push(("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_not_regular", &[("path", &path.display())]))));
+    refuse(&OVal::Obj(body).stringify())
+}
+
 fn read_with_site(path: &Path, site: &str) -> R<Option<Vec<u8>>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -92,7 +117,7 @@ fn read_with_site(path: &Path, site: &str) -> R<Option<Vec<u8>>> {
         return Ok(None);
     }
     if !m.is_file() {
-        return defer(defaults::text("mesh_write.read_why_not_regular"));
+        return not_regular(path);
     }
     if m.len() > hard {
         note_read_limit(path, site, defaults::text("mesh_write.read_why_over_hard"));
@@ -100,7 +125,7 @@ fn read_with_site(path: &Path, site: &str) -> R<Option<Vec<u8>>> {
     }
     let Ok(f) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path) else { return Ok(None) };
     if !f.metadata().is_ok_and(|m| m.is_file()) {
-        return defer(defaults::text("mesh_write.read_why_not_regular"));
+        return not_regular(path);
     }
     let mut buf = Vec::new();
     if f.take(hard.saturating_add(1)).read_to_end(&mut buf).is_err() {
@@ -122,8 +147,8 @@ fn read_with_site(path: &Path, site: &str) -> R<Option<Vec<u8>>> {
 pub fn read_or_skip(path: &Path, site: &str) -> Option<Vec<u8>> {
     match read_with_site(path, site) {
         Ok(bytes) => bytes,
-        Err(Defer(reason)) => {
-            note_read_limit(path, site, &reason);
+        Err(_) => {
+            note_read_limit(path, site, defaults::text("mesh_write.read_why_not_regular"));
             None
         }
     }
@@ -1128,6 +1153,29 @@ mod tests {
         std::fs::File::create(&hard).unwrap().set_len(defaults::num("mesh_write.file_read_hard_max_bytes") + 1).unwrap();
         assert_eq!(read_bounded(&hard).unwrap(), None);
         assert_eq!(read_or_skip(&hard, "test"), None);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// A store that cannot be opened or written is the verb's own refusal (exit 2, `store-unavailable`), not a hand-over.
+    #[test]
+    fn an_unavailable_store_is_a_worded_refusal() {
+        let err = unavailable::<()>("mesh_write.what_store", &"disk full").unwrap_err();
+        let body = refusal_body(&err).unwrap();
+        assert!(body.contains("store-unavailable") && body.contains("the mesh store is unavailable (disk full)"), "{body}");
+        assert_eq!(js_to_string(&OVal::Arr(vec![OVal::Num(1.0), OVal::Null, OVal::Str("a".into())])), "1,,a");
+        assert_eq!(js_to_string(&OVal::Obj(vec![])), "[object Object]");
+    }
+
+    /// A FIFO read as a mesh file is the verb's refusal (exit 2, `not-a-regular-file`), and returns at once.
+    #[test]
+    fn a_fifo_is_a_clean_refusal() {
+        let dir = scratch("fifo-refusal");
+        let f = dir.join("in.ndjson");
+        fifo(&f);
+        let g = f.clone();
+        let err = within("read_bounded", move || read_bounded(&g)).unwrap_err();
+        let body = refusal_body(&err).unwrap();
+        assert!(body.contains("not-a-regular-file") && body.contains("in.ndjson"), "{body}");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
 }
