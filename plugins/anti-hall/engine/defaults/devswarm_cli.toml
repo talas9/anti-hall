@@ -3595,3 +3595,21 @@ value = "inbox-"
 [devswarm_cli.window_logged_subs]
 doc = "The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing."
 value = ["pull", "messages", "read-primary", "peek-primary", "ack-primary", "drain-primary-legacy"]
+
+# ---- plan set / scope add: Node's errors reproduced natively ------------------------------------------------------------
+
+[devswarm_cli.msg_plan_steps_file]
+doc = "The error of `plan set` whose --steps-file cannot be read. Placeholder: {why} (the operating system's message as JavaScript words it)."
+value = "cannot read --steps-file: {why}"
+
+[devswarm_cli.plan_fs_errors]
+doc = "The message JavaScript gives for a failed read of a file, by operating system error number; {path} is the path in single quotes."
+value = { "1" = "EPERM: operation not permitted, open {path}", "2" = "ENOENT: no such file or directory, open {path}", "5" = "EIO: i/o error, read", "6" = "ENXIO: no such device or address, open {path}", "12" = "ENOMEM: not enough memory, read", "13" = "EACCES: permission denied, open {path}", "16" = "EBUSY: resource busy or locked, open {path}", "20" = "ENOTDIR: not a directory, open {path}", "21" = "EISDIR: illegal operation on a directory, read", "23" = "ENFILE: file table overflow, open {path}", "24" = "EMFILE: too many open files, open {path}", "36" = "ENAMETOOLONG: name too long, open {path}", "40" = "ELOOP: too many symbolic links encountered, open {path}", "62" = "ELOOP: too many symbolic links encountered, open {path}", "63" = "ENAMETOOLONG: name too long, open {path}" }
+
+[devswarm_cli.plan_fs_error_other]
+doc = "The message JavaScript gives for a failed read whose error number is not in plan_fs_errors. Placeholder: {path} (in single quotes)."
+value = "UNKNOWN: unknown error, open {path}"
+
+[devswarm_cli.msg_plan_threw]
+doc = "The log line of a plan verb that threw in Node's code (a null step or extra in the plan file) and refused instead. Placeholder: {error}."
+value = "plan verb refused, Node throws on this plan: {error}"

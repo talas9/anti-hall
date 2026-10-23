@@ -3,26 +3,26 @@
 //! `addExtra`, `planKeyForWorktree`). The plan file, its lock, `findPlan`, `finishLabel` and the supervision log are the ones
 //! the heartbeat's `--step` already uses ([`crate::meshw::plan`]).
 //!
-//! Anything the engine cannot treat exactly like JavaScript defers BEFORE the plan is written, and Node then runs the verb:
-//! a `--steps-file` it cannot read (Node reports the operating system's message), a step or note cut that would split a
-//! surrogate pair, a plan whose shape is not the one `devswarm-plan.js` writes (see [`plan`]), a supervision log due for rotation.
-//! The plan write is the first thing this module does to the store; after it nothing defers (the supervision event is best
-//! effort, as in Node).
+//! Where Node's code throws, the verb refuses with the same text before the plan is written: a `--steps-file` it cannot read
+//! (the operating system's message, as Node words it) and a plan holding a `null` step or extra (a TypeError: `{ ok: false, error }`,
+//! exit 2). A step or note cut inside a surrogate pair keeps JavaScript's lone surrogate ([`plan::clip_utf16`]). The supervision log
+//! is rotated by [`plan::record`] when it is due. The plan write is the first thing this module does to the store; after it
+//! nothing can fail (the supervision event is best effort, as in Node).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::guardkit::text::{is_js_space, js_trim, slice_utf16};
+use crate::checks::guardkit::text::{is_js_space, js_trim};
 use crate::defaults;
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::is_safe_id;
 use crate::meshw::plan;
 use crate::meshw::send::{Answer, Effect};
 
 fn answer(code: i32, v: OVal) -> Answer {
-    Answer { code, stdout: format!("{}\n", v.stringify()), effect: Effect::None }
+    Answer { code, stdout: format!("{}\n", plan::stringify(&v)), effect: Effect::None }
 }
 
 /// `{ok:false, action, [sub, id, key, reason,] error}` with exit code 2, fields in the order given.
@@ -91,7 +91,7 @@ pub(crate) fn parse_steps(text: &str) -> R<Vec<String>> {
         // `split(/\r?\n/)`: only a CR that a LF follows goes with it
         let line = if i + 1 < pieces.len() { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
         let Some((num, body)) = match_step_line(line) else { continue };
-        let Some(body) = slice_utf16(js_trim(body), defaults::num("devswarm_cli.plan_max_step_text") as usize) else { return defer("surrogate-cut") };
+        let body = plan::clip_utf16(js_trim(body), defaults::num("devswarm_cli.plan_max_step_text") as usize);
         if num == expect {
             out.push(body);
             expect += 1;
@@ -156,11 +156,18 @@ fn fresh_step(i: usize, text: &str) -> OVal {
 /// `newPlan({ key, id, worktreePath, steps, scope, base, source, now })`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], scope: &[String], base: Option<&str>, source: &str, now: f64) -> OVal {
+    new_plan_val(key, id, wt.filter(|w| !w.is_empty()).map_or(OVal::Null, s), steps, scope, base, source, now)
+}
+
+/// [`new_plan`] where the worktree path is the descriptor's value as it is (`worktreePath || null`: any truthy value).
+#[allow(clippy::too_many_arguments)]
+fn new_plan_val(key: &str, id: &str, wt: OVal, steps: &[String], scope: &[String], base: Option<&str>, source: &str, now: f64) -> OVal {
+    let wt = if wt.truthy() { wt } else { OVal::Null };
     let mut o = Obj::default();
     o.put("v", n(1.0))
         .put("key", s(key))
         .put("id", s(id))
-        .put("worktreePath", wt.map_or(OVal::Null, s))
+        .put("worktreePath", wt)
         .put("source", s(source))
         .put("created_at", n(now))
         .put("base", base.map_or(OVal::Null, s))
@@ -175,12 +182,24 @@ pub(crate) fn new_plan(key: &str, id: &str, wt: Option<&str>, steps: &[String], 
     o.done()
 }
 
-/// `replaceSteps(plan, steps, scope, now)` -> changed.
-fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: f64) -> R<bool> {
+/// `replaceSteps(plan, steps, scope, now)` -> changed. `every` reads `s.text` of a step in order up to the first mismatch and
+/// `stepsDone` reads `s.status` of all: a `null` step there is Node's TypeError ([`plan::Throw`]).
+fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: f64) -> Result<bool, plan::Throw> {
     let old: Vec<OVal> = plan::steps_of(p).to_vec();
-    let same = old.len() == steps.len() && old.iter().zip(steps).all(|(x, t)| matches!(x.get("text"), Some(OVal::Str(y)) if y == t));
+    let mut same = old.len() == steps.len();
+    if same {
+        for (x, t) in old.iter().zip(steps) {
+            if matches!(x, OVal::Null) {
+                return Err(plan::null_read(defaults::text("mesh_write.js_prop_text")));
+            }
+            if !matches!(x.get("text"), Some(OVal::Str(y)) if y == t) {
+                same = false;
+                break;
+            }
+        }
+    }
     let current_scope = match p.get("scope_globs") {
-        Some(v) if v.truthy() => v.stringify(),
+        Some(v) if v.truthy() => plan::stringify(v),
         _ => OVal::Arr(Vec::new()).stringify(),
     };
     let wanted_scope = scope.map(|g| OVal::Arr(g.iter().map(|x| s(x)).collect()).stringify());
@@ -189,6 +208,9 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
         return Ok(false);
     }
     if !same {
+        if let Some(thrown) = plan::null_step_throw(p) {
+            return Err(thrown);
+        }
         let before = plan::steps_done(p);
         let kept: Vec<OVal> = steps
             .iter()
@@ -201,7 +223,7 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
             .collect();
         p.set("steps", OVal::Arr(kept));
         p.set("replaced_at", n(now));
-        plan::note_done_drop(p, before)?;
+        plan::note_done_drop(p, before);
         plan::remove(p, "done_reported_at");
     }
     if let Some(g) = scope {
@@ -210,19 +232,26 @@ fn replace_steps(p: &mut OVal, steps: &[String], scope: Option<&[String]>, now: 
     Ok(true)
 }
 
-/// `addExtra(plan, glob, note, now)` -> changed.
-fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> R<bool> {
+/// `addExtra(plan, glob, note, now)` -> changed. `extras.find((e) => e.glob === glob)` reads `e.glob` in order up to the first match:
+/// a `null` extra before it is Node's TypeError ([`plan::Throw`]).
+fn add_extra(p: &mut OVal, glob: &str, note: &str, now: f64) -> Result<bool, plan::Throw> {
     if !matches!(p.get("extras"), Some(OVal::Arr(_))) {
         p.set("extras", OVal::Arr(Vec::new()));
     }
-    let Some(n_text) = slice_utf16(note, defaults::num("devswarm_cli.plan_max_note") as usize) else { return defer("surrogate-cut") };
-    let OVal::Obj(fields) = p else { return defer("plan-shape") };
-    let Some((_, OVal::Arr(extras))) = fields.iter_mut().find(|(k, _)| k == "extras") else { return defer("plan-shape") };
-    // `extras.find((e) => e.glob === glob)` throws on an entry that is no object
-    if extras.iter().any(|e| !matches!(e, OVal::Obj(_))) {
-        return defer("plan-shape");
+    let n_text = plan::clip_utf16(note, defaults::num("devswarm_cli.plan_max_note") as usize);
+    let OVal::Obj(fields) = p else { return Ok(false) }; // a plan is an object: findPlan and newPlan only hand over objects
+    let Some((_, OVal::Arr(extras))) = fields.iter_mut().find(|(k, _)| k == "extras") else { return Ok(false) }; // set just above
+    let mut at = None;
+    for (i, e) in extras.iter().enumerate() {
+        if matches!(e, OVal::Null) {
+            return Err(plan::null_read(defaults::text("mesh_write.js_prop_glob")));
+        }
+        if matches!(e.get("glob"), Some(OVal::Str(g)) if g == glob) {
+            at = Some(i);
+            break;
+        }
     }
-    if let Some(existing) = extras.iter_mut().find(|e| matches!(e.get("glob"), Some(OVal::Str(g)) if g == glob)) {
+    if let Some(existing) = at.and_then(|i| extras.get_mut(i)) {
         if matches!(existing.get("note"), Some(OVal::Str(x)) if *x == n_text) {
             return Ok(false);
         }
@@ -246,6 +275,31 @@ fn record(inv: &Inv, typ: &str, fields: Vec<(String, OVal)>) {
     }
 }
 
+/// What Node's `run()` answers when the verb throws: `{ ok: false, error }`, exit 2. The throw is logged where Node logs it.
+fn threw(thrown: &plan::Throw) -> Answer {
+    crate::debug::violated("meshw", &defaults::render("devswarm_cli.msg_plan_threw", &[("error", &thrown.0)]));
+    fail(&[("error", s(&thrown.0))])
+}
+
+/// The key of the plan to write: the found plan's, else the worktree's mesh id (when the descriptor's worktree is a path), else the id.
+fn key_of(found: &Option<plan::Found>, wt: Option<&OVal>, id: &str) -> R<String> {
+    Ok(match (found, wt) {
+        (Some(f), _) => f.key.clone(),
+        (None, Some(OVal::Str(w))) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
+        _ => id.to_string(),
+    })
+}
+
+/// `e.message` of a failed `readFileSync(path, 'utf8')`, by operating system error number.
+fn fs_error_text(e: &std::io::Error, path: &str) -> String {
+    let quoted = format!("'{path}'");
+    let table = defaults::raw("devswarm_cli.plan_fs_errors");
+    match e.raw_os_error().and_then(|n| table.get(&n.to_string())).and_then(defaults::V::as_str) {
+        Some(tpl) => defaults::fill(tpl, &[("path", &quoted)]),
+        None => defaults::render("devswarm_cli.plan_fs_error_other", &[("path", &quoted)]),
+    }
+}
+
 // ---- plan ---------------------------------------------------------------------------------------------------------------
 
 /// `plan set|show <id> ...`.
@@ -263,19 +317,17 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     let id = id.as_str();
     let now = inv.now as f64;
     let sub_word = || sub.map_or(OVal::Null, s);
-    let wt = plan::plan_ref(inv, id)?;
+    let wt = plan::plan_ref_value(inv, id)?;
     if sub == Some(defaults::text("devswarm_cli.sub_show")) {
         let Some(found) = plan::find(inv, id)? else {
             return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("reason", s(defaults::text("devswarm_cli.plan_reason_none")))]));
         };
+        let label = match plan::label_checked(&found.plan, now) {
+            Ok(l) => l,
+            Err(thrown) => return Ok(threw(&thrown)),
+        };
         let mut o = Obj::default();
-        o.put("ok", OVal::Bool(true))
-            .put("action", action)
-            .put("sub", sub_word())
-            .put("id", s(id))
-            .put("key", s(&found.key))
-            .put("label", plan::finish_label(&found.plan, now)?)
-            .put("plan", found.plan);
+        o.put("ok", OVal::Bool(true)).put("action", action).put("sub", sub_word()).put("id", s(id)).put("key", s(&found.key)).put("label", label).put("plan", found.plan);
         return Ok(answer(0, o.done()));
     }
     if sub != Some(defaults::text("devswarm_cli.sub_set")) {
@@ -287,7 +339,10 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     {
         match std::fs::read(file) {
             Ok(b) => text = Some(String::from_utf8_lossy(&b).into_owned()),
-            Err(_) => return defer("steps-file"),
+            Err(e) => {
+                let error = defaults::render("devswarm_cli.msg_plan_steps_file", &[("why", &fs_error_text(&e, file))]);
+                return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("error", s(&error))]));
+            }
         }
     }
     let steps = parse_steps(text.as_deref().unwrap_or(""))?;
@@ -296,30 +351,21 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let scope = a.has(defaults::text("devswarm_cli.flag_scope")).then(|| split_globs(&csv_list(a, defaults::text("devswarm_cli.flag_scope")).join(",")));
     let found = plan::find(inv, id)?;
-    let key = match &found {
-        Some(f) => f.key.clone(),
-        None => match wt.as_deref() {
-            Some(w) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
-            None => id.to_string(),
-        },
-    };
-    if plan::log_needs_rotation(inv) {
-        return defer("supervision-rotate");
-    }
+    let key = key_of(&found, wt.as_ref(), id)?;
     let source = defaults::text("devswarm_cli.plan_source_set");
     let done = plan::update_with(inv, &key, |cur| {
         Ok(match cur {
-            Some(mut p) => {
-                let changed = replace_steps(&mut p, &steps, scope.as_deref(), now)?;
-                ((false, changed, p.clone()), changed.then_some(p))
-            }
+            Some(mut p) => match replace_steps(&mut p, &steps, scope.as_deref(), now) {
+                Ok(changed) => (Ok((false, changed, p.clone())), changed.then_some(p)),
+                Err(thrown) => (Err(thrown), None),
+            },
             None => {
-                let p = new_plan(&key, id, wt.as_deref(), &steps, scope.as_deref().unwrap_or(&[]), None, source, now);
-                ((true, true, p.clone()), Some(p))
+                let p = new_plan_val(&key, id, wt.clone().unwrap_or(OVal::Null), &steps, scope.as_deref().unwrap_or(&[]), None, source, now);
+                (Ok((true, true, p.clone())), Some(p))
             }
         })
     })?;
-    let Some(((created, changed, p), written)) = done else {
+    let Some((outcome, written)) = done else {
         return Ok(fail(&[
             ("action", action),
             ("sub", sub_word()),
@@ -328,6 +374,10 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
             ("reason", s(defaults::text("devswarm_cli.plan_reason_busy"))),
             ("error", s(defaults::text("devswarm_cli.msg_plan_busy"))),
         ]));
+    };
+    let (created, changed, p) = match outcome {
+        Ok(done) => done,
+        Err(thrown) => return Ok(threw(&thrown)),
     };
     if let Some(t) = written {
         crate::meshw::mark_committed();
@@ -387,32 +437,25 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
             return Ok(fail(&[("action", action), ("sub", sub_word()), ("id", s(id)), ("error", s(defaults::text("devswarm_cli.msg_scope_note_required")))]));
         }
     };
-    let wt = plan::plan_ref(inv, id)?;
+    let wt = plan::plan_ref_value(inv, id)?;
     let found = plan::find(inv, id)?;
-    let key = match &found {
-        Some(f) => f.key.clone(),
-        None => match wt.as_deref() {
-            Some(w) => plan::key_for_worktree(w)?.unwrap_or_else(|| id.to_string()),
-            None => id.to_string(),
-        },
-    };
-    if plan::log_needs_rotation(inv) {
-        return defer("supervision-rotate");
-    }
+    let key = key_of(&found, wt.as_ref(), id)?;
     let source = defaults::text("devswarm_cli.plan_source_scope");
     let done = plan::update_with(inv, &key, |cur| {
         let created = cur.is_none();
-        let mut p = cur.unwrap_or_else(|| new_plan(&key, id, wt.as_deref(), &[], &[], None, source, now));
+        let mut p = cur.unwrap_or_else(|| new_plan_val(&key, id, wt.clone().unwrap_or(OVal::Null), &[], &[], None, source, now));
         let mut changed = false;
         for g in &globs {
-            if add_extra(&mut p, g, note, now)? {
-                changed = true;
+            match add_extra(&mut p, g, note, now) {
+                Ok(true) => changed = true,
+                Ok(false) => {}
+                Err(thrown) => return Ok((Err(thrown), None)),
             }
         }
         let write = (changed || created).then(|| p.clone());
-        Ok(((changed, p), write))
+        Ok((Ok((changed, p)), write))
     })?;
-    let Some(((changed, p), written)) = done else {
+    let Some((outcome, written)) = done else {
         return Ok(fail(&[
             ("action", action),
             ("sub", sub_word()),
@@ -421,6 +464,10 @@ pub fn run_scope(inv: &Inv, a: &Args) -> R<Answer> {
             ("reason", s(defaults::text("devswarm_cli.plan_reason_busy"))),
             ("error", s(defaults::text("devswarm_cli.msg_plan_busy"))),
         ]));
+    };
+    let (changed, p) = match outcome {
+        Ok(done) => done,
+        Err(thrown) => return Ok(threw(&thrown)),
     };
     if let Some(t) = written {
         crate::meshw::mark_committed();
