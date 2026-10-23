@@ -562,6 +562,10 @@ value = "background subagent(s)/shell(s)"
 doc = "Put before a background shell's name in the nudge."
 value = "shell: "
 
+[silent_nudge.monitor_shell_kind]
+doc = "The task_status shell.kind of a background shell started by the Monitor tool (a plain Bash background task records `bash`). A Monitor task is an event stream, quiet by design when nothing happens, so it is never nudged as silent; a plain background Bash task is still judged by its output age."
+value = "monitor"
+
 [silent_nudge.shell_task_type]
 doc = "The task_status taskType of a background shell (anything else adopted is an agent)."
 value = "local_bash"
