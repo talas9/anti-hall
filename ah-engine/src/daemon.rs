@@ -1008,6 +1008,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::memdiag::note_check(check);
         observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
         checks_us.set(checks_us.get().saturating_add(micros));
+        crate::web::decisions::push(&meta.event, check, &e.id, &v, micros);
         sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
     };
     let (start_cpu, budget) = cpu_budget(cfg);
