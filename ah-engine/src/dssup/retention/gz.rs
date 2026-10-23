@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 
 /// The failure of one gzip step, in the words of `devswarm_sup.rt_err_gzip`.
 fn broke(why: impl std::fmt::Display) -> Defer {
-    Defer(defaults::render("devswarm_sup.rt_err_gzip", &[("why", &why)]))
+    crate::dssup::failure(defaults::render("devswarm_sup.rt_err_gzip", &[("why", &why)]))
 }
 
 /// Run `bin args` with `input` on stdin; stdout when it exits 0.

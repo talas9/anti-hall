@@ -101,10 +101,6 @@ value = "primary"
 doc = "The prefix of a Primary workspace's mesh id (a row with it is never a root-mapped child row)."
 value = "primary-"
 
-[devswarm_recon.why_surrogate]
-doc = "Why a decision was handed back: cutting the text at Node's length would split a surrogate pair."
-value = "surrogate-cut"
-
 # ---- the side files (slice S1) -------------------------------------------------------------------------------------------------
 
 [devswarm_recon.file_sweep_state]
@@ -236,14 +232,6 @@ value = "no-descriptor"
 doc = "The reason of an unhealable orphan whose worktree belongs to another repository."
 value = "wrong-store"
 
-[devswarm_recon.why_orphan_archived]
-doc = "Why a store was handed back: an orphan is archived (forward or drained, which are Node's) or the archive gate needs the liveness proof."
-value = "orphan-archived"
-
-[devswarm_recon.why_orphan_family]
-doc = "Why a store was handed back: an orphan's worktree already has registry rows, so adopting it forwards its unread into the survivor (the fold, which is Node's)."
-value = "orphan-family"
-
 [devswarm_recon.stage_heal_orphans]
 doc = "The name of the deferred post-update stage the orphan heal belongs to."
 value = "heal-orphan-partitions"
@@ -357,10 +345,6 @@ value = '"pid":[0-9]+,"nonce"'
 doc = "What the pid pattern becomes."
 value = '"pid":0,"nonce"'
 
-[devswarm_recon.why_summary_orphan]
-doc = "Why a fold was handed back: after it the closing summary would meet an unregistered partition with unread mail, which only Node's projection classifies."
-value = "summary-orphan"
-
 # ---- archived rows and twin descriptors (slice S7) -------------------------------------------------------------------------------
 
 [devswarm_recon.job_archive]
@@ -402,26 +386,6 @@ value = "live-or-unprovable-worktree"
 [devswarm_recon.reason_differs]
 doc = "Why a twin descriptor stayed active: archived/ already holds a different file under its name."
 value = "archived-tombstone-differs"
-
-[devswarm_recon.why_group_fold]
-doc = "Why the archived rows pass was handed back: a sibling row would be folded into a survivor (foldGroupIntoSurvivor)."
-value = "fold-group-into-survivor"
-
-[devswarm_recon.why_archived_absent]
-doc = "Why a retire was handed back: archived/ does not exist and Node would create it."
-value = "archived-dir-absent"
-
-[devswarm_recon.why_unreadable]
-doc = "Why a decision was handed back: a descriptor or archived path could not be read as Node reads it."
-value = "descriptor-unreadable"
-
-[devswarm_recon.why_resume_duplicates]
-doc = "Why a pass was handed back: its resume marker names an id twice."
-value = "resume-duplicates"
-
-[devswarm_recon.why_collision]
-doc = "Why a restore was handed back: the registry already maps the id to a different worktree (the collision guard of upsertRegistry)."
-value = "registry-collision"
 
 [devswarm_recon.err_no_archived]
 doc = "Restore refused: nothing archived or live to restore. Placeholder: {id} (JSON text)."
@@ -1066,10 +1030,6 @@ value = "reconcile-log-sig.json"
 doc = "The failure text of a hivecontrol call the capability cache already records as unsupported by this build. Placeholders: {name}, {reason}."
 value = "capability dormant: {name} — {reason}"
 
-[devswarm_recon.cursor_log_rotation]
-doc = "Whether the fold may rotate a cursor-write journal that is past `mesh_write.cursor_log_cap` records: the newest records stay and the older ones are APPENDED to the end of the journal's `.1` file, which keeps whatever it already held (nothing is lost or replaced). On (the default). Off: a fold that would need it waits (counted, nothing written for that group) until you switch it on or trim the journal yourself."
-value = true
-
 [devswarm_recon.cursor_log_older_suffix]
 doc = "The suffix of the file a rotated cursor journal's older records move to."
 value = ".1"
@@ -1192,10 +1152,6 @@ value = "legacy"
 doc = "The accounting name under which a legacy journal store skipped by a reconcile pass or a recon stage is counted as disabled."
 value = "recon:legacy-store"
 
-[devswarm_recon.reason_store_unpinned]
-doc = "The reason code of a store with no backend marker (or one naming neither backend): the engine does not open it as it cannot tell which backend it is on. The update's store stages pin a store that holds a database; until then the item is held and tried again."
-value = "store-unpinned"
-
 [devswarm_recon.fold_unit_prefix]
 doc = "The label prefix of one candidate's fold unit (the candidate id follows); a registration reads it back to report a unit the applier handed back as pending."
 value = "fold:"
@@ -1221,3 +1177,47 @@ doc = "Most characters of the first output line a failed hivecontrol call's desc
 value = 160
 min = 20
 max = 1000
+
+[devswarm_recon.archive_forward_age_env]
+doc = "The environment variable that sets, in days, how old an archived orphan's unread row may be and still be forwarded (parseInt of it; anything not positive keeps the default)."
+value = "ANTIHALL_DEVSWARM_ARCHIVE_FORWARD_MAX_AGE_DAYS"
+
+[devswarm_recon.archive_forward_age_default_days]
+doc = "The default age cap, in days, of an archived orphan's forwarded unread rows."
+value = 30
+
+[devswarm_recon.word_skipped]
+doc = "The reason word of a pending orphan detail whose fold skipped it without a reason of its own."
+value = "skipped"
+
+[devswarm_recon.reason_no_live_survivor]
+doc = "The detail reason of an adopted orphan whose worktree family has rows but no survivor to fold it into."
+value = "no-live-survivor"
+
+[devswarm_recon.reason_unsafe_id]
+doc = "Why a fold candidate was not acted on: its id is no path segment, so it has no lock and no cursor file to name."
+value = "unsafe-id"
+
+[devswarm_recon.reason_tail_off]
+doc = "The refusal of a store pass while the owner's switch devswarm_sup.sweep_tail_mode is off: the engine takes no store, nothing is read or written."
+value = "sweep-tail-mode-off"
+
+[devswarm_recon.err_read_archived]
+doc = "The restore error when the archived descriptor cannot be read. Placeholder: {why}."
+value = "failed to read archived descriptor: {why}"
+
+[devswarm_recon.err_read_active]
+doc = "The restore error when the active descriptor cannot be read. Placeholder: {why}."
+value = "failed to read restored descriptor: {why}"
+
+[devswarm_recon.err_not_regular]
+doc = "Why a descriptor path cannot be read as a descriptor: it is not a regular file."
+value = "descriptor path is not a regular file"
+
+[devswarm_recon.err_not_object]
+doc = "Why a descriptor cannot be read as a descriptor: its JSON is not an object."
+value = "descriptor is not a JSON object"
+
+[devswarm_recon.reason_retire_failed]
+doc = "The reason a twin descriptor is left when retiring it failed inside its lock. Placeholder: {why}."
+value = "retire-failed: {why}"

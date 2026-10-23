@@ -280,14 +280,14 @@ pub fn previous_gaps(prev: &Option<OVal>, now: i64, cooldown: Option<f64>) -> Op
 pub fn gap_total(g: &OVal) -> Result<OVal, ident::Defer> {
     let rows = match g.get("repos") {
         Some(OVal::Arr(rs)) => rs,
-        None => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_undefined").to_string())),
-        Some(OVal::Null) => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_null").to_string())),
-        Some(_) => return Err(ident::Defer(defaults::text("devswarm_sup.as_err_reduce_fn").to_string())),
+        None => return Err(crate::dssup::failure(defaults::text("devswarm_sup.as_err_reduce_undefined").to_string())),
+        Some(OVal::Null) => return Err(crate::dssup::failure(defaults::text("devswarm_sup.as_err_reduce_null").to_string())),
+        Some(_) => return Err(crate::dssup::failure(defaults::text("devswarm_sup.as_err_reduce_fn").to_string())),
     };
     let mut acc = OVal::Num(0.0);
     for r in rows {
         if matches!(r, OVal::Null) {
-            return Err(ident::Defer(defaults::text("devswarm_sup.as_err_read_gap_null").to_string()));
+            return Err(crate::dssup::failure(defaults::text("devswarm_sup.as_err_read_gap_null").to_string()));
         }
         let add = match r.get("gap") {
             None => OVal::Num(f64::NAN),
@@ -492,7 +492,7 @@ pub fn build(snap: &Snap, inp: &Inputs) -> R<Built> {
 }
 
 #[cfg(test)]
-mod native_tests {
+mod tests {
     //! The cases the app sync used to hand to Node now answer natively, as JavaScript would.
     use super::*;
     use std::cmp::Ordering;

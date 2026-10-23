@@ -143,6 +143,14 @@ pub enum Op {
         dest: String,
         /// The rows, already addressed to `dest`.
         rows: Vec<MeshRow>,
+        /// `allowArchivedDest`: a destination that is archived-only (no live descriptor, an archive marker) takes the rows too; set only
+        /// for rows of archived origin.
+        allow_archived: bool,
+    },
+    /// `mkdirSync(dir, { recursive: true })` of a directory under the home (`checkedArchivedDir(home, { create: true })`).
+    Mkdir {
+        /// The directory, relative to the home.
+        rel: String,
     },
     /// `importLegacy` of one partition that has no floor rows yet (`raiseAllLossFree` makes the same import inside its own transaction): the
     /// legacy read positions become the `#floor` rows and the live readers' rows, once; a second run finds the floors and writes nothing. A

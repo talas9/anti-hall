@@ -148,7 +148,7 @@ pub fn plan_marks(home: &Path, snap: &Snap) -> R<MarkPlan> {
     let wdir = dir_of(home, "devswarm_sup.as_dir_workspaces");
     let adir = dir_of(home, "devswarm_sup.as_dir_archived");
     let ext = defaults::text("devswarm_sup.as_json_ext");
-    let uuid = regex::Regex::new(defaults::text("devswarm_sup.as_builder_re")).map_err(|e| ident::Defer(e.to_string()))?;
+    let uuid = regex::Regex::new(defaults::text("devswarm_sup.as_builder_re")).map_err(|e| crate::dssup::failure(e.to_string()))?;
     let mut plan = MarkPlan::default();
     for (name, _) in fsx::read_dir_names(&wdir.to_string_lossy()).unwrap_or_default() {
         let Some(id) = name.strip_suffix(ext) else { continue };
@@ -392,7 +392,7 @@ pub fn retire_marker(ctx: &crate::dssup::tick::Ctx, id: &str, builder_id: &str) 
 }
 
 #[cfg(test)]
-mod native_tests {
+mod tests {
     use super::*;
 
     #[test]

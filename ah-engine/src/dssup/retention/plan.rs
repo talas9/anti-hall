@@ -15,7 +15,7 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
-use crate::meshw::ident::{Defer, R};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, params};
@@ -114,14 +114,14 @@ pub fn store_dir(home: &Path, hash: &str) -> PathBuf {
 /// Open a store read only, the way Node's `openDb(home, hash, true)` does (a busy timeout, no waiting beyond it).
 pub fn open_ro(file: &Path) -> R<Connection> {
     let c =
-        Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| Defer(format!("store-open:{e}")))?;
+        Connection::open_with_flags(file, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
     crate::discard::harmless(c.busy_timeout(defaults::millis("devswarm_sup.rt_busy_ms"))); // keep: the default timeout only makes a busy store fail sooner
     Ok(c)
 }
 
 /// An integer JavaScript cannot hold exactly: Node's sqlite binding throws on it, which ends the store's plan with this text.
 pub(super) fn safe_int(i: i64) -> R<i64> {
-    if i.unsigned_abs() > defaults::num("mesh.js_safe_int") { Err(Defer(defaults::render("msg.err_mesh_range", &[("value", &i)]))) } else { Ok(i) }
+    if i.unsigned_abs() > defaults::num("mesh.js_safe_int") { Err(crate::dssup::failure(defaults::render("msg.err_mesh_range", &[("value", &i)]))) } else { Ok(i) }
 }
 
 /// `String(x)` of a column value: a blob is a `Uint8Array`, which joins its bytes with commas.
@@ -156,7 +156,7 @@ fn js_min(a: f64, b: f64) -> f64 {
 }
 
 fn e<T>(r: rusqlite::Result<T>, what: &str) -> R<T> {
-    r.map_err(|x| Defer(format!("{what}:{x}")))
+    r.map_err(|x| crate::dssup::failure(format!("{what}:{x}")))
 }
 
 /// What makes two broadcasts one run: sender, body, urgency.
@@ -179,7 +179,7 @@ fn reader_rows(c: &Connection, partition: &str) -> R<Vec<Reader>> {
     let mut st = match c.prepare(crate::sql::RT_READER_ROWS) {
         Ok(s) => s,
         Err(x) if x.to_string().to_lowercase().contains(defaults::text("devswarm_sup.rt_no_table_text")) => return Ok(Vec::new()),
-        Err(x) => return Err(Defer(format!("reader-rows:{x}"))),
+        Err(x) => return Err(crate::dssup::failure(format!("reader-rows:{x}"))),
     };
     let mut rows = e(st.query(params![partition]), "reader-rows")?;
     let mut out = Vec::new();

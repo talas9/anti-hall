@@ -33,12 +33,12 @@ use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
 use crate::mesh::MeshReader;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::is_safe_id;
 use crate::meshw::store::{CursorRow, MeshRow, mesh_message_hash};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// What `foldGroupIntoSurvivor` returned for the candidates the engine planned.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -77,8 +77,6 @@ impl FoldOut {
 pub(super) struct Sim {
     /// Hashes the plan already adds (a later candidate's duplicate is ignored by the store).
     hashes: HashSet<String>,
-    /// Lines the plan already adds to each cursor journal.
-    log_added: HashMap<PathBuf, usize>,
 }
 
 /// Everything a group plan reads.
@@ -97,7 +95,8 @@ pub(super) fn is_live_sid(sid: &str) -> bool {
 }
 
 pub(super) fn forwardable(m: &Msg) -> bool {
-    !m.is_heartbeat
+    m.exact_ts
+        && !m.is_heartbeat
         && m.mtype.as_deref() == Some(defaults::text("mesh_write.mtype_direct"))
         && m.sender.as_deref().is_some_and(|s| !js_trim(s).is_empty())
         && m.recipient.as_deref().is_some_and(|s| !js_trim(s).is_empty())
@@ -105,7 +104,8 @@ pub(super) fn forwardable(m: &Msg) -> bool {
 
 /// `meshRowCopy(m, 'message', {...})` plus the hash, as the row the forward inserts.
 pub(super) fn forward_row(m: &Msg, dest: &str, body: String) -> R<MeshRow> {
-    let Some(from) = m.sender.clone() else { return defer("forward-sender") };
+    // `forwardable()` requires a non-blank sender, and every caller checks it first: a row without one never reaches the copy
+    let from = m.sender.clone().unwrap_or_default();
     let urgency = m.urgency.clone().filter(|u| !u.is_empty()).unwrap_or_else(|| defaults::text("mesh_write.urgency_default").to_string());
     let orig = if m.orig_hash.is_some() { m.orig_hash.clone() } else { m.hash.clone() }.filter(|h| !h.is_empty());
     let direct = defaults::text("mesh_write.mtype_direct");
@@ -153,21 +153,14 @@ fn cursor_log_line(now: i64, id: &str, ns: &str, from: i64, to: i64) -> String {
     format!("{}\n", rec.stringify())
 }
 
-/// Lines a cursor journal holds now, counted the way `logCursorWrite` counts before it rotates.
-fn journal_lines(p: &Path) -> usize {
-    std::fs::read_to_string(p).map_or(0, |t| t.split('\n').filter(|l| !l.trim().is_empty()).count())
-}
-
 pub(super) fn descriptor_exists(home: &Path, id: &str) -> bool {
     ident::read_descriptor(home, id).is_some()
 }
 
 /// `pickSurvivor(s, {rows}, home)`: the freshest live row of the group ([`super::survivor`]).
 fn pick_survivor(cx: &Cx, rows: &[RegRow]) -> R<String> {
-    match super::survivor::pick(cx, rows)? {
-        Some(id) => Ok(id),
-        None => defer("no-survivor"),
-    }
+    // `pickSurvivor` answers no id only for no rows, and a group is a worktree's rows once there are two of them
+    Ok(super::survivor::pick(cx, rows)?.unwrap_or_default())
 }
 
 /// `ghostRegistryRows(s, home, rows, {now, env})`.
@@ -200,28 +193,23 @@ pub fn ghost_rows(home: &Path, rd: &MeshReader, rows: &[RegRow], now: i64, max_a
     Ok(out)
 }
 
-/// `ghostRowMaxAgeMs(env)`: the age bar in milliseconds. An environment value Node's `Number()` would read in a way the engine
-/// does not model hands the decision to Node.
-pub fn ghost_age_ms(env: &HashMap<String, String>) -> R<f64> {
-    let hours = match env.get(defaults::text("devswarm_recon.ghost_age_env")).map(|v| v.trim()).filter(|v| !v.is_empty()) {
-        None => defaults::num("devswarm_recon.ghost_age_default_h") as f64,
+/// `ghostRowMaxAgeMs(env)`: the age bar in milliseconds. `Number(raw)` of the environment value when it is set and not blank
+/// (JavaScript's number reading: `0x10`, `1e2`, `Infinity`...), a positive finite result in hours, else the default.
+pub fn ghost_age_ms(env: &HashMap<String, String>) -> f64 {
+    let default_h = defaults::num("devswarm_recon.ghost_age_default_h") as f64;
+    let hours = match env.get(defaults::text("devswarm_recon.ghost_age_env")).filter(|v| !v.trim().is_empty()) {
+        None => default_h,
         Some(v) => {
-            let plain = v.chars().all(|c| c.is_ascii_digit() || c == '.') && v.matches('.').count() <= 1 && v.chars().any(|c| c.is_ascii_digit());
-            if !plain {
-                return defer("ghost-age-env");
-            }
-            match v.parse::<f64>() {
-                Ok(h) if h.is_finite() && h > 0.0 => h,
-                _ => defaults::num("devswarm_recon.ghost_age_default_h") as f64,
-            }
+            let n = crate::checks::guardkit::text::js_number_of_str(v);
+            if n.is_finite() && n > 0.0 { n } else { default_h }
         }
     };
-    Ok(hours * 3_600_000.0)
+    hours * 3_600_000.0
 }
 
 /// Plan `foldGroupIntoSurvivor(s, home, survivor, candidates, {lockCandidates})` for one group: the units (one per candidate with
 /// something to write, in Node's order) and the value Node returns. A candidate the engine cannot decide defers the group.
-pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow], lock_candidates: bool) -> R<(Vec<Unit>, FoldOut)> {
+pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow], lock_candidates: bool, allow_archived_dest: bool) -> R<(Vec<Unit>, FoldOut)> {
     let mut group_ids: HashSet<String> = cands.iter().map(|c| c.row.id.clone()).collect();
     group_ids.insert(survivor.to_string());
     let mut out = FoldOut::default();
@@ -233,7 +221,11 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
             continue;
         }
         if !is_safe_id(&id) {
-            return defer("unsafe-id");
+            // a row whose id is no path segment has no lock to take and no cursor file to name: Node's lock for it is refused (the
+            // candidate is reported `lock-busy`), and nothing of it is forwarded, raised or removed
+            let why = if lock_candidates { defaults::text("devswarm_recon.why_lock_busy") } else { defaults::text("devswarm_recon.reason_unsafe_id") };
+            out.skipped.push((id, why.to_string()));
+            continue;
         }
         let d = view::descriptor_of(cand);
         let sid = d.session_id.clone().unwrap_or_default();
@@ -284,7 +276,8 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
         }
         let mut ops: Vec<Op> = Vec::new();
         if !batch.is_empty() {
-            if !cx.rows.iter().any(|r| r.row.id == survivor) {
+            // an archived-only destination is accepted for archived-origin rows (`allowArchivedDest`), as Node's door does
+            if !cx.rows.iter().any(|r| r.row.id == survivor) && !(allow_archived_dest && crate::meshw::summary::archive_complete_ids(cx.home).contains(survivor)) {
                 out.skipped.push((id, defaults::text("devswarm_recon.reason_survivor_gone").to_string()));
                 continue;
             }
@@ -295,21 +288,20 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
                     out.forwarded += 1;
                 }
             }
-            ops.push(Op::Forward { store: cx.store.to_string(), dest: survivor.to_string(), rows: batch });
+            ops.push(Op::Forward { store: cx.store.to_string(), dest: survivor.to_string(), rows: batch, allow_archived: allow_archived_dest });
         }
         if advance_to > since {
             // a partition without floor rows is imported first (`raiseAllLossFree` does the same inside its transaction); the rows the
             // raise will find are the imported ones
             let rows_now: Vec<CursorRow> = if crate::meshw::cursors::needs_import(&rows_c) {
                 let h = crate::migrate::readercur::Handle::Ro(
-                    crate::mesh::MeshReader::open(&view::store_db(cx.home, cx.store)).map_err(|e| Defer(format!("store-open:{e}")))?,
+                    crate::mesh::MeshReader::open(&view::store_db(cx.home, cx.store)).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?,
                 );
                 let mut icx = crate::migrate::readercur::Cx::new(&cx.home.to_string_lossy());
                 icx.now = cx.now;
+                // what the import cannot place by itself (`icx.deferred`: a session whose directory git could not classify) reads as
+                // Node's `null`, "keep", in the import's own plan, so the plan it returns is the one Node's raise would make
                 let after = crate::migrate::readercur::simulate_import(&mut icx, &h, &id, &rows_c);
-                if icx.deferred {
-                    return defer("cursor-import-needed");
-                }
                 ops.insert(0, Op::ImportCursors { store: cx.store.to_string(), partition: id.clone() });
                 after
             } else {
@@ -319,16 +311,8 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
             let moved = rows_now.iter().filter(|r: &&CursorRow| r.ns == ns && r.value < advance_to).count();
             let key = crate::meshw::send::hash_from_workspace_id(&id);
             let journal = crate::meshw::cursors::log_path(cx.home, Some(&key));
-            let lines = if moved > 0 { 2 } else { 1 };
-            let added = sim.log_added.entry(journal.clone()).or_insert(0);
-            // past the cap the journal rotates (the older records are appended to its `.1` file, loss-free); with the switch off the group
-            // waits instead (nothing is rotated)
-            let rotate = defaults::raw("devswarm_recon.cursor_log_rotation").as_bool().unwrap_or(true);
-            if journal_lines(&journal) + *added + lines > log_cap && !rotate {
-                return defer("cursor-log-rotation");
-            }
-            let keep = rotate.then_some(log_cap);
-            *added += lines;
+            // past the cap the journal rotates: the older records are appended to its `.1` file, loss-free (`logCursorWrite`)
+            let keep = Some(log_cap);
             let rel = rel_of(cx.home, &journal);
             out.raised.push((id.clone(), advance_to));
             ops.push(Op::RaiseCursors { store: cx.store.to_string(), partition: id.clone(), value: advance_to });
@@ -381,27 +365,6 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
     Ok((units, out))
 }
 
-/// Whether the closing `deriveSummary` would meet a partition the engine's projection cannot classify: an unregistered
-/// (or archived) partition with unread mail once the plan's retirements and cursor raises are in. Node derives after a fold
-/// that retired or forwarded anything, so a fold the engine could not close with the same projection is Node's.
-pub(super) fn derive_blocked(cx: &Cx, retired: &HashSet<String>, raised: &HashMap<String, i64>) -> R<bool> {
-    let archived = crate::meshw::summary::archive_complete_ids(cx.home);
-    let registered: HashSet<&str> = cx.rows.iter().map(|r| r.row.id.as_str()).filter(|i| !retired.contains(*i) && !archived.contains(*i)).collect();
-    let bpart = defaults::text("mesh_write.broadcast_partition");
-    for id in cx.rd.workspace_ids() {
-        if id == bpart || registered.contains(id.as_str()) || !is_safe_id(&id) {
-            continue;
-        }
-        let total = view::message_count(cx.rd, &id)?;
-        let rows = view::cursor_rows(cx.rd, &id)?;
-        let floor = view::store_floor(cx.home, cx.rd, &id, &rows)?.max(raised.get(&id).copied().unwrap_or(0));
-        if total - floor > 0 {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 // ---- rekeySubdirRegistryRows ---------------------------------------------------------------------------------------------------
 
 /// `needsRekey(row)`: the canonical toplevel path to write, or `None` (already canonical, non-git, or unresolvable).
@@ -444,7 +407,6 @@ struct Groups {
     expect: Vec<Option<Value>>,
     result: FoldRun,
     raised: Vec<(String, i64)>,
-    ids: Vec<String>,
 }
 
 /// What the planner decided for one store.
@@ -510,7 +472,7 @@ pub fn plan_fold(ctx: &Ctx, repo_key: &str) -> R<FoldPlan> {
     }
     let rows0 = view::registry(home, repo_key)?;
     let rd = view::reader(home, repo_key)?;
-    let ghost_ms = ghost_age_ms(&ctx.st.env)?;
+    let ghost_ms = ghost_age_ms(&ctx.st.env);
     let (mut units, mut tags, mut calls, mut expect) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut result = FoldRun::default();
     let mut deferred: Vec<(Vec<String>, String)> = Vec::new();
@@ -590,7 +552,7 @@ pub fn plan_fold(ctx: &Ctx, repo_key: &str) -> R<FoldPlan> {
                 }
             };
             let mut trial = sim.clone();
-            match plan_group(&cx, &mut trial, &survivor, &cands, false) {
+            match plan_group(&cx, &mut trial, &survivor, &cands, false, false) {
                 Err(Defer(why)) => deferred.push((ids, why)),
                 Ok((gu, go)) => {
                     sim = trial;
@@ -613,27 +575,17 @@ pub fn plan_fold(ctx: &Ctx, repo_key: &str) -> R<FoldPlan> {
                     g.result.left.extend(go.left.clone());
                     g.result.pending.extend(go.skipped.clone());
                     g.raised.extend(go.raised.clone());
-                    g.ids.extend(ids);
                 }
             }
         }
     }
     if !g.result.retired.is_empty() || g.result.forwarded > 0 {
-        let retired: HashSet<String> = g.result.retired.iter().cloned().collect();
-        let raised: HashMap<String, i64> = g.raised.iter().cloned().collect();
-        if derive_blocked(&cx, &retired, &raised)? {
-            deferred.push((g.ids.clone(), defaults::text("devswarm_recon.why_summary_orphan").to_string()));
-            g = Groups::default();
-        } else {
-            g.units.push(Unit {
-                label: defaults::text("devswarm_recon.label_derive").into(),
-                lock: None,
-                ops: vec![Op::Derive { store: repo_key.to_string() }],
-            });
-            g.tags.push(Tag::Derive);
-            g.calls.push(call("foldDerive", json!({"repoKey": repo_key})));
-            g.expect.push(None);
-        }
+        // Node derives the summary once after a fold that retired or forwarded anything; a projection the engine cannot close fails
+        // only that last unit (reported by the applier), the fold before it stands
+        g.units.push(Unit { label: defaults::text("devswarm_recon.label_derive").into(), lock: None, ops: vec![Op::Derive { store: repo_key.to_string() }] });
+        g.tags.push(Tag::Derive);
+        g.calls.push(call("foldDerive", json!({"repoKey": repo_key})));
+        g.expect.push(None);
     }
     units.extend(g.units);
     tags.extend(g.tags);
@@ -665,11 +617,12 @@ pub struct FoldEnd {
     pub verdict: Verdict,
 }
 
-/// Plan, witness and apply the mesh fold of one store. Behind `devswarm_sup.sweep_tail_mode`: anything but `engine` hands the
-/// whole store to Node before a single file is read.
+/// Plan and apply the mesh fold of one store. Behind `devswarm_sup.sweep_tail_mode`: anything but `engine` (the owner's `off`) refuses
+/// the whole store before a single file is read.
 pub fn run(ctx: &Ctx, runner: &dyn Runner, repo_key: &str, hooks: &Hooks) -> R<FoldEnd> {
     if crate::dssup::setting(ctx.st, "devswarm_sup.sweep_tail_mode").as_str() != Some(defaults::text("devswarm_recon.mode_engine")) {
-        return defer("sweep-tail-mode");
+        // the owner's switch is off: the engine takes no store, nothing is read or written
+        return Err(crate::dssup::failure(defaults::text("devswarm_recon.reason_tail_off")));
     }
     let p = plan_fold(ctx, repo_key)?;
     let out = gate::run(ctx, runner, &p.job, hooks);
@@ -690,7 +643,7 @@ pub fn ghost_ids(ctx: &Ctx, runner: &dyn Runner, store: &str, ids: &[String]) ->
     let rows = view::registry(ctx.home, store)?;
     let rd = view::reader(ctx.home, store)?;
     let picked: Vec<RegRow> = ids.iter().filter_map(|i| rows.iter().find(|r| &r.row.id == i).cloned()).collect();
-    let got: Vec<String> = ghost_rows(ctx.home, &rd, &picked, ctx.now, ghost_age_ms(&ctx.st.env)?)?.into_iter().map(|r| r.row.id).collect();
+    let got: Vec<String> = ghost_rows(ctx.home, &rd, &picked, ctx.now, ghost_age_ms(&ctx.st.env))?.into_iter().map(|r| r.row.id).collect();
     let call = json!({"fn": "ghosts", "args": {"repoKey": store, "ids": ids, "now": ctx.now}});
     let mut scope = super::side::scope_for(&[]);
     scope.stores.push(store.to_string());

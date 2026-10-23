@@ -1318,10 +1318,6 @@ value = "isPinned"
 doc = "The last selected time column."
 value = "lastSelectedAt"
 
-[devswarm_sup.as_c_last_accessed]
-doc = "The last accessed time column."
-value = "lastAccessed"
-
 [devswarm_sup.as_key_sep]
 doc = "The separator inside the pull request by repository and branch key."
 value = "\u0000"

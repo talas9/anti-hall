@@ -406,12 +406,23 @@ fn retire_identity_family_descriptors_matches_node_for_every_shape() {
 }
 
 #[test]
-fn retire_is_deferred_when_node_would_create_the_archived_directory() {
+fn retire_creates_the_archived_directory_like_node_and_retires_into_it() {
     let f = fix("retire-nodir");
     let p = f.repo("p");
     f.live("B", &p, "x");
     let desc = OVal::parse(&f.desc("A", &p, "B")).unwrap();
-    assert!(archive::retire_identity_family(&f.home, "A", &desc, false).is_err());
+    assert!(!f.exists(&f.ds("archived")));
+    let plan = archive::retire_identity_family(&f.home, "A", &desc, false).unwrap();
+    assert_eq!(plan.result["retired"], serde_json::json!(["B"]));
+    agreed(&f, &plan);
+    assert!(f.exists(&f.ds("archived/B.json")) && !f.exists(&f.ds("workspaces/B.json")));
+    // with nothing to retire the directory is still created, as Node's `checkedArchivedDir(home, { create: true })` does
+    let g = fix("retire-nodir-empty");
+    let q = g.repo("p");
+    let desc = OVal::parse(&g.desc("A", &q, "B")).unwrap();
+    let plan = archive::retire_identity_family(&g.home, "A", &desc, false).unwrap();
+    agreed(&g, &plan);
+    assert!(g.exists(&g.ds("archived")));
 }
 
 // ---- foldArchivedFamilyDescriptors ----------------------------------------------------------------------------------------------
@@ -469,10 +480,12 @@ fn fold_archived_family_matches_node_including_the_budget_and_the_resume_marker(
     agreed(&f, &archive::fold_archived_family(&f.home, NOW, None).unwrap());
     assert!(!f.exists(&f.ds("fold-archived-family-resume.json")));
     t.case(false);
-    // a marker naming an id twice is Node's
+    // a marker naming an id twice walks it twice, as Node's `resumeIds.concat(...)` does (the second visit finds its twins gone)
     let f = setup("fam-dup");
     f.put(&f.ds("fold-archived-family-resume.json"), "{\"ids\":[\"T2\",\"T2\"]}");
-    assert!(archive::fold_archived_family(&f.home, NOW, None).is_err());
+    let plan = archive::fold_archived_family(&f.home, NOW, None).unwrap();
+    assert!(plan.result["scanned"].as_u64().unwrap() >= 4, "{}", plan.result);
+    agreed(&f, &plan);
     t.case(true);
     // no archived directory: nothing to do, no marker touched
     let f = fix("fam-none");
@@ -517,16 +530,17 @@ fn fold_archived_rows_matches_node_for_every_shape_and_defers_a_group_fold() {
     agreed(&f, &plan);
     assert_eq!(f.registry(&k).len(), 1);
     t.case(false);
-    // a sibling that would have to be folded into a survivor is slice S6: the whole pass is Node's, nothing written
+    // a sibling that has to be folded into a survivor is folded first (forward, then tombstone), then the archived id's own row goes
     let f = fix("rows-fold");
     let p = f.repo("p");
     let k = f.key_of(&p);
     f.tomb("a1", &p, "s1");
     f.row(&k, "a1", &p, "s1");
     f.row(&k, "phantom", &p, "s2");
-    let before = f.snapshot();
-    assert!(archive::fold_archived_rows(&f.ctx(), None).is_err());
-    assert_eq!(f.snapshot(), before);
+    let plan = archive::fold_archived_rows(&f.ctx(), None).unwrap();
+    assert_eq!(plan.result["retired"], serde_json::json!([format!("phantom@{k}"), format!("a1@{k}")]), "{}", plan.result);
+    agreed(&f, &plan);
+    assert!(f.registry(&k).is_empty());
     t.case(true);
     // an empty session is a NULL guard that the stored empty text never satisfies: raced-re-register, nothing deleted
     let f = fix("rows-empty-session");
@@ -568,13 +582,15 @@ fn fold_archived_rows_matches_node_for_every_shape_and_defers_a_group_fold() {
     assert!(archive::read_rows_resume(&f.home).is_empty());
     agreed(&f, &archive::fold_archived_rows(&f.ctx(), None).unwrap());
     t.case(false);
-    // a store that is not SQLite is Node's
+    // a store on the legacy journal backend has no reader here: passed over (the stages count it disabled), nothing retired, no error
     let f = fix("rows-journal");
     let p = f.repo("p");
     let k = f.key_of(&p);
     f.tomb("a1", &p, "s1");
     f.put(&f.ds(&format!("store/{k}/BACKEND")), "journal\n");
-    assert!(archive::fold_archived_rows(&f.ctx(), None).is_err());
+    let plan = archive::fold_archived_rows(&f.ctx(), None).unwrap();
+    assert_eq!(plan.result["retired"], serde_json::json!([]));
+    assert_eq!(plan.result["errors"], serde_json::json!(0));
     t.case(true);
     // a tombstone with a live descriptor of the same id is a mid-archive state: not this pass's
     let f = fix("rows-midarchive");
@@ -694,11 +710,13 @@ fn restore_archived_descriptor_matches_node_in_both_modes() {
     assert_eq!(run(&f, &archive::RestoreOpts::default())["ok"], serde_json::json!(false));
     assert_eq!(f.snapshot(), before);
     t.case(false);
-    // a registry row on another worktree is the collision guard of upsertRegistry: Node's
+    // a registry row on another worktree is the collision guard of upsertRegistry: the write is skipped (Node's `upsertRegistry`
+    // returns false), the existing mapping stays, and the restore still reports ok
     let f = fix("restore-collision");
     let (_, k) = restore_fixture(&f, false);
     f.row(&k, "W", "/somewhere/else", "x");
-    assert!(archive::restore_archived_descriptor(&f.home, "W", &archive::RestoreOpts::default()).is_err());
+    assert_eq!(run(&f, &archive::RestoreOpts::default())["ok"], serde_json::json!(true));
+    assert_eq!(f.registry(&k).iter().filter(|r| r.row.worktree_path.as_deref() == Some("/somewhere/else")).count(), 1);
     t.case(true);
     t.print();
 }

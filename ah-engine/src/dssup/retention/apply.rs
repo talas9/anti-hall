@@ -206,15 +206,15 @@ fn value_of(v: ValueRef<'_>) -> R<OVal> {
 fn full_rows(c: &Connection, ids: &[i64]) -> R<Vec<Row>> {
     let ph = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!("{}{ph}{}", crate::sql::RT_FULL_OPEN, crate::sql::RT_FULL_CLOSE);
-    let mut st = c.prepare(&sql).map_err(|e| Defer(format!("full-rows:{e}")))?;
-    let mut rows = st.query(rusqlite::params_from_iter(ids.iter())).map_err(|e| Defer(format!("full-rows:{e}")))?;
+    let mut st = c.prepare(&sql).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
+    let mut rows = st.query(rusqlite::params_from_iter(ids.iter())).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
     let names = defaults::list("devswarm_sup.rt_row_cols");
     let mut out = Vec::new();
-    while let Some(r) = rows.next().map_err(|e| Defer(format!("full-rows:{e}")))? {
+    while let Some(r) = rows.next().map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))? {
         let mut cols = Vec::new();
         let (mut id, mut ts, mut body_bytes) = (0i64, 0f64, 0i64);
         for (i, n) in names.iter().enumerate() {
-            let raw = r.get_ref(i).map_err(|e| Defer(format!("full-rows:{e}")))?;
+            let raw = r.get_ref(i).map_err(|e| crate::dssup::failure(format!("full-rows:{e}")))?;
             let v = value_of(raw)?;
             match (i, &v) {
                 (0, OVal::Num(x)) => id = *x as i64,
@@ -235,7 +235,7 @@ fn full_rows(c: &Connection, ids: &[i64]) -> R<Vec<Row>> {
 /// `appendArchive(home, hash, rows, now)`: one gzip member per month, verified, appended and fsynced.
 fn append_archive(home: &Path, hash: &str, rows: &[Row], now: f64) -> R<Vec<(String, usize)>> {
     let dir = archive_root(home).join(hash);
-    std::fs::create_dir_all(&dir).map_err(|e| Defer(format!("archive-dir:{e}")))?;
+    std::fs::create_dir_all(&dir).map_err(|e| crate::dssup::failure(format!("archive-dir:{e}")))?;
     let mut order: Vec<String> = Vec::new();
     let mut by_month: HashMap<String, Vec<&Row>> = HashMap::new();
     for r in rows {
@@ -258,8 +258,8 @@ fn append_archive(home: &Path, hash: &str, rows: &[Row], now: f64) -> R<Vec<(Str
             text.push('\n');
         }
         let gz = super::gz::compress_verified(text.as_bytes())?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| Defer(format!("archive-open:{e}")))?;
-        f.write_all(&gz).and_then(|()| f.sync_all()).map_err(|e| Defer(format!("archive-write:{e}")))?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file).map_err(|e| crate::dssup::failure(format!("archive-open:{e}")))?;
+        f.write_all(&gz).and_then(|()| f.sync_all()).map_err(|e| crate::dssup::failure(format!("archive-write:{e}")))?;
         if created {
             fsync_dir(&dir);
         }
@@ -332,7 +332,7 @@ pub struct Run<'a> {
 /// Open the store for writing (never creating it).
 pub(super) fn open_rw(home: &Path, hash: &str) -> R<Connection> {
     let c = Connection::open_with_flags(plan::db_path(home, hash), OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|e| Defer(format!("store-open:{e}")))?;
+        .map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
     crate::discard::harmless(c.busy_timeout(defaults::millis("devswarm_sup.rt_busy_ms"))); // keep: the default timeout only fails sooner
     Ok(c)
 }
@@ -425,7 +425,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
         // the tombstoning transaction
         let (mut pruned, mut pruned_bytes) = (0i64, 0i64);
         let mut done: Vec<i64> = Vec::new();
-        c.execute_batch(crate::sql::RT_BEGIN).map_err(|e| Defer(format!("begin:{e}")))?;
+        c.execute_batch(crate::sql::RT_BEGIN).map_err(|e| crate::dssup::failure(format!("begin:{e}")))?;
         let body = (|| -> R<()> {
             let mut bound_cache: HashMap<String, Option<f64>> = HashMap::new();
             let min_bc = min_broadcast_cursor(c);
@@ -459,7 +459,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
                 {
                     continue;
                 }
-                let n = c.execute(crate::sql::RT_TOMBSTONE, params![r.id]).map_err(|e| Defer(format!("tombstone:{e}")))?;
+                let n = c.execute(crate::sql::RT_TOMBSTONE, params![r.id]).map_err(|e| crate::dssup::failure(format!("tombstone:{e}")))?;
                 if n > 0 {
                     pruned += 1;
                     pruned_bytes += r.body_bytes;
@@ -469,7 +469,7 @@ fn do_batches(c: &Connection, run: &mut Run, plan_cutoff: f64, list: &[Cand], t0
             Ok(())
         })();
         match body {
-            Ok(()) => c.execute_batch(crate::sql::RT_COMMIT).map_err(|e| Defer(format!("commit:{e}")))?,
+            Ok(()) => c.execute_batch(crate::sql::RT_COMMIT).map_err(|e| crate::dssup::failure(format!("commit:{e}")))?,
             Err(e) => {
                 crate::discard::harmless(c.execute_batch(crate::sql::RT_ROLLBACK)); // keep: the original error is what is reported
                 return Err(e);

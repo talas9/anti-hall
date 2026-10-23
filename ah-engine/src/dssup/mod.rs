@@ -73,6 +73,13 @@ pub fn owner() -> Owner {
     Owner::parse(&crate::dswire::effective_text("devswarm_sup.mode"))
 }
 
+/// A step of a duty that could not complete (an I/O or SQL error, a refused value), with the reason that is logged and shown. The error
+/// type is the one the mesh verbs share (`meshw::ident::Defer`) so a verb can pass the reason along with `?`; it is a failure of this
+/// step, never a hand-off to anything else.
+pub(crate) fn failure(why: impl Into<String>) -> crate::meshw::ident::Defer {
+    crate::meshw::ident::Defer(why.into())
+}
+
 /// A settings entry of `devswarm_sup.toml` (`key` is its full name), resolved the way Node's settings reader does (environment,
 /// settings.json, plugin option, default).
 pub(crate) fn setting(st: &Settings, key: &str) -> Value {

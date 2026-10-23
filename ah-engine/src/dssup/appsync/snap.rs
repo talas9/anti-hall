@@ -607,7 +607,7 @@ pub fn message_timestamps(file: &str, until_ms: f64) -> R<Option<RepoMessages>> 
 }
 
 #[cfg(test)]
-mod native_tests {
+mod tests {
     use super::*;
 
     #[test]

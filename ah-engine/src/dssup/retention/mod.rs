@@ -422,7 +422,7 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
 }
 
 #[cfg(test)]
-mod native_tests {
+mod tests {
     //! The cases the engine used to hand to Node now answer natively, with Node's own result for each.
     use super::*;
     use crate::meshw::common::Inv;
