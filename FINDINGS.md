@@ -41,3 +41,14 @@
    Self-amplifying: overrun -> deadline_soft line -> serialised lock -> longer. Not changed (needs a buffered logger).
 3. per-request state writes (crash breadcrumb, memdiag; task #184) -- not measured here.
 - The supervisor duties are NOT the 74%: verdicts 81 ms/call on a 60 s tick = 0.14% of a core.
+
+## Follow-up (shed list, log thread, session cache) -- measured in scratch, same load (4 clients x 120 Pre+Post, soft deadline 1 ms to force log lines, 8 s `sample`)
+- Worker threads in flock: base 9 / 9 -> new 0 / 0 (log lines written in the window 221/247 -> 406/316: workers no longer wait on the lock).
+- script::resolve cache: new binary with script.fingerprint_ttl_ms=0 (old behaviour) stat 15 + getdirentries 3 vs ttl 1000: stat 3-4, getdirentries 0.
+- Next hotspot now: worker __rename 10-15 + __open 17-23 samples = per-request atomic writes (crash breadcrumb, task #184).
+- Forced hard CPU limit (budget_cpu_hard_pct=1, windows=1), 400 UPS calls: recorders (agent-reminders, auto-handover, devswarm-child-turn,
+  devswarm-parent-inbox, repair-on-reload, task-tracker) decided 400/400; pure advice (verify-first, limit-conserve-inject, idle-agent-sweep,
+  devswarm-rt-advisory, gh-rt-advisory, procwatch-advisory) decided 54, shed 346 each; answers_dropped.this_daemon = {optional:shed: 2078}.
+- sessions_for cache NOT measured: it runs only from the parent-inbox UPS path (devswarm-parent-inbox.js:1317 piDriftNotice -> host piDrift ->
+  host_parentinbox.rs drift_of), which needs a DevSwarm parent roster to reach; not reproducible in a scratch HOME in the time.
+- Another drop site seen: a Reply::Busy (per-session/project rate limit, daemon.rs dispatch) answers NOTHING for every entry; not recorded in answers_dropped.
