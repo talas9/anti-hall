@@ -12,7 +12,8 @@ Settings switches, the generated reference and the Jev classifier.
 | Verb | What it does | Roles |
 |---|---|---|
 | `ah-engine auto-handover-config` | `<get [--json]\|set <1-99>\|off\|on\|nag on\|off\|nag-step <n>\|nag-quiet <n>\|max-tokens <n>>` Get or change the auto-handover trigger's settings (L03, the port of scripts/auto-handover-config.js): `get [--json]` (the resolved... | main, codex |
-| `ah-engine config` | `[validate <file>\|heal]` Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the... | main, codex, workspace, subagent (owner args: heal) |
+| `ah-engine config` | `[validate <file>\|heal\|set <key> <value> [--check] [--confirmed]\|reset <key> [--confirmed]\|undo <id> [--confirmed]\|apply\|history [--limit <n>] [--key <k>] [--verb <v>]]` Show the effective config and where each value comes from, validate a config file, or `heal` the plugin's edited defaults (add the... | main, codex, workspace, subagent (owner args: heal, set, reset, undo, apply) |
+| `ah-engine describe` | `[--part <a,b,...>] [--coverage]` The engine's generated self-description for the dashboard and agents: the generated reference (commands, flags, env, metrics, impact... | main, codex, workspace, subagent |
 | `ah-engine docs` | `[--format md]` Print the generated reference: every command, setting, metric, impact kind, check and error code | main, codex, workspace, subagent |
 | `ah-engine finding-dedup` | `[--file <findings.json>]` Advisory duplicate-finding detector for the deadly-loop reviewers (L03, the port of scripts/finding-dedup.js): reads a JSON array of... | main, codex, workspace, subagent |
 | `ah-engine install-statusline` | `` Retired no-op kept for old invocations: prints that anti-hall no longer writes a command-backed statusLine and exits 0 | main, codex |

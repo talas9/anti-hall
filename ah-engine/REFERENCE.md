@@ -7339,8 +7339,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ops.table_headers_integrations` | `Integration, Effective, Configured, Source, Logs to` |  |  | The columns of the Jev integrations table. |
 | `ops.true_word` | `true` |  |  | The value `judge on` stores. |
 | `ops.trust_done` | `trusted {repo}/{rel} (sha256 {hash}):` |  |  | First line after a trust is recorded. Placeholders: repo, rel, hash. |
-| `ops.trust_exotic_breaks` | `
-,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
+| `ops.trust_exotic_breaks` | `,  ,  ` |  |  | Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings. |
 | `ops.trust_missing` | `no {rel} in {top}` |  |  | No allowlist file. Placeholders: rel, top. |
 | `ops.trust_not_git` | `not inside a git repository: {target}` |  |  | No repository. Placeholder: target. |
 | `ops.trust_state` | `{rel} in {top} is {state}` |  |  | An unusable allowlist file. Placeholders: rel, top, state. |
@@ -9601,8 +9600,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.ready_git_timeout_ms` | `4000` |  |  | How long one git call of ready-check may run (devswarm-git-truth.js GIT_TIMEOUT_MS); a call that overruns is unknown, never a fact. |
 | `devswarm_cli.ready_gitlink_mode` | `160000` |  |  | The git file mode of a submodule pointer (a gitlink). |
 | `devswarm_cli.ready_is_ancestor` | `--is-ancestor` |  |  | The merge-base option that asks whether the first commit is an ancestor of the second. |
-| `devswarm_cli.ready_line_terminators` | `\n
-  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
+| `devswarm_cli.ready_line_terminators` | `\n  ` |  |  | The four characters JavaScript's `.` does not match (line feed, carriage return, line separator, paragraph separator): `**` in an --allow glob skips every other character. |
 | `devswarm_cli.ready_merge_base` | `merge-base` |  |  | The git subcommand that answers ancestry questions. |
 | `devswarm_cli.ready_no_renames` | `--no-renames` |  |  | The git diff option that reports a rename as a delete and an add. |
 | `devswarm_cli.ready_quiet` | `--quiet` |  |  | The git flag that keeps the fetch of `ready-check --fetch` quiet. |
@@ -9733,8 +9731,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.rr_mb_grep_file_long` | `--file` |  |  | The long flag by which the pattern filter reads its patterns from a file (refused, with or without `=value`). |
 | `devswarm_cli.rr_mb_grep_file_short` | `f` |  |  | The short flag letter for the same (refused anywhere in a flag cluster). |
 | `devswarm_cli.rr_mb_inbox_word` | `inbox` |  |  | The word a mailbox cron prompt must contain (as a whole word) next to the CLI script name. |
-| `devswarm_cli.rr_mb_line_terms` | `\n
-  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
+| `devswarm_cli.rr_mb_line_terms` | `\n  ` |  |  | The line terminator characters a script path may not contain (a regex dot does not cross them). |
 | `devswarm_cli.rr_mb_node` | `node` |  |  | The interpreter word a mailbox-class command starts with (companion/lib/devswarm-idle.js: a ping turn is made only of such calls). |
 | `devswarm_cli.rr_mb_pipe` | `\|` |  |  | The pipe character that separates a mailbox command from its read-only filters. |
 | `devswarm_cli.rr_mb_quotes` | `'"` |  |  | The two quote characters of a mailbox command, in this order: the literal quote, the string quote. |
@@ -11937,7 +11934,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.ctl_timeout_ms` | `2000` |  |  | A request to the engine's control socket that takes longer than this is abandoned (the last data stays on screen). |
 | `web.decisions_poll_ms` | `2000` |  |  | How often the engine is asked for new check decisions (the activity feed). |
 | `web.delta_ring` | `64` |  |  | Changes kept so a slow tab can be sent everything it missed in one message; a tab further behind gets a full snapshot. |
-| `web.detail_skip_keys` | `agent` |  |  | Tracker fields left out of the details panel. |
+| `web.detail_skip_keys` | `agent, tasks` |  |  | Tracker fields left out of the details panel. |
 | `web.enabled` | `true` |  |  | Master switch: when false, `ah-engine web` prints web.msg_disabled and starts nothing. |
 | `web.feed_decisions_shown` | `block, advisory, error` |  |  | Which check decisions become feed lines (allow is left out: it is the normal case). |
 | `web.feed_events` | `7 entries` |  |  | Plain names for the host's event names in the feed; an event not listed shows as it is. |
@@ -11951,6 +11948,34 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.index_file` | `index.html` |  |  | The page served at /, inside web.static_dir. |
 | `web.kind_order` | `main, workspace, subagent, teammate, codex, heartbeat` |  |  | Order of agent kinds in the tree (first = top). |
 | `web.lite_push_ms` | `5000` |  |  | Milliseconds between pushes to a tab in the lite tier (5000 = one every 5 seconds). |
+| `web.live_action_fx` | `11 entries` |  |  | Effect each action plays on its node: ripple, ring or shake. Keys are the engine's action-log action names; a refused action always shakes. |
+| `web.live_actions_file` | `actions.ndjson` |  |  | The engine's action log, in the directory of the engine socket; the server follows it for the Live screen's action effects. |
+| `web.live_actions_max_bytes` | `65536` |  | bytes | Most bytes of the action log read in one round (a larger backlog is skipped to its newest lines). |
+| `web.live_backfill` | `40` |  |  | Newest decisions a new page receives with its first snapshot, so the Live screen starts with something to show. |
+| `web.live_block_decisions` | `block` |  |  | Decision names the Live screen counts as a block. |
+| `web.live_block_window_s` | `300` |  | s | Seconds the Live screen's blocks counter looks back. |
+| `web.live_checks_max` | `12` |  |  | Most check nodes the Live screen draws; the least recently fired are dropped first. |
+| `web.live_col_gap` | `330` |  |  | Distance between the Live screen's columns (events, checks, decisions), in graph units. |
+| `web.live_decision_fx` | `5 entries` |  |  | Effect colour key by decision name (see web.graph.fx.colors): allow green, advisory amber, block red; error plays as a block, defer as an inject. |
+| `web.live_events_max` | `8` |  |  | Most hook-event nodes the Live screen draws. |
+| `web.live_graph_rel` | `engine/defaults/web_graph.toml` |  |  | The graph component's config file, relative to the plugin root; the server turns it into the JSON the page reads. |
+| `web.live_inject_decision` | `allow` |  |  | A decision with this name that put text into the model's context plays in the inject colour instead. |
+| `web.live_inject_fx` | `inject` |  |  | Effect colour key of a decision that injected text into the context. |
+| `web.live_jev_fx` | `3 entries` |  |  | Effect colour key by Jev mode: on (may change the outcome), shadow (logged only), off. |
+| `web.live_jev_log_rel` | `.anti-hall/logs/jev-assist.ndjson` |  |  | The Jev decision log, relative to the user's home; the server follows it for the Live screen's AI-mind node. |
+| `web.live_map_parts` | `bindings` |  |  | The `describe` parts the Live screen reads (`describe --part`). |
+| `web.live_map_timeout_ms` | `15000` |  | ms | Longest the server waits for `describe` to answer. |
+| `web.live_map_ttl_s` | `300` |  | s | Seconds the hook wiring (event to check) is kept before `describe` is asked again. |
+| `web.live_outcome_fx` | `3 entries` |  |  | Effect colour key by action outcome (see web.graph.fx.colors). |
+| `web.live_panel_rows` | `12` |  |  | Recent decisions kept per node for the Live screen's side panel. |
+| `web.live_rate_window_s` | `10` |  | s | Seconds the Live screen averages a rate over (decisions per second, edge rates). |
+| `web.live_row_gap` | `70` |  |  | Distance between two rows of the Live screen, in graph units. |
+| `web.live_rules_max` | `10` |  |  | Most rule nodes the Live screen draws. |
+| `web.live_scan_gap_ms` | `2500` |  | ms | Least time between two scan-line sweeps over the Live graph (a sweep follows a real live decision). |
+| `web.live_tick_ms` | `500` |  | ms | Milliseconds between the Live screen's counter and edge-rate updates (500 = twice a second at most). |
+| `web.live_timeline_max` | `40` |  |  | Rows of the Live screen's timeline strip. |
+| `web.live_top_n` | `5` |  |  | Checks listed in the Live screen's top list. |
+| `web.live_travel_fx` | `travel` |  |  | Effect colour key of the first leg of a decision particle (event to check). |
 | `web.max_streams` | `16` |  |  | Most event streams open at once; more are refused with 503. |
 | `web.mesh_db_rel` | `.anti-hall/devswarm/store/devswarm.db` |  |  | The mesh store, relative to the home directory. |
 | `web.mesh_limit` | `200` |  |  | Most mesh messages read in one round. |
@@ -11975,6 +12000,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.open_browser` | `true` |  |  | Open the page in the default browser after `ah-engine web` (the --no-open flag overrides it). |
 | `web.open_cmd` | `open` |  |  | Command that opens a URL; the URL is appended as the last argument. |
 | `web.pkg_dir` | `web/pkg` |  |  | Directory of the compiled page (WASM and its loader), relative to the plugin root. |
+| `web.plugin_manifest_rel` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to the plugin root; the header's version badge reads the plugin version from it. |
 | `web.port` | `47821` |  |  | The port the dashboard listens on. When something else holds it, a random free port from web.port_min..web.port_max is used and printed. |
 | `web.port_max` | `29999` |  |  | Highest port tried when picking a random free port. |
 | `web.port_min` | `20000` |  |  | Lowest port tried when picking a random free port. |
@@ -11995,7 +12021,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.static_dir` | `web/static` |  |  | Directory of the page's own files (index, CSS), relative to the plugin root. |
 | `web.step_max_chars` | `240` |  |  | Longest 'doing now' text sent per agent, in characters. |
 | `web.token_bytes` | `16` |  |  | Random bytes in the per-session token (shown as twice as many hex digits). |
-| `web.ui` | `88 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `158 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 

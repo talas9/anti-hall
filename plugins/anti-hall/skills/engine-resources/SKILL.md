@@ -19,6 +19,7 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including... | main, codex, workspace, subagent |
 | `ah-engine maintain` | `` Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived... | main, codex |
 | `ah-engine metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one... | main, codex, workspace, subagent |
+| `ah-engine query` | `[<source>] [--limit <n>] [--offset <n>] [--where <field=value,...>] [--since <7d>] [--window <7d>] [--schema]` Read-only, paginated query over the existing stores: `query <source> [--limit N] [--offset N] [--where field=value,...] [--since 7d]... | main, codex, workspace, subagent |
 | `ah-engine reset` | `` Clear the client breaker, the crash-loop stop and the failure record | main, codex |
 | `ah-engine restore` | `<snapshot-dir>` Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then... | main, codex |
 | `ah-engine schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the... | main, codex, workspace, subagent (owner args: run) |
@@ -27,6 +28,7 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
 | `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
+| `ah-engine web` | `[open\|status] [--no-open] [--json]` The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address,... | main, codex |
 | `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job... | main, codex |
 | `ah-engine units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their... | main, codex, workspace, subagent (owner args: install, heal, uninstall) |
 | `ah-engine codex-activate` | `` Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the... | main, codex |
