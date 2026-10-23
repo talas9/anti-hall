@@ -1273,8 +1273,10 @@ pub fn nudge(inv: &Inv, a: &Args) -> R<Answer> {
         let st = common::open_store(inv, &repo_key)?;
         let rows = rows_of(&st);
         let target = match crate::meshw::send::resolve_send_target(inv, Some(st.reader()), &rows, &id)? {
-            crate::meshw::send::Resolved::Row(t) | crate::meshw::send::Resolved::Rerouted(t, ..) => Some(t.id),
-            crate::meshw::send::Resolved::Unregistered | crate::meshw::send::Resolved::AmbiguousPrefix(_) => None,
+            crate::meshw::send::Resolved::Row(t) | crate::meshw::send::Resolved::Rerouted(t, ..) | crate::meshw::send::Resolved::Redirected(t, _) => Some(t.id),
+            crate::meshw::send::Resolved::Unregistered
+            | crate::meshw::send::Resolved::AmbiguousPrefix(_)
+            | crate::meshw::send::Resolved::AmbiguousRows(_) => None,
         };
         desc = target.and_then(|t| ident::read_descriptor(&inv.home, &t));
     }
