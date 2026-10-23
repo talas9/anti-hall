@@ -158,10 +158,19 @@ fn devswarm(env: &Env, st: &mut State) {
     let f = defaults::raw("agent_tracker.devswarm_fields");
     let g = |v: &Value, k: &str| v.get(f.str_field(k)).and_then(Value::as_str).unwrap_or("").to_string();
     let plans: Vec<Value> = read_dir(&root.join(pth("plans"))).iter().filter_map(|p| json_of(p)).collect();
+    // the workspace's display title (DevSwarm's name cache) names its agent; an archived workspace keeps its title
+    let title_of = |id: &str| json_of(&root.join(pth("names")).join(format!("{id}{}", pth("json_ext")))).map(|t| g(&t, "title")).unwrap_or_default();
+    for p in read_dir(&root.join(pth("archived"))) {
+        let Some(d) = json_of(&p) else { continue };
+        let title = title_of(&g(&d, "id"));
+        if let Some(a) = st.agents.get_mut(&g(&d, "session")).filter(|_| !title.is_empty()) {
+            a.name = super::cap(&title, lim("text_cap"));
+        }
+    }
     for p in descs {
         let Some(d) = json_of(&p) else { continue };
         let (id, session, wt) = (g(&d, "id"), g(&d, "session"), g(&d, "worktree"));
-        if id.is_empty() || root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+        if id.is_empty() {
             continue;
         }
         let key = if st.agents.contains_key(&session) {
@@ -170,6 +179,13 @@ fn devswarm(env: &Env, st: &mut State) {
             st.agents.iter().find(|(_, a)| a.kind == kind_name("main") && !wt.is_empty() && a.cwd == wt).map(|(k, _)| k.clone())
         };
         let Some(a) = key.and_then(|k| st.agents.get_mut(&k)) else { continue };
+        let title = title_of(&id);
+        if !title.is_empty() {
+            a.name = super::cap(&title, lim("text_cap"));
+        }
+        if root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+            continue;
+        }
         a.kind = kind_name("workspace").into();
         let (mut step, mut done) = (String::new(), 0u64);
         if let Some(plan) = plans.iter().find(|pl| g(pl, "worktree") == wt) {
