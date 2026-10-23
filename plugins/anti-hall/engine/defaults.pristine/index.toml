@@ -52,6 +52,7 @@ files = [
     "setup.toml",
     "mesh.toml",
     "mesh_write.toml",
+    "mesh_report.toml",
     "sibling_sweep.toml",
     "limits.toml",
     "script.toml",

@@ -4,7 +4,7 @@
 //! same stdout and exits with the same code. The engine is the only process that acts; there is no Node to hand a verb to:
 //!
 //! * `on` (shipped default; `shadow`, a position of earlier versions, reads as `on`): the engine runs the verb. One it cannot
-//!   answer (an [`ident::Defer`], an unported verb, no plugin context) is UNABLE: nothing was written, it is counted
+//!   answer (an unported verb, no plugin context, a failure of the verb's own reads) is UNABLE: nothing was written, it is counted
 //!   (`abandoned`), one line says so on stderr and the exit code is `mesh_write.exit_unable`;
 //! * `off`: the diagnostic switch. Nothing is done; it is counted, said on stderr, and the exit code is `mesh_write.exit_unable`.
 //!   Never a silent success.
@@ -67,7 +67,7 @@ pub mod wsverbs;
 
 use crate::defaults;
 use common::Inv;
-use ident::{Defer, R};
+use ident::R;
 use send::Answer;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -203,6 +203,8 @@ pub enum Verb {
     Gate,
     /// `workspaces list` (see [`wsverbs`]).
     Workspaces,
+    /// `mesh <anything but read|history>`: devswarm.js refuses it (`unknown mesh subcommand`, exit 2).
+    MeshUnknown,
     /// The verbs of lane l8b (see [`extverbs`]).
     Ext(extverbs::Ext),
 }
@@ -254,6 +256,9 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     }
     if p0 == defaults::text("mesh_write.verb_mesh") && p1 == Some(defaults::text("mesh_write.verb_history")) {
         return Some(Verb::MeshHistory);
+    }
+    if p0 == defaults::text("mesh_write.verb_mesh") {
+        return Some(Verb::MeshUnknown);
     }
     if p0 == defaults::text("mesh_write.verb_roster") && a.has(defaults::text("mesh_write.flag_ack")) {
         return Some(Verb::MeshRead);
@@ -314,8 +319,19 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::Gate) => wsverbs::run_gate(inv, a),
         Some(Verb::Workspaces) => wsverbs::run_workspaces(inv, a),
         Some(Verb::Ext(v)) => extverbs::run(inv, a, v),
-        None => ident::defer("not-ported"),
+        Some(Verb::MeshUnknown) => Ok(mesh_unknown(a)),
+        // unreachable: `run_front` answers `unable` for an argv with no verb before it calls this
+        None => Ok(Answer { code: defaults::num("mesh_write.exit_unable") as i32, stdout: String::new(), effect: send::Effect::None }),
     }
+}
+
+/// devswarm.js `case 'mesh'` (scripts/devswarm.js:954-969): any subcommand but `read` and `history` is refused with exit 2.
+fn mesh_unknown(a: &args::Args) -> Answer {
+    let sub = a.positionals.get(1).map_or("", String::as_str);
+    let msg = defaults::render("mesh_write.msg_unknown_mesh_sub", &[("sub", &crate::checks::guardkit::ojson::OVal::Str(sub.to_string()).stringify())]);
+    let mut o = common::Obj::default();
+    o.put("ok", crate::checks::guardkit::ojson::OVal::Bool(false)).put("error", common::s(&msg));
+    Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: send::Effect::None }
 }
 
 /// `devswarm.js migrate`: Node's `migrateToStore` imported descriptors into the first store layouts, which no install holds any more;
@@ -447,8 +463,8 @@ pub fn next_step(r: std::thread::Result<R<Answer>>, committed: bool) -> (Next, S
             let body = ident::refusal_body(&d).unwrap_or_default().to_string();
             (Next::Refuse(body), w("mesh_write.result_refused"), String::new())
         }
-        Ok(Err(Defer(d))) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d),
-        Ok(Err(Defer(d))) => (Next::Unable, w("mesh_write.shadow_defer"), d),
+        Ok(Err(d)) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), d.0),
+        Ok(Err(d)) => (Next::Unable, w("mesh_write.shadow_defer"), d.0),
         Err(_) if committed => (Next::CommittedFailure, w("mesh_write.result_committed"), String::new()),
         Err(_) => (Next::Unable, w("mesh_write.shadow_panic"), String::new()),
     }
@@ -502,10 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deferral_or_panic_before_any_write_is_unable() {
-        let (n, result, reason) = next_step(Ok(ident::defer("some-case")), false);
-        assert!(is_unable(&n));
-        assert_eq!((result.as_str(), reason.as_str()), (defaults::text("mesh_write.shadow_defer"), "some-case"));
+    fn a_panic_before_any_write_is_unable() {
         let (n, result, _) = next_step(panicked(), false);
         assert!(is_unable(&n));
         assert_eq!(result, defaults::text("mesh_write.shadow_panic"));
@@ -523,12 +536,22 @@ mod tests {
 
     #[test]
     fn nothing_that_follows_a_write_is_ever_repeated() {
-        // a panic after the first write, and a deferral decided after it (a bug): both are committed failures
-        for r in [panicked(), Ok(ident::defer("late"))] {
-            let (n, result, _) = next_step(r, true);
-            assert!(matches!(n, Next::CommittedFailure), "running the verb again after a write would write twice");
-            assert_eq!(result, defaults::text("mesh_write.result_committed"));
-        }
+        // a panic after the first write: a committed failure
+        let (n, result, _) = next_step(panicked(), true);
+        assert!(matches!(n, Next::CommittedFailure), "running the verb again after a write would write twice");
+        assert_eq!(result, defaults::text("mesh_write.result_committed"));
+    }
+
+    #[test]
+    fn an_unknown_mesh_subcommand_is_refused_natively_as_devswarm_js_refuses_it() {
+        let argv: Vec<String> = ["mesh", "bogus"].iter().map(|s| s.to_string()).collect();
+        let a = args::parse(&argv);
+        assert_eq!(verb_of(&a), Some(Verb::MeshUnknown));
+        let ans = mesh_unknown(&a);
+        assert_eq!(ans.code, 2);
+        assert_eq!(ans.stdout, "{\"ok\":false,\"error\":\"unknown mesh subcommand: \\\"bogus\\\" (read|history)\"}\n");
+        let bare = mesh_unknown(&args::parse(&["mesh".to_string()]));
+        assert!(bare.stdout.contains("unknown mesh subcommand: \\\"\\\" (read|history)"), "{}", bare.stdout);
     }
 
     #[test]

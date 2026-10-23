@@ -1312,16 +1312,6 @@ value = "closed"
 doc = "How the before table names a workspace anti-hall holds an active descriptor for."
 value = "active"
 
-[devswarm_cli.sui_setting_word]
-doc = "The word the screenshot-sync setting is named by: a settings tier or an environment variable that mentions it sends the verb to Node, which knows every way to resolve it."
-value = "screenshotsync"
-
-[devswarm_cli.sui_setting_files]
-doc = "The files under the anti-hall directory in which the screenshot-sync setting can be set."
-value = ["settings.json", "config.toml", "config.json"]
-
-# ---- retention (lane l8c) -----------------------------------------------------------------------------------------------
-
 [devswarm_cli.verb_retention]
 doc = "The verb that shows and runs message retention (tombstoning old, fully read message bodies, archive first)."
 value = "retention"
@@ -1406,12 +1396,6 @@ doc = "How many characters of an ISO timestamp name its UTC day (YYYY-MM-DD)."
 value = 10
 min = 10
 max = 10
-
-[devswarm_cli.sr_gen_digits_max]
-doc = "The most digits of a rotated log's generation number the report reads as an ordinary number (a longer one JavaScript would print in exponent form, which is Node's to print)."
-value = 15
-min = 1
-max = 15
 
 [devswarm_cli.sr_top_workspaces]
 doc = "How many of the workspaces that used the most tokens the report names."
