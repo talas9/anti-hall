@@ -75,6 +75,8 @@ struct Inner {
     checks: Slots,
     rules: Slots,
     agents: Slots,
+    /// The order of agent kinds in the tree (Primary first).
+    kind_order: Vec<String>,
     /// Group keys (label and kind) whose repeated rows the person opened.
     expanded: HashSet<String>,
     /// Agent id to the node standing for it, for agents folded into a counted group node.
@@ -136,6 +138,7 @@ pub fn init(boot: &Boot) {
         rules: Slots::default(),
         jev: VecDeque::new(),
         agents: Slots::default(),
+        kind_order: boot.kind_order.clone(),
         expanded: HashSet::new(),
         alias: HashMap::new(),
         group_of: HashMap::new(),
@@ -371,7 +374,7 @@ impl Inner {
     /// Fold repeated same-name, same-kind rows into one node carrying a count, unless the person opened that group. The node is the
     /// most recently active member; `alias` maps every folded member to it so decisions and actions still find their node.
     fn collapse(&mut self, agents: &[Agent]) -> Vec<Agent> {
-        let key = |a: &Agent| format!("{}|{}", a.label, a.kind);
+        let key = |a: &Agent| format!("{}|{}|{}", a.label, a.kind, a.parent);
         let mut sizes: HashMap<String, usize> = HashMap::new();
         for a in agents.iter().filter(|a| a.kind != "main") {
             *sizes.entry(key(a)).or_default() += 1;
@@ -523,9 +526,16 @@ impl Inner {
         };
         let per_s = self.t("live_per_s");
         node("engine".into(), self.t("live_engine"), self.t("live_engine_sub"), "engine", 0.0, 0, "running");
-        for (row, id) in self.agents.ids.iter().enumerate() {
-            let Some(id) = id else { continue };
-            let Some(a) = agents.iter().find(|a| format!("a:{}", a.id) == *id) else { continue };
+        // the agents in the order of the tree: project by project, a Primary, its workspaces, then what they started
+        let placed: HashSet<&str> = self.agents.ids.iter().flatten().map(String::as_str).collect();
+        let mut row = 0;
+        for line in crate::flatten(&self.kind_order, agents, &HashSet::new()) {
+            let Some(aid) = line.agent.as_deref() else { continue };
+            let id = format!("a:{aid}");
+            if !placed.contains(id.as_str()) {
+                continue;
+            }
+            let Some(a) = agents.iter().find(|a| a.id == aid) else { continue };
             let kind = match (a.kind.as_str(), a.state == "running") {
                 (_, false) => "idle",
                 ("main", _) => "primary",
@@ -533,7 +543,11 @@ impl Inner {
                 ("codex", _) => "codex",
                 _ => "subagent",
             };
-            node(id.clone(), a.label.clone(), a.step.chars().take(34).collect(), kind, 0.0, row + 1, &a.state);
+            let label = if line.depth > 1 { format!("{}\u{2514} {}{}", "\u{a0}\u{a0}".repeat(line.depth - 2), a.label, line.suffix) } else { format!("{}{}", a.label, line.suffix) };
+            // a top agent of a project says which project; the others say what they are doing
+            let sub = if line.depth == 1 { a.project_name.clone() } else { a.step.chars().take(34).collect() };
+            row += 1;
+            node(id, label, sub, kind, 0.0, row, &a.state);
         }
         let visible_ck: HashSet<&str> = self.checks.ids.iter().flatten().map(String::as_str).collect();
         let visible_ru: HashSet<&str> = self.rules.ids.iter().flatten().map(String::as_str).collect();

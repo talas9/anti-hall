@@ -48,6 +48,15 @@ pub struct Agent {
     /// "idle, shell running", not "running".
     #[serde(default)]
     pub idle_shell: bool,
+    /// The project's top folder (the git checkout the directory belongs to); empty when the agent reports no directory.
+    #[serde(default)]
+    pub project_root: String,
+    /// What to call that project.
+    #[serde(default)]
+    pub project_name: String,
+    /// Not a tracked agent: a parent that a sub-agent names but the tracker does not list.
+    #[serde(default)]
+    pub placeholder: bool,
 }
 
 /// The engine's vital signs (`CTL pulse`), reduced to what the header shows.
