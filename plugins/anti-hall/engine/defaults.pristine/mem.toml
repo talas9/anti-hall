@@ -13,8 +13,8 @@ min = 1048576
 unit = "bytes"
 
 [mem.global_hard_bytes]
-doc = "HARD limit (250 MB, owner decision 2026-10-23). Process memory above which every holder is recycled and every cache insert is refused. If it is still above this `mem.global_restart_after_s` later, the daemon is asked to restart cleanly and the reason is recorded in the event log."
-value = 262144000
+doc = "HARD limit (200 MB, owner decision 2026-10-23). Process memory above which every holder is recycled and every cache insert is refused. If it is still above this `mem.global_restart_after_s` later, the daemon is asked to restart cleanly and the reason is recorded in the event log."
+value = 209715200
 min = 1048576
 unit = "bytes"
 
