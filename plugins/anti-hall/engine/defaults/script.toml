@@ -132,9 +132,15 @@ min = 65536
 unit = "bytes"
 
 [script.regex_dfa_size_limit]
-doc = "Lazy-DFA scratch space one thread may grow per compiled `ah.re.*` pattern (regex builder dfa_size_limit); at the limit the engine falls back to a slower matcher instead of growing."
-value = 524288
+doc = "Lazy-DFA scratch space one thread may grow per compiled `ah.re.*` pattern (regex builder dfa_size_limit); at the limit the engine falls back to a slower matcher instead of growing. This is the worst-case ceiling per pattern and thread (about patterns x daemon.workers x this x 2 for the forward and reverse DFAs); the typical use is script.regex_scratch_bytes."
+value = 262144
 min = 32768
+unit = "bytes"
+
+[script.regex_scratch_bytes]
+doc = "Estimated search scratch (lazy-DFA transition tables and caches) ONE worker thread holds per cached `ah.re.*` pattern. The regex crate keeps it per thread inside the compiled pattern and cannot report its size, so a cache entry weighs its compiled program plus daemon.workers times this. Measured 2026-10-23 on the real-payload replay (system allocator, stack-logged live heap): about 21 MB of search scratch across 130 patterns and 4 workers, about 40 KiB per pattern and thread; lowering script.regex_dfa_size_limit from 512 KiB to 64 KiB changed the plateau by under 1 MB, so most caches stay far under the cap."
+value = 40960
+min = 0
 unit = "bytes"
 
 [script.unload_batch]

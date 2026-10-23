@@ -1713,6 +1713,19 @@ fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
     assert!(super::recache::get("(", "").is_err(), "an invalid pattern is an error, not a cache entry");
 }
 
+/// A cached pattern weighs its program plus the per-thread search scratch the regex crate keeps inside it (and cannot report):
+/// `daemon.workers` times `script.regex_scratch_bytes`, so the registry sees the memory the lazy DFAs really hold.
+#[test]
+fn a_cached_pattern_weighs_its_per_thread_search_scratch_too() {
+    let scratch = super::recache::scratch_estimate();
+    assert_eq!(scratch, (defaults::num("daemon.workers") * defaults::num("script.regex_scratch_bytes")) as usize);
+    assert!(scratch > 0, "the shipped defaults estimate a scratch per pattern");
+    let (_, before) = super::recache::usage();
+    super::recache::get("zzscratchweight\\d{3}", "").expect("valid pattern");
+    let (_, after) = super::recache::usage();
+    assert!(after - before >= scratch, "the entry weighs at least its scratch estimate: {} < {scratch}", after - before);
+}
+
 #[test]
 fn the_limit_that_interrupted_a_call_is_named_in_its_failure() {
     use super::{Deadline, Trip};
