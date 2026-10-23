@@ -263,9 +263,28 @@ fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
     path.join(word("path_join"))
 }
 
-/// The owner's channel: the newest live armed main session, else the owner notices file. Returns (where, path).
+/// The owner's channel: the newest live armed main session of the child's own project, else the owner notices file. Returns (where, path).
+/// The project of an agent: the repo key of its working directory (the launcher's when it has none) by the one canonical resolver.
+fn project_key(st: &State, a: &Agent) -> Option<String> {
+    let cwd = if a.cwd.is_empty() { st.agents.get(&a.parent).map(|p| p.cwd.clone()).unwrap_or_default() } else { a.cwd.clone() };
+    crate::meshw::ident::repo_key_for_worktree(&cwd).ok().flatten()
+}
+
+/// The newest live armed main session in the same project as the nudge's child (never `n.parent`); none when the child's project
+/// cannot be told. A session of another project is never a target.
+fn owner_in_project(env: &Env, st: &State, n: &Nudge) -> Option<String> {
+    let want = project_key(st, st.agents.get(&n.child)?)?;
+    let mut cands: Vec<&Agent> = st
+        .agents
+        .values()
+        .filter(|m| (m.kind == kind_name("main") || escalate::primary(m)) && m.id != n.parent && super::sources::proc_live(m) && wake_armed(env, &m.id))
+        .collect();
+    cands.sort_by_key(|m| std::cmp::Reverse(m.last_output_ms));
+    cands.into_iter().find(|m| project_key(st, m).as_deref() == Some(want.as_str())).map(|m| m.id.clone())
+}
+
 fn to_owner(env: &Env, st: &State, n: &Nudge, text: String) -> (String, String) {
-    match escalate::owner_session(env, st, &n.parent) {
+    match owner_in_project(env, st, n) {
         Some(k) => {
             let p = send_to(env, &k, n, text);
             (k, p)
@@ -526,7 +545,9 @@ fn follow(env: &Env, st: &mut State) {
     }
 }
 
-/// One notice to the direct parent (or nearest live ancestor) of a child that just died. No question.
+/// One notice to the direct parent (or nearest live ancestor in the child's project) of a child that just died. No question. A death
+/// older than `dead_fresh_ms` is only recorded (telemetry), never announced; the fresh ones of one target are batched past
+/// `dead_per_target` into a single summary line.
 fn dead_notices(env: &Env, st: &mut State) {
     let now = env.now_ms;
     let ids: Vec<String> = st
@@ -535,9 +556,12 @@ fn dead_notices(env: &Env, st: &mut State) {
         .filter(|a| a.dead && !a.dead_noticed && !escalate::primary(a) && now.saturating_sub(a.last_output_ms) <= lim("dead_notice_window_ms"))
         .map(|a| a.id.clone())
         .collect();
+    // (target session or empty for the owner file) -> the nudges of this tick
+    let mut groups: std::collections::BTreeMap<String, Vec<(Nudge, String)>> = std::collections::BTreeMap::new();
     for id in ids {
         let Some(a) = st.agents.get(&id).cloned() else { continue };
         let (direct, to, walked) = target(env, st, &a);
+        let to = to.filter(|p| st.agents.get(p).is_none_or(|t| !walked || project_key(st, t).is_none() || project_key(st, t) == project_key(st, &a)));
         let why = if a.path.is_empty() || std::path::Path::new(&a.path).exists() { defaults::text("agent_nudge.dead_silent") } else { defaults::text("agent_nudge.dead_gone") };
         let n = Nudge {
             id: format!("{:x}", crate::health::fnv(&format!("{id}{now}dead"))),
@@ -550,20 +574,41 @@ fn dead_notices(env: &Env, st: &mut State) {
             trigger: word("trigger_dead").into(),
             sent_at: now,
             reminders: 1,
+            outcome: out("child_died").into(),
+            outcome_at: now,
             ..Nudge::default()
         };
-        let text = defaults::render("msg.agent_nudge_dead", &[("kind", &n.child_kind), ("name", &n.child_name), ("when", &age(now.saturating_sub(a.last_output_ms))), ("why", &why)]);
-        let mut n = n;
-        match to {
-            Some(p) => n.path = send_to(env, &p, &n, text),
-            None => n.path = to_owner(env, st, &n, text).1,
-        }
-        n.outcome = out("child_died").into();
-        n.outcome_at = now;
-        emit(env, word("ev_dead"), &n);
-        st.nudge_log.push(n);
         if let Some(m) = st.agents.get_mut(&id) {
             m.dead_noticed = true;
+        }
+        let since = now.saturating_sub(a.last_output_ms);
+        if since > lim("dead_fresh_ms") {
+            emit(env, word("ev_dead"), &n); // an old death: recorded, not announced
+            st.nudge_log.push(n);
+            continue;
+        }
+        let text = defaults::render("msg.agent_nudge_dead", &[("kind", &n.child_kind), ("name", &n.child_name), ("when", &age(since)), ("why", &why)]);
+        groups.entry(to.unwrap_or_default()).or_default().push((n, text));
+    }
+    for (_, group) in groups {
+        let cap = lim("dead_per_target") as usize;
+        let batch = group.len() > cap;
+        let summary = batch.then(|| {
+            let a = st.agents.get(&group[0].0.child);
+            let project = a.map(|a| if a.cwd.is_empty() { a.id.clone() } else { std::path::Path::new(&a.cwd).file_name().map_or(a.cwd.clone(), |f| f.to_string_lossy().into_owned()) }).unwrap_or_default();
+            defaults::render("msg.agent_nudge_dead_batch", &[("n", &group.len()), ("project", &project)])
+        });
+        let mut path = String::new();
+        for (i, (mut n, text)) in group.into_iter().enumerate() {
+            if batch && i > 0 {
+                n.path.clone_from(&path); // carried by the summary
+            } else {
+                let body = summary.clone().unwrap_or(text);
+                n.path = if n.parent.is_empty() { to_owner(env, st, &n, body).1 } else { send_to(env, &n.parent.clone(), &n, body) };
+                path.clone_from(&n.path);
+            }
+            emit(env, word("ev_dead"), &n);
+            st.nudge_log.push(n);
         }
     }
 }
