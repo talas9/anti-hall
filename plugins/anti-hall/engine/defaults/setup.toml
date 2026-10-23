@@ -217,7 +217,7 @@ value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/companion/{file}"'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/scripts/migrate-state.js"'
+value = "~/.anti-hall/ah-engine/bin/ah-engine migrate"
 
 # ---- briefing ------------------------------------------------------------------------------------
 
@@ -305,7 +305,7 @@ value = "migration (auto-safe: idempotent, non-destructive, single-consumer-lock
 
 [setup.brief_doctor_line]
 doc = "The last line of the briefing."
-value = "Health check (do the guards actually fire?): ah-hook doctor"
+value = "Health check (do the guards actually fire?): ah-engine doctor"
 
 # ---- jev-setup ----------------------------------------------------------------------------------
 
@@ -519,7 +519,7 @@ value = "set-key --role fallback: no fallback transport is configured — run `e
 
 [setup.msg_setkey_empty]
 doc = "Why `set-key` refused: nothing arrived on stdin."
-value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | ah-hook jev-setup set-key`"
+value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | ah-engine jev-setup set-key`"
 
 [setup.msg_setkey_nonprintable]
 doc = "Why `set-key` refused: the key holds a control character."
@@ -846,7 +846,7 @@ doc = "The DevSwarm store module, relative to the plugin root."
 value = "../anti-hall-node/companion/lib/devswarm-store.js"
 
 [setup.brief_cli_file]
-doc = "The DevSwarm command-line script, relative to the plugin root."
+doc = "The old Node DevSwarm command-line script, relative to the plugin root. Read only to list its documented subcommands in the briefing; absent once the Node tree is retired (the briefing then lists none)."
 value = "../anti-hall-node/scripts/devswarm.js"
 
 [setup.brief_companion_dir]

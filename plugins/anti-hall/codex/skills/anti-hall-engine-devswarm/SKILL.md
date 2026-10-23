@@ -47,7 +47,6 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.childRole` = true: Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op
 - `devswarm.parentGate` = true: Switch devswarm.parentGate (default on): off makes the Stop gate a no-op
 - `devswarm.rearmOnTickOnly` = true: Switch devswarm.rearmOnTickOnly (default on): re-arm a lapsed monitor only from the cron tick, never inline on the monitor's own expiry
-- `devswarm.stableLauncher` = true: Switch devswarm.stableLauncher (default on): point the injected text at the version-independent launchers under the anti-hall bin...
 - `devswarm.wakeCron` = "7,37 * * * *": Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected
 - `devswarm.childGateStrict` = true: The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue...
 - `devswarm.childDrain` = true: Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)

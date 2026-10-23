@@ -12,7 +12,7 @@ File, list, show, and rule on anti-hall's own defect reports via the durable, ho
 A durable, file-based, two-way channel for reporting bugs found in anti-hall itself back
 to the maintainer, and reading the maintainer's rulings back. It lives at
 `~/.anti-hall/defects/`, home-scoped (works from any repo), and is the SAME script and
-store as the Claude side (`defect-store`, `ah-hook defect`) — there is no
+store as the Claude side (`defect-store`, `ah-engine defect`) — there is no
 separate Codex implementation to drift from.
 
 ## Resolve the plugin root
@@ -40,18 +40,18 @@ fresher read than the once-per-24h nudge, run `list` directly (below) rather tha
 ## The five core verbs
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect report \
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect report \
   --class hook-crash --sev p1 \
   --sym "command-guard throws on empty argv" \
   --repro "run command-guard.js with stdin ''" \
   --claimed "should exit 0" --observed "TypeError: Cannot read...stack"
 
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect list --mine --json
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect list --open --json         # status === 'open' only (untriaged)
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect show <fp> --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --mine --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --open --json         # status === 'open' only (untriaged)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect show <fp> --json
 # rule is MAINTAINER-ONLY:
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
 ```
 
 `--status` (exactly 6, closed vocabulary): `ack`, `fixed`, `partial`, `wontfix`,
@@ -73,10 +73,10 @@ These three verbs turn the channel into a bug history, so the same thing is not 
 in circles. They read every record: reported defects plus fixes imported from git.
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout> --dry-run   # preview, writes nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect backfill --repo <anti-hall checkout>             # one-time import; a re-run adds nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect recurring [--since 0.100.0|2026-09-01] [--top 10] [--json]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" defect similar <symptom words...> [--component hooks/devswarm-parent-gate] [--json]
 ```
 
 - **`backfill`** imports every `fix:` / `fix(scope):` commit as a record with status

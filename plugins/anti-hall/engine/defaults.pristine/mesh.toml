@@ -64,5 +64,5 @@ doc = "The words of mesh.engine_writes, in this order: off, shadow (reads as on)
 value = ["off", "shadow", "on"]
 
 [mesh.db_flag]
-doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a ah-hook mesh argv."
+doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a ah-engine mesh argv."
 value = "--db"

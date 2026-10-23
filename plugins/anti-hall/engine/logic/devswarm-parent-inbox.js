@@ -900,8 +900,7 @@ function piStaleBuild(home, id, newest) {
   var hb = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
   var rec = hb && typeof hb.version === 'string' ? hb.version : null;
   if (!(piSemver(rec) && jx.cmpVersions(rec, newest.version) < 0)) return null;
-  var target = newest.cacheRoot + '/' + newest.version + '/' + ah.cfg('devswarm_parent.cli_rel');
-  var cmd = ah.fs.isFile(target) ? text.render(ah.cfg('devswarm_parent.stale_build_cmd'), { path: target }) : ah.cfg('devswarm_parent.stale_build_cmd_unknown');
+  var cmd = ah.cfg('devswarm_parent.stale_build_cmd'); // the native thin client drains it; no per-version script path
   return { version: rec, message: text.render(ah.cfg('devswarm_parent.stale_build_message'), { version: rec, cmd: cmd }) };
 }
 

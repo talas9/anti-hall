@@ -117,8 +117,7 @@ function gmKey(key, args) {
   return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
 }
 function skipCmd(k) {
-  const script = ah.cfg('git.skip_script');
-  return text.render(ah.cfg('git.skip_command'), { script: (S.pluginRoot + '/' + script).split("'").join("'\\''"), key: k });
+  return text.render(ah.cfg('git.skip_command'), { key: k });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

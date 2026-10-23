@@ -3,8 +3,7 @@
 //! Read-only apart from making sure the watcher's private state directory exists (create-only, idempotent). It arms nothing, spawns
 //! nothing, takes no lock and removes nothing: liveness is a read of the watcher lock and a signal-0 probe of its pid.
 //!
-//! The one difference from the script is how `shipped` is decided (see `update_post.wake_exports`): the script loads the watcher with
-//! require(), the engine checks that it is readable and names every export the stage needs.
+//! The watcher is the engine's own `devswarm wake-watch` verb, so `shipped` is always true: no script file is looked for.
 use super::Run;
 use crate::checks::jsport::json::J;
 use crate::defaults;
@@ -43,34 +42,12 @@ fn probe(pid: f64) -> bool {
 impl Run<'_> {
     /// `None` when the engine cannot reproduce the script's answer (a checkout nested in another one, an undecidable setting): the
     /// script answers then.
-    pub(super) fn wake_monitor_stage(&self, row: &'static defaults::V) -> Option<J> {
-        // the detection file is the stage row's first plugin file
-        let detect = self.plugin(row.get("files").map(|f| f.strings()).unwrap_or_default().first().copied().unwrap_or_default());
-        if !detect.exists() {
-            return Some(J::Obj(vec![
-                ("attempted".into(), J::Bool(false)),
-                ("shipped".into(), J::Bool(false)),
-                ("live".into(), J::Bool(false)),
-                ("detail".into(), J::Str(defaults::fill(text("update_post.wake_no_detect"), &[("dir", &self.paths.plugin_src)]))),
-            ]));
-        }
-        let watcher = self.plugin(text("update_post.wake_watcher_rel"));
-        let shown = watcher.to_string_lossy().into_owned();
-        let Some(src) = read_text(&watcher).filter(|_| watcher.is_file()) else {
-            let missing = !watcher.exists();
-            let detail = if missing { defaults::fill(text("update_post.wake_no_watcher"), &[("watcher", &shown)]) } else { text("update_post.wake_no_exports").to_string() };
-            return Some(answer(false, false, None, false, detail));
-        };
-        if !defaults::list("update_post.wake_exports").iter().all(|e| src.contains(e)) {
-            return Some(answer(false, false, None, false, text("update_post.wake_no_exports").to_string()));
-        }
-
+    pub(super) fn wake_monitor_stage(&self, _row: &'static defaults::V) -> Option<J> {
+        // the watcher is the engine itself (`ah-engine devswarm wake-watch`): nothing on disk to check for
         let home = Path::new(self.home);
         let root = devswarm_root(home);
         let ensured = std::fs::create_dir_all(root.join(text("update_post.wake_state_dir"))).is_ok();
         let engine_watcher = crate::checks::devswarm_role::text::engine_watcher(self.home);
-        // the engine owns the stable shims: write them where absent or different (the same files the DevSwarm hooks name)
-        crate::discard::harmless(crate::checks::devswarm_role::text::install_shims(home)); // keep: a failed write leaves the shim as it was; hooks retry
         let arm = defaults::fill(text("update_post.wake_arm_cmd"), &[("watcher", &engine_watcher)]);
         let cwd = std::env::current_dir().ok()?.to_string_lossy().into_owned();
         let st = crate::checks::git::util::Settings { home: self.home.to_string(), env: self.env.to_map() };

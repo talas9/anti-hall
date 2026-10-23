@@ -773,7 +773,7 @@ value = "update.js runs migrations and the main session must judge the result."
 
 [model_routing.msg_update_instead]
 doc = "Update-in-session block advice."
-value = "run `ah-hook update ...` directly in the main session."
+value = "run `ah-engine update ...` directly in the main session."
 
 [model_routing.msg_handover_what]
 doc = "Handover-delegation advisory headline."
@@ -1328,19 +1328,43 @@ value = 4096
 
 [coordinator_work.bookkeeping_verbs]
 doc = "DevSwarm CLI verbs that only talk to the mesh store (heartbeat, mailbox, send, roster reads); a command made only of calls to these is not work."
-value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose"]
+value = ["inbox", "heartbeat", "send", "roster", "mesh", "status", "workspaces", "register", "register-primary", "diagnose", "help", "verbs", "verb", "pull", "ack", "read"]
+
+[coordinator_work.never_block_verbs]
+doc = "DevSwarm CLI verbs whose call is never counted as work and never blocked by the coordinator-work window, whatever the rest of the line holds (escalation to the parent must always get through)."
+value = ["send"]
 
 [coordinator_work.bookkeeping_filters]
 doc = "Output filters that may follow a DevSwarm bookkeeping call in a pipe without making the command work."
-value = ["tail", "head", "wc"]
+value = ["tail", "head", "wc", "grep", "egrep", "rg", "sort", "uniq", "cut", "nl"]
 
 [coordinator_work.bookkeeping_cli]
-doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the anti-hall ah-hook mesh launcher or `ah-engine mesh|devswarm`, then one of the verbs ({verbs})."
-value = '^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-engine\s+(?:mesh|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'
+doc = "Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh|agents|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs})."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.anti-hall/bin|scripts)/devswarm\.js|ah-(?:hook|engine)\s+mesh|ah-engine\s+(?:agents|devswarm))["\x27]?\s+(?:{verbs})(?:\s|$)'''
 
 [coordinator_work.bookkeeping_filter]
-doc = "Regex source of one output-filter segment ({filters} are the allowed filter words)."
-value = '^\s*(?:{filters})(?:\s+-?[0-9A-Za-z]+)*\s*$'
+doc = "Regex source of one output-filter segment ({filters} are the allowed filter words); its arguments are flags, plain words or quoted strings."
+value = '^\s*(?:{filters})(?:\s+(?:-{1,2}[0-9A-Za-z][0-9A-Za-z-]*(?:=\S+)?|[0-9A-Za-z_.:\/,@=-]+|"[^"$`]*"|\x27[^\x27]*\x27))*\s*$'
+
+[coordinator_work.bookkeeping_quoted]
+doc = "Regex source of a quoted string that expands nothing (single-quoted, or double-quoted without `$` or a backtick); it is blanked before a bookkeeping candidate is checked and cut into segments, so a pipe or `>` inside a message is not a pipe or redirect."
+value = '\x27[^\x27]*\x27|"[^"$`]*"'
+
+[coordinator_work.bookkeeping_heredoc]
+doc = "Regex source of a heredoc with a QUOTED delimiter, opener to closing line; its body is inert data (a mesh message) and is dropped before a bookkeeping candidate is judged."
+value = '''<<-?\s*(["\x27])([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\2[ \t]*(?:\n|$)'''
+
+[coordinator_work.bookkeeping_devnull]
+doc = "Regex source of a redirect into /dev/null, which a bookkeeping call may carry besides the stderr merge."
+value = '[0-9]?>\s*/dev/null'
+
+[coordinator_work.bookkeeping_loop_lead]
+doc = "Regex source of the shell keyword that may open a segment of a polling loop (`do`, `then`, `else`); it is stripped before the segment is tested."
+value = '^\s*(?:do|then|else)\s+'
+
+[coordinator_work.bookkeeping_inert]
+doc = "Regex source of a segment that does nothing by itself and may sit between bookkeeping calls: loop scaffolding (`while true`, `for i in 1 2 3`, `do`, `done`) and `sleep N`."
+value = '^\s*(?:do|done|then|fi|else|true|:|sleep\s+[0-9.]+|(?:while|until)\s+(?:true|:)|for\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+[A-Za-z0-9_ .{},:$-]+)\s*$'
 
 [coordinator_work.bookkeeping_reject]
 doc = "Regex source of what disqualifies a command from the bookkeeping shortcut: command substitution, a backtick, a heredoc, a carriage return."
@@ -1383,12 +1407,12 @@ doc = "Block headline; {count} is the number of work calls in the window and {mi
 value = "{count} state-changing calls in the main thread within {minutes} min; this one is blocked."
 
 [coordinator_work.block_why]
-doc = "Why a work call past the block threshold is blocked."
-value = "Too much hands-on work in the main thread; the window clears as calls age out."
+doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."
+value = "NOT a human gate: do not ask the human and do not mark yourself waiting. Too much hands-on work in the main thread; this clears automatically in about {clear_min} min as calls age out."
 
 [coordinator_work.block_instead]
-doc = "What to do instead of a blocked work call."
-value = "hand this and the remaining steps (patch applies and test runs included) to a subagent (Agent tool) that returns a tight summary."
+doc = "What to do instead of a blocked work call. {clear_min} is the minutes until the window clears."
+value = "right now, hand this and the remaining steps (patch applies included) to a subagent (Agent tool) that returns a tight summary, or keep working on reads and retry this call in about {clear_min} min. A suite-scale test run is not for a subagent (the lane-test-guard blocks it there): run it yourself in the main thread once the window clears. A DevSwarm child workspace is never counted by this guard."
 
 [coordinator_work.block_allowed]
 doc = "What stays allowed past the block threshold."

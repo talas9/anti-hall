@@ -31,7 +31,7 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 Project-local hooks are installed by `anti-hall-activate`:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 The installer registers `limit-conserve-inject` on `UserPromptSubmit` so conservation instructions are injected when active.

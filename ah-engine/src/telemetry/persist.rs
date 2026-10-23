@@ -144,6 +144,31 @@ pub struct TelDb {
     db: Arc<Db>,
 }
 
+impl TelDb {
+    /// The guard blocks since `since_ms`, newest first, at most `limit`.
+    pub fn blocks(&self, since_ms: u64, limit: usize) -> Vec<crate::storage::BlockRow> {
+        self.db
+            .read(|c| {
+                let mut st = c.prepare_cached(crate::sql::BLOCK_RECENT)?;
+                let rows = st.query_map(rusqlite::params![since_ms as i64, limit as i64], |r| {
+                    Ok(crate::storage::BlockRow {
+                        ts_ms: r.get::<_, i64>(0)?.max(0) as u64,
+                        guard: r.get(1)?,
+                        rule: r.get(2)?,
+                        event: r.get(3)?,
+                        session: r.get(4)?,
+                        agent: r.get(5)?,
+                        tool: r.get(6)?,
+                        project: r.get(7)?,
+                        reason: r.get(8)?,
+                    })
+                })?;
+                rows.collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<DayRow> {
     let n = |i: usize| r.get::<_, i64>(i).map(|v| v.max(0) as u64);
     Ok(DayRow {

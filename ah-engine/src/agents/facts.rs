@@ -300,6 +300,8 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
             class = "commit".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
             class = "test".into();
+        } else if pat("build").is_some_and(|r| r.is_match(arg)) {
+            class = "build".into();
         }
         if input.get(tr("background")).and_then(Value::as_bool) == Some(true) {
             push_ring(&mut a.bg_bash, ts, lim("loop_window"));
@@ -399,10 +401,19 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if p.push {
         a.pushes += 1;
+        a.progress += weight("push");
+        a.waste.reset_at = ts;
     }
     if p.class == "commit" {
         a.commits += 1;
         a.progress += weight("commit");
+        a.waste.reset_at = ts; // a commit in any repo the command ran git in starts the waste window afresh
+    } else if p.class == "build" {
+        if pat("build_pass").is_some_and(|r| r.is_match(&text)) && !pat("build_fail").is_some_and(|r| r.is_match(&text)) {
+            a.builds_ok += 1;
+            a.progress += weight("build");
+            a.waste.reset_at = ts;
+        }
     } else if p.class == "test" {
         let ok = pat("test_pass").is_some_and(|r| r.is_match(&text)) && !pat("test_fail").is_some_and(|r| r.is_match(&text));
         if ok {

@@ -40,7 +40,7 @@ function fakeRouter(x) { /* hard-coded 2-way switch, fine for now */ }
 
 ## What `/anti-hall:debt` does
 
-It runs `ah-hook harvest` (pure Node, cross-platform, no deps), which:
+It runs `ah-engine harvest` (pure Node, cross-platform, no deps), which:
 
 1. **Greps** the target tree (default cwd; `--dir <path>`) for `anti-hall:` markers across all
    comment styles, skipping `.git`, `node_modules`, dot-dirs, and binaries.
@@ -55,9 +55,9 @@ It runs `ah-hook harvest` (pure Node, cross-platform, no deps), which:
 Invoke:
 
 ```
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest              # human table
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest --json       # machine-readable
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root plugins/anti-hall harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest              # human table
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --json       # machine-readable
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --dir src --stale-days 60
 ```
 
 ## Reading the report

@@ -44,13 +44,49 @@ value = "agent_id"
 doc = "Tools a blocked subagent may still call: SendMessage carries its final report."
 value = ["SendMessage"]
 
+[burn.report_tools]
+doc = "Tools whose write into a report path (burn.report_path_res) passes while the breaker blocks, and lifts it: writing the report is the outcome the block asks for."
+value = ["Write", "Edit"]
+
+[burn.report_path_field]
+doc = "The tool-input field that holds the path a report tool writes."
+value = "file_path"
+
+[burn.report_path_res]
+doc = "Where a blocked subagent may still write its report: a scratchpad directory, a reports directory, the anti-hall handover, history and progress notes. Regular expressions (Rust syntax) tested on the path; a path holding `..` never passes."
+value = [
+  '''(?:^|/)scratchpad/[^\s]+\.(?:md|txt|json|log)$''',
+  '''(?:^|/)reports?/[^\s]+\.(?:md|txt|json)$''',
+  '''(?:^|/)\.anti-hall/(?:handovers|history|progress)/[^\s]+\.md$''',
+]
+
+[burn.report_bash_re]
+doc = "The one Bash line a blocked subagent may use to write a report: `cat|echo|printf|tee` with a redirect (`>` or `>>`) into one path, optionally followed by a heredoc opener. Group 1 is the path (checked against burn.report_path_res), group 2 the heredoc opener when present. JavaScript syntax; no pipe, `;`, `&`, backtick, `$` or parenthesis before the redirect."
+value = '''^\s*(?:cat|echo|printf|tee)\b[^|&;`$()<>]*>>?\s*["\x27]?([^\s"\x27|&;`$()<>]+)["\x27]?\s*(<<-?\s*[\x27"][A-Za-z_][A-Za-z0-9_]*[\x27"])?\s*$'''
+
+[burn.report_heredoc_re]
+doc = "A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it."
+value = '''<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$'''
+
+[burn.send_bash_re]
+doc = "A mesh or agents send, which a blocked subagent may always run (the escalation to the parent and every mesh send): the engine binary (or the old launcher name) with `mesh` or `agents`, then `send`. Regular expression (Rust syntax), tested on the first line of the command."
+value = '''^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?(?:ah-(?:engine|hook)\s+(?:mesh|agents)\s+send|(?:\.anti-hall/bin|scripts)/devswarm\.js\s+send)\b'''
+
+[burn.send_chain_re]
+doc = "What chains a second command onto a send line (after quoted text is blanked and a heredoc opener removed): `;`, `&`, a pipe, a backtick, `$(` or a redirect. Regular expression (Rust syntax)."
+value = '''[;&|`<>]|\$\('''
+
+[burn.send_heredoc_opener_re]
+doc = "A heredoc opener with a QUOTED delimiter at the end of a send line. Regular expression (Rust syntax)."
+value = '''\s*<<-?\s*(["'])[A-Za-z_][A-Za-z0-9_]*\1\s*$'''
+
 [burn.bash_tools]
 doc = "Tools whose command text is checked against burn.allowed_bash_re while the breaker blocks."
 value = ["Bash"]
 
 [burn.allowed_bash_re]
-doc = "A segment of a command a blocked subagent may still run: git (optionally with any number of `-C <dir>` and `-c <key=value>` options) followed by commit, add, push, status, log, diff, show, rev-parse or branch. Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
-value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)\b'''
+doc = "A segment of a command a blocked subagent may still run. Git (optionally with any number of -C <dir> and -c <key=value> options) followed by commit, add, push, status, log, diff, show, rev-parse or branch; read-only GitHub status (gh pr|run|issue checks, view, status, list, diff); a compile or check (cargo build|check|clippy, optionally behind lockf <file> and nice -n N), which is a step outcome when it finishes; and removing the agent's own build output (rm -rf <dir>/target). Regular expression (Rust syntax), tested on each segment with its plain quoted strings reduced to \"\"."
+value = '''^\s*(?:git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|add|push|status|log|diff|show|rev-parse|branch)|gh\s+(?:pr|run|issue)\s+(?:checks|view|status|list|diff)|(?:lockf\s+\S+\s+)?(?:nice\s+-n\s+\d+\s+)?cargo\s+(?:build|check|clippy)|rm\s+-[rf]+\s+\S*/target/?)(?:\s|$)'''
 
 [burn.allowed_cd_re]
 doc = "The other segment a blocked subagent may run: `cd <dir>` (so `cd <dir> && git ...` passes). Regular expression (Rust syntax), tested like burn.allowed_bash_re."
@@ -89,16 +125,16 @@ doc = "Heading of the block when the waste sensor (agent_waste.toml) holds the h
 value = "This tool call is blocked: the waste sensor marks you as wasting budget (score {score}, hard line {hard}; about {tokens} tokens in the window) - {reason}."
 
 [burn.lift_bash_re]
-doc = "A segment that lifts the block at once: a git commit (optionally with `-C <dir>` / `-c k=v`). A commit is the outcome the block asks for; the tracker counts it on its next tick and raises the flag again only if the hard condition still holds. Regular expression (Rust syntax), tested like burn.allowed_bash_re."
-value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+commit\b'''
+doc = "A segment that lifts the block at once: a git commit or push (optionally with `-C <dir>` / `-c k=v`). A commit is the outcome the block asks for; the tracker counts it on its next tick and raises the flag again only if the hard condition still holds. Regular expression (Rust syntax), tested like burn.allowed_bash_re."
+value = '''^\s*git(?:\s+-[Cc]\s+\S+)*\s+(?:commit|push)\b'''
 
 [burn.msg_why]
 doc = "Why the breaker blocks."
 value = "Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about 60% of a weekly limit waiting on build locks, re-reading files and re-running suites). Parallel agents are fine; spending with nothing to show is not."
 
 [burn.msg_instead]
-doc = "What to do instead, with the exact allowed command forms."
-value = "Commit what works, report (SendMessage) what is done and what is not, and stop. Allowed while blocked: `git commit -m \"msg\"`, `git add ...`, `git push`, `git status|log|diff|show|rev-parse|branch`, the same with `git -C <dir> ...` or `git -c k=v ...`, `cd <dir> && git ...`, several of these joined by `&&` or `;`, and a trailing `2>&1` (optionally `| tail -N`). Other pipes and redirects, backticks and dollar-paren stay blocked. A commit, push, finished step, passing check or new file resets the count."
+doc = "What to do instead: the exact actions that lift the block, with the allowed command forms."
+value = "To unblock, do ONE of these (the block lifts on the next tracker tick, within about a minute): (1) `git commit -m \"msg\"` what works (any repo: `git -C <dir> commit ...`), then `git push`; (2) finish with a report: write it to a scratchpad or reports file, or SendMessage it, and stop; (3) a successful `cargo build|check|clippy` counts as a finished step. Allowed while blocked: git commit|add|push|status|log|diff|show|rev-parse|branch (also git -C <dir> ..., cd <dir> && git ...), read-only gh pr|run|issue checks|view|status|list|diff, cargo build|check|clippy, rm -rf <dir>/target, report writes and sends, several of these joined by && or ;, and a trailing 2>&1 (optionally | tail -N). Other pipes and redirects, backticks and dollar-paren stay blocked. A commit, push, finished build, finished step, passing check or new file restarts the count."
 
 [burn.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

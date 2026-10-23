@@ -1955,8 +1955,7 @@ fn a_primary_session_registers_adopts_and_keeps_its_seat_and_the_launchers_are_i
     let desc: Vec<_> = std::fs::read_dir(home.join(".anti-hall/devswarm/workspaces")).expect("workspaces dir").flatten().collect();
     assert_eq!(desc.len(), 1, "the Primary's descriptor is written");
     for launcher in ["devswarm.js", "wake-watch.js"] {
-        let m = std::fs::metadata(home.join(".anti-hall/bin").join(launcher)).expect("a stable launcher");
-        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111, 0o111, "{launcher} is executable");
+        assert!(!home.join(".anti-hall/bin").join(launcher).exists(), "{launcher}: the engine writes no launcher file");
     }
     // the same session again: its own seat, no notice
     let second = run(&l);

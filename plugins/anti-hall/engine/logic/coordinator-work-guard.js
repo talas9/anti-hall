@@ -72,8 +72,11 @@ function cwPrune(state, now, cfg) {
   return state;
 }
 function cwCheckPre(state, p, cfg) {
-  var count = state && Array.isArray(state.ts) ? state.ts.filter(function (t) { return p.now - t < cfg.tMs; }).length : 0;
-  return { wouldBlock: cfg.tMs > 0 && cfg.blockAt > 0 && !!p.work && !!p.blockable && count >= cfg.blockAt - 1, count: count };
+  var live = state && Array.isArray(state.ts) ? state.ts.filter(function (t) { return p.now - t < cfg.tMs; }).sort(function (a, b) { return a - b; }) : [];
+  var count = live.length, wouldBlock = cfg.tMs > 0 && cfg.blockAt > 0 && !!p.work && !!p.blockable && count >= cfg.blockAt - 1;
+  // the window lets this call through once count - k < blockAt - 1, i.e. when the k-th oldest entry has aged out
+  var k = count - (cfg.blockAt - 1) + 1, clearMs = wouldBlock && k >= 1 && k <= count ? live[k - 1] + cfg.tMs - p.now : cfg.tMs;
+  return { wouldBlock: wouldBlock, count: count, clearMin: Math.max(1, Math.ceil(clearMs / 60000)) };
 }
 function cwStepPost(state, p, cfg) {
   if (!state.firstTs) state.firstTs = p.now;
@@ -219,28 +222,51 @@ function cwProvablyNotWork(command) {
 // (mirrors hooks/lib/coordinator-work.js `isDevswarmBookkeeping`; verbs, filters and patterns: coordinator_work.bookkeeping_*).
 function cwBookkeeping(command) {
   if (typeof command !== 'string' || !command.trim() || command.length > ah.cfg('coordinator_work.safe_max_len')) return false;
-  if (new RegExp(ah.cfg('coordinator_work.bookkeeping_reject')).test(command)) return false;
-  if (command.split(ah.cfg('coordinator_work.bookkeeping_stderr_merge')).join('').indexOf('>') >= 0) return false;
+  // the body of a QUOTED heredoc is inert data (a mesh message): dropped with its opener before anything is judged
+  var cmd = command.replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_heredoc'), 'g'), ' ');
+  // quoted text that expands nothing is data too: blanked (same length) before the safety checks and before cutting segments, so a `|`
+  // or a `>` inside a message is not a pipe or a redirect; a double-quoted string with `$` or a backtick stays visible and is rejected
+  var masked = cmd.replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_quoted'), 'g'), function (q) { return new Array(q.length + 1).join('x'); });
+  if (new RegExp(ah.cfg('coordinator_work.bookkeeping_reject')).test(masked)) return false;
+  if (masked.split(ah.cfg('coordinator_work.bookkeeping_stderr_merge')).join('').replace(new RegExp(ah.cfg('coordinator_work.bookkeeping_devnull'), 'g'), '').indexOf('>') >= 0) return false;
   var cli = new RegExp(ah.cfg('coordinator_work.bookkeeping_cli').replace('{verbs}', ah.cfg('coordinator_work.bookkeeping_verbs').join('|')));
   var filt = new RegExp(ah.cfg('coordinator_work.bookkeeping_filter').replace('{filters}', ah.cfg('coordinator_work.bookkeeping_filters').join('|')));
-  var segs = command.split(new RegExp(ah.cfg('coordinator_work.segment_split')));
+  var inert = new RegExp(ah.cfg('coordinator_work.bookkeeping_inert')), lead = new RegExp(ah.cfg('coordinator_work.bookkeeping_loop_lead'));
+  var splitter = new RegExp(ah.cfg('coordinator_work.segment_split'), 'g'), segs = [], at = 0, m;
+  while ((m = splitter.exec(masked)) !== null) {
+    segs.push(cmd.slice(at, m.index));
+    at = m.index + m[0].length;
+    if (m[0].length === 0) splitter.lastIndex++;
+  }
+  segs.push(cmd.slice(at));
   var sawCli = false;
   for (var i = 0; i < segs.length; i++) {
-    if (!segs[i].trim()) continue;
-    if (cli.test(segs[i])) { sawCli = true; continue; }
-    if (filt.test(segs[i])) continue;
+    var seg = segs[i].replace(lead, '');
+    if (!seg.trim()) continue;
+    if (cli.test(seg)) { sawCli = true; continue; }
+    if (filt.test(seg) || inert.test(seg)) continue;
     return false;
   }
   return sawCli;
 }
 
+// A mesh send (`send` and the other verbs of coordinator_work.never_block_verbs) is never counted or blocked, whatever else the line holds
+// (a message may carry a backtick or `$(`): escalating to the parent must always get through. Only the first line is read, and the call
+// must open the command.
+function cwMeshSend(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  var first = command.split('\n')[0];
+  return new RegExp(ah.cfg('coordinator_work.bookkeeping_cli').replace('{verbs}', ah.cfg('coordinator_work.never_block_verbs').join('|'))).test(first);
+}
+
 // ---- the texts
 
 function cwMinutes(cfg) { return Math.round(cfg.tMs / 60000); }
-function cwBlock(count, cfg) {
+function cwBlock(count, cfg, clearMin) {
+  var vars = { clear_min: clearMin };
   return text.message('block', ah.cfg('coordinator_work.guard_name'), {
     what: text.render(ah.cfg('coordinator_work.block_what'), { count: count, minutes: cwMinutes(cfg) }),
-    why: ah.cfg('coordinator_work.block_why'), instead: ah.cfg('coordinator_work.block_instead'), allowed: ah.cfg('coordinator_work.block_allowed'),
+    why: text.render(ah.cfg('coordinator_work.block_why'), vars), instead: text.render(ah.cfg('coordinator_work.block_instead'), vars), allowed: ah.cfg('coordinator_work.block_allowed'),
     override: text.render(ah.cfg('coordinator_work.block_override'), { skip: LIB['./lib/skip-cmd.js'].skipCommand(ah.cfg('coordinator_work.guard_name')) }),
   });
 }
@@ -259,6 +285,9 @@ function cwMain(payload, post) {
   var sid = typeof payload.session_id === 'string' ? payload.session_id.trim() : '';
   if (!sid) return 'allow';
   if (!coordinator.isCoordinator(payload)) return 'allow';
+  // a DevSwarm child workspace is a worker on its own branch (as edit-guard and command-guard treat it): its commits, deploys and suite runs
+  // are its task, so the window never counts or blocks them. Without this a child that must run its project's suite had no permitted path.
+  if (cmdChildWorker(typeof payload.cwd === 'string' ? payload.cwd : '')) return 'allow';
   if (ah.settings.skipped(ah.cfg('coordinator_work.command_guard_name'))) return 'allow';
   if (!ah.settings.bool('coordinator_work.command_guard_setting')) return 'allow';
   var cfg = cwConfig();
@@ -271,7 +300,7 @@ function cwMain(payload, post) {
   var st = cwNormalize(cwReadJson(cwSessionRel(sid)));
   var id = typeof payload.tool_use_id === 'string' && payload.tool_use_id && command.trim() ? payload.tool_use_id : '';
   var classify = function () {
-    return cwProvablyNotWork(command) || cwBookkeeping(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
+    return cwProvablyNotWork(command) || cwBookkeeping(command) || cwMeshSend(command) ? { work: false, blockable: false } : classifyBashWork(command, payload, { sessionStartTs: cwSessionStart(st, now) });
   };
   var skipped = function () { return ah.settings.skipped(ah.cfg('coordinator_work.guard_name')); };
 
@@ -292,7 +321,7 @@ function cwMain(payload, post) {
     if (cwUpdate(sid, function (s) { s.blocks++; s.lastBlockAt = now; }) === null) ah.unable('coordinator-work-guard:lock_not_taken'); // the block still stands
     cwBumpMetrics(function (m) { m.blocks++; });
     cwLogTrip({ event: ah.cfg('coordinator_work.trip_block'), count: pre.count });
-    return { exact: { code: 2, out: JSON.stringify({ decision: 'block', reason: cwBlock(pre.count, cfg) }) + '\n', err: '' } };
+    return { exact: { code: 2, out: JSON.stringify({ decision: 'block', reason: cwBlock(pre.count, cfg, pre.clearMin) }) + '\n', err: '' } };
   }
 
   var stored = id && st ? cwTakePre(st, id) : null;

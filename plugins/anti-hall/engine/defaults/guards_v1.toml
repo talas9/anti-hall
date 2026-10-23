@@ -278,7 +278,7 @@ value = "The store is the write/derive layer; a raw read risks a partial view an
 
 [inbox_read_v1.msg_store_instead]
 doc = "Store-read block: what to do instead."
-value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` (or `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` first to import)."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (or `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` first to import)."
 
 # ---- output-verify-guard ----------------------------------------------------------------
 

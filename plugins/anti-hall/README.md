@@ -45,7 +45,7 @@ is missing or cannot answer, hooks let the call through and print one notice per
 a small Rust binary that hands the event to the `ah-engine` binary. Both are downloaded from the GitHub Release and installed
 only if their sha256 equals the one pinned in `ah-engine.lock`; the plugin's one shell file, `hooks/install.sh`, does that on first
 install. No Node and no other script runs on a hook path. If the engine is missing, broken or unreachable, hooks let the call
-through and print one notice per session. Commands use the same client: `ah-hook <verb>` runs `ah-engine <verb>`. Its rules,
+through and print one notice per session. Commands call the engine directly: `ah-engine <verb>`. Its rules,
 settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS and
 Linux; Windows is not supported yet. Details:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md).

@@ -1,6 +1,6 @@
 # ah-engine shipped defaults for the Command Center web dashboard (`ah-engine web`, binary ah-web; GH #266). Format: see the
 # header of engine.toml. The dashboard is a local page: it binds to the loopback address only, on a random free port, behind a
-# per-session token, and exits when nobody has used it for web.idle_exit_s. Nothing runs until `ah-hook web` is called.
+# per-session token, and exits when nobody has used it for web.idle_exit_s. Nothing runs until `ah-engine web` is called.
 # `ah-web` reads this file itself (start-up and whenever the file changes); the engine reads the start-up keys.
 
 [web.enabled]
@@ -344,7 +344,7 @@ value = ["main", "workspace", "subagent", "teammate", "codex", "heartbeat"]
 
 [web.msg_unauthorized]
 doc = "Body of the refusal sent to a request without the session token."
-value = "Open the Command Center with `ah-hook web`."
+value = "Open the Command Center with `ah-engine web`."
 
 [web.msg_busy]
 doc = "Body sent when too many event streams are open."

@@ -441,13 +441,9 @@ value = { section = "guards", key = "handoverCommitGuard", env = "ANTIHALL_HANDO
 doc = "Pattern (case-insensitive) that recognises a path inside the plugin launcher directory."
 value = "(?i)\\.anti-hall[\\\\/]+bin(?:[\\\\/]|$)"
 
-[git.skip_script]
-doc = "Script, relative to the plugin directory, that records a skip for a guard."
-value = "../anti-hall-node/scripts/devswarm.js"
-
 [git.skip_command]
-doc = "Command that records a skip for a guard; {script} is the quoted script path and {key} the guard id."
-value = "node '{script}' skip {key}"
+doc = "Command that records a skip for a guard ({key} is the guard id): the native thin client."
+value = "~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}"
 
 [git.handover_dir_prefix]
 doc = "Directory under which handovers live (never committed)."
@@ -481,7 +477,7 @@ value = "Override (only if the user explicitly asked): "
 
 [git.file_write_tip]
 doc = "Added to a block when the command writes a file with shell text: the file was scanned as shell."
-value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `~/.anti-hall/ah-engine/bin/ah-hook mesh send --message-file <path>`)."
+value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `~/.anti-hall/ah-engine/bin/ah-engine mesh send --message-file <path>`)."
 
 [git.re_file_write_heredoc]
 doc = "JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip."

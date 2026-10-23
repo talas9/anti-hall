@@ -1,12 +1,12 @@
 # ah-engine shipped defaults for `ah-engine engine-update` and the `engine_update` scheduler job (issue #140). Format: see the header of engine.toml.
 #
-# The engine has no network code. `engine-update` only hands its arguments to the thin client's updater (`ah-hook update`), so a
+# The engine has no network code. `engine-update` only hands its arguments to the thin client's updater (`ah-engine update`), so a
 # broken engine can still be fixed with the client by hand. The updater reads its URLs, timeouts and channel names from `[updater.*]`
 # in engine.toml. The scheduler job runs `engine-update --auto`: the updater then does nothing unless the setting `engine.autoUpdate`
 # is `stable` or `dev`, and limits itself to one check per `updater.auto_interval_s`.
 
 [cmd.engine-update]
-doc = "Update the engine binary: runs the thin client's updater (ah-hook update) with the given arguments (--from FILE [--sha256 X] [--yes] | --channel stable|dev | --rollback | --auto | --dry-run). The engine itself does no network access."
+doc = "Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] | --channel stable|dev | --rollback | --auto | --dry-run). The engine itself does no network access."
 value = { args = "--from <file> [--sha256 <x>] [--yes] | --channel <stable|dev> | --rollback | --auto [--dry-run] [--no-restart]", read_only = false, status = "implemented" }
 
 [job.engine_update]

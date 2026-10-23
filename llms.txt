@@ -96,7 +96,7 @@ and getting a yes); re-arming a guard never does. /config, env and a `settings.j
 | SessionStart | jev-weekly-scorecard | Jev enabled only: once a week names one integration worth promoting (KEEP) or turning off (REMOVE). | ✓ | jev.weeklyNotice |
 | SessionStart | jev-review-reminder | Jev enabled only: durable "time to review the Jev shadow numbers" nudge once a shadow integration has run `jev.reviewAfterDays` with `jev.reviewMinDecisions` decisions logged; also the bold "Recommended: enable Jev" notice while Jev is OFF (`jev.recommendNotice`, once, then at most every 30 days). | ✓ | jev.reviewReminder |
 | SessionStart | defect-nudge | Once-a-day count of open defect reports (counts only, never reporter text). | ✓ | context.defectNudge |
-| SessionStart + UserPromptSubmit | repair-on-reload | When any repair migration isn't stamped for the running version, spawns one detached `ah-hook doctor --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
+| SessionStart + UserPromptSubmit | repair-on-reload | When any repair migration isn't stamped for the running version, spawns one detached `ah-engine doctor --repair --migrations-only --quiet` (data migrations only; never writes user config — the legacy migration copies into the project's `.anti-hall/history/legacy/` and never deletes or moves a repo file — the GSD `.planning/` fold is explicit-only, copy-only `migrate-state.js --planning`; lock-guarded; at most once an hour; newest 5 logs kept). | ✓ | maintenance.repairOnReload (`ANTIHALL_REPAIR_ON_RELOAD=off`) |
 | UserPromptSubmit | verify-first | Short rotating one-line verify-first nudge. | ✓ | context.verifyFirstTurn |
 | UserPromptSubmit | task-tracker | Task-list discipline directive plus a freshness note when tasks are open/stale. | ✓ | context.taskTracker |
 | UserPromptSubmit | idle-agent-sweep | Advisory (never blocks), once per user prompt: lists agents that finished but were never stopped (Claude named teammates whose last report has idleReason available/failed, with no later SendMessage or TaskStop; Codex multi_agent_v1 agents completed/errored in wait_agent and never closed), oldest first, up to 10 names, with the exact `TaskStop` / `close_agent` call. Fires at ≥ 3 idle or any idle ≥ 15 min. | ✓ | guards.idleAgentSweep, guards.idleAgentSweepCount (3), guards.idleAgentSweepMin (15) |
@@ -203,27 +203,27 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 
 | Path | Verbs / use |
 |---|---|
-| ah-hook settings | `show [--all] [--section s] [--json]`, `get`, `set`, `reset` — the settings store CLI; `trust-command-allow [<repo>] --confirmed` trusts a repo's `.anti-hall/command-allow.json` by content hash; `trust-edit-allow [<repo>] --confirmed` trusts its `.anti-hall/edit-allow.json` doc-edit globs the same way. |
-| ah-hook auto-handover-config | `get \| set <1-99> \| off \| on \| max-tokens <n> \| nag on\|off \| nag-step <n> \| nag-quiet <n>` — alias over `autoHandover.*`. |
-| ah-hook mesh | The DevSwarm mesh CLI (JSON out): register/ensure, register-primary, primary status/takeover, heartbeat, send, inbox (incl. `inbox tick`, the mailbox-wake cron drain), roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
-| ah-hook jev-setup | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
-| ah-hook jev-report | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `--by project\|session`, `--project`, `--weekly`; `label`, `prune-audit`. |
-| ah-hook defect | `report \| list \| show \| rule \| archive` for the defect channel; `backfill \| recurring \| similar` for bug history (hotspots, likely regressions, similar past fixes). |
-| ah-hook briefing | Backs system-briefing. |
-| ah-hook capability-scan | Harness capability scan (see the update skill). |
-| ah-hook harvest | Backs the debt skill. |
-| `ah-hook migrate` | State-layout migration CLI (see the update skill). |
-| ah-hook update | The updater (`--check`); re-execs the freshly pulled version for post-pull stages; re-registers the plugin with the harness (`claude plugin update`) and then asks for a `/reload-plugins`. |
-| ah-hook doctor | Doctor (`--repair`, `--quiet`). |
-| ah-hook mcp-reaper | Opt-in interval job killing orphaned MCP servers (macOS LaunchAgent / systemd user timer). |
-| ah-hook devswarm supervisor | Opt-in DevSwarm sweep: liveness poke/escalate (never kills), app-DB sync, auto-archive, message retention, hourly housekeeping (child-gate/reaped sweeps), own log rotation. Installer dry-runs under tests or a temp HOME. |
-| ah-hook devswarm ingest | Opt-in per-project ingest daemon (`hivecontrol workspace monitor` → mesh store). |
-| ah-hook migrate | Legacy DevSwarm state → store migration. |
-| ah-hook devswarm recover | The only DevSwarm path that kills: on-demand, one named workspace. |
-| ah-hook statusline | The two-line statusline renderer (line 1 rich, line 2 phase bar; also persists the context window for auto-handover); `ah-hook install-statusline` / `ah-hook uninstall-statusline` manage it. |
+| ah-engine settings | `show [--all] [--section s] [--json]`, `get`, `set`, `reset` — the settings store CLI; `trust-command-allow [<repo>] --confirmed` trusts a repo's `.anti-hall/command-allow.json` by content hash; `trust-edit-allow [<repo>] --confirmed` trusts its `.anti-hall/edit-allow.json` doc-edit globs the same way. |
+| ah-engine auto-handover-config | `get \| set <1-99> \| off \| on \| max-tokens <n> \| nag on\|off \| nag-step <n> \| nag-quiet <n>` — alias over `autoHandover.*`. |
+| ah-engine mesh | The DevSwarm mesh CLI (JSON out): register/ensure, register-primary, primary status/takeover, heartbeat, send, inbox (incl. `inbox tick`, the mailbox-wake cron drain), roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
+| ah-engine jev-setup | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
+| ah-engine jev-report | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `--by project\|session`, `--project`, `--weekly`; `label`, `prune-audit`. |
+| ah-engine defect | `report \| list \| show \| rule \| archive` for the defect channel; `backfill \| recurring \| similar` for bug history (hotspots, likely regressions, similar past fixes). |
+| ah-engine briefing | Backs system-briefing. |
+| ah-engine capability-scan | Harness capability scan (see the update skill). |
+| ah-engine harvest | Backs the debt skill. |
+| `ah-engine migrate` | State-layout migration CLI (see the update skill). |
+| ah-engine update | The updater (`--check`); re-execs the freshly pulled version for post-pull stages; re-registers the plugin with the harness (`claude plugin update`) and then asks for a `/reload-plugins`. |
+| ah-engine doctor | Doctor (`--repair`, `--quiet`). |
+| ah-engine mcp-reaper | Opt-in interval job killing orphaned MCP servers (macOS LaunchAgent / systemd user timer). |
+| ah-engine devswarm supervisor | Opt-in DevSwarm sweep: liveness poke/escalate (never kills), app-DB sync, auto-archive, message retention, hourly housekeeping (child-gate/reaped sweeps), own log rotation. Installer dry-runs under tests or a temp HOME. |
+| ah-engine devswarm ingest | Opt-in per-project ingest daemon (`hivecontrol workspace monitor` → mesh store). |
+| ah-engine migrate | Legacy DevSwarm state → store migration. |
+| ah-engine devswarm recover | The only DevSwarm path that kills: on-demand, one named workspace. |
+| ah-engine statusline | The two-line statusline renderer (line 1 rich, line 2 phase bar; also persists the context window for auto-handover); `ah-engine install-statusline` / `ah-engine uninstall-statusline` manage it. |
 | monitors/monitors.json | Registers `ah-engine devswarm wake-watch` (Monitor-based wake; off: `devswarm.wakeWatch`). |
 
-## Settings (user-facing; `/anti-hall:settings`, `ah-hook settings show --all` for advanced)
+## Settings (user-facing; `/anti-hall:settings`, `ah-engine settings show --all` for advanced)
 
 Store: `~/.anti-hall/settings.json`. Precedence: env > settings.json > stored plugin option
 (plugin.json userConfig, headline rows only) > legacy file (e.g. `jev.json`) > default; legacy outranks the plugin option
@@ -257,7 +257,7 @@ Codex: no `/config`, use the skill.
 | guards.gitAliasResolve / gitReusedMessageCheck (advanced, safety: --confirmed) | true / true | `ANTIHALL_GIT_ALIAS_RESOLVE`, `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
 | engine.bootstrap | false | `AH_ENGINE_BOOTSTRAP` (1 opts in to the automatic `ah-engine` binary download on SessionStart, 0 forces it off; overrides the setting; the explicit install is `sh hooks/install.sh --download`) |
-| engine.autoUpdate | off | `AH_ENGINE_AUTO_UPDATE` (off, stable or dev: `ah-hook engine-update --auto` from the engine scheduler, at most daily; URLs and timeouts in `engine/ah-update.toml`) |
+| engine.autoUpdate | off | `AH_ENGINE_AUTO_UPDATE` (off, stable or dev: `ah-engine engine-update --auto` from the engine scheduler, at most daily; URLs and timeouts in `engine/ah-update.toml`) |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |
 | versionAlerts.antiHall / claudeCli / devswarm | true | `ANTIHALL_VERSION_ALERT`, `ANTIHALL_CLAUDE_CLI_VERSION_ALERT`, `ANTIHALL_DEVSWARM_VERSION_ALERT` |
@@ -271,7 +271,7 @@ Codex: no `/config`, use the skill.
 | jev.recommendNoticeHeadless | false | `ANTIHALL_JEV_NOTICE_HEADLESS` |
 | jev.recommendNotice | true | `ANTIHALL_JEV_RECOMMEND_NOTICE` |
 | jevIntegrations.speculation / triage / newRequest / claimLedger / outputVerifyGuard / gitGuardSelfCredit / modelRouting / tasklistTrivial / codexNudgeSubstantial / mergeGateHedge / parentGateQuestion / supervisorBlockerLabel / findingDedup / postHandoverGate (one row each; legacy jev.json / jev["integrations.<id>"] auto-migrate) | on (speculation, triage, findingDedup) / off (postHandoverGate) / shadow (rest) | `ANTIHALL_JEV_<ID>=0` forces an integration off |
-| devswarm.planTracking / planRequired / stepStallMin / strayWarnMax / burnTokensWarn / burnCacheReadPct / respawnGraceMin / respawnWipWaitSec; jevIntegrations.devswarmOnBrief / devswarmExtraSanctioned / devswarmWaitKind / devswarmLoop / devswarmStepMap | Meeseeks supervision (0.117.0): step plans, advisory straying warnings (stall, off-scope, idle, token burn), `ah-hook mesh correct` / `scope add` / `supervision-report`, and the Primary-run `respawn <id>` (after a warning and a grace period: WIP pushed or parked on a new pushed branch, handover, new workspace from the default branch, old one archived); the five Jev integrations are recommendations to the Primary (default on), never a suppression, block or kill. |
+| devswarm.planTracking / planRequired / stepStallMin / strayWarnMax / burnTokensWarn / burnCacheReadPct / respawnGraceMin / respawnWipWaitSec; jevIntegrations.devswarmOnBrief / devswarmExtraSanctioned / devswarmWaitKind / devswarmLoop / devswarmStepMap | Meeseeks supervision (0.117.0): step plans, advisory straying warnings (stall, off-scope, idle, token burn), `ah-engine mesh correct` / `scope add` / `supervision-report`, and the Primary-run `respawn <id>` (after a warning and a grace period: WIP pushed or parked on a new pushed branch, handover, new workspace from the default branch, old one archived); the five Jev integrations are recommendations to the Primary (default on), never a suppression, block or kill. |
 | devswarm.hivecontrol / supervisorMode / requiredGates / inboxCmd | "" / auto / done,merged,tests_passed / "" | `ANTIHALL_DEVSWARM_*` |
 | devswarm.autoArchive.mode (+ idleMin, maxPerSweep advanced) | on (30, 3) | `ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE` |
 | devswarm.retention.days / maxStoreMB / keepPerPartition / archive / archiveMaxMB (advanced) | 30 / 100 / 200 / true / 0 (no cap) | `ANTIHALL_DEVSWARM_RETENTION_*` |
@@ -314,7 +314,7 @@ Per-project: `.anti-hall/progress/`, `.anti-hall/history/`, `.anti-hall/handover
 
 Dormant unless in a DevSwarm session (`DEVSWARM_REPO_ID`) or an opt-in companion is
 installed. Primary and children talk only through the per-project mesh store via
-`ah-hook mesh` (native hivecontrol messaging and `SendMessage` to workspaces are
+`ah-engine mesh` (native hivecontrol messaging and `SendMessage` to workspaces are
 blocked). Recovery is layered and never auto-kills: child self-report → supervisor poke →
 escalate to the parent; only `devswarm-recover.js` kills. The DevSwarm desktop app's own
 SQLite DB is read (read-only, never message bodies or credentials) as the ground truth for

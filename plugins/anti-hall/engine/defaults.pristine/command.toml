@@ -382,13 +382,29 @@ value = " (category: {label})"
 doc = "Why a heavy command is blocked."
 value = "Raw output floods the main thread."
 
+[command.msg_heavy_remote_why]
+doc = "Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread."
+value = "A push, pull, fetch or gh call talks to a shared remote: it can stall on the network or credentials, and what it changes is shared state. The main thread hands it to a worker; a DevSwarm child workspace pushes its own branch inline."
+
+[command.pytest_interpreter_re]
+doc = "Regex source of the interpreter word of the single-file pytest check that stays allowed inline (`python3 -m pytest ...`)."
+value = '^python[0-9.]*$'
+
+[command.pytest_value_flags]
+doc = "pytest flags that take the next word as their value (`-p no:cacheprovider`, `-k expr`); allowed in the single-file pytest check in any order."
+value = ["-p", "-k", "-m", "-o", "-W", "--tb", "--maxfail", "--durations", "--rootdir", "--import-mode", "--color"]
+
+[command.pytest_flag_re]
+doc = "Regex source of a pytest flag allowed in the single-file check besides pytest_value_flags: output and failure-mode switches that do not widen what runs (not -n, --cov or a collect-all option)."
+value = '^(?:-[qvxsl]+|-r[a-zA-Z]*|--(?:quiet|verbose|exitfirst|no-header|disable-warnings|lf|ff|nf|strict-markers|strict-config|showlocals|full-trace|capture=\w+|tb=\w+|maxfail=\d+|durations=\d+|color=\w+|import-mode=\w+|rootdir=\S+))$'
+
 [command.msg_heavy_delegate]
 doc = "What to do instead ({to} names the worker)."
 value = "delegate to {to} (it returns a short summary)"
 
 [command.msg_heavy_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy): `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
+value = "workspace-scale matter (feature/fix/deploy): `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
 
 [command.msg_heavy_allowed]
 doc = "What stays allowed inline (first part)."
@@ -432,7 +448,7 @@ value = "spawn {sub} to make this edit and have it report a tight summary."
 
 [command.msg_edit_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-hall/ah-engine/bin/ah-hook mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
+value = "workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
 
 [command.msg_edit_notes]
 doc = "What stays allowed (Claude)."
@@ -443,16 +459,12 @@ doc = "What stays allowed (Codex)."
 value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/edit-allow.json"
 
 [command.msg_edit_skip_cmd]
-doc = "The command that records consent to skip edit-guard ({cli} is the quoted devswarm CLI path)."
-value = "{cli} skip edit-guard"
+doc = "The command that records consent to skip edit-guard (the native thin client)."
+value = "~/.anti-hall/ah-engine/bin/ah-engine mesh skip edit-guard"
 
 [command.msg_edit_override]
 doc = "The override line ({skip} is the command above)."
 value = "{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
-
-[command.devswarm_cli_rel]
-doc = "The devswarm CLI, relative to the plugin root."
-value = "../anti-hall-node/scripts/devswarm.js"
 
 [command.cd_delims]
 doc = "The delimiters after which a leading cd carries into the next segment."
@@ -467,7 +479,7 @@ doc = "A command without this text cannot name a stable launcher."
 value = ".anti-hall"
 
 [command.launcher_scripts]
-doc = "The stable launcher scripts under ~/.anti-hall/bin that are light."
+doc = "The old stable launcher scripts under ~/.anti-hall/bin (retired: the engine no longer creates them). Kept only so the command guard still recognises a leftover file by name; no text advertises them."
 value = ["devswarm.js", "wake-watch.js"]
 
 [command.tmp_env_names]
@@ -666,7 +678,7 @@ value = "anti-hall's shared mesh store is the only agent-initiated messaging tra
 
 [command.msg_send_instead]
 doc = "What to do instead of a native send."
-value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `~/.anti-hall/ah-engine/bin/ah-hook mesh heartbeat <id> --summary \"<text>\"` to report status."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary \"<text>\"` to report status."
 
 [command.msg_send_override]
 doc = "The override of the native-send block."
@@ -734,7 +746,7 @@ value = "It does not drain the queue, but bypasses the durable cursor, so messag
 
 [command.msg_rawread_inbox_instead]
 doc = "What to do instead of a raw inbox read."
-value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>`."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`."
 
 [command.msg_rawread_override]
 doc = "The override of the raw read block."
@@ -762,7 +774,7 @@ value = "`message-count` reflects the NATIVE queue only; a 0 does not mean nothi
 
 [command.msg_dsread_instead]
 doc = "What to do instead of a native read."
-value = "`~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-hook mesh inbox read <id>` (durable cursor). Do not delegate this to a subagent either."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (durable cursor). Do not delegate this to a subagent either."
 
 [command.msg_dsread_inbox_cmd_prefix]
 doc = "Added before the text above when a consumer-configured inbox command is set."
@@ -875,7 +887,7 @@ doc = "The git arguments that print the current branch (plain-push carve-out)."
 value = ["symbolic-ref", "--short", "HEAD"]
 
 [command.mailbox_flag_skip]
-doc = "Regex source: optional flags (with an optional value each) before a ah-hook mesh verb."
+doc = "Regex source: optional flags (with an optional value each) before a ah-engine mesh verb."
 value = "(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*"
 
 [command.mailbox_js_prefix]

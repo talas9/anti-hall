@@ -20,7 +20,7 @@ Health check, repair, migrations and capability scans.
 | `ah-engine migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state,... | main, codex |
 | `ah-engine update` | `[--check] [--post-pull-only]` Update anti-hall (D81, lane L9b, the native update): `git pull --ff-only` of the marketplace clone (a dirty tree or a diverged history... | main, codex |
 | `ah-engine refresh` | `[--force] [--home <dir>]` Handle the pending session-cache refresh requests the SessionStart checks wrote (L06): the remote-latest release tag (version-alert),... | main, codex |
-| `ah-engine engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` Update the engine binary: runs the thin client's updater (ah-hook update) with the given arguments (--from FILE [--sha256 X] [--yes] |... | main, codex |
+| `ah-engine engine-update` | `--from <file> [--sha256 <x>] [--yes] \| --channel <stable\|dev> \| --rollback \| --auto [--dry-run] [--no-restart]` Update the engine binary: runs the thin client's updater (ah-engine update) with the given arguments (--from FILE [--sha256 X] [--yes] |... | main, codex |
 
 ## Guards
 

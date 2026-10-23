@@ -95,6 +95,18 @@ env = "AH_ENGINE_TELEMETRY_FLUSH_MS"
 min = 50
 unit = "ms"
 
+[telemetry.block_keep_days]
+doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message."
+value = 14
+min = 1
+unit = "days"
+
+[telemetry.block_reason_chars]
+doc = "How many characters of a guard block's message (its first non-empty line) are kept with the block."
+value = 200
+min = 20
+unit = "chars"
+
 [telemetry.retention_days]
 doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."
 value = 30

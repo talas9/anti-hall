@@ -29,11 +29,11 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Use the thin client's update helper (`ah-hook update`):
+Use the thin client's update helper (`ah-engine update`):
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" update --check
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" update
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" update
 ```
 
 This is already the STALE-VERSION-SAFE path — `$ANTI_HALL_ROOT` is derived
@@ -49,13 +49,13 @@ freshly-pulled version's own copy internally as a second line of defense.
 For Codex, also re-run the Codex hook installer after a successful update:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 or for global Codex hooks:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex --global
 ```
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
@@ -69,7 +69,7 @@ daemon. The installer now bakes the **git marketplace clone's own copy** of
 `devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
 **in place**), so a fresh install never goes stale again.
 
-The update helper (`ah-hook update`) ALSO attempts to heal an already-installed daemon
+The update helper (`ah-engine update`) ALSO attempts to heal an already-installed daemon
 in-process via `healIngestDaemon` — no separate step needed. **v0.86.0 — the heal fires
 when EITHER this run synced new bytes into the cache OR the installed unit fails to
 classify `ok`.** Gating it on a cache sync alone made it unreachable in exactly the state
@@ -147,7 +147,7 @@ call to make progress on those stages.
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" capability-scan
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" capability-scan
 ```
 
 Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:

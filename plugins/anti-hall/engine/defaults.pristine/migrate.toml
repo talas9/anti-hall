@@ -265,7 +265,7 @@ value = " \u2014 marker write failed; retries next run"
 
 [migrate_msg.heal_dry_run]
 doc = "The registry heal step in a preview."
-value = "[dry-run] would sweep every per-project store registry for mis-keyed/stale rows (~/.anti-hall/ah-engine/bin/ah-hook mesh healRegistry)"
+value = "[dry-run] would sweep every per-project store registry for mis-keyed/stale rows (~/.anti-hall/ah-engine/bin/ah-engine mesh healRegistry)"
 
 [migrate_msg.heal_none]
 doc = "The registry heal step when there is no store to sweep."

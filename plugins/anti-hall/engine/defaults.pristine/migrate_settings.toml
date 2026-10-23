@@ -275,7 +275,6 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"housekeepingSweepSec\",\"type\":\"number\",\"default\":3600,\"min\":300,\"env\":\"ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC\"}",
   "{\"section\":\"devswarm\",\"key\":\"supervisorLogRotateBytes\",\"type\":\"number\",\"default\":10485760,\"exclusiveMin\":0,\"env\":\"ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES\"}",
   "{\"section\":\"devswarm\",\"key\":\"inboxGraceSec\",\"type\":\"number\",\"default\":120,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_INBOX_GRACE_SEC\"}",
-  "{\"section\":\"devswarm\",\"key\":\"stableLauncher\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_STABLE_LAUNCHER\"}",
   "{\"section\":\"devswarm\",\"key\":\"supervisorSweepBudgetMs\",\"type\":\"number\",\"default\":20000,\"min\":0,\"env\":\"ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS\"}",
   "{\"section\":\"devswarm\",\"key\":\"supervisorBlockerLabelReaskSec\",\"type\":\"number\",\"default\":21600,\"min\":60,\"env\":\"ANTIHALL_DEVSWARM_SUPERVISOR_BLOCKER_LABEL_REASK_SEC\"}",
   "{\"section\":\"devswarm\",\"key\":\"autoArchive.mode\",\"type\":\"enum\",\"default\":\"on\",\"values\":[\"on\",\"dry-run\",\"off\"],\"env\":\"ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE\",\"pluginOption\":\"devswarm_auto_archive_mode\"}",

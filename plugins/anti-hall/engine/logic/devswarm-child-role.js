@@ -1,8 +1,7 @@
 // check = "devswarm-child-role" (SessionStart; devswarm-parent-gate.js and devswarm-child-drain.js build on this script). Injects the
-// DevSwarm mesh-only messaging directive for a child workspace. The stable launchers are installed (written where absent or different) first; where they are not current the
-// script names the launcher targets (dwLaunchersNative, counted). A Primary in a checkout adopts, or on its first run in real DevSwarm
+// DevSwarm mesh-only messaging directive for a child workspace. The texts name the engine binary directly; no launcher file is written. A Primary in a checkout adopts, or on its first run in real DevSwarm
 // registers, its seat in the mesh store and gets the seat notices (ah.mesh.adoptSeat). Mirrors `main` of
-// hooks/devswarm-child-role.js and the module-level launcher install above it. Keys and texts: devswarm_role.toml (devswarm_role.*).
+// hooks/devswarm-child-role.js. Keys and texts: devswarm_role.toml (devswarm_role.*).
 'use strict';
 
 function dwRealHomeUnderTest(home) {
@@ -40,51 +39,19 @@ function dwNodeRoot(root) {
   return hooks === null ? null : ah.path.resolveAbs(hooks + '/..');
 }
 
-// The command agents run for the DevSwarm CLI / the mailbox watcher: the engine shims (devswarm_role.engine_cli / engine_watcher).
+// The command agents run for the DevSwarm CLI / the mailbox watcher: the engine binary (devswarm_role.engine_cli / engine_watcher).
 function dwEngineCmd(key, home) { return text.render(ah.cfg(key), { home: home }); }
 
-// The source of the CLI (watcher = false) or watcher shim: POSIX sh that execs the engine, no Node.
-function dwShimSource(watcher, home) {
-  return text.render(ah.cfg(watcher ? 'devswarm_role.shim_watcher' : 'devswarm_role.shim_cli'), { engine: dwEngineCmd('devswarm_role.engine_bin', home) });
-}
-
-// The shim file `key` (launcher_cli / launcher_watcher) names under the bin directory.
-function dwShimPath(home, key) { return posix.normalize(home + '/' + ah.cfg('devswarm_role.bin_dir') + '/' + ah.cfg(key).name); }
-
-// `installLaunchers`: the two stable shims are written where they are absent or differ (devswarm.stableLauncher on), executable, by the engine.
-// A failed write is counted and leaves the command in use (fail-open: the shim path is stable, a later run retries).
-function dwInstallLaunchers() {
-  var home = dwUsableHome();
-  if (home === null || !ah.settings.bool('devswarm_role.sw_stable_launcher')) return;
-  var committed = false;
-  [['devswarm_role.launcher_cli', false], ['devswarm_role.launcher_watcher', true]].forEach(function (k) {
-    var rel = ah.cfg('devswarm_role.bin_dir') + '/' + ah.cfg(k[0]).name, src = dwShimSource(k[1], home);
-    if (ah.fs.readText(posix.normalize(home + '/' + rel)) === src) return;
-    if (!committed) { ah.commit(); committed = true; }
-    if (!ah.state.op(home, 'write', rel, src) || !ah.markExecutable(rel)) ah.unable('devswarm-child-role:launcher_install');
-  });
-}
-
-// {home, cli, watcher} when the shims are current (written with exactly the source above); null when they are not. The commands the
-// texts name are always devswarm_role.engine_cli / engine_watcher.
+// {home, cli, watcher}: the commands the texts name (devswarm_role.engine_cli / engine_watcher, the engine binary itself); null only without
+// a usable home or plugin root. The engine writes no launcher file.
 function dwLaunchers(root, wantWatcher) {
   var home = dwUsableHome();
   if (home === null || !root) return null;
-  var cur = function (watcher, key) { return ah.fs.readText(dwShimPath(home, key)) === dwShimSource(watcher, home); };
-  if (ah.settings.bool('devswarm_role.sw_stable_launcher') && (!cur(false, 'devswarm_role.launcher_cli') || (wantWatcher && !cur(true, 'devswarm_role.launcher_watcher')))) return null;
   return { home: home, cli: dwEngineCmd('devswarm_role.engine_cli', home), watcher: dwEngineCmd('devswarm_role.engine_watcher', home) };
 }
 
-// `dwLaunchers`, or where the shims are not current (counted; the engine's update stage and the next SessionStart write them) the same commands.
-// null only without a usable home or plugin root.
-function dwLaunchersNative(root, wantWatcher) {
-  var l = dwLaunchers(root, wantWatcher);
-  if (l !== null) return l;
-  var home = dwUsableHome();
-  if (home === null || !root) return null;
-  ah.unable('devswarm-launchers:not_current');
-  return { home: home, cli: dwEngineCmd('devswarm_role.engine_cli', home), watcher: dwEngineCmd('devswarm_role.engine_watcher', home) };
-}
+// The same commands (kept under this name for the scripts that build on this one).
+function dwLaunchersNative(root, wantWatcher) { return dwLaunchers(root, wantWatcher); }
 
 // `dwLaunchers` for the read side of a hook that needs only that the launchers are current.
 function dwLaunchersCurrent(root, wantWatcher) {
@@ -161,7 +128,6 @@ function decide(p, opts, event) {
   if (event !== 'SessionStart') return 'allow'; // this script answers SessionStart only
   if (dwJudgeChild()) return 'allow';
   var root = jx.isObj(opts) && typeof opts.plugin_root === 'string' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root'));
-  dwInstallLaunchers(); // as the Node hook did when it was loaded, before anything else it does
   var l = dwLaunchersNative(root, true);
   if (l === null) { ah.unable('devswarm-child-role:no_home_or_root', 'abandoned'); return 'allow'; } // no usable home or plugin root: no launcher can be named
   if (!ah.settings.bool('devswarm_role.sw_child_role') || !dwActive()) return 'allow';

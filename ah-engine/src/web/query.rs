@@ -75,6 +75,24 @@ fn agents_doc() -> Value {
     agents::status_document(&env, &st, &listing)
 }
 
+/// The guard blocks recorded in hot.db within `--window` (newest first, at most `need`): guard, rule, event, session, agent, tool,
+/// project and the first line of the block message.
+fn guard_blocks(rest: &[String], need: usize) -> Value {
+    let mut window = flag(rest, "window");
+    if window.is_empty() {
+        window = flag(rest, "since");
+    }
+    let days = crate::telemetry::report::window_days(&window);
+    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(86_400_000));
+    let rows: Vec<Value> = crate::telemetry::cli::open_existing()
+        .map(|t| t.blocks(since, need))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| json!({"ts_ms": b.ts_ms, "guard": b.guard, "rule": b.rule, "event": b.event, "session": b.session, "agent": b.agent, "tool": b.tool, "project": b.project, "reason": b.reason}))
+        .collect();
+    json!({"blocks": rows, "window": {"days": days}})
+}
+
 /// The source's document. `need` is how many rows from the start the page reaches (events are fetched newest first up to it).
 fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
     let not_running = || json!({"running": false, "note": defaults::text("webapi.msg_not_running")});
@@ -86,6 +104,7 @@ fn fetch(source: &str, rest: &[String], params: &[&str], need: usize) -> Value {
             let verb = if check.is_empty() { "metrics".to_string() } else { format!("metrics check={check}") };
             crate::client::ctl_json(&verb).unwrap_or_else(not_running)
         }
+        "guard_blocks" => guard_blocks(rest, need),
         "agents" => agents_doc(),
         "nudges" => agents::nudge_document(),
         "status" => crate::client::status_value(),

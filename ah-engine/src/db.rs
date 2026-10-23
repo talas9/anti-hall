@@ -34,6 +34,8 @@ use std::time::{Duration, Instant};
 pub enum Op {
     /// Record an impact event and count it in its total (D52).
     Impact(ImpactEvent),
+    /// Record one guard block and drop the ones older than `telemetry.block_keep_days`.
+    Block(crate::storage::BlockRow),
     /// No change: answered once everything queued before it has committed (read-your-writes for a following read).
     Barrier,
     /// A scheduler write (D33): saves a schedule, opens or closes a run record. Answers the new run's id for a start.
@@ -586,6 +588,12 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
         Op::Impact(e) => {
             c.prepare_cached(sql::IMPACT_INSERT)?.execute(params![e.ts_ms as i64, e.kind, e.check, e.reason, e.project])?;
             c.prepare_cached(sql::IMPACT_COUNT)?.execute(params![e.kind, e.check, e.reason, e.project])?;
+            Ok(String::new())
+        }
+        Op::Block(b) => {
+            c.prepare_cached(sql::BLOCK_INSERT)?.execute(params![b.ts_ms as i64, b.guard, b.rule, b.event, b.session, b.agent, b.tool, b.project, b.reason])?;
+            let keep = defaults::num("telemetry.block_keep_days").saturating_mul(86_400_000);
+            c.prepare_cached(sql::BLOCK_PRUNE)?.execute(params![b.ts_ms.saturating_sub(keep) as i64])?;
             Ok(String::new())
         }
         Op::Sched(op) => sched_apply(c, op),

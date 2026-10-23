@@ -27,9 +27,9 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 Run the existing pure-Node debt harvester:
 
 ```bash
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" harvest
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" harvest --json
-"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "$ANTI_HALL_ROOT" harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --dir src --stale-days 60
 ```
 
 Debt marker format:

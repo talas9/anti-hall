@@ -262,7 +262,7 @@ value = "a question about a destructive or irreversible action, with the questio
 
 [ask_guard.child_text]
 doc = "Sentence appended in a child workspace, which asks its parent instead of the user."
-value = "\nChild workspace: send the question to your parent with `~/.anti-hall/ah-engine/bin/ah-hook mesh send --to-primary --question \"...\"` instead of asking the user directly."
+value = "\nChild workspace: send the question to your parent with `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --question \"...\"` instead of asking the user directly."
 
 [ask_guard.child_env]
 doc = "Environment variable whose non-blank value marks a child workspace."

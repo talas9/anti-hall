@@ -39,7 +39,7 @@ value = "M/N. Workers do not re-delegate; read-only research -> a read-only sub-
 
 [verify_first.child_note]
 doc = "The note a subagent gets when the session is a DevSwarm child workspace (CHILD_WORKSPACE_MAILBOX_NOTE)."
-value = "You are a subagent inside a DevSwarm child workspace: do NOT run ~/.anti-hall/ah-engine/bin/ah-hook mesh inbox pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the mailbox; anything you learn goes back to your parent in your report."
+value = "You are a subagent inside a DevSwarm child workspace: do NOT run ~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull/ack/ack-primary/read/read-primary/tick or heartbeat — the workspace main thread owns the mailbox; anything you learn goes back to your parent in your report."
 
 [verify_first.abs_marker]
 doc = "Placeholder in the compact protocol texts that is replaced by the plugin root directory."

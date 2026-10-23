@@ -6,7 +6,7 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7, HOT_V8];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
 pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3, ARCHIVE_V4];
@@ -231,6 +231,22 @@ CREATE TABLE IF NOT EXISTS rt_entity (ns TEXT NOT NULL, key TEXT NOT NULL, body 
 CREATE TABLE IF NOT EXISTS rt_edges (id INTEGER PRIMARY KEY, ns TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, from_v TEXT NOT NULL, to_v TEXT NOT NULL, generation INTEGER NOT NULL, at_ms INTEGER NOT NULL, while_down INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS rt_edges_ns ON rt_edges (ns, id);
 ";
+
+/// hot.db v8: one row per guard block (which guard, which session and agent, when, and the first line of its message), so a block
+/// can be asked about afterwards (`ah-engine query guard_blocks`). Kept for `telemetry.block_keep_days`.
+const HOT_V8: &str = "
+CREATE TABLE IF NOT EXISTS guard_blocks (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT NULL, guard TEXT NOT NULL, rule TEXT NOT NULL, event TEXT NOT NULL, session TEXT NOT NULL, agent TEXT NOT NULL, tool TEXT NOT NULL, project TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS guard_blocks_ts ON guard_blocks (ts_ms);
+";
+
+/// Record one guard block.
+pub const BLOCK_INSERT: &str = "INSERT INTO guard_blocks (ts_ms, guard, rule, event, session, agent, tool, project, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+
+/// Drop the blocks older than a time.
+pub const BLOCK_PRUNE: &str = "DELETE FROM guard_blocks WHERE ts_ms < ?1";
+
+/// The newest blocks since a time.
+pub const BLOCK_RECENT: &str = "SELECT ts_ms, guard, rule, event, session, agent, tool, project, reason FROM guard_blocks WHERE ts_ms >= ?1 ORDER BY id DESC LIMIT ?2";
 
 /// Insert or replace one realtime entity.
 pub const RT_ENTITY_PUT: &str = "INSERT INTO rt_entity (ns, key, body, src_sig, observed_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (ns, key) DO UPDATE SET body = excluded.body, src_sig = excluded.src_sig, observed_ms = excluded.observed_ms";
