@@ -20,6 +20,7 @@
   --red:       light-dark(oklch(0.55 0.2 15),    oklch(0.76 0.14 5));
   --idle:      light-dark(oklch(0.62 0.04 260),  oklch(0.56 0.06 260));
   --on-accent: oklch(0.15 0.03 250);
+  --top-h:     66px;
   --font-ui:   Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-head: "Space Grotesk", Inter, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -55,9 +56,11 @@ a { color: var(--cyan); }
 /* header */
 .top {
   display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
+  position: sticky; top: 0; z-index: 30;
   padding: 14px 24px;
+  min-height: var(--top-h);
   border-bottom: 1px solid var(--line);
-  background: color-mix(in oklch, var(--bg) 70%, transparent);
+  background: var(--bg);
 }
 .brand { display: flex; align-items: center; gap: 10px; }
 .mark {
@@ -88,7 +91,10 @@ a { color: var(--cyan); }
 .nav {
   flex: 0 0 76px; display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 16px 0; border-right: 1px solid var(--line);
+  position: sticky; top: var(--top-h); align-self: flex-start;
+  height: calc(100vh - var(--top-h)); overflow-y: auto;
 }
+@media (max-width: 720px) { .nav { position: static; height: auto; overflow: visible; align-self: auto; } }
 .nav-item {
   width: 60px; min-height: 56px; border-radius: 12px; border: 1px solid transparent;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
@@ -283,4 +289,4 @@ html { scrollbar-gutter: stable; }
 .hb-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0; font: 11px var(--font-mono); color: var(--muted); }
 .hb-legend span:not(:first-child)::before { content: "\25CF "; }
 @container main (max-width: 720px) { .tree-cols .c-brief { display: none; } }
-@media (min-width: 1100px) { .detail { position: sticky; top: 0; align-self: flex-start; max-height: 100vh; } }
+@media (min-width: 1100px) { .detail { position: sticky; top: var(--top-h); align-self: flex-start; max-height: calc(100vh - var(--top-h)); } }
