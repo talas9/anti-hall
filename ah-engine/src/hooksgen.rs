@@ -5,7 +5,7 @@
 //!   reliability wrapper with the event name. Which entries and rules then apply is decided by the engine from the table
 //!   and the config, not by the host.
 //! * `hooks.registry.json` ([`registry_json`]): the old per-hook form of `hooks.json` (one handler per table entry, with
-//!   its matcher and timeout; the command is the thin client's, the same as in `hooks.json`, because the thin client is
+//!   its matcher, timeout and table id; the command is the thin client's, the same as in `hooks.json`, because the thin client is
 //!   what runs every entry; the Node text of an entry lives in the fallback map only). Nothing in the host reads it; the
 //!   plugin's Node readers (doctor, the briefing, the hook-latency script) and the manual Codex installer use it to know
 //!   which entries exist.
@@ -54,13 +54,17 @@ fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
-fn handler(out: &mut String, command: &str, timeout: u64) {
+fn handler(out: &mut String, command: &str, timeout: u64, id: Option<&str>) {
     crate::discard::harmless(write!(
         out,
-        "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}\n          }}",
+        "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}",
         q(command),
         timeout
     )); // keep: formatting into a String cannot fail
+    if let Some(id) = id {
+        crate::discard::harmless(write!(out, ",\n            \"id\": {}", q(id))); // keep: formatting into a String cannot fail
+    }
+    out.push_str("\n          }");
 }
 
 /// The thin `hooks.json` of `host`.
@@ -69,7 +73,7 @@ pub fn hooks_json(host: &str) -> String {
     let evs = events(host);
     for (i, ev) in evs.iter().enumerate() {
         crate::discard::harmless(write!(out, "    {}: [\n      {{\n        \"hooks\": [\n", q(ev))); // keep: formatting into a String cannot fail
-        handler(&mut out, &thin_command(host, ev), event_timeout(host, ev));
+        handler(&mut out, &thin_command(host, ev), event_timeout(host, ev), None);
         out.push_str("\n        ]\n      }\n    ]");
         out.push_str(if i + 1 < evs.len() { ",\n" } else { "\n" });
     }
@@ -105,7 +109,7 @@ pub fn registry_json(host: &str) -> String {
             }
             out.push_str("        \"hooks\": [\n");
             for (hi, e) in g.iter().enumerate() {
-                handler(&mut out, &command, e.timeout_s);
+                handler(&mut out, &command, e.timeout_s, Some(&e.id));
                 out.push_str(if hi + 1 < g.len() { ",\n" } else { "\n" });
             }
             out.push_str("        ]\n      }");

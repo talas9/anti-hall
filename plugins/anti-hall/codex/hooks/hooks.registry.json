@@ -6,23 +6,37 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\" --post",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "merge-side-pick:post"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\" --audit",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "git-guard:audit"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-reply-tracker.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "devswarm-parent-reply-tracker"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-drain.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "devswarm-child-drain"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
+            "timeout": 10,
+            "id": "agent-reminders"
           }
         ]
       }
@@ -32,8 +46,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/precompact-snapshot.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreCompact --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreCompact --host codex",
+            "timeout": 10,
+            "id": "precompact-snapshot"
           }
         ]
       }
@@ -44,28 +59,33 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/git-guard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "git-guard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/command-guard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "command-guard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-side-pick.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "merge-side-pick"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/merge-gate.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "merge-gate"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-declaration-guard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "compact-declaration-guard"
           }
         ]
       },
@@ -74,8 +94,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/orch-on-spawn.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "orch-on-spawn"
           }
         ]
       },
@@ -84,13 +105,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/api-guard.js\"",
-            "timeout": 45
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 45,
+            "id": "api-guard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/ship-it-guard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "ship-it-guard"
           }
         ]
       },
@@ -99,8 +122,70 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/edit-guard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "edit-guard"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "procwatch-advisory"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "engine-role-guard"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "broad-kill-guard"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "burn-breaker"
+          }
+        ]
+      },
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "uncommitted-guard"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "queued-wait-guard"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "lane-test-guard"
           }
         ]
       }
@@ -110,78 +195,111 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-full.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "verify-first-full"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first-orch.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "verify-first-orch"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-role.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "devswarm-child-role"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/version-alert.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "version-alert"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/codex-availability.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "codex-availability"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-version.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "devswarm-version"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/claude-cli-version.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "claude-cli-version"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repo-self-drift.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "repo-self-drift"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/progress-prune.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "progress-prune"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/handover-resume.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "handover-resume"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/jev-weekly-scorecard.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "handover-hygiene"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/jev-review-reminder.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "jev-weekly-scorecard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/emit-dedupe-reset.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "jev-review-reminder"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/defect-nudge.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "emit-dedupe-reset"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "defect-nudge"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "repair-on-reload"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "procwatch-advisory"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
+            "timeout": 10,
+            "id": "engine-role-note"
           }
         ]
       }
@@ -191,53 +309,81 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/task-guard.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "task-guard"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/tasklist-guard.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "tasklist-guard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-guard.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "speculation-guard"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/speculation-judge.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "speculation-judge"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/claim-ledger.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "claim-ledger"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-gate.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "devswarm-parent-gate"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-gate.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "devswarm-child-gate"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover-pause-nag.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "auto-handover-pause-nag"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/silent-agent-nudge.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "silent-agent-nudge"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/compact-advice-guard.js\"",
-            "timeout": 30
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 30,
+            "id": "compact-advice-guard"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
+            "timeout": 10,
+            "id": "sibling-sweep"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SubagentStop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SubagentStop --host codex",
+            "timeout": 10,
+            "id": "sibling-sweep"
           }
         ]
       }
@@ -247,43 +393,75 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "verify-first"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "task-tracker"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "idle-agent-sweep"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "limit-conserve-inject"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-parent-inbox.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "devswarm-parent-inbox"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/devswarm-child-turn.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "devswarm-rt-advisory"
           },
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/../anti-hall-node/hooks/repair-on-reload.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "devswarm-child-turn"
           },
           {
             "type": "command",
-            "command": "node --no-concurrent-recompilation --no-concurrent-sparkplug \"${PLUGIN_ROOT}/../anti-hall-node/hooks/auto-handover.js\"",
-            "timeout": 10
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "repair-on-reload"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "auto-handover"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "procwatch-advisory"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "agent-reminders"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "gh-rt-advisory"
           }
         ]
       }
