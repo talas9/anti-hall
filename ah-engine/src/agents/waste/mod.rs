@@ -116,9 +116,13 @@ fn evidence_of(a: &Agent, i: &Input, score: f64, now: u64) -> serde_json::Value 
     let goal = [a.name.as_str(), a.step.as_str()].iter().filter(|s| !s.is_empty()).map(|s| cap(s, lim("goal_cap"))).collect::<Vec<_>>();
     let calls: Vec<String> = a.recent.iter().rev().take(lim("call_cap") as usize).rev().map(|r| cap(&r.1, lim("line_cap"))).collect();
     let outcomes = vec![
-        format!("window: {} outcome units", i.outcome),
-        format!("lifetime: {} commits, {} passing checks, {} steps done, {} files edited", a.commits, a.tests_pass, a.steps_done, a.files.len()),
+        defaults::render("agent_waste.outcome_window", &[("outcome", &i.outcome)]),
+        defaults::render(
+            "agent_waste.outcome_lifetime",
+            &[("commits", &a.commits), ("checks", &a.tests_pass), ("steps", &a.steps_done), ("files", &a.files.len())],
+        ),
     ];
+
     let signals = vec![format!("kind {}; score {:.0}; {}", a.kind, score, reason_of(i))];
     let w = defaults::raw("agent_waste.judge_sections");
     json!({

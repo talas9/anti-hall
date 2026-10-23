@@ -41,6 +41,14 @@ value = "{tokens_k}k tokens for {outcome} outcome units; re-read {reread}%, repe
 doc = "Words the sensor writes: the source of a decision (judge or formula), the actions (warn, hard) and the telemetry class."
 value = { judge = "judge", formula = "formula", warn = "warn", hard = "hard", class = "waste", fire = "fire", judged = "judge", no_goal = "unknown" }
 
+[agent_waste.outcome_window]
+doc = "Evidence line for the judge: the outcome units in the window. Placeholder: {outcome}."
+value = "window: {outcome} outcome units"
+
+[agent_waste.outcome_lifetime]
+doc = "Evidence line for the judge: the agent's lifetime outcomes. Placeholders: {commits}, {checks}, {steps}, {files}."
+value = "lifetime: {commits} commits, {checks} passing checks, {steps} steps done, {files} files edited"
+
 [agent_waste.judge_sections]
 doc = "Headings-free section names of the evidence pack sent to the judge (must match the sections of evidence.cfg.agentWaste)."
 value = { goal = "goal", calls = "tool_calls", outcomes = "outcomes", signals = "signals" }

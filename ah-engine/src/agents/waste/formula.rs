@@ -64,7 +64,7 @@ impl Params {
     pub fn load() -> Params {
         let th = defaults::raw("agent_waste.thresholds");
         let t = |k: &str| th.get(k).and_then(V::as_integer).unwrap_or(0) as f64;
-        let div = defaults::raw("agent_waste.relief").get("divisor_pct").and_then(V::as_integer).unwrap_or(100).max(1) as f64 / 100.0;
+        let div = defaults::raw("agent_waste.relief").get("divisor_pct").and_then(V::as_integer).unwrap_or(0).max(1) as f64 / crate::agents::fmtn("pct") as f64;
         Params {
             eps: lim("eps_pct").max(1) as f64 / 100.0,
             reread: mult("reread"),
