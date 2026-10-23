@@ -703,6 +703,7 @@ fn cmd_config(p: &Parsed) -> i32 {
                 }
             },
         },
+        Some("explain") => cmd_config_explain(p),
         Some("heal") => {
             // explicit: writes the missing settings even into a version-controlled checkout (the automatic heal never does)
             let Some(root) = defaults::root() else { return 70 };
@@ -740,6 +741,42 @@ fn cmd_config(p: &Parsed) -> i32 {
             64
         }
     }
+}
+
+/// `config explain <key | rule:<id>> [--cwd <dir>]`: the effective value and what each layer (env, project, settings.json, user
+/// config.toml, shipped) holds for it, read from the files (the project layer of `--cwd`, default the current directory).
+fn cmd_config_explain(p: &Parsed) -> i32 {
+    let Some(key) = p.rest.get(1).filter(|k| !k.starts_with("--")) else {
+        let msg = defaults::text("msg.layer_explain_usage");
+        emit(p, msg.to_string(), json!({"error": msg}));
+        return 64;
+    };
+    let cwd = Some(flag(p, "cwd")).filter(|c| !c.is_empty()).or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned())).unwrap_or_default();
+    let found = match key.strip_prefix(defaults::text("layers.explain_rule_prefix")) {
+        Some(id) => crate::layers::explain_rule(id, &cwd),
+        None => {
+            let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
+            let project = crate::layers::project(&cwd).map(|p| p.settings.clone()).unwrap_or_default();
+            crate::cfgstore::explain_setting_here(key, &layers, &project)
+        }
+    };
+    let Some(v) = found else {
+        let msg = defaults::render("msg.layer_explain_unknown", &[("key", key)]);
+        emit(p, msg.clone(), json!({"error": msg}));
+        return 1;
+    };
+    let mut lines = vec![defaults::render("msg.layer_explain_header", &[("key", key), ("value", &v["value"].as_str().map(str::to_string).unwrap_or_else(|| v["value"].to_string())), ("source", &v["source"].as_str().unwrap_or(""))])];
+    for l in v["layers"].as_array().into_iter().flatten() {
+        let state = l["state"].as_str().unwrap_or("");
+        lines.push(defaults::render("msg.layer_explain_line", &[("layer", &l["layer"].as_str().unwrap_or("")), ("state", &state), ("value", &l["value"].to_string())]));
+    }
+    match &v["refused"] {
+        Value::Array(a) => lines.extend(a.iter().filter_map(Value::as_str).map(String::from)),
+        Value::String(why) => lines.push(why.clone()),
+        _ => {}
+    }
+    emit(p, lines.join("\n"), v);
+    0
 }
 
 /// Human rendering of a config report: where it came from, the files, then one line per setting with its source.

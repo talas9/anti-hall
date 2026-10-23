@@ -476,6 +476,7 @@ arguments, is in the generated reference.
 | `ah-engine backup [--to <dir>]` | no | A consistent, scrubbed snapshot of `hot.db` and `archive.db`; prints its manifest. |
 | `ah-engine restore <snapshot-dir>` | no | Keep the current state as a pre-restore snapshot, stop the daemon, swap in the snapshot. |
 | `ah-engine config [--json]` | yes | The effective config with the source of every value (`default`, `config_toml`, `settings`, `env`), the files read, the active version, any rejected edit and settings pending a restart. Asks the running daemon, else reads the files. |
+| `ah-engine config explain <key \| rule:<id>> [--cwd <dir>] [--json]` | yes | Where an effective value comes from: for a setting, every layer (`env`, `project`, `settings`, `config_toml`, `default`) with its value and whether it is `applied`, `shadowed` by a higher layer or `refused`; for `rule:<id>`, the rule as it stands after the shipped, user and project layers and the refusals that name it. Reads the files; the project layer is the one of `--cwd` (default: the current directory). |
 | `ah-engine config validate <file>` | yes | Check an engine TOML file against the schema: exit 0 when valid, 1 with the reason when not. |
 | `ah-engine config heal` | no | Add the settings the edited engine files lack, taken from the pristine copy (existing text kept, the file backed up first, idempotent). The automatic heal skips a version-controlled checkout; this command does not. |
 | `ah-engine config versions`, `config rollback`, `config export` | no | planned (D18, they need the config database); they say so and exit 64. |
@@ -1372,6 +1373,7 @@ Files:
 | `telemetry.toml` | the metric and impact-kind registries, the savings method and the telemetry settings (`telemetry.enabled`, `telemetry.flush_ms`, `telemetry.retention_days`, table sizes and window defaults) |
 | `storage.toml` | database file names, SQLite durability settings, the writer queue and group-commit window, the in-memory layer, the spool, retention, backups |
 | `config.toml` | config layering: file names, watch and debounce timing, boolean tokens, restart-only settings, config messages |
+| `layers.toml` | rule and settings layers (shipped, user, project): directory and file names, size and count caps, the project-allowed rule fields and settings (with their stricter direction), the locked rules, the rule actions in order of strictness, and the layer messages |
 | `transcript.toml` | the transcript index: window and update caps, kept-fact counts, status sets, registry size and idle time |
 | `gitcache.toml` | the git cache: git invocations, timeouts, TTLs, signed file names, the bypass environment, messages |
 | `jev_sweep.toml` | the evidence sweep: the `jev_sweep` job and interval, where plans/transcripts/mesh stores are read, windows and limits, the transcript, git and CI commands and patterns, the evidence line words |
@@ -1450,10 +1452,51 @@ where the config files are, the two lists themselves, the dispatch table `dispat
 `[events.*]`/`[entries.*]`, whose guard rules stay in force) and the command registry `cmd.*`; `config.toml` naming one is
 invalid (`locked`), `settings.json` naming one is ignored. A value derived from settings (`defaults::Cache`, a compiled pattern) is rebuilt after an overlay change.
 
+### Rule and settings layers: shipped, user, project
+
+Rules and settings come from three layers, lowest first: the **shipped** plugin files, the **user** (host) files under the
+base directory (`~/.anti-hall`), and the **project** files under the session's project root. The environment stays on top for
+settings. Every layer MERGES into the one below it, key by key: tables deep-merge, a rule with a new id is added, a rule with a
+known id has only the fields it names replaced. No layer replaces another's file. All of it is read from the files at run time
+(`layers.toml` holds every name, limit and text) and re-read when a file changes.
+
+| Layer | Rules | Settings and hook sections |
+| --- | --- | --- |
+| shipped | `engine/rules.json` in the plugin | `engine/defaults/*.toml` |
+| user | `rules.json` in the state directory (merged by id; it used to replace the shipped file) and `<base>/rules/*.toml` | `settings.json`, then `config.toml` (see above) |
+| project | `<root>/.anti-hall/rules/*.toml` | `hooks.project_file` (`<root>/.anti-hall/engine.toml`): `[events.*]`, `[entries.*]` and the settings listed in `layers.project_settings` |
+
+A rule file holds `[[rules]]` tables with the fields of `rules.json` (`id`, `events`, `tools`, `field`, `pattern`, `action`
+`message`, `paths`, plus `enabled = false` to switch a lower layer's rule off). A new rule needs an `id` and an `action`.
+
+The **project root** is the git top level of the payload's cwd, found by the same resolver the other checks use; a nested
+repository or a submodule is its own project, and a repository at the home directory does not read the user layer as a project.
+The layers of the projects are cached per root, so two projects on one daemon never see each other's rules, and a project value
+never enters the daemon-wide `defaults::*` overlay.
+
+The project layer is repository content, so it is **untrusted**: data only (`check` and `options` run engine code and are
+refused), size and count capped, schema validated, and **tighten-only**:
+
+- it may add rules, raise a rule's `action` (`context` < `warn` < `deny`) and change its `message`; lowering the action,
+  switching a rule off or changing any other field of a lower layer's rule is refused;
+- it may set only the settings in `layers.project_settings`, each only in its stricter direction (`up`, `down`, `on`, `off`,
+  `add`) relative to the value below it; locked settings (`config.locked`) are refused whatever the direction;
+- it may loosen a rule or setting only when the USER layer lists it in `layers.project_may_loosen` (a project file cannot grant
+  itself this).
+
+The user layer may loosen anything except the rules in `layers.locked_rules` and the locked settings. A refused entry is logged
+once (`layer_notice`) and skipped; an invalid, oversized or non-regular file (a symlink, a pipe) is ignored whole with one notice.
+A bad layer never fails a request: the shipped rules and settings always apply. `ah-engine config explain` shows which layer a
+value came from and what was refused.
+
+Not yet request-scoped: the daemon's internal reads of a setting (`defaults::num` and friends) answer the user-level value, so a
+project's setting value is visible to `config explain` and to request-scoped consumers (`cfgstore::resolve_for_project`) but is
+not yet applied inside every check.
+
 State lives in `~/.anti-hall/ah-engine/` (override with `AH_ENGINE_DIR`): `hot.db` and `archive.db`, the write spool
 `spool.log` and its `spool.quarantine`, the `backups/` directory, the optional `schedules.json`, the event log,
-`failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The rules file is
-`rules.json` there, or the path in `AH_ENGINE_RULES`.
+`failure.json`, the breaker and crash-loop markers, the run marker, the start counter and the per-session advisory stamps. The user's rules file is
+`rules.json` there (merged over the shipped rules by id), or the path in `AH_ENGINE_RULES` (then the whole rule set).
 
 A daemon found gone without a clean exit is logged as `crash` (counts toward the crash-loop stop, marks the engine degraded, writes
 `last_crash`) unless the operating system booted after its last sign of life (its newest breadcrumb, or its start): then it is a

@@ -121,7 +121,7 @@ doc = "Suffix appended to the socket path for the singleton lock file."
 value = ".lock"
 
 [paths.rules_file]
-doc = "Name of the user's rules override inside the state directory; when that file exists it replaces the plugin's rules file."
+doc = "Name of the user's rules file inside the state directory; when it exists its rules are merged over the plugin's by id (a known id changes that rule, a new id adds one; see layers.toml). It no longer replaces the plugin's file."
 value = "rules.json"
 
 [paths.plugin_rules_file]

@@ -46,7 +46,7 @@ value = ["daemon.workers", "daemon.mem_mb", "daemon.nice", "paths.", "storage.",
 
 [config.locked]
 doc = "Settings (exact keys, or prefixes ending in a dot or in *) the owner's files may not change: the names of the environment variables (the contract between the wrapper, the client and the daemon), the settings that say where the config files are, these two lists, the dispatch table (the generated hooks.json is built from it; hooks are configured in [events.*] and [entries.*], whose guard rules keep a guard from being turned off) and the command registry (its read-only flags feed the role gate). config.toml naming one is invalid; settings.json naming one is ignored."
-value = ["env.", "config.user_file", "config.settings_file", "config.restart_only", "config.locked", "dispatch.hooks_*", "cmd."]
+value = ["env.", "config.user_file", "config.settings_file", "config.restart_only", "config.locked", "dispatch.hooks_*", "cmd.", "layers.rule_fields", "layers.project_rule_fields", "layers.tighten_fields", "layers.action_rank", "layers.locked_rules", "layers.project_settings", "layers.project_dir"]
 
 [msg.cfg_err_io]
 doc = "A config file could not be read."

@@ -30,7 +30,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
@@ -105,7 +105,7 @@ pub struct Shared {
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
     rules_path: Mutex<std::path::PathBuf>,
-    seen: Mutex<Option<(SystemTime, u64)>>,
+    seen: Mutex<u64>,
     sessions: Mutex<Buckets>,
     projects: Mutex<Buckets>,
     store: Store,
@@ -199,7 +199,7 @@ impl Shared {
             hook_version: RwLock::new(String::new()),
             plugin_version: Mutex::new((0, String::new())),
             rules: RwLock::new(Arc::new(rules)),
-            seen: Mutex::new(mtime(&rules_path)),
+            seen: Mutex::new(crate::layers::host_fingerprint(&rules_path, defaults::env_var("rules").is_some())),
             rules_path: Mutex::new(rules_path),
             store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
@@ -370,10 +370,12 @@ impl Shared {
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
     fn reload(&self) {
         let path = lk(&self.rules_path).clone();
-        if let Ok(r) = RuleSet::load(&path) {
+        let explicit = defaults::env_var("rules").is_some();
+        // the shipped file and the user's layers over it (layers.rs); a bad user file is ignored with a notice, the shipped rules stay
+        if let Ok((r, _)) = crate::layers::load_host_rules(&path, explicit) {
             *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(r);
         }
-        *lk(&self.seen) = mtime(&path);
+        *lk(&self.seen) = crate::layers::host_fingerprint(&path, explicit);
     }
 
     /// The memory breakdown: the live heap against RSS, and the size of every long-lived in-memory structure, so a growing
@@ -971,6 +973,7 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let rules = crate::layers::rules_for(p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""), &rules); // the project's rules, tighten-only
     let (start, budget) = cpu_budget(cfg);
     let over = move || over_cpu_budget(start, budget);
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
@@ -1952,10 +1955,6 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     }
 }
 
-fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
-    std::fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
-}
-
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     health::record_failure("start_fail", code, detail);
@@ -2044,7 +2043,8 @@ pub fn serve() {
 
     crate::mem::register_defaults_leak();
     let rules_path = paths::rules_file();
-    let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
+    let host_rules = crate::layers::load_host_rules(&rules_path, defaults::env_var("rules").is_some()).map(|(r, _)| r).unwrap_or_default();
+    let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);
     sh.config = store;
     sh.rlimit = rlimit;
     sh.starts = starts;
@@ -2380,7 +2380,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             if moved {
                 *lk(&sh.rules_path) = wanted.clone();
             }
-            let now = mtime(&wanted);
+            let now = crate::layers::host_fingerprint(&wanted, defaults::env_var("rules").is_some());
             if moved || HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
                 sh.reload();
                 sh.reload_config();
