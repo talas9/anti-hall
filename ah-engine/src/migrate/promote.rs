@@ -6,8 +6,8 @@
 //! descriptor and of the registry row (write-through, so the two cannot diverge); a registry that already holds a real value is
 //! copied onto the descriptor instead, and the other way round. Idempotent: a re-run finds no marker left on a promoted row.
 //!
-//! Anything the engine cannot do exactly as Node does (a store it cannot open, a summary it cannot project, a project key only
-//! git can tell) is a deferral, found BEFORE the first write of the row: the stage then runs as Node's function.
+//! A row whose store cannot be opened or whose summary cannot be projected is an error of that row (`errors`, `ok: false`, the cause
+//! logged), found BEFORE the first write of the row and retried by the next call, as Node's per-row catch does.
 use super::Ctx;
 use super::poststages::Tally;
 use crate::checks::guardkit::ojson::OVal;
@@ -15,7 +15,7 @@ use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dssup::liveness::read_descriptors;
 use crate::meshw::common::{self, Inv};
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident;
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::send::hash_from_workspace_id;
 use crate::meshw::store::RegistryRow;
@@ -36,42 +36,43 @@ fn marker_of(id: &str) -> String {
     format!("{}{id}", defaults::text("mesh_write.unclaimed_prefix"))
 }
 
-/// `storeOwnerKeyFor(id, ctx)`: the project key of this process's working directory, else the key of the workspace id.
-fn store_owner_key(inv: &Inv, id: &str) -> R<String> {
-    if inv.cwd.is_empty() {
-        return defer("relative-path");
-    }
-    Ok(ident::resolve_context(&inv.cwd, true)?.repo_key.unwrap_or_else(|| hash_from_workspace_id(id)))
+/// `storeOwnerKeyFor(id, ctx)`: the project key of this process's working directory (`path.resolve`d against the process's own when
+/// relative or empty), else the key of the workspace id. A directory no key resolves from is the id's key, as Node's catch.
+fn store_owner_key(inv: &Inv, id: &str) -> String {
+    let process_cwd = std::env::current_dir().ok().and_then(|d| d.to_str().map(str::to_string)).unwrap_or_default();
+    let cwd = if inv.cwd.is_empty() { process_cwd } else { ident::resolve(&process_cwd, &inv.cwd) };
+    ident::resolve_context(&cwd, true).ok().and_then(|c| c.repo_key).unwrap_or_else(|| hash_from_workspace_id(id))
 }
 
 /// `currentRegistrySessionId(home, id, ctx)`: the registry's own session id for `id`, read fresh.
-fn current_registry_sid(inv: &Inv, id: &str) -> R<Option<String>> {
-    let st = common::open_store(inv, &store_owner_key(inv, id)?)?;
-    let roster = st.reader().roster().map_err(|e| Defer(format!("registry:{e}")))?;
+fn current_registry_sid(inv: &Inv, id: &str) -> Result<Option<String>, String> {
+    let st = common::open_store(inv, &store_owner_key(inv, id)).map_err(|d| d.0)?;
+    let roster = st.reader().roster().map_err(|e| format!("registry:{e}"))?;
     Ok(roster.iter().find(|r| r.get("id").and_then(|v| v.as_str()) == Some(id)).and_then(|r| r.get("sessionId")?.as_str()).map(str::to_string))
 }
 
 /// `upsertStoreRegistry(home, desc, ctx, { allowPathChange: true })` then the summary refresh; the store and the summary are
-/// checked before the descriptor is written, so a failure here is a deferral.
+/// checked before the descriptor is written, so a failure here is an error of the row, found before its first write.
 struct Upsert {
     key: String,
     store: crate::meshw::store::MeshStore,
     row: RegistryRow,
 }
 
-fn prepare_upsert(inv: &Inv, id: &str, desc: &OVal) -> R<Upsert> {
+fn prepare_upsert(inv: &Inv, id: &str, desc: &OVal) -> Result<Upsert, String> {
     let key = match desc.get("ownerKey") {
         Some(OVal::Str(k)) if !k.is_empty() => k.clone(),
-        _ => store_owner_key(inv, id)?,
+        _ => store_owner_key(inv, id),
     };
-    let store = common::open_store(inv, &key)?;
-    crate::meshw::summary::check(&store, inv, None)?;
+    let store = common::open_store(inv, &key).map_err(|d| d.0)?;
+    crate::meshw::summary::check(&store, inv, None).map_err(|d| d.0)?;
+    let text = |k: &str| crate::meshw::pull::text_or_null(desc, k).map_err(|d| d.0);
     let row = RegistryRow {
         id: id.to_string(),
-        worktree_path: crate::meshw::pull::text_or_null(desc, "worktreePath")?,
-        session_id: crate::meshw::pull::text_or_null(desc, "sessionId")?,
-        inbox_path: crate::meshw::pull::text_or_null(desc, "inboxPath")?,
-        cursor_path: crate::meshw::pull::text_or_null(desc, "cursorPath")?,
+        worktree_path: text("worktreePath")?,
+        session_id: text("sessionId")?,
+        inbox_path: text("inboxPath")?,
+        cursor_path: text("cursorPath")?,
         nudge_command: match desc.get("nudgeCommand") {
             None | Some(OVal::Null) => None,
             Some(v) => Some(v.stringify()),
@@ -99,7 +100,7 @@ fn with_session(desc: &OVal, sid: &str) -> OVal {
 }
 
 /// `promoteUnclaimedSession(home, id, sessionId, ctx)` -> promoted?
-fn promote_session(inv: &Inv, id: &str, session_id: &str) -> R<bool> {
+fn promote_session(inv: &Inv, id: &str, session_id: &str) -> Result<bool, String> {
     if session_id.is_empty() || !is_safe_id(id) {
         return Ok(false);
     }
@@ -125,7 +126,7 @@ fn promote_session(inv: &Inv, id: &str, session_id: &str) -> R<bool> {
     }
     let next = with_session(&desc, session_id);
     let up = prepare_upsert(inv, id, &next)?;
-    crate::meshw::clog::ready(inv)?;
+    crate::meshw::clog::ready(inv).map_err(|d| d.0)?;
     if crate::meshw::pull::write_descriptor(inv, id, &next).is_err() {
         return Ok(false);
     }
@@ -146,7 +147,7 @@ fn beat_session(home: &Path, id: &str) -> Option<String> {
     (!raw.is_empty() && raw != id && !raw.starts_with(defaults::text("mesh_write.unclaimed_prefix"))).then_some(raw)
 }
 
-/// `promoteUnclaimedRegistrySessions(home, { cwd, env })`; `None` when Node must run the stage.
+/// `promoteUnclaimedRegistrySessions(home, { cwd, env })`: always answered (`Some`); a row that errors is counted and logged, the others go on.
 pub(crate) fn promote_unclaimed(ctx: &Ctx) -> Option<Tally> {
     let home = Path::new(&ctx.home);
     let inv = Inv {
@@ -159,6 +160,7 @@ pub(crate) fn promote_unclaimed(ctx: &Ctx) -> Option<Tally> {
         store_override: None,
     };
     let mut t = Tally::default();
+    t.ok = Some(true);
     for d in read_descriptors(home) {
         let sid = d.raw.get("sessionId").map(js_str).unwrap_or_default();
         if sid != marker_of(&d.id) {
@@ -171,9 +173,45 @@ pub(crate) fn promote_unclaimed(ctx: &Ctx) -> Option<Tally> {
         match promote_session(&inv, &d.id, &real) {
             Ok(true) => *t.n.entry("promoted").or_insert(0.0) += 1.0,
             Ok(false) => *t.n.entry("left").or_insert(0.0) += 1.0,
-            Err(_) => return None,
+            Err(why) => {
+                crate::discard::note("promote_unclaimed.row", &format!("{}: {why}", d.id));
+                *t.n.entry("errors").or_insert(0.0) += 1.0;
+                t.ok = Some(false);
+            }
         }
     }
-    t.ok = Some(true);
     Some(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row whose store cannot be used is an error of that row, counted, with the stage still answering (it used to hand the whole
+    /// stage to Node); the other rows go on.
+    #[test]
+    fn a_row_whose_store_cannot_be_opened_is_an_error_of_the_row_not_a_handoff() {
+        let home = std::env::temp_dir().join(format!("ah-promote-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let root = devswarm_root(&home);
+        let id = "w-one";
+        std::fs::create_dir_all(root.join("workspaces")).unwrap();
+        std::fs::create_dir_all(root.join("heartbeats")).unwrap();
+        std::fs::write(root.join("workspaces").join(format!("{id}.json")), format!(r#"{{"id":"{id}","worktreePath":"/w/x","sessionId":"unclaimed:{id}","ownerKey":"proj-bbbbbbbb"}}"#)).unwrap();
+        std::fs::write(root.join("heartbeats").join(format!("{id}.json")), r#"{"sessionId":"real-session"}"#).unwrap();
+        let store = crate::meshw::union::store_dir(&home, "proj-bbbbbbbb");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join(defaults::text("mesh.backend_marker")), defaults::text("mesh_write.backend_journal")).unwrap();
+        let ctx = Ctx::new(home.to_string_lossy().into_owned(), home.to_string_lossy().into_owned(), Default::default(), false, None, None);
+        let t = promote_unclaimed(&ctx).expect("the stage answers");
+        assert_eq!((t.get("errors"), t.ok), (1.0, Some(false)));
+        assert_eq!(t.get("promoted"), 0.0);
+    }
+
+    #[test]
+    fn the_owner_key_of_an_empty_directory_is_the_ids_own() {
+        let inv = Inv { home: "/h".into(), write_home: "/h".into(), env: Default::default(), cwd: String::new(), now: 1, stdin: None, store_override: None };
+        let key = store_owner_key(&inv, "w-one");
+        assert!(!key.is_empty());
+    }
 }

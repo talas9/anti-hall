@@ -355,6 +355,10 @@ value = 25
 doc = "The pattern that finds the working directory a session transcript records (capture 1: the JSON string body)."
 value = '"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"'
 
+[devswarm_parent.js_object_text]
+doc = "What JavaScript's String() makes of an object (a session id field that holds one reads as this text)."
+value = "[object Object]"
+
 [devswarm_parent.drift_sid_re]
 doc = "The shape of a session id the drift check accepts (SID_RE)."
 value = "^[A-Za-z0-9._-]+$"
