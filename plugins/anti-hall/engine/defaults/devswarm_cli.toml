@@ -59,10 +59,6 @@ value = "short"
 doc = "The word that makes a help request print the result object instead of the usage text (matched against the words of the command line)."
 value = "--json"
 
-[devswarm_cli.help_own_renderer_verbs]
-doc = "Verbs whose own one-line renderer main() applies to ANY result when no --json is given, a help result included; the engine does not reproduce those renderers, so `<verb> --help` for them is Node's."
-value = ["healthcheck", "diagnose", "supervision-report"]
-
 [devswarm_cli.help_json_verbs]
 doc = "Verbs whose human rendering prints the result object when it carries no `text` (a help result carries none): `<verb> --help` prints the JSON."
 value = ["app-state"]

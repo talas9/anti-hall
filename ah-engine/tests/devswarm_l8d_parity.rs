@@ -505,10 +505,10 @@ fn done_refusals_match_node() {
         d("done-outside-a-project", &["done"], "nongit", true),
         d("done-in-another-repository", &["done"], "other", true),
         d("done-refused-in-a-log-dir-of-its-own", &["done", "nope"], "child", true).env("ANTI_HALL_LOG_DIR", "{HOME}/elsewhere"),
-        d("done-refused-under-a-test-context-is-node", &["done", "nope"], "child", false).env("NODE_TEST_CONTEXT", "child-v8"),
+        d("done-refused-under-a-test-context", &["done", "nope"], "child", true).env("NODE_TEST_CONTEXT", "child-v8"),
         d("done-still-reports", &["done", "--summary", "merged"], "child", true),
     ];
-    check(&fx, &cases, &[], 9, 1);
+    check(&fx, &cases, &[], 10, 0);
 }
 
 // ---- read-primary --ack-after-print ----------------------------------------------------------------------------------------
