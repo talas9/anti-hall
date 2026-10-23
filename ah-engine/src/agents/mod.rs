@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub use status::run_cmd;
+pub(crate) use status::document as status_document;
 
 pub(crate) fn lim(k: &str) -> u64 {
     defaults::raw("agent_tracker.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64

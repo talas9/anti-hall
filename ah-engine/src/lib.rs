@@ -88,6 +88,7 @@ pub mod threads;
 pub mod tier;
 pub mod transcript;
 pub mod wakew;
+pub mod webapi;
 pub mod watch;
 pub mod wire;
 

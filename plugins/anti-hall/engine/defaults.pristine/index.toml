@@ -57,6 +57,7 @@ files = [
     "host_proc.toml",
     "task_tracker.toml",
     "settings_cli.toml",
+    "webapi.toml",
     "operator.toml",
     "slcfg.toml",
     "update_cli.toml",

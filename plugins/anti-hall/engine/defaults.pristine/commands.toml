@@ -208,3 +208,15 @@ value = { args = "<index|check|search> [query] [--project <dir>] [--registered] 
 [cmd.diag]
 doc = "Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring. Needs no feature flag and changes nothing."
 value = { args = "<cpu|mem|threads|hooks|mesh|jev|fs|locks|trace>", read_only = true, status = "implemented" }
+
+[cmd.describe]
+doc = "The engine's generated self-description for the dashboard and agents: `describe [--part verbs,settings,config,checks,hooks,scripts,jev,switches,topics,coverage]` returns every verb, setting (type, default, current value, category), config file and key, check, hook binding (Claude and Codex), script, Jev integration, feature switch, query topic and a coverage list; nothing in it is hand-kept."
+value = { args = "[--part <a,b,...>]", read_only = true, status = "implemented" }
+
+[cmd.query]
+doc = "Read-only, paginated query over the existing stores: `query <topic> [--limit N] [--offset N] [--window 7d] [--kind k] [--check c] [--state s]`; `query topics` lists the topics (per-check stats, outcomes, events, counters, agents, health, audit)."
+value = { args = "<topic> [--limit <n>] [--offset <n>] [--window <7d>] [--kind <k>] [--check <c>] [--state <s>] [--agent <id>] [--project <p>] [--name <n>] [--key <k>] [--op <o>]", read_only = true, status = "implemented" }
+
+[cmd.manage]
+doc = "Audited setting writes for the dashboard: `set <section.key> <value>` and `reset <section.key>` validate against the settings schema (registry settings) or the shipped defaults (engine settings, written to the settings.json layer, never to the pristine copy), keep the previous value and append an audit row; `undo <audit-id>` restores it; `audit` lists the log."
+value = { args = "<set|reset|undo|audit> [args] [--limit <n>] [--confirmed]", read_only = false, read_only_args = ["audit"], status = "implemented" }

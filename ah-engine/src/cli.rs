@@ -101,6 +101,9 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("refresh", crate::refresh::run_cmd),
         ("units", crate::setup::units::cmd_units),
         ("mcp-reaper", crate::checks::mcp_reaper::run_cmd),
+        ("describe", crate::webapi::cmd_describe),
+        ("query", crate::webapi::cmd_query),
+        ("manage", crate::webapi::cmd_manage),
     ]
 }
 
