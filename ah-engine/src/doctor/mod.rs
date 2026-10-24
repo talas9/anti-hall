@@ -405,9 +405,12 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
             Err(e) => doc.bad(defaults::render("doctor_msg.repair_failed", &[("id", &id), ("msg", &e)])),
         }
     }
+    // the legacy sweep (old install files and artefacts moved aside, state migrations): fail-open, idempotent, never deletes
+    let swept = crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l));
+    done += (swept.files + swept.legacy + swept.migrated) as u64;
     crate::telemetry::emit::add_items(done);
     let units = crate::setup::units::heal_changes(f.dry_run);
-    if rows.is_empty() && fixes.is_empty() && units.is_none() && doc.fail == 0 {
+    if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {

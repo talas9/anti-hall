@@ -27,12 +27,21 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 ```
 
 0. Install the thin client and the engine if `~/.anti-hall/ah-engine/bin/ah-hook` is missing (nothing is downloaded on its own:
-   `engine.bootstrap` defaults to false; ask the user first). The plugin's one shell file does it, checked against the sha256
-   pinned in `ah-engine.lock`:
+   `engine.bootstrap` defaults to false; ask the user first). The plugin ships no installer script; do these steps with standard
+   tools, pinned to the sha256 in `ah-engine.lock`:
 
-```bash
-test -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" || sh "$ANTI_HALL_ROOT/hooks/install.sh" --download -v
-```
+   a. Read `$ANTI_HALL_ROOT/ah-engine.lock` (JSON): `version`, and `assets["ah-engine-v<version>-<triple>.tar.gz"]` = the pinned sha256.
+   b. Pick `<triple>` for this machine: macOS `aarch64-apple-darwin` (Apple silicon, also an Intel shell under Rosetta: check
+      `sysctl -n sysctl.proc_translated` = 1) or `x86_64-apple-darwin`; Linux `<aarch64|x86_64>-unknown-linux-<gnu|musl>` (musl
+      when `/lib/ld-musl-*` exists or `ldd --version` names musl, else gnu). Any other platform: stop and tell the user.
+   c. Download `https://github.com/talas9/anti-hall/releases/download/ah-engine-v<version>/ah-engine-v<version>-<triple>.tar.gz`
+      into a fresh temp directory (`curl -fsSL --proto '=https' --tlsv1.2 -o <tmp>/asset.tar.gz <url>`).
+   d. Verify its sha256 (`shasum -a 256` or `sha256sum`) equals the pinned value. On a mismatch delete the temp directory, report
+      it and STOP: never install an unverified archive.
+   e. Extract only the two members `ah-engine-v<version>-<triple>/ah-engine` and `.../ah-hook` (`tar -xzOf <archive> <member>
+      > <tmp>/<name>`, never the archive's own paths) into `~/.anti-hall/ah-engine/bin/`, `chmod 755` both.
+   f. Run `~/.anti-hall/ah-engine/bin/ah-hook --plugin-root "$ANTI_HALL_ROOT" install --lock "$ANTI_HALL_ROOT/ah-engine.lock" -v`: the one
+      implementation of install and update (it records the integrity of the installed engine and wires the rest).
 
 1. Install project-local Codex hooks:
 

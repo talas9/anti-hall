@@ -559,3 +559,89 @@ value = "update: refused: the binaries of this set report different versions:\n{
 [routine.line_mismatch_forced]
 doc = "A set of different versions is installed because the force flag was given."
 value = "update: installing binaries of different versions (forced)"
+
+# ---- the legacy sweep (operator/sweep.rs): runs in every install routine run and in `doctor --repair`; moves, never deletes ----
+
+[routine.retired_dir]
+doc = "Directory in the state directory that receives everything the legacy sweep moves aside (one sub-directory per run and root)."
+value = "retired"
+
+[routine.retired_name]
+doc = "Name of one run's sub-directory of routine.retired_dir. {ts} is the epoch seconds of the run, {label} the root (or the word routine.sweep_legacy_label)."
+value = "{ts}-{label}"
+
+[routine.sweep_legacy_label]
+doc = "The {label} of the sub-directory that holds the artefacts found outside the plugin roots."
+value = "legacy"
+
+[routine.sweep_keep]
+doc = "Paths (relative to a plugin root; a directory name keeps everything below it) the sweep never moves although the new plugin tree does not hold them: files the host or the user keep inside a plugin root."
+value = [".orphaned_at", ".git", "node_modules"]
+
+[routine.sweep_legacy_shims]
+doc = "Launcher shims an older anti-hall wrote into the base directory (relative to it, see paths.base_dir). Each one that exists is moved aside; nothing else in that directory is touched."
+value = ["bin/devswarm.js", "bin/wake-watch.js", "bin/wake-watch"]
+
+[routine.sweep_cron_markers]
+doc = "Comment lines an older anti-hall's installers put above their crontab line (a managed block is the marker line and the line after it). A marker also matches `<marker>-<suffix>` (one block per project or worktree). Launchd and systemd units of the same installers are handled by `units heal` (units.node_units)."
+value = ["# anti-hall-devswarm-ingest", "# anti-hall-devswarm-supervisor", "# anti-hall-mcp-reaper"]
+
+[routine.sweep_cron_sep]
+doc = "Between a cron marker and its per-project suffix."
+value = "-"
+
+[routine.sweep_cron_list]
+doc = "The command (program, then arguments) that prints the user's crontab."
+value = ["crontab", "-l"]
+
+[routine.sweep_cron_write]
+doc = "The command that replaces the user's crontab with what it reads on standard input."
+value = ["crontab", "-"]
+
+[routine.sweep_cron_backup]
+doc = "File name, inside the legacy sub-directory of routine.retired_dir, of the crontab as it was before the sweep rewrote it."
+value = "crontab.before"
+
+[routine.line_retired]
+doc = "One root had files that the new plugin tree does not hold; they were moved. {n}, {dir}."
+value = "RETIRED {n} files -> {dir}"
+
+[routine.line_retired_would]
+doc = "Dry run: what the sweep would move out of one root. {n}, {dir}."
+value = "WOULD RETIRE {n} files -> {dir}"
+
+[routine.line_retired_legacy]
+doc = "Artefacts of an older install outside the plugin roots were moved or rewritten. {n}, {dir}."
+value = "RETIRED {n} legacy items -> {dir}"
+
+[routine.line_retired_legacy_would]
+doc = "Dry run: legacy artefacts the sweep would move or rewrite. {n}, {dir}."
+value = "WOULD RETIRE {n} legacy items -> {dir}"
+
+[routine.line_units]
+doc = "The service units of an older install were retired by `units heal`. {text}."
+value = "units: {text}"
+
+[routine.line_migrated]
+doc = "State migrations changed something. {n}."
+value = "migrated: {n} state item(s) repaired"
+
+[routine.line_sweep_failed]
+doc = "A sweep step failed; the install goes on. {step}, {why}."
+value = "sweep {step} failed (the install goes on): {why}"
+
+[routine.sweep_step_files]
+doc = "Name of the stale-file step in a failure line."
+value = "plugin files"
+
+[routine.sweep_step_legacy]
+doc = "Name of the legacy-artefact step in a failure line."
+value = "legacy artefacts"
+
+[routine.sweep_step_units]
+doc = "Name of the service-unit step in a failure line."
+value = "service units"
+
+[routine.sweep_step_migrate]
+doc = "Name of the state-migration step in a failure line."
+value = "state migrations"

@@ -11,7 +11,7 @@ The exact list of commands, settings, metrics and error codes is generated from 
 per event: `hooks.json` runs the Rust thin client `~/.anti-hall/ah-engine/bin/ah-hook <Event>`, which asks the engine. The
 thin client is the only entry point, for hooks of both hosts and for every command (`ah-hook <verb>` runs `ah-engine <verb>`).
 No Node and no shell script runs on an entry path; when the engine is absent or cannot answer, the call passes through with one
-notice per session. The binaries are installed by the plugin's one shell file, `hooks/install.sh`, and checked against a sha256
+notice per session. The binaries are installed by the setup skill (standard tools; the plugin ships no shell file) and checked against a sha256
 pinned in the plugin ([Install, go-live and rollback](#install-go-live-and-rollback)).
 Supported platforms: macOS and Linux (including WSL, which runs the Linux build). Windows is not supported yet.
 
@@ -289,11 +289,9 @@ labelled with how it was measured in the README of `ah-engine/`.
 
 ## Install, go-live and rollback
 
-**Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset) and one shell
-file, `hooks/install.sh`. While `~/.anti-hall/ah-engine/bin/ah-hook` is missing, `hooks.json` runs `install.sh` for each hook
-event: it prints nothing on stdout, exits 0 and gives one notice line per session on stderr. It downloads nothing by itself unless
+**Install.** The plugin ships `ah-engine.lock` (schema, engine version, tag and the sha256 of every release asset) and the setup skill installs the engine (the plugin ships no shell file). While `~/.anti-hall/ah-engine/bin/ah-hook` is missing, each hook command prints nothing on stdout, exits 0 and gives one notice line on stderr. Nothing is downloaded by itself unless
 you opted in (the setting `engine.bootstrap` = true, or `AH_ENGINE_BOOTSTRAP=1`; off by default). The install is a deliberate
-step: the setup skill (`/anti-hall:activate`) runs `sh hooks/install.sh --download`. From then on the thin client does the same job
+step: the setup skill (`/anti-hall:activate`) runs the download, sha256 check and `ah-hook install` with standard tools. From then on the thin client does the same job
 as `ah-hook install [--lock FILE] [--print-target] [--auto] [-v]` (`--auto` is the session-start form that honours the opt-in).
 Both (never fail a session):
 

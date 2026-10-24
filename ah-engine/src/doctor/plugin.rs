@@ -146,10 +146,6 @@ pub fn thin_diff(actual: &Value, host: &str) -> (usize, String) {
 /// HK-01..03: the wrapper is there and each host's hooks file is the thin form.
 pub fn thin_section(doc: &mut Doc, root: &Path) {
     doc.head(defaults::text("doctor_msg.head_thin"));
-    let wrapper = root.join(defaults::text("doctor.wrapper_file"));
-    if !wrapper.is_file() {
-        doc.bad(defaults::render("doctor_msg.wrapper_missing", &[("file", &wrapper.display())]));
-    }
     for entry in defaults::raw("doctor.hooks_files").as_array().unwrap_or_default() {
         let (host, rel) = (entry.str_field("host"), entry.str_field("file"));
         let file = root.join(rel);

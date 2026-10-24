@@ -21,7 +21,7 @@ unit = "ms"
 
 [engine_update.msg_no_client]
 doc = "Printed when the thin client (the updater) is not installed. Placeholders: {path}."
-value = "engine-update: the thin client is not installed: {path}\n  state: nothing changed - the installed engine is still active\n  next: install it with the setup skill (/anti-hall:activate), or run: sh <plugin>/hooks/install.sh --download"
+value = "engine-update: the thin client is not installed: {path}\n  state: nothing changed - the installed engine is still active\n  next: install it with the setup skill (/anti-hall:activate)"
 
 [engine_update.msg_spawn_failed]
 doc = "Printed when the thin client cannot be started. Placeholders: {path}, {why}."

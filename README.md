@@ -58,7 +58,7 @@ Add `.anti-hall/` to your project's `.gitignore`: anti-hall keeps per-project se
 
 ## Network and data
 
-No analytics and nothing is reported to anyone. One request is on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`). Downloading the `ah-engine` binary from the GitHub Release (sha256-pinned) is opt-in: the setup skill or `sh hooks/install.sh --download` does it on request, and the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`) makes it automatic. The engine keeps local-only usage counters (hook name, outcome, latency, never content; `telemetry.enabled`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
+No analytics and nothing is reported to anyone. One request is on by default: an update check to GitHub (a tag-list request, no project data; turn it off with `versionAlerts.antiHall`). Downloading the `ah-engine` binary from the GitHub Release (sha256-pinned) is opt-in: the setup skill or the setup skill (`/anti-hall:activate`) does it on request, and the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`) makes it automatic. The engine keeps local-only usage counters (hook name, outcome, latency, never content; `telemetry.enabled`). The optional classifier features (Jev, semantic judge, mesh triage) are off by default and send the text they judge only to the provider you configure. Everything else stays in `~/.anti-hall/` and `<repo>/.anti-hall/`. Full table: [PRIVACY.md](PRIVACY.md).
 
 ### What it runs and writes
 

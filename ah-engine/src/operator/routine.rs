@@ -13,7 +13,7 @@
 //! -> record what was installed (`routine.state_file`) -> one summary. Nothing is hardcoded here: every name, limit and text is in
 //! `engine/defaults/routine.toml`.
 use crate::cli::Parsed;
-use crate::operator::post_update;
+use crate::operator::{post_update, sweep};
 use crate::{client, defaults, health, paths};
 use serde_json::{Value, json};
 use std::io::Write;
@@ -207,6 +207,11 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
     let Some(v) = std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return Vec::new() };
     let reg = v.get("plugins").unwrap_or(&v);
     reg.get(t("routine.plugin_key")).and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("installPath").and_then(Value::as_str)).map(PathBuf::from).collect()
+}
+
+/// The plugin roots the install routine keeps in step (the engine's own, the registered installs, `routine.default_roots`).
+pub fn plugin_roots() -> Vec<PathBuf> {
+    resolve_target().roots
 }
 
 fn resolve_target() -> Target {
@@ -855,6 +860,7 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
     let same = cur.sha.as_deref() == Some(pre.sha.as_str());
     if o.check || !o.yes {
         log.say(defaults::render(if o.check { "routine.line_check_ok" } else { "routine.line_dry_plan" }, &[("roots", &tg.roots.len()), ("same", &if same { t("routine.word_same") } else { "" })]));
+        sweep::run(src.tree.as_deref(), &tg.roots, true, true, &mut |l| log.say(l));
         return (Done::Ok, json!({"action": "install", "dry_run": true, "plan": {"roots": tg.roots.len(), "same_binary": same}, "from": head["from"], "to": head["to"]}));
     }
     do_install(o, &src, &tg, &pre, &cur, same, new_built, scratch, log, head)
@@ -956,6 +962,12 @@ fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, sam
         return fail_and_restore(&jdir, tg, pre, cur, scratch, log, head, problems);
     }
     log.say(defaults::render("routine.line_validated", &[("pid", &daemon_pid().unwrap_or(0))]));
+    // the legacy sweep: files of the old install the new tree does not hold, artefacts of the old installers, state migrations
+    let swept = sweep::run(src.tree.as_deref(), &tg.roots, false, true, &mut |l| log.say(l));
+    manifest["retired"] = swept.to_json();
+    if let Err(e) = j.write(&manifest) {
+        log.say(defaults::render("routine.msg_record_failed", &[("why", &e)]));
+    }
     // cleanup, record, summary
     let clean = post_update::evaluate(false, Some(pre.sha.clone()));
     if !clean.human.is_empty() {
@@ -971,7 +983,7 @@ fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, sam
         log.say(defaults::render("routine.msg_record_failed", &[("why", &e)]));
     }
     log.say(defaults::render("routine.line_summary", &[("version", &pre.version), ("sha", &short(&pre.sha)), ("source", &o.source), ("files", &changed), ("kept", &kept), ("deploy", &jdir.display())]));
-    (Done::Ok, json!({"action": "install", "installed": record, "cleanup": clean.value, "files": changed}))
+    (Done::Ok, json!({"action": "install", "installed": record, "cleanup": clean.value, "files": changed, "retired": swept.to_json()}))
 }
 
 /// Install failed validation (or its commit): put the saved copies back, start the old binary, validate it, say so. Never a downgrade check.

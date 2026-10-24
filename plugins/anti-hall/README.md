@@ -43,8 +43,8 @@ is missing or cannot answer, hooks let the call through and print one notice per
 
 `hooks/hooks.json` holds one thin trigger per event: it runs the installed thin client `~/.anti-hall/ah-engine/bin/ah-hook <Event>`,
 a small Rust binary that hands the event to the `ah-engine` binary. Both are downloaded from the GitHub Release and installed
-only if their sha256 equals the one pinned in `ah-engine.lock`; the plugin's one shell file, `hooks/install.sh`, does that on first
-install. No Node and no other script runs on a hook path. If the engine is missing, broken or unreachable, hooks let the call
+only if their sha256 equals the one pinned in `ah-engine.lock`; the setup skill (`/anti-hall:activate`) does that on first
+install, using standard tools; the plugin ships no shell file. No Node and no other script runs on a hook path. If the engine is missing, broken or unreachable, hooks let the call
 through and print one notice per session. Commands call the engine directly: `ah-engine <verb>`. Its rules,
 settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS and
 Linux; Windows is not supported yet. Details:
@@ -61,7 +61,7 @@ No analytics and nothing is reported to anyone; the `ah-engine` keeps local-only
 | Feature | Default | Sends to | What |
 |---|---|---|---|
 | Update check | On | github.com/talas9/anti-hall (`git ls-remote --tags`) | A tag-list request, no project data. Off: `versionAlerts.antiHall` or `ANTIHALL_VERSION_ALERT=off` |
-| Engine binary download | Off until you install or opt in; then once per pinned release (needs a release that pins `ah-engine.lock`) | github.com/talas9/anti-hall Releases (HTTPS) | The release archive for your platform; no data about you or your project is sent. Installed only if its sha256 equals the one pinned in the plugin; a mismatch installs nothing. Opt in: `/anti-hall:setup` or `sh hooks/install.sh --download` (explicit), or the setting `engine.bootstrap` = true / `AH_ENGINE_BOOTSTRAP=1` (automatic, on SessionStart). Without the binary the hooks pass through with one notice per session |
+| Engine binary download | Off until you install or opt in; then once per pinned release (needs a release that pins `ah-engine.lock`) | github.com/talas9/anti-hall Releases (HTTPS) | The release archive for your platform; no data about you or your project is sent. Installed only if its sha256 equals the one pinned in the plugin; a mismatch installs nothing. Opt in: `/anti-hall:activate` (explicit), or the setting `engine.bootstrap` = true / `AH_ENGINE_BOOTSTRAP=1` (automatic, on SessionStart). Without the binary the hooks pass through with one notice per session |
 | Jev classifier | Off | ai-gateway.vercel.sh or api.typesafe.ai | May include prompts, assistant text, test output, commit text, file paths (4000-8000 chars per call); secrets matching known token shapes are redacted before sending (best-effort). Off: `jev.enabled` or `ANTIHALL_JEV=0` |
 | Semantic judge | Off | api.anthropic.com (key, or your `claude` CLI login with `jev.judgeBackend` cli) | Last assistant message (up to 8000 chars), latest prompt (up to 2000) and newest tool output (about 6000); known secret shapes redacted (best-effort). Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1` |
 | Mesh message triage | Off (needs Jev) | Jev, then api.anthropic.com if an Anthropic key is available | DevSwarm message text |

@@ -583,13 +583,9 @@ value = "bootstrap.installed"
 doc = "The plugin's pin of the engine release, relative to the plugin root."
 value = "ah-engine.lock"
 
-[doctor.bootstrap_script]
-doc = "The engine installer (the plugin's one shell file), relative to the plugin root (shown in fixes)."
-value = "hooks/install.sh"
-
-[doctor.wrapper_file]
-doc = "The installer every hook command falls back to while the thin client is not installed (the plugin's one shell file), relative to the plugin root."
-value = "hooks/install.sh"
+[doctor.setup_command]
+doc = "How the engine is (re)installed, shown in fixes: the setup skill, which downloads the sha256-pinned release and installs it."
+value = "run the setup skill (/anti-hall:activate)"
 
 [doctor.claude_hooks_file]
 doc = "The Claude hooks file, relative to a plugin's root."
@@ -767,15 +763,15 @@ value = "Node witness"
 
 [doctor_msg.bin_missing]
 doc = "BIN-01. Placeholders: {path}, {bootstrap}."
-value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: sh {bootstrap} --download -v"
+value = "engine binary not installed at {path} (hooks use ah-engine on PATH, else the Node hooks) - Fix: {bootstrap}"
 
 [doctor_msg.bin_not_file]
 doc = "BIN-02. Placeholders: {path}, {kind}, {bootstrap}."
-value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {bootstrap} --download -v"
+value = "{path} is not a regular file ({kind}) - Fix: move it aside, then run: {bootstrap}"
 
 [doctor_msg.bin_unreadable]
 doc = "The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}."
-value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh {bootstrap} --download -v"
+value = "{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: {bootstrap}"
 
 [doctor_msg.bin_not_exec]
 doc = "BIN-03. Placeholders: {path}, {mode}."
@@ -783,7 +779,7 @@ value = "{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engi
 
 [doctor_msg.bin_corrupt]
 doc = "BIN-04. Placeholders: {path}, {why}, {bootstrap}."
-value = "{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} --download -v"
+value = "{path} is not a runnable program ({why}) - Fix: reinstall: {bootstrap}"
 
 [doctor_msg.why_empty]
 doc = "BIN-04 reason."
@@ -799,19 +795,19 @@ value = "unrecognised header"
 
 [doctor_msg.bin_wrong_os]
 doc = "BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}."
-value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: sh {bootstrap} --download -v"
+value = "{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstall: {bootstrap}"
 
 [doctor_msg.bin_wrong_arch]
 doc = "BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}."
-value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: sh {bootstrap} --download -v"
+value = "{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it cannot run - Fix: reinstall: {bootstrap}"
 
 [doctor_msg.bin_rosetta]
 doc = "BIN-06b. Same placeholders."
-value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: sh {bootstrap} --download -v installs the native build"
+value = "{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (slower) - Fix: {bootstrap} installs the native build"
 
 [doctor_msg.bin_no_rosetta]
 doc = "BIN-06c. Same placeholders."
-value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or sh {bootstrap} --download -v for the native build"
+value = "{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch} Mac; it will not start - Fix: softwareupdate --install-rosetta --agree-to-license, or {bootstrap} for the native build"
 
 [doctor_msg.bin_quarantined]
 doc = "BIN-11. Placeholder: {path}."
@@ -823,15 +819,15 @@ value = "{path} was not installed by the bootstrap (a local build); the bootstra
 
 [doctor_msg.bin_hash_differs]
 doc = "BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}."
-value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && sh {bootstrap} --download -v"
+value = "{path} differs from the build the bootstrap installed (sha256 {have}... vs {want}...): a local build, or damaged - Fix: to restore the pinned build: mv {path} {path}.local && {bootstrap}"
 
 [doctor_msg.bin_version_differs]
 doc = "BIN-09. Placeholders: {have}, {want}, {bootstrap}."
-value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: sh {bootstrap} --download -v"
+value = "engine {have} is installed but the plugin pins {want} - Fix: it updates at the next session start, or run: {bootstrap}"
 
 [doctor_msg.bin_no_run]
 doc = "BIN-12. Placeholders: {path}, {why}, {bootstrap}."
-value = "{path} does not run: {why} - Fix: reinstall: sh {bootstrap} --download -v"
+value = "{path} does not run: {why} - Fix: reinstall: {bootstrap}"
 
 [doctor_msg.bin_ok]
 doc = "BIN-14. Placeholders: {path}, {triple}, {ver}."
@@ -1054,10 +1050,6 @@ value = "the plugin registry still says {registered} but {running} is running - 
 doc = "PL-08. Placeholders: {key}, {version}."
 value = "plugin {key} v{version} is registered and enabled"
 
-[doctor_msg.wrapper_missing]
-doc = "HK-03. Placeholder: {file}."
-value = "{file} is missing; the hook commands cannot install the thin client - Fix: reinstall the plugin"
-
 [doctor_msg.thin_missing]
 doc = "HK-01. Placeholder: {file}."
 value = "{file} is missing - Fix: reinstall the plugin"
@@ -1144,7 +1136,7 @@ value = "the hooks run ah-engine from PATH ({path}) because the home install is 
 
 [doctor_msg.no_engine]
 doc = "ND-04: no working engine. The thin client's built-in doctor prints the same text."
-value = "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine (sh hooks/install.sh --download -v)"
+value = "no working engine: the anti-hall hooks do not run - Fix: reinstall the engine with the setup skill (/anti-hall:activate)"
 
 [doctor_msg.log_huge]
 doc = "LG-01. Placeholders: {file}, {mb}, {cap_mb}."
@@ -2360,10 +2352,6 @@ value = "bin"
 doc = "The first line of an sh shim."
 value = "#!/bin/sh"
 
-[doctor_l.wrapper_name]
-doc = "File name of the retired shell wrapper."
-value = "ah-hook.sh"
-
 [doctor_l.wsl_word_upper]
 doc = "The other spelling of the WSL marker in the kernel release."
 value = "WSL"
@@ -2434,11 +2422,11 @@ value = "{file}: every hook command is the direct form"
 
 [doctor_l.msg_health_shipped_sh]
 doc = "Placeholders: {n}, {first}."
-value = "the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) - Fix: update or reinstall the plugin"
+value = "the plugin ships {n} shell file(s) (first: {first}) - Fix: update or reinstall the plugin"
 
 [doctor_l.msg_health_shipped_sh_ok]
-doc = "Said when the plugin ships only hooks/install.sh."
-value = "the plugin ships no shell file besides hooks/install.sh"
+doc = "Said when the plugin ships no shell file."
+value = "the plugin ships no shell file"
 
 [doctor_l.msg_health_shim_bad]
 doc = "Placeholders: {path}, {first}."

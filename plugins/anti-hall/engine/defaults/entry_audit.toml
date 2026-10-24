@@ -1,5 +1,5 @@
 # ah-engine shipped defaults for `ah-engine audit entry-paths`: the mechanical inspection that no js/sh/wrong-entry leftover ships.
-# Owner design rule: no js and no sh in the plugin except the installer hooks/install.sh; `ah-hook` is only the hook trigger (hooks.json
+# Owner design rule: no js and no sh in the plugin; `ah-hook` is only the hook trigger (hooks.json
 # runs `ah-hook <Event>`); every agent-facing command calls the engine directly (`ah-engine <verb>`); the QuickJS logic files under
 # engine/logic run in-process and are not entry points; the retired Node backup tree is out of scope and nothing in scope may point
 # into it. Everything the audit looks for, allows and prints is here (D88): editing this file changes the audit, never a rebuild.
@@ -67,7 +67,7 @@ value = 90
 doc = "The command-string rules. Allowed forms: `ah-hook <Event>` in hooks.json; `ah-engine <verb>` everywhere else."
 value = [
   { id = "node-invocation", re = '(?:^|[\s\x22\x27`(;&|=])node\s+(?:(?:-[\w-]+\s+)*[\x22\x27]?(?:[~$/]|\.{1,2}/|[\w.-]*/|[\w.-]*\.(?:c|m)?js\b)|-[ep]\s)', reason = "runs a Node script; agent-facing commands call the engine directly" },
-  { id = "shell-invocation", re = '(?:^|[\s\x22\x27`(;&|=])(?:sh|bash|zsh)\s+(?:-\w+\s+)*[\x22\x27]?(?:[~$/]|\.{1,2}/|[\w.-]*/|[\w.-]*\.sh\b)', reason = "runs a shell script; only the installer hooks/install.sh may be a shell file" },
+  { id = "shell-invocation", re = '(?:^|[\s\x22\x27`(;&|=])(?:sh|bash|zsh)\s+(?:-\w+\s+)*[\x22\x27]?(?:[~$/]|\.{1,2}/|[\w.-]*/|[\w.-]*\.sh\b)', reason = "runs a shell script; the plugin ships no shell file" },
   { id = "script-path", re = '(?:[\w.${}~@-]+/)+[\w.-]*\.(?:sh|js|mjs|cjs|py)\b', reason = "names a js/sh/py file; commands call the engine directly" },
   { id = "named-launcher", re = '\b(?:devswarm|wake-watch)\.js\b', reason = "names a retired Node launcher; use `ah-engine devswarm ...` / `ah-engine mesh ...`" },
   { id = "node-dir", re = 'anti-hall-node', reason = "points into the retired Node backup tree" },
@@ -84,11 +84,9 @@ value = [
 doc = "What the audit lets through, each with its reason."
 value = [
   { section = "files", path = '(^|/)engine/logic/.+\.js$', reason = "QuickJS logic files: the engine runs them in-process; they are not entry points (owner design rule)" },
-  { section = "files", path = '(^|/)hooks/install\.sh$', reason = "the one allowed shell file: the installer" },
   { section = "files", path = '(^|/)skills/[^/]+/references/[^/]+\.workflow\.js$', reason = "scripts for Claude Code's Workflow tool: the host runs them, they are not entry points" },
   { section = "files", path = '(^|/)web/static/', reason = "browser assets served by the dashboard (ah-web): they run in the browser and are never invoked as a command" },
   { section = "files", path = '(^|/)web/pkg/', reason = "the dashboard's compiled WASM bundle (web.pkg_dir in web.toml): browser assets served by ah-web, loaded by the page and never invoked as a command" },
-  { section = "commands", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file; hooks.json falls back to it while the thin client is missing" },
   { section = "commands", path = '(^|/)engine/defaults/entry_audit\.toml$', reason = "the audit's own rule file names the patterns it forbids" },
   { section = "commands", path = '^docs/(plans|archive|specs|superpowers)/', reason = "historical record" },
   { section = "commands", path = '^docs/(KB-[^/]+|CODEX-KB-MIGRATION-MAP|CONTEXT-PRESERVATION-KB|gsd-distilled|BENCHMARK-METHOD)\.md$', reason = "historical record (knowledge-base notes and research, written against the Node-era code)" },
@@ -98,6 +96,8 @@ value = [
   { section = "commands", path = '(^|/)engine/defaults/small_guards\.toml$', text = 'old `devswarm\.js` and `ah-hook mesh` names', reason = "guard recognition: the bookkeeping-call pattern still matches the retired launcher spellings so a call in either form is classified the same" },
   { section = "commands", path = '(^|/)engine/defaults/(engine|messages)\.toml$', rule = "hook-verb", text = 'ah-hook (update|install|integrity|doctor)', reason = "describes the thin client's own installer verbs (update, install, integrity, doctor): the session-start installer and the built-in doctor run them when the engine is not there to answer, so they cannot be `ah-engine` verbs; they are not agent-facing commands" },
   { section = "commands", path = '(^|/)skills/activate/SKILL\.md$', rule = "hook-verb", text = 'ah-hook install', reason = "describes the installer handing over to the thin client's `install` verb (the installer path, not an agent-facing command)" },
+  { section = "commands", path = '(^|/)engine/defaults/routine\.toml$', text = 'bin/(devswarm|wake-watch)', reason = "legacy recognition: the launcher shims an older install wrote, listed so the legacy sweep can move them aside; nothing runs them" },
+  { section = "commands", path = '(^|/)engine/defaults/engine\.toml$', text = 'hooks/install\.sh', reason = "legacy recognition: the retired installer fallback an older hooks.json held, matched so the doctor repair can rewrite it to the direct form; the file no longer ships" },
   { section = "commands", path = '(^|/)engine/defaults/(engine|slcfg)\.toml$', text = 'ah-run\.sh', reason = "legacy recognition: the launcher name an earlier installer wrote into a statusLine command, matched so the migration can rewrite it to the thin client's command" },
   { section = "commands", path = '(^|/)engine/defaults/(nodeback|setup|dispatch|operator|doctor)\.toml$', text = 'anti-hall-node', reason = "configuration of the Node fallback switch, kept until its deletion stage (owner rule: delete only on data and owner OK); the engine reads these paths only to find the fallback, no text advertises them" },
   { section = "commands", path = '(^|/)engine/defaults/doctor\.toml$', text = 'file_path\\":\\"src/x\.js', reason = "a synthetic hook payload for a doctor drill: a file name inside test JSON, not a command" },
@@ -106,7 +106,6 @@ value = [
   { section = "commands", path = '(^|/)engine/defaults/messages\.toml$', text = 'go-live\.sh', reason = "names the go-live script of the owner's deploy kit (written by scripts/engine-deploy.sh into the kit directory, never a plugin file): the recovery text for a failed live apply" },
   { section = "commands", path = '(^|/)skills/(deadly-loop|ship-it)/SKILL\.md$', text = 'references/[\w-]+\.workflow\.js|\.claude/workflows/ship-it\.js', reason = "scripts for Claude Code's Workflow tool: the host runs them, they are not entry points (see the matching files-section entry)" },
   { section = "commands", path = '(^|/)codex/skills/anti-hall-omx/SKILL\.md$', text = '\./cx\.sh resume', reason = "an example of the reader's own launcher wrapper (the skill shows how to write one); the file is the reader's, not shipped in the plugin" },
-  { section = "live", text = 'hooks/install\.sh', reason = "the installer hooks/install.sh is the one allowed shell file" },
   { section = "live", rule = "live-process", text = '/private/tmp/claude-\d+/', reason = "the tool shell of a Claude Code session: its scratch path names the project directory, it is not an anti-hall script" },
 ]
 

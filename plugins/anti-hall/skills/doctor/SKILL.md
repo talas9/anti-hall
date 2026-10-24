@@ -18,7 +18,7 @@ changes nothing.
 
 ## What it reports
 - **Environment:** platform, plugin version, the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook`) and engine. No Node is needed on a hook path.
-- **Hooks:** every command in `hooks.json` is the direct form (thin client first, `hooks/install.sh` as the fallback), the plugin ships no shell file besides `hooks/install.sh`, and a hook command or `statusLine` that still runs a retired `ah-hook.sh`/`ah-run.sh` wrapper fails the doctor (`ah-engine doctor --repair` rewrites it, keeping a backup).
+- **Hooks:** every command in `hooks.json` is the direct form (thin client first, else one stderr notice pointing at the setup skill), the plugin ships no shell file, and a hook command or `statusLine` that still runs a retired `ah-hook.sh`/`ah-run.sh` wrapper fails the doctor (`ah-engine doctor --repair` rewrites it, keeping a backup).
 - **Guard behavior (live self-tests):** spawns the real guards with crafted payloads and
   asserts exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
   command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent

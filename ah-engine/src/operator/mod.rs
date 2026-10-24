@@ -14,6 +14,7 @@ pub mod install_codex;
 pub mod post_update;
 pub mod postpull;
 pub mod routine;
+pub mod sweep;
 pub mod update;
 
 use crate::defaults;
