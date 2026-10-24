@@ -262,7 +262,7 @@ impl World {
         while t.elapsed() < ready {
             if sock.exists() && common::marker_pid(&self.state).is_some() {
                 saw_socket = true;
-                if self.daemon_dispatch_ready("claude", &mut last_probe) && self.daemon_dispatch_ready("codex", &mut last_probe) {
+                if self.daemon_dispatch_ready("claude", "PreToolUse", &mut last_probe) && self.daemon_dispatch_ready("codex", "PreToolUse", &mut last_probe) {
                     return;
                 }
             }
@@ -280,6 +280,22 @@ impl World {
         );
     }
 
+    /// Warm prompt-only checks immediately before the first measured prompt. PreToolUse readiness does not load them,
+    /// and the intervening events can evict cached checks. A separate session leaves the measured session's first prompt intact.
+    pub fn warm_prompt(&self, host: &str) {
+        let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
+        let t = Instant::now();
+        let mut probe = Outcome { code: None, stdout: String::new(), stderr: String::new(), timed_out: false, elapsed_ms: 0 };
+        while t.elapsed() < ready {
+            if self.daemon_dispatch_ready(host, "UserPromptSubmit", &mut probe) {
+                assert!(self.hits_of(&format!("daemon-ready-{host}")).is_empty(), "prompt readiness launched Node");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the harness daemon did not answer {host} prompt dispatch within {ready:?}: {probe:?}");
+    }
+
     fn out_file(&self, name: &str) -> fs::File {
         fs::File::create(self.dir.join("out").join(name)).unwrap()
     }
@@ -287,18 +303,19 @@ impl World {
     /// The socket and pid marker only prove the daemon process exists. The no-node hook tests require a healthy daemon
     /// that can answer guard dispatches inside the client deadline; otherwise the client correctly treats it as unavailable
     /// and the wrapper fails open before exercising the healthy-daemon contract.
-    fn daemon_dispatch_ready(&self, host: &str, last_probe: &mut Outcome) -> bool {
+    fn daemon_dispatch_ready(&self, host: &str, event: &str, last_probe: &mut Outcome) -> bool {
         let payload = serde_json::json!({
             "session_id": format!("no-node-ready-{host}"),
             "transcript_path": self.transcript.to_string_lossy(),
             "cwd": self.project.to_string_lossy(),
-            "hook_event_name": "PreToolUse",
+            "hook_event_name": event,
+            "prompt": "Please list the files in this repo.",
             "tool_name": "Bash",
             "tool_input": {"command": "git push --force origin main"},
         });
         let payload = self.subst(&payload.to_string());
         let mut cmd = self.command(&self.engine, &format!("daemon-ready-{host}"));
-        cmd.arg("hook").args(["--event", "PreToolUse", "--tool", "Bash", "--host", host, "--fallback-map"]).arg(match host {
+        cmd.arg("hook").args(["--event", event, "--tool", "Bash", "--host", host, "--fallback-map"]).arg(match host {
             "codex" => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.codex.map.json"),
             _ => plugin_src().join("../anti-hall-node/hooks").join("ah-fallback.map.json"),
         });
@@ -306,7 +323,14 @@ impl World {
             cmd.env("PLUGIN_ROOT", &self.plugin);
         }
         *last_probe = self.run(cmd, Some(&payload), Duration::from_secs(5));
-        last_probe.code == Some(2)
+        if event == "PreToolUse" {
+            last_probe.code == Some(2)
+        } else {
+            // Exit 0 alone also means fail-open: require the daemon's actual prompt answer.
+            last_probe.code == Some(0)
+                && serde_json::from_str::<serde_json::Value>(last_probe.stdout.trim())
+                    .is_ok_and(|v| v["hookSpecificOutput"]["hookEventName"] == event && v["hookSpecificOutput"]["additionalContext"].is_string())
+        }
     }
 
     /// Run `c` (built by `command`) with `stdin`, bounded by `timeout`; the process group is killed on a timeout.

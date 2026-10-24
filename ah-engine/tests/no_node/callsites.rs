@@ -1,7 +1,7 @@
 //! Every command line the skills (both ports) and agents tell an agent to run. A direct `node <script>` is a Node path as
-//! written (surface `doc`). A thin-client line (`"$HOME/.anti-hall/ah-engine/bin/ah-hook" --plugin-root "<root>" <verb> ...`) is run in the no-Node
-//! world when it is a
-//! concrete command (no placeholder), and the Node starts it makes are its Node paths (surface `run/<verb>`). Launcher lines
+//! written (surface `doc`). Direct engine and thin-client lines (`.../bin/ah-engine <verb> ...` or `.../bin/ah-hook
+//! --plugin-root "<root>" <verb> ...`) run in the no-Node world when concrete (no placeholder), and the Node starts they make
+//! are their Node paths (surface `run/<verb>`). Launcher lines
 //! with placeholders are inventoried in the report. Unit files the runs leave in HOME are checked too (surface `unit/<file>`).
 
 use crate::expected;
@@ -21,7 +21,7 @@ pub struct Site {
 pub enum Kind {
     /// `node <script>`: the plugin-relative script (as the text names it, root spelling removed)
     Node(String),
-    /// a thin-client line (`.../bin/ah-hook" --plugin-root "<root>" <verb> ...`): the arguments after the plugin root
+    /// A direct engine or thin-client line: the arguments after the optional plugin root.
     Launcher(String),
 }
 
@@ -55,7 +55,7 @@ fn resolve(plugin: &Path, script: &str) -> String {
 pub fn extract(plugin: &Path, cfg: &toml::Table) -> Vec<Site> {
     let spellings = cfg_list(cfg, "callsites", "root_spellings");
     let node_re = regex::Regex::new(r#"(?:^|[\s`(;&|])node\s+(?:--?[\w-]+\s+)*("?[^\s"`]+\.[mc]?js"?)"#).unwrap();
-    let run_re = regex::Regex::new(r#"(?:^|[\s`(;&|])"?[^\s"`]*/bin/ah-hook"?\s+--plugin-root\s+"[^"]*"\s+([a-z][^`\n]*)"#).unwrap();
+    let run_re = regex::Regex::new(r#"(?:^|[\s`(;&|])"?[^\s"`]*/bin/ah-(?:hook|engine)"?\s+(?:--plugin-root\s+"[^"]*"\s+)?([a-z][^`\n]*)"#).unwrap();
     let mut files = Vec::new();
     for r in cfg_list(cfg, "callsites", "roots") {
         harness::files_with_ext(&plugin.join(r), "md", &mut files);
@@ -91,12 +91,15 @@ fn runnable(args: &str, cfg: &toml::Table) -> bool {
 
 /// The extractor finds the call sites the harness exists for (a guard against a regex that silently matches nothing).
 #[test]
-fn the_extractor_finds_both_kinds_of_call_site() {
+fn the_extractor_finds_shipped_command_lines() {
     let cfg = harness::cfg();
     let sites = extract(&harness::plugin_src(), &cfg);
     let launchers = sites.iter().filter(|s| matches!(s.kind, Kind::Launcher(_))).count();
     let runnable_n = sites.iter().filter(|s| matches!(&s.kind, Kind::Launcher(a) if runnable(a, &cfg))).count();
-    assert!(launchers > 0 && runnable_n > 0, "no ah-hook command lines found ({launchers} launchers, {runnable_n} runnable)");
+    assert!(launchers > 0 && runnable_n > 0, "no engine command lines found ({launchers} launchers, {runnable_n} runnable)");
+    for port in ["skills/", "codex/skills/"] {
+        assert!(sites.iter().any(|s| s.at.starts_with(port) && matches!(&s.kind, Kind::Launcher(a) if runnable(a, &cfg))), "no runnable commands in {port}");
+    }
     for s in &sites {
         if let Kind::Node(script) = &s.kind {
             assert!(!script.contains('$'), "{}: the root spelling of `{script}` is not in harness.toml", s.at);

@@ -174,6 +174,7 @@ cargo bench --locked --bench parsers
 
 **Plugin.** There is no install step and no Node test suite. A plugin change (TOML defaults, skills, docs) is checked by loading it into the engine and reading the result:
 
+<!-- doc-check: skip (needs an installed engine) -->
 ```sh
 ~/.anti-hall/ah-engine/bin/ah-hook doctor --check
 ```

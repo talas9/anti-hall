@@ -136,7 +136,12 @@ fn drive(host: &str) {
     let mut checked = Vec::new();
     let mut rows = Vec::new();
     let mut fallback_cases: Vec<String> = Vec::new();
+    let mut prompt_warmed = false;
     for c in cases().into_iter().filter(|c| c.host == host) {
+        if c.event == "UserPromptSubmit" && !prompt_warmed {
+            w.warm_prompt(host);
+            prompt_warmed = true;
+        }
         let mut payload = serde_json::json!({
             "session_id": format!("no-node-{host}"),
             "transcript_path": w.transcript,

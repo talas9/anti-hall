@@ -61,6 +61,9 @@ jobs:
       run:
         working-directory: ah-engine
     env:
+      # The Rust hook and install contract tests need the thin client in this job's checkout (jobs do not share builds).
+      AH_HOOK_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_LAUNCHER_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
       # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
       AH_ENGINE_SCRIPT_TIME_MS: "2000"
       # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
@@ -78,6 +81,9 @@ jobs:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      - name: Build the thin client for hook and install tests
+        working-directory: ah-launcher
+        run: cargo build --release --locked
       # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
       # daemon-survivor check). Clippy runs only here, once.
       - name: test.sh (gate)
