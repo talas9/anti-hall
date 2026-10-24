@@ -41,11 +41,13 @@ pub fn event_timeout(host: &str, event: &str) -> u64 {
     table::entries(host, event).iter().map(|e| e.timeout_s).max().filter(|t| *t > 0).unwrap_or_else(|| defaults::num("dispatch.thin_timeout_s"))
 }
 
-/// The thin command of `event` on `host`: the direct form `hooks_form.template` (run the installed thin client, else print the
-/// one notice that points at the setup skill) with the event, the host's extra arguments and the notice text.
+/// The thin command of `event` on `host`: the direct form `hooks_form.template` (run the installed thin client, else the
+/// installer) with the event, the host's extra arguments and the host's plugin-root variable as the prefix.
 pub fn thin_command(host: &str, event: &str) -> String {
+    let var = defaults::raw("dispatch.root_vars").get(host).map(|v| v.strings()).unwrap_or_default().first().copied().unwrap_or("");
     let extra = defaults::raw("dispatch.thin_host_args").str_field(host);
-    defaults::fill(defaults::text("hooks_form.template"), &[("event", &event), ("host_args", &extra), ("notice", &defaults::text("msg.install_notice"))])
+    let prefix = format!("${{{var}}}");
+    defaults::fill(defaults::text("hooks_form.template"), &[("event", &event), ("host_args", &extra), ("prefix", &prefix)])
 }
 
 fn q(s: &str) -> String {
@@ -184,13 +186,15 @@ mod tests {
     }
 
     #[test]
-    fn the_thin_command_runs_the_thin_client_else_prints_the_setup_notice() {
-        let notice = defaults::text("msg.install_notice");
-        let tail = format!(" || {{ printf '%s\\n' '{notice}' >&2; exit 0; }}");
-        let head = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\"";
-        assert_eq!(thin_command("claude", "Stop"), format!("{head} Stop{tail}"));
-        assert_eq!(thin_command("codex", "Stop"), format!("{head} Stop --host codex{tail}"));
-        assert!(!thin_command("claude", "Stop").contains("install.sh"));
+    fn the_thin_command_names_the_hosts_root_variable_and_arguments() {
+        assert_eq!(
+            thin_command("claude", "Stop"),
+            "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop"
+        );
+        assert_eq!(
+            thin_command("codex", "Stop"),
+            "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex"
+        );
     }
 
     #[test]

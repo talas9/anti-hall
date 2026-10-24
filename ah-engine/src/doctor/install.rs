@@ -61,9 +61,13 @@ fn stop(mut x: Found) -> Found {
     x
 }
 
-/// How the engine is (re)installed, shown in fixes: the setup skill (the plugin ships no installer script).
-fn bootstrap_cmd(_root: Option<&Path>) -> String {
-    defaults::text("doctor.setup_command").to_string()
+/// The bootstrap invocation shown in fixes.
+fn bootstrap_cmd(root: Option<&Path>) -> String {
+    let script = defaults::text("doctor.bootstrap_script");
+    match root {
+        Some(r) => r.join(script).display().to_string(),
+        None => script.to_string(),
+    }
 }
 
 /// BIN-01..06, 11 and 03's repair: the findings about the file itself on `host`.

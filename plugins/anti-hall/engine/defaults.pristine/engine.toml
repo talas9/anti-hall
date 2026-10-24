@@ -55,7 +55,7 @@ doc = "Test-only: the engine binary the thin client runs instead of the installe
 value = "AH_ENGINE_BIN"
 
 [env.bootstrap]
-doc = "Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is the setup skill, /anti-hall:activate); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto`."
+doc = "Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is `sh hooks/install.sh --download`); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto` and hooks/install.sh."
 value = "AH_ENGINE_BOOTSTRAP"
 
 [env.install_lock_token]
@@ -63,7 +63,7 @@ doc = "Set by an installer (`ah-hook update`) for the integrity check: the token
 value = "AH_ENGINE_INSTALL_LOCK_TOKEN"
 
 [env.release_base]
-doc = "Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` only with AH_WRAPPER_TEST=1."
+doc = "Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` and hooks/install.sh only with AH_WRAPPER_TEST=1."
 value = "AH_ENGINE_RELEASE_BASE"
 
 [env.wrapper_diag]
@@ -1266,7 +1266,7 @@ value = "failed printing to std"
 doc = "Text of the I/O error that marks the closed-pipe panic (see `crash.closed_pipe_prefix`)."
 value = "Broken pipe"
 
-# ---- binary install (`ah-hook install`, ah-launcher/src/install.rs) ----
+# ---- binary install (`ah-hook install`, ah-launcher/src/install.rs; `hooks/install.sh --download` for the very first install) ----
 # The release archive holds ah-engine and (when the release ships it) ah-hook. Version and sha256 come from the plugin's
 # ah-engine.lock, never from the network; an archive whose sha256 differs is refused and nothing is installed.
 
@@ -1339,6 +1339,10 @@ min = 1
 [install.file_log]
 doc = "Install log, inside the state directory."
 value = "bootstrap.log"
+
+[install.file_notice]
+doc = "Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory)."
+value = "install.notice"
 
 [install.file_marker]
 doc = "Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten."
@@ -1882,8 +1886,8 @@ value = "AH_UPDATE_NO_ATTEST"
 # ---- the direct form of a hook command (hooks.json is generated from it by `ah-engine gen-hooks`; `ah-hook doctor --repair` rewrites old forms to it) -----------------------------
 
 [hooks_form.template]
-doc = "A hook command in the direct form: run the installed thin client, else print the one notice (stderr) that tells the user to run the setup skill and exit 0 with stdout empty. Placeholders: {event}, {host_args}, {notice} (messages.toml msg.install_notice)."
-value = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args} || { printf '%s\\n' '{notice}' >&2; exit 0; }"
+doc = "A hook command in the direct form: run the installed thin client, else the installer. Placeholders: {event}, {host_args}, {prefix} (the plugin root variable or path)."
+value = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args} || exec sh \"{prefix}/hooks/install.sh\" {event}{host_args}"
 
 [hooks_form.host_claude]
 doc = "The name of the Claude host."
@@ -1896,6 +1900,10 @@ value = "codex"
 [hooks_form.host_args_codex]
 doc = "What a Codex hook command adds after the event."
 value = " --host codex"
+
+[hooks_form.hooks_dir_word]
+doc = "The directory below the plugin root that holds the hook scripts (stripped to find the plugin root variable of an old command)."
+value = "/hooks"
 
 [hooks_form.node_word]
 doc = "The program name that marks Node on an entry path."
@@ -1913,13 +1921,9 @@ value = "sh "
 doc = "Texts that all appear in a statusLine command that runs the retired shell wrapper (after hooks_form.statusline_old_prefix)."
 value = ["/scripts/ah-run.sh\" --stdin statusline"]
 
-[hooks_form.rewrite_markers]
-doc = "Texts that mark an old-form hook command the doctor repair can rewrite to the direct form; the event name follows the marker (retired shell wrapper, retired installer fallback)."
-value = ["ah-hook.sh", "hooks/install.sh"]
-
 [hooks_form.old_markers]
 doc = "Text in a hook or statusLine command that marks the retired shell wrappers."
-value = ["ah-hook.sh", "ah-run.sh", "hooks/install.sh"]
+value = ["ah-hook.sh", "ah-run.sh"]
 
 [launcher.cli_doctor_verb]
 doc = "The ah-hook command-line verb of the built-in doctor (`ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]`); it hands over to the engine's doctor when the engine runs."

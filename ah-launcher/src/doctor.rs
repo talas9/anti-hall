@@ -116,7 +116,7 @@ impl Doc<'_> {
     }
 
     fn install_cmd(&self) -> String {
-        self.s.text("doctor.setup_command")
+        self.root.as_ref().map(|r| r.join(self.s.text("doctor.bootstrap_script")).display().to_string()).unwrap_or_else(|| self.s.text("doctor.bootstrap_script"))
     }
 
     // ---- facts ------------------------------------------------------------------------------------------------------------------
@@ -548,16 +548,23 @@ impl Doc<'_> {
         }
     }
 
-    /// Whether `cmd` is exactly the direct form (`hooks_form.template`) of `event` for `host`.
+    /// Whether `cmd` is exactly the direct form (`hooks_form.template`) of `event` for `host`: the installer's path in it is the only
+    /// part that varies (the host's plugin-root variable, or a literal path in a copy the host keeps).
     fn is_direct_form(&self, host: &str, event: &str, cmd: &str) -> bool {
+        let installer = self.s.text("doctor.bootstrap_script");
+        let Some(at) = cmd.find(&installer) else { return false };
+        let Some(q) = cmd[..at].rfind('"') else { return false };
+        let prefix = cmd[q + 1..at].trim_end_matches('/');
         let host_args = if host == self.s.text("hooks_form.host_codex") { self.s.text("hooks_form.host_args_codex") } else { String::new() };
-        cmd == fill(&self.s.text("hooks_form.template"), &[("event", event), ("host_args", &host_args), ("notice", &self.s.text("msg.install_notice"))])
+        cmd == fill(&self.s.text("hooks_form.template"), &[("event", event), ("host_args", &host_args), ("prefix", prefix)])
     }
 
     fn hooks_wiring(&mut self) {
         self.head("head_thin");
-        if self.root.is_none() {
-            return;
+        let Some(root) = self.root.clone() else { return };
+        let wrapper = root.join(self.s.text("doctor.wrapper_file"));
+        if !wrapper.is_file() {
+            self.bad("wrapper_missing", &[("file", &wrapper.display().to_string())]);
         }
         self.thin_check(&self.s.text("doctor_l.hooks_claude_rel"), &self.s.text("hooks_form.host_claude"));
         self.thin_check(&self.s.text("doctor_l.hooks_codex_rel"), &self.s.text("hooks_form.host_codex"));
@@ -683,6 +690,8 @@ impl Doc<'_> {
         if let Some(root) = self.root.clone() {
             let mut sh = Vec::new();
             self.scan_sh(&root, &mut sh, 0);
+            let keep = root.join(self.s.text("doctor.bootstrap_script"));
+            sh.retain(|p| *p != keep);
             sh.sort();
             if sh.is_empty() {
                 self.ok("x.health_shipped_sh_ok", &[]);
@@ -840,8 +849,7 @@ impl Doc<'_> {
     fn rewrite_hooks(&self, v: &mut serde_json::Value) -> usize {
         let mut n = 0;
         let tpl = self.s.text("hooks_form.template");
-        let notice = self.s.text("msg.install_notice");
-        let markers = self.s.list("hooks_form.rewrite_markers");
+        let wrapper = self.s.text("doctor_l.wrapper_name");
         let host_codex = self.s.text("hooks_form.host_codex");
         let host_args_codex = self.s.text("hooks_form.host_args_codex");
         let Some(h) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) else { return 0 };
@@ -849,13 +857,16 @@ impl Doc<'_> {
             for g in groups.as_array_mut().into_iter().flatten() {
                 for c in g.get_mut("hooks").and_then(|x| x.as_array_mut()).into_iter().flatten() {
                     let Some(cmd) = c.get("command").and_then(|x| x.as_str()).map(str::to_string) else { continue };
-                    let Some((at, len)) = markers.iter().find_map(|m| cmd.find(m.as_str()).map(|a| (a, m.len()))) else { continue };
-                    // ... "<prefix>/hooks/ah-hook.sh" <Event> [--host codex]  or  ... || exec sh "<prefix>/hooks/install.sh" <Event> [--host codex]
-                    let tail = cmd[at + len..].trim_start_matches('"').trim();
+                    let Some(at) = cmd.find(&wrapper) else { continue };
+                    // sh "<prefix>/hooks/ah-hook.sh" <Event> [--host codex]
+                    let Some(q) = cmd[..at].rfind('"') else { continue };
+                    let hooks_dir = cmd[q + 1..at].trim_end_matches('/');
+                    let prefix = hooks_dir.strip_suffix(&self.s.text("hooks_form.hooks_dir_word")).unwrap_or(hooks_dir).trim_end_matches('/');
+                    let tail = cmd[at + wrapper.len()..].trim_start_matches('"').trim();
                     let mut words = tail.split_whitespace();
                     let Some(event) = words.next().filter(|e| e.chars().all(|ch| ch.is_ascii_alphanumeric())) else { continue };
                     let host_args = if tail.contains(&format!("--host {host_codex}")) { host_args_codex.clone() } else { String::new() };
-                    let new = fill(&tpl, &[("event", event), ("host_args", &host_args), ("notice", &notice)]);
+                    let new = fill(&tpl, &[("event", event), ("host_args", &host_args), ("prefix", prefix)]);
                     c["command"] = serde_json::Value::String(new);
                     n += 1;
                 }
@@ -950,7 +961,7 @@ impl Doc<'_> {
         // hook commands still through the retired wrapper
         for f in self.hook_files() {
             let Some(mut v) = fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
-            let todo = Self::commands(&v).iter().filter(|(_, c)| self.s.list("hooks_form.rewrite_markers").iter().any(|m| c.contains(m.as_str()))).count();
+            let todo = Self::commands(&v).iter().filter(|(_, c)| c.contains(&self.s.text("doctor_l.wrapper_name"))).count();
             if todo == 0 {
                 continue;
             }

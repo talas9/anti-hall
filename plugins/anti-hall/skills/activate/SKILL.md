@@ -16,20 +16,9 @@ plugin. It is **never** auto-invoked — always user-triggered. Re-running is sa
 
 0. **Engine install (explicit)** — the hooks run the thin client `~/.anti-hall/ah-engine/bin/ah-hook`; until it is installed they pass
    through with one notice per session, and nothing is downloaded on its own (`engine.bootstrap` defaults to false). If
-   `~/.anti-hall/ah-engine/bin/ah-hook` is missing, ask the user, then install it with standard tools (the plugin ships
-   no installer script; every step is sha256-pinned to `ah-engine.lock`):
-   a. Read `${CLAUDE_PLUGIN_ROOT}/ah-engine.lock` (JSON): `version`, and `assets["ah-engine-v<version>-<triple>.tar.gz"]` = the pinned sha256.
-   b. Pick `<triple>` for this machine: macOS `aarch64-apple-darwin` (Apple silicon, also an Intel shell under Rosetta: check
-      `sysctl -n sysctl.proc_translated` = 1) or `x86_64-apple-darwin`; Linux `<aarch64|x86_64>-unknown-linux-<gnu|musl>` (musl
-      when `/lib/ld-musl-*` exists or `ldd --version` names musl, else gnu). Any other platform: stop and tell the user.
-   c. Download `https://github.com/talas9/anti-hall/releases/download/ah-engine-v<version>/ah-engine-v<version>-<triple>.tar.gz`
-      into a fresh temp directory (`curl -fsSL --proto '=https' --tlsv1.2 -o <tmp>/asset.tar.gz <url>`).
-   d. Verify its sha256 (`shasum -a 256` or `sha256sum`) equals the pinned value. On a mismatch delete the temp directory, report
-      it and STOP: never install an unverified archive.
-   e. Extract only the two members `ah-engine-v<version>-<triple>/ah-engine` and `.../ah-hook` (`tar -xzOf <archive> <member>
-      > <tmp>/<name>`, never the archive's own paths) into `~/.anti-hall/ah-engine/bin/`, `chmod 755` both.
-   f. Run `~/.anti-hall/ah-engine/bin/ah-hook --plugin-root "${CLAUDE_PLUGIN_ROOT}" install --lock "${CLAUDE_PLUGIN_ROOT}/ah-engine.lock" -v`: the one
-      implementation of install and update (it records the integrity of the installed engine and wires the rest).
+   `~/.anti-hall/ah-engine/bin/ah-hook` is missing, ask the user, then run the plugin's one shell file:
+   `sh "${CLAUDE_PLUGIN_ROOT}/hooks/install.sh" --download -v` (sha256-pinned to `ah-engine.lock`; once the thin client exists the
+   same command hands over to `ah-hook install`).
 
 1. **Statusline retired** — do not write Claude `statusLine`. If an older anti-hall statusline exists, tell the user `uninstall-statusline` remains available for cleanup.
 

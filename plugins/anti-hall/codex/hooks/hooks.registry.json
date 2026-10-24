@@ -6,25 +6,25 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "merge-side-pick:post"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "git-guard:audit"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "devswarm-parent-reply-tracker"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "devswarm-child-drain"
           }
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PostToolUse --host codex",
             "timeout": 10,
             "id": "agent-reminders"
           }
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreCompact --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreCompact --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreCompact --host codex",
             "timeout": 10,
             "id": "precompact-snapshot"
           }
@@ -59,31 +59,31 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "git-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "command-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "merge-side-pick"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "merge-gate"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "compact-declaration-guard"
           }
@@ -94,13 +94,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "orch-on-spawn"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "swarm-guard"
           }
@@ -111,13 +111,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 45,
             "id": "api-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "ship-it-guard"
           }
@@ -128,7 +128,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "edit-guard"
           }
@@ -139,19 +139,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "procwatch-advisory"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "engine-role-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "broad-kill-guard"
           }
@@ -161,7 +161,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "burn-breaker"
           }
@@ -172,7 +172,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "uncommitted-guard"
           }
@@ -183,19 +183,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "queued-wait-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "lane-test-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "wide-search-guard"
           }
@@ -207,109 +207,109 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "verify-first-full"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "verify-first-orch"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "devswarm-child-role"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "version-alert"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "codex-availability"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "devswarm-version"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "claude-cli-version"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "repo-self-drift"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "progress-prune"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "handover-resume"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "handover-hygiene"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "jev-weekly-scorecard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "jev-review-reminder"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "emit-dedupe-reset"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "defect-nudge"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "repair-on-reload"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "procwatch-advisory"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SessionStart --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SessionStart --host codex",
             "timeout": 10,
             "id": "engine-role-note"
           }
@@ -321,67 +321,67 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "task-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "tasklist-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "speculation-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "speculation-judge"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "claim-ledger"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "devswarm-parent-gate"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "devswarm-child-gate"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "auto-handover-pause-nag"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "silent-agent-nudge"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 30,
             "id": "compact-advice-guard"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex",
             "timeout": 10,
             "id": "sibling-sweep"
           }
@@ -393,7 +393,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SubagentStop --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" SubagentStop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" SubagentStop --host codex",
             "timeout": 10,
             "id": "sibling-sweep"
           }
@@ -405,73 +405,73 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "verify-first"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "task-tracker"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "idle-agent-sweep"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "limit-conserve-inject"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "devswarm-parent-inbox"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "devswarm-rt-advisory"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "devswarm-child-turn"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "repair-on-reload"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "auto-handover"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "procwatch-advisory"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "agent-reminders"
           },
           {
             "type": "command",
-            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || { printf '%s\\n' 'anti-hall: the engine is not installed, so the guards are not running. Run /anti-hall:activate to install it (a sha256-pinned download); until then every hook call passes through.' >&2; exit 0; }",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "gh-rt-advisory"
           }

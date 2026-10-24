@@ -47,7 +47,7 @@ value = "<abs>"
 
 [verify_first.root_probe]
 doc = "File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file."
-value = "hooks/hooks.json"
+value = "hooks/install.sh"
 
 [verify_first.summary_subagent]
 doc = "One-line description of the verify-first-subagent check in the generated reference."

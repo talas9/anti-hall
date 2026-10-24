@@ -6,7 +6,7 @@ Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin 
 
 | Path | What lives there |
 |---|---|
-| `plugins/anti-hall/hooks/` | `hooks.json` (one thin trigger per event, generated from `engine/defaults/dispatch.toml`) (the plugin ships no shell file) |
+| `plugins/anti-hall/hooks/` | `hooks.json` (one thin trigger per event, generated from `engine/defaults/dispatch.toml`) and `install.sh`, the plugin's one shell file (first install only) |
 | `plugins/anti-hall/engine/` | The engine's plugin files: `logic/*.js` (rule logic run by the engine's script host, not Node) and `defaults/*.toml` (every setting, table and text; `defaults.pristine/` is the byte-identical read-only copy) |
 | `ah-engine/`, `ah-launcher/` | The Rust engine and the thin client `ah-hook` |
 | `plugins/anti-hall-node/` | The Node backup (not published): the original hooks, `doctor.js`, `lib/` |

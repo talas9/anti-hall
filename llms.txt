@@ -256,7 +256,7 @@ Codex: no `/config`, use the skill.
 | safety.gitGuard / commandGuard / editGuard / swarmGuard (safety: risky `set`/`reset` need `--confirmed`; normal precedence applies, settings.json values count) | true | `ANTIHALL_GIT_GUARD`, `ANTIHALL_COMMAND_GUARD`, `ANTIHALL_EDIT_GUARD`, `ANTIHALL_SWARM_GUARD` |
 | guards.gitAliasResolve / gitReusedMessageCheck (advanced, safety: --confirmed) | true / true | `ANTIHALL_GIT_ALIAS_RESOLVE`, `ANTIHALL_GIT_REUSED_MESSAGE_CHECK` |
 | guards.editGuardAllow / allowSubagentMailbox (advanced, safety: --confirmed) | "" / false | `ANTIHALL_EDIT_GUARD_ALLOW`, `ANTIHALL_ALLOW_SUBAGENT_MAILBOX` |
-| engine.bootstrap | false | `AH_ENGINE_BOOTSTRAP` (1 opts in to the automatic `ah-engine` binary download on SessionStart, 0 forces it off; overrides the setting; the explicit install is the setup skill (`/anti-hall:activate`)) |
+| engine.bootstrap | false | `AH_ENGINE_BOOTSTRAP` (1 opts in to the automatic `ah-engine` binary download on SessionStart, 0 forces it off; overrides the setting; the explicit install is `sh hooks/install.sh --download`) |
 | engine.autoUpdate | off | `AH_ENGINE_AUTO_UPDATE` (off, stable or dev: `ah-engine engine-update --auto` from the engine scheduler, at most daily; URLs and timeouts in `engine/ah-update.toml`) |
 | context.verifyFirstSession / verifyFirstOrchestration / verifyFirstTurn / verifyFirstSubagent / taskTracker / handoverResume / defectNudge | true | — |
 | maintenance.repairOnReload / progressPrune / precompactSnapshot / taskLifecycleLog / sessionEndReaper | true | `ANTIHALL_REPAIR_ON_RELOAD`, `ANTIHALL_SESSION_END_REAPER` (deprecated alias `ANTI_HALL_SESSION_END_REAPER`) |

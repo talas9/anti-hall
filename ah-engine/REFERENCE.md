@@ -202,7 +202,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_AUTO_UPDATE` |  | Read by `ah-hook update --auto`: off, stable or dev overrides the `engine.autoUpdate` setting for one run. |
 | `AH_ENGINE_BACKUP_MS` | `schedule.backup_ms` | Interval of the backup job (D27); 0 (the default) turns it off. |
 | `AH_ENGINE_BIN` |  | Test-only: the engine binary the thin client runs instead of the installed one. The thin client ignores it unless AH_WRAPPER_TEST=1 is also set, so a stray value can never turn the safety net into a silent allow. Test-only: environment variable that replaces the engine binary (honoured only when the test flag is set). |
-| `AH_ENGINE_BOOTSTRAP` |  | Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is the setup skill, /anti-hall:activate); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto`. |
+| `AH_ENGINE_BOOTSTRAP` |  | Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is `sh hooks/install.sh --download`); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto` and hooks/install.sh. |
 | `AH_ENGINE_BREAKER_COOLDOWN_S` | `client.breaker_cooldown_s` | How long the breaker stays open once tripped. |
 | `AH_ENGINE_BREAKER_N` | `client.breaker_n` | Engine failures within the window that open the breaker (the client then skips the engine). |
 | `AH_ENGINE_BREAKER_WINDOW_S` | `client.breaker_window_s` | Window in which breaker failures are counted. |
@@ -255,7 +255,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_QUEUE` | `daemon.queue` | Connections that may wait for a worker; beyond this the daemon answers BUSY and the client falls back. |
 | `AH_ENGINE_READ_MS` | `daemon.read_ms` | Total time a client has to deliver its request. |
 | `AH_ENGINE_REFRESH_MS` | `refresh.every_ms` | How often the refresh job looks for requests; a request waits at most this long (plus jitter). Cheap when there is none: it reads a few small files. 0 turns the job off. |
-| `AH_ENGINE_RELEASE_BASE` |  | Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` only with AH_WRAPPER_TEST=1. |
+| `AH_ENGINE_RELEASE_BASE` |  | Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` and hooks/install.sh only with AH_WRAPPER_TEST=1. |
 | `AH_ENGINE_REQUEST_PEER_PID` | `request_env.peer_pid_key` | The name under which a daemon request's sender pid (its socket peer; 0 when the socket did not say) reaches the checks. Not on the allowlist, so no client can set it; host functions that walk the process ancestry (the DevSwarm reader nonce) start there. Absent in a one-shot `ah-engine check`, which starts at itself. |
 | `AH_ENGINE_ROLLBACK_FAIL_N` | `rollback.fail_n` | Engine failures seen by the thin client (timeout, signal death, no answer) within rollback.fail_window_s that roll a never-healthy binary back. The thin client counts them because a hung binary cannot count its own. |
 | `AH_ENGINE_ROLLBACK_FAIL_WINDOW_S` | `rollback.fail_window_s` | Window in which the wrapper's engine failures are counted for rollback.fail_n. |
@@ -561,7 +561,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `env.allocator` | `AH_ENGINE_ALLOCATOR` |  |  | Selects the daemon's allocator: jemalloc (default) or system. The client sets it from `diagnostics.allocator` on the daemon it spawns, unless it is already set; the daemon reads it before its first allocation. |
 | `env.auto_update` | `AH_ENGINE_AUTO_UPDATE` |  |  | Read by `ah-hook update --auto`: off, stable or dev overrides the `engine.autoUpdate` setting for one run. |
 | `env.bin` | `AH_ENGINE_BIN` |  |  | Test-only: the engine binary the thin client runs instead of the installed one. The thin client ignores it unless AH_WRAPPER_TEST=1 is also set, so a stray value can never turn the safety net into a silent allow. |
-| `env.bootstrap` | `AH_ENGINE_BOOTSTRAP` |  |  | Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is the setup skill, /anti-hall:activate); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto`. |
+| `env.bootstrap` | `AH_ENGINE_BOOTSTRAP` |  |  | Set to 0 or 1 to turn the automatic download of the sha256-pinned engine binary off or on (default off: the explicit install is `sh hooks/install.sh --download`); overrides the `engine.bootstrap` setting. Read by `ah-hook install --auto` and hooks/install.sh. |
 | `env.debug` | `AH_ENGINE_DEBUG` |  |  | When set to anything but 0 or empty, turns debug mode (diagnostics.debug_mode) on for that process. |
 | `env.dir` | `AH_ENGINE_DIR` |  |  | Overrides the state directory (default: base_dir/state_dir under the home directory). |
 | `env.done_file` | `AH_ENGINE_DONE_FILE` |  |  | A file the dispatcher creates once it has dispatched an event and decided its exit code (D87). The thin client sets it, so that an engine exit code of a hook's own (1, say) is told from an engine failure and is not answered by running every hook a second time. |
@@ -573,7 +573,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `env.live_kit` | `AH_LIVE_KIT` |  |  | Test and operator override: the live kit directory (default: updater.kit_dir below the base directory). |
 | `env.nospawn` | `AH_ENGINE_NOSPAWN` |  |  | When set, the client never starts a daemon (tests, and hosts that manage the daemon themselves). |
 | `env.plugin_root` | `AH_ENGINE_PLUGIN_ROOT` |  |  | Plugin install directory, used by built-in checks that build override commands (a rule's `options.plugin_root` wins). |
-| `env.release_base` | `AH_ENGINE_RELEASE_BASE` |  |  | Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` only with AH_WRAPPER_TEST=1. |
+| `env.release_base` | `AH_ENGINE_RELEASE_BASE` |  |  | Test-only: download base URL for the engine binary (http allowed). Honored by `ah-hook install` and hooks/install.sh only with AH_WRAPPER_TEST=1. |
 | `env.rules` | `AH_ENGINE_RULES` |  |  | Overrides the rules file path. |
 | `env.session` | `AH_ENGINE_SESSION` |  |  | Session id a `proj` write is spooled under; spooled writes keep their order per session (D24). |
 | `env.test_hooks` | `AH_ENGINE_TEST_HOOKS` |  |  | When set, the daemon accepts the test-only control verbs (sleep, stall, panic). Never set in production. |
@@ -671,16 +671,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `hooks_form.hooks_dir_word` | `/hooks` |  |  | The directory below the plugin root that holds the hook scripts (stripped to find the plugin root variable of an old command). |
 | `hooks_form.host_args_codex` | ` --host codex` |  |  | What a Codex hook command adds after the event. |
 | `hooks_form.host_claude` | `claude` |  |  | The name of the Claude host. |
 | `hooks_form.host_codex` | `codex` |  |  | The name of the Codex host (the value of --host). |
 | `hooks_form.node_word` | `node` |  |  | The program name that marks Node on an entry path. |
-| `hooks_form.old_markers` | `ah-hook.sh, ah-run.sh, hooks/install.sh` |  |  | Text in a hook or statusLine command that marks the retired shell wrappers. |
-| `hooks_form.rewrite_markers` | `ah-hook.sh, hooks/install.sh` |  |  | Texts that mark an old-form hook command the doctor repair can rewrite to the direct form; the event name follows the marker (retired shell wrapper, retired installer fallback). |
+| `hooks_form.old_markers` | `ah-hook.sh, ah-run.sh` |  |  | Text in a hook or statusLine command that marks the retired shell wrappers. |
 | `hooks_form.statusline_old_form` | `/scripts/ah-run.sh" --stdin statusline` |  |  | Texts that all appear in a statusLine command that runs the retired shell wrapper (after hooks_form.statusline_old_prefix). |
 | `hooks_form.statusline_old_prefix` | `sh ` |  |  | How a statusLine command that runs the retired shell wrapper starts. |
 | `hooks_form.statusline_template` | `"{client}" statusline` |  |  | The statusLine command in the thin-client form, which the migration (update, doctor --repair) writes in place of one that runs the retired shell wrapper. Placeholder: {client} (the installed ah-hook, absolute). |
-| `hooks_form.template` | `[ -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" ] && exec "$HOME/.anti-hall/ah-...` |  |  | A hook command in the direct form: run the installed thin client, else print the one notice (stderr) that tells the user to run the setup skill and exit 0 with stdout empty. Placeholders: {event}, {host_args}, {notice} (messages.toml msg.install_notice). |
+| `hooks_form.template` | `[ -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" ] && exec "$HOME/.anti-hall/ah-...` |  |  | A hook command in the direct form: run the installed thin client, else the installer. Placeholders: {event}, {host_args}, {prefix} (the plugin root variable or path). |
 
 ### engine.toml / install
 
@@ -698,6 +698,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `install.file_attempt` | `bootstrap.attempt` |  |  | Marker of the last failed attempt: <epoch> <version> <asset sha256>. Read by the retry limit. |
 | `install.file_log` | `bootstrap.log` |  |  | Install log, inside the state directory. |
 | `install.file_marker` | `bootstrap.installed` |  |  | Marker of what the installer put in place: <version> <asset sha256> <engine sha256> [<ah-hook sha256>]. A binary that does not match it (a local build) is never overwritten. |
+| `install.file_notice` | `install.notice` |  |  | Holds the id of the session that already got the one notice of hooks/install.sh (inside the state directory). |
 | `install.kill_grace_s` | `2` |  | s | How long a timed-out command gets after TERM before it is killed. |
 | `install.libc_default` | `gnu` |  |  | The libc part of the Linux triple when musl is not detected. |
 | `install.libc_musl` | `musl` |  |  | The libc part of the Linux triple on a musl system. |
@@ -2861,7 +2862,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.judge_child_env` | `2 entries` |  |  | Environment variable that marks the headless judge child; a hook that runs in it prints nothing. |
 | `verify_first.mn_line` | `M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/n...` |  |  | The model-routing and no-re-delegation line the compact SessionStart text gains when the orchestration hook is switched off (Claude). |
 | `verify_first.mn_line_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The same line for a Codex session. |
-| `verify_first.root_probe` | `hooks/hooks.json` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
+| `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
@@ -5166,6 +5167,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.bin_dir` | `bin` |  |  | The directory of the installed engine binary, under the engine state directory. |
 | `doctor.bin_label` | `ah-engine version` |  |  | The name a run of the installed engine is logged under. |
 | `doctor.bin_name` | `ah-engine` |  |  | The file name of the installed engine binary. |
+| `doctor.bootstrap_script` | `hooks/install.sh` |  |  | The engine installer (the plugin's one shell file), relative to the plugin root (shown in fixes). |
 | `doctor.class_duplicate` | `duplicate-label-same-project` |  |  | The class of two loaded units for one project. |
 | `doctor.class_healthy` | `healthy` |  |  | The class of a loaded unit that is in use. |
 | `doctor.class_no_plist` | `orphan-no-plist` |  |  | The class of a loaded unit with no unit file on disk (the only class that may be unloaded). |
@@ -5363,7 +5365,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.service_quoted_re` | `"((?:[^"\\]\|\\.)*)"` |  |  | A double-quoted word of a systemd command. |
 | `doctor.service_wd_re` | `(?m)^WorkingDirectory=(.*)$` |  |  | The working directory of a systemd unit file. |
 | `doctor.settings_scopes` | `2 entries, 2 entries, 2 entries` |  |  | The settings files that carry enabledPlugins, in precedence order (later wins); home = relative to the home directory, else to the project. |
-| `doctor.setup_command` | `run the setup skill (/anti-hall:activate)` |  |  | How the engine is (re)installed, shown in fixes: the setup skill, which downloads the sha256-pinned release and installs it. |
 | `doctor.shadow_dir` | `ah-node-shadow` |  |  | The Node witness kit's directory, under the base directory. |
 | `doctor.shadow_log` | `node-shadow.ndjson` |  |  | The witness's comparison log. |
 | `doctor.shadow_log_warn_mb` | `256` |  |  | A Node witness log larger than this many MB is reported. |
@@ -5411,6 +5412,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.why_max` | `160` |  |  | How many characters of a failing program's first message the report shows. |
 | `doctor.workflow_dir` | `.claude/workflows` |  |  | The directory of saved Workflow templates under the home directory and under the project (relative to each). |
 | `doctor.workflow_patterns` | `(?i)^deadly-loop.*\.js$, (?i)^ship-it.*\.js$` |  |  | The names of the saved Workflow templates the doctor looks for (case-insensitive patterns). |
+| `doctor.wrapper_file` | `hooks/install.sh` |  |  | The installer every hook command falls back to while the thin client is not installed (the plugin's one shell file), relative to the plugin root. |
 | `doctor.wsl_markers` | `microsoft, wsl` |  |  | Words (lowercase) in the kernel version text that mean WSL. |
 | `doctor.wsl_mount_re` | `^/mnt/[a-zA-Z](/\|$)` |  |  | A path on a Windows drive mounted into WSL. |
 | `doctor.xml_unescape` | `&lt;\\|<, &gt;\\|>, &quot;\\|", &apos;\\|', &amp;\\|&` |  |  | The XML entities a property list value is read back through, in order, as `entity\|text`. |
@@ -5453,8 +5455,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.msg_health_node_entry` | `{file} runs Node on an entry path ({n} command(s), first: {first}) - Fix: upd...` |  |  | Placeholders: {file}, {n}, {first}. |
 | `doctor_l.msg_health_shim_bad` | `{path} is not an sh shim for ah-hook (first line: {first}) - Fix: ah-engine d...` |  |  | Placeholders: {path}, {first}. |
 | `doctor_l.msg_health_shims_ok` | `{n} launcher shim(s) in {dir} are sh shims` |  |  | Placeholders: {n}, {dir}. |
-| `doctor_l.msg_health_shipped_sh` | `the plugin ships {n} shell file(s) (first: {first}) - Fix: update or reinstal...` |  |  | Placeholders: {n}, {first}. |
-| `doctor_l.msg_health_shipped_sh_ok` | `the plugin ships no shell file` |  |  | Said when the plugin ships no shell file. |
+| `doctor_l.msg_health_shipped_sh` | `the plugin ships {n} shell file(s) besides hooks/install.sh (first: {first}) ...` |  |  | Placeholders: {n}, {first}. |
+| `doctor_l.msg_health_shipped_sh_ok` | `the plugin ships no shell file besides hooks/install.sh` |  |  | Said when the plugin ships only hooks/install.sh. |
 | `doctor_l.msg_health_statusline_old` | `the statusLine in {file} still runs the retired shell wrapper ({command}) - F...` |  |  | Placeholders: {file}, {command}. |
 | `doctor_l.msg_repair_exec` | `made {path} executable` |  |  | Placeholder: {path}. |
 | `doctor_l.msg_repair_hooks_form` | `rewrote {n} hook command(s) in {file} to the direct form; the previous file i...` |  |  | Placeholders: {n}, {file}, {backup}. |
@@ -5481,6 +5483,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.shim_dir` | `bin` |  |  | The directory of the launcher shims, below the base directory (~/.anti-hall). |
 | `doctor_l.shim_shebang` | `#!/bin/sh` |  |  | The first line of an sh shim. |
 | `doctor_l.version_flag` | `--version` |  |  | The flag with which git prints its version. |
+| `doctor_l.wrapper_name` | `ah-hook.sh` |  |  | File name of the retired shell wrapper. |
 | `doctor_l.wsl_word_upper` | `WSL` |  |  | The other spelling of the WSL marker in the kernel release. |
 | `doctor_l.xattr_cmd` | `xattr, -p, {attr}, {path}` |  |  | The macOS command that reads a file attribute (exit 0 = the attribute is set). Placeholders: {attr}, {path}. |
 
@@ -5488,19 +5491,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `doctor_msg.bin_corrupt` | `{path} is not a runnable program ({why}) - Fix: reinstall: {bootstrap}` |  |  | BIN-04. Placeholders: {path}, {why}, {bootstrap}. |
+| `doctor_msg.bin_corrupt` | `{path} is not a runnable program ({why}) - Fix: reinstall: sh {bootstrap} --d...` |  |  | BIN-04. Placeholders: {path}, {why}, {bootstrap}. |
 | `doctor_msg.bin_hash_differs` | `{path} differs from the build the bootstrap installed (sha256 {have}... vs {w...` |  |  | BIN-07. Placeholders: {path}, {have}, {want}, {bootstrap}. |
 | `doctor_msg.bin_missing` | `engine binary not installed at {path} (hooks use ah-engine on PATH, else the ...` |  |  | BIN-01. Placeholders: {path}, {bootstrap}. |
 | `doctor_msg.bin_no_rosetta` | `{path} is an {bin_arch} build and Rosetta is not installed on this {host_arch...` |  |  | BIN-06c. Same placeholders. |
-| `doctor_msg.bin_no_run` | `{path} does not run: {why} - Fix: reinstall: {bootstrap}` |  |  | BIN-12. Placeholders: {path}, {why}, {bootstrap}. |
+| `doctor_msg.bin_no_run` | `{path} does not run: {why} - Fix: reinstall: sh {bootstrap} --download -v` |  |  | BIN-12. Placeholders: {path}, {why}, {bootstrap}. |
 | `doctor_msg.bin_not_bootstrapped` | `{path} was not installed by the bootstrap (a local build); the bootstrap leav...` |  |  | BIN-08. Placeholder: {path}. |
 | `doctor_msg.bin_not_exec` | `{path} is not executable (mode {mode}) - Fix: chmod u+x {path} (ah-engine doc...` |  |  | BIN-03. Placeholders: {path}, {mode}. |
-| `doctor_msg.bin_not_file` | `{path} is not a regular file ({kind}) - Fix: move it aside, then run: {bootst...` |  |  | BIN-02. Placeholders: {path}, {kind}, {bootstrap}. |
+| `doctor_msg.bin_not_file` | `{path} is not a regular file ({kind}) - Fix: move it aside, then run: sh {boo...` |  |  | BIN-02. Placeholders: {path}, {kind}, {bootstrap}. |
 | `doctor_msg.bin_ok` | `engine binary {path} ({triple}) runs and reports {ver}` |  |  | BIN-14. Placeholders: {path}, {triple}, {ver}. |
 | `doctor_msg.bin_other_engine` | `this doctor is engine {running}; the installed engine reports {installed}` |  |  | BIN-13. Placeholders: {running}, {installed}. |
 | `doctor_msg.bin_quarantined` | `{path} is quarantined by macOS Gatekeeper (com.apple.quarantine); it will not...` |  |  | BIN-11. Placeholder: {path}. |
 | `doctor_msg.bin_rosetta` | `{path} is an {bin_arch} build running under Rosetta on this {host_arch} Mac (...` |  |  | BIN-06b. Same placeholders. |
-| `doctor_msg.bin_unreadable` | `{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: {bo...` |  |  | The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}. |
+| `doctor_msg.bin_unreadable` | `{path} cannot be read ({err}) - Fix: check its permissions, or reinstall: sh ...` |  |  | The binary cannot be read. Placeholders: {path}, {err}, {bootstrap}. |
 | `doctor_msg.bin_version_differs` | `engine {have} is installed but the plugin pins {want} - Fix: it updates at th...` |  |  | BIN-09. Placeholders: {have}, {want}, {bootstrap}. |
 | `doctor_msg.bin_wrong_arch` | `{path} was built for {bin_arch} but this {host_os} machine is {host_arch}; it...` |  |  | BIN-06a. Placeholders: {path}, {bin_arch}, {host_os}, {host_arch}, {bootstrap}. |
 | `doctor_msg.bin_wrong_os` | `{path} was built for {bin_os} but this machine runs {host_os} - Fix: reinstal...` |  |  | BIN-05. Placeholders: {path}, {bin_os}, {host_os}, {bootstrap}. |
@@ -5768,13 +5771,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.witness_stale` | `the witness log has not changed for {days} days - Fix: check that node is on ...` |  |  | SH-07. Placeholder: {days}. |
 | `doctor_msg.workflow_found` | `saved workflow template(s) found: {files}` |  |  | Saved Workflow templates exist. Placeholder: {files}. |
 | `doctor_msg.workflow_missing` | `no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ ...` |  |  | No saved deadly-loop or ship-it Workflow template exists. |
+| `doctor_msg.wrapper_missing` | `{file} is missing; the hook commands cannot install the thin client - Fix: re...` |  |  | HK-03. Placeholder: {file}. |
 | `doctor_msg.wsl` | `WSL detected ({release})` |  |  | EV-09. Placeholder: {release}. |
 
 ### entry_audit.toml / entry_audit
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `entry_audit.allow` | `24 items` |  |  | What the audit lets through, each with its reason. |
+| `entry_audit.allow` | `26 items` |  |  | What the audit lets through, each with its reason. |
 | `entry_audit.cmd_files` | `12 items` |  |  | Regexes on the path (relative to the scanned root) of the files whose lines are checked for command strings: hooks.json and the hook registry of both ports, the engine defaults (engine/defaults.pristine is a byte-identical copy, compared by the deploy kit, so it is not scanned twice), skills of both ports, docs, README, llms.txt, PROTOCOL.md, monitors files and the rules file. |
 | `entry_audit.file_exts` | `.sh, .js, .mjs, .cjs, .py` |  |  | Extensions (with the dot, lower case) that make a file a script for the files section and for the launcher directories. |
 | `entry_audit.generators` | `3 entries, 3 entries` |  |  | Every generator of files the engine itself writes outside the plugin tree: the service units. |
@@ -13103,7 +13107,9 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.hint_socket_path` | Self-fix hint when the socket path is too long. Placeholder: {env_dir}. |
 | `msg.hint_state_dir` | Self-fix hint when the state directory is not writable or not private. Placeholders: {state_dir}, {env_dir}. |
 | `msg.impact_no_routing` | Status shown in place of a model-routing saving figure while no routing events are recorded. |
-| `msg.install_notice` | The one line a hook command prints on stderr while the thin client is not installed (hook calls pass through unchecked; it is part of every generated hook command, so it holds no single quote). |
+| `msg.install_done` | Printed by `hooks/install.sh --download` when it installed the binaries. Placeholders: {version}, {triple}, {path}. |
+| `msg.install_failed` | Printed on stderr by `hooks/install.sh --download` when the install did not complete. Placeholder: {why}. |
+| `msg.install_notice` | The one line per session hooks/install.sh prints on stderr while the thin client is not installed (hook calls pass through unchecked). |
 | `msg.install_unsupported` | Printed by `ah-hook install --print-target` on a platform without a release build. |
 | `msg.inv_busy_workers` | Invariant violation: more workers are marked busy than there are workers. Placeholder: {workers}. |
 | `msg.inv_queue_pop` | Invariant violation: after a worker took a connection, the queue-depth counter and the queue length differ. Placeholders: {depth}, {len}. |

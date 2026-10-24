@@ -132,8 +132,8 @@ Hooks are small per call but not free. On a quiet machine a bare `node -e 0` cos
 `ah-engine`, a small Rust program, is the core component: it answers the hook calls without starting Node per call. The plugin's hooks are one
 thin trigger per event; the engine decides natively what it can prove identical to the Node hook and defers the rest to Node (never
 weaker than Node). Every hook command in `hooks.json` runs the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook <Event>`) directly, and runs
-the setup skill (standard tools; the plugin ships no shell file) only while the thin client is missing (one notice per session, the call passes
-through). The binaries are installed from the GitHub Release by the setup skill (`/anti-hall:activate`) and only if
+the plugin's one shell file, `hooks/install.sh`, only while the thin client is missing (one notice per session, the call passes
+through). The binaries are installed from the GitHub Release by `sh hooks/install.sh --download` (the setup skill runs it) and only if
 their sha256 equals the one pinned in the plugin's `ah-engine.lock`; the automatic download on SessionStart is opt-in (the setting
 `engine.bootstrap` = true, or `AH_ENGINE_BOOTSTRAP=1`; default false). All its rules, settings and texts are plain files in `plugins/anti-hall/engine/`, read at run
 time with hot reload and fallbacks (edited, then last-known-good, then pristine, then Node), and `ah-engine config heal` restores a
@@ -215,7 +215,7 @@ If an older anti-hall statusline is still configured, remove it first with `unin
 
 **The `ah-engine` binary.** Every hook command runs the thin Rust client `~/.anti-hall/ah-engine/bin/ah-hook`, which
 calls the engine at `~/.anti-hall/ah-engine/bin/ah-engine` (both installed and verified against `ah-engine.lock` by the
-plugin's one shell file, the setup skill; an `ah-engine` on `PATH` is used when the home install is not executable).
+plugin's one shell file, `hooks/install.sh`; an `ah-engine` on `PATH` is used when the home install is not executable).
 No working engine means the hooks let every call through with one notice per session — check with
 `~/.anti-hall/ah-engine/bin/ah-engine doctor`, or `~/.anti-hall/ah-engine/bin/ah-hook --selftest` when the engine itself
 cannot start. Node.js is not needed. No npm install, no other config.
@@ -1597,7 +1597,7 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Legacy renderer option: suppress the email segment. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
-| `engine.bootstrap` | `false` | `AH_ENGINE_BOOTSTRAP` | Opt in to the automatic download: install the sha256-pinned ah-engine and ah-hook binaries from the GitHub Release on SessionStart (once per pinned release). Off (default): nothing is downloaded on its own; the setup skill prints one notice per session and hooks pass through until you run the setup skill (`/anti-hall:activate`). AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
+| `engine.bootstrap` | `false` | `AH_ENGINE_BOOTSTRAP` | Opt in to the automatic download: install the sha256-pinned ah-engine and ah-hook binaries from the GitHub Release on SessionStart (once per pinned release). Off (default): nothing is downloaded on its own; `hooks/install.sh` prints one notice per session and hooks pass through until you run `sh hooks/install.sh --download`. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |
 | `engine.autoUpdate` | `off` [off, stable, dev] | `AH_ENGINE_AUTO_UPDATE` | Update the engine binary on its own, at most once a day: off (default), stable (latest release) or dev (latest dev pre-release; also syncs the plugin files of a live kit). Runs `ah-engine engine-update --auto`; the previous binary is kept (`--rollback`). URLs and timeouts: `engine/ah-update.toml`. |
 | `defects.defaultProj` | — | `ANTIHALL_DEFECT_PROJ` | Default project tag used when filing an anti-hall defect (max 64 chars). |
 | `procwatch.enabled` | `true` | `ANTIHALL_PROCWATCH` | procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process. |

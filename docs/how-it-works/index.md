@@ -60,20 +60,20 @@ same for each event:
 
 ```sh
 [ -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" ] && exec "$HOME/.anti-hall/ah-engine/bin/ah-hook" <Event> [--host codex] \
-  || { printf '%s\n' '<notice: run /anti-hall:activate>' >&2; exit 0; }
+  || exec sh "${CLAUDE_PLUGIN_ROOT}/hooks/install.sh" <Event> [--host codex]
 ```
 
 | Situation | What runs |
 |---|---|
 | Thin client installed | `ah-hook` takes the call (`exec`, so a block's exit code 2 reaches the host unchanged). It hands the event to the engine and returns the engine's answer. |
 | Engine busy, slow, restarting or broken | `ah-hook` lets the call through and prints one note per session; it never blocks because something failed. |
-| Thin client not installed | the hook command itself (no shell file): stdout stays empty, exit 0, one stderr notice per session. It downloads nothing unless you opted in. |
+| Thin client not installed | `hooks/install.sh`, the plugin's only shell file: stdout stays empty, exit 0, one stderr notice per session. It downloads nothing unless you opted in. |
 | Node fallback switch on (`ah-engine fallback node`, a manual diagnostic) | `ah-hook` itself runs the original Node.js hooks from the separate `anti-hall-node` backup, directly and without a shell. It never switches on by itself. |
 
 No Node.js and no shell script is on a normal hook path. The commands are checked by tests
 (`ah-engine/tests/it/hooks_files.rs`): the plugin ships exactly one `.sh` file and every command equals the template.
 
-The engine binary and the thin client are installed by the setup skill (`/anti-hall:activate`) (the setup skill runs it) and
+The engine binary and the thin client are installed by `sh hooks/install.sh --download` (the setup skill runs it) and
 checked against a sha256 checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS and
 Linux, including WSL.
 
@@ -92,12 +92,12 @@ what that does. Every point below is read from the code in this repository.
 | Install location | `~/.anti-hall/ah-engine/bin/ah-engine`, replaced atomically, previous copy kept as `ah-engine.prev`. |
 | Provenance | Each release carries `SHA256SUMS` and a GitHub build-provenance attestation, created by `.github/workflows/ah-engine-release.yml`. Check one with `gh attestation verify <archive> --repo talas9/anti-hall`. |
 | Immutability | Tags `v*` and `ah-engine-v*` are covered by a repository ruleset that blocks deletion and updates, and the repository has immutable releases enabled, so a published release's assets and tag cannot be changed. |
-| Opt in | Nothing is downloaded on its own. You install it with `/anti-hall:setup` or the setup skill (`/anti-hall:activate`); the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`, which overrides the setting) makes the download happen automatically on SessionStart. |
+| Opt in | Nothing is downloaded on its own. You install it with `/anti-hall:setup` or `sh hooks/install.sh --download`; the setting `engine.bootstrap` = true (or `AH_ENGINE_BOOTSTRAP=1`, which overrides the setting) makes the download happen automatically on SessionStart. |
 
 **What the binary does on the network.** The engine runs as a per-user background process that
 listens only on a private Unix socket. Its only HTTP client (`ureq` with `rustls`) lives in the
 opt-in Jev module, which is off by default; with Jev off the engine makes no network
-connections. The download above is done by the setup skill (first install) or `ah-hook install` (later installs and updates), not by the engine. The sources
+connections. The download above is done by `hooks/install.sh` (first install) or `ah-hook install` (later installs and updates), not by the engine. The sources
 are in `ah-engine/` and the dependency list is `ah-engine/Cargo.toml`.
 
 **Build from source.** There is no switch that makes the installer build or fetch from a

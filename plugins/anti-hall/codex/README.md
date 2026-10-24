@@ -39,11 +39,11 @@ anti-hall writes per-project session notes under `.anti-hall/`. Add `.anti-hall/
 
 Same as on Claude Code: `codex/hooks/hooks.json` holds one thin trigger per Codex event,
 `~/.anti-hall/ah-engine/bin/ah-hook <Event> --host codex`, for all ten events. The thin client hands the event to the
-`ah-engine` binary (`~/.anti-hall/ah-engine/bin/ah-engine`); both are installed by the setup skill (standard tools, no shell file shipped),
-and checked against the sha256 pinned in `ah-engine.lock`. No Node runs on a hook path. With no engine,
+`ah-engine` binary (`~/.anti-hall/ah-engine/bin/ah-engine`); both are installed by the plugin's one shell file,
+`hooks/install.sh`, and checked against the sha256 pinned in `ah-engine.lock`. No Node runs on a hook path. With no engine,
 or when it cannot answer, the hook lets the call through and prints one notice per session. The Codex hook table, its rules, settings and texts are the plugin's `engine/` files (shared with
 Claude, hot-reloaded, with last-known-good and pristine copies). `PermissionRequest`, `PostCompact` and `SubagentStart` have a
-thin trigger but no hook entries yet, so they answer with the neutral no-op. The download is off by default (the setup skill installs on request; the setting
+thin trigger but no hook entries yet, so they answer with the neutral no-op. The download is off by default (the setup skill or `sh hooks/install.sh --download` installs on request; the setting
 `engine.bootstrap` = true or `AH_ENGINE_BOOTSTRAP=1` makes it automatic). Full description and rollback:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md). Telemetry is local only and read with
 `ah-engine telemetry summary`.
