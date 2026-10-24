@@ -488,6 +488,7 @@ fn parse_haiku(q: &Question, text: &str) -> Option<(Answer, f64, String)> {
 }
 
 /// Ask Haiku directly with the labelled pack; the answer must cite a line that is in the pack.
+#[allow(clippy::too_many_arguments)] // one ask: its inputs are the ask
 fn ask_haiku(home: &Path, cfg: &Cfg, q: &Question, pack: &str, ids: &[String], o: &mut Outcome, env: &Env, alias: &str) {
     let w = word("reason_no_answer");
     let st = Settings { home: home.to_string_lossy().into_owned(), env: cli::process_env() };

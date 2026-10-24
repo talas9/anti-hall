@@ -119,7 +119,7 @@ fn no_command_the_shipped_texts_name_exits_unable_without_node() {
     let cmds = shipped_commands();
     assert!(cmds.len() > 15, "the scan found too few commands: {cmds:?}");
     let scratch = std::env::temp_dir().join(format!("ah-shipped-cmds-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&scratch);
+    ah_engine::discard::harmless(fs::remove_dir_all(&scratch)); // keep: our own scratch directory
     let (home, repo) = (scratch.join("home"), scratch.join("repo"));
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&repo).unwrap();
@@ -193,7 +193,7 @@ fn no_command_the_shipped_texts_name_exits_unable_without_node() {
         assert_eq!(o.status.code(), Some(2), "inbox {sub}: {out}{}", String::from_utf8_lossy(&o.stderr));
         assert!(out.contains("\"reason\":\"no-inbox-path\"") && out.contains("\"id\":\"fake-ws-1\""), "inbox {sub}: {out}");
     }
-    let _ = fs::remove_dir_all(&scratch);
+    ah_engine::discard::harmless(fs::remove_dir_all(&scratch)); // keep: our own scratch directory
     let now: BTreeSet<&str> = unable.iter().map(|(k, _)| k.as_str()).collect();
     let known: BTreeSet<&str> = KNOWN_UNABLE.iter().copied().collect();
     let new: Vec<_> = unable.iter().filter(|(k, _)| !known.contains(k.as_str())).collect();

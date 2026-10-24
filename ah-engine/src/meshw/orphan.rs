@@ -121,6 +121,7 @@ impl<'a> Classifier<'a> {
     }
 
     /// [`Classifier::new`] with the store of the projection and its invocation: the forwarded-drained proof is made too.
+    #[cfg(test)] // only the tests build a classifier with a store
     pub(crate) fn with_store(inv: &Inv, store: &'a MeshStore, worktrees: Vec<String>) -> Classifier<'a> {
         Classifier {
             home: inv.home.clone(),

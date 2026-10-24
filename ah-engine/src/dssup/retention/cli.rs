@@ -111,11 +111,7 @@ fn legacy_summary(v: &Value) -> OVal {
     } else {
         (v["eligible"].as_bool().unwrap_or(false), v["reason"].as_str().map(str::to_string), v["files"].as_array().map_or(0, Vec::len))
     };
-    OVal::Obj(vec![
-        ("eligible".into(), OVal::Bool(eligible)),
-        ("reason".into(), reason.map_or(OVal::Null, |r| OVal::Str(r))),
-        ("files".into(), n(files as f64)),
-    ])
+    OVal::Obj(vec![("eligible".into(), OVal::Bool(eligible)), ("reason".into(), reason.map_or(OVal::Null, OVal::Str)), ("files".into(), n(files as f64))])
 }
 
 /// What `pruneStore` answers before it opens anything: `disabled`, `not-a-sqlite-store` (a journal-backed store) or `no-store` (no

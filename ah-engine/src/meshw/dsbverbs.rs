@@ -390,6 +390,7 @@ struct Archived {
     skipped: Option<String>,
 }
 
+#[allow(clippy::type_complexity)] // a skip-reason callback
 fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> Archived {
     let argv = vec![text("devswarm_cli.action_archive").to_string(), id.to_string()];
     let args = crate::meshw::args::parse(&argv);
@@ -414,6 +415,7 @@ fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Op
 
 /// `revalidate(desc)` of `reap-stale`: why a candidate must NOT be archived now, else `None` (the verdict is still stale or escalated,
 /// no fresh heartbeat, no recent commit, and the descriptor still belongs to this project).
+#[allow(clippy::too_many_arguments)] // one recheck: its inputs are the recheck
 fn reap_recheck(inv: &Inv, id: &str, wt: &str, repo_key: &str, desc: &OVal, fresh_ms: f64, idle_ms: f64, states: &[&str]) -> Option<&'static str> {
     let now = clock(inv) as f64;
     if !verdict_status(inv, id).is_some_and(|t| states.contains(&t.as_str())) {
@@ -1003,6 +1005,7 @@ fn park_wip(wt: &str, id: &str, branch: &str, park_branch: &str, dirty: bool) ->
 
 /// The snapshot commit of a dirty worktree: tracked changes, then the untracked files that are not credentials, staged into the
 /// private index `tmp/index`, written as a tree and committed on top of HEAD (no ref moves).
+#[allow(clippy::result_large_err)] // Parked carries the whole parked-row record; the error path is rare
 fn snapshot_commit(wt: &str, id: &str, branch: &str, tmp: &std::path::Path, included: &mut Vec<String>, excluded: &mut Vec<String>) -> Result<String, Parked> {
     let index = tmp.join(text("devswarm_cli.rs_index_name"));
     let env: [(&str, &std::path::Path); 1] = [(text("devswarm_cli.rs_index_env"), index.as_path())];
@@ -1887,9 +1890,7 @@ mod tests {
         assert_eq!(g_idle(&open), held, "a tool result after the last end_turn: the turn is open");
         let tool = r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"tool_use","content":[]}}"#;
         assert_eq!(g_idle(tool), held, "an assistant entry that did not end its turn");
-        let bg = format!(
-            r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":"end_turn","content":[{{"type":"tool_use","input":{{"run_in_background":true}}}}]}}}}"#
-        );
+        let bg = r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"tool_use","input":{"run_in_background":true}}]}}"#.to_string();
         assert_eq!(g_idle(&bg), held, "background work launched and not shown finished");
         assert_eq!(g_idle("not json at all"), held, "a tail with no turn entry proves nothing");
     }

@@ -81,7 +81,7 @@ fn base(path: &str) -> &str {
 fn kind_of(words: &[String]) -> Option<Kind> {
     let prog = base(words.first()?);
     let has = |key: &str| words.iter().skip(1).any(|w| defaults::list(key).iter().any(|k| k == w));
-    let is = |key: &str| defaults::list(key).iter().any(|n| *n == prog);
+    let is = |key: &str| defaults::list(key).contains(&prog);
     if is("post_update.engine_names") && has("post_update.watch_words") {
         Some(Kind::Watcher)
     } else if is("post_update.engine_names") && has("post_update.serve_words") {
@@ -406,7 +406,7 @@ fn clean(o: &Opts, bin: &Path, all: &[Proc], rep: &mut Report) {
         let Some(prefix) = prefixes.iter().find(|p| name.starts_with(p.as_str())) else { continue };
         let suffix = name.get(prefix.len() - 1..).unwrap_or_default();
         let canon = std::fs::canonicalize(&path).ok();
-        let kept = keep.iter().any(|k| *k == suffix) || canon == current || canon.as_ref().is_some_and(|c| running.contains(c));
+        let kept = keep.contains(&suffix) || canon == current || canon.as_ref().is_some_and(|c| running.contains(c));
         if kept || !e.file_type().is_ok_and(|t| t.is_file()) || age_s(&path) < min_age {
             continue;
         }

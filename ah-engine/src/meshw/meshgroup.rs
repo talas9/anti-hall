@@ -257,7 +257,7 @@ impl Dedup {
         }
         let Ok(total) = reader.message_count(id) else { return Ok(d) };
         let end = c.min(total);
-        let start = end.saturating_sub(defaults::num("mesh_write.consumed_hash_seed_cap") as u64);
+        let start = end.saturating_sub(defaults::num("mesh_write.consumed_hash_seed_cap"));
         let mut seen = start;
         let read = reader.for_each_message(id, start, |row| {
             if seen >= end {

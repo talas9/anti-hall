@@ -135,6 +135,7 @@ impl<'de> Deserialize<'de> for Sc {
 
 /// One element of a `content` array. Only objects carry fields; anything else reads as a block with none (`b.type` of a
 /// string, a number or an array is `undefined`).
+#[derive(Default)]
 struct Blk {
     ty: Option<Sc>,
     tool_use_id: Option<Sc>,
@@ -145,12 +146,6 @@ struct Blk {
     question: Option<String>,
     /// `isMailboxTool(block)` of a tool call.
     mailbox: bool,
-}
-
-impl Default for Blk {
-    fn default() -> Blk {
-        Blk { ty: None, tool_use_id: None, text: None, id: None, name: None, question: None, mailbox: false }
-    }
 }
 
 struct BlkVisitor;

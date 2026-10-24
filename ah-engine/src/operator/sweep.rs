@@ -270,19 +270,6 @@ pub fn run(tree: Option<&Path>, roots: &[PathBuf], dry: bool, units: bool, say: 
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_cron_block_is_a_marker_and_the_line_after_it() {
-        let text = "0 * * * * keep\n# anti-hall-devswarm-ingest-abc123\n* * * * * run it\n# anti-hall-devswarm-ingestx\n5 * * * * other\n";
-        let (next, n) = strip_cron(text);
-        assert_eq!(n, 1);
-        assert_eq!(next, "0 * * * * keep\n# anti-hall-devswarm-ingestx\n5 * * * * other\n");
-    }
-}
-
 /// `doctor --repair`'s share: the legacy artefacts and the state migrations, plus the stale files of the other installed plugin roots
 /// that are at the same version as the plugin root the engine runs from (a different version is another install's tree, not a newer
 /// copy of this one).
@@ -297,4 +284,17 @@ pub fn for_doctor(dry: bool, say: &mut dyn FnMut(String)) -> Outcome {
     let mine = tree.as_deref().and_then(version_of);
     let roots: Vec<PathBuf> = super::routine::plugin_roots().into_iter().filter(|r| mine.is_some() && version_of(r) == mine).collect();
     run(tree.as_deref(), &roots, dry, false, say)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cron_block_is_a_marker_and_the_line_after_it() {
+        let text = "0 * * * * keep\n# anti-hall-devswarm-ingest-abc123\n* * * * * run it\n# anti-hall-devswarm-ingestx\n5 * * * * other\n";
+        let (next, n) = strip_cron(text);
+        assert_eq!(n, 1);
+        assert_eq!(next, "0 * * * * keep\n# anti-hall-devswarm-ingestx\n5 * * * * other\n");
+    }
 }

@@ -892,14 +892,14 @@ fn take_turns(env: &Env, st: &mut State) {
             let after = ref_end(&t.2, &tag)?;
             Some(parse_ref_reply(&t.2[after..]))
         });
-        if let Some((class, text, min)) = tagged {
-            if class != ans("prose") || budget > 0 {
-                if class == ans("prose") {
-                    budget -= 1;
-                }
-                record(env, st, &id, class, super::cap(&text, lim("reason_cap")), min, src("ref"));
-                continue;
+        if let Some((class, text, min)) = tagged
+            && (class != ans("prose") || budget > 0)
+        {
+            if class == ans("prose") {
+                budget -= 1;
             }
+            record(env, st, &id, class, super::cap(&text, lim("reason_cap")), min, src("ref"));
+            continue;
         }
         let tool = new
             .iter()
@@ -1014,7 +1014,7 @@ fn median(mut v: Vec<u64>) -> Option<u64> {
 fn rollup(all: &[&Nudge], since: u64) -> Value {
     let ns: Vec<&&Nudge> = all.iter().filter(|n| n.sent_at >= since && n.trigger != word("trigger_dead")).collect();
     let total = ns.len() as u64;
-    let pct = |c: usize| if total == 0 { 0 } else { c as u64 * super::fmtn("pct") / total };
+    let pct = |c: usize| (c as u64 * super::fmtn("pct")).checked_div(total).unwrap_or(0);
     let acted = [out("acted_stopped"), out("acted_progress"), out("finished")];
     let count = |f: &dyn Fn(&Nudge) -> bool| ns.iter().filter(|n| f(n)).count();
     let mut by_trigger = serde_json::Map::new();

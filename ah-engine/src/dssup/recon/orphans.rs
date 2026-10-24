@@ -312,7 +312,14 @@ impl Planner<'_> {
         let mut separate: Vec<Unit> = Vec::new();
         let mut entry = json!({"id": id, "action": defaults::text("devswarm_recon.action_adopted")});
         if !group.is_empty() {
-            let cx = Cx { home, store: self.repo_key, rd: &self.rd, now: ctx.now, rows: &[group.as_slice(), &[adopted_row.clone()]].concat(), inv: &self.inv };
+            let cx = Cx {
+                home,
+                store: self.repo_key,
+                rd: &self.rd,
+                now: ctx.now,
+                rows: &[group.as_slice(), std::slice::from_ref(&adopted_row)].concat(),
+                inv: &self.inv,
+            };
             let survivor = super::survivor::pick(&cx, &group)?;
             match survivor {
                 Some(sid) => {

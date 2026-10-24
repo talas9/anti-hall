@@ -396,19 +396,13 @@ fn apply_step(plan: &mut OVal, raw: &str, status: &str, now: f64) -> Result<Resu
         return Err(null_read(prop)); // stepsDone(plan) reads every step
     }
     let before = steps_done(plan);
-    match &steps_of(plan)[idx] {
-        v @ (OVal::Str(_) | OVal::Num(_) | OVal::Bool(_)) => {
-            let kind = match v {
-                OVal::Str(_) => "mesh_write.js_kind_string",
-                OVal::Num(_) => "mesh_write.js_kind_number",
-                _ => "mesh_write.js_kind_boolean",
-            };
-            return Err(Throw(defaults::render(
-                "mesh_write.js_err_create_prop",
-                &[("prop", &prop), ("kind", &defaults::text(kind)), ("value", &js_string(v))],
-            )));
-        }
-        _ => {}
+    if let v @ (OVal::Str(_) | OVal::Num(_) | OVal::Bool(_)) = &steps_of(plan)[idx] {
+        let kind = match v {
+            OVal::Str(_) => "mesh_write.js_kind_string",
+            OVal::Num(_) => "mesh_write.js_kind_number",
+            _ => "mesh_write.js_kind_boolean",
+        };
+        return Err(Throw(defaults::render("mesh_write.js_err_create_prop", &[("prop", &prop), ("kind", &defaults::text(kind)), ("value", &js_string(v))])));
     }
     step_set(plan, idx, "status", s(status));
     note_done_drop(plan, before);

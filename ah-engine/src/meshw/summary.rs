@@ -269,7 +269,8 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, cwd: &str, id: &str,
     let ns = defaults::text(if nd { "mesh_write.cursor_ns_nd" } else { "mesh_write.cursor_ns_store" });
     let floor = defaults::text("mesh_write.cursor_floor_reader");
     let row = rows.iter().find(|r| r["ns"].as_str() == Some(ns) && r["reader"].as_str() == Some(floor));
-    let v = if !nd {
+
+    if !nd {
         match row {
             Some(r) => stored_position(&r["value"]),
             None => cur.legacy_store_floor(st, id),
@@ -304,8 +305,7 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, cwd: &str, id: &str,
             }
             None => cp.map_or(0.0, |p| read_cursor(Path::new(&ident::resolve(cwd, &p)))),
         }
-    };
-    v
+    }
 }
 
 /// A `reader_cursors` value as the store returns it: a finite non-negative number floored, else 0.

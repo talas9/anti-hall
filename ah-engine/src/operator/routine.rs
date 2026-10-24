@@ -111,8 +111,8 @@ impl Log {
     fn say(&mut self, line: String) {
         if !self.json {
             let mut out = std::io::stdout().lock();
-            let _ = writeln!(out, "{line}"); // keep: a closed pipe must not stop an install half way
-            let _ = out.flush(); // keep: same
+            crate::discard::harmless(writeln!(out, "{line}")); // keep: a closed pipe must not stop an install half way
+            crate::discard::harmless(out.flush()); // keep: same
         }
         self.lines.push(line);
     }
@@ -150,8 +150,8 @@ fn run(bin: &Path, args: &[&str], envs: &[(String, String)], limit: Duration, sc
             Ok(Some(st)) => break st.code(),
             Ok(None) if Instant::now() < until => std::thread::sleep(defaults::millis("post_update.poll_ms")),
             _ => {
-                let _ = child.kill(); // keep: a child that already exited is the outcome we wanted
-                let _ = child.wait(); // keep: reaping only
+                crate::discard::harmless(child.kill()); // keep: a child that already exited is the outcome we wanted
+                crate::discard::harmless(child.wait()); // keep: reaping only
                 break None;
             }
         }
@@ -440,7 +440,7 @@ fn commit(staged: &[Staged]) -> Result<(), String> {
 
 fn unstage(staged: &[Staged]) {
     for s in staged {
-        let _ = std::fs::remove_file(&s.tmp); // keep: our own temp file; absent is fine
+        crate::discard::harmless(std::fs::remove_file(&s.tmp)); // keep: our own temp file; absent is fine
     }
 }
 
@@ -467,7 +467,7 @@ impl Hold {
     fn refresh(&self) {
         if self.on {
             let until = (now_s() + self.ttl.as_secs()) * 1000;
-            let _ = write_atomic(&self.file, &until.to_string()); // keep: a failed refresh only shortens the hold
+            crate::discard::harmless(write_atomic(&self.file, &until.to_string())); // keep: a failed refresh only shortens the hold
         }
     }
 }
@@ -475,7 +475,7 @@ impl Hold {
 impl Drop for Hold {
     fn drop(&mut self) {
         if self.on {
-            let _ = write_atomic(&self.file, self.before.as_deref().unwrap_or("0")); // keep: the TTL expires it anyway
+            crate::discard::harmless(write_atomic(&self.file, self.before.as_deref().unwrap_or("0"))); // keep: the TTL expires it anyway
         }
     }
 }
@@ -616,7 +616,7 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
         }
     }
     let empty = scratch.join(t("routine.empty_toml"));
-    let _ = std::fs::write(&empty, ""); // keep: validate only needs a readable empty file; a failure shows as a validate problem
+    crate::discard::harmless(std::fs::write(&empty, "")); // keep: validate only needs a readable empty file; a failure shows as a validate problem
     for (i, root) in tg.roots.iter().enumerate() {
         let sim = scratch.join(format!("sim{i}"));
         let mut copy_ok = true;
@@ -823,7 +823,7 @@ fn summary(log: &mut Log, o: &Opts, fields: Value, done: &Done) -> i32 {
         v["ok"] = json!(matches!(done, Done::Ok));
         v["lines"] = json!(log.lines);
         let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{v}"); // keep: nothing to do about a closed pipe at the very end
+        crate::discard::harmless(writeln!(out, "{v}")); // keep: nothing to do about a closed pipe at the very end
     }
     done.code()
 }
@@ -844,7 +844,7 @@ pub fn run_routine(p: &Parsed) -> i32 {
     }
     let mut log = Log { json: o.json, lines: Vec::new() };
     let (code, fields) = if o.rollback { manual_rollback(&o, &scratch, &mut log) } else { install(&o, &scratch, &mut log) };
-    let _ = std::fs::remove_dir_all(&scratch); // keep: our own scratch directory (created above under the temp dir)
+    crate::discard::harmless(std::fs::remove_dir_all(&scratch)); // keep: our own scratch directory (created above under the temp dir)
     summary(&mut log, &o, fields, &code)
 }
 
@@ -1075,7 +1075,7 @@ fn do_install(
     let had_prev = tg.engine.is_file() && !same;
     if had_prev {
         let prev = tg.engine.with_file_name(format!("{}{}", t("rollback.bin_name"), t("updater.prev_suffix")));
-        let _ = stage_copy(&tg.engine, &prev).and_then(|tmp| std::fs::rename(tmp, &prev)); // keep: the journal copy is the real rollback source
+        crate::discard::harmless(stage_copy(&tg.engine, &prev).and_then(|tmp| std::fs::rename(tmp, &prev))); // keep: the journal copy is the real rollback source
     }
     if let Err(e) = commit(&staged) {
         log.say(e);
@@ -1169,7 +1169,7 @@ fn prune_deploys(tg: &Target) -> usize {
     let keep = defaults::num("routine.keep_deploys").max(1) as usize;
     while d.len() > keep {
         let old = d.remove(0);
-        let _ = std::fs::remove_dir_all(&old); // keep: an old saved copy beyond the kept count (owner-specified cleanup); a failure leaves it for the next run
+        crate::discard::harmless(std::fs::remove_dir_all(&old)); // keep: an old saved copy beyond the kept count (owner-specified cleanup); a failure leaves it for the next run
     }
     d.len()
 }
@@ -1201,7 +1201,7 @@ pub fn engine_facts() -> Value {
     } else {
         json!({"error": t("routine.word_no_client")})
     };
-    let _ = std::fs::remove_dir_all(&scratch); // keep: our own scratch directory
+    crate::discard::harmless(std::fs::remove_dir_all(&scratch)); // keep: our own scratch directory
     // the one place the Updates page's "newer release" is decided: it must not repeat the comparison with its own rules
     let release_newer = latest
         .get("version")

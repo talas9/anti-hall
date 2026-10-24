@@ -619,14 +619,14 @@ pub(crate) fn promote_full(
         Ok(())
     })();
     let mut registry_error = None;
-    if let Err(msg) = registry {
-        if case_c {
-            // R22 P2: descriptor promoted, registry retries on the next call; the failure is reported, never fatal
-            eprintln!("{}", fill_once(defaults::text("mesh_write.msg_promote_registry_stderr"), &[("id", id.to_string()), ("error", msg.clone())]));
-            registry_error = Some(msg);
-        }
-        // the divergence repair of a promoted descriptor retries silently
+    if let Err(msg) = registry
+        && case_c
+    {
+        // R22 P2: descriptor promoted, registry retries on the next call; the failure is reported, never fatal
+        eprintln!("{}", fill_once(defaults::text("mesh_write.msg_promote_registry_stderr"), &[("id", id.to_string()), ("error", msg.clone())]));
+        registry_error = Some(msg);
     }
+    // the divergence repair of a promoted descriptor retries silently
     if case_c {
         let msg = fill_once(defaults::text("devswarm_cli.msg_promoted"), &[("id", id.to_string()), ("marker", marker.to_string())]);
         crate::meshw::clog::event(inv, defaults::text("devswarm_cli.op_promoted"), &msg, vec![("id", s(id)), ("to", s(&sid))]);
@@ -718,6 +718,7 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
 
 /// Node's ownership refusal of an acking read (`read-primary <id> refused (<cause>)`, exit 2, logged): the cause names the leg that
 /// failed, or `unregistered-workspace` when the id has nothing at all behind it (`unbacked`).
+#[allow(clippy::too_many_arguments)] // one refusal: its inputs are the refusal
 fn ownership_refusal(
     inv: &Inv,
     action: &str,
@@ -2146,7 +2147,7 @@ mod tests {
         for f in [&old, &fresh, &own, &other] {
             std::fs::write(f, "{}").unwrap();
         }
-        let keep = defaults::num("mesh_write.receipt_keep_ms") as u64;
+        let keep = defaults::num("mesh_write.receipt_keep_ms");
         let long_ago = std::time::SystemTime::now() - std::time::Duration::from_millis(keep + 3_600_000);
         for f in [&old, &own, &other] {
             std::fs::File::options().write(true).open(f).unwrap().set_modified(long_ago).unwrap();
