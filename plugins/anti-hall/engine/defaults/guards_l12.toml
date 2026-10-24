@@ -4,43 +4,43 @@
 
 [edit_guard.msg_what]
 doc = "Heading of the delegation block ({tool} is the tool name, {who} the next text)."
-value = "{tool} blocked: the {who} does not touch files directly."
+value = "{tool} is not allowed: the {who} does not edit files directly."
 
 [edit_guard.msg_self_edit_what]
 doc = "Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name)."
-value = "{tool} of .anti-hall/edit-allow.json is blocked."
+value = "{tool} on .anti-hall/edit-allow.json is not allowed."
 
 [edit_guard.msg_self_edit_why]
 doc = "Why the repository's own edit allowlist is never edited by the main thread."
-value = "That file decides which files the main thread may edit directly, so the main thread never edits it."
+value = "That file decides which files the main thread may edit, so the main thread never edits it."
 
 [edit_guard.msg_self_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "ask the user to change it (or delegate the change to {sub}), then the user re-trusts it with `~/.anti-hall/ah-engine/bin/ah-engine settings trust-edit-allow <repo> --confirmed`."
+value = "ask the user to change it (or delegate to {sub}); the user then re-trusts it with `~/.anti-hall/ah-engine/bin/ah-engine settings trust-edit-allow <repo> --confirmed`."
 
 [edit_guard.msg_outside_what]
 doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
-value = "{tool} of a session-handover doc outside the project is blocked."
+value = "{tool} on a handover file outside the project is not allowed."
 
 [edit_guard.msg_outside_why]
 doc = "Why a handover document outside the project is blocked."
-value = "Handovers live inside the project, where handover-resume finds them; this path is outside it."
+value = "Handovers live inside the project, where they are found on resume."
 
 [edit_guard.msg_outside_instead]
 doc = "What to do instead ({path} is the canonical handover path)."
-value = "write it yourself (the main thread may; no subagent, no override needed) at {path}."
+value = "write it yourself at {path}; no subagent or override is needed."
 
 [edit_guard.msg_new_what]
 doc = "Heading of the block on a new handover document at the wrong place ({tool} is the tool name)."
-value = "{tool} of a new session-handover doc at this path is blocked."
+value = "{tool} on a new handover file at this path is not allowed."
 
 [edit_guard.msg_new_why]
 doc = "Why a new handover document is redirected."
-value = "New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HANDOVER.md (the `handover` skill computes <date>/<session-id>)."
+value = "New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOVER.md."
 
 [edit_guard.msg_new_instead]
 doc = "What to do instead for a new handover document."
-value = "write it under .anti-hall/handovers/** and copy elsewhere afterwards if the project wants one."
+value = "write it there and copy it elsewhere afterwards if the project wants one."
 
 [edit_guard.msg_new_allowed]
 doc = "What stays allowed next to a redirected handover document."
@@ -48,19 +48,19 @@ value = ".anti-hall/handovers/**."
 
 [edit_guard.msg_new_override]
 doc = "The override line of the handover redirect ({skip} is the skip command)."
-value = "{skip} (~/.anti-hall/skip.json, 15-min TTL), then retry"
+value = "tell the agent \"skip edit-guard\" (lasts 15 minutes)."
 
 [edit_guard.msg_patch_what]
 doc = "Heading of the block on an apply_patch the parser rejects ({error} is the parser's message)."
-value = "this apply_patch could not be parsed ({error}), so its targets cannot be checked."
+value = "this apply_patch could not be read ({error}), so its targets can't be checked."
 
 [edit_guard.msg_patch_why]
 doc = "Why an unparseable patch is blocked on the main thread."
-value = "Edits in the main thread must be checked against the delegation rule."
+value = "Edits in the main thread are checked against the delegation rule."
 
 [edit_guard.msg_patch_instead]
 doc = "What to do instead for an unparseable patch ({sub} names the worker)."
-value = "send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the edit to {sub}."
+value = "send a well-formed patch (*** Begin Patch ... *** End Patch) or delegate the edit to {sub}."
 
 [edit_guard.handover_parts]
 doc = "The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory."

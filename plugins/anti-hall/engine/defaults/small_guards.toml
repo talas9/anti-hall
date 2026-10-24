@@ -91,7 +91,11 @@ value = " anti-hall · "
 
 [guardkit.msg_labels]
 doc = "Labels of the optional lines of a block or advisory message."
-value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "Override (only if the user explicitly asked): " }
+value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "To allow this once: " }
+
+[messages.style_guide]
+doc = "Style guide for every block or advisory text a guard shows (owner rule 2026-10-24: blocking messages must be human friendly). Line 1: `⛔ <plain-words name>: <what was stopped, in plain words>`. Line 2: `Why: <one short sentence>`. Line 3: `Do instead: <one concrete action>`. Optional last lines: `To allow this once: tell the agent \"skip <guard>\"` (override phrased for the human) and `Details: <one file path>`. At most 4 lines and about 350 characters before the details. No raw ids, hashes, epoch numbers or JSON in the message; long instructions (file paths, file headers, ledger rules, the mechanical override) go in a details file the engine writes (see tasklist_guard.details_dir). Keep every {placeholder} the code fills; keep key names stable."
+value = "⛔ <name>: <what was stopped, in plain words>\nWhy: <one short sentence>\nDo instead: <one concrete action>\nTo allow this once: tell the agent \"skip <guard>\"\nDetails: <file path, only when long instructions exist>"
 
 # ---- merge-side-pick ----------------------------
 
@@ -1392,27 +1396,27 @@ value = 'output|^-o'
 
 [coordinator_work.nudge_what]
 doc = "Advisory headline; {count} is the number of work calls in the window and {minutes} the window length."
-value = "{count} state-changing calls in the main thread within {minutes} min."
+value = "{count} file-changing steps in the main thread within {minutes} min."
 
 [coordinator_work.nudge_instead]
 doc = "Advisory advice without a block threshold."
-value = "delegate the rest to a subagent now."
+value = "hand the rest to a subagent now."
 
 [coordinator_work.nudge_instead_block]
 doc = "Advisory advice with a block threshold; {block_at} is the call that is blocked."
-value = "delegate the rest to a subagent now; call {block_at} in the window is blocked."
+value = "hand the rest to a subagent now; step {block_at} in this window will be blocked."
 
 [coordinator_work.block_what]
 doc = "Block headline; {count} is the number of work calls in the window and {minutes} the window length."
-value = "{count} state-changing calls in the main thread within {minutes} min; this one is blocked."
+value = "this step is blocked: {count} file-changing steps in the main thread within {minutes} min."
 
 [coordinator_work.block_why]
 doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."
-value = "NOT a human gate: do not ask the human and do not mark yourself waiting. Too much hands-on work in the main thread; this clears automatically in about {clear_min} min as calls age out."
+value = "Too much hands-on work in the main thread. This is not a question for the user; it clears by itself in about {clear_min} min."
 
 [coordinator_work.block_instead]
 doc = "What to do instead of a blocked work call. {clear_min} is the minutes until the window clears."
-value = "right now, hand this and the remaining steps (patch applies included) to a subagent (Agent tool) that returns a tight summary, or keep working on reads and retry this call in about {clear_min} min. A suite-scale test run is not for a subagent (the lane-test-guard blocks it there): run it yourself in the main thread once the window clears. A DevSwarm child workspace is never counted by this guard."
+value = "hand this and the remaining steps to a subagent that returns a short summary, or read for about {clear_min} min and retry. Test suites run here once the window clears."
 
 [coordinator_work.block_allowed]
 doc = "What stays allowed past the block threshold."
@@ -1652,15 +1656,15 @@ value = [".anti-hall", "bin"]
 
 [edit_guard.msg_launcher_what]
 doc = "Launcher-directory block headline; {tool} is the tool name."
-value = "{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked."
+value = "{tool} into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed."
 
 [edit_guard.msg_launcher_why]
 doc = "Launcher-directory block reason."
-value = "anti-hall installs and refreshes those files itself; overwriting one would run arbitrary code under a trusted name."
+value = "anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name."
 
 [edit_guard.msg_launcher_instead]
 doc = "Launcher-directory block advice."
-value = "leave that directory alone."
+value = "leave that folder alone."
 
 [edit_guard.msg_launcher_allowed]
 doc = "What stays allowed next to the launcher directory."

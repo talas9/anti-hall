@@ -189,6 +189,12 @@ function tlAckPath(home, session) {
   return home + '/' + ah.cfg('paths.base_dir') + '/' + dir + '/' + dir + '-' + tlSafe(session).slice(0, tlN('ack_session_max')) + tlT('state_ext');
 }
 
+// The details file of a block (the long instructions the short message points at): {abs, rel (relative to the home)}.
+function tlDetailsPath(home, session) {
+  var rel = ah.cfg('paths.base_dir') + '/' + tlT('details_dir') + '/' + tlT('guard_name') + '-' + tlSafe(session).slice(0, tlN('ack_session_max')) + tlT('details_ext');
+  return { abs: home + '/' + rel, rel: rel };
+}
+
 // `entryIsEvidence(entry)` of lib/task-tool-evidence.js.
 function tlEvidenceEntry(e) {
   if (!jx.isObj(e)) return false;
@@ -470,13 +476,13 @@ function tlFire(f) {
   var progressPath = f.progressAbs ? f.progressAbs : f.progressRel;
   var historyPath = f.historyAbs ? f.historyAbs : f.historyRel;
   var header = text.render(tlT('header'), { session: f.rawSid ? f.rawSid : ah.cfg('taskkit.unknown_session'), started: started });
-  var what, why;
+  var what, why, priorPath = null;
   if (!scan.sawTaskActivity && scan.taskStoreReset) { what = tlT('what_reset'); why = tlT('why_reset'); }
   else if (!scan.sawTaskActivity) {
     what = text.render(tlT('what_no_tasks'), { n: String(work) });
     why = tlT('why_no_tasks');
     var prior2 = f.root ? tlPriorState(f.root, f.date, f.sid) : null;
-    if (prior2) why += text.render(tlT('prior_snapshot'), { path: prior2 });
+    if (prior2) { why += text.render(tlT('prior_snapshot'), { path: prior2 }); priorPath = prior2; }
   } else if (stale) { what = text.render(tlT('what_stalled'), { n: String(scan.inProgressCount) }); why = tlT('why_stalled'); }
   else { what = text.render(tlT('what_progress'), { n: String(work), path: progressPath }); why = tlT('why_progress'); }
   var instead;
@@ -488,9 +494,18 @@ function tlFire(f) {
     if (!scan.sawTaskActivity && scan.taskStoreReset) instead += codex ? tlT('instead_reset_codex') : tlT('instead_reset');
     if (stale && scan.sawTaskActivity) instead += tlT('instead_stalled');
     instead += codex ? tlT('instead_capture_codex') : tlT('instead_capture');
-    instead += text.render(tlT('instead_files'), { progress: progressPath, header: header, history: historyPath, append: codex ? tlT('append_codex') : tlT('append_claude') });
   }
-  var base = text.message('block', tlT('guard_name'), { what: what, why: why, instead: instead });
+  // the long instructions (file paths, header, ledger rules, the mechanical override) go to a details file the short message points at
+  var details = null, extra = [];
+  if (!reduced && hm !== null) {
+    var dp = tlDetailsPath(hm, session);
+    var dbody = tlT('details_head') + '\n\n' + text.render(tlT('instead_files'), { progress: progressPath, header: header, history: historyPath, append: codex ? tlT('append_codex') : tlT('append_claude') });
+    if (priorPath) dbody += '\n\n' + text.render(tlT('prior_detail'), { path: priorPath });
+    dbody += '\n\n' + text.render(tlT('ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: tlAckPath(hm, session) }) + '\n';
+    details = { rel: dp.rel, body: dbody };
+    extra.push(tlT('details_label') + dp.abs);
+  }
+  var base = text.message('block', tlT('guard_name'), { what: what, why: why, instead: instead, override: tlT('ack_human'), extra: extra });
   var reason = tlSanitize(base);
   var omc = tlOmcActive(p, home, f.now);
   var advisory = null;
@@ -514,10 +529,6 @@ function tlFire(f) {
     } else policy = { rel: null, buckets: {}, budget: 0, key: '' };
   }
   var finalReason = advisory ? advisory.text : reason;
-  if (hm !== null) {
-    var hint = text.render(tlT('ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: tlAckPath(hm, session) });
-    finalReason = tlSanitize(finalReason + '\n' + hint);
-  }
   var out = JSON.stringify({ decision: 'block', reason: finalReason }) + '\n';
 
   // effects, in Node order
@@ -526,6 +537,7 @@ function tlFire(f) {
   // the advisories go to stderr: stdout stays empty or ONE JSON object, which the dispatcher can merge with another Stop hook's JSON
   if (omc) return { exact: { code: 0, out: '', err: adv.gate(ah.cfg('advisory.kind_tasklist_omc'), session) ? tlT('omc_text') : '' } };
   if (advisory) { try { tlStamp(home, advisory.marker, advisory.body); } catch (e) { /* best-effort cap */ } }
+  if (details) { try { tlStamp(home, details.rel, details.body); } catch (e) { /* the message still stands without its details file */ } }
   if (policy !== null && policy.rel !== null) {
     var now = ah.clock.now(), bk = function (kind) { return safe + '|' + tlT('guard_name') + '|' + kind; };
     var spent = false;

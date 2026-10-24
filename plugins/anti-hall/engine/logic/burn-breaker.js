@@ -102,6 +102,7 @@ function decide(p) {
     what: what,
     why: ah.cfg('burn.msg_why'),
     instead: ah.cfg('burn.msg_instead'),
+    allowed: ah.cfg('burn.msg_allowed'),
     override: ah.cfg('burn.msg_override'),
   });
   // exit 2 with the reason on stdout as a decision and on stderr: Claude reads the decision, Codex honors exit 2 only with the reason on stderr

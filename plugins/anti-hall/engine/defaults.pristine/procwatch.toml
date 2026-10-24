@@ -136,31 +136,31 @@ value = "procwatch"
 
 [procwatch.msg_orphans_what]
 doc = "Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note."
-value = "{n} process(es) left behind by ended Claude sessions: {list}{more}."
+value = "{n} leftover process(es) from ended Claude sessions, with the folder each ran in (some may belong to other projects): {list}{more}."
 
 [procwatch.msg_orphans_why]
 doc = "Why the orphan summary matters."
-value = "They keep running (ports, CPU, memory) after the session that started them is gone. Modes: {modes}."
+value = "They keep using ports, CPU and memory after their session ended. Modes: {modes}."
 
 [procwatch.msg_orphans_instead]
 doc = "What to do about orphans."
-value = "Nothing was stopped. Opt in per class with procwatch.<class>Mode=kill (/anti-hall:settings), or end a pid yourself after checking it."
+value = "nothing was stopped. Check each folder and end the ones that are yours, or set procwatch.<class>Mode=kill in /anti-hall:settings."
 
 [procwatch.msg_killed]
 doc = "Line added when a sweep stopped orphans; {n} count, {list} the stopped ones."
-value = "Stopped {n} orphan(s) (class in kill mode): {list}."
+value = "Stopped {n} leftover process(es) (their class is set to kill): {list}."
 
 [procwatch.msg_stuck_what]
 doc = "Stuck-agent line; {n} agents, {list} the named ones, {more} the remainder note."
-value = "{n} background agent(s) have shown no output for {minutes}+ minutes: {list}{more}."
+value = "{n} background agent(s) printed nothing for {minutes}+ minutes: {list}{more}."
 
 [procwatch.msg_stuck_why]
 doc = "Why a stuck agent matters."
-value = "It may be hung, waiting on input, or finished without reporting; it keeps its slot and its context until it is dealt with."
+value = "They may be stuck, waiting for input, or finished without reporting, and they keep their slot and context until dealt with."
 
 [procwatch.msg_stuck_instead]
 doc = "What to do about a stuck agent."
-value = "Check its output file or SendMessage it, then TaskStop it if it is dead. Nothing was stopped."
+value = "check each one's output file or message it, then stop it with TaskStop if it is dead. Nothing was stopped."
 
 [procwatch.msg_proc_cwd]
 doc = "Appended to a named process when the report knows the directory it runs in (the project that owns it). Placeholder: {cwd}."

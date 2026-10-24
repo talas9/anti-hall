@@ -261,7 +261,7 @@ value = []
 
 [command.msg_remote_block_why]
 doc = "Why a command on command.remote_block is blocked in the main thread."
-value = "It is irreversible or sensitive: a merge, a release, a repository setting, a secret or a raw gh api write. Hand it to a worker, or ask the owner."
+value = "It is hard to undo or sensitive (a merge, release, repository setting, secret or raw gh api write); hand it to a worker or ask the owner."
 
 [command.gh_oneliner_subcommands]
 doc = "gh group and subcommand pairs that are light when the whole command is one short plain line: they print a line or two and flood nothing, so a subagent for them is noise."
@@ -360,31 +360,31 @@ value = "a sub-agent (spawn_agent, fast-tier model)"
 
 [command.msg_heavy_what]
 doc = "Heading of the heavy-command block ({kind} and {detail} are the next two texts)."
-value = "{kind}{detail} blocked in the main thread."
+value = "{kind}{detail} can't run in the main thread."
 
 [command.msg_heavy_remote]
 doc = "The kind of a state-changing remote command."
-value = "state-changing remote command"
+value = "a command that changes a shared remote"
 
 [command.msg_heavy_plain]
 doc = "The kind of any other heavy command."
-value = "heavy command"
+value = "a heavy command"
 
 [command.msg_heavy_detail_verb]
 doc = "Detail of a block caused by a heavy verb."
-value = " (verb: {label})"
+value = " ({label})"
 
 [command.msg_heavy_detail_category]
 doc = "Detail of a block caused by a heavy pattern or category."
-value = " (category: {label})"
+value = " ({label})"
 
 [command.msg_heavy_why]
 doc = "Why a heavy command is blocked."
-value = "Raw output floods the main thread."
+value = "Its raw output would flood the main conversation."
 
 [command.msg_heavy_remote_why]
 doc = "Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread."
-value = "A push, pull, fetch or gh call talks to a shared remote: it can stall on the network or credentials, and what it changes is shared state. The main thread hands it to a worker; a DevSwarm child workspace pushes its own branch inline."
+value = "Pushes, pulls and gh calls touch a shared remote and can stall on network or credentials, so the main thread hands them to a worker."
 
 [command.pytest_interpreter_re]
 doc = "Regex source of the interpreter word of the single-file pytest check that stays allowed inline (`python3 -m pytest ...`)."
@@ -400,15 +400,15 @@ value = '^(?:-[qvxsl]+|-r[a-zA-Z]*|--(?:quiet|verbose|exitfirst|no-header|disabl
 
 [command.msg_heavy_delegate]
 doc = "What to do instead ({to} names the worker)."
-value = "delegate to {to} (it returns a short summary)"
+value = "hand it to {to}; it returns a short summary"
 
 [command.msg_heavy_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy): `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline); a single command: {delegate}. Never hand a workspace-scale matter to {sub}."
+value = "for a feature, fix or deploy start a workspace: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"`; for one command, {delegate}. Never give workspace-sized work to {sub}."
 
 [command.msg_heavy_allowed]
 doc = "What stays allowed inline (first part)."
-value = "piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `ctest -R <n>`, `<cc> -fsyntax-only`, --check/--dry-run/--list"
+value = "small checks piped to tail/head/wc, e.g. `node --test <1-2 files>`, `python3 -m pytest -q <file>`, `vitest|jest <1-2 files>`, `<cc> -fsyntax-only`, --check, --dry-run"
 
 [command.msg_heavy_allowed_codex]
 doc = "End of the allowed text on Codex."
@@ -416,7 +416,7 @@ value = "."
 
 [command.msg_heavy_allowed_claude]
 doc = "End of the allowed text on Claude (the scratchpad script path)."
-value = "; or a read-only scratchpad script (executable, absolute path, no VAR= prefix) run with run_in_background (never in the foreground)."
+value = "; or a read-only script in the scratchpad run in the background."
 
 [command.msg_heavy_cd_hint]
 doc = "Added when the same command joined with && would qualify for the inline check."
@@ -424,7 +424,7 @@ value = " To run the check inline, use `cd <dir> &&`, not `;`."
 
 [command.msg_edit_what]
 doc = "Heading of the Bash edit parity block ({who} is the next text)."
-value = "Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write) blocked: the {who} does not touch files directly."
+value = "a Bash file write (sed -i, tee, cp, mv, redirect, inline code) is not allowed: the {who} does not edit files directly."
 
 [command.msg_edit_who_orch]
 doc = "Who is blocked when DevSwarm is active."
@@ -436,27 +436,27 @@ value = "coordinator"
 
 [command.msg_edit_why]
 doc = "Why a Bash write is blocked."
-value = "Raw edits never happen in the main thread; the coordinator synthesizes a summary."
+value = "Hands-on edits belong to a worker, which reports back a short summary."
 
 [command.msg_edit_why_orch]
 doc = "Why a Bash write is blocked while DevSwarm is active."
-value = "Raw edits in the main thread flood it; a worker returns a tight summary instead."
+value = "Hands-on edits belong to a worker, which reports back a short summary."
 
 [command.msg_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "spawn {sub} to make this edit and have it report a tight summary."
+value = "spawn {sub} to make the edit and report a short summary."
 
 [command.msg_edit_instead_tier]
 doc = "What to do instead for a DevSwarm Primary whose repo allows workspaces."
-value = "workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"` (guard-exempt, run inline). Small scoped edit: spawn {sub} and have it report a tight summary. Never hand a workspace-scale matter to {sub}."
+value = "for a feature, fix or deploy start a workspace: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"`; for a small edit spawn {sub}. Never give workspace-sized work to {sub}."
 
 [command.msg_edit_notes]
 doc = "What stays allowed (Claude)."
-value = "session notes/reports in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json"
+value = "notes in .anti-hall/history/** or the scratchpad; repo docs need a subagent or a trusted .anti-hall/edit-allow.json"
 
 [command.msg_edit_notes_codex]
 doc = "What stays allowed (Codex)."
-value = "session notes/reports in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/edit-allow.json"
+value = "notes in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/edit-allow.json"
 
 [command.msg_edit_skip_cmd]
 doc = "The command that records consent to skip edit-guard (the native thin client)."
@@ -464,7 +464,7 @@ value = "~/.anti-hall/ah-engine/bin/ah-engine mesh skip edit-guard"
 
 [command.msg_edit_override]
 doc = "The override line ({skip} is the command above)."
-value = "{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry"
+value = "tell the agent \"skip edit-guard\" (lasts 15 minutes)."
 
 [command.cd_delims]
 doc = "The delimiters after which a leading cd carries into the next segment."

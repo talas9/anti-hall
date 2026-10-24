@@ -449,7 +449,7 @@ value = "; "
 
 [spawn_ceiling.msg_what]
 doc = "What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause."
-value = "{n} agents are already running (ceiling now {ceiling}): {names}{more}."
+value = "{n} agents are already running (limit {ceiling}): {names}{more}."
 
 [spawn_ceiling.msg_more]
 doc = "The remainder clause when more agents run than are listed; {n} is how many are not listed."
@@ -457,11 +457,11 @@ value = " and {n} more"
 
 [spawn_ceiling.msg_why]
 doc = "Why the ceiling block applies."
-value = "More agents than that rarely add outcome; each one costs tokens whether or not it finishes anything."
+value = "More agents rarely add results, and each one costs tokens whether or not it finishes."
 
 [spawn_ceiling.msg_instead]
 doc = "What to do instead of spawning past the ceiling."
-value = "wait for or stop a finished or idle agent above, then spawn; the ceiling rises again when usage headroom returns. The owner can lift it for this session with a skip entry for spawn-ceiling."
+value = "wait for or stop a finished or idle agent, then spawn. The limit rises when usage headroom returns; to lift it now, tell the agent \"skip spawn-ceiling\"."
 
 # ---- spawn-usage: usage-aware dispatch (GH #270) -----------------------------------------------------------------
 # Reads the usage cache the limit-conserve check reads. Soft: allow, plus advice to use cheaper models and fewer agents (counted).
@@ -509,15 +509,15 @@ value = "reset time unknown"
 
 [spawn_usage.msg_block_what]
 doc = "What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause."
-value = "the {limit} usage limit is at {pct}% (hard threshold {cap}%, {resets}); new agent spawns are blocked."
+value = "new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%, {resets})."
 
 [spawn_usage.msg_block_why]
 doc = "Why the hard block applies."
-value = "A spawn past this point can exhaust the limit and stop all work, including agents already running."
+value = "Another spawn could use up the limit and stop all work, including agents already running."
 
 [spawn_usage.msg_block_instead]
 doc = "What to do instead of the blocked spawn."
-value = "finish the work already running, do small steps inline, or wait for the reset. The owner can lift this for the session with a skip entry for spawn-usage."
+value = "finish the running work, do small steps yourself, or wait for the reset. To allow spawning anyway, tell the agent \"skip spawn-usage\"."
 
 [spawn_usage.msg_soft_what]
 doc = "What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what."
@@ -525,11 +525,11 @@ value = "the {limit} usage limit is at {pct}% ({resets})."
 
 [spawn_usage.msg_soft_why]
 doc = "Why the soft advice applies."
-value = "Headroom is getting short; tokens spent without a matching outcome (commits, finished steps, passing checks) are the ones to avoid."
+value = "Headroom is getting short; avoid spending tokens that produce no commit, finished step or passing check."
 
 [spawn_usage.msg_soft_instead]
 doc = "What to do instead, in the soft advice."
-value = "use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents, and give each a tight brief with a clear finish."
+value = "use cheaper models for routine work, start fewer agents, and give each a tight brief with a clear finish."
 
 # ---- nested spawns (a subagent or teammate starting agents of its own) ----------------------------------------
 
@@ -547,12 +547,12 @@ value = "Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Cod
 
 [nested_spawn.msg_what]
 doc = "What the block says."
-value = "this agent is a worker and may not start agents of its own (nested spawn)."
+value = "this agent is a worker and can't start agents of its own."
 
 [nested_spawn.msg_why]
 doc = "Why nested spawns are blocked."
-value = "A worker that fans out hides its cost from the coordinator: one nested spawn burned about 2.5M tokens in 30 minutes (2026-10-23), and the spawn ceiling and usage gates only count the coordinator's own agents."
+value = "Nested agents hide their cost from the coordinator (one burned about 2.5M tokens in 30 minutes)."
 
 [nested_spawn.msg_instead]
 doc = "What to do instead of a nested spawn."
-value = "do the task yourself with your own tools and report back; if it truly needs more agents, say so in your report and let the coordinator spawn them. The user can allow it with guards.allowNestedSpawns or skip it for a session in skip.json as nested-spawn-guard."
+value = "do the task yourself and report back; if it needs more agents, say so and the coordinator will spawn them. To allow it, tell the agent \"skip nested-spawn-guard\"."

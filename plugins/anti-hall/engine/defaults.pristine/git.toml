@@ -457,7 +457,7 @@ value = "⛔"
 
 [git.block_mark]
 doc = "Product and guard label after the symbol; also the marker alias notes are inserted after."
-value = " anti-hall · git-guard: "
+value = " anti-hall · git safety: "
 
 [git.label_why]
 doc = "Label of the reason line."
@@ -473,7 +473,7 @@ value = "Allowed here: "
 
 [git.label_override]
 doc = "Label of the override line."
-value = "Override (only if the user explicitly asked): "
+value = "To allow this once: "
 
 [git.file_write_tip]
 doc = "Added to a block when the command writes a file with shell text: the file was scanned as shell."
@@ -553,15 +553,15 @@ value = ", ..."
 
 [git.msg_launcher]
 doc = "Block: a write into the launcher directory."
-value = { what = "a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.", why = "anti-hall installs those files itself (update / doctor --repair); overwriting one would run arbitrary code (such as a force push) under a trusted launcher name.", instead = "leave that directory alone; if the path only appears as prose in a heredoc/brief, write that text with the Write tool instead." }
+value = { what = "writing into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed.", why = "anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name.", instead = "leave that folder alone; if the path is only text in a note, write the note with the Write tool." }
 
 [git.msg_reused_message]
 doc = "Block: a reused commit message carries an AI self-credit. Placeholder: {origin}."
-value = { what = "a commit whose message is taken from {origin} and carries an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit, even when the message is reused rather than typed.", instead = "commit with an explicit clean message (`-m \"<msg>\"` or `-F <file>`) instead of reusing that one." }
+value = { what = "this commit would reuse a message ({origin}) that has an AI co-author line.", why = "Commits in this setup carry no AI co-author line, even when the message is reused.", instead = "remove the Co-Authored-By line and commit again with an explicit message (-m or -F)." }
 
 [git.msg_gh_credit]
 doc = "Block: a gh pr, issue or release body or title carries an AI self-credit."
-value = { what = "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+value = { what = "this gh pr/issue/release text has an AI credit line (\"Generated with\", Co-Authored-By or a claude.com link).", why = "Pull requests and issues in this setup carry no AI credit.", instead = "remove that line and run the command again." }
 
 [git.credit_label_gh_words]
 doc = "How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`)."
@@ -570,39 +570,39 @@ min = 1
 
 [git.msg_gh_credit_elsewhere]
 doc = "Block: a gh pr, issue or release command is chained with another git/gh command that carries the AI self-credit. Placeholder: {elsewhere} (the carrying command, e.g. `git commit`)."
-value = { what = "a gh pr/issue/release command is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the gh body or title. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
+value = { what = "this gh command is chained with `{elsewhere}`, which has an AI credit line.", why = "The credit line is in the `{elsewhere}` part, not in the gh text; nothing here carries AI credit.", instead = "remove the credit line from the `{elsewhere}` text and run again." }
 
 [git.msg_runner_placeholder]
 doc = "Block: a runner placeholder stands for the command or subcommand beside a force or delete flag."
-value = { what = "a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.", why = "The placeholder is filled from input at run time, so the command may be `git push`.", instead = "run the git command directly with an explicit subcommand and arguments." }
+value = { what = "a force or delete flag next to an xargs/find/parallel placeholder command is not allowed.", why = "The placeholder is filled in at run time, so the command could secretly be a git push.", instead = "run the git command directly, naming the subcommand." }
 
 [git.msg_runner_no_subcommand]
 doc = "Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}."
-value = { what = "`{runner} git` with no subcommand, beside a force or delete flag, is blocked.", why = "{runner} reads the subcommand from its input, so it may be `push` with that flag.", instead = "run the git command directly with an explicit subcommand and arguments." }
+value = { what = "`{runner} git` with no subcommand next to a force or delete flag is not allowed.", why = "{runner} supplies the subcommand later, so it could be a push with that flag.", instead = "run the git command directly, naming the subcommand." }
 
 [git.msg_runner_push]
 doc = "Block: a push through xargs or parallel. Placeholder: {runner}."
-value = { what = "force push via `{runner} git push` is blocked.", why = "{runner} appends input words to the command, so the full argv (and any hidden --force/-f) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+value = { what = "a force push through `{runner} git push` is not allowed.", why = "{runner} adds words to the command, so a hidden --force can't be ruled out.", instead = "run the git push directly with explicit arguments." }
 
 [git.msg_find_push]
 doc = "Block: a push through find -exec."
-value = { what = "push via `find -exec git push ... {}` is blocked.", why = "find puts file names where {} stands, so the refspecs (a `+ref` is a force push) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+value = { what = "pushing through `find -exec git push ... {}` is not allowed.", why = "find fills in the arguments, so a force push (`+ref`) can't be ruled out.", instead = "run the git push directly with explicit arguments." }
 
 [git.msg_handover]
 doc = "Block: a commit that includes a session handover. Placeholders: {shown}, {skip}."
-value = { what = "this commit includes a session handover ({shown}) and is blocked.", why = "Handovers are local session state and are never committed.", instead = "unstage a NEW one with `git restore --staged <path>`; if ALREADY tracked, `git rm --cached <path>` and commit that removal (allowed).", override = "{skip} (only if the owner explicitly asked to commit this file)" }
+value = { what = "this commit includes a session handover ({shown}).", why = "Handovers are private session notes and are never committed.", instead = "unstage it with `git restore --staged <path>` (if already tracked: `git rm --cached <path>` and commit that removal).", override = "tell the agent \"skip git-guard\", only if you want this file committed." }
 
 [git.msg_force_push]
 doc = "Block: a force push."
-value = { what = "force push is blocked.", why = "Rewriting published history is a deliberate human action.", instead = "do it manually with explicit owner confirmation, never from an automated push." }
+value = { what = "a force push is not allowed.", why = "Rewriting published history should be a deliberate human decision.", instead = "ask the owner to run it themselves, or push normally." }
 
 [git.msg_delete_ref]
 doc = "Block: remote ref deletion. Placeholder: {skip}."
-value = { what = "remote ref deletion (push --delete / -d / --prune / an empty-source :<ref> refspec) is blocked.", why = "Deleting published branches or tags needs explicit owner confirmation.", instead = "leave the ref.", override = "{skip} (only if the owner asked for this exact deletion)" }
+value = { what = "deleting a remote branch or tag is not allowed.", why = "Deleting published refs needs the owner's explicit OK.", instead = "leave the remote ref alone.", override = "tell the agent \"skip git-guard\", only for this exact deletion." }
 
 [git.msg_push_cmdsubst]
 doc = "Block: a push argument produced by command substitution."
-value = { what = "`git push` with an argument produced by command substitution / backticks is blocked.", why = "It can smuggle a --force flag past static inspection.", instead = "run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead." }
+value = { what = "a git push with an argument built by command substitution or backticks is not allowed.", why = "It could hide a --force flag from the check.", instead = "run the push with plain, literal arguments. If it is only message text inside printf/echo, write that file with the Write tool." }
 
 [git.push_cmdsubst_heredoc_note]
 doc = "Appended to the remedy of the push_cmdsubst block when the command contains a heredoc."
@@ -610,27 +610,27 @@ value = " Heredoc bodies are scanned as shell even when a script only reads them
 
 [git.msg_trailer_remap]
 doc = "Block: a trailer remap to an AI self-credit key."
-value = { what = "a `-c trailer.*.key=` remap to an AI self-credit key (Co-Authored-By / Generated-with) is blocked.", why = "Commits carry no AI co-author credit.", instead = "remove the trailer remap." }
+value = { what = "a git config that remaps a trailer to an AI credit line is not allowed.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the trailer setting and commit again." }
 
 [git.msg_commit_credit]
 doc = "Block: an inline commit message with an AI self-credit."
-value = { what = "a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+value = { what = "this commit message has an AI co-author line (Co-Authored-By or \"Generated with\").", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again." }
 
 [git.msg_commit_file_credit]
 doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
-value = { what = "a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+value = { what = "this commit message (from -F, a file or a heredoc) has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line from it and commit again." }
 
 [git.msg_gh_jev]
 doc = "Block: Jev judged a gh body or title to credit an AI assistant (paraphrased)."
-value = { what = "a gh pr/issue/release body or title appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) and is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+value = { what = "this gh pr/issue/release text appears to credit an AI assistant (worded freely, caught by the Jev check).", why = "Pull requests and issues in this setup carry no AI credit.", instead = "reword it without the credit and run the command again." }
 
 [git.msg_commit_jev]
 doc = "Block: Jev judged an inline commit message to credit an AI assistant (paraphrased)."
-value = { what = "a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+value = { what = "this commit message appears to credit an AI assistant (worded freely, caught by the Jev check).", why = "Commits in this setup carry no AI co-author line.", instead = "reword the message without the credit and commit again." }
 
 [git.msg_commit_file_jev]
 doc = "Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased)."
-value = { what = "a commit message (via `-F`/`--file`) that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+value = { what = "this commit message (from -F or a file) appears to credit an AI assistant (worded freely, caught by the Jev check).", why = "Commits in this setup carry no AI co-author line.", instead = "reword the message without the credit and commit again." }
 
 [git.jev_id]
 doc = "The Jev integration id of the self-credit question (add-block trust)."
@@ -676,11 +676,11 @@ min = 1
 
 [git.msg_creating_credit]
 doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."
-value = { what = "a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked.", why = "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).", instead = "remove the trailer line and re-run." }
+value = { what = "this command creates a commit (git {sub}) with an AI co-author line in it.", why = "Commits in this setup carry no AI co-author line, however it reaches git.", instead = "remove the Co-Authored-By line and commit again." }
 
 [git.msg_creating_credit_elsewhere]
 doc = "Block: a commit-creating command is chained with another git/gh command that carries the AI self-credit. Placeholders: {sub}, {elsewhere} (the carrying command, e.g. `gh pr create`)."
-value = { what = "a command that creates a commit (git {sub}) is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the commit message. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
+value = { what = "this command creates a commit (git {sub}) and is chained with `{elsewhere}`, which has an AI credit line.", why = "The credit line is in the `{elsewhere}` part, not in the commit message.", instead = "remove the credit line from the `{elsewhere}` text and run again." }
 
 # ---- PostToolUse audit --------------------------------------------------------------------
 

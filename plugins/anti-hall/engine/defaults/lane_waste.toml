@@ -311,20 +311,20 @@ value = { find = { style = "paths-first", skip_flags = ["-H", "-L", "-P"] }, bfs
 
 [wide_search.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches."
-value = "`{cmd}` is blocked: it searches the whole of `{root}`."
+value = "`{cmd}` was stopped: it would scan all of `{root}`."
 
 [wide_search.msg_why]
 doc = "Why whole-disk searches are blocked."
-value = "A search rooted at the disk, the home directory or the user and volume folders wakes Spotlight and the network volumes, takes minutes and once pushed this Mac's load to 170."
+value = "Scanning a whole disk or home folder takes minutes and can overload this Mac."
 
 [wide_search.msg_instead]
 doc = "What to do instead. Placeholders: {repo} the session's working directory."
-value = "search the project: give the command a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>`, or narrow it to the directory that holds the code (git grep and git ls-files cover tracked files)."
+value = "search the project: give a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>` (git grep and git ls-files cover tracked files)."
 
 [wide_search.msg_instead_no_repo]
 doc = "What to do instead when the session's working directory is itself a forbidden root."
-value = "search one project directory: give the command that directory's absolute path (git grep and git ls-files cover tracked files)."
+value = "search one project folder: give the command that folder's absolute path (git grep and git ls-files cover tracked files)."
 
 [wide_search.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
-value = "the user sets guards.allowWideSearch, adds the path to the wide_search.allow_paths list, or skips the guard for a session in skip.json as wide-search-guard."
+value = "tell the agent \"skip wide-search-guard\" (or set guards.allowWideSearch)."

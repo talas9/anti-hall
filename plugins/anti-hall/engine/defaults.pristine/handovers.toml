@@ -383,15 +383,15 @@ min = 1
 
 [handovers.msg_advisory_what]
 doc = "The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}."
-value = "{count} handover problem(s), {days} day brief(s) out of date in {project}"
+value = "{count} handover problem(s) and {days} day brief(s) out of date in {project}"
 
 [handovers.msg_advisory_why]
 doc = "Why it matters."
-value = "later searches for changes, work and decisions read the handover briefs; an unindexed or malformed handover is invisible to them"
+value = "Searches for earlier work and decisions read these briefs, and a malformed or unindexed handover is invisible to them."
 
 [handovers.msg_advisory_instead]
 doc = "What to do. Placeholder: {cmd}."
-value = "run `{cmd}` (the scheduled job also repairs the briefs); handover files are never edited by it"
+value = "run `{cmd}` (the scheduled job also repairs the briefs); it never edits handover files."
 
 [handovers.cmd_index]
 doc = "The command the advisory tells the owner to run."

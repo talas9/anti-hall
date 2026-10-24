@@ -505,39 +505,39 @@ value = "apply_patch"
 
 [task_guard.idle_what]
 doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
-value = "stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {list}{more}."
+value = "can't stop yet: {n} task(s) have no agent working on them: {list}{more}."
 
 [task_guard.idle_why]
 doc = "The why line of the idle-neglect block."
-value = "Dispatchable work is sitting idle."
+value = "Work that could run in parallel is sitting idle."
 
 [task_guard.devswarm_hint]
 doc = "The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool."
-value = " Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the workspace id, branch or title."
+value = " If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspace's title."
 
 [task_guard.idle_instead]
 doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
-value = "dispatch them now in parallel (one background agent each, cap {cap}), or stop only if a task truly needs the user (say which and why). A task waiting on an in-flight task: set its blockedBy ({upd} addBlockedBy). A running agent already covers a task: set the task owner to it ({upd} owner) and it counts as attended.{devswarm}"
+value = "start a background agent for each (up to {cap}), or tell the user which task truly needs them. Waiting on another task: set blockedBy ({upd} addBlockedBy). Already covered by an agent: set it as owner ({upd} owner).{devswarm}"
 
 [task_guard.idle_allowed]
 doc = "The allowed-here line of the idle-neglect block."
-value = "a task blocked on the OWNER (hardware, a human decision): mark it metadata.blockedOn:'owner' (or 'user'/'human'/'external'), or give it an \"OWNER:\" / \"OWNER DECISION\" subject prefix. Never a fake blockedBy dependency."
+value = "a task waiting on the user (hardware, a decision): mark it blocked on 'owner', or start its subject with \"OWNER:\"."
 
 [task_guard.generic_what]
 doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
-value = "stop blocked: open tasks remain: {list}{more}."
+value = "can't stop yet: open tasks remain: {list}{more}."
 
 [task_guard.generic_why]
 doc = "The why line of the generic block."
-value = "Tasks should not sit neglected when the session stops."
+value = "Open tasks should not be left behind when the session stops."
 
 [task_guard.generic_instead]
 doc = "The do-instead line of the generic block; `{upd}` is the task update tool."
-value = "pick up pending tasks and dispatch subagents to finish them in parallel (up to the cap, ~min(16, cores-2)); or mark them completed/deferred ({upd}), or tell the user what is pending and why you are stopping."
+value = "start agents to finish them in parallel, mark them completed or deferred ({upd}), or tell the user what is pending and why you are stopping."
 
 [task_guard.generic_allowed]
 doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
-value = "a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] or metadata.blockedOn:'owner'/'user'/'human'/'external'; it is then no longer listed."
+value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or blockedOn 'owner'); it is then no longer listed."
 
 [task_guard.block_json]
 doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
@@ -894,15 +894,15 @@ value = "<!-- session: {session} | started: {started} -->"
 
 [tasklist_guard.what_reset]
 doc = "Block headline when the task store was reset (a session restore)."
-value = "the task store was reset (session restore)."
+value = "can't stop yet: the task list was lost when the session restored."
 
 [tasklist_guard.why_reset]
 doc = "Block reason when the task store was reset."
-value = "The old task ids are gone, not un-tracked."
+value = "The old tasks are gone, not finished."
 
 [tasklist_guard.what_no_tasks]
 doc = "Block headline when work was done and no task was tracked; {n} is the work count."
-value = "stop blocked: {n} file-changing actions this session but NO tasks tracked."
+value = "can't stop yet: {n} file changes this session and no tasks tracked."
 
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."
@@ -910,27 +910,27 @@ value = "Work this size needs a task list and a progress file."
 
 [tasklist_guard.prior_snapshot]
 doc = "Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path."
-value = " A prior session's snapshot exists at {path}: recreate your task list from it first."
+value = " An earlier session left a snapshot to rebuild the list from (see the details file)."
 
 [tasklist_guard.what_stalled]
 doc = "Block headline when tasks are in progress with no live agent; {n} is the count."
-value = "stop blocked: {n} tasks are in_progress but NO background agent is live."
+value = "can't stop yet: {n} tasks are marked in progress but no agent is working on them."
 
 [tasklist_guard.why_stalled]
 doc = "Block reason when tasks are stalled in progress."
-value = "They are stalled, not worked in parallel."
+value = "They are stalled, not running in parallel."
 
 [tasklist_guard.what_progress]
 doc = "Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file."
-value = "stop blocked: {n} file-changing actions but {path} is missing or stale."
+value = "can't stop yet: {n} file changes and the progress file is missing or out of date."
 
 [tasklist_guard.why_progress]
 doc = "Block reason when the progress file is missing or stale."
-value = "The progress file must track what was done."
+value = "The progress file must record what was done."
 
 [tasklist_guard.what_reduced]
 doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
-value = "stop blocked: {n} file-changing actions, no tasks tracked."
+value = "can't stop yet: {n} file changes and nothing tracked."
 
 [tasklist_guard.why_reduced]
 doc = "Block reason of the reduced nag."
@@ -938,31 +938,31 @@ value = "Untracked work gets lost."
 
 [tasklist_guard.instead_reduced]
 doc = "What to do instead, reduced nag; {progress} and {history} are the files."
-value = "list the open tasks and status in your reply, priority first. Progress: {progress} History: {history}"
+value = "list the open tasks and their status in your reply, priority first."
 
 [tasklist_guard.instead_reset]
 doc = "Lead of what to do instead after a task store reset (Claude wording)."
-value = "recreate the open tasks with TaskCreate (see the progress file / handover), then continue. "
+value = "recreate the open tasks with TaskCreate, then continue. "
 
 [tasklist_guard.instead_reset_codex]
 doc = "Lead of what to do instead after a task store reset (Codex wording)."
-value = "recreate the open tasks in your task list (see the progress file / handover), then continue. "
+value = "recreate the open tasks in your task list, then continue. "
 
 [tasklist_guard.instead_stalled]
 doc = "What to do about tasks stalled in progress."
-value = "dispatch a background agent for EACH now (do not serialize to one), or set idle ones back to pending; start the highest-priority task's agent first but keep the rest running. "
+value = "start a background agent for each stalled task, or set idle ones back to pending. "
 
 [tasklist_guard.instead_capture]
 doc = "What to do instead: capture the work as tasks (Claude wording)."
-value = "Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList first to dedup; link with addBlockedBy/addBlocks), set statuses, and update "
+value = "write the work down as tasks (TaskCreate/TaskUpdate) and update the progress file."
 
 [tasklist_guard.instead_capture_codex]
 doc = "What to do instead: capture the work as tasks (Codex wording)."
-value = "Capture the work as priority-sorted tasks in your task list (check it first to dedup; link related ones), set statuses, and update "
+value = "write the work down as tasks in your task list and update the progress file."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "{progress} (done/in-progress/next); a new file gets this header on top: {header}. Gitignore it. Append each COMPLETED task to {history} (append-only ledger, one entry per task: Cause / Fix / Verified; gitignore it too; it usually exists already, so {append}). The progress file can be written freely. No Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -1003,7 +1003,7 @@ value = '{"advised":true}'
 
 [tasklist_guard.advisory_text]
 doc = "The no-handover advisory appended to a block."
-value = "\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo instead: consider /anti-hall:handover before ending."
+value = "\n💡 anti-hall · handover: no handover has been saved yet, and a lot of work happened.\nDo instead: run /anti-hall:handover before ending."
 
 [tasklist_guard.stale_prefix]
 doc = "Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`)."
@@ -1015,7 +1015,7 @@ value = '{"warned":true}'
 
 [tasklist_guard.stale_text]
 doc = "The stale-handover advisory appended to a block."
-value = "\n⚠️ anti-hall · handover: the saved handover is stale (work happened after it was written).\nDo instead: refresh it before the user compacts."
+value = "\n⚠️ anti-hall · handover: the saved handover is out of date (work happened after it was written).\nDo instead: refresh it with /anti-hall:handover before compacting."
 
 [tasklist_guard.jev_id]
 doc = "The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it)."
@@ -1097,7 +1097,31 @@ min = 1
 
 [tasklist_guard.ack_hint]
 doc = "The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in."
-value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
+value = "Mechanical override, only if the user explicitly confirmed this exact condition is fine: write {\"{key}\": {now}} into {path} (merge with existing keys). The block then stays advisory for the rest of the session."
+
+[tasklist_guard.ack_human]
+doc = "The override line of a tasklist-guard block, phrased for the human; the mechanical override is in the details file (ack_hint)."
+value = "tell the agent \"skip tasklist-guard\" (the block then stays advisory for the rest of the session)."
+
+[tasklist_guard.details_label]
+doc = "Label of the last line of a tasklist-guard block: the file with the long instructions."
+value = "Details: "
+
+[tasklist_guard.details_dir]
+doc = "Directory of the tasklist-guard details file under the anti-hall state directory."
+value = "block-details"
+
+[tasklist_guard.details_ext]
+doc = "File extension of the tasklist-guard details file."
+value = ".md"
+
+[tasklist_guard.details_head]
+doc = "First line of the tasklist-guard details file."
+value = "Task list and progress file: what to do"
+
+[tasklist_guard.prior_detail]
+doc = "Line of the tasklist-guard details file that names the snapshot an earlier session left; {path} is its path."
+value = "An earlier session left a snapshot to rebuild the task list from: {path}"
 
 [tasklist_guard.budget_setting]
 doc = "guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off)."
