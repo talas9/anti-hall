@@ -879,6 +879,9 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
                 let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
                 let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
+                let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
+                api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
                 let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
                 if v.is_undefined() || v.is_null() {
                     return Ok("null".into());

@@ -258,6 +258,21 @@ pub struct Agent {
     pub offset: u64,
     /// Its totals count from part way into the transcript.
     pub partial: bool,
+    /// This tick consumed a complete, valid transcript through its current end.
+    #[serde(default)]
+    pub transcript_complete: bool,
+    /// Proven coverage from byte zero (older cached offsets alone cannot prove it).
+    #[serde(default)]
+    pub transcript_from_start: bool,
+    /// Work runs in a background Codex job; wrapper tool counts do not measure it.
+    #[serde(default)]
+    pub codex_rescue: bool,
+    /// Rescue launches awaiting their host result.
+    #[serde(default)]
+    pub rescue_calls: std::collections::BTreeSet<String>,
+    /// Children whose launch or returned Codex job identified them as rescue wrappers.
+    #[serde(default)]
+    pub rescue_children: std::collections::BTreeSet<String>,
     /// First tick that saw it.
     pub first_seen: u64,
     /// Last tick that saw it.

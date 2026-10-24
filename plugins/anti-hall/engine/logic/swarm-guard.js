@@ -160,27 +160,6 @@ function swgDescribe(p) {
 // check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
-// The ceiling at this usage: the base, less the reduce of the highest step whose percent the fullest bucket has reached, never under the floor.
-function swgCeiling(full) {
-  var ceil = ah.cfgNum('spawn_ceiling.base'), at = ah.cfg('spawn_ceiling.step_pct'), cut = ah.cfg('spawn_ceiling.step_reduce');
-  if (full) for (var i = 0; i < at.length; i++) if (full.pct >= at[i]) ceil = ah.cfgNum('spawn_ceiling.base') - cut[i];
-  return Math.max(ah.cfgNum('spawn_ceiling.floor'), ceil);
-}
-
-// The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
-function swgRunning(p) {
-  var tp = p.transcript_path;
-  if (typeof tp !== 'string' || tp === '') return null;
-  var found = ah.transcript.agents(hookProc.open(p, tp));
-  if (found === null) return null;
-  if (found.unsure) { ah.unable('swarm-guard:ceiling_agents_unsure'); return null; }
-  var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
-  var names = found.rows.slice(0, max).map(function (a) {
-    return String(a.description || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
-  });
-  return { n: found.rows.length, names: names };
-}
-
 // A block reason, an advisory line to ride an allowed spawn ('' for none).
 function swgBudgetGates(p, home) {
   var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));

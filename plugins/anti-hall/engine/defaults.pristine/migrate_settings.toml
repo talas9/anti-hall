@@ -26,6 +26,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"queuedWaitGuard\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_QUEUED_WAIT_GUARD\"}",
   "{\"section\":\"guards\",\"key\":\"allowWideSearch\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_ALLOW_WIDE_SEARCH\"}",
   "{\"section\":\"guards\",\"key\":\"delegateStandDown\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DELEGATE_STAND_DOWN\"}",
+  "{\"section\":\"guards\",\"key\":\"agentSpawnAvailable\",\"type\":\"enum\",\"values\":[\"auto\",\"on\",\"off\"],\"default\":\"auto\",\"env\":\"ANTIHALL_AGENT_SPAWN_AVAILABLE\"}",
   "{\"section\":\"guards\",\"key\":\"upfrontNotice\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_UPFRONT_NOTICE\"}",
   "{\"section\":\"guards\",\"key\":\"repeatHint\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_REPEAT_HINT\"}",
   "{\"section\":\"guards\",\"key\":\"allowTestSuites\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_ALLOW_TEST_SUITES\"}",

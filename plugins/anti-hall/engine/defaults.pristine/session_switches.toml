@@ -1,12 +1,12 @@
 # Session-wide switches and the guard learner (owner 2026-10-24). Three parts:
-#   standdown.*  the delegate-only guards stand down while no agent can be spawned (the usage hard stop), so the work has a path;
+#   standdown.*  the delegate-only guards stand down while spawning is unavailable, so the work has a path;
 #   upfront.*    ONE short line when the set of session-wide switches changes (spawn stop, limit conserve, guard skips);
 #   repeat.*     a guard that blocks the same session again and again says what is allowed and asks for a different approach.
 # Logic: engine/logic/lib/81-standdown.js (shared), engine/logic/switch-notice.js (the up-front line, run by the dispatcher on
 # UserPromptSubmit and PreToolUse), ah-engine/src/learn.rs (the repeat learner, run on every blocking answer).
 
 [standdown.setting]
-doc = "Switch guards.delegateStandDown (default on): while the spawn-usage hard stop is active the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking."
+doc = "Switch guards.delegateStandDown (default on): while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking."
 value = { section = "guards", key = "delegateStandDown", type = "boolean", env = "ANTIHALL_DELEGATE_STAND_DOWN", option = "", default = true }
 
 [standdown.guard_name]
@@ -26,8 +26,8 @@ doc = "Advisory kind the stand-down note is counted and de-duplicated under (onc
 value = "standdown_note"
 
 [standdown.msg_what]
-doc = "What the stand-down note says; {limit} the bucket, {pct} its usage, {resets} the reset clause."
-value = "spawning is stopped ({limit} usage limit at {pct}%, {resets}); doing this inline is allowed."
+doc = "What the stand-down note says; {reason} is rendered from standdown.reasons."
+value = "spawning is stopped ({reason}); doing this inline is allowed."
 
 [standdown.msg_why]
 doc = "Why the delegate-only guards stand down."
@@ -63,8 +63,8 @@ value = 86400000
 min = 0
 
 [upfront.msg_spawn_stop]
-doc = "Line for the spawn stop being on; {limit}, {pct}, {resets} as in standdown.msg_what."
-value = "Agent spawning is stopped ({limit} usage limit at {pct}%, {resets}): do the work inline, in small bounded steps."
+doc = "Line for spawning being unavailable; {reason} is rendered from standdown.reasons."
+value = "Agent spawning is stopped ({reason}): do the work inline, in small bounded steps."
 
 [upfront.msg_conserve]
 doc = "Line for limit conserve being on; {reason} names the bucket(s)."
@@ -122,7 +122,7 @@ doc = "Per guard: the defaults key of its own allowed-forms text, appended once 
 value = { command-guard = "command.msg_heavy_allowed", coordinator-work-guard = "coordinator_work.block_allowed", edit-guard = "edit_guard.msg_new_allowed", wide-search-guard = "wide_search.msg_instead", lane-test-guard = "lane_test.msg_instead", queued-wait-guard = "queued_wait.msg_instead_bg" }
 
 [upfront.check]
-doc = "The check the dispatcher runs for the up-front line (engine/logic/<name>.js); it is not a hook row."
+doc = "The check the dispatcher runs for the up-front line (engine/logic/<name>.js); it is an engine-only dispatch row."
 value = "switch-notice"
 
 [upfront.min_interval_ms]
@@ -132,4 +132,32 @@ min = 0
 
 [upfront.summary]
 doc = "One-line description of the switch-notice check in the generated reference."
-value = "Run by the dispatcher on UserPromptSubmit and PreToolUse (not a hook row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice."
+value = "Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice."
+
+[standdown.spawn_setting]
+doc = "Host spawn capability: auto uses the request's advertised tools, otherwise standdown.hosts defaults; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex."
+value = { section = "guards", key = "agentSpawnAvailable", type = "enum", values = ["auto", "on", "off"], env = "ANTIHALL_AGENT_SPAWN_AVAILABLE", option = "", default = "auto" }
+
+[standdown.hosts]
+doc = "Host spawn tools and capability fallback when no tool inventory is advertised. Codex must advertise its native tool or explicitly enable guards.agentSpawnAvailable; its hook payload alone does not establish tool availability."
+value = { claude = { tools = ["Agent", "Task"], default_available = true }, codex = { tools = ["spawn_agent", "collaborationspawn_agent", "collaboration.spawn_agent"], default_available = false } }
+
+[standdown.codex_host]
+doc = "The dispatch host whose payload need not include Claude tool names."
+value = "codex"
+
+[standdown.tool_fields]
+doc = "Optional request/payload tool-inventory fields; an empty array explicitly means no tools. Entries may be names or objects with a name."
+value = ["available_tools", "tools"]
+
+[standdown.reasons]
+doc = "Reasons can_spawn returns: only model-independent routing bans count; rejecting one model is not a spawn stop."
+value = { usage = "{name} usage limit at {pct}%, {resets}", host = "{host} host has no available agent tool", nested = "nested spawning is disabled for this agent", burn = "the session's burn breaker refuses agent spawns", ceiling = "{n} agents are running, at the spawn ceiling of {ceiling}", routing = "model routing refuses every model for this task" }
+
+[repeat.overrides]
+doc = "Per guard or check name, optional min_blocks (N, at least 2) and window_min (W, at least 1). Either omitted field inherits its global repeat.* key. Example: { command = { min_blocks = 3, window_min = 5 } }. Guard names win over check aliases; both command-guard and command are accepted."
+value = {}
+
+[repeat.guard_names]
+doc = "Checks whose public guard names differ, for per-guard threshold overrides and allowed-form hints. All other checks use their own names."
+value = { command = "command-guard", git = "git-guard", model-routing = "model-routing-guard" }

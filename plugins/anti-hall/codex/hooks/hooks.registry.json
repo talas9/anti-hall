@@ -200,6 +200,16 @@
             "id": "wide-search-guard"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "switch-notice"
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -474,6 +484,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
             "timeout": 10,
             "id": "gh-rt-advisory"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" UserPromptSubmit --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" UserPromptSubmit --host codex",
+            "timeout": 10,
+            "id": "switch-notice"
           }
         ]
       }

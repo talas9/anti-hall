@@ -69,21 +69,9 @@ function bbSend(cmd) {
 
 function decide(p) {
   if (p === null || typeof p !== 'object') return 'allow';
-  var id = p[ah.cfg('burn.agent_field')];
-  if (typeof id !== 'string' || id === '') return 'allow';
-  if (!ah.settings.bool('burn.sw') || ah.settings.skipped(ah.cfg('burn.guard_name'))) return 'allow';
-  var home = ah.env.get(ah.cfg('env.home'));
-  if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
-  if (!home) return 'allow';
-  var paths = ah.cfg('agent_tracker.paths'), key = '', max = ah.cfg('agent_reminders.key_max');
-  for (var i = 0; i < id.length && i < max; i++) key += /[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_';
-  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key + ah.cfg('burn.marker_ext');
-  var marker = ah.path.join(home, rel);
-  if (ah.fs.size(marker) === null) return 'allow';
-  var raw = ah.fs.readText(marker), m;
-  if (raw === null) return 'allow';
-  try { m = JSON.parse(raw); } catch (e) { return 'allow'; }
-  if (m === null || typeof m !== 'object' || typeof m.ts !== 'number' || ah.clock.now() - m.ts > ah.cfgNum('burn.marker_ttl_ms')) return 'allow';
+  var held = bbMarker(p);
+  if (held === null) return 'allow';
+  var m = held.marker, rel = held.rel;
   var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
   if (ah.cfg('burn.allowed_tools').indexOf(tool) >= 0) return 'allow';
   // writing the report IS the outcome the block asks for: a Write/Edit of a report path, or a Bash redirect into one, passes and lifts the

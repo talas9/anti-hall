@@ -73,7 +73,11 @@ pub fn annotate(meta: &Meta, p: &Value, check: &str, a: Answer) -> Answer {
     if session.is_empty() || !get_bool(&Settings::from_env(&meta.env), defaults::raw("repeat.setting")) {
         return Answer::Decided(r, routes);
     }
-    let (window_ms, min) = (defaults::num("repeat.window_min").saturating_mul(60_000), defaults::num("repeat.min_blocks").max(2));
+    let guard = defaults::raw("repeat.guard_names").get(check).and_then(V::as_str).unwrap_or(check);
+    let overrides = defaults::raw("repeat.overrides").get(guard).or_else(|| defaults::raw("repeat.overrides").get(check));
+    let per_guard = |key: &str, fallback: &str| overrides.and_then(|v| v.get(key)).and_then(V::as_integer).filter(|n| *n > 0).map(|n| n as u64).unwrap_or_else(|| defaults::num(fallback));
+    let minutes = per_guard("window_min", "repeat.window_min").max(1);
+    let (window_ms, min) = (minutes.saturating_mul(60_000), per_guard("min_blocks", "repeat.min_blocks").max(2));
     let now = crate::health::now_ms();
     let key = (session, check.to_string());
     let (n, first) = {
@@ -100,11 +104,11 @@ pub fn annotate(meta: &Meta, p: &Value, check: &str, a: Answer) -> Answer {
     LAST_REPEAT.with(|c| c.set(n));
     let mut add = Vec::new();
     if first
-        && let Some(forms) = defaults::raw("repeat.allowed_keys").get(check).and_then(V::as_str)
+        && let Some(forms) = defaults::raw("repeat.allowed_keys").get(guard).or_else(|| defaults::raw("repeat.allowed_keys").get(check)).and_then(V::as_str)
     {
         add.push(defaults::render("repeat.msg_allowed", &[("forms", &defaults::text(forms))]));
     }
-    add.push(defaults::render("repeat.msg_changed", &[("n", &n), ("minutes", &defaults::num("repeat.window_min"))]));
+    add.push(defaults::render("repeat.msg_changed", &[("n", &n), ("minutes", &minutes)]));
     let add = add.join("\n");
     if r.code == Some(2) {
         r.err = format!("{}\n{add}\n", r.err.trim_end());
@@ -128,7 +132,8 @@ pub fn upfront_notice(meta: &Meta, p: &Value, out: &mut [(String, Answer)]) {
     if session.is_empty() || out.iter().any(|(_, a)| matches!(a, Answer::Decided(r, _) if is_block(r))) {
         return;
     }
-    let Some(slot) = out.iter().position(|(_, a)| matches!(a, Answer::Decided(r, _) if r.code == Some(0) && r.out.is_empty() && r.err.is_empty())) else { return };
+    let name = defaults::text("upfront.check");
+    let Some(slot) = out.iter().position(|(id, a)| id == name && matches!(a, Answer::Decided(r, _) if r.code == Some(0) && r.out.is_empty() && r.err.is_empty())) else { return };
     if !get_bool(&Settings::from_env(&meta.env), defaults::raw("upfront.setting")) {
         return;
     }
@@ -144,7 +149,6 @@ pub fn upfront_notice(meta: &Meta, p: &Value, out: &mut [(String, Answer)]) {
         }
         l.last_notice.insert(session, now);
     }
-    let name = defaults::text("upfront.check");
     if let Answer::Decided(r, _) = native::run_check(name, name, meta, p)
         && r.code == Some(0)
         && !r.out.is_empty()

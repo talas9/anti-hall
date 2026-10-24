@@ -52,6 +52,7 @@ fn push_ring<T>(v: &mut Vec<T>, x: T, max: u64) {
 
 /// Read what is new in `a`'s transcript.
 pub(crate) fn ingest(a: &mut Agent, now: u64) {
+    a.transcript_complete = false;
     if a.path.is_empty() {
         return;
     }
@@ -71,6 +72,7 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
             ..Agent::default()
         };
     }
+    if a.offset == 0 { a.transcript_from_start = true; }
     let mut start = a.offset;
     let mut skip_first = false;
     if start == 0 && len > lim("first_read_bytes") {
@@ -79,6 +81,7 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
         skip_first = true;
     }
     if len - start > lim("read_max_bytes") {
+        a.partial = true;
         start = len - lim("read_max_bytes");
         skip_first = true;
     }
@@ -91,19 +94,29 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
     }
     let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
     a.offset = start + end as u64;
-    let text = String::from_utf8_lossy(&buf[..end]);
+    let text = match std::str::from_utf8(&buf[..end]) {
+        Ok(text) => text,
+        Err(_) => { a.partial = true; return; }
+    };
     let mut lines = text.lines();
     if skip_first {
         lines.next();
     }
     for l in lines {
-        if let Ok(v) = serde_json::from_str::<Value>(l) {
-            line(a, &v, now);
+        match serde_json::from_str::<Value>(l) {
+            Ok(v) => line(a, &v, now),
+            Err(_) => a.partial = true,
         }
     }
+    a.transcript_complete = a.transcript_from_start && !a.partial && a.offset == len
+        && std::fs::metadata(&a.path).is_ok_and(|m| m.len() == len);
 }
 
 fn line(a: &mut Agent, v: &Value, now: u64) {
+    let nw = defaults::raw("agent_tracker.no_work");
+    if nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().any(|k| str_of(v, k) == nw.str_field("rescue_type")) {
+        a.codex_rescue = true;
+    }
     let ty = str_of(v, tr("type_key"));
     if a.cwd.is_empty() {
         a.cwd = str_of(v, tr("cwd")).to_string();
@@ -120,6 +133,9 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
                 a.running = false;
             }
         }
+        // Rescue wrappers can return a background Codex task id without making local tool calls.
+        let returned = msg.and_then(|m| m.get(tr("content"))).map(result_text).unwrap_or_default();
+        if pat("codex_job").is_some_and(|r| r.is_match(&returned)) { a.codex_rescue = true; }
         for b in blocks {
             if a.watch {
                 turn(a, b, ts);
@@ -137,6 +153,13 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         }
         for b in blocks {
             if str_of(b, tr("type_key")) == tr("tool_result") {
+                let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
+                let rescue = a.rescue_calls.remove(str_of(b, tr("tool_use_id"))) || pat("codex_job").is_some_and(|r| r.is_match(&text));
+                if rescue {
+                    let id = v.get(nw.str_field("result_field")).and_then(|r| r.get(nw.str_field("result_agent_field"))).and_then(Value::as_str).map(str::to_string)
+                        .or_else(|| Regex::new(defaults::text("agent_scan.re_agent_id")).ok().and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()))));
+                    if let Some(id) = id.filter(|id| !id.is_empty()) { a.rescue_children.insert(id); }
+                }
                 tool_result(a, b, ts);
             }
         }
@@ -272,6 +295,10 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
     let id = str_of(b, "id").to_string();
+    let nw = defaults::raw("agent_tracker.no_work");
+    if nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().any(|k| str_of(&input, k) == nw.str_field("rescue_type")) {
+        a.rescue_calls.insert(id.clone());
+    }
     a.tools += 1;
     let arg = [tr("command"), tr("file_path"), tr("pattern"), tr("path")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
     let label = if tools("task_create").contains(&name) { cap(str_of(&input, tr("subject")), lim("text_cap")) } else { cap(arg, lim("text_cap")) };
@@ -412,8 +439,9 @@ fn wake(a: &mut Agent, name: &str, input: &Value, ts: u64) {
 }
 
 fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
-    let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
+    if pat("codex_job").is_some_and(|r| r.is_match(&text)) { a.codex_rescue = true; }
+    let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let failed = b.get(tr("is_error")).and_then(Value::as_bool) == Some(true);
     if !failed
         && tools("task_create").contains(&p.name.as_str())

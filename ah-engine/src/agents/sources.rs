@@ -493,9 +493,19 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
             continue;
         }
         facts::ingest(a, now);
+        // Host metadata can identify a rescue before its transcript has any tool uses.
+        let nw = defaults::raw("agent_tracker.no_work");
+        if let Some(meta) = json_of(Path::new(&facts::meta_path(&a.path))) {
+            a.codex_rescue |= nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().any(|k| meta.get(*k).and_then(Value::as_str) == Some(nw.str_field("rescue_type")));
+        }
         if !super::is_child(a) && a.kind != kind_name("workspace") {
             a.kind = kind_name("main").into();
         }
+    }
+    // Rescue type belongs to the parent's launch input on hosts that omit it from child metadata.
+    let rescue_children: std::collections::BTreeSet<String> = st.agents.values().flat_map(|a| a.rescue_children.iter().cloned()).collect();
+    for id in rescue_children {
+        if let Some(child) = st.agents.get_mut(&id) { child.codex_rescue = true; }
     }
     // a rollout that aged out of the scan is no longer found, so its row is judged again from its last write
     for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {

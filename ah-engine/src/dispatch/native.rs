@@ -154,7 +154,12 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             Answer::Defer
         } else {
             let mark = crate::deadline::staged_mark();
-            let a = run_entry(&e, meta, p);
+            let a = if check == crate::defaults::text("upfront.check") {
+                // It has a real table row (and honors --only); emit after all blocking guards are known.
+                Answer::Decided(HookResult::quiet(&e.id), Vec::new())
+            } else {
+                run_entry(&e, meta, p)
+            };
             let used = crate::limits::thread_cpu_us().saturating_sub(cpu_before);
             if matches!(a, Answer::Defer) {
                 crate::deadline::discard_staged_since(mark);

@@ -81,3 +81,8 @@ What the automatic guards check and how to read a block.
 - `devswarm.inlineWorkNudgeThreshold` = 5: Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._
+
+Spawn availability: `session_switches.toml` defines the shared `can_spawn(session)` decision used by the three delegate-only guards and `switch-notice` on both hosts. `guards.agentSpawnAvailable=auto` uses an advertised `available_tools`/`tools` inventory; without one, the host defaults apply (Claude available, Codex unavailable). Set `on` explicitly for a Codex host that provides native agents but no inventory; `off` declares no spawn tool. Usage/ceiling gates follow swarm-guard enable/skip semantics; nested and fresh burn-breaker bans remain independent. Only model-independent routing bans stand down; a rejected model with an allowed alternative does not.
+The notice calls the same account-refined limit-conserve decision as `limit-conserve-inject`, without committing its pending account-state writes. `switch-notice` has ordinary dispatch rows on Claude and Codex, emitted after blocking answers are known.
+Repeat thresholds: `repeat.overrides` accepts per-check `{ min_blocks = N, window_min = W }`; omitted fields inherit the global defaults. Guard names (for example `command-guard`) win; check aliases (`command`) are also accepted.
+`no_work` requires an unbroken, valid scan from byte zero through EOF. Partial scans and legacy offsets without proven coverage report `unknown` and never notify; `codex:codex-rescue` metadata or a `task-...` Codex job result excludes the wrapper.

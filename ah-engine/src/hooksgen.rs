@@ -94,6 +94,7 @@ fn groups(entries: &[Entry]) -> Vec<(&str, Vec<&Entry>)> {
 }
 
 /// The per-hook registry of `host` in the old `hooks.json` shape (events with at least one table entry only).
+/// Engine-only rows, including the delayed switch notice, use the same table/id generation as every other check.
 pub fn registry_json(host: &str) -> String {
     let mut out = String::from("{\n  \"hooks\": {\n");
     let evs: Vec<&str> = table::events(host).into_iter().filter(|ev| !table::entries(host, ev).is_empty()).collect();

@@ -245,13 +245,25 @@ fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
     (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms")).then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
 }
 
+/// Only a complete transcript can establish no work. Partial scans and rescue wrappers never raise this signal.
 /// A subagent that is known to have finished (it said so, or its task ended) and spoke at all, without making a single tool call: it did nothing, whatever its last message says ("Done"). Raised once,
 /// so the parent is told not to take the report for a result. `agent_tracker.no_work.max_tools` is the most tool calls that still count.
 fn no_work(a: &Agent) -> Option<Raised> {
-    if !super::is_child(a) || !(a.finished || a.gone) || a.dead || a.tout == 0 || a.tools > defaults::num("agent_tracker.no_work.max_tools") {
+    if !super::is_child(a) || !(a.finished || a.gone) || a.dead || a.tout == 0
+        || !a.transcript_complete || a.partial || a.codex_rescue
+        || a.tools > defaults::num("agent_tracker.no_work.max_tools") {
         return None;
     }
     Some((a.tools, String::new()))
+}
+
+/// The no-work evidence state, including unknown for any incomplete scan.
+pub(crate) fn no_work_state(a: &Agent) -> &'static str {
+    let key = if a.codex_rescue { "excluded" }
+        else if a.partial || !a.transcript_complete { "unknown" }
+        else if no_work(a).is_some() { "no_work" }
+        else { "clear" };
+    defaults::raw("agent_tracker.no_work_states").str_field(key)
 }
 
 /// A background shell task the agent started has ended (a test run, a soak, a build): the session that waits for it is told once.
