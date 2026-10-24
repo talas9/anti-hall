@@ -2337,3 +2337,52 @@ value = "launcher.spawn.lock"
 [files.launcher_spawn_log]
 doc = "Times (epoch ms, one per line) of the daemon starts the launcher asked for, inside the state directory; the crash-loop window counts them."
 value = "launcher.spawns"
+
+# Daemon start provenance: bounded retained history, not a lifetime counter.
+[health.start_ring_file]
+doc = "The bounded JSON ring of actual daemon starts, relative to the engine state directory. Refused duplicate serve processes do not count."
+value = "starts-reasons.json"
+
+[health.start_ring_rows]
+doc = "Maximum retained daemon-start rows; status starts_by_reason counts this retained history."
+value = 128
+min = 1
+max = 4096
+
+[health.start_ring_bytes]
+doc = "Maximum bytes read or written for the start ring; oversized or unreadable history is ignored, without preventing daemon startup."
+value = 65536
+min = 1024
+unit = "bytes"
+
+[health.start_reason_flag]
+doc = "The serve argument actual launchers use to identify their trigger. Plain serve defaults to manual."
+value = "--start-reason"
+
+[health.start_reasons]
+doc = "Allowed start reasons: hook client, install/deploy routine, installed service managers, plain serve, and evidenced crash recovery. Crash recovery retains the original trigger in its own field."
+value = { hook = "hook-client", routine = "deploy/routine", launchd = "launchd", systemd = "systemd", manual = "manual", crash = "after-crash" }
+
+[health.start_fields]
+doc = "Field names of a start row and its health summary: timestamp is Unix milliseconds; counts cover the retained bounded ring."
+value = { timestamp = "ts", pid = "pid", reason = "reason", trigger = "trigger", counts = "starts_by_reason", last = "last_start" }
+
+[health.start_lifecycle_kinds]
+doc = "Event kinds that delimit daemon lifecycle evidence. The latest event after the prior ring start decides recovery; a clean exit or system reboot supersedes an old crash."
+value = ["start", "exit", "crash", "panic", "system_restart"]
+
+[health.start_crash_kinds]
+doc = "Lifecycle event kinds proving the next actual start follows an unrecovered crash. Stale run-marker reaping writes crash, including when the hook client reaped it before serve."
+value = ["crash", "panic"]
+
+[health.start_doctor_line]
+doc = "The doctor's one-line retained daemon-start summary. Placeholders: counts (JSON), timestamp (last start Unix milliseconds, 0 if none), reason."
+value = "daemon starts (retained): {counts}; last ts={timestamp} reason={reason}"
+
+[updater.engine_serve_args]
+doc = "The legacy updater restart and detached restart-tail arguments after serve; identify both actual launch paths as deploy/routine."
+value = ["--start-reason", "deploy/routine"]
+
+[health.start_ring_write_kind]
+doc = "The discard diagnostic key when writing daemon-start provenance fails; startup continues."
+value = "daemon_start_ring_write"

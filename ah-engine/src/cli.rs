@@ -323,9 +323,10 @@ fn run_recorded(p: &Parsed, h: Handler) -> i32 {
     code
 }
 
-fn cmd_serve(_: &Parsed) -> i32 {
+fn cmd_serve(p: &Parsed) -> i32 {
+    let reason = health::starts::requested(&p.rest);
     crate::daemonenv::sanitize(); // before any thread: the daemon serves every session, so it keeps nothing of the one that started it
-    daemon::serve();
+    daemon::serve(&reason);
     0
 }
 

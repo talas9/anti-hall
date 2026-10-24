@@ -472,7 +472,7 @@ fn start_daemon(tg: &Target) -> bool {
     if client::ping(&paths::socket()).is_some() {
         return true;
     }
-    drop(client::spawn_daemon_from(Ok(tg.engine.clone()), tg.roots.first().map(PathBuf::as_path)));
+    drop(client::spawn_daemon_from_reason(Ok(tg.engine.clone()), tg.roots.first().map(PathBuf::as_path), health::starts::reason("routine")));
     let until = Instant::now() + defaults::secs("routine.start_wait_s");
     while Instant::now() < until {
         if client::ping(&paths::socket()).is_some() {

@@ -555,6 +555,11 @@ pub fn spawn_daemon() -> Option<std::process::Child> {
 /// Start a detached daemon from `exe` (the installer starts the binary it just installed, not itself). `plugin_root`, when given,
 /// is the plugin root the daemon loads: the installer may itself run against a different tree than the live one.
 pub fn spawn_daemon_from(exe: std::io::Result<PathBuf>, plugin_root: Option<&Path>) -> Option<std::process::Child> {
+    spawn_daemon_from_reason(exe, plugin_root, health::starts::reason("hook"))
+}
+
+/// Start with explicit provenance from the actual launcher (hooks and the install routine share the spawn machinery).
+pub fn spawn_daemon_from_reason(exe: std::io::Result<PathBuf>, plugin_root: Option<&Path>, reason: &str) -> Option<std::process::Child> {
     if defaults::env_var("nospawn").is_some() {
         return None;
     }
@@ -596,7 +601,7 @@ pub fn spawn_daemon_from(exe: std::io::Result<PathBuf>, plugin_root: Option<&Pat
             }
         }
     }
-    match cmd.arg(defaults::text("health.serve_arg")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn() {
+    match cmd.arg(defaults::text("health.serve_arg")).arg(defaults::text("health.start_reason_flag")).arg(reason).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn() {
         Ok(child) => Some(child),
         Err(e) => {
             spawn_failed(e);

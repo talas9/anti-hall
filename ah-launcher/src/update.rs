@@ -88,6 +88,7 @@ struct Uc {
     git_archive: Vec<String>,
     engine_stop: String,
     engine_serve: String,
+    engine_serve_args: Vec<String>,
     engine_status: String,
     engine_version: String,
     member_engine: String,
@@ -190,6 +191,7 @@ impl Uc {
             git_archive: l("git_archive_cmd")?,
             engine_stop: t("engine_verb_stop")?,
             engine_serve: t("engine_verb_serve")?,
+            engine_serve_args: l("engine_serve_args")?,
             engine_status: t("engine_verb_status")?,
             engine_version: t("engine_verb_version")?,
             member_engine: text(s, "install.member_engine")?,
@@ -555,7 +557,7 @@ impl U<'_> {
             self.vsay(&self.m("msg.updater_stop_nothing", &[]));
         }
         std::thread::sleep(self.c.restart_pause);
-        let _ = self.engine_cmd(&self.c.engine_serve).process_group(0).spawn();
+        let _ = self.engine_cmd(&self.c.engine_serve).args(&self.c.engine_serve_args).process_group(0).spawn();
         for _ in 0..self.c.status_tries {
             let st = self.tmp.join("status.out");
             if matches!(self.run_in(&[b.clone(), self.c.engine_status.clone()], &envs, Some(&st), self.limit), Ran::Done(0)) {
@@ -571,7 +573,7 @@ impl U<'_> {
         std::thread::sleep(self.c.restart_pause);
         let _ = self.engine_cmd(&self.c.engine_stop).status();
         std::thread::sleep(self.c.restart_pause);
-        let _ = self.engine_cmd(&self.c.engine_serve).process_group(0).spawn();
+        let _ = self.engine_cmd(&self.c.engine_serve).args(&self.c.engine_serve_args).process_group(0).spawn();
         0
     }
 

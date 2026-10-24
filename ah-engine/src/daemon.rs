@@ -1972,7 +1972,7 @@ fn io_code(e: &std::io::Error) -> String {
 }
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
-pub fn serve() {
+pub fn serve(start_reason: &str) {
     crate::crash::mark_daemon(true);
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
@@ -2039,6 +2039,7 @@ pub fn serve() {
     let cfg = store.snapshot().config.clone();
     let rlimit = limits::apply_mem_limit(cfg.mem_mb);
     limits::apply_nice(cfg.nice);
+    health::starts::record(start_reason);
     health::write_marker();
     health::clear_env_failure();
     let starts = next_start_count();

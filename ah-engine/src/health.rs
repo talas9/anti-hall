@@ -1,6 +1,8 @@
 //! Engine health state, all inside the engine's own state dir (`paths::dir()`): the event log, the
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
+pub mod starts;
+
 use crate::config::ClientConfig;
 use crate::defaults;
 use crate::paths;
@@ -718,7 +720,9 @@ pub fn add_fail_open_reason(summary: &mut Value, unhealthy: Option<(u64, String)
 /// fallback of a `health.degraded_kinds` kind in the window). Everything is
 /// read from the event log, so it works with the daemon down and survives a restart.
 pub fn summary() -> Value {
-    summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining())
+    let mut summary = summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining());
+    starts::add_summary(&mut summary);
+    summary
 }
 
 /// Every cause of `degraded`, each with how often it happened and when it was first and last seen: a restart (by kind and code) in
