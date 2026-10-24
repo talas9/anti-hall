@@ -459,6 +459,10 @@ fn compute_due(home: &Path, s: &JevSettings, after: f64, min: f64) -> Result<Com
     }
     ids.retain(|id| s.mode(id, false).as_str() == defaults::text("opcli.review_mode_shadow"));
 
+    if ids.is_empty() {
+        return Ok(Computed { due: Vec::new(), after, min });
+    }
+
     let ev = Evidence { rows: decision_stats(home)?, rollups: rollups(home) };
     let mut state = State::read(home);
     let mut due = Vec::new();
