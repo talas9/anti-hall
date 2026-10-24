@@ -821,7 +821,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     let target: Option<Row> = if broadcast {
         None
     } else if let Some(pm) = &primary_mesh {
-        match resolve_mesh_target(inv, Some(&st.reader()), &rows, Some(pm))? {
+        match resolve_mesh_target(inv, Some(st.reader()), &rows, Some(pm))? {
             Some(t) => Some(t),
             None => {
                 return Ok(refused(&[
@@ -831,7 +831,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
             }
         }
     } else {
-        match resolve_send_target(inv, Some(&st.reader()), &rows, to_flag.unwrap_or_default())? {
+        match resolve_send_target(inv, Some(st.reader()), &rows, to_flag.unwrap_or_default())? {
             Resolved::Row(t) => Some(t),
             Resolved::Rerouted(t, from, why) => {
                 reroute = Some((from, why));

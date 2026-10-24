@@ -41,10 +41,10 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
     } else {
         raw.to_string()
     };
-    if let Some(desc) = ident::read_descriptor(&inv.home, &id) {
-        if has_inbox(&desc)? {
-            return Ok(Found::Go { id, desc, resolved_from: None, redirected_from: None });
-        }
+    if let Some(desc) = ident::read_descriptor(&inv.home, &id)
+        && has_inbox(&desc)?
+    {
+        return Ok(Found::Go { id, desc, resolved_from: None, redirected_from: None });
     }
     // the store the probes below read: the caller's project, else the id's legacy bucket (Node's `openStore` creates it); one that
     // cannot be opened ends in the `store-unavailable` refusal
@@ -145,16 +145,14 @@ pub(crate) fn locate(inv: &Inv, sub: &str, raw: &str, ack_as_owner: bool, dispat
     let exact = rows.iter().any(|r| r.id == id);
     if !exact {
         // a mesh label of a registered row addresses that row
-        if let Some(target) = resolve_mesh_target(inv, Some(&reader), &rows, Some(id.as_str()))? {
-            if target.id != id {
-                if let Some(desc) = ident::read_descriptor(&inv.home, &target.id)
-                    && has_inbox(&desc)?
-                {
-                    return Ok(Found::Go { id: target.id, desc, resolved_from: Some(id), redirected_from: None });
-                }
-            }
-            // a label whose row has no inbox: Node reports the literal id's refusal below
+        if let Some(target) = resolve_mesh_target(inv, Some(&reader), &rows, Some(id.as_str()))?
+            && target.id != id
+            && let Some(desc) = ident::read_descriptor(&inv.home, &target.id)
+            && has_inbox(&desc)?
+        {
+            return Ok(Found::Go { id: target.id, desc, resolved_from: Some(id), redirected_from: None });
         }
+        // a label whose row has no inbox: Node reports the literal id's refusal below
     }
     let has_messages = reader
         .message_count(&id)

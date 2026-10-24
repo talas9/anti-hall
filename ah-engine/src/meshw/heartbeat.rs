@@ -453,7 +453,7 @@ fn attempt_session_id(inv: &Inv, id: &str) -> Option<String> {
 fn owner_app_env(env: &ident::Env) -> ident::Env {
     let mut e = env.clone();
     for k in defaults::list("mesh_write.hb_app_override_keys") {
-        e.remove(&k.to_string());
+        e.remove(k);
     }
     e
 }
@@ -732,14 +732,14 @@ fn child_label_inner(inv: &Inv, a: &Args, id: &str) -> R<Option<Vec<(String, OVa
     let redirect = crate::meshw::readprimary::read_retired_redirect(inv, id);
     let retired_to = redirect.filter(|r| r != id);
     let refusal = |resolved: Option<&str>, worktree: Option<&str>, error: String| {
-        let mut o: Vec<(String, OVal)> = Vec::new();
-        o.push(("ok".into(), OVal::Bool(false)));
-        o.push(("reason".into(), s(defaults::text("mesh_write.hb_reason_child_label"))));
-        o.push(("id".into(), s(id)));
-        o.push(("resolvedTo".into(), resolved.map_or(OVal::Null, s)));
-        o.push(("worktree".into(), worktree.map_or(OVal::Null, s)));
-        o.push(("error".into(), s(&error)));
-        o
+        vec![
+            ("ok".into(), OVal::Bool(false)),
+            ("reason".into(), s(defaults::text("mesh_write.hb_reason_child_label"))),
+            ("id".into(), s(id)),
+            ("resolvedTo".into(), resolved.map_or(OVal::Null, s)),
+            ("worktree".into(), worktree.map_or(OVal::Null, s)),
+            ("error".into(), s(&error)),
+        ]
     };
     let Some(wt) = wt else {
         let Some(to) = retired_to else { return Ok(None) };

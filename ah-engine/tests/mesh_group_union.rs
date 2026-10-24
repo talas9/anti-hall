@@ -18,7 +18,7 @@ struct Fx {
 impl Fx {
     fn new(tag: &str) -> Fx {
         let root = std::env::temp_dir().join(format!("ah-group-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        ah_engine::discard::harmless(fs::remove_dir_all(&root)); // keep: our own scratch directory
         let (home, repo) = (root.join("home"), root.join("repo"));
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&repo).unwrap();

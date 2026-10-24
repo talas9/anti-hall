@@ -116,10 +116,11 @@ fn note_read_limit(path: &Path, site: &str, reason: &str) {
 /// The verb's own refusal for a path that is a FIFO, socket or device (a read would block for good; Node's blocks too): exit 2,
 /// reason `not-a-regular-file`.
 fn not_regular<T>(path: &Path) -> R<T> {
-    let mut body = Vec::new();
-    body.push(("ok".to_string(), OVal::Bool(false)));
-    body.push(("reason".to_string(), OVal::Str(defaults::text("mesh_write.read_why_not_regular").to_string())));
-    body.push(("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_not_regular", &[("path", &path.display())]))));
+    let body = vec![
+        ("ok".to_string(), OVal::Bool(false)),
+        ("reason".to_string(), OVal::Str(defaults::text("mesh_write.read_why_not_regular").to_string())),
+        ("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_not_regular", &[("path", &path.display())]))),
+    ];
     refuse(&OVal::Obj(body).stringify())
 }
 

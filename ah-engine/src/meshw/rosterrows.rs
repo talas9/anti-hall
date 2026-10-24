@@ -12,6 +12,7 @@
 //!   their worktree belongs to; children of another repository are dropped and logged;
 //! * the split-brain fallback row (a Primary in the legacy hash bucket's summary), archived-descriptor rows, the apps-still-live
 //!   report, the ghost-label fold and the text table.
+//!
 //! An odd value in a file (a number where a text is expected) is read the way JavaScript's `String()` and truthiness read it.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or torn optional file is the absent one (Node: `try { JSON.parse(readFileSync(...)) } catch (_) {}`)

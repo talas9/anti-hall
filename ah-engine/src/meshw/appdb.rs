@@ -105,7 +105,7 @@ pub(crate) fn select_for(table: &str, schema: &[&str], have: &[String]) -> Optio
 /// Read one cell the way a snapshot does, so a damaged page fails here as it would in Node; `Err` = Node throws. `node:sqlite`
 /// also throws (`ERR_OUT_OF_RANGE`) on an integer beyond `mesh_write.app_max_exact_int`, which makes the whole snapshot null.
 fn touch_row(r: &rusqlite::Row<'_>, cols: usize) -> Result<(), ()> {
-    let max = defaults::num("mesh_write.app_max_exact_int") as u64;
+    let max = defaults::num("mesh_write.app_max_exact_int");
     for i in 0..cols {
         if let ValueRef::Integer(v) = r.get_ref(i).map_err(|_| ())?
             && v.unsigned_abs() > max

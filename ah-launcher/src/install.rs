@@ -281,6 +281,13 @@ pub fn host_uname() -> (String, String, String) {
     }
 }
 
+/// Whether the `sysctl` flag `name` reads 1; only macOS has `sysctlbyname`, so on every other OS the answer is no.
+#[cfg(not(target_os = "macos"))]
+pub fn is_apple_silicon(_name: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
 pub fn is_apple_silicon(name: &str) -> bool {
     let Ok(c) = std::ffi::CString::new(name) else {
         return false;

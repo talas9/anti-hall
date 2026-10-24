@@ -374,8 +374,8 @@ fn child_label_refusal(inv: &Inv, id: &str, worktree_flag: Option<&str>) -> Opti
     go().ok().flatten()
 }
 
-/// The first half of the plan: the ensure (what the descriptor, the registry and the summary become), decided without writing. The
-/// tick counts over [`Plan::ensured`], which is the descriptor Node's count reads after its own ensure ([`prepare_ex`] is the entry).
+// The first half of the plan: the ensure (what the descriptor, the registry and the summary become), decided without writing. The
+// tick counts over [`Plan::ensured`], which is the descriptor Node's count reads after its own ensure ([`prepare_ex`] is the entry).
 
 /// [`prepare_ex`] for the reconcile sweep, which has already run the project-wide fold: another registry row on the workspace's worktree
 /// is then one the fold deliberately LEFT (its descriptor, a live reader or a heartbeat anchors it; nothing may retire it), so it does

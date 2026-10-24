@@ -39,7 +39,7 @@ pub(crate) fn physical_owner_key(d: &OVal) -> R<Option<String>> {
 /// A switch of the verb as `main()` reads it: the exact word anywhere in the argument list (`argv.includes('--json')`), whatever follows.
 fn has_word(a: &Args, name: &str) -> bool {
     let word = format!("--{name}");
-    a.raw.iter().any(|w| *w == word)
+    a.raw.contains(&word)
 }
 
 /// Run plain `roster`.

@@ -268,9 +268,9 @@ pub(super) fn codex_state(env: &Env, a: &mut Agent, mtime: u64) {
                 a.cwd = p.and_then(|p| p.get(cx.str_field("cwd"))).and_then(Value::as_str).unwrap_or("").to_string();
             }
             let origin = p.and_then(|p| p.get(cx.str_field("originator"))).and_then(Value::as_str).unwrap_or("");
-            a.codex_exec = cx.get("exec_originators").map(V::strings).unwrap_or_default().iter().any(|o| *o == origin);
+            a.codex_exec = cx.get("exec_originators").map(V::strings).unwrap_or_default().contains(&origin);
         }
-        a.codex_terminal = tail(&a.path).is_some_and(|t| turn_ended(&cx, &t));
+        a.codex_terminal = tail(&a.path).is_some_and(|t| turn_ended(cx, &t));
         a.codex_stamp = (mtime, size);
     }
     // done: a one-shot run whose turn ended, a one-shot run quiet past codex_done_after_ms, or any rollout quiet past codex_stale_after_ms

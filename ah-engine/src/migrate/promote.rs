@@ -164,8 +164,7 @@ pub(crate) fn promote_unclaimed(ctx: &Ctx) -> Option<Tally> {
         write_home: home.to_path_buf(),
         store_override: None,
     };
-    let mut t = Tally::default();
-    t.ok = Some(true);
+    let mut t = Tally { ok: Some(true), ..Tally::default() };
     for d in read_descriptors(home) {
         let sid = d.raw.get("sessionId").map(js_str).unwrap_or_default();
         if sid != marker_of(&d.id) {

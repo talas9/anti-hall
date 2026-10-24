@@ -105,15 +105,15 @@ pub fn document(since: Option<&str>, agent: Option<&str>) -> Value {
                 // the agent's task list, rebuilt from its transcript by the same parser the task guards use; absent when it has none
                 if let Some(path) = st.agents.get(id).map(|a| a.path.clone()).filter(|p| !p.is_empty()) {
                     let (w, wide) = (defaults::num("tasklist_guard.window_bytes"), defaults::num("tasklist_guard.wide_window_bytes"));
-                    if let Ok(Some(scan)) = crate::checks::taskstate::scanview::scan_tasks(&path, w, wide) {
-                        if !scan.all.is_empty() {
-                            r["tasks"] = json!(
-                                scan.all
-                                    .iter()
-                                    .map(|t| json!({"subject": t.subject, "status": t.status, "priority": t.priority, "updated_ms": t.updated_ms}))
-                                    .collect::<Vec<_>>()
-                            );
-                        }
+                    if let Ok(Some(scan)) = crate::checks::taskstate::scanview::scan_tasks(&path, w, wide)
+                        && !scan.all.is_empty()
+                    {
+                        r["tasks"] = json!(
+                            scan.all
+                                .iter()
+                                .map(|t| json!({"subject": t.subject, "status": t.status, "priority": t.priority, "updated_ms": t.updated_ms}))
+                                .collect::<Vec<_>>()
+                        );
                     }
                 }
             }

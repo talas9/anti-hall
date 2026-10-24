@@ -477,6 +477,7 @@ pub(super) fn sessions_for(home: &Path, worktree: &str) -> R<Vec<Session>> {
 /// The first-line `cwd` of a transcript, read once per file (inode and length 0 excluded): the head of a transcript never changes.
 fn head_cwd_cached(file: &Path) -> R<Option<String>> {
     use std::os::unix::fs::MetadataExt;
+    #[allow(clippy::type_complexity)] // (dev, inode) -> cwd cache
     static CWDS: std::sync::Mutex<Option<std::collections::HashMap<(u64, u64), Option<String>>>> = std::sync::Mutex::new(None);
     let id = std::fs::metadata(file).ok().filter(|m| m.len() > 0).map(|m| (m.dev(), m.ino()));
     if let Some(id) = id

@@ -653,6 +653,7 @@ pub(crate) struct Opts<'a> {
     /// The CLI flags (`--force-cross-project`): only the interactive verb passes them, never a sweep.
     pub args: Option<&'a Args>,
     /// `opts.revalidate(desc)`: a reason to skip, evaluated inside the lock right before the archive.
+    #[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
     pub revalidate: Option<&'a dyn Fn(Option<&OVal>) -> Option<String>>,
 }
 
@@ -665,7 +666,7 @@ fn apply_unit(inv: &Inv, label: &str, ops: Vec<Op>) -> UnitEnd {
 
 /// The answer fields every app leg reports (`appArchive`, the side-effect warning, `manualStep`, `partial`); whether the leg was partial.
 fn app_fields(o: &mut Obj, leg: &AppLeg, id: &str) -> bool {
-    o.put("appArchive", leg_value(&leg));
+    o.put("appArchive", leg_value(leg));
     if let Some((message, changed)) = &leg.side {
         o.put("warnings", OVal::Arr(vec![s(&tpl("devswarm_cli.msg_app_side_warning", &[("message", message), ("changed", &changed.stringify())]))]));
     }
@@ -742,6 +743,7 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
 
 /// [`archive`] with Node's `opts.revalidate`: the caller's check of the descriptor, run INSIDE the workspace's lock immediately before
 /// the first write. A reason skips the archive (`{ ok: true, skipped: true, reason }`, nothing written).
+#[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
 pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> R<Answer> {
     let raw = a.positionals.get(1).map(String::as_str).unwrap_or("");
     // already archived in anti-hall but still live in the app: archive the app side only
@@ -928,22 +930,21 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
     }
     let owner = owner_key.clone().unwrap_or_else(|| current_owner.clone());
     // ---- 1. the archived name: a hard link of the active descriptor; a leftover one that is nobody's is replaced atomically ----
-    if active.exists {
-        if let Some(arch) = ino(&archived_path)
-            && ino(&active_path) != Some(arch)
-        {
-            let healed = tombstone_is_orphaned(&root, arch) && {
-                let tmp = adir.join(format!("{id}{json}{}", text("devswarm_cli.act_heal_suffix")));
-                crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: clears a leftover of a crashed heal
-                let ok = std::fs::hard_link(&active_path, &tmp).is_ok() && std::fs::rename(&tmp, &archived_path).is_ok();
-                if !ok {
-                    crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: never leave the temporary link behind
-                }
-                ok && ino(&active_path) == ino(&archived_path)
-            };
-            if !healed {
-                return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_link_failed", &[("error", text("devswarm_cli.act_msg_link_exists"))])));
+    if active.exists
+        && let Some(arch) = ino(&archived_path)
+        && ino(&active_path) != Some(arch)
+    {
+        let healed = tombstone_is_orphaned(&root, arch) && {
+            let tmp = adir.join(format!("{id}{json}{}", text("devswarm_cli.act_heal_suffix")));
+            crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: clears a leftover of a crashed heal
+            let ok = std::fs::hard_link(&active_path, &tmp).is_ok() && std::fs::rename(&tmp, &archived_path).is_ok();
+            if !ok {
+                crate::discard::harmless(std::fs::remove_file(&tmp)); // keep: never leave the temporary link behind
             }
+            ok && ino(&active_path) == ino(&archived_path)
+        };
+        if !healed {
+            return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_link_failed", &[("error", text("devswarm_cli.act_msg_link_exists"))])));
         }
     }
     let (arel, drel) = (crate::dssup::recon::view::archived_rel(id), crate::dssup::recon::view::descriptor_rel(id));

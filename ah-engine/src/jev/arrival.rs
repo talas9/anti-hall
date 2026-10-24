@@ -277,7 +277,7 @@ fn entry(label: Option<&Label>, seq: f64) -> J {
 fn append_log(p: &Paths, keep: u64, hash: &str, l: &Label) {
     let opt = |s: &Option<String>| s.clone().map_or(J::Null, J::Str);
     let mut row = vec![
-        ("ts".to_string(), J::Str(crate::checks::jsport::date::to_iso(crate::checks::replykit::io::now_ms() as f64).unwrap_or_default())),
+        ("ts".to_string(), J::Str(crate::checks::jsport::date::to_iso(crate::checks::replykit::io::now_ms()).unwrap_or_default())),
         ("hash".into(), J::Str(hash.to_string())),
         ("urgency".into(), opt(&l.urgency)),
         ("kind".into(), opt(&l.kind)),
@@ -325,7 +325,9 @@ fn claim(p: &Paths, lim: &Limits, hash: &str) -> Claim {
 /// `triageMessagesSync(items, {home})` for the arrival path and for a reader that wants labels now: the labels the items have
 /// or get, keyed by the caller's identity. A message another process is labelling is skipped (its label lands in the shared
 /// cache); one the budget cut off stays uncached and is retried on a later call. Never panics, never blocks past the budget.
+#[allow(clippy::type_complexity)] // (position, (label, reason)) rows, local to this module
 pub fn triage_sync(home: &Path, items: &[Item], lim: &Limits, labeler: &dyn Labeler) -> Vec<(usize, (Option<String>, Option<String>))> {
+    #[allow(clippy::type_complexity)] // same rows as the return type
     let mut results: Vec<(usize, (Option<String>, Option<String>))> = Vec::new();
     let cfg = load_cfg(home, Env::process());
     if !cfg.enabled {
@@ -386,6 +388,7 @@ pub fn triage_sync(home: &Path, items: &[Item], lim: &Limits, labeler: &dyn Labe
     results
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)] // one labelling pass: its inputs are the pass
 fn label_and_cache(
     p: &Paths,
     cfg: &Cfg,

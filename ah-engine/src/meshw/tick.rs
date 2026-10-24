@@ -45,7 +45,7 @@ struct Form {
 /// `argv.includes('--<name>')`.
 fn word(a: &Args, flag_key: &str) -> bool {
     let want = format!("--{}", defaults::text(flag_key));
-    a.raw.iter().any(|w| *w == want)
+    a.raw.contains(&want)
 }
 
 fn tick_form(a: &Args) -> Form {

@@ -132,15 +132,12 @@ pub fn generated(home: &Path) -> Vec<Generated> {
     let mut out = Vec::new();
     for g in defaults::raw("entry_audit.generators").as_array().unwrap_or_default() {
         let (id, kind) = (g.str_field("id").to_string(), g.str_field("kind").to_string());
-        match kind.as_str() {
-            "unit" => {
-                let Some(m) = crate::setup::units::manager(defaults::text(g.str_field("os_key"))) else { continue };
-                let exe = crate::paths::dir().join(defaults::text("doctor.bin_dir")).join(defaults::text("doctor.bin_name"));
-                for (path, text) in crate::setup::units::engine_files(m, home, &exe.to_string_lossy()) {
-                    out.push(Generated { id: id.clone(), kind: kind.clone(), path, text });
-                }
+        if kind.as_str() == "unit" {
+            let Some(m) = crate::setup::units::manager(defaults::text(g.str_field("os_key"))) else { continue };
+            let exe = crate::paths::dir().join(defaults::text("doctor.bin_dir")).join(defaults::text("doctor.bin_name"));
+            for (path, text) in crate::setup::units::engine_files(m, home, &exe.to_string_lossy()) {
+                out.push(Generated { id: id.clone(), kind: kind.clone(), path, text });
             }
-            _ => {}
         }
     }
     out
