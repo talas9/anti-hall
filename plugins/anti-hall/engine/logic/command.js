@@ -2084,7 +2084,7 @@ function isSafeGitFetch(segment) {
 // between `git` and the subcommand cannot hide it) of push/pull/clone
 // (always heavy) or fetch without isSafeGitFetch's safety. This is the fix
 // for the P1 bypass above: the plain-substring git HEAVY_PATTERN
-// (`\bgit\s+(?:push|pull|fetch|clone)\b`) only matches when the subcommand
+// (`\bgit\s+(?:pull|fetch|clone)\b`) only matches when the subcommand
 // is textually ADJACENT to `git`, so it never even sees a global-option-
 // prefixed invocation — this check runs the same tokenized, option-aware
 // parse used by isSafeGitFetch, so the two can never disagree about where
@@ -2101,7 +2101,7 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'push' || sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull' || sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }

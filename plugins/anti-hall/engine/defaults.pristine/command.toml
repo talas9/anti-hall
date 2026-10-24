@@ -82,7 +82,7 @@ value = [
   '(?i)\bnpm\s+run\s+(?:build|test|deploy|start|lint|typecheck|check)\b',
   '(?i)\byarn\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
   '(?i)\bpnpm\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b',
-  '(?i)\bgit\s+(?:push|pull|fetch|clone)\b',
+  '(?i)\bgit\s+(?:pull|fetch|clone)\b',
   '(?i)\bpython[23]?\s+\S+\.py\b',
   '(?i)\bnode\s+\S+\.(?:js|mjs|cjs)\b',
   '(?i)\bdeno\s+(?:run|task)\b',
@@ -182,7 +182,7 @@ value = ["--prune", "-p", "--prune-tags", "--force", "-f"]
 
 [command.git_heavy_subs]
 doc = "git subcommands that are always heavy."
-value = ["push", "pull", "clone"]
+value = ["pull", "clone"]
 
 # ---- sqlite3 ------------------------------------------------------------------------------------------------------
 
