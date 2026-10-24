@@ -12,7 +12,7 @@
 
 [nodeback.shadow_mode]
 doc = "Which events the Node shadow follows: `off` (none), `sampled` (nodeback.shadow_sample_pct of the events, plus every event the engine blocked when nodeback.shadow_sample_blocks is 1) or `all` (every event of nodeback.shadow_events; heavy, a Node process per hook)."
-value = "sampled"
+value = "off"
 
 [nodeback.shadow_sample_pct]
 doc = "Share of the shadowed events, in percent, that `sampled` mode follows."
