@@ -90,13 +90,13 @@ function egDelegation(tool, cwd, p) {
     var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
     var tierText = false;
     try { tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd); } catch (e) { if (cmdFatal(e)) throw e; tierText = false; }
-    return text.message('block', guard, {
+    return text.detailsMessage('block', guard, {
       what: what, why: ah.cfg('command.msg_edit_why_orch'),
       instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
       allowed: notes, override: override,
-    });
+    }, p && p.session_id);
   }
-  return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+  return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, p && p.session_id);
 }
 
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }

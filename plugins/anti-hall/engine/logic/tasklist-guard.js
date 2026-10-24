@@ -503,7 +503,7 @@ function tlFire(f) {
     if (priorPath) dbody += '\n\n' + text.render(tlT('prior_detail'), { path: priorPath });
     dbody += '\n\n' + text.render(tlT('ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: tlAckPath(hm, session) }) + '\n';
     details = { rel: dp.rel, body: dbody };
-    extra.push(tlT('details_label') + dp.abs);
+    extra.push(ah.cfg('guardkit.msg_labels').details + dp.abs);
   }
   var base = text.message('block', tlT('guard_name'), { what: what, why: why, instead: instead, override: tlT('ack_human'), extra: extra });
   var reason = tlSanitize(base);

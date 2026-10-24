@@ -98,13 +98,13 @@ function decide(p) {
   var what = m.source === 'waste'
     ? text.render(ah.cfg('burn.msg_what_waste'), { score: String(m.score), hard: String(m.hard), tokens: String(m.tokens_text), reason: String(m.reason) })
     : text.render(ah.cfg('burn.msg_what'), { tokens: String(m.tokens_text !== undefined ? m.tokens_text : m.tokens) });
-  var reason = text.message('block', ah.cfg('burn.guard_name'), {
+  var reason = text.detailsMessage('block', ah.cfg('burn.guard_name'), {
     what: what,
     why: ah.cfg('burn.msg_why'),
     instead: ah.cfg('burn.msg_instead'),
     allowed: ah.cfg('burn.msg_allowed'),
     override: ah.cfg('burn.msg_override'),
-  });
+  }, p.session_id);
   // exit 2 with the reason on stdout as a decision and on stderr: Claude reads the decision, Codex honors exit 2 only with the reason on stderr
   return { exact: { code: 2, out: text.blockJson(reason), err: reason + '\n' } };
 }

@@ -60,5 +60,5 @@ function decide(p) {
   }
   if (!warn) return 'allow';
   var event = typeof p.hook_event_name === 'string' && p.hook_event_name !== '' ? p.hook_event_name : ah.cfg('uncommitted.event');
-  return { advisory: text.advisoryJson(event, text.render(ah.cfg('uncommitted.msg_soft'), { lines: String(lines), soft: String(soft), max: String(hard) })) };
+  return { advisory: text.advisoryJson(event, text.message('warn', ah.cfg('uncommitted.guard_name'), { what: text.render(ah.cfg('uncommitted.msg_soft'), { lines: String(lines), soft: String(soft), max: String(hard) }) })) };
 }

@@ -1101,11 +1101,11 @@ value = "Mechanical override, only if the user explicitly confirmed this exact c
 
 [tasklist_guard.ack_human]
 doc = "The override line of a tasklist-guard block, phrased for the human; the mechanical override is in the details file (ack_hint)."
-value = "tell the agent \"skip tasklist-guard\" (the block then stays advisory for the rest of the session)."
+value = "tell the agent \"skip tasklist-guard\""
 
 [tasklist_guard.details_label]
 doc = "Label of the last line of a tasklist-guard block: the file with the long instructions."
-value = "Details: "
+value = "📄 Details: "
 
 [tasklist_guard.details_dir]
 doc = "Directory of the tasklist-guard details file under the anti-hall state directory."

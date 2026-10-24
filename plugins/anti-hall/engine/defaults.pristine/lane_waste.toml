@@ -95,19 +95,19 @@ value = [
 
 [lane_test.msg_policy_what]
 doc = "Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
-value = "`{cmd}` is blocked: tests are off by owner policy (guards.testPolicy = none); this agent runs no test command ({label})."
+value = "tests are off by owner policy ({label}): {cmd}"
 
 [lane_test.msg_policy_why]
 doc = "Why every test run is blocked under testPolicy none."
-value = "The owner turned tests off for agents: test runs queue behind the shared build lock and re-send each waiting agent's whole context, which burned weekly limit on 2026-10-23, and verification happens at deploy."
+value = "The owner chose to verify at deploy instead of running tests here."
 
 [lane_test.msg_policy_instead]
 doc = "What to do instead under testPolicy none."
-value = "build only (cargo build or cargo check), commit by explicit path, and report what you changed and that no tests were run; do not retry the test command."
+value = "Build or check syntax, then report the change and that tests were not run."
 
 [lane_test.msg_policy_override]
 doc = "How the user can lift the testPolicy block (shown on the last line)."
-value = "the user sets guards.testPolicy to targeted or suites, or skips it for a session in skip.json as lane-test-guard."
+value = "tell the agent \"skip lane-test-guard\""
 
 [lane_test.guard_name]
 doc = "The guard id the lane test guard answers to in skip.json and in its messages."
@@ -167,19 +167,19 @@ value = [
 
 [lane_test.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
-value = "`{cmd}` is blocked: a subagent does not run suite-scale tests ({label})."
+value = "a helper cannot run this full suite ({label}): {cmd}"
 
 [lane_test.msg_why]
 doc = "Why suite runs are blocked for subagents."
-value = "Suite runs queue behind the shared build lock and keep every waiting agent re-sending its whole context; the 2026-10-23 token burn (about 60% of a weekly limit) was mostly lanes waiting on or re-reading suite runs."
+value = "Full suites can queue behind a shared build lock and waste the work budget."
 
 [lane_test.msg_instead]
 doc = "What to do instead."
-value = "run cargo check, commit, verification happens at deploy; a filtered single-module test (`cargo test <module>::`) is allowed."
+value = "Run a build check or one allowed module test, then report the result."
 
 [lane_test.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
-value = "the user sets guards.allowTestSuites, turns the guard off with guards.laneTestGuard, or skips it for a session in skip.json as lane-test-guard."
+value = "tell the agent \"skip lane-test-guard\""
 
 # ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
 
@@ -235,31 +235,31 @@ value = "run_in_background"
 
 [queued_wait.msg_what_bg]
 doc = "Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written."
-value = "`{cmd}` is blocked: a subagent does not start build or test commands in the background."
+value = "a helper cannot start this build or test in the background: {cmd}"
 
 [queued_wait.msg_what_sleep]
 doc = "Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit."
-value = "`{cmd}` is blocked: it waits {secs}s (limit {max}s)."
+value = "this wait is too long ({secs}s; limit {max}s): {cmd}"
 
 [queued_wait.msg_what_loop]
 doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."
-value = "`{cmd}` is blocked: a poll loop sleeping {secs}s per round (limit {max}s)."
+value = "this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}"
 
 [queued_wait.msg_why]
 doc = "Why background heavy commands and poll loops are blocked."
-value = "An agent that waits keeps acting: every poll or re-read re-sends its whole context, so waiting costs as much as working (the 2026-10-23 token burn was agents polling for builds queued behind one lock)."
+value = "Repeated checks while waiting use the work budget without making progress."
 
 [queued_wait.msg_instead_bg]
 doc = "What to do instead of a background heavy command."
-value = "run it in the foreground under the lock (`lockf <lockfile> ...`): if the lock is held the command just waits, and waiting costs nothing."
+value = "Run the command in the foreground under the shared lock."
 
 [queued_wait.msg_instead_sleep]
 doc = "What to do instead of a long sleep or poll loop."
-value = "run the command in the foreground, or end your turn and let the completion notification wake you; do not poll."
+value = "End the turn and wait for the completion notification."
 
 [queued_wait.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
-value = "the user turns the guard off with guards.queuedWaitGuard, or skips it for a session in skip.json as queued-wait-guard."
+value = "tell the agent \"skip queued-wait-guard\""
 
 # ---- wide-search-guard (whole-disk searches, every agent; GH #174) ----------------------------------------
 # Decision logic: engine/logic/wide-search-guard.js over the shared command parser. Unlike the two guards above it judges the main

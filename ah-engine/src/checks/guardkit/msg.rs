@@ -62,8 +62,11 @@ fn clean(s: &str) -> String {
 pub fn message(kind: Kind, guard: &str, p: &Parts<'_>) -> String {
     let icon = defaults::raw("guardkit.icons").str_field(kind.key());
     let labels = defaults::raw("guardkit.msg_labels");
-    let mut lines = vec![format!("{icon}{}{}: {}", defaults::text("guardkit.msg_head"), clean(guard), clean(p.what))];
-    for (label, text) in [("why", p.why), ("instead", p.instead), ("allowed", p.allowed), ("override", p.override_)] {
+    let name = defaults::raw("guardkit.plain_names").str_field(guard);
+    let name = if name.is_empty() { guard } else { name };
+    let override_text = render("guardkit.override_human", &[("guard", guard)]);
+    let mut lines = vec![format!("{icon}{}{}: {}", defaults::text("guardkit.msg_head"), clean(name), clean(p.what))];
+    for (label, text) in [("why", p.why), ("instead", p.instead), ("allowed", p.allowed), ("override", if p.override_.is_empty() { "" } else { &override_text })] {
         if !text.is_empty() {
             lines.push(format!("{}{}", labels.str_field(label), clean(text)));
         }

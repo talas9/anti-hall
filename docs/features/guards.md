@@ -13,15 +13,16 @@ setting, and you can skip one for a short while.
 ## How a block looks
 
 Every block has the same three parts: what was stopped, why, and what to do instead. The
-assistant reads it and takes the other path. For example:
+assistant reads it and takes the other path. Long instructions go in a details file; the
+message links to it. The first line uses a plain name; the override keeps the guard id
+so the agent can record your consent. For example:
 
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · git-guard: a commit message with an AI/assistant self-credit trailer
-(Co-Authored-By / "Generated with <AI>") is blocked.
-Why: Commits carry no AI co-author credit.
-Do instead: re-run the commit without that trailer.
+⛔ git safety: this commit message has an AI co-author line (Co-Authored-By or "Generated with").
+❓ Why: Commits in this setup carry no AI co-author line.
+👉 Do instead: remove the Co-Authored-By line and commit again.
 ```
 
 </div>
@@ -55,16 +56,17 @@ coordinator keeps the overview and checks each helper's result instead of trusti
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.
-Why: Raw output floods the main thread.
-Do instead: ... a single command: delegate to a subagent (it returns a short summary).
-Allowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, ...
+⛔ command check: the main agent cannot run this heavy command.
+❓ Why: Long output would crowd the main conversation.
+👉 Do instead: Hand the command to a helper agent for a short summary.
+🔓 To allow this once: tell the agent "skip command-guard"
+📄 Details: /Users/you/.anti-hall/block-details/command-guard-session.md
 ```
 
 </div>
 
 Short checks are still allowed in the main session, such as one or two test files piped
-to `tail`, or a `--check` / `--dry-run` run. The full list is in the message itself.
+to `tail`, or a `--check` / `--dry-run` run. The full list is in the details file linked from the message.
 
 ## Checking claims
 
@@ -75,11 +77,9 @@ once:
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · speculation-guard: your reply states something speculative ('probably')
-without verifying it or flagging it as unverified.
-Why: Unverified claims read as facts.
-Do instead: verify it with a tool, or say what is unverified ('I don't know, here is what
-I would check'), then continue.
+⛔ claim check: your reply states something speculative ('probably') without verifying it or flagging it as unverified.
+❓ Why: Unverified claims read as facts.
+👉 Do instead: verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue.
 ```
 
 </div>

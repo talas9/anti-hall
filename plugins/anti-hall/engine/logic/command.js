@@ -1089,13 +1089,13 @@ LIB['./edit-guard.js'] = (function () {
     if (devswarmActive) {
       var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
       var tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd);
-      return text.message('block', guard, {
+      return text.detailsMessage('block', guard, {
         what: what, why: ah.cfg('command.msg_edit_why_orch'),
         instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
         allowed: NOTES, override: override,
-      });
+      }, payload && payload.session_id);
     }
-    return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+    return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, payload && payload.session_id);
   }
   return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason };
 })();
@@ -5088,15 +5088,14 @@ function mainFlow(payload) {
     }
   }
   const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
-  const reason = bm.blockMessage({
-    guard: ah.cfg('command.guard_name'),
+  const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
     why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
       : delegateTo + '.') + cdJoinHint,
     allowed: allowedShapes,
-  });
+  }, payload && payload.session_id);
   return blockExact(reason);
 }
 

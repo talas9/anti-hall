@@ -104,12 +104,7 @@ function gitSettingOn(key) { return ah.settings.bool(key); }
 // gm(opts) -> the block text in the shared layout (hooks/lib/block-message.js, guard git-guard).
 function gitClean(s) { return String(s).split(/\s+/).filter(Boolean).join(' '); }
 function gm(o) {
-  const lines = [ah.cfg('git.block_emoji') + ah.cfg('git.block_mark') + gitClean(o.what)];
-  if (o.why) lines.push(ah.cfg('git.label_why') + gitClean(o.why));
-  if (o.instead) lines.push(ah.cfg('git.label_instead') + gitClean(o.instead));
-  if (o.allowed) lines.push(ah.cfg('git.label_allowed') + gitClean(o.allowed));
-  if (o.override) lines.push(ah.cfg('git.label_override') + gitClean(o.override));
-  return lines.join('\n');
+  return text.message('block', ah.cfg('git.guard_name'), o);
 }
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
@@ -1946,7 +1941,9 @@ function expandAlias(args, sub, rest, dir, env) {
 }
 
 function annotate(msg, note) {
-  return String(msg).replace(new RegExp('^(\\S+' + gitEsc(ah.cfg('git.block_mark')) + ')'), '$1' + note + ' ');
+  const guard = ah.cfg('git.guard_name');
+  const prefix = ah.cfg('guardkit.icons').block + ah.cfg('guardkit.msg_head') + (ah.cfg('guardkit.plain_names')[guard] || guard) + ': ';
+  return String(msg).startsWith(prefix) ? prefix + note + ' ' + String(msg).slice(prefix.length) : String(msg);
 }
 
 function aliasBodyCommand(v) {

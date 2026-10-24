@@ -241,3 +241,11 @@ value = "procwatch-state.json"
 doc = "Prefix of the cooldown record that remembers the newest resource warning a session was shown."
 value = "res-shown"
 
+
+[procwatch.msg_other_project]
+doc = "Suffix when a process belongs to another checkout; folder is its project name."
+value = " (another project: {folder})"
+
+[procwatch.f_cwd]
+doc = "Payload field of the session directory."
+value = "cwd"

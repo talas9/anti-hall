@@ -87,15 +87,15 @@ value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "�
 
 [guardkit.msg_head]
 doc = "Text between the icon and the guard name in every block or advisory message."
-value = " anti-hall · "
+value = " "
 
 [guardkit.msg_labels]
 doc = "Labels of the optional lines of a block or advisory message."
-value = { why = "Why: ", instead = "Do instead: ", allowed = "Allowed here: ", override = "To allow this once: " }
+value = { "why" = "❓ Why: ", "instead" = "👉 Do instead: ", "allowed" = "✅ Allowed here: ", "override" = "🔓 To allow this once: ", "details" = "📄 Details: " }
 
 [messages.style_guide]
-doc = "Style guide for every block or advisory text a guard shows (owner rule 2026-10-24: blocking messages must be human friendly). Line 1: `⛔ <plain-words name>: <what was stopped, in plain words>`. Line 2: `Why: <one short sentence>`. Line 3: `Do instead: <one concrete action>`. Optional last lines: `To allow this once: tell the agent \"skip <guard>\"` (override phrased for the human) and `Details: <one file path>`. At most 4 lines and about 350 characters before the details. No raw ids, hashes, epoch numbers or JSON in the message; long instructions (file paths, file headers, ledger rules, the mechanical override) go in a details file the engine writes (see tasklist_guard.details_dir). Keep every {placeholder} the code fills; keep key names stable."
-value = "⛔ <name>: <what was stopped, in plain words>\nWhy: <one short sentence>\nDo instead: <one concrete action>\nTo allow this once: tell the agent \"skip <guard>\"\nDetails: <file path, only when long instructions exist>"
+doc = "Style guide for every block or advisory text a guard shows (owner rule 2026-10-24: blocking messages must be human friendly). Line 1: `⛔ <plain-words name>: <what was stopped, in plain words>`. Line 2: `❓ Why: <one short sentence>`. Line 3: `👉 Do instead: <one concrete action>`. Optional last lines: `🔓 To allow this once: tell the agent \"skip <guard>\"` (override phrased for the human) and `📄 Details: <one file path>`. At most 4 lines and about 350 characters before the optional details line. Plain text only; no markdown. Shared labels and plain names come from guardkit. No raw ids, hashes, epoch numbers or JSON in the message; long instructions (file paths, file headers, ledger rules, the mechanical override) go in a details file the engine writes (see tasklist_guard.details_dir). Keep every {placeholder} the code fills; keep key names stable."
+value = "⛔ <plain name>: <what stopped>\n❓ Why: <one short reason>\n👉 Do instead: <one action>\n🔓 To allow this once: tell the agent \"skip <id>\"\n📄 Details: <file path, when needed>"
 
 # ---- merge-side-pick ----------------------------
 
@@ -1514,19 +1514,19 @@ min = 1
 
 [merge_gate.msg_what]
 doc = "The block message's first line; {hedge} is the last hedge phrase found."
-value = 'auto-merge blocked: your recent output flagged a deliverable as pending/unverified ("{hedge}").'
+value = "the merge is paused: recent work is still unverified (\"{hedge}\")."
 
 [merge_gate.msg_why]
 doc = "The block message's reason."
-value = "A self-issued hedge blocks auto-merge (false-done backstop)."
+value = "Merging now could ship unfinished work."
 
 [merge_gate.msg_instead]
 doc = "The block message's alternative."
-value = "verify it against its agreed criterion or get owner sign-off, then merge."
+value = "Verify the agreed result, or get the owner to accept the gap before merging."
 
 [merge_gate.msg_override]
 doc = "The block message's override line."
-value = "set ANTIHALL_MERGE_GATE=off, or skip merge-gate"
+value = "tell the agent \"skip merge-gate\""
 
 [merge_gate.segment_split]
 doc = "Regex source that splits a Bash command into the segments the auto-merge scan looks at (shell separators; quotes are not honoured, on purpose, as in the Node gate)."
@@ -2074,3 +2074,35 @@ value = 32
 unit = "bytes"
 min = 0
 max = 65536
+
+[guardkit.plain_names]
+doc = "Human names on the first line; unknown guard ids fall back to themselves."
+value = { "tasklist-guard" = "task list check", "git-guard" = "git safety", "command-guard" = "command check", "edit-guard" = "file-edit check", "spawn-usage" = "usage limit", "wide-search-guard" = "wide search", "burn-breaker" = "runaway-work breaker", "task-guard" = "idle tasks check", "coordinator-work-guard" = "coordinator workload", "procwatch" = "process watch", "lane-test-guard" = "test run check", "queued-wait-guard" = "waiting check", "uncommitted-guard" = "uncommitted work check", "sibling-sweep" = "similar bugs check", "merge-gate" = "merge check", "speculation-guard" = "claim check", "swarm-guard" = "agent spawn check", "api-guard" = "API check", "ship-it-guard" = "change plan check", "merge-side-pick" = "merge review", "scan-throttle" = "search workload" }
+
+[guardkit.override_human]
+doc = "Human consent hint; the id is the skip key."
+value = "tell the agent \"skip {guard}\""
+
+[guardkit.details_dir]
+doc = "Details files relative to the anti-hall directory."
+value = "block-details"
+
+[guardkit.details_ext]
+doc = "Details file extension."
+value = ".md"
+
+[guardkit.details_session_default]
+doc = "Details file suffix when a session id is unavailable."
+value = "session"
+
+[guardkit.brief_what]
+doc = "Short headlines; full context is saved in the details file."
+value = { "burn-breaker" = "this tool call is paused after work with no recorded outcome.", "edit-guard" = "the main agent cannot make this project edit.", "command-guard" = "the main agent cannot run this heavy command." }
+
+[guardkit.brief_why]
+doc = "Short reasons; full context is saved in the details file."
+value = { "burn-breaker" = "Further work needs a saved outcome.", "edit-guard" = "A helper makes the edit and reports back.", "command-guard" = "Long output would crowd the main conversation." }
+
+[guardkit.brief_instead]
+doc = "Short actions; full instructions are saved in the details file."
+value = { "burn-breaker" = "Save working changes in a commit, or write your report and stop.", "edit-guard" = "Hand the edit to a helper agent.", "command-guard" = "Hand the command to a helper agent for a short summary." }

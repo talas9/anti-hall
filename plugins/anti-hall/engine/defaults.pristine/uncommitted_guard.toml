@@ -81,20 +81,20 @@ value = 50
 
 [uncommitted.msg_what]
 doc = "Heading of the block. Placeholders: {lines} uncommitted lines now, {max} the hard line."
-value = "This edit is blocked: your worktree holds {lines} uncommitted lines (the limit is {max})."
+value = "this edit is paused: {lines} lines are uncommitted (limit {max})."
 
 [uncommitted.msg_why]
 doc = "Why the guard blocks."
-value = "Uncommitted work is lost when an agent stops, is killed or runs out of budget, and a large uncommitted diff cannot be reviewed or resumed; a 2026-10-23 swarm burned about 60% of a weekly limit with little committed."
+value = "Large unsaved changes are harder to review and resume."
 
 [uncommitted.msg_instead]
 doc = "What to do instead."
-value = "Commit what works now (git add and git commit are allowed), then continue editing. Small commits reset the count."
+value = "Commit the working changes, then continue editing."
 
 [uncommitted.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
-value = "the user turns the guard off with `guards.uncommittedWork`, skips it for a session in skip.json as uncommitted-guard, or raises git.max_uncommitted_lines (plugin data)."
+value = "tell the agent \"skip uncommitted-guard\""
 
 [uncommitted.msg_soft]
 doc = "Soft warning added to the agent's context. Placeholders: {lines} uncommitted lines now, {soft} the soft line, {max} the hard line."
-value = "anti-hall uncommitted-guard: your worktree holds {lines} uncommitted lines (soft line {soft}, edits are blocked at {max}). Commit what works now."
+value = "{lines} lines are uncommitted (warning at {soft}; edits pause at {max}). Commit the working changes."
