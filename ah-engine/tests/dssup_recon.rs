@@ -246,7 +246,7 @@ fn the_snapshot_tool_backs_up_and_anonymises_with_nodes_own_hashes() {
     assert!(rows[0].0.starts_with("[forwarded from archived abc] anon-"), "prefix kept: {}", rows[0].0);
     assert!(!rows[0].0.contains("secret") && !rows[1].0.contains("secret"));
     // the hash is Node's messageHash of the anonymised body (re-derived here by Node itself)
-    let code = "const i=require(process.argv[1]+'/companion/devswarm-ingest.js');console.log(i.messageHash('w1',{message:process.argv[2],createdAt:'6'}))";
+    let code = "const i=require(process.argv[1]+'/../anti-hall-node/companion/devswarm-ingest.js');console.log(i.messageHash('w1',{message:process.argv[2],createdAt:'6'}))";
     let want = Command::new("node").args(["-e", code, src.root.to_str().unwrap(), &rows[1].0]).output().unwrap();
     assert_eq!(rows[1].1, String::from_utf8_lossy(&want.stdout).trim());
 }

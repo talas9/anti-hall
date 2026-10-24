@@ -28,6 +28,7 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("ahd-cfg-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         Env { dir }
     }
@@ -74,6 +75,7 @@ impl Env {
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("AH_ENGINE_NOSPAWN", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -87,9 +89,8 @@ impl Env {
 
     /// Everything the engine logged in its state dir.
     fn log(&self) -> String {
-        std::fs::read_dir(self.state())
-            .map(|rd| rd.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
+        ah_engine::defaults::init().unwrap();
+        std::fs::read_to_string(self.state().join(ah_engine::health::log_name())).unwrap_or_default()
     }
 }
 
@@ -184,7 +185,7 @@ fn a_project_file_applies_below_the_user_file_and_cannot_touch_guards() {
     let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(e.plans().len(), before, "an invalid project file is ignored, not half applied: the defaults write no plan event");
-    assert!(e.log().contains("config_invalid") && e.log().contains("project file"), "{}", e.log());
+    assert!(e.log().contains("layer_notice") && e.log().contains("ignored (project)"), "{}", e.log());
 }
 
 #[test]
@@ -208,6 +209,7 @@ fn config_validate_enforces_the_guard_rule_on_the_real_command() {
             .env_clear()
             .env("HOME", e.dir.join("home"))
             .env("AH_ENGINE_DIR", e.state())
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .output()
             .unwrap();
         (o.status.code().unwrap(), String::from_utf8_lossy(&o.stdout).to_string())
@@ -239,12 +241,13 @@ fn a_guard_check_in_shadow_still_decides_and_off_drops_it() {
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"shadow\"\n");
     let (code, _, err) = e.run("PreToolUse", &payload, &[]);
     assert_eq!(code, 2, "shadow: the check still blocks a force push: {err}");
-    assert!(err.contains("git-guard"), "{err}");
+    assert!(err.contains("git safety"), "{err}");
     // off is the owner's explicit choice: the entry is dropped and no hook takes its place
     e.config("[entries.\"PreToolUse/git-guard\"]\nmode = \"off\"\n");
     let (_, _, err) = e.run("PreToolUse", &payload, &[]);
-    assert!(!err.contains("git-guard: force push"), "off: the git check does not run: {err}");
-    assert!(e.plan("off").contains(&"git-guard".to_string()), "{}", e.log());
+    assert!(!err.contains("git safety: a force push"), "off: the git check does not run: {err}");
+    // The bounded log can clip the final off field; the leading ran list still records its absence.
+    assert!(!e.plan("ran").contains(&"git-guard".to_string()), "{}", e.log());
 }
 
 #[test]

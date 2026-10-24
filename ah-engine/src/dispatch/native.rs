@@ -269,7 +269,8 @@ mod tests {
                 "burn-breaker",
                 "queued-wait-guard",
                 "lane-test-guard",
-                "wide-search-guard"
+                "wide-search-guard",
+                "switch-notice"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
@@ -452,10 +453,9 @@ mod tests {
         let mut m = meta();
         m.env = crate::reqenv::RequestEnv::from_pairs([("HOME", home.to_string_lossy().to_string()), ("CLAUDE_CODE_ENTRYPOINT", "cli".to_string())]);
         let got = evaluate(&m, &p, &|_| false, &|_, _, _| {});
-        // the plugin root of this test does not exist, so the block message cannot name the CLI: the script defers rather than guess
-        let cg = &got.iter().find(|(id, _)| id == "command-guard").unwrap().1;
-        assert!(matches!(cg, Answer::Defer) || matches!(cg, Answer::Decided(r, _) if r.code == Some(2)), "never an allow: {got:?}");
-        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Defer | Answer::Decided(..)));
+        // Command delegation allows this lightweight command; git safety owns force-push blocking.
+        assert!(matches!(&got.iter().find(|(id, _)| id == "command-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(0)));
+        assert!(matches!(&got.iter().find(|(id, _)| id == "git-guard").unwrap().1, Answer::Decided(r, _) if r.code == Some(2)));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup of a scratch directory
     }
 
@@ -506,7 +506,7 @@ mod tests {
                 }
             }
         }
-        // the root is a host fact: with none, the compact text cannot be built and the Node hook answers
+        // With no request root, the loaded plugin root supplies the protocol path.
         let meta = Meta {
             host: "claude".into(),
             event: "SubagentStart".into(),
@@ -519,10 +519,11 @@ mod tests {
             payload_sha1: None,
             deadline_ms: None,
         };
-        assert_eq!(
-            evaluate(&meta, &p, &|_| false, &|_, _, _| {}).into_iter().filter(|(id, _)| id == "verify-first-subagent").map(|(_, a)| a).collect::<Vec<_>>(),
-            vec![Answer::Defer]
-        );
+        let answers = evaluate(&meta, &p, &|_| false, &|_, _, _| {});
+        let (_, answer) = answers.iter().find(|(id, _)| id == "verify-first-subagent").unwrap();
+        let Answer::Decided(result, _) = answer else { panic!("loaded root must answer: {answer:?}") };
+        let root = crate::defaults::root().unwrap();
+        assert!(result.out.contains(&format!("{}/PROTOCOL.md", root.display())), "{}", result.out);
     }
 
     #[test]

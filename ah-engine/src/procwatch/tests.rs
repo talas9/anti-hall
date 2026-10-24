@@ -476,9 +476,9 @@ fn advise(env: &RequestEnv, event: &str, payload: &Value) -> Verdict {
     v
 }
 
-fn text_of(v: &Verdict) -> String {
+fn text_of(h: &Path, v: &Verdict) -> String {
     match v {
-        Verdict::Advisory(t) | Verdict::Block(t) => t.clone(),
+        Verdict::Advisory(t) | Verdict::Block(t) => t.clone() + &details(h, "procwatch", ""),
         other => panic!("expected an advisory or block, got {other:?}"),
     }
 }
@@ -491,12 +491,12 @@ fn low_disk_adds_an_advisory_with_a_cooldown_and_a_worse_level_breaks_through() 
     publish(&mut disk_host(300.0), &h);
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow);
     publish(&mut disk_host(15.0), &h);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
     assert!(t.contains("Low disk space") && t.contains("warn") && t.contains("nothing was deleted"), "{t}");
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "cooldown: the same level is not repeated");
-    assert!(text_of(&advise(&env, "SessionStart", &json!({"session_id": "s2"}))).contains("Low disk space"), "another session is told once too");
+    assert!(text_of(&h, &advise(&env, "SessionStart", &json!({"session_id": "s2"}))).contains("Low disk space"), "another session is told once too");
     publish(&mut disk_host(2.5), &h);
-    assert!(text_of(&advise(&env, "UserPromptSubmit", &p)).contains("critical"), "a worse level is never held back");
+    assert!(text_of(&h, &advise(&env, "UserPromptSubmit", &p)).contains("critical"), "a worse level is never held back");
 }
 
 #[test]
@@ -509,10 +509,10 @@ fn at_critical_a_heavy_command_is_warned_about_and_blocking_is_an_opt_in() {
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
     publish(&mut disk_host(2.5), &h);
     assert_eq!(advise(&env, "PreToolUse", &light), Verdict::Allow, "a light command is not warned about");
-    assert!(text_of(&advise(&env, "PreToolUse", &heavy)).contains("writes a lot of data"));
+    assert!(text_of(&h, &advise(&env, "PreToolUse", &heavy)).contains("writes a lot of data"));
     write_settings(&h, json!({"diskWatch": {"blockAtCritical": true}}));
     let b = advise(&env, "PreToolUse", &heavy);
-    assert!(matches!(&b, Verdict::Block(t) if t.contains("Blocked")), "{b:?}");
+    assert!(matches!(&b, Verdict::Block(t) if t.contains("this command is blocked")), "{b:?}");
     assert_eq!(advise(&env, "PreToolUse", &light), Verdict::Allow);
     write_settings(&h, json!({"diskWatch": {"enabled": false}}));
     assert_eq!(advise(&env, "PreToolUse", &heavy), Verdict::Allow);
@@ -528,13 +528,13 @@ fn orphan_report(h: &Path, pids: &[(u64, &str)]) {
 }
 
 #[test]
-fn an_orphan_is_reported_once_per_session_names_its_project_and_a_new_one_still_is() {
+fn an_orphan_is_counted_once_per_session_and_a_new_one_still_is() {
     let h = scratch("orphan-ack");
     let env = script_env(&h, None);
     let p = json!({"session_id": "s1"});
     orphan_report(&h, &[(111, "adb server")]);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
-    assert!(t.contains("pid 111") && t.contains("/Users/u/Projects/other-app"), "the process and the project that owns it: {t}");
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("1 processes remain from ended sessions"), "one unacknowledged process is counted: {t}");
     // the cooldown passing must not repeat an acknowledged process
     let expire = || {
         let state = h.join(".anti-hall").join(crate::defaults::text("paths.state_dir")).join(crate::defaults::text("procwatch.state_rel"));
@@ -547,8 +547,8 @@ fn an_orphan_is_reported_once_per_session_names_its_project_and_a_new_one_still_
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "pid 111 was already shown to this session");
     expire();
     orphan_report(&h, &[(111, "adb server"), (222, "node dev")]);
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
-    assert!(t.contains("pid 222") && !t.contains("pid 111"), "only the new process is reported: {t}");
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
+    assert!(t.contains("1 processes remain from ended sessions"), "only the new process is reported: {t}");
 }
 
 #[test]
@@ -617,7 +617,7 @@ fn growth_is_named_in_the_advisory_when_a_volume_is_low() {
     let report = json!({"ts_s": NOW, "orphans": {"count": 0, "listed": []}, "kills": [], "resource": [],
         "disk": {"volumes": [{"path": "/proj", "dev": 7, "free": "2.5 GB", "pct": "1", "level": "critical"}], "growth": [{"path": "/proj/target", "size": "38.0 GB"}]}});
     std::fs::write(dir.join("procwatch-report.json"), report.to_string()).expect("report");
-    let t = text_of(&advise(&script_env(&h, None), "UserPromptSubmit", &json!({"session_id": "s1"})));
+    let t = text_of(&h, &advise(&script_env(&h, None), "UserPromptSubmit", &json!({"session_id": "s1"})));
     assert!(t.contains("/proj/target (38.0 GB)") && t.contains("suggestion only") && t.contains("critical"), "{t}");
 }
 
@@ -629,7 +629,7 @@ fn the_report_resource_warnings_reach_the_right_session_once() {
     publish(&mut f, &h);
     let env = script_env(&h, Some("500"));
     let p = json!({"session_id": "sess-9"});
-    let t = text_of(&advise(&env, "UserPromptSubmit", &p));
+    let t = text_of(&h, &advise(&env, "UserPromptSubmit", &p));
     assert!(t.contains("Resource use is high") && t.contains("python3") && t.contains("Nothing was stopped"), "{t}");
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "shown once");
     // another session does not get a process warning that belongs to sess-9
@@ -644,13 +644,16 @@ fn orphans_and_stops_are_summarised_once_per_cooldown() {
     publish(&mut f, &h);
     let env = script_env(&h, None);
     let p = json!({"session_id": "s1"});
-    let t = text_of(&advise(&env, "SessionStart", &p));
-    assert!(t.contains("left behind by ended Claude sessions") && t.contains("vite") && t.contains("dev_server=kill") && t.contains("Stopped 2 orphan"), "{t}");
+    let t = text_of(&h, &advise(&env, "SessionStart", &p));
+    assert!(
+        t.contains("2 processes remain from ended sessions") && t.contains("vite") && t.contains("[dev_server]") && t.contains("Stopped 2 leftover"),
+        "{t}"
+    );
     assert_eq!(advise(&env, "UserPromptSubmit", &p), Verdict::Allow, "not repeated inside the cooldown");
     // report mode: listed, with the way to opt in, and no stop line
     let h2 = scratch("orphan-adv2");
     publish(&mut orphan_fixture(), &h2);
-    let t = text_of(&advise(&script_env(&h2, None), "SessionStart", &p));
+    let t = text_of(&h2, &advise(&script_env(&h2, None), "SessionStart", &p));
     assert!(t.contains("Nothing was stopped") && !t.contains("Stopped "), "{t}");
 }
 
@@ -684,7 +687,8 @@ fn a_silent_agent_of_this_session_is_named_once_and_never_stopped() {
     heartbeat(&h, "done-one", "s1", "done", 90.0);
     heartbeat(&h, "foreign-one", "s2", "running", 90.0);
     let Verdict::Advisory(j) = stuck(&h, "s1") else { panic!("an advisory naming the stuck agent") };
-    assert!(j.contains("stuck-one") && j.contains("no output for 20+ minutes") && j.contains("Nothing was stopped"), "{j}");
+    let j = j + &details(&h, "procwatch", "s1");
+    assert!(j.contains("stuck-one") && j.contains("printed nothing for 20+ minutes") && j.contains("Nothing was stopped"), "{j}");
     assert!(!j.contains("fresh-one") && !j.contains("done-one") && !j.contains("foreign-one"));
     assert_eq!(stuck(&h, "s1"), Verdict::Allow, "the per-agent cooldown holds");
     write_settings(&h, json!({"procwatch": {"enabled": false}}));
@@ -932,4 +936,13 @@ fn the_shipped_dev_example_classes_parse_and_separate_a_test_daemon_from_the_liv
         "the live engine is left alone; a short sleeper is only the catch-all class once it is an hour old"
     );
     assert!(found.iter().all(|x| x.mode == orphan::Mode::Report));
+}
+
+fn details(h: &Path, guard: &str, _session: &str) -> String {
+    let session = crate::defaults::text("guardkit.details_session_default");
+    let p = h
+        .join(crate::defaults::text("paths.base_dir"))
+        .join(crate::defaults::text("guardkit.details_dir"))
+        .join(format!("{guard}-{session}{}", crate::defaults::text("guardkit.details_ext")));
+    std::fs::read_to_string(p).expect("the brief guard saves its complete details")
 }

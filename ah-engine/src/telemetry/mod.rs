@@ -602,7 +602,7 @@ mod tests {
         let t2 = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db2)));
         let s = t2.telemetry_json("summary", "1d", "", 10);
         assert_eq!(s["invocations"], 2, "everything up to the last flush is there, and the unflushed one is not: {s}");
-        assert_eq!(s["injected_bytes"], 300);
+        assert_eq!(s["injected_bytes"], 0, "hook totals do not duplicate the check injection ledger");
         assert_eq!(s["by_outcome"]["advise"], 1);
         // a clean shutdown flushes first, so nothing is lost
         t2.record_hook("Stop", Outcome::Allow, 10, 0);
@@ -664,9 +664,9 @@ mod tests {
         assert_eq!(imp["by_kind"]["route"], 1, "the decision is in the impact ledger: {imp}");
         let r = &imp["net"]["routing"];
         assert_eq!((r["decisions"].as_u64(), r["linked_spawns"].as_u64()), (Some(1), Some(1)), "the spawn result joined by key: {imp}");
-        // the shipped price table has no verified prices yet, so the join is reported but no dollar figure is invented
-        assert_eq!(r["unpriced_spawns"], 1);
-        assert!(imp["net"]["net_usd"].is_null());
+        // The shipped table now prices both requested opus and selected haiku.
+        assert_eq!(r["unpriced_spawns"], 0);
+        assert!(imp["net"]["net_usd"].is_number());
         assert_eq!(imp["net"]["label"], "estimate");
         let ev = t.telemetry_json("events", "7d", "route", 10);
         assert_eq!(ev["count"], 1);

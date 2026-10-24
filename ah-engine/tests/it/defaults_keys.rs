@@ -144,8 +144,69 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             }
         }
     }
+    // Optional startup optimizations are enumerated by prefix, including when absent in pristine.
+    literals.extend(shipped.iter().filter(|k| k.starts_with("script.prewarm_")).cloned());
+    // Retired fields from the immutable pristine schema remain required by defaults::load's
+    // repair path. Keep this list explicit: newly unused fields must still fail the audit.
+    let compatibility: BTreeSet<&str> = [
+        "act.msg_no_session",
+        "devswarm_prompt.escape_marker",
+        "devswarm_role.pg_frame_head",
+        "devswarm_role.pg_frame_indent",
+        "devswarm_role.pg_frame_instead",
+        "devswarm_role.pg_frame_override",
+        "devswarm_role.pg_frame_why",
+        "devswarm_role.pg_why",
+        "git.block_emoji",
+        "git.block_mark",
+        "git.label_allowed",
+        "git.label_instead",
+        "git.label_override",
+        "git.label_why",
+        "guardkit.brief_why",
+        "mesh_write.cause_not_registered",
+        "mesh_write.heal_cooldown_flag",
+        "mesh_write.heal_disabled_key",
+        "mesh_write.heal_disabled_label_key",
+        "mesh_write.heal_engine_owned_note",
+        "mesh_write.heal_retry_after",
+        "mesh_write.ingest_owner_name",
+        "mesh_write.launchd_label_prefix",
+        "mesh_write.log_op_inbox_ack_primary",
+        "mesh_write.ms_per_hour",
+        "mesh_write.msg_ack_primary_not_owner",
+        "mesh_write.msg_pull_replay_failed",
+        "mesh_write.msg_receipt_owner",
+        "mesh_write.msg_store_not_opened",
+        "mesh_write.reason_receipt_owner_mismatch",
+        "mesh_write.tick_roster_env",
+        "mesh_write.tick_roster_setting",
+        "mesh_write.tick_settings_files",
+        "messages.style_guide",
+        "msg.err_mesh_read_id",
+        "msg.log_budget_skipped",
+        "nested_spawn.summary",
+        "routine.sweep_step_files",
+        "routine.sweep_step_units",
+        "tasklist_guard.details_label",
+        "update.zero_version",
+    ]
+    .into_iter()
+    .collect();
+    let pristine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults.pristine");
+    let pristine_text: String = fs::read_dir(pristine)
+        .unwrap()
+        .flatten()
+        .filter(|f| f.path().extension().is_some_and(|x| x == "toml"))
+        .map(|f| fs::read_to_string(f.path()).unwrap())
+        .collect();
+    for key in &compatibility {
+        assert!(pristine_text.contains(&format!("[{key}]")), "compatibility field {key} must belong to the immutable repair schema");
+    }
     let indirect = |k: &str| {
-        k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
+        k.starts_with("routine.flag_") // routine::flag constructs these CLI names from its argument
+            || k.starts_with("webapi.source_") // web::query enumerates this registry with defaults::with_prefix
+            || k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
             || k.starts_with("jevrep.thr_")
             || k.starts_with("opcli.ahc_") // the words and numbers of the L03 verbs, handed whole to the plugin scripts rules/operator-cli and rules/coordinator-work-baseline (`ops::opcli_cfg`)
             || k.starts_with("opcli.dr_")
@@ -193,7 +254,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         let (section, name) = k.split_once('.').unwrap_or(("", k));
         literals.contains(k) || (["git", "env", "files", "store", "metric", "impact", "cmd", "tasklist_guard"].contains(&section) && literals.contains(name))
     };
-    let unread: Vec<&String> = shipped.iter().filter(|k| !read(k) && !indirect(k)).collect();
+    let unread: Vec<&String> = shipped.iter().filter(|k| !read(k) && !indirect(k) && !compatibility.contains(k.as_str())).collect();
     assert!(unread.is_empty(), "shipped settings nothing reads (delete them or use them): {unread:?}");
 }
 

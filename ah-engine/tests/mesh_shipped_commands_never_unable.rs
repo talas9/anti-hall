@@ -86,19 +86,21 @@ fn shipped_commands() -> BTreeSet<(String, Option<String>)> {
     let mut out = BTreeSet::new();
     for p in paths {
         let text = fs::read_to_string(&p).unwrap_or_default();
-        for (i, _) in text.match_indices("devswarm.js ") {
-            let mut it = text[i + "devswarm.js ".len()..]
-                .split(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == ')' || c == ',' || c == ';' || c == '.')
-                .filter(|w| !w.is_empty());
-            let Some(verb) = it.next().and_then(word) else { continue };
-            if !VERBS.contains(&verb.as_str()) {
-                continue;
+        for marker in ["devswarm.js ", "ah-engine mesh ", "ah-hook mesh "] {
+            for (i, _) in text.match_indices(marker) {
+                let mut it = text[i + marker.len()..]
+                    .split(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == ')' || c == ',' || c == ';' || c == '.')
+                    .filter(|w| !w.is_empty());
+                let Some(verb) = it.next().and_then(word) else { continue };
+                if !VERBS.contains(&verb.as_str()) {
+                    continue;
+                }
+                let sub = if WITH_SUB.contains(&verb.as_str()) { it.next().and_then(word) } else { None };
+                if verb == "inbox" && !sub.as_deref().is_some_and(|s| INBOX_SUBS.contains(&s)) {
+                    continue;
+                }
+                out.insert((verb, sub));
             }
-            let sub = if WITH_SUB.contains(&verb.as_str()) { it.next().and_then(word) } else { None };
-            if verb == "inbox" && !sub.as_deref().is_some_and(|s| INBOX_SUBS.contains(&s)) {
-                continue;
-            }
-            out.insert((verb, sub));
         }
     }
     out
@@ -128,8 +130,22 @@ fn no_command_the_shipped_texts_name_exits_unable_without_node() {
     git(&repo, &["add", "f"]);
     git(&repo, &["commit", "-q", "-m", "i"]);
     // a PATH with git and the system tools but no node
-    let path = "/usr/bin:/bin";
-    assert!(!Path::new("/usr/bin/node").exists() && !Path::new("/bin/node").exists(), "this test needs a machine whose system PATH has no node");
+    // Ubuntu installs Node in /usr/bin. Build a real no-Node PATH instead of relying on macOS's layout.
+    let tools = scratch.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for sys in ["/usr/bin", "/bin"] {
+        for e in fs::read_dir(sys).unwrap().flatten() {
+            let name = e.file_name();
+            if ["node", "nodejs", "npm", "npx", "corepack"].iter().any(|n| name == *n) {
+                continue;
+            }
+            let link = tools.join(&name);
+            if link.symlink_metadata().is_err() {
+                std::os::unix::fs::symlink(e.path(), link).unwrap();
+            }
+        }
+    }
+    let path = tools.to_string_lossy().to_string();
     // a stand-in `hivecontrol` (the real one is a Node script): the probe and the workspace list the roster reads
     let stub = scratch.join("hivecontrol");
     fs::write(
@@ -145,7 +161,7 @@ fn no_command_the_shipped_texts_name_exits_unable_without_node() {
             .current_dir(&repo)
             .env_clear()
             .env("HOME", &home)
-            .env("PATH", path)
+            .env("PATH", &path)
             .env("ANTIHALL_DEVSWARM_HIVECONTROL", &stub)
             .env("AH_ENGINE_PLUGIN_ROOT", root().join("plugins").join("anti-hall"))
             .stdin(std::process::Stdio::null())

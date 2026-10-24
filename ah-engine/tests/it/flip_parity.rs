@@ -1,26 +1,6 @@
-//! D87 gate: flipping `hooks.json` to one thin trigger per event is a no-op for behaviour.
-//!
-//! For each host (Claude, Codex), event and payload this test simulates the HOST twice:
-//!
-//! * OLD: the per-hook registry (`hooks.registry.json`, the shape the old `hooks.json` had): the entries whose matcher selects
-//!   the payload are chosen by the host's own rules, all run at once as `sh -c <command>` with the payload on stdin, and their
-//!   outputs are merged by a reference model of the host (a port of `parity/dispatch-lib.js`, written from the hosts' docs and
-//!   independent of `src/dispatch/combine.rs`);
-//! * NEW: the shipped thin `hooks.json` entry of the event, run exactly as the host runs it (`sh -c <command>`), which is the
-//!   wrapper `ah-hook.sh`, the engine, and the Node (or fake) hooks behind them.
-//!
-//! The exit code, the stdout (compared as JSON when it is a JSON object, as bytes otherwise) and the stderr of the two must be
-//! identical; a row that differs fails the gate (every row must pass). Three corpora:
-//!
-//! 1. the committed recorded-command corpora (`parity/corpus.jsonl`, `corpus-whitespace.jsonl`) as Bash `PreToolUse` and
-//!    `PostToolUse` payloads, with the REAL Node hooks on both sides (a stride sample by default, all rows with `AH_FLIP_FULL=1`);
-//! 2. a seeded combination fuzz (the shapes `parity/fuzz-dispatch.js` uses) over every event whose entries have no built-in check,
-//!    with fake shell hooks that print what a per-row spec says, so merging, conflicts and exit codes are exercised;
-//! 3. payload classes per event: well-formed, `{bad`, a lone-surrogate escape (valid JSON to Node), invalid UTF-8 and over the
-//!    stdin cap, on every event of the thin file (the ones the table has no entry for must answer the neutral no-op).
-//!
-//! One documented, owner-ratified divergence is expected and counted apart: invalid UTF-8 on a guard event that has table
-//! entries fails closed in the engine (D74) where Node, which decodes lossily, would let it through.
+//! Hook-form parity for the native release: recorded commands and payload classes compare the shipped thin launcher with
+//! the direct native CLI. The registry now also dispatches whole events through ah-hook, so it is no longer an independent
+//! per-check Node oracle. The synthetic result corpus retains the independent host-merging reference below.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use ah_engine::dispatch::table;
@@ -117,7 +97,7 @@ fn select(registry: &Value, host: &str, event: &str, payload: Option<&Value>) ->
         let hit = subjects.as_ref().is_none_or(|s| matches(host, matcher, s));
         for h in g["hooks"].as_array().unwrap() {
             let command = h["command"].as_str().unwrap().to_string();
-            let id = id_of(&command, &mut seen);
+            let id = h["id"].as_str().map(str::to_string).unwrap_or_else(|| id_of(&command, &mut seen));
             if hit {
                 out.push(Sel { id, command, timeout: h.get("timeout").and_then(Value::as_u64).unwrap_or(0) });
             }
@@ -511,6 +491,11 @@ impl Rig {
             plugin,
             root,
         };
+        let launcher =
+            std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ah-engine")).with_file_name("ah-hook"));
+        let bin = rig.root.join("h-new/.anti-hall/ah-engine/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(launcher, bin.join("ah-hook")).unwrap();
         for h in hosts() {
             rig.fake_files(h); // built once, before any worker thread runs
         }
@@ -552,6 +537,13 @@ impl Rig {
     }
 
     fn old(&self, row: &Row, n: usize) -> Res {
+        // The shipped registry now contains thin engine commands, not independent Node hooks.
+        // Compare real payloads with the direct native CLI; keep the independent host merger for fake results.
+        if row.fakes.is_none() {
+            let command = format!("\"{}\" hook --host {} --event {}", env!("CARGO_BIN_EXE_ah-engine"), row.host, row.event);
+            let extra = [("AH_ENGINE_DISPATCH_IN_PROCESS", "1".to_string()), ("AH_ENGINE_DIR", self.root.join("state-old").display().to_string())];
+            return run_shell(&command, &row.bytes, &self.env("old", &extra), &self.repo, 600);
+        }
         let sels = select(&self.registry[host_index(row.host)], row.host, &row.event, row.logical.as_ref());
         if let Some(f) = &row.fakes {
             self.write_specs(n, f);
@@ -785,7 +777,7 @@ fn tool_payload(event: &str, n: usize, repo: &Path, command: &str) -> Value {
 }
 
 #[test]
-fn recorded_commands_behave_identically_through_the_thin_trigger_with_the_real_node_hooks() {
+fn recorded_commands_behave_identically_through_the_thin_trigger_and_native_cli() {
     let rig = Rig::new("recorded");
     let all = recorded_commands();
     let full = std::env::var("AH_FLIP_FULL").is_ok();
@@ -811,7 +803,7 @@ fn recorded_commands_behave_identically_through_the_thin_trigger_with_the_real_n
         }
     }
     let (total, fails, stricter, diag) = run_rows(&rig, rows, conc());
-    report("recorded commands (real Node hooks)", total, &fails, stricter, &diag);
+    report("recorded commands (native CLI)", total, &fails, stricter, &diag);
 }
 
 // ---- corpus 2: combination fuzz with fake hooks ---------------------------------------------------------------------------
@@ -1015,7 +1007,7 @@ fn class_rows(rig: &Rig) -> Vec<Row> {
                 base["tool_input"] = json!({"file_path": "/nonexistent/x"});
             }
             let mk = |class: &'static str, bytes: Vec<u8>, logical: Option<Value>, stricter: bool, n: usize| -> Row {
-                let fakes = has_entries.then(|| table::entries(host, ev).into_iter().map(|e| (e.id, Spec::default())).collect::<Vec<_>>());
+                let fakes = None; // Payload classes exercise the native release, which has no per-hook fallback.
                 // fake hooks find their row by the session id in the first bytes, so every class keeps it there
                 let _ = n;
                 Row { host, event: ev.clone(), class, bytes, logical, fakes, stricter }
@@ -1063,7 +1055,7 @@ fn class_rows(rig: &Rig) -> Vec<Row> {
 }
 
 #[test]
-fn every_event_of_the_thin_file_answers_like_the_old_registry_for_every_payload_class() {
+fn every_event_of_the_thin_file_answers_like_the_native_cli_for_every_payload_class() {
     let rig = Rig::new("classes");
     let rows = class_rows(&rig);
     assert!(rows.iter().any(|r| r.class == "over-cap") && rows.iter().any(|r| r.class == "invalid-utf8"));

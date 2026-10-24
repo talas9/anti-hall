@@ -630,6 +630,46 @@ fn limit_ms(name: &str, event: &str) -> u64 {
         .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
 }
 
+/// Prepare the configured cold entries on their owning worker, without calling their decision functions.
+/// File fingerprints still invalidate these entries normally after an owner edit or plugin update.
+pub(crate) fn prewarm() {
+    if defaults::num("script.enabled") == 0 {
+        return;
+    }
+    let st = Settings::from_env(&RequestEnv::capture());
+    // Optional warm-up settings may be absent in the immutable pristine fallback.
+    for name in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.strings()) {
+        let Some((libs, own)) = resolve(name, &st.home) else { continue };
+        let result = host::with_call(st.clone(), || {
+            POOL.with(|cell| -> Result<(), String> {
+                let mut slot = cell.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(Pool::new().ok_or("runtime")?);
+                }
+                let pool = slot.as_mut().ok_or("runtime")?;
+                ensure_entry(pool, name, &libs, &own, defaults::text("script.entry"))?;
+                Ok(())
+            })
+        });
+        crate::discard::logged("script_prewarm", result);
+    }
+}
+
+/// Compile shared patterns before workers accept their first Stop. No decision or state write runs here.
+pub(crate) fn prewarm_patterns() {
+    crate::checks::guardkit::mask::mask_quoted_text("");
+    for row in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.as_array().unwrap_or_default()) {
+        if row.get("key").is_none() {
+            continue;
+        }
+        let value = defaults::raw(row.str_field("key"));
+        let patterns = value.as_str().map(|s| vec![s]).unwrap_or_else(|| value.strings());
+        for pattern in patterns {
+            crate::discard::logged("script_pattern_prewarm", recache::get(pattern, row.str_field("flags")));
+        }
+    }
+}
+
 /// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
 /// files or the entry's files changed since.
 fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {

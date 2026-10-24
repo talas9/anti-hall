@@ -53,6 +53,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "handover-codex-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -250,7 +251,7 @@ fn codex_nudge_blocks_a_stop_once_with_the_decision_json() {
     assert_eq!((code, err.as_str()), (0, ""));
     let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}"));
     assert_eq!(v["decision"], "block");
-    assert!(v["reason"].as_str().unwrap().contains("this session made 4 substantial code edit(s) across 4 file(s) (f0.js, f1.js, f2.js, …)"), "{out}");
+    assert!(v["reason"].as_str().unwrap().contains("codex nudge: 4 edits across 4 files have no Codex review."), "{out}");
     // the same file set is not nudged again
     let (code, out, _) = e.run("Stop", "codex-nudge", true, &p, &[]);
     assert_eq!((code, out.as_str()), (0, ""));

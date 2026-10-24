@@ -151,12 +151,13 @@ fn transcript(w: &World, age_ms: u64) {
 
 /// (Re)write the app database: ws-1 active with a PR in `pr_state`, and a primary.
 fn app_db(w: &World, pr_state: &str) {
-    std::fs::remove_file(&w.db).ok(); // absent is the goal state
+    // Keep the inode: the watcher holds a connection and observes SQLite data_version.
     let c = Connection::open(&w.db).unwrap();
     c.execute_batch(
-        "CREATE TABLE builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, worktreePath TEXT, label TEXT, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isActive INTEGER, lastSelectedAt TEXT);
-         CREATE TABLE builder_terminals (id INTEGER PRIMARY KEY, builderId TEXT, panelStatus TEXT, isActive INTEGER);
-         CREATE TABLE pull_requests (id TEXT PRIMARY KEY, number INTEGER, state TEXT, checkStatus TEXT, lastSyncedAt TEXT);",
+        "CREATE TABLE IF NOT EXISTS builders (id TEXT PRIMARY KEY, repositoryId TEXT, branchName TEXT, worktreePath TEXT, label TEXT, isHidden INTEGER, pullRequestId TEXT, builderType TEXT, isActive INTEGER, lastSelectedAt TEXT);
+         CREATE TABLE IF NOT EXISTS builder_terminals (id INTEGER PRIMARY KEY, builderId TEXT, panelStatus TEXT, isActive INTEGER);
+         CREATE TABLE IF NOT EXISTS pull_requests (id TEXT PRIMARY KEY, number INTEGER, state TEXT, checkStatus TEXT, lastSyncedAt TEXT);
+         DELETE FROM builders; DELETE FROM builder_terminals; DELETE FROM pull_requests;",
     )
     .unwrap();
     c.execute("INSERT INTO builders VALUES ('ws-1','r1','b1',?1,'Child one',0,'p1','standard',1,NULL)", params![w.wt.to_str().unwrap()]).unwrap();
@@ -335,12 +336,21 @@ fn a_blocked_gate_archives_nothing() {
 #[test]
 fn a_real_file_event_drives_the_archive() {
     let w = world("event");
+    // Idle must be provable from a readable mailbox, even when other action executors are off.
+    let key = facts::repo_key(w.wt.to_str().unwrap()).unwrap();
+    let store = ah_engine::meshw::union::store_dir(&w.home, &key);
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(store.join("BACKEND"), "sqlite\n").unwrap();
+    drop(ah_engine::meshw::store::MeshStore::open(&store.join("devswarm.db")).unwrap());
     let stub = Arc::new(Stub::default());
-    let wire = Arc::new(wire(&w, &stub, Executor::Engine));
+    // Keep the startup sweep from archiving before the event, as in the direct edge test.
+    stub.git_fail.lock().unwrap().push("status".into());
+    let wire = Arc::new(wire(&w, &stub, Executor::Engine).with_executor(|kind| if kind == "auto_archive" { Executor::Engine } else { Executor::Off }));
     let stop = Arc::new(AtomicBool::new(false));
     let (wr, st) = (wire.clone(), stop.clone());
     let h = std::thread::spawn(move || watching::run(&wr, &|| st.load(Ordering::SeqCst)));
     std::thread::sleep(Duration::from_millis(1500)); // the watcher is up and the start-up run is done
+    stub.git_fail.lock().unwrap().clear();
     app_db(&w, "merged");
     let t0 = Instant::now();
     while archives(&stub).is_empty() && t0.elapsed() < Duration::from_secs(20) {
@@ -349,7 +359,14 @@ fn a_real_file_event_drives_the_archive() {
     std::thread::sleep(Duration::from_millis(1500));
     stop.store(true, Ordering::SeqCst);
     h.join().unwrap();
-    assert_eq!(archives(&stub).len(), 1, "one archive, driven by the file event (no periodic tick ran)");
+    assert_eq!(
+        archives(&stub).len(),
+        1,
+        "one archive, driven by the file event (no periodic tick ran): snapshot={:?}, calls={:?}, work={}",
+        wire.rt.current(),
+        stub.calls.lock().unwrap(),
+        ah_engine::threads::work()
+    );
 }
 
 /// ws-1's per-repo mesh store, SQLite-backed, with its write-ahead log and shared-memory index on disk and no process holding it
@@ -851,7 +868,9 @@ fn print_work_since(tag: &str, before: &serde_json::Value) {
 fn a_quiet_periodic_reconcile_reads_through_the_cache_only_and_counts_its_cpu_by_cause() {
     let w = world("periodic-reads");
     let stub = Arc::new(Stub::default());
-    let wire = wire(&w, &stub, Executor::Engine).with_full_sweep_every(3_600_000);
+    let wire = wire(&w, &stub, Executor::Engine)
+        .with_executor(|kind| if kind == "auto_archive" { Executor::Engine } else { Executor::Off })
+        .with_full_sweep_every(3_600_000);
     wire.reconcile(Cause::Startup);
     wire.reconcile(Cause::Periodic); // the first run after the seed still sees the world's first edges
     let before = ah_engine::threads::work();
@@ -924,7 +943,9 @@ fn a_jev_sweep_thread_reports_its_cpu_under_its_name() {
 fn a_periodic_reconcile_sweeps_in_full_only_when_something_changed_or_the_interval_passed() {
     let w = world("periodic-full");
     let stub = Arc::new(Stub::default());
-    let wire = wire(&w, &stub, Executor::Engine).with_full_sweep_every(3_600_000);
+    let wire = wire(&w, &stub, Executor::Engine)
+        .with_executor(|kind| if kind == "auto_archive" { Executor::Engine } else { Executor::Off })
+        .with_full_sweep_every(3_600_000);
     wire.reconcile(Cause::Startup);
     assert!(wire.full_sweeps() >= 1, "the start-up reconcile sweeps in full");
     wire.reconcile(Cause::Periodic); // the first run after the seed still sees the world's first edges

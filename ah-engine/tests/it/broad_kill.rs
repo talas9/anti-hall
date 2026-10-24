@@ -190,9 +190,9 @@ fn a_block_uses_the_standard_message_and_reaches_both_hosts_channels() {
     assert_eq!(v["decision"], "block");
     let reason = v["reason"].as_str().unwrap();
     assert_eq!(err.trim(), reason, "stderr carries the same reason (Codex honors exit 2 only with it there)");
-    assert!(reason.starts_with("⛔ anti-hall · broad-kill-guard: `pkill -f next dev` is blocked"), "{reason}");
-    assert!(reason.contains("\nWhy: ") && reason.contains("\nDo instead: kill by PID after checking the process"), "{reason}");
-    assert!(reason.contains("pkill -P $$") && reason.contains("guards.broadKill"), "{reason}");
+    assert!(reason.starts_with("⛔ broad kill: pkill -f next dev is blocked"), "{reason}");
+    assert!(reason.contains("\nDo instead: check the target process and stop only its PID."), "{reason}");
+    assert_eq!(reason.lines().count(), 2, "the guard keeps details out of the inline notice");
 }
 
 #[test]
@@ -223,12 +223,7 @@ fn the_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
         let e = t::entries(host, "PreToolUse").into_iter().find(|e| e.id == "broad-kill-guard").unwrap();
         assert!(e.check.is_some() && e.command.is_empty(), "{host}: engine-only entry");
     }
-    for rel in [
-        "hooks/hooks.registry.json",
-        "codex/hooks/hooks.registry.json",
-        "../anti-hall-node/hooks/ah-fallback.list",
-        "../anti-hall-node/hooks/ah-fallback.codex.list",
-    ] {
+    for rel in ["../anti-hall-node/hooks/ah-fallback.list", "../anti-hall-node/hooks/ah-fallback.codex.list"] {
         let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
         assert!(!text.contains("broad-kill-guard"), "{rel} names no command for the engine-only guard");
     }

@@ -132,9 +132,9 @@ fn a_block_uses_the_standard_message_and_reaches_both_hosts_channels() {
     assert_eq!(v["decision"], "block");
     let reason = v["reason"].as_str().unwrap();
     assert_eq!(err.trim(), reason, "stderr carries the same reason (Codex honors exit 2 only with it there)");
-    assert!(reason.starts_with("⛔ anti-hall · lane-test-guard: `cargo test --workspace` is blocked"), "{reason}");
-    assert!(reason.contains("run cargo check, commit, verification happens at deploy"), "{reason}");
-    assert!(reason.contains("guards.allowTestSuites") && reason.contains("guards.laneTestGuard"), "{reason}");
+    assert!(reason.starts_with("⛔ test run check: a helper cannot run this full suite (cargo test): cargo test --workspace"), "{reason}");
+    assert!(reason.contains("Run a build check or one allowed module test, then report the result."), "{reason}");
+    assert_eq!(reason.lines().count(), 2);
 }
 
 #[test]
@@ -160,12 +160,11 @@ fn the_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
     use ah_engine::dispatch::table as t;
     let has = |host: &str, id: &str| t::entries(host, "PreToolUse").iter().any(|e| e.id == id);
     assert!(has("claude", "lane-test-guard") && has("codex", "lane-test-guard"));
-    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json", "hooks/ah-fallback.list", "hooks/ah-fallback.codex.list"] {
+    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json"] {
         let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
-        assert!(text.contains("hooks/lane-test-guard"), "{rel} names the fallback no-op");
+        assert!(text.contains("lane-test-guard") && text.contains("ah-hook"), "{rel} routes the guard to the native client");
     }
-    let script = std::fs::read_to_string(plugin().join("hooks/lane-test-guard")).unwrap();
-    assert!(script.contains("exit 0"), "the fallback is a no-op");
+    assert!(!plugin().join("hooks/lane-test-guard").exists(), "the native guard needs no fallback no-op");
     let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
     assert!(schema.contains("key: 'laneTestGuard'") && schema.contains("ANTIHALL_LANE_TEST_GUARD"), "guards.laneTestGuard is a registered setting");
     assert!(schema.contains("key: 'allowTestSuites'") && schema.contains("ANTIHALL_ALLOW_TEST_SUITES"), "guards.allowTestSuites is a registered setting");
@@ -184,7 +183,7 @@ fn wait_guard(cmd: &str, who: &str, background: bool, env_pairs: &[(&str, &str)]
 
 /// (command, started in the background, None = allowed, Some(text of the block heading)).
 fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
-    const BG: &str = "does not start build or test commands in the background";
+    const BG: &str = "cannot start this build or test in the background";
     vec![
         ("cargo test", true, Some(BG)),
         ("cargo check -j4", true, Some(BG)),
@@ -203,16 +202,16 @@ fn wait_table() -> Vec<(&'static str, bool, Option<&'static str>)> {
         ("git status", true, None),
         ("echo cargo test", true, None),
         // sleeps
-        ("sleep 60", false, Some("waits 60s (limit 30s)")),
-        ("sleep 1m", false, Some("waits 60s (limit 30s)")),
-        ("sleep 31", false, Some("waits 31s")),
+        ("sleep 60", false, Some("wait is too long (60s; limit 30s)")),
+        ("sleep 1m", false, Some("wait is too long (60s; limit 30s)")),
+        ("sleep 31", false, Some("wait is too long (31s")),
         ("sleep 30", false, None),
         ("sleep 5", false, None),
         ("sleep 0.5", false, None),
-        ("cargo check && sleep 120", false, Some("waits 120s")),
-        ("until [ -f /tmp/done ]; do sleep 30; done", false, Some("a poll loop sleeping 30s per round (limit 5s)")),
-        ("while true; do ls; sleep 10; done", false, Some("a poll loop sleeping 10s per round")),
-        ("for i in 1 2 3; do sleep 6; done", false, Some("a poll loop sleeping 6s per round")),
+        ("cargo check && sleep 120", false, Some("wait is too long (120s")),
+        ("until [ -f /tmp/done ]; do sleep 30; done", false, Some("poll loop waits too long (30s per round; limit 5s)")),
+        ("while true; do ls; sleep 10; done", false, Some("poll loop waits too long (10s per round")),
+        ("for i in 1 2 3; do sleep 6; done", false, Some("poll loop waits too long (6s per round")),
         ("until [ -f /tmp/done ]; do sleep 5; done", false, None),
         ("until [ -f /tmp/done ]; do sleep 2; done", false, None),
         ("sleep 20; echo hi", false, None),
@@ -254,11 +253,11 @@ fn a_wait_block_names_the_foreground_remedy_and_reaches_both_channels() {
     let v: Value = serde_json::from_str(out.trim()).unwrap();
     let reason = v["reason"].as_str().unwrap();
     assert_eq!(err.trim(), reason);
-    assert!(reason.starts_with("⛔ anti-hall · queued-wait-guard: `cargo check` is blocked"), "{reason}");
-    assert!(reason.contains("run it in the foreground under the lock") && reason.contains("waiting costs nothing"), "{reason}");
-    assert!(reason.contains("guards.queuedWaitGuard"), "{reason}");
+    assert!(reason.starts_with("⛔ waiting check: a helper cannot start this build or test in the background: cargo check"), "{reason}");
+    assert!(reason.contains("Run the command in the foreground under the shared lock."), "{reason}");
+    assert_eq!(reason.lines().count(), 2);
     let (_, out, _) = wait_guard("sleep 99", "subagent", false, &[]);
-    assert!(out.contains("do not poll"), "{out}");
+    assert!(out.contains("End the turn and wait for the completion notification."), "{out}");
 }
 
 #[test]
@@ -275,12 +274,11 @@ fn the_wait_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
     use ah_engine::dispatch::table as t;
     let has = |host: &str, id: &str| t::entries(host, "PreToolUse").iter().any(|e| e.id == id);
     assert!(has("claude", "queued-wait-guard") && has("codex", "queued-wait-guard"));
-    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json", "hooks/ah-fallback.list", "hooks/ah-fallback.codex.list"] {
+    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json"] {
         let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
-        assert!(text.contains("hooks/queued-wait-guard"), "{rel} names the fallback no-op");
+        assert!(text.contains("queued-wait-guard") && text.contains("ah-hook"), "{rel} routes the guard to the native client");
     }
-    let script = std::fs::read_to_string(plugin().join("hooks/queued-wait-guard")).unwrap();
-    assert!(script.contains("exit 0"), "the fallback is a no-op");
+    assert!(!plugin().join("hooks/queued-wait-guard").exists(), "the native guard needs no fallback no-op");
     let schema = std::fs::read_to_string(plugin().join("../anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
     assert!(schema.contains("key: 'queuedWaitGuard'") && schema.contains("ANTIHALL_QUEUED_WAIT_GUARD"), "guards.queuedWaitGuard is a registered setting");
 }

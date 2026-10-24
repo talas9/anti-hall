@@ -53,7 +53,7 @@ fn context(tag: &str, last_full_ago_ms: u64) -> String {
     v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-const FULL: &str = "capture EVERY user request";
+const FULL: &str = "task tracker: requests need tracking before work starts.";
 
 #[test]
 fn growth_alone_resends_the_full_directive_only_after_the_minimum_gap() {

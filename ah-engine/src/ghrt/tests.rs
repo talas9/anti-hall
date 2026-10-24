@@ -140,11 +140,12 @@ struct Fx {
 
 impl Fx {
     fn new(name: &str) -> Fx {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("ghrt-test").join(format!("{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join("ghrt-test").join(format!("{name}-{}", std::process::id()));
         if dir.exists() {
             std::fs::remove_dir_all(&dir).unwrap();
         }
         std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
         let cfg = Cfg::shipped().in_dir(&dir.join("state")).with("github_rt.ready_auto_merge", json!(true));
         Fx { dir, cfg }
     }

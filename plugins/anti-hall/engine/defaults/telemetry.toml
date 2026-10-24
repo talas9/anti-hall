@@ -711,3 +711,7 @@ value = "SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1"
 [telemetry.sql_update_event]
 doc = "SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3)."
 value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"
+
+[metric.memory_leak_notices]
+doc = "Memory-registry leak notices, by largest holder."
+value = { kind = "counter", unit = "notices", labels = ["top"] }

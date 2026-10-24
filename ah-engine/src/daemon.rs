@@ -1616,6 +1616,8 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
 }
 
 fn worker(sh: Arc<Shared>, idx: usize) {
+    crate::script::prewarm_patterns();
+    crate::script::prewarm();
     crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
     loop {
         let conn = {

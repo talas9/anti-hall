@@ -164,7 +164,13 @@ mod tests {
 
     #[test]
     fn the_dev_checkout_is_found_from_the_test_binary() {
-        assert!(dev_checkout().is_some(), "the cargo target tree sits inside the repository");
+        let exe = std::env::current_exe().unwrap();
+        let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        if exe.starts_with(&local) {
+            assert!(dev_checkout().is_some(), "an in-checkout target tree finds the repository");
+        } else {
+            assert!(dev_checkout().is_none(), "an external target tree cannot identify a checkout by ancestry");
+        }
     }
 
     #[test]
@@ -194,6 +200,7 @@ mod tests {
         let root = crate::defaults::root().expect("a loaded root");
         assert_eq!(root.canonicalize().unwrap(), plugin, "a test loaded the plugin at {}", root.display());
         let state = state_dir().expect("a state dir");
-        assert!(state.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("target")), "state dir {} is outside target/", state.display());
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+        assert!(state.starts_with(&target), "state dir {} is outside {}", state.display(), target.display());
     }
 }

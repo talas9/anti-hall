@@ -1032,7 +1032,7 @@ fn cf_05_unknown_settings_are_reported_not_failed() {
     sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let f = sc.plugin.join("engine/defaults/doctor.toml");
     let mut text = fs::read_to_string(&f).unwrap();
-    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo\"\nvalue = 1\n");
+    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo.\"\nvalue = 1\n");
     fs::write(&f, text).unwrap();
     let d = sc.doctor(&[]);
     d.has("info", &["doctor.toml: unknown setting(s) doctor.not_a_real_key", "a typo?"]);

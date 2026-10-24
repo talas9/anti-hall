@@ -70,7 +70,7 @@ fn ceiling_blocks_at_twelve_running_and_names_them() {
     put(&h, "t.jsonl", &running(12));
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("spawn-ceiling") && out.contains("12 agents") && out.contains("lane 0"), "{out}");
+    assert!(out.contains("spawn ceiling") && out.contains("12 agents") && out.contains("limit 12"), "{out}");
     put(&h, "t.jsonl", &running(11));
     assert_eq!(spawn(&h).0, 0, "11 running is under the ceiling");
 }
@@ -82,7 +82,7 @@ fn ceiling_shrinks_near_the_limit() {
     put(&h, CACHE, &usage(10.0, 86.0)); // step 85 -> ceiling 12 - 6 = 6
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("ceiling now 6"), "{out}");
+    assert!(out.contains("6 agents are running (limit 6)"), "{out}");
 }
 
 #[test]
@@ -92,14 +92,14 @@ fn usage_soft_advises_and_hard_blocks() {
     put(&h, CACHE, &usage(80.0, 10.0));
     let (code, out) = spawn(&h);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("spawn-usage") && out.contains("5-hour"), "{out}");
+    assert!(out.contains("usage limit") && out.contains("5-hour"), "{out}");
     put(&h, CACHE, &usage(10.0, 95.0));
     let (code, out) = spawn(&h);
     assert_eq!(code, 2, "{out}");
     assert!(out.contains("weekly") && out.contains("2099-01-02T00:00Z"), "{out}");
     put(&h, CACHE, &usage(10.0, 20.0));
     let (code, out) = spawn(&h);
-    assert!(code == 0 && !out.contains("spawn-usage"), "{out}");
+    assert!(code == 0 && !out.contains("usage limit"), "{out}");
 }
 
 #[test]

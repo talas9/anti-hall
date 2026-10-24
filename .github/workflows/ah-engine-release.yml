@@ -117,6 +117,19 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         working-directory: ah-launcher
         run: RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" cargo build --release --locked --target "$TRIPLE"
+      # The Command Center server is required in every release archive, just like the thin client.
+      - name: Toolchain (ah-web)
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-web
+        run: |
+          rustup show active-toolchain || rustup toolchain install --profile minimal "$(sed -n 's/^channel = "\(.*\)"/\1/p' ../ah-engine/rust-toolchain.toml)"
+          rustup target add "$TRIPLE"
+      - name: Build ah-web
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-web
+        run: RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" cargo build --release --locked --target "$TRIPLE"
       - name: Package
         env:
           TRIPLE: ${{ matrix.triple }}

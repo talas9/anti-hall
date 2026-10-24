@@ -70,6 +70,8 @@ fn checks_share_one_context_but_not_their_declarations() {
         std::fs::write(format!("{lib}/zz-count.js"), "var zzLoads = 10;").unwrap();
         let f = std::fs::File::options().write(true).open(format!("{lib}/zz-count.js")).unwrap();
         f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+        // Library fingerprints are cached between calls; an edit is visible after that interval.
+        std::thread::sleep(std::time::Duration::from_millis(defaults::num("script.fingerprint_ttl_ms") + 1));
         assert_eq!(run_forced("zz-b", &json!({}), &e), Some(Some(Verdict::Block("undefined10".into()))));
         assert_eq!(super::pool_usage().map(|u| u.0), Some(1), "the rebuilt context holds only what was loaded since");
     })
@@ -667,7 +669,7 @@ fn command_script_matches_the_compiled_port() {
 // (the Node fallback is gone, #248): the edit gate scans the head and tail, and a big heredoc write or a big heavy command is blocked
 // where Node blocks it, without parsing the whole command (about 4.5 us of interpreter time per character in release).
 #[test]
-fn a_command_over_the_classify_cap_defers_before_it_is_parsed() {
+fn a_command_over_the_classify_cap_is_blocked_within_the_runtime_budget() {
     let h = home("cmd-cap");
     // a main-thread session of a DevSwarm checkout: the context in which Node's edit and heavy-command gates block
     let e = RequestEnv::from_pairs([
@@ -693,7 +695,10 @@ fn a_command_over_the_classify_cap_defers_before_it_is_parsed() {
             other => panic!("{what}: a command over the cap is blocked as Node blocks it, got {other:?}"),
         }
         let used_ms = crate::limits::thread_cpu_us().saturating_sub(cpu) / 1000;
-        assert!(used_ms < defaults::num("script.time_limit_ms"), "{what}: decided after {used_ms} ms of cpu, so it was parsed whole");
+        assert!(
+            used_ms < super::limit_ms("command", "PreToolUse") * defaults::num("script.time_hard_factor"),
+            "{what}: exceeded the command script's configured hard CPU budget ({used_ms} ms CPU)"
+        );
     }
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
@@ -764,6 +769,8 @@ mod swarm {
             format!("ah.sys.memory = function(){{ return {{available: {a}, total: {total}}}; }}; Date.now = function(){{ return {now}; }};"),
         )
         .unwrap();
+        // Owner edits are discovered on the configured fingerprint cadence.
+        std::thread::sleep(std::time::Duration::from_millis(defaults::num("script.fingerprint_ttl_ms") + 1));
         run_forced("swarm-guard", p, &env(h))
     }
 
@@ -798,7 +805,7 @@ mod swarm {
         let log = format!("{h}/.anti-hall/swarm-spawns.log");
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20);
         let v = call(&h, &spawn(), T0 + 21, Some(8.0 * GB), 16.0 * GB);
-        assert!(text_of(&v).contains("agent spawn-rate ceiling reached (20 spawns in the last 60s, cap is 20)."), "{v:?}");
+        assert!(text_of(&v).contains("spawn limit reached (20 in 60s, cap 20)."), "{v:?}");
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 20, "a block must not extend the window");
         let trips = std::fs::read_to_string(format!("{h}/.anti-hall/swarm-trips.log")).unwrap();
         assert!(trips.ends_with("Z\t20\tAgent:Explore\n") && trips.starts_with("2023-11-14T22:13:20.021Z\t"), "{trips}");
@@ -828,7 +835,7 @@ mod swarm {
         let t = transcript(&h, json!({"subagent_type": "general-purpose", "prompt": "fix it"}));
         let writer = json!({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose"}, "transcript_path": t, "cwd": h});
         let a = advisory(call(&h, &writer, T0, Some(8.0 * GB), 16.0 * GB)).expect("advisory");
-        assert!(a.contains("anti-hall \u{b7} shared-tree: another write-capable agent") && a.contains("pass isolation:\\\"worktree\\\""), "{a}");
+        assert!(a.contains("shared tree: another agent is already writing in this working tree.") && a.contains("give the new agent its own worktree"), "{a}");
         assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/swarm-spawns.log")).unwrap().lines().count(), 1, "an advisory spawn is recorded once");
         std::fs::write(format!("{h}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
         let a = advisory(call(&h, &writer, T0 + 1, Some(8.0 * GB), 16.0 * GB)).expect("advisory");
@@ -1090,7 +1097,7 @@ mod sibling {
         let j: Value = serde_json::from_str(j).unwrap();
         assert_eq!(j["decision"], "block", "the reminder IS a Stop block");
         let t = j["reason"].as_str().unwrap();
-        assert!(t.contains("read_window") && t.contains("search the codebase"), "{t}");
+        assert!(t.contains("similar bugs check") && t.contains("search for the same cause"), "{t}");
         assert_eq!(results(&d, "cause", "result"), ["reminded"]);
     }
 
@@ -1387,9 +1394,11 @@ fn scan_throttle_script_matches_the_compiled_port() {
         let got = super::run_forced("scan-throttle", &l.payload, &l.opts, &l.event, &l.env).expect("a shipped script");
         let mut got = golden::verdict_json(&got, &l);
         prefix_neutral(&mut got);
+        let mut expected = c["expect"].clone();
+        prefix_neutral(&mut expected);
         assert_eq!(
             got,
-            c["expect"],
+            expected,
             "scan-throttle: script differs from the compiled port on case {}: {} ({:?})",
             c["n"],
             c["payload"],
@@ -1930,7 +1939,7 @@ fn the_speculation_judge_is_handed_to_the_dispatcher_and_blocks_there() {
     let in_dispatcher = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
     *TEST_MODEL.lock().unwrap() = None;
     assert_eq!(in_dispatcher["v"], "exact", "{in_dispatcher}");
-    assert!(in_dispatcher["out"].as_str().unwrap_or_default().contains("the cause is stated, not shown"), "{in_dispatcher}");
+    assert!(in_dispatcher["out"].as_str().unwrap_or_default().contains("speculation judge: your reply states an unchecked claim as fact"), "{in_dispatcher}");
 }
 
 // ---- v0.301 W3b: the Primary seat and the stable launchers ------------------------------------------------------------
@@ -2106,8 +2115,9 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     }));
     let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
     let Some(Verdict::Exact(out)) = got else { panic!("a child must report: {got:?}") };
-    assert!(out.out.contains("Heartbeat: before you stop"), "{}", out.out);
-    assert!(out.out.contains("ah-engine mesh"), "{}", out.out);
+    assert!(out.out.contains("workspace reporting or inbox duties are unfinished"), "{}", out.out);
+    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-child-gate-direct-stop.md", case.home)).unwrap();
+    assert!(details.contains("Heartbeat: before you stop") && details.contains("ah-engine mesh"), "{details}");
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
 }
 
@@ -2127,5 +2137,6 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     let Some(Verdict::Exact(out)) = got else { panic!("neglect must block: {got:?}") };
     let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
     assert_eq!(answer["decision"], "block");
-    assert!(out.out.contains("c-1"), "{}", out.out);
+    let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
+    assert!(details.contains("c-1"), "{details}");
 }

@@ -19,7 +19,8 @@ the update.
 ### Changed
 
 - Per-component versions: the engine, the hook client and the dashboard each report their own version (0.2.0), with minimum supported versions for each other, checked on install, update and `doctor`. Old plugin-numbered component versions (0.30x) count as older, so upgrading from 0.301.x to 0.2.0 needs no `--force`.
-- Guard messages are two lines: an icon, the plain reason and what to do; details sit in a details file.- Guard rules are shown up front: a short notice names the rules in force when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired).
+- Guard messages are two lines: an icon, the plain reason and what to do; details sit in a details file.
+- Guard rules are shown up front: a short notice names the rules in force when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired).
 - Updates show short versions and the real installed version, and a release never replaces a local or hand-installed build of the same plugin version.
 - The dashboard chart asset is packaged in the dashboard package, outside the plugin tree.
 - `git push` is classified as a heavy command, and the doctor version-alert probe handles plain guard names.

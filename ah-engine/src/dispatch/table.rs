@@ -439,11 +439,12 @@ mod tests {
                 "burn-breaker",
                 "queued-wait-guard",
                 "lane-test-guard",
-                "wide-search-guard"
+                "wide-search-guard",
+                "switch-notice"
             ]
         );
         let glob: Vec<String> = select("claude", "PreToolUse", &json!({"tool_name": "Glob"}), None).into_iter().map(|e| e.id).collect();
-        assert_eq!(glob, ["burn-breaker"], "only the every-tool entries match Glob");
+        assert_eq!(glob, ["burn-breaker", "switch-notice"], "only the every-tool entries match Glob");
     }
 
     #[test]

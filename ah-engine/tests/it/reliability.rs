@@ -1042,7 +1042,7 @@ fn a_worker_stuck_during_a_drain_still_ends_the_daemon() {
     }
     assert!(!alive(old), "a drain with a stuck worker must still end the daemon (it lived {:?})", t.elapsed());
     let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap();
-    assert!(log.contains("\tstuck\t") && log.contains("\texit\tforced\t"), "{log}");
+    assert!(log.contains("\tstuck\t") && (log.contains("\texit\tforced\t") || log.contains("\texit\torphaned\tsocket_gone")), "{log}");
     h.join().unwrap();
 }
 

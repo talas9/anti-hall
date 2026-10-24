@@ -97,12 +97,12 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--days` | `devswarm`, `jev-report`, `jev-setup`, `shadow-compare` | Look-back window in days, or the snooze length for `jev-setup snooze`. |
 | `--db` | `mesh` | Path of a DevSwarm database to read instead of the live one (`mesh`; makes the verb read-only). |
 | `--debug` |  | Turns debug mode (diagnostics.debug_mode) on for one `serve` or `hook` process. |
-| `--deploy-dir` | `update` | undocumented |
+| `--deploy-dir` | `update` | Install or update into this directory. |
 | `--dir` | `harvest` | Directory to scan (`harvest`). |
 | `--dry-run` | `devswarm`, `doctor`, `install-codex`, `migrate`, `mcp-reaper`, `engine-update`, `post-update-check`, `units` | Show what would change and write nothing. |
-| `--engine-bin` | `update` | undocumented |
+| `--engine-bin` | `update` | Use this ah-engine binary for an operator routine. |
 | `--event` | `hook`, `shadow-compare` | The hook event name to dispatch (`hook --event`). |
-| `--expect-sha` | `post-update-check` | undocumented |
+| `--expect-sha` | `post-update-check` | Require the installed engine to have this SHA-256. |
 | `--fallback` | `hook`, `jev-setup` | The fallback transport of the Jev classifier (`jev-setup enable`). Older versions of `hook` took a Node script here; it is ignored now. |
 | `--fallback-map` | `hook` | File that maps hook entries to their Node fallback commands (`hook --event`). |
 | `--fetch` |  | Run `git fetch --quiet` before the checks (`devswarm ready-check`). |
@@ -113,13 +113,14 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--format` | `docs` | Output format; `md` prints the Markdown reference (`docs`). |
 | `--from` | `engine-update` | Install from this local file, a release .tar.gz or a bare engine binary (`engine-update`). |
 | `--from-line` | `coordinator-work-baseline` | First transcript line to replay (`coordinator-work-baseline`). |
-| `--from-local` | `update` | undocumented |
+| `--from-local` | `update` | Use the local checkout or branch as the source. |
 | `--glob` | `devswarm` | Path glob a workspace is allowed to touch (`devswarm scope add`). |
 | `--global` | `install-codex` | Install into the home directory instead of the current project (`install-codex`). |
 | `--home` | `audit`, `doctor`, `migrate`, `refresh` | Home directory to use instead of the real one (scratch-HOME runs). |
-| `--hook-bin` | `update` | undocumented |
+| `--hook-bin` | `update` | Use this ah-hook binary for an operator routine. |
 | `--host` | `docs`, `gen-hooks`, `hook` | The host the output is for: `claude` or `codex`. |
 | `--id` | `devswarm` | Workspace id (`devswarm`, `mesh`). |
+| `--into` |  | Target branch for a mesh merge. |
 | `--job` | `schedule` | Name of one scheduled job (`schedule`). |
 | `--json` | `agents`, `audit`, `auto-handover-config`, `coordinator-work-baseline`, `defect`, `devswarm`, `dispatch-report`, `jev-report`, `proc`, `settings`, `web` | Print machine-readable JSON instead of text. Accepted by every command. |
 | `--key` | `config` | Limit the history to one setting key (`config history`). |
@@ -133,16 +134,16 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--migration` | `status` | Print the migration report: every hook check, supervisor duty, post-update stage, command and Node switch as native, partial or node (`status`; add `--json` for the machine form). |
 | `--migrations-only` | `doctor` | With `--repair` or `--fix`, run only the migration pass and print its report as JSON (`doctor`). |
 | `--mistake` | `telemetry` | Record a mistake signal the engine cannot see itself: `--mistake <feature> <action> <target> <kind> [detail]` (`telemetry actions`). |
-| `--name` | `docs` | undocumented |
-| `--no-live` | `audit` | undocumented |
-| `--no-open` | `web` | undocumented |
+| `--name` | `docs` | Name the generated skill document (`docs --format skill`). |
+| `--no-live` | `audit` | Skip the live-machine section of the entry-path audit. |
+| `--no-open` | `web` | Print the dashboard address without opening a browser. |
 | `--no-restart` | `engine-update` | Install without restarting the daemon; the next hook call starts the new one (`engine-update`). |
 | `--note` | `devswarm` | Free-text note stored with the entry (`devswarm scope add`). |
 | `--note-file` | `devswarm` | File whose contents are sent as the note (`devswarm relay`). |
 | `--nudge` | `devswarm` | The nudge word a registered workspace answers to (`devswarm register`). |
 | `--offset` | `query` | Rows to skip before the page starts (`query`). |
 | `--older-than` | `devswarm` | Only items older than this many days (`devswarm plan-prune`). |
-| `--out` | `docs` | undocumented |
+| `--out` | `docs` | Write generated documentation to the named output file. |
 | `--part` | `describe` | Comma-separated parts of the self-description to return (`describe`). |
 | `--plan` | `devswarm` | The nonce printed by `plan-prune`, proving the prune was planned first (`devswarm prune`). |
 | `--plugin-root` | `doctor`, `migrate` | Plugin directory whose files are read, before anything is loaded. |
@@ -151,6 +152,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--purge-base` | `uninstall-statusline` | Also remove the saved base statusline (`uninstall-statusline`). |
 | `--quiet` | `doctor` | Print only problems (`doctor`). |
 | `--reason` | `devswarm` | Why the action is taken; recorded with it (`devswarm`). |
+| `--receipt` |  | Delivery receipt identifier for inbox acknowledgement. |
 | `--registered` | `handovers` | Walk every project the SessionStart check has seen (`handovers index`). |
 | `--repair` | `doctor` | Run the repair pass after the diagnostics (`doctor`). |
 | `--repair-ingest-orphans` | `doctor` | Add the report section that previews retiring orphaned ingest entries; with `--apply` it does so (`doctor`). |
@@ -168,8 +170,9 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--set` | `devswarm` | Comma-separated gates to set (`devswarm gate`). |
 | `--sha256` | `engine-update` | Expected sha256 of the `--from` file (64 lowercase hex digits); without it the SHA256SUMS next to the file, then the plugin's ah-engine.lock decide (`engine-update`). |
 | `--since` | `devswarm`, `mesh`, `metrics`, `query` | Only entries from this point on: a number of seconds, or a message sequence for `mesh`. |
-| `--source` | `update` | undocumented |
+| `--source` | `update` | Source directory for the operator routine. |
 | `--stale-days` | `harvest` | A file untouched this many days counts as stale (`harvest`). |
+| `--stdin` |  | Read the mesh operation input from standard input. |
 | `--steps` |  | The plan's numbered steps as text (`mesh plan set`). |
 | `--steps-file` |  | Read the plan's steps from a file instead of `--steps` (`mesh plan set`). |
 | `--store` | `devswarm` | Limit to one retention store key (`devswarm retention run`). |
@@ -179,8 +182,9 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--to` | `backup`, `devswarm` | Destination: a directory (`backup`) or a workspace id (`devswarm relay`). |
 | `--tool` | `hook` | The tool name of the hook event (`hook --event`). |
 | `--transport` | `jev-setup` | Gateway transport for the Jev classifier: `vercel` or `typesafe` (`jev-setup`). |
-| `--tree` | `update` | undocumented |
+| `--tree` | `update` | Repository tree for the operator routine. |
 | `--ttl` | `devswarm` | How long the skip lasts, in minutes (`devswarm skip`). |
+| `--urgency` |  | Urgency of a mesh heartbeat. |
 | `--user` | `uninstall-statusline` | The user-level settings file (`uninstall-statusline`). |
 | `--vendor` | `jev-setup` | Gateway vendor: `vercel` or `typesafe` (`jev-setup`). |
 | `--verb` | `config` | Limit the history to one verb: set, reset or undo (`config history`). |
@@ -232,6 +236,7 @@ Every `AH_ENGINE_*` variable the engine or its wrappers read. A variable that ov
 | `AH_ENGINE_HEALTH_SNAPSHOT_MS` | `telemetry.health_snapshot_ms` | How often the daemon records a `daemon` health snapshot event (resident set, its cap, restarts, degraded flag, queue and worker load, saturation). Events are kept for retention_days and capped by max_event_rows. |
 | `AH_ENGINE_HEARTBEAT_CONFIRM_MS` | `client.heartbeat_confirm_ms` | How long a stale daemon heartbeat (client.heartbeat_stale_ms) must stay unchanged, by the monotonic clock, before a client ends that daemon. The first stale sample only records a suspicion and fails open; any beat, a new daemon, or a wall-clock jump that only made a moving heartbeat read old resets it. Keep it at most client.down_marker_ttl_ms, so a stopped daemon is replaced by the first call after the down marker expires. |
 | `AH_ENGINE_HEARTBEAT_STALE_MS` | `client.heartbeat_stale_ms` | A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check. |
+| `AH_ENGINE_HOOK_ENGINE_MIN` |  | Set by the hook launcher (ah-hook) on the engine client it runs, to the lowest engine version that launcher supports. It travels with each request (`request_env.allow`) and the daemon checks it against its own version (`compat` in status). |
 | `AH_ENGINE_HOOK_VERSION` |  | Set by the hook launcher (ah-hook) on the engine client it runs, to the launcher's own build version. It travels with each request (`request_env.allow`) and the daemon reports the last one it saw as `hook_version` in status and pulse. |
 | `AH_ENGINE_IDLE_EXIT_S` | `daemon.idle_exit_s` | Seconds without any request after which the daemon exits cleanly (the next hook call starts a fresh one, and the scheduler catches up its missed jobs); 0 keeps it resident. Default is 1800 (about 30 minutes), so a daemon with no sessions does not linger forever. A daemon whose state dir, lock file or executable is gone still exits on its own (daemon.orphan_check_ms). |
 | `AH_ENGINE_INSTALL_LOCK_HOOK_WAIT_S` | `rollback.lock_hook_wait_s` | How long the integrity check started by the thin client waits for the install lock before skipping (the next run checks). A held lock never holds a session. |
@@ -358,7 +363,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `auto-handover-pause-nag` | Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover freshness) and the re-arm, latch writes as in Node; defers only what JavaScript could read differently. |
 | `compact-advice-guard` | Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis, latch exception and record as in Node); defers a text with a line terminator other than LF and what JavaScript could read differently. |
 | `version-alert` | SessionStart advisory: a newer anti-hall release is available or already mirrored locally; a stale remote cache defers to Node, which starts the refresh. |
-| `devswarm-version` | SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version; a stale cache defers to Node, which starts the probe. |
+| `devswarm-version` | SessionStart advisory: the DevSwarm CLI differs from the verified version (including patch releases); a stale cache requests the native refresh and read-only dependency probe. |
 | `claude-cli-version` | SessionStart advisory: the Claude Code CLI drifted by major or minor from the audited version; a stale cache defers to Node, which starts the probe. |
 | `repo-self-drift` | SessionStart advisory: docs/KB.md's claimed hook and skill counts differ from disk, or the model KBs were audited too long ago. |
 | `defect-nudge` | SessionStart advisory, at most daily: unfinished defect reports (in the anti-hall repository) or rulings on defects this project reported; counts and ages only. |
@@ -378,6 +383,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
 | `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
+| `switch-notice` | Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -396,7 +402,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `tasklist-guard` | Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale progress file, with the Node hook's loop state, dedupe, cap, handover advisories, stop-policy budget and acknowledgement; answers the quiet Stops, plan mode and the resume-verification nudge with the same file effects. |
 | `devswarm-parent-inbox` | DevSwarm Primary prompt hook: answers the silent cases (not a Primary, DevSwarm inactive, switch off, judge child) and every active Primary turn, in a git checkout or not, in the engine: the communication-override reminder through emit-dedupe, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds, the live workspace table of the project's summary with its nudges, archive recommendation and not-draining / stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it was asked, the screenshot-sync ask and the parked supervisor escalations. A seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the supervisor's auto-archive owns and the other rare states defer to the Node hook, each cause logged as parent-inbox-defer. |
 | `devswarm-child-turn` | DevSwarm child prompt hook: answers the silent cases (not a child workspace, DevSwarm inactive, switch off, judge child) and every active child turn in the engine: the heartbeat (with the git push state in a checkout), the descriptor and registry row under the workspace lock, the fixed reminder block through emit-dedupe, the step plan, unread parent mail and the archive request. An archived workspace, an ingest daemon that is not healthy, mesh-direct unread mail, a store Node would first create and the other rare states defer to the Node hook. |
-| `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace or a Primary with no seat to settle; a Primary in a git checkout (seat adoption writes the mesh store), a stale stable launcher or anything else it cannot prove byte-identical defers to Node. |
+| `devswarm-child-role` | SessionStart: injects the DevSwarm mesh-only messaging directive and native engine commands for a child workspace or Primary; direct ah-hook events use the active plugin defaults root when the request supplies none. |
 | `devswarm-parent-gate` | Stop: the DevSwarm Primary gate (decided in the plugin's engine/logic/devswarm-parent-gate logic file): the early exits, the inert and clean passes (loop state removed), the busy and grace advisories, and the neglect block with its loop state, cap, escalation, waiting-on-human lines and wake line; own unread, pending questions, stale verdicts, a parked escalation and every case it cannot reproduce byte for byte defer to the Node gate before anything is written. |
 | `devswarm-child-gate` | DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget; an archived workspace and the shapes it cannot read exactly defer to the Node gate. |
 | `devswarm-parent-reply-tracker` | DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call. |
@@ -464,6 +470,25 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `client.wrapper_extra_ms` | `250` |  | ms | Extra shell watchdog budget beyond the client deadline and client slack; this lets the client write the daemon-down marker and release the single-flight spawn lock before the wrapper kills it. |
 | `client.wrapper_kill_grace_ms` | `200` |  | ms | How long the hook launcher (ah-hook) waits after SIGTERM to a timed-out engine's process group before it sends SIGKILL. The soft stop lets the client write its markers; the hard stop bounds the call. |
 | `client.wrapper_watchdog_poll_ms` | `2` |  | ms | Poll interval for the thin client's millisecond watchdog. |
+
+### engine.toml / compat
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `compat.engine_min` | `0.2.0` |  |  | The lowest engine version this plugin supports. An engine older than this is reported by status and doctor; it never blocks a session. |
+| `compat.hook_min` | `0.2.0` |  |  | The lowest hook client (ah-hook) version this plugin supports. |
+| `compat.log_join` | `; ` |  |  | What joins several mismatch lines in the engine log line. |
+| `compat.msg_logged` | `version mismatch (sessions are not blocked): {detail}` |  |  | The one engine log line written when a mismatch is first seen. Placeholder: {detail} (the mismatch lines joined). |
+| `compat.msg_mismatch` | `{needer} {needer_version} needs {needs} >= {required}, installed {actual} -> ...` |  |  | One pair that does not hold, as doctor, the engine log and the dashboard show it. Placeholders: {needer}, {needer_version}, {needs}, {required}, {actual}. |
+| `compat.msg_ok` | `component versions are compatible ({count} pairs checked)` |  |  | The doctor line when every pair that can be checked holds. Placeholder: {count} (pairs checked). |
+| `compat.part_engine` | `engine` |  |  | The name of the engine in compatibility reports. |
+| `compat.part_hook` | `hook` |  |  | The name of the hook client in compatibility reports. |
+| `compat.part_plugin` | `plugin` |  |  | The name of the plugin in compatibility reports (`status --json` compat.pairs[].needer / needs). |
+| `compat.part_web` | `web` |  |  | The name of the dashboard in compatibility reports. |
+| `compat.state_mismatch` | `mismatch` |  |  | The state of a compatibility pair whose installed version is below the requirement. |
+| `compat.state_ok` | `ok` |  |  | The state of a compatibility pair whose installed version meets the requirement. |
+| `compat.state_unknown` | `unknown` |  |  | The state of a compatibility pair where one of the two versions is not known (never a mismatch). |
+| `compat.web_min` | `0.2.0` |  |  | The lowest dashboard (ah-web) version this plugin supports. |
 
 ### engine.toml / crash
 
@@ -568,6 +593,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `env.fail_open_file` | `AH_ENGINE_FAIL_OPEN_FILE` |  |  | A file the client appends one line to (`<reason> <check>`) for every engine-level fail-open the daemon reported in a reply (GitHub #201). The launcher sets it inside its per-call run directory and counts the lines after the engine exits, so its own stats and log know the call failed open. |
 | `env.home` | `HOME` |  |  | Home directory variable. |
 | `env.home_alt` | `USERPROFILE` |  |  | Fallback home directory variable (used by the git check when the home variable is unset). |
+| `env.hook_engine_min` | `AH_ENGINE_HOOK_ENGINE_MIN` |  |  | Set by the hook launcher (ah-hook) on the engine client it runs, to the lowest engine version that launcher supports. It travels with each request (`request_env.allow`) and the daemon checks it against its own version (`compat` in status). |
 | `env.hook_version` | `AH_ENGINE_HOOK_VERSION` |  |  | Set by the hook launcher (ah-hook) on the engine client it runs, to the launcher's own build version. It travels with each request (`request_env.allow`) and the daemon reports the last one it saw as `hook_version` in status and pulse. |
 | `env.install_lock_token` | `AH_ENGINE_INSTALL_LOCK_TOKEN` |  |  | Set by an installer (`ah-hook update`) for the integrity check: the token of the install lock it already holds, so recording the expected sha256 runs under the caller's hold instead of waiting on it. |
 | `env.live_kit` | `AH_LIVE_KIT` |  |  | Test and operator override: the live kit directory (default: updater.kit_dir below the base directory). |
@@ -654,7 +680,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `health.rss_probe` | `ps, -o, rss=, -p, {pid}` |  |  | Command used to read this process's resident set where /proc is unavailable (macOS): the program, then its arguments with `{pid}` substituted. |
 | `health.scrub_patterns` | `7 items` |  |  | Patterns removed from anything that goes into a diagnostic: each item is [regex, replacement]. Order matters. |
 | `health.serve_arg` | `serve` |  |  | Subcommand a daemon is started with; also how a live engine is recognised in the process list. |
+| `health.start_crash_kinds` | `crash, panic` |  |  | Lifecycle event kinds proving the next actual start follows an unrecovered crash. Stale run-marker reaping writes crash, including when the hook client reaped it before serve. |
+| `health.start_doctor_line` | `daemon starts (retained): {counts}; last ts={timestamp} reason={reason}` |  |  | The doctor's one-line retained daemon-start summary. Placeholders: counts (JSON), timestamp (last start Unix milliseconds, 0 if none), reason. |
+| `health.start_fields` | `6 entries` |  |  | Field names of a start row and its health summary: timestamp is Unix milliseconds; counts cover the retained bounded ring. |
 | `health.start_kind` | `start` |  |  | The event-log kind the daemon writes when it starts. A defaults fallback logged before the latest one is answered by that start (the daemon reloads every defaults file then), so it no longer marks the engine degraded. |
+| `health.start_lifecycle_kinds` | `start, exit, crash, panic, system_restart` |  |  | Event kinds that delimit daemon lifecycle evidence. The latest event after the prior ring start decides recovery; a clean exit or system reboot supersedes an old crash. |
+| `health.start_reason_flag` | `--start-reason` |  |  | The serve argument actual launchers use to identify their trigger. Plain serve defaults to manual. |
+| `health.start_reasons` | `6 entries` |  |  | Allowed start reasons: hook client, install/deploy routine, installed service managers, plain serve, and evidenced crash recovery. Crash recovery retains the original trigger in its own field. |
+| `health.start_ring_bytes` | `65536` |  | bytes | Maximum bytes read or written for the start ring; oversized or unreadable history is ignored, without preventing daemon startup. |
+| `health.start_ring_file` | `starts-reasons.json` |  |  | The bounded JSON ring of actual daemon starts, relative to the engine state directory. Refused duplicate serve processes do not count. |
+| `health.start_ring_rows` | `128` |  |  | Maximum retained daemon-start rows; status starts_by_reason counts this retained history. |
+| `health.start_ring_write_kind` | `daemon_start_ring_write` |  |  | The discard diagnostic key when writing daemon-start provenance fails; startup continues. |
 | `health.system_restart_slack_ms` | `0` |  | ms | How much later than a dead daemon's last sign of life (its newest breadcrumb, or its start) the operating system must have booted for the unclean stop to be reported as a `system_restart` (the machine stopped under it) instead of a `crash`. A margin against clock steps. |
 
 ### engine.toml / hook
@@ -790,6 +826,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `launcher.knob_update_git_url` | `AH_UPDATE_GIT_URL` |  |  | Test-only: environment variable that replaces updater.git_url. |
 | `launcher.knob_update_no_attest` | `AH_UPDATE_NO_ATTEST` |  |  | Test-only: environment variable that, set to 1, skips the build attestation check. |
 | `launcher.knob_update_triple` | `AH_UPDATE_TRIPLE` |  |  | Test-only: environment variable that replaces the detected release triple. |
+| `launcher.legacy_scheme_floor` | `0.300.0` |  |  | The first version of the OLD numbering. Builds made while the engine, hook client and web server carried the plugin's number report 0.300.x / 0.301.x (`0.301.1+<branch>.<sha>`); each component now has its own version (0.2.0, ...). An engine, hook client or web server at or above this floor counts as OLDER than any version below it, in every comparison: the install routine's downgrade check, the Updates page and `ah-hook doctor`. So nobody needs --force to go from 0.301.1 to 0.2.0. Plugin versions are never compared through this floor. |
 | `launcher.log_hard_bytes` | `1048576` |  | bytes | Size at which the launcher's failure log stops accepting lines: further lines are dropped and the drops counted. |
 | `launcher.log_line_max` | `512` |  | bytes | Longest line the launcher writes to its failure log; longer lines are cut. |
 | `launcher.log_rotate_min_s` | `60` |  | s | Fewest seconds between two rotations of the launcher's failure log. A flood of lines therefore grows the current file to launcher.log_hard_bytes (then lines are dropped and counted) instead of rotating the older history away. |
@@ -871,7 +908,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `request_env.allow` | `44 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. DEVSWARM_BUILDER_NAME is written into the heartbeat of devswarm-child-turn. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop. |
+| `request_env.allow` | `48 items` |  |  | The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. DEVSWARM_BUILDER_NAME is written into the heartbeat of devswarm-child-turn. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop. |
 | `request_env.incomplete_key` | `ah_env_incomplete` |  |  | Reserved name, never a forwardable variable, that carries the request's incomplete flag inside the forwarded environment object (the client's variables were dropped or it had no HOME), so the daemon's checks defer to the Node guards. |
 | `request_env.line_prefix` | `E ` |  |  | Prefix of the request line that carries the forwarded environment as one JSON object. |
 | `request_env.max_bytes` | `65536` |  | bytes | Largest forwarded environment (sum of names and values); a client whose allowed variables exceed it forwards none of them and the request is marked incomplete, so every check defers to the Node guard (a missing or empty HOME marks it incomplete too). |
@@ -943,6 +980,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `updater.engine_flag_from_local` | `--from-local` |  |  | The engine flag that names the directory holding the binaries to install. |
 | `updater.engine_flag_source` | `--source` |  |  | The engine flag that names where the build came from (recorded in the install record). |
 | `updater.engine_flag_yes` | `--yes` |  |  | The engine flag that makes the routine act (without it, it only plans). |
+| `updater.engine_serve_args` | `--start-reason, deploy/routine` |  |  | The legacy updater restart and detached restart-tail arguments after serve; identify both actual launch paths as deploy/routine. |
 | `updater.engine_verb_serve` | `serve` |  |  | The engine verb that starts the daemon. |
 | `updater.engine_verb_status` | `status` |  |  | The engine verb that probes the daemon. |
 | `updater.engine_verb_stop` | `stop` |  |  | The engine verb that tells a running daemon to exit. |
@@ -1026,7 +1064,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.argv_log_message` | `log, -1, --format=%B, {rev}, --` |  |  | git arguments that print one commit message; {rev} is the revision. |
 | `git.backstop_commit_subs` | `commit, merge, commit-tree, interpret-trailers, tag` |  |  | Subcommands whose messages the backstop scan checks for AI self-credit. |
 | `git.block_emoji` | `⛔` |  |  | Leading symbol of a block message. |
-| `git.block_mark` | ` anti-hall · git-guard: ` |  |  | Product and guard label after the symbol; also the marker alias notes are inserted after. |
+| `git.block_mark` | ` anti-hall · git safety: ` |  |  | Product and guard label after the symbol; also the marker alias notes are inserted after. |
 | `git.budget_handover_evals` | `50` |  |  | Commit evaluations the handover check may do per command. |
 | `git.budget_handover_queries` | `8` |  |  | Distinct git queries the handover check may run per command. |
 | `git.budget_launcher_fs` | `64` |  |  | Filesystem probes the launcher check may spend per command. |
@@ -1098,7 +1136,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git.jev_true` | `credits an AI assistant as author/co-author/contributor, in any phrasing` |  |  | The label for a true answer of the self-credit question. |
 | `git.label_allowed` | `Allowed here: ` |  |  | Label of the allowed-here line. |
 | `git.label_instead` | `Do instead: ` |  |  | Label of the remedy line. |
-| `git.label_override` | `Override (only if the user explicitly asked): ` |  |  | Label of the override line. |
+| `git.label_override` | `To allow this once: ` |  |  | Label of the override line. |
 | `git.label_why` | `Why: ` |  |  | Label of the reason line. |
 | `git.launcher_dir_pattern` | `(?i)\.anti-hall[\\/]+bin(?:[\\/]\|$)` |  |  | Pattern (case-insensitive) that recognises a path inside the plugin launcher directory. |
 | `git.launcher_hops` | `10` |  |  | Most symlink hops followed when resolving a dangling launcher link. |
@@ -1151,7 +1189,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `git_audit.git_verb` | `git` |  |  | The verb of a git command. |
 | `git_audit.max_buffer` | `1048576` |  |  | Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped). |
 | `git_audit.max_depth` | `3` |  |  | How deep eval and shell -c payloads are followed when looking for commit-creating git commands. |
-| `git_audit.msg` | `anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last ...` |  |  | Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes). |
+| `git_audit.msg` | `⚠️ git safety: recent commits contain AI credit.\nDo instead: remove the cred...` |  |  | Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes). |
 | `git_audit.opts_with_value` | `-c, --git-dir, --work-tree, --namespace, --config-env` |  |  | Global git options that take a value in the next word (skipped when looking for the repository directory). |
 | `git_audit.record_sep` | `` |  |  | The character that ends one commit record of the audit's log output (RS). |
 | `git_audit.summary` | `Advisory after a commit-creating git command: a commit made in the last 15 mi...` |  |  | One-line description of the git-audit check in the generated reference. |
@@ -1230,7 +1268,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.git_fetch_dangerous_flags` | `--prune, -p, --prune-tags, --force, -f` |  |  | git fetch options that rewrite or delete local refs. |
 | `command.git_global_flag_opts` | `8 items` |  |  | git global options without a value, skipped to find the subcommand. |
 | `command.git_global_value_opts` | `8 items` |  |  | git global options that take a value. |
-| `command.git_heavy_subs` | `push, pull, clone` |  |  | git subcommands that are always heavy. |
+| `command.git_heavy_subs` | `pull, clone` |  |  | git subcommands that are always heavy. |
 | `command.git_status_timeout_ms` | `2000` |  | ms | How long the `git status` question about a script file may take (command-guard.js gitCleanTracked: 2000 ms). |
 | `command.git_tag_value_flags` | `10 items` |  |  | git tag options that take a value. |
 | `command.git_timeout_ms` | `5000` |  | ms | How long a git question of the plain-push carve-out may take (command-guard.js: 5000 ms). |
@@ -1258,56 +1296,56 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.max_classify_len` | `65536` |  |  | Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it). |
 | `command.max_depth` | `3` |  |  | Nesting depth of inline shells, eval and command substitutions the heavy and write scans follow (command-guard.js `d < 3`). |
 | `command.msg_dsread_inbox_cmd_prefix` | `read via the configured ANTIHALL_DEVSWARM_INBOX_CMD, or ` |  |  | Added before the text above when a consumer-configured inbox command is set. |
-| `command.msg_dsread_instead` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hal...` |  |  | What to do instead of a native read. |
+| `command.msg_dsread_instead` | `read the inbox through the mesh CLI.` |  |  | What to do instead of a native read. |
 | `command.msg_dsread_monitor_what` | ``hivecontrol workspace monitor` is blocked.` |  |  | Heading of the monitor block. |
 | `command.msg_dsread_monitor_why` | `It is a long-poll with no default timeout: it hangs the shell until a message...` |  |  | Why monitor is blocked. |
 | `command.msg_dsread_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely` |  |  | The override of the native read block. |
 | `command.msg_dsread_rm_allowed` | ``message-count` reflects the NATIVE queue only; a 0 does not mean nothing is ...` |  |  | What stays allowed. |
 | `command.msg_dsread_rm_what` | ``hivecontrol workspace read-messages` is blocked.` |  |  | Heading of the read-messages block. |
 | `command.msg_dsread_rm_why` | `It mark-reads and drains the native queue, losing messages the durable inbox ...` |  |  | Why read-messages is blocked. |
-| `command.msg_edit_instead` | `spawn {sub} to make this edit and have it report a tight summary.` |  |  | What to do instead ({sub} names the worker). |
-| `command.msg_edit_instead_tier` | `workspace-scale matter (feature/fix/deploy, own branch + review): `~/.anti-ha...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
-| `command.msg_edit_notes` | `session notes/reports in .anti-hall/history/** or the scratchpad; repo docs n...` |  |  | What stays allowed (Claude). |
-| `command.msg_edit_notes_codex` | `session notes/reports in .anti-hall/history/**; repo docs need {sub} or a tru...` |  |  | What stays allowed (Codex). |
-| `command.msg_edit_override` | `{skip} (records consent in ~/.anti-hall/skip.json, 15-min TTL), then retry` |  |  | The override line ({skip} is the command above). |
+| `command.msg_edit_instead` | `spawn {sub} to make the edit and report a short summary.` |  |  | What to do instead ({sub} names the worker). |
+| `command.msg_edit_instead_tier` | `for a feature, fix or deploy start a workspace: `~/.anti-hall/ah-engine/bin/a...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
+| `command.msg_edit_notes` | `notes in .anti-hall/history/** or the scratchpad; repo docs need a subagent o...` |  |  | What stays allowed (Claude). |
+| `command.msg_edit_notes_codex` | `notes in .anti-hall/history/**; repo docs need {sub} or a trusted .anti-hall/...` |  |  | What stays allowed (Codex). |
+| `command.msg_edit_override` | `tell the agent "skip edit-guard" (lasts 15 minutes).` |  |  | The override line ({skip} is the command above). |
 | `command.msg_edit_skip_cmd` | `~/.anti-hall/ah-engine/bin/ah-engine mesh skip edit-guard` |  |  | The command that records consent to skip edit-guard (the native thin client). |
-| `command.msg_edit_what` | `Bash (sed -i/perl -i/tee/cp/mv/redirect/inline-code write) blocked: the {who}...` |  |  | Heading of the Bash edit parity block ({who} is the next text). |
+| `command.msg_edit_what` | `this shell file edit must run in a helper agent.` |  |  | Heading of the Bash edit parity block ({who} is the next text). |
 | `command.msg_edit_who_coord` | `coordinator` |  |  | Who is blocked otherwise. |
 | `command.msg_edit_who_orch` | `orchestrator` |  |  | Who is blocked when DevSwarm is active. |
-| `command.msg_edit_why` | `Raw edits never happen in the main thread; the coordinator synthesizes a summ...` |  |  | Why a Bash write is blocked. |
-| `command.msg_edit_why_orch` | `Raw edits in the main thread flood it; a worker returns a tight summary instead.` |  |  | Why a Bash write is blocked while DevSwarm is active. |
-| `command.msg_heavy_allowed` | `piped to tail/head/wc/grep -c: `node --test <1-2 files>`, `python3 -m pytest ...` |  |  | What stays allowed inline (first part). |
-| `command.msg_heavy_allowed_claude` | `; or a read-only scratchpad script (executable, absolute path, no VAR= prefix...` |  |  | End of the allowed text on Claude (the scratchpad script path). |
+| `command.msg_edit_why` | `Hands-on edits belong to a worker, which reports back a short summary.` |  |  | Why a Bash write is blocked. |
+| `command.msg_edit_why_orch` | `Hands-on edits belong to a worker, which reports back a short summary.` |  |  | Why a Bash write is blocked while DevSwarm is active. |
+| `command.msg_heavy_allowed` | `small checks piped to tail/head/wc, e.g. `node --test <1-2 files>`, `python3 ...` |  |  | What stays allowed inline (first part). |
+| `command.msg_heavy_allowed_claude` | `; or a read-only script in the scratchpad run in the background.` |  |  | End of the allowed text on Claude (the scratchpad script path). |
 | `command.msg_heavy_allowed_codex` | `.` |  |  | End of the allowed text on Codex. |
 | `command.msg_heavy_cd_hint` | ` To run the check inline, use `cd <dir> &&`, not `;`.` |  |  | Added when the same command joined with && would qualify for the inline check. |
-| `command.msg_heavy_delegate` | `delegate to {to} (it returns a short summary)` |  |  | What to do instead ({to} names the worker). |
-| `command.msg_heavy_detail_category` | ` (category: {label})` |  |  | Detail of a block caused by a heavy pattern or category. |
-| `command.msg_heavy_detail_verb` | ` (verb: {label})` |  |  | Detail of a block caused by a heavy verb. |
-| `command.msg_heavy_instead_tier` | `workspace-scale matter (feature/fix/deploy): `~/.anti-hall/ah-engine/bin/ah-e...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
-| `command.msg_heavy_plain` | `heavy command` |  |  | The kind of any other heavy command. |
-| `command.msg_heavy_remote` | `state-changing remote command` |  |  | The kind of a state-changing remote command. |
-| `command.msg_heavy_remote_why` | `A push, pull, fetch or gh call talks to a shared remote: it can stall on the ...` |  |  | Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread. |
-| `command.msg_heavy_what` | `{kind}{detail} blocked in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
-| `command.msg_heavy_why` | `Raw output floods the main thread.` |  |  | Why a heavy command is blocked. |
+| `command.msg_heavy_delegate` | `hand it to {to}; it returns a short summary` |  |  | What to do instead ({to} names the worker). |
+| `command.msg_heavy_detail_category` | ` ({label})` |  |  | Detail of a block caused by a heavy pattern or category. |
+| `command.msg_heavy_detail_verb` | ` ({label})` |  |  | Detail of a block caused by a heavy verb. |
+| `command.msg_heavy_instead_tier` | `for a feature, fix or deploy start a workspace: `~/.anti-hall/ah-engine/bin/a...` |  |  | What to do instead for a DevSwarm Primary whose repo allows workspaces. |
+| `command.msg_heavy_plain` | `a heavy command` |  |  | The kind of any other heavy command. |
+| `command.msg_heavy_remote` | `a command that changes a shared remote` |  |  | The kind of a state-changing remote command. |
+| `command.msg_heavy_remote_why` | `Pushes, pulls and gh calls touch a shared remote and can stall on network or ...` |  |  | Why a remote git or gh call (push, pull, fetch, a gh read or write that is not on command.remote_block) is blocked in the main thread. |
+| `command.msg_heavy_what` | `{kind}{detail} can't run in the main thread.` |  |  | Heading of the heavy-command block ({kind} and {detail} are the next two texts). |
+| `command.msg_heavy_why` | `Its raw output would flood the main conversation.` |  |  | Why a heavy command is blocked. |
 | `command.msg_mailbox_allowed` | ``inbox count`, `inbox peek-primary`, `mesh read --peek`, plain `roster`.` |  |  | What stays allowed. |
 | `command.msg_mailbox_guard` | `devswarm-mailbox` |  |  | The message id of the mailbox block. |
-| `command.msg_mailbox_instead` | `report what you learned to your parent; the main thread drains the mailbox it...` |  |  | What to do instead. |
+| `command.msg_mailbox_instead` | `report back so the main agent can drain it.` |  |  | What to do instead. |
 | `command.msg_mailbox_override` | `set ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 to disable this guard entirely` |  |  | The override of the mailbox block. |
-| `command.msg_mailbox_what` | `a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-p...` |  |  | Heading of the subagent mailbox block. |
+| `command.msg_mailbox_what` | `a helper tried to drain the DevSwarm mailbox.` |  |  | Heading of the subagent mailbox block. |
 | `command.msg_mailbox_why` | `A subagent that acks or reads advances the shared cursor, so the main thread ...` |  |  | Why a subagent may not touch the mailbox. |
 | `command.msg_rawread_inbox_guard` | `devswarm-inbox-read` |  |  | The message id of the raw inbox read block. |
-| `command.msg_rawread_inbox_instead` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hal...` |  |  | What to do instead of a raw inbox read. |
+| `command.msg_rawread_inbox_instead` | `read the inbox through the mesh CLI.` |  |  | What to do instead of a raw inbox read. |
 | `command.msg_rawread_inbox_what` | `a shell read of the raw DevSwarm inbox file is blocked.` |  |  | Heading of the raw inbox read block. |
 | `command.msg_rawread_inbox_why` | `It does not drain the queue, but bypasses the durable cursor, so messages get...` |  |  | Why a raw inbox read is blocked. |
 | `command.msg_rawread_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | The override of the raw read block. |
-| `command.msg_remote_block_why` | `It is irreversible or sensitive: a merge, a release, a repository setting, a ...` |  |  | Why a command on command.remote_block is blocked in the main thread. |
+| `command.msg_remote_block_why` | `It is hard to undo or sensitive (a merge, release, repository setting, secret...` |  |  | Why a command on command.remote_block is blocked in the main thread. |
 | `command.msg_send_guard` | `devswarm-mesh-only` |  |  | The message id of the native-send block. |
-| `command.msg_send_instead` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <...` |  |  | What to do instead of a native send. |
+| `command.msg_send_instead` | `send the message through the DevSwarm mesh.` |  |  | What to do instead of a native send. |
 | `command.msg_send_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | The override of the native-send block. |
 | `command.msg_send_what` | ``hivecontrol workspace {kind}` is blocked.` |  |  | Heading of the native-send block. |
 | `command.msg_send_why` | `anti-hall's shared mesh store is the only agent-initiated messaging transport...` |  |  | Why a native send is blocked. |
 | `command.msg_stash_allowed` | ``git stash list` (read-only).` |  |  | What stays allowed. |
-| `command.msg_stash_instead` | `commit the work (even as a WIP commit); never delegate a stash to a subagent.` |  |  | What to do instead of a stash. |
+| `command.msg_stash_instead` | `save the work in a WIP commit.` |  |  | What to do instead of a stash. |
 | `command.msg_stash_scope_armed` | `this repo (guard armed: .anti-hall/protected-stashes exists or ANTIHALL_STASH...` |  |  | Scope text for an armed repository. |
 | `command.msg_stash_scope_subagent` | `a subagent (workers must never touch the coordinator's working tree via stash)` |  |  | Scope text for a subagent. |
 | `command.msg_stash_what` | ``git stash {sub}` is blocked for {scope}.` |  |  | Heading of the git stash block ({sub} is the subcommand, {scope} the next two texts). |
@@ -1388,7 +1426,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `docs.external_flags` | `19 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
+| `docs.external_flags` | `25 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
 
 ### telemetry.toml / telemetry
 
@@ -1439,7 +1477,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `telemetry.shards` | `4` |  |  | Counter tables the hot path spreads threads over, so threads rarely share a cache line. |
 | `telemetry.slots` | `256` |  |  | Label combinations (kind, hook or check, event, outcome) one shard holds; rounded up to a power of two. A full table counts the sample as dropped instead of waiting. |
 | `telemetry.snapshot_ms` | `60000` | `AH_ENGINE_SNAPSHOT_MS` | ms | Interval of the scheduled metrics snapshot job, which keeps the counters in hot.db and their rollups in archive.db (D51); the daemon also keeps one when it exits. |
+| `telemetry.spawn_agent_fields` | `agentId, agent_id` |  |  | Response keys holding the actual spawned child identity, in precedence order. |
+| `telemetry.spawn_background_field` | `run_in_background` |  |  | Launch input flag identifying a running background child; partial response usage is not a finished outcome. |
+| `telemetry.spawn_completed_status` | `completed` |  |  | Response status proving a child is complete; absence is not proof of completion. |
+| `telemetry.spawn_link_retention_ms` | `604800000` |  |  | How far back to look for persisted launch identities on completion. |
+| `telemetry.spawn_model_fields` | `resolvedModel, resolved_model, model` |  |  | Response keys holding the actual resolved model, never the requested routing choice. |
+| `telemetry.spawn_parent_transcript_field` | `transcript_path` |  |  | Explicit launching-session transcript from which the configured child transcript layout can be resolved. |
 | `telemetry.spawn_result` | `17 entries` |  |  | The spawn-result event the engine records itself when an agent launch finishes (PostToolUse of the agent tool), linked to the route event by the same spawn key: the key is rebuilt from the same payload fields the routing check hashes (session, calling agent, subagent type, prompt prefix of model_routing.key_prefix_chars characters; joined with sep). event / tool: which call; session, agent, input, prompt, subagent_type: payload fields; response, usage, model: fields of the tool response (model = the model the agent ran on); in, out, cache_read, cache_write: usage fields; check: the h label of the recorded event; key_prefix: the key's text prefix. |
+| `telemetry.spawn_status_field` | `status` |  |  | Response status field; transcript recovery on PostToolUse requires explicit completion evidence. |
+| `telemetry.spawn_stop_event` | `SubagentStop` |  |  | Completion hook on both host ports. |
+| `telemetry.spawn_tools` | `Agent, Task` |  |  | Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads. |
+| `telemetry.spawn_transcript_field` | `agent_transcript_path` |  |  | The completed child's explicitly supplied transcript; never the parent's transcript. |
+| `telemetry.spawn_transcript_fields` | `5 entries` |  |  | Child transcript schema for actual usage; required input/output counts, optional cache classes default to zero only when absent. |
+| `telemetry.spawn_transcript_max_bytes` | `16777216` |  |  | Maximum complete child transcript read for outcome recovery. Oversized or malformed files stay unmeasured. |
+| `telemetry.spawn_unknown_model` | `unknown` |  |  | Identity-only launch marker, excluded from routing savings until actual model and usage arrive. |
+| `telemetry.sql_spawn_by_key` | `SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1` |  |  | SQL: the stored spawn events of one spawn key (?1), read to find the identity-only row a completed background launch repairs in place. |
+| `telemetry.sql_update_event` | `UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4` |  |  | SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3). |
 | `telemetry.summary_event_limit` | `5000` |  |  | Most events of one kind `telemetry summary` reads to build its jev, cmd, model and daemon sections. |
 | `telemetry.token_max_len` | `64` |  | bytes | Longest identifier a telemetry event may hold in any text field (hook, event, model, task class, spawn key); longer ones are cut. Event text fields hold identifiers only, never prose. |
 | `telemetry.top_checks` | `5` |  |  | How many checks `status --json` lists in `cpu.top_checks`, the ones that spent the most CPU (with calls and CPU per call). |
@@ -1745,11 +1798,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `coordinator_work.agent_markers` | `agent_id, agent_type` |  |  | Payload fields the host puts on a subagent's hook payload and never on the main thread's. |
 | `coordinator_work.block_allowed` | `reads, recovery commands (--abort/--quit, stash pop/apply) and loosely matche...` |  |  | What stays allowed past the block threshold. |
-| `coordinator_work.block_instead` | `right now, hand this and the remaining steps (patch applies included) to a su...` |  |  | What to do instead of a blocked work call. {clear_min} is the minutes until the window clears. |
+| `coordinator_work.block_instead` | `hand the remaining work to a helper agent.` |  |  | What to do instead of a blocked work call. {clear_min} is the minutes until the window clears. |
 | `coordinator_work.block_override` | `{skip} (15-min TTL)` |  |  | The override line of the block ({skip} is the skip command). |
 | `coordinator_work.block_setting` | `5 entries` |  |  | The Nth work call in the window is blocked (guards.coordinatorWorkBlockAt); 0 means never. |
-| `coordinator_work.block_what` | `{count} state-changing calls in the main thread within {minutes} min; this on...` |  |  | Block headline; {count} is the number of work calls in the window and {minutes} the window length. |
-| `coordinator_work.block_why` | `NOT a human gate: do not ask the human and do not mark yourself waiting. Too ...` |  |  | Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed. |
+| `coordinator_work.block_what` | `this step was stopped after repeated main-thread edits.` |  |  | Block headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.block_why` | `Too much hands-on work in the main thread. This is not a question for the use...` |  |  | Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed. |
 | `coordinator_work.bookkeeping_cli` | `^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:node\s+)?["\x27]?(?:\S*/)?(?:(?:\.an...` |  |  | Regex source of one DevSwarm bookkeeping call: optional env assignments, optional node, the DevSwarm CLI (`ah-engine mesh\|agents\|devswarm`, or the old `devswarm.js` and `ah-hook mesh` names), then one of the verbs ({verbs}). |
 | `coordinator_work.bookkeeping_devnull` | `[0-9]?>\s*/dev/null` |  |  | Regex source of a redirect into /dev/null, which a bookkeeping call may carry besides the stderr merge. |
 | `coordinator_work.bookkeeping_filter` | `^\s*(?:{filters})(?:\s+(?:-{1,2}[0-9A-Za-z][0-9A-Za-z-]*(?:=\S+)?\|[0-9A-Za-z_...` |  |  | Regex source of one output-filter segment ({filters} are the allowed filter words); its arguments are flags, plain words or quoted strings. |
@@ -1787,10 +1840,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `coordinator_work.main_entrypoints` | `cli, vscode, jetbrains, vim, emacs` |  |  | Entry point values (exact) of a main-thread session. |
 | `coordinator_work.metrics_file` | `coordinator-work-metrics.json` |  |  | Name of the metrics file under the state directory. |
 | `coordinator_work.never_block_verbs` | `send` |  |  | DevSwarm CLI verbs whose call is never counted as work and never blocked by the coordinator-work window, whatever the rest of the line holds (escalation to the parent must always get through). |
-| `coordinator_work.nudge_instead` | `delegate the rest to a subagent now.` |  |  | Advisory advice without a block threshold. |
-| `coordinator_work.nudge_instead_block` | `delegate the rest to a subagent now; call {block_at} in the window is blocked.` |  |  | Advisory advice with a block threshold; {block_at} is the call that is blocked. |
+| `coordinator_work.nudge_instead` | `hand the rest to a subagent now.` |  |  | Advisory advice without a block threshold. |
+| `coordinator_work.nudge_instead_block` | `hand the rest to a subagent now; step {block_at} in this window will be blocked.` |  |  | Advisory advice with a block threshold; {block_at} is the call that is blocked. |
 | `coordinator_work.nudge_setting` | `5 entries` |  |  | Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory. |
-| `coordinator_work.nudge_what` | `{count} state-changing calls in the main thread within {minutes} min.` |  |  | Advisory headline; {count} is the number of work calls in the window and {minutes} the window length. |
+| `coordinator_work.nudge_what` | `{count} file-changing steps in the main thread within {minutes} min.` |  |  | Advisory headline; {count} is the number of work calls in the window and {minutes} the window length. |
 | `coordinator_work.plugin_json` | `.claude-plugin/plugin.json` |  |  | Path of the plugin manifest, relative to the plugin root; its version stamps new window files. |
 | `coordinator_work.post_event` | `PostToolUse` |  |  | The event name of the pass that records calls into the window. |
 | `coordinator_work.pre_cap` | `20` |  |  | How many pre-call verdicts (kept until the matching post-call) a window file holds. |
@@ -1915,9 +1968,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.guard_name` | `edit-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `edit_guard.launcher_dir` | `.anti-hall, bin` |  |  | Path of the stable launcher directory under the home directory, as its parts. A write into it is blocked for every agent. |
 | `edit_guard.msg_launcher_allowed` | `the rest of .anti-hall/** (handovers, progress, history, state).` |  |  | What stays allowed next to the launcher directory. |
-| `edit_guard.msg_launcher_instead` | `leave that directory alone.` |  |  | Launcher-directory block advice. |
-| `edit_guard.msg_launcher_what` | `{tool} into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.` |  |  | Launcher-directory block headline; {tool} is the tool name. |
-| `edit_guard.msg_launcher_why` | `anti-hall installs and refreshes those files itself; overwriting one would ru...` |  |  | Launcher-directory block reason. |
+| `edit_guard.msg_launcher_instead` | `leave that folder alone.` |  |  | Launcher-directory block advice. |
+| `edit_guard.msg_launcher_what` | `an edit to the managed launcher folder was stopped.` |  |  | Launcher-directory block headline; {tool} is the tool name. |
+| `edit_guard.msg_launcher_why` | `anti-hall manages those files itself; overwriting one could run unwanted code...` |  |  | Launcher-directory block reason. |
 | `edit_guard.notebook_tool` | `NotebookEdit` |  |  | The tool whose target is `tool_input.notebook_path` instead of `tool_input.file_path`. |
 | `edit_guard.patch_tool` | `apply_patch` |  |  | The Codex tool whose targets are the files of a patch (parsed with the shared apply_patch parser). |
 | `edit_guard.setting` | `6 entries` |  |  | Where the guard's on/off switch is read from (safety.editGuard, default on). |
@@ -1959,7 +2012,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `failure_nudge.guard_name` | `failure-root-cause-nudge` |  |  | The skip.json key that silences this hook. |
 | `failure_nudge.max_cmd_len` | `80` |  |  | Longest command text, in UTF-16 units, shown in the advisory before it is cut. |
 | `failure_nudge.message_guard` | `root-cause` |  |  | The guard label shown in the advisory. |
-| `failure_nudge.msg_instead` | `before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) ...` |  |  | Advisory advice. |
+| `failure_nudge.msg_instead` | `trace the failure before retrying or patching.` |  |  | Advisory advice. |
 | `failure_nudge.msg_what` | `this command failed{cmd}.` |  |  | Advisory headline; {cmd} is the shown command part or empty. |
 | `failure_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.failureRootCauseNudge, default on). |
 | `failure_nudge.summary` | `Advisory after a failed Bash call: trace the cause before patching; silent fo...` |  |  | One-line description of the failure-root-cause-nudge check in the generated reference. |
@@ -1968,16 +2021,26 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `guardkit.brief_instead` | `3 entries` |  |  | Short actions; full instructions are saved in the details file. |
+| `guardkit.brief_what` | `3 entries` |  |  | Short headlines; full context is saved in the details file. |
+| `guardkit.brief_why` | `3 entries` |  |  | Short reasons; full context is saved in the details file. |
 | `guardkit.claude_settings_file` | `.claude/settings.json` |  |  | The host's own settings file, relative to the home directory, where plugin options are stored. |
 | `guardkit.destructive_guards` | `git-guard, devswarm-read-guard, git-stash-guard` |  |  | Guards that a broad skip of everything does not cover; they must be named in the skip file. |
+| `guardkit.details_actions` | `7 items` |  |  | Compact guard message text. |
+| `guardkit.details_dir` | `block-details` |  |  | Details files relative to the anti-hall directory. |
+| `guardkit.details_ext` | `.md` |  |  | Details file extension. |
+| `guardkit.details_session_default` | `session` |  |  | Details file suffix when a session id is unavailable. |
 | `guardkit.false_tokens` | `0, off, false, no` |  |  | Environment or settings strings that mean off (compared after trimming and lower-casing). |
 | `guardkit.icons` | `6 entries` |  |  | Leading icon of a block or advisory message, by kind. |
 | `guardkit.jev_legacy_file` | `.anti-hall/jev.json` |  |  | The legacy Jev settings file (settings.js reads it below settings.json for the Jev keys), relative to the home directory. |
 | `guardkit.js_space` | `\t\n\x0b\x0c\r    -     　﻿` |  |  | Characters JavaScript treats as white space, written as the body of a regex character class; used to translate the JS escapes for white space exactly (Rust's own class differs: it has U+0085 and lacks U+FEFF). |
 | `guardkit.line_terminators` | `\n\r  ` |  |  | Characters JavaScript's dot excludes, as the body of a regex character class. |
+| `guardkit.long_instructions` | `32 entries` |  |  | Full instructions retained when visible guard text is shortened; placeholders describe the original command fields. Saved only in details files. |
 | `guardkit.migration_markers_file` | `.anti-hall/update-sweep-state.json` |  |  | The per-migration marker file, relative to the home directory. |
-| `guardkit.msg_head` | ` anti-hall · ` |  |  | Text between the icon and the guard name in every block or advisory message. |
-| `guardkit.msg_labels` | `4 entries` |  |  | Labels of the optional lines of a block or advisory message. |
+| `guardkit.msg_head` | ` ` |  |  | Text between the icon and the guard name in every block or advisory message. |
+| `guardkit.msg_labels` | `5 entries` |  |  | Labels of the optional lines of a block or advisory message. |
+| `guardkit.override_human` | `tell the agent "skip {guard}"` |  |  | Human consent hint; the id is the skip key. |
+| `guardkit.plain_names` | `46 entries` |  |  | Human names on the first line; unknown guard ids fall back to themselves. |
 | `guardkit.plugin_config_keys` | `anti-hall, anti-hall@anti-hall` |  |  | Keys of the host settings file's pluginConfigs map under which this plugin's options may be stored, lowest priority first. |
 | `guardkit.plugin_manifest` | `.claude-plugin/plugin.json` |  |  | The plugin manifest, relative to the plugin root (its version is the one the settings migration stamp is compared with). |
 | `guardkit.plugin_option_prefix` | `CLAUDE_PLUGIN_OPTION_` |  |  | Prefix of the environment variables the host sets from plugin options. |
@@ -1992,6 +2055,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `guardkit.settings_migration_key` | `migrateSettingsFromLegacy` |  |  | Key of the marker that says the legacy settings were forward-migrated into settings.json for a plugin version. |
 | `guardkit.skip_all_key` | `all` |  |  | Key of the skip file that skips every guard not listed in destructive_guards. |
 | `guardkit.skip_file` | `.anti-hall/skip.json` |  |  | Skip file, relative to the home directory (a skipped guard is allowed until its expiry time). |
+| `guardkit.skip_session_env` | `CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, ANTIHALL_SESSION_ID, CODEX_THREAD_ID` |  |  | Session identity fallbacks for skip writers and readers; hook payload session_id takes precedence. |
+| `guardkit.skip_session_separator` | `@` |  |  | Separator between a guard name and its session id in skip.json; bare names remain global. |
 | `guardkit.state_cap` | `4096` |  |  | How many per-session state entries the in-memory guard state keeps before it evicts the least recently written one. |
 | `guardkit.state_dir_name` | `.anti-hall` |  |  | Name of the directory under the home directory that holds the per-session state files the Node guards share with the engine. |
 | `guardkit.state_ext` | `.json` |  |  | Extension of a per-session state file. |
@@ -2012,10 +2077,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_gate.jev_state_chars` | `4000` |  |  | How many trailing UTF-16 units of the assistant text the mergeGateHedge ask evaluates (Node: text.slice(-4000)). |
 | `merge_gate.jev_true` | `unresolved hedge present` |  |  | The label for a true answer of the mergeGateHedge question. |
 | `merge_gate.merge_rules` | `2 entries, 3 entries, 4 entries, 2 entries, 2 entries` |  |  | The command shapes that are an auto-merge intent. verb: the command word (after leading assignments); prefix: the words that must follow it, in order; includes_any: when present, at least one of these words must appear after the prefix; needs_target: when true, a word after the prefix must match protected_target. |
-| `merge_gate.msg_instead` | `verify it against its agreed criterion or get owner sign-off, then merge.` |  |  | The block message's alternative. |
-| `merge_gate.msg_override` | `set ANTIHALL_MERGE_GATE=off, or skip merge-gate` |  |  | The block message's override line. |
-| `merge_gate.msg_what` | `auto-merge blocked: your recent output flagged a deliverable as pending/unver...` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
-| `merge_gate.msg_why` | `A self-issued hedge blocks auto-merge (false-done backstop).` |  |  | The block message's reason. |
+| `merge_gate.msg_instead` | `verify the agreed result before merging.` |  |  | The block message's alternative. |
+| `merge_gate.msg_override` | `tell the agent "skip merge-gate"` |  |  | The block message's override line. |
+| `merge_gate.msg_what` | `the merge is paused while recent work remains unverified.` |  |  | The block message's first line; {hedge} is the last hedge phrase found. |
+| `merge_gate.msg_why` | `Merging now could ship unfinished work.` |  |  | The block message's reason. |
 | `merge_gate.non_human_origins` | `human, user` |  |  | The origin kinds of a user record that still count as a human typing. |
 | `merge_gate.protected_target` | `^(main\|master\|develop\|origin\/(main\|master\|develop))$` |  |  | Regex source (case-insensitive) of the branch names a plain `git merge` must name to count as an auto-merge. |
 | `merge_gate.resolutions` | `owner approved, owner signed off, sign-off received, fidelity verified, verif...` |  |  | Phrases that resolve a hedge when a REAL user prompt typed after the hedge contains one (case-insensitive plain text); the assistant can never clear its own hedge. |
@@ -2043,8 +2108,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_side_pick.head_word` | `HEAD` |  |  | The refspec word that means the current branch. |
 | `merge_side_pick.heads_prefix` | `refs/heads/` |  |  | The prefix of a full local branch ref in a refspec. |
 | `merge_side_pick.heredoc_open` | `<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1` |  |  | JavaScript regex source for the opener of a heredoc (<<TAG, <<-TAG, <<'TAG'; capture 1 = the optional quote, capture 2 = the tag). The lines up to the tag line are text, blanked before a command is split into segments. |
-| `merge_side_pick.msg_instead` | `run the tests first, review the discarded side in `git diff`, then push.` |  |  | Advisory advice. |
-| `merge_side_pick.msg_what` | `pushing after a conflict was resolved by taking one side wholesale ({pick}) w...` |  |  | Advisory headline; {pick} is the recorded side-pick command. |
+| `merge_side_pick.msg_instead` | `verify the conflict resolution before pushing.` |  |  | Advisory advice. |
+| `merge_side_pick.msg_what` | `a push follows a one-sided conflict resolution with no tests.` |  |  | Advisory headline; {pick} is the recorded side-pick command. |
 | `merge_side_pick.msg_why` | `taking --ours/--theirs (or -X ours/theirs) silently drops the other side's ch...` |  |  | Advisory reason. |
 | `merge_side_pick.pick_tails` | `(?:checkout\\|restore)\b[^\n]*?\s--(?:ours\\|theirs)\b, (?:merge\\|pull\\|rebase\...` |  |  | Regex sources, each appended to git_prefix, that recognise taking one side of a conflict wholesale (checkout or restore --ours, -X ours, -s ours). |
 | `merge_side_pick.plain_branch_re` | `^[A-Za-z0-9][A-Za-z0-9._/@-]*$` |  |  | Regex source: a plain local branch name in a refspec (anything else, such as a tag, a sha or a revision, keeps the advisory). |
@@ -2057,6 +2122,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `merge_side_pick.state_ns` | `merge-side-pick` |  |  | Namespace of this check's per-session state in the guard state store. |
 | `merge_side_pick.summary` | `Advisory: a push after a conflict was resolved by taking one side wholesale, ...` |  |  | One-line description of the merge-side-pick check in the generated reference. |
 | `merge_side_pick.test_patterns` | `11 items` |  |  | Regex sources that recognise a test run in a command segment. |
+
+### small_guards.toml / messages
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `messages.style_guide` | `⛔ <plain name>: <what stopped>\nDo instead: <one action>` |  |  | Every guard message uses at most two lines and one leading emoji: block ⛔, warning ⚠️, tip 💡. Line 1: <emoji> <plain name>: <what stopped, short>. Line 2: Do instead: <one action>. No emoji on labels; no separate Why, override or Details line. Fold a short reason into line 1 only when needed to understand the action. Aim for 160 characters; never exceed 250 including filled placeholders and a details tail. Save skip instructions, long instructions and paths in a details file. Link it only when the action needs them, as (details: <path>) at the end of line 2. Plain text, no markdown. Both Claude/OMC and Codex/OMX use this shared renderer. |
 
 ### small_guards.toml / model_routing
 
@@ -2114,11 +2185,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_handover_why` | `A subagent never lived this session, so its reconstruction loses decision/tri...` |  |  | Handover-delegation advisory reason. |
 | `model_routing.msg_row1_instead` | `respawn with model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-1 block advice. |
 | `model_routing.msg_row1_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 Jev relaxation advisory advice. |
-| `model_routing.msg_row1_jev_what` | `execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mec...` |  |  | Row-1 Jev relaxation advisory headline. |
-| `model_routing.msg_row1_research_what` | `execution-shaped spawn on a flagship model ('{model}'), exempt from blocking ...` |  |  | Row-1 research-exempt advisory headline. |
+| `model_routing.msg_row1_jev_what` | `flagship spawn allowed after a non-mechanical verdict.` |  |  | Row-1 Jev relaxation advisory headline. |
+| `model_routing.msg_row1_research_what` | `flagship spawn allowed for research.` |  |  | Row-1 research-exempt advisory headline. |
 | `model_routing.msg_row1_role_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-1 role-exempt advisory advice. |
-| `model_routing.msg_row1_role_what` | `execution-shaped spawn on a flagship model ('{model}'), exempt because a deba...` |  |  | Row-1 role-exempt advisory headline. |
-| `model_routing.msg_row1_what` | `execution-shaped task on a flagship model (model: '{model}') is blocked.` |  |  | Row-1 block headline. |
+| `model_routing.msg_row1_role_what` | `flagship spawn allowed for a debate role.` |  |  | Row-1 role-exempt advisory headline. |
+| `model_routing.msg_row1_what` | `routine execution was assigned to a flagship model.` |  |  | Row-1 block headline. |
 | `model_routing.msg_row1_why` | `This hook cannot see the parent model; execution-only work needs an explicit ...` |  |  | Row-1 block reason. |
 | `model_routing.msg_row2_adv_instead` | `set model:'haiku' (or 'sonnet' if it authors code).` |  |  | Row-2 advisory advice. |
 | `model_routing.msg_row2_adv_what` | `execution-shaped spawn sets no explicit model.` |  |  | Row-2 advisory headline. |
@@ -2128,12 +2199,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.msg_row2_block_what` | `execution-shaped spawn with no explicit model is blocked (strict default).` |  |  | Row-2 strict block headline. |
 | `model_routing.msg_row2_block_why` | `An omitted model inherits the orchestrator's and cannot be verified here; on ...` |  |  | Row-2 strict block reason. |
 | `model_routing.msg_row2_jev_instead` | `if it is genuinely mechanical work, prefer model:'haiku'.` |  |  | Row-2 Jev relaxation advisory advice. |
-| `model_routing.msg_row2_jev_what` | `omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so ...` |  |  | Row-2 Jev relaxation advisory headline. |
-| `model_routing.msg_row3_instead` | `unless that agent is pinned to a flagship on purpose, prefer model:'haiku'.` |  |  | Row-3 advisory advice. |
-| `model_routing.msg_row3_what` | `execution-shaped task on a flagship model ('{model}') via custom subagent_typ...` |  |  | Row-3 advisory headline. |
+| `model_routing.msg_row2_jev_what` | `default-model spawn allowed after a non-mechanical verdict.` |  |  | Row-2 Jev relaxation advisory headline. |
+| `model_routing.msg_row3_instead` | `choose a cheaper model unless the role requires a flagship.` |  |  | Row-3 advisory advice. |
+| `model_routing.msg_row3_what` | `a custom agent uses a flagship model for execution.` |  |  | Row-3 advisory headline. |
 | `model_routing.msg_row4_instead` | `consider opus or fable for deeper reasoning.` |  |  | Row-4 advisory advice. |
-| `model_routing.msg_row4_what` | `planning-shaped task (architecture/design/plan/brainstorm/deep review) runs o...` |  |  | Row-4 advisory headline. |
-| `model_routing.msg_row6_instead` | `re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so...` |  |  | Row-6 advisory advice. |
+| `model_routing.msg_row4_what` | `planning work was assigned to haiku.` |  |  | Row-4 advisory headline. |
+| `model_routing.msg_row6_instead` | `use an Explore agent for read-only research.` |  |  | Row-6 advisory advice. |
 | `model_routing.msg_row6_what` | `research/read-only-shaped spawn uses subagent_type:'general-purpose'.` |  |  | Row-6 advisory headline. |
 | `model_routing.msg_row6_why` | `general-purpose carries the Agent tool and can recurse; chains waste ~7x toke...` |  |  | Row-6 advisory reason. |
 | `model_routing.msg_update_instead` | `run `ah-engine update ...` directly in the main session.` |  |  | Update-in-session block advice. |
@@ -2183,10 +2254,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `scan_throttle.known_prefixes` | `taskpolicy -c utility nice -n 19 , ionice -c 3 nice -n 19 , nice -n 19 ` |  |  | Every throttle prefix this check itself generates; a command that already starts with one is left alone. |
 | `scan_throttle.linux` | `4 entries` |  |  | The Linux throttle tool that must exist on PATH, the prefix it gives, and the optional I/O tool with its own prefix. |
 | `scan_throttle.msg_first_instead` | `re-run it background-throttled: `{throttled}`.` |  |  | Advice when the scan is the first simple command; {throttled} is the command with the prefix in place. |
-| `scan_throttle.msg_first_what` | `this is a heavy repo-wide scan; the command was NOT modified.` |  |  | Advisory headline when the scan is the first simple command. |
+| `scan_throttle.msg_first_what` | `a heavy project scan needs throttling.` |  |  | Advisory headline when the scan is the first simple command. |
 | `scan_throttle.msg_first_why` | `To keep the machine responsive.` |  |  | Advisory reason when the scan is the first simple command. |
 | `scan_throttle.msg_group_instead` | `consider running the scan background-throttled, e.g. `{prefix} <that command>`.` |  |  | Advice when the scan is not the first simple command; {prefix} is the throttle prefix without its trailing space. |
-| `scan_throttle.msg_group_what` | `a repo-wide scan command was detected in a compound or grouped command (not t...` |  |  | Advisory headline when the scan is not the first simple command. |
+| `scan_throttle.msg_group_what` | `a grouped command contains a heavy project scan.` |  |  | Advisory headline when the scan is not the first simple command. |
 | `scan_throttle.path_separator` | `:` |  |  | Separator of the entries of the PATH variable. |
 | `scan_throttle.path_var` | `PATH` |  |  | Name of the variable that holds the executable search path. |
 | `scan_throttle.patterns_env` | `ANTI_HALL_THROTTLE_PATTERNS` |  |  | Environment variable holding the comma-separated regex sources of the scan commands to advise on; with none set the check matches nothing. |
@@ -2203,8 +2274,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ship_it.files_head` | `\n-[ \t]*files:[ \t]*` |  |  | Regex source (case-insensitive) of the files field a phase declares, up to where its value starts. |
 | `ship_it.guard_name` | `ship-it-guard` |  |  | The guard id this check answers to in skip.json and in messages. |
 | `ship_it.hard_risk` | `7 items` |  |  | Regex sources (case-insensitive) of hard-risk paths: CI workflows, migrations, auth, security. |
-| `ship_it.msg_adv_instead` | `if intentional, proceed; if not, update the PLAN.md Blast radius / phase `fil...` |  |  | Advisory advice. |
-| `ship_it.msg_adv_what` | `{file} does not appear in any phase's declared "files:" list in {plan} (advis...` |  |  | Advisory headline; {file} is the first target outside the declared files and {plan} the plan path. |
+| `ship_it.msg_adv_instead` | `check the phase scope in PLAN.md.` |  |  | Advisory advice. |
+| `ship_it.msg_adv_what` | `{file} is missing from the plan phase file list.` |  |  | Advisory headline; {file} is the first target outside the declared files and {plan} the plan path. |
 | `ship_it.msg_adv_why` | `It may be a legitimate shared-file touch (`files:` is free text, so false pos...` |  |  | Advisory reason. |
 | `ship_it.msg_block_instead` | `create PLAN.md (repo root) first.` |  |  | Block advice. |
 | `ship_it.msg_block_override` | `if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or use the ...` |  |  | Block override hint. |
@@ -2246,7 +2317,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inbox_read.devswarm_root` | `.anti-hall/devswarm` |  |  | Path of the DevSwarm state root under the home directory. |
 | `inbox_read.guard_inbox` | `devswarm-inbox-read` |  |  | Guard name in the message that blocks a raw inbox read. |
 | `inbox_read.inbox_segment` | `inbox` |  |  | First path segment under the DevSwarm root whose files are the raw inbox. |
-| `inbox_read.msg_inbox_instead` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hal...` |  |  | What to do instead of reading the inbox. |
+| `inbox_read.msg_inbox_instead` | `read through the mesh inbox CLI.` |  |  | What to do instead of reading the inbox. |
 | `inbox_read.msg_inbox_what` | `reading the raw DevSwarm inbox file directly is blocked.` |  |  | What the inbox block says was blocked. |
 | `inbox_read.msg_inbox_why` | `It does not drain the queue, but bypasses the durable cursor, so messages get...` |  |  | Why the inbox block applies. |
 | `inbox_read.msg_override` | `set DISABLE_ANTIHALL_DEVSWARM=1 to disable this guard entirely` |  |  | How to disable the guard entirely. |
@@ -2529,8 +2600,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_judge.max_evidence` | `6000` |  |  | UTF-16 units of tool evidence the judge sees, newest chunks first (Node: MAX_EVIDENCE). |
 | `speculation_judge.max_message` | `8000` |  |  | UTF-16 units of the reply the judge sees (Node: MAX_MESSAGE). |
 | `speculation_judge.max_request` | `2000` |  |  | UTF-16 units of the user request the judge sees (Node: MAX_REQUEST). |
-| `speculation_judge.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | What to do instead. |
-| `speculation_judge.msg_what` | `your reply states '{claim}' as fact, but nothing this session checked shows i...` |  |  | What the block says; {claim} is the sanitized claim. |
+| `speculation_judge.msg_instead` | `verify the claim or label it unverified.` |  |  | What to do instead. |
+| `speculation_judge.msg_what` | `your reply states an unchecked claim as fact.` |  |  | What the block says; {claim} is the sanitized claim. |
 | `speculation_judge.msg_why` | `Unverified claims read as facts.` |  |  | Why the block matters. |
 | `speculation_judge.reply_window` | `524288` |  |  | Bytes of the transcript tail read for the reply when the payload does not carry it (Node: readTranscriptTail default 512 KB). |
 | `speculation_judge.state_prefix` | `judge-state-` |  |  | Name prefix of the per-session state file under the anti-hall directory (Node: judge-state-<session>.json). |
@@ -2690,7 +2761,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUse` | `9 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `29 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `30 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
@@ -2698,14 +2769,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_SubagentStop` | `4 entries` |  |  | The claude SubagentStop hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCompleted` | `4 entries` |  |  | The claude TaskCompleted hook entries, in dispatch order. |
 | `dispatch.hooks_claude_TaskCreated` | `4 entries` |  |  | The claude TaskCreated hook entries, in dispatch order. |
-| `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_claude_UserPromptSubmit` | `13 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `18 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `19 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
-| `dispatch.hooks_codex_UserPromptSubmit` | `12 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
+| `dispatch.hooks_codex_UserPromptSubmit` | `13 items` |  |  | The codex UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.in_process` | `0` | `AH_ENGINE_DISPATCH_IN_PROCESS` |  | Run the built-in checks inside the hook client (1) instead of asking the daemon (0, the default). |
 | `dispatch.list_banner` | `# Generated from the dispatch table by `ah-engine gen-hooks`. Event rows are:...` |  |  | The first line of the generated fallback list. |
 | `dispatch.list_comment_mark` | `#` |  |  | The mark that starts a comment line of the generated fallback list. |
@@ -2837,7 +2908,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `fable_availability.access_list` | `4 entries` |  |  | Config key holding the model access list, and the field of each entry that names the model. |
 | `fable_availability.config_file` | `.claude.json` |  |  | The host's own config file, relative to the home directory, that holds the model cache. |
 | `fable_availability.guard_name` | `fable-availability` |  |  | The guard id used in the availability message. |
-| `fable_availability.msg_instead` | `pass args.fableAvailable=true into ship-it/deadly-loop Workflow invocations s...` |  |  | Do-instead line of the availability message. |
+| `fable_availability.msg_instead` | `pass args.fableAvailable=true to the review workflow.` |  |  | Do-instead line of the availability message. |
 | `fable_availability.msg_what` | `Fable is available this session (per ~/.claude.json).` |  |  | First line of the availability message. |
 | `fable_availability.msg_why` | `Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit if Fabl...` |  |  | Why line of the availability message. |
 | `fable_availability.needle` | `fable` |  |  | Lower-case text a model name must contain to count as a Fable model. |
@@ -2925,7 +2996,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_sweep.guard_name` | `idle-agents` |  |  | The guard id the advisory names. |
 | `idle_sweep.idle_marker` | `idle_notification` |  |  | The text a teammate's end-of-turn report carries. |
 | `idle_sweep.inbox_marker` | `'s inbox` |  |  | Text of a SendMessage result for a teammate. |
-| `idle_sweep.instead` | `if you have no more work for them, {verb} each one, e.g. {call} (one call per...` |  |  | Advisory advice; {verb} close or stop, {call} the exact call for the first agent. |
+| `idle_sweep.instead` | `{verb} each finished agent you will not reuse.` |  |  | Advisory advice; {verb} close or stop, {call} the exact call for the first agent. |
 | `idle_sweep.label_max` | `60` |  |  | Longest agent label shown, in UTF-16 units. |
 | `idle_sweep.launch_phrase` | `Async agent launched successfully` |  |  | What a background agent's launch tool result begins with. |
 | `idle_sweep.launch_tools` | `Agent, Task` |  |  | The tools whose results can be a launch or a teammate spawn. |
@@ -3012,8 +3083,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.advice_prefilter` | `compact, clear, reset, /new` |  |  | Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation. |
 | `ctxbudget.advice_safe_word` | `safe` |  |  | The word that opens the safe-to and safe-for recommendation wordings. |
 | `ctxbudget.advice_slash_compact` | `/compact` |  |  | The slash command whose mention alone can be a recommendation (run /compact, a standalone /compact line). |
-| `ctxbudget.ah_backstop_instead` | `refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it cove...` |  |  | The backstop's instructions; {skill} the handover skill, {reset} the reset commands. |
-| `ctxbudget.ah_backstop_what` | `post-handover budget exceeded: context is ~{pct}%, more than {b} points past ...` |  |  | The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent. |
+| `ctxbudget.ah_backstop_instead` | `refresh the handover with {skill}.` |  |  | The backstop's instructions; {skill} the handover skill, {reset} the reset commands. |
+| `ctxbudget.ah_backstop_what` | `context is ~{pct}%, past the post-handover budget.` |  |  | The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent. |
 | `ctxbudget.ah_bloat` | `As context grows the model gets less efficient and more prone to hallucinatio...` |  |  | The sentence on why a large context hurts (BLOAT_SENTENCE). |
 | `ctxbudget.ah_budget` | `~{b}% of the context window{tok}` |  |  | The budget label of the gate; {b} is the budget percent, {tok} the token clause. |
 | `ctxbudget.ah_budget_tokens` | ` (~{k}K tokens)` |  |  | The token clause of the budget label; {k} is the budget in thousands of tokens. |
@@ -3035,9 +3106,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_gate_allowed` | `a quick question, finishing the in-flight task the handover names, or spawnin...` |  |  | The gate's Allowed line. |
 | `ctxbudget.ah_gate_ask_claude` | `ask the user with AskUserQuestion (two options)` |  |  | How the gate asks on Claude. |
 | `ctxbudget.ah_gate_ask_codex` | `ask the user to choose between two options` |  |  | How the gate asks on Codex. |
-| `ctxbudget.ah_gate_instead` | `if it is bigger than the budget, do not start it; {ask}: (a) add it to the ta...` |  |  | The gate's instructions; {ask} how to ask, {reset} the reset commands. |
+| `ctxbudget.ah_gate_instead` | `ask whether to save the work for after {reset}.` |  |  | The gate's instructions; {ask} how to ask, {reset} the reset commands. |
 | `ctxbudget.ah_gate_override` | `if the user has explicitly insisted on proceeding, proceed` |  |  | The gate's override line. |
-| `ctxbudget.ah_gate_what` | `post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budge...` |  |  | The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label. |
+| `ctxbudget.ah_gate_what` | `new work exceeds the post-handover budget ({budget}).` |  |  | The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label. |
 | `ctxbudget.ah_gate_why` | `Before starting this request, judge YOURSELF whether it needs more than that ...` |  |  | The gate's Why line. |
 | `ctxbudget.ah_guard` | `auto-handover` |  |  | The guard name every auto-handover message carries. |
 | `ctxbudget.ah_handover_dir_rel` | `.anti-hall/handovers` |  |  | The handovers directory relative to the repository, as the fire directive shows it. |
@@ -3060,19 +3131,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ah_line_continue` | `🟢 **GOOD POINT TO /compact NOW**: handover saved at {path}. /compact keeps wo...` |  |  | The good-point line otherwise; {clear} the fresh-session command, {path} the handover path. |
 | `ctxbudget.ah_marker_seps` | `,, :` |  |  | The characters that separate the extra housekeeping markers of the setting (csvToMarkers splits on each). |
 | `ctxbudget.ah_mtime_slack_ms` | `2000` |  | ms | How much older than the fire a handover file may be and still count as this arm's handover. |
-| `ctxbudget.ah_nag_instead` | `{bloat} Mention {reset} to the user again when convenient.` |  |  | The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
+| `ctxbudget.ah_nag_instead` | `remind the user to {reset}.` |  |  | The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
 | `ctxbudget.ah_nag_what` | `context is now ~{pct}% (handover already saved earlier this session).` |  |  | The milestone nag's first line; {pct} is the rounded percent. |
 | `ctxbudget.ah_next_done_words` | `none, done, complete, nothing` |  |  | The whole-section texts (an optional trailing dot allowed, any case) that say Next action is done. |
 | `ctxbudget.ah_open_empty_words` | `none, n/a, -, —, (none)` |  |  | The whole-section texts (an optional trailing dot allowed, any case) that say Open items is empty. |
 | `ctxbudget.ah_open_statuses` | `pending, in_progress` |  |  | The task statuses that count as open work and hold back the pause nag. |
 | `ctxbudget.ah_parts_sep` | `\n\n` |  |  | What joins the parts of one auto-handover context (backstop, gate, nag). |
-| `ctxbudget.ah_pause_instead` | `{bloat} Mention {reset} to the user now.` |  |  | The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
+| `ctxbudget.ah_pause_instead` | `tell the user to {reset}.` |  |  | The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands. |
 | `ctxbudget.ah_pause_what` | `good stopping point: context is still ~{pct}% and a handover is already saved.` |  |  | The pause nag's first line; {pct} is the rounded percent. |
 | `ctxbudget.ah_reset_claude` | `/compact or /clear` |  |  | How the Claude texts name the reset commands. |
 | `ctxbudget.ah_reset_codex` | `/compact or /new` |  |  | How the Codex texts name the reset commands. |
 | `ctxbudget.ah_skill_claude` | `the /anti-hall:handover skill` |  |  | How the Claude texts name the handover skill. |
 | `ctxbudget.ah_skill_codex` | `the anti-hall-handover skill (pick it with /skills if it is not already loaded)` |  |  | How the Codex texts name the handover skill. |
-| `ctxbudget.ah_soft_instead` | `consider checking with the user about writing a handover and compacting/clear...` |  |  | The soft advisory's instructions; {bloat} the bloat sentence. |
+| `ctxbudget.ah_soft_instead` | `offer to save a handover.` |  |  | The soft advisory's instructions; {bloat} the bloat sentence. |
 | `ctxbudget.ah_soft_what` | `context looks high (~{pct}%, ESTIMATED).` |  |  | The soft advisory's first line; {pct} is the rounded percent. |
 | `ctxbudget.ah_soft_why` | `This session's exact context window could not be determined, so treat this as...` |  |  | The soft advisory's Why line. |
 | `ctxbudget.ah_spawn_activity_ms` | `120000` |  | ms | How recent a logged subagent spawn must be to hold back the pause nag (statusline phase-bar ACTIVITY_MS). |
@@ -3092,7 +3163,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.ca_ctx_low` | `low` |  |  | The context clause of the instructions when the percent is unknown. |
 | `ctxbudget.ca_ctx_pct` | `{pct}%` |  |  | The context clause of the instructions when the percent is known ({pct} rounded). |
 | `ctxbudget.ca_guard` | `compact-advice-guard` |  |  | The guard name of the compact-advice block. |
-| `ctxbudget.ca_instead` | `retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no n...` |  |  | The block's instructions; {ctx} is the context clause. |
+| `ctxbudget.ca_instead` | `retract the compact advice and continue.` |  |  | The block's instructions; {ctx} is the context clause. |
 | `ctxbudget.ca_recent_n` | `a compact happened {n} turns ago` |  |  | The reason when a compact happened {n} turns ago. |
 | `ctxbudget.ca_recent_now` | `a compact happened earlier in this turn` |  |  | The reason when a compact happened in this very turn. |
 | `ctxbudget.ca_recent_one` | `a compact happened {n} turn ago` |  |  | The reason when a compact happened one turn ago ({n}). |
@@ -3121,7 +3192,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.lc_dedupe_key` | `limit-conserve` |  |  | The emit-dedupe key of the limit-conservation directive. |
 | `ctxbudget.lc_downshift` | `Main-model downshift: if the main agent is on the flagship model (Claude Opus...` |  |  | The main-model downshift text at the end of the directive. |
 | `ctxbudget.lc_guard` | `limit-conserve` |  |  | The guard name the limit-conservation directive carries . |
-| `ctxbudget.lc_instead` | `route execution to Codex (codex:codex-rescue, separate limit) and cheap Claud...` |  |  | The start of the Do instead line of the directive (the reset clause and the downshift text follow). |
+| `ctxbudget.lc_instead` | `route routine execution to Codex or cheaper Claude helpers.` |  |  | The start of the Do instead line of the directive (the reset clause and the downshift text follow). |
 | `ctxbudget.lc_keepalive_turns` | `10` |  | turns | The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns. |
 | `ctxbudget.lc_reason_manual` | `manual-on` |  |  | The directive reason when the mode setting forces conservation on. |
 | `ctxbudget.lc_reset_round` | `3 entries` |  |  | The reset time in the reset clause is rounded to the nearest `ms` (a minute) and printed as an ISO time with a whole-minute `cut` replaced by `to`: the usage API reports the reset with millisecond jitter, which would change the directive every turn and defeat emit-dedupe. A reset time that is not a date is printed as written. |
@@ -3225,7 +3296,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.claude_cli_guard` | `claude-cli-version` |  |  | The guard id of claude-cli-version, in its messages and in the skip file. |
 | `session.claude_cli_instead` | `see docs/KB-claude-code-harness-features.md.` |  |  | Advice of the Claude CLI drift advisory. |
 | `session.claude_cli_summary` | `SessionStart advisory: the Claude Code CLI drifted by major or minor from the...` |  |  | One-line description of the claude-cli-version check in the generated reference. |
-| `session.claude_cli_what` | `Claude Code CLI {installed} is installed; anti-hall's harness KB is audited a...` |  |  | Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
+| `session.claude_cli_what` | `Claude CLI {installed} differs from KB baseline {baseline}.` |  |  | Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
 | `session.cwd_key_prefix` | `cwd_` |  |  | Prefix of the throttle key made from a working directory. |
 | `session.day_ms` | `86400000` |  | ms | Milliseconds in a day, for the UTC date arithmetic of the hooks. |
 | `session.defect_backfill` | `backfill` |  |  | The line type of a defect imported from git history. |
@@ -3249,8 +3320,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.devswarm_cache` | `.anti-hall/devswarm-version.json` |  |  | The DevSwarm version cache the background probe writes, under the home directory. |
 | `session.devswarm_guard` | `devswarm-version` |  |  | The guard id of devswarm-version, in its messages and in the skip file. |
 | `session.devswarm_instead` | `see docs/KB-devswarm-hivecontrol.md.` |  |  | Advice of the DevSwarm drift advisory. |
-| `session.devswarm_summary` | `SessionStart advisory: the DevSwarm CLI drifted by major or minor from the ve...` |  |  | One-line description of the devswarm-version check in the generated reference. |
-| `session.devswarm_what` | `DevSwarm {installed} is installed; anti-hall's integration is verified agains...` |  |  | Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
+| `session.devswarm_summary` | `SessionStart advisory: the DevSwarm CLI differs from the verified version (in...` |  |  | One-line description of the devswarm-version check in the generated reference. |
+| `session.devswarm_what` | `DevSwarm {installed} differs from KB baseline {baseline}.` |  |  | Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing). |
 | `session.drift_cache_ttl_ms` | `86400000` |  | ms | How long a drift probe's cache (claude-cli-version, devswarm-version, repo-self-drift) counts as fresh; an older one makes Node refresh it, which defers the engine's answer. |
 | `session.drift_counts_line` | `anti-hall repo self-drift — {parts} (docs/KB.md)` |  |  | The count-drift advisory line; {parts} are the differing counts. |
 | `session.drift_hooks_part` | `hooks: KB.md claims {claimed}, actual {actual}` |  |  | The hook-count part of the count-drift line. |
@@ -3295,8 +3366,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.registry_file` | `installed_plugins.json` |  |  | The host's plugin registry, relative to the plugins root. |
 | `session.registry_key` | `anti-hall@anti-hall` |  |  | The registry key of this plugin. |
 | `session.registry_max_bytes` | `4194304` |  | bytes | The largest registry file read (a bigger one counts as unreadable). |
-| `session.reload_instead` | `tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook...` |  |  | Advice for that case when the registry does not name a newer build than the running one. |
-| `session.reload_instead_ahead` | `tell the user now: run /reload-plugins to load it (if a hook or skill path st...` |  |  | Advice for that case when the registry already names a newer build than the running one ({running} is the running version). |
+| `session.reload_instead` | `reload plugins in Claude or restart Codex.` |  |  | Advice for that case when the registry does not name a newer build than the running one. |
+| `session.reload_instead_ahead` | `reload plugins in Claude or restart Codex.` |  |  | Advice for that case when the registry already names a newer build than the running one ({running} is the running version). |
 | `session.reload_mark_file` | `.anti-hall/version-alert-reload.json` |  |  | The once-per-session marker of the reload advisory, under the home directory (separate from the remote-latest cache). |
 | `session.reload_what` | `v{mirrored} is already downloaded (you are running v{running}).` |  |  | Headline when a newer release is already mirrored and the registry is up to date; {mirrored} and {running} are the two versions. |
 | `session.repo_self_drift_cache` | `.anti-hall/repo-self-drift.json` |  |  | The repo-self-drift scan cache, under the home directory. |
@@ -3313,10 +3384,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `session.skills_dir` | `skills` |  |  | The skills directory, relative to the plugin root. |
 | `session.staleness_threshold_days` | `60` |  |  | How many days after the audit the model KBs count as stale; a test keeps the two equal. |
 | `session.state_dir` | `.anti-hall` |  |  | The anti-hall state directory, under the home directory. |
-| `session.unregistered_instead` | `tell the user now: run /anti-hall:update (Claude; syncs the cache AND the har...` |  |  | Advice for that case. |
-| `session.unregistered_what` | `v{mirrored} is downloaded locally (you are running v{running}) but the Claude...` |  |  | Headline when a newer release is mirrored but the host has not registered it. |
+| `session.unregistered_instead` | `run the anti-hall update skill for your host.` |  |  | Advice for that case. |
+| `session.unregistered_what` | `v{mirrored} is downloaded but not registered in Claude.` |  |  | Headline when a newer release is mirrored but the host has not registered it. |
 | `session.unregistered_why` | `A reload alone will not pick it up until the harness registers it.` |  |  | Why line for that case. |
-| `session.update_instead` | `tell the user now: run /anti-hall:update (Claude) or the anti-hall-update ski...` |  |  | Advice for that case. |
+| `session.update_instead` | `run the anti-hall update skill for your host.` |  |  | Advice for that case. |
 | `session.update_what` | `v{latest} is available (you are running v{running}).` |  |  | Headline when the remote-latest cache names a newer release; {latest} and {running} are the two versions. |
 | `session.version_alert_guard` | `version-alert` |  |  | The guard id of version-alert, in its messages and in the skip file. |
 | `session.version_alert_summary` | `SessionStart advisory: a newer anti-hall release is available or already mirr...` |  |  | One-line description of the version-alert check in the generated reference. |
@@ -3376,8 +3447,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `output_verify.jev_instructions` | `Does this test-runner output show a GENUINELY mixed pass/fail result (some te...` |  |  | The Noul question text of the outputVerifyGuard shadow ask (byte-identical to the Node hook's). |
 | `output_verify.jev_state_chars` | `4000` |  |  | How many UTF-16 units of the output the outputVerifyGuard shadow ask evaluates (Node: blob.slice(0, 4000)). |
 | `output_verify.jev_true` | `genuinely mixed pass/fail` |  |  | The label for a true answer of the outputVerifyGuard question. |
-| `output_verify.msg_instead` | `before reporting "tests pass" / "build succeeded", re-read the full output an...` |  |  | Advisory advice. |
-| `output_verify.msg_what` | `this Bash command's output contains {bits} in the same run (advisory, not a b...` |  |  | Advisory headline; {bits} are the signals found. |
+| `output_verify.msg_instead` | `read the full output before reporting the result.` |  |  | Advisory advice. |
+| `output_verify.msg_what` | `command output contains conflicting results.` |  |  | Advisory headline; {bits} are the signals found. |
 | `output_verify.msg_why` | `A mixed summary is not a clean pass.` |  |  | Advisory reason. |
 | `output_verify.once_setting` | `6 entries` |  |  | Where the once-per-turn switch is read from (guards.outputVerifyOncePerTurn, default on). |
 | `output_verify.pass_patterns` | `8 items` |  |  | The passing signals, in the order they are tried: regex source, case-insensitive flag, and whether it must start a line. |
@@ -3444,9 +3515,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `speculation_guard.markers` | `15 items` |  |  | Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried. |
 | `speculation_guard.max_blocks` | `3` |  |  | Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe). |
 | `speculation_guard.modal_markers` | `must be, should be` |  |  | Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own. |
-| `speculation_guard.msg_instead` | `verify it with a tool, or say what is unverified ('I don't know, here is what...` |  |  | Block advice. |
-| `speculation_guard.msg_what` | `your reply states something speculative ('{marker}') without verifying it or ...` |  |  | Block headline; {marker} is the hedge found. |
-| `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without citing evidence (command output...` |  |  | Block headline when Jev added the block. |
+| `speculation_guard.msg_instead` | `verify the claim or label it unverified.` |  |  | Block advice. |
+| `speculation_guard.msg_what` | `your reply makes an unverified claim ("{marker}").` |  |  | Block headline; {marker} is the hedge found. |
+| `speculation_guard.msg_what_jev` | `your reply asserts a cause or outcome without evidence.` |  |  | Block headline when Jev added the block. |
 | `speculation_guard.msg_why` | `Unverified claims read as facts.` |  |  | Block reason. |
 | `speculation_guard.obligation_re` | `^\s+(measured\|verified\|tested\|checked\|reviewed\|documented\|validated\|approved\|...` |  |  | Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess. |
 | `speculation_guard.obligation_window` | `40` |  |  | How many UTF-16 units after a must-be or should-be are read for the obligation word. |
@@ -3540,11 +3611,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `ask_guard.advise_instead` | `take the recommended option, say which you took, and continue; list anything ...` |  |  | What to do instead, in the standing-rule advice. |
+| `ask_guard.advise_instead` | `continue with the recommended reversible option.` |  |  | What to do instead, in the standing-rule advice. |
 | `ask_guard.advise_what` | `do not hold work on a question.` |  |  | Headline of the standing-rule advice. |
 | `ask_guard.block_allowed` | `a question about a destructive or irreversible action, with the question head...` |  |  | What stays allowed, in the block message. |
-| `ask_guard.block_instead` | `decide the recommended option yourself, state it in your reply, and continue;...` |  |  | What to do instead, in the block message. |
-| `ask_guard.block_what` | `AskUserQuestion blocked by guards.noBlockingQuestions.` |  |  | Headline of the block message. |
+| `ask_guard.block_instead` | `continue with the recommended reversible option.` |  |  | What to do instead, in the block message. |
+| `ask_guard.block_what` | `this question would pause authorized work.` |  |  | Headline of the block message. |
 | `ask_guard.block_why` | `Work should not wait on a question.` |  |  | Why line of the block message. |
 | `ask_guard.child_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable whose non-blank value marks a child workspace. |
 | `ask_guard.child_text` | `\nChild workspace: send the question to your parent with `~/.anti-hall/ah-eng...` |  |  | Sentence appended in a child workspace, which asks its parent instead of the user. |
@@ -3611,7 +3682,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `silent_nudge.missing` | `missing` |  |  | Snapshot of an agent whose output file is missing. |
 | `silent_nudge.monitor_shell_kind` | `monitor` |  |  | The task_status shell.kind of a background shell started by the Monitor tool (a plain Bash background task records `bash`). A Monitor task is an event stream, quiet by design when nothing happens, so it is never nudged as silent; a plain background Bash task is still judged by its output age. |
 | `silent_nudge.msg_allowed` | `set ANTIHALL_SILENT_AGENT_NUDGE=off to silence this nudge` |  |  | Allowed-here line of the nudge. |
-| `silent_nudge.msg_instead` | `check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (Task...` |  |  | Do-instead line of the nudge; {them} is the pronoun for one agent or several. |
+| `silent_nudge.msg_instead` | `check the silent agents for progress.` |  |  | Do-instead line of the nudge; {them} is the pronoun for one agent or several. |
 | `silent_nudge.msg_item` | `{label} — silent {mins}m` |  |  | One named silent agent in the nudge. |
 | `silent_nudge.msg_item_sep` | `; ` |  |  | Text between two named silent agents. |
 | `silent_nudge.msg_more` | `, +{n} more` |  |  | Tail of the list when more agents are silent than are named. |
@@ -3671,11 +3742,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_comms.disable_value` | `1` |  |  | The value of the disable variable that switches the DevSwarm integration off. |
 | `devswarm_comms.guard_name` | `devswarm-comms-guard` |  |  | Guard name in the block message and the skip file. |
 | `devswarm_comms.label_name` | `devswarm-comms` |  |  | Guard name in the advisory labels. |
-| `devswarm_comms.msg_block_instead` | `use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <...` |  |  | What to do instead of the blocked send. |
-| `devswarm_comms.msg_block_what` | `SendMessage target "{to}" resolves to a DevSwarm workspace-backed peer sessio...` |  |  | What the block says; {to} is the target and {cwd} the peer session's directory. |
+| `devswarm_comms.msg_block_instead` | `send through the DevSwarm mesh.` |  |  | What to do instead of the blocked send. |
+| `devswarm_comms.msg_block_what` | `target "{to}" belongs to a DevSwarm workspace.` |  |  | What the block says; {to} is the target and {cwd} the peer session's directory. |
 | `devswarm_comms.msg_block_why` | `Direct Claude remote-agent messaging between a DevSwarm Primary/child and a w...` |  |  | Why the block applies. |
-| `devswarm_comms.msg_main_what` | `SendMessage target "main" is this session's own coordinator address, not a cr...` |  |  | What the label says for the coordinator address. |
-| `devswarm_comms.msg_ok_what` | `target "{to}" resolves to a live session (cwd: {cwd}) that is not a DevSwarm ...` |  |  | What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory. |
+| `devswarm_comms.msg_main_what` | `target "main" points back to this session.` |  |  | What the label says for the coordinator address. |
+| `devswarm_comms.msg_ok_what` | `target "{to}" is a live session; messaging is allowed.` |  |  | What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory. |
 | `devswarm_comms.ref_re` | `^(.*?)\s*\[[0-9a-f]{4,16}\]\s*$` |  |  | A target with a trailing bracketed reference such as `name [3fa9c1]`; group 1 is the bare name (JavaScript regex, case-insensitive). |
 | `devswarm_comms.repo_id_env` | `DEVSWARM_REPO_ID` |  |  | Environment variable DevSwarm sets in a session it runs; in auto mode its presence means DevSwarm is active. |
 | `devswarm_comms.repos_root` | `.devswarm/repos` |  |  | The DevSwarm workspace registry root, relative to the home directory. |
@@ -3691,9 +3762,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `nested_spawn.guard_name` | `nested-spawn-guard` |  |  | Guard name in the block message and the skip file. |
-| `nested_spawn.msg_instead` | `do the task yourself with your own tools and report back; if it truly needs m...` |  |  | What to do instead of a nested spawn. |
-| `nested_spawn.msg_what` | `this agent is a worker and may not start agents of its own (nested spawn).` |  |  | What the block says. |
-| `nested_spawn.msg_why` | `A worker that fans out hides its cost from the coordinator: one nested spawn ...` |  |  | Why nested spawns are blocked. |
+| `nested_spawn.msg_instead` | `report back to the coordinator if more agents are needed.` |  |  | What to do instead of a nested spawn. |
+| `nested_spawn.msg_what` | `this agent is a worker and can't start agents of its own.` |  |  | What the block says. |
+| `nested_spawn.msg_why` | `Nested agents hide their cost from the coordinator (one burned about 2.5M tok...` |  |  | Why nested spawns are blocked. |
 | `nested_spawn.setting` | `6 entries` |  |  | Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session. |
 | `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
@@ -3708,10 +3779,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_ceiling.guard_name` | `spawn-ceiling` |  |  | Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json). |
 | `spawn_ceiling.join` | `; ` |  |  | The separator between the listed agent names. |
 | `spawn_ceiling.list_max` | `8` |  |  | How many running agents the block message names. |
-| `spawn_ceiling.msg_instead` | `wait for or stop a finished or idle agent above, then spawn; the ceiling rise...` |  |  | What to do instead of spawning past the ceiling. |
+| `spawn_ceiling.msg_instead` | `wait for a running agent to finish.` |  |  | What to do instead of spawning past the ceiling. |
 | `spawn_ceiling.msg_more` | ` and {n} more` |  |  | The remainder clause when more agents run than are listed; {n} is how many are not listed. |
-| `spawn_ceiling.msg_what` | `{n} agents are already running (ceiling now {ceiling}): {names}{more}.` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
-| `spawn_ceiling.msg_why` | `More agents than that rarely add outcome; each one costs tokens whether or no...` |  |  | Why the ceiling block applies. |
+| `spawn_ceiling.msg_what` | `{n} agents are running (limit {ceiling}).` |  |  | What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause. |
+| `spawn_ceiling.msg_why` | `More agents rarely add results, and each one costs tokens whether or not it f...` |  |  | Why the ceiling block applies. |
 | `spawn_ceiling.setting` | `6 entries` |  |  | The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op. |
 | `spawn_ceiling.step_pct` | `70, 85, 92` |  |  | Usage percents (the fuller of the 5-hour and weekly buckets) at which the ceiling is reduced, ascending; parallel to step_reduce. |
 | `spawn_ceiling.step_reduce` | `3, 6, 9` |  |  | How much the base ceiling shrinks once the matching step_pct is reached (the highest reached step applies). |
@@ -3726,14 +3797,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `spawn_usage.bucket_pct` | `fiveHourPercent, weeklyPercent` |  |  | The usage-cache fields holding each bucket percent (the 5-hour and weekly limits; there is no separate Sonnet pool). |
 | `spawn_usage.bucket_resets` | `fiveHourResetsAt, weeklyResetsAt` |  |  | The usage-cache fields holding each bucket reset time, parallel to bucket_pct. |
 | `spawn_usage.guard_name` | `spawn-usage` |  |  | Guard name in the messages and the skip file. |
-| `spawn_usage.msg_block_instead` | `finish the work already running, do small steps inline, or wait for the reset...` |  |  | What to do instead of the blocked spawn. |
-| `spawn_usage.msg_block_what` | `the {limit} usage limit is at {pct}% (hard threshold {cap}%, {resets}); new a...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
-| `spawn_usage.msg_block_why` | `A spawn past this point can exhaust the limit and stop all work, including ag...` |  |  | Why the hard block applies. |
+| `spawn_usage.msg_block_instead` | `wait for the usage limit to reset.` |  |  | What to do instead of the blocked spawn. |
+| `spawn_usage.msg_block_what` | `new agents can't start: the {limit} usage limit is at {pct}% (stop at {cap}%,...` |  |  | What the hard block says; {limit} the bucket, {pct} its usage, {cap} the hard threshold, {resets} the reset clause. |
+| `spawn_usage.msg_block_why` | `Another spawn could use up the limit and stop all work, including agents alre...` |  |  | Why the hard block applies. |
 | `spawn_usage.msg_resets_at` | `resets at {at}` |  |  | The reset clause when the reset time is known; {at} is an ISO time to the minute (UTC). |
 | `spawn_usage.msg_resets_unknown` | `reset time unknown` |  |  | The reset clause when the reset time is not in the usage cache. |
-| `spawn_usage.msg_soft_instead` | `use cheaper models (Sonnet or Haiku for mechanical work), spawn fewer agents,...` |  |  | What to do instead, in the soft advice. |
+| `spawn_usage.msg_soft_instead` | `use cheaper models for routine work.` |  |  | What to do instead, in the soft advice. |
 | `spawn_usage.msg_soft_what` | `the {limit} usage limit is at {pct}% ({resets}).` |  |  | What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what. |
-| `spawn_usage.msg_soft_why` | `Headroom is getting short; tokens spent without a matching outcome (commits, ...` |  |  | Why the soft advice applies. |
+| `spawn_usage.msg_soft_why` | `Headroom is getting short; avoid spending tokens that produce no commit, fini...` |  |  | Why the soft advice applies. |
 | `spawn_usage.setting` | `6 entries` |  |  | The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op. |
 | `spawn_usage.soft_pct` | `75` |  |  | Soft threshold: at or above this usage percent a spawn is allowed with advice to use cheaper models and fewer agents. |
 
@@ -3762,12 +3833,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.meminfo_path` | `/proc/meminfo` |  |  | The Linux memory report. |
 | `swarm_guard.meminfo_total_key` | `MemTotal:` |  |  | The total-memory line prefix of the Linux memory report, in kB. |
 | `swarm_guard.msg_mem` | `anti-hall swarm-guard: memory pressure critical ({avail} MB available of {tot...` |  |  | The block reason for critical memory pressure; {avail} and {total} are megabytes. |
-| `swarm_guard.msg_rate_instead` | `pause new agents and let running ones finish, then launch the next wave; resp...` |  |  | What to do instead of spawning past the cap. |
-| `swarm_guard.msg_rate_what` | `agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
+| `swarm_guard.msg_rate_instead` | `wait for running agents to finish before spawning more.` |  |  | What to do instead of spawning past the cap. |
+| `swarm_guard.msg_rate_what` | `spawn limit reached ({count} in 60s, cap {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
 | `swarm_guard.msg_rate_why` | `A runaway swarm can make the OS unusable.` |  |  | Why the rate block applies. |
-| `swarm_guard.msg_shared_instead` | `pass isolation:"worktree", serialize them, or give each its own scratch clone.` |  |  | What to do instead, when the repo does not forbid worktrees. |
+| `swarm_guard.msg_shared_instead` | `give the new agent its own worktree.` |  |  | What to do instead, when the repo does not forbid worktrees. |
 | `swarm_guard.msg_shared_instead_no_worktrees` | `serialize them or give each its own scratch clone.` |  |  | What to do instead, when the repo forbids worktrees. |
-| `swarm_guard.msg_shared_what` | `another write-capable agent is still running in this working tree, and this s...` |  |  | What the shared-tree advisory says. |
+| `swarm_guard.msg_shared_what` | `another agent is already writing in this working tree.` |  |  | What the shared-tree advisory says. |
 | `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
@@ -3777,6 +3848,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.re_named_tree_home` | `^(?:~\|\$HOME)` |  |  | JavaScript regex source: the home prefix of a named-tree path (~ or $HOME), replaced by the user's home directory. |
 | `swarm_guard.re_named_tree_path` | `(?:~\|\$HOME)?\/[^\s\x60'",;)]+` |  |  | JavaScript regex source: the path inside a re_named_tree match (the first absolute, ~ or $HOME path). |
 | `swarm_guard.re_named_tree_trim` | `[.:]+$` |  |  | JavaScript regex source: trailing sentence punctuation cut from a named-tree path. |
+| `swarm_guard.re_negated_in_place` | `\b(?:(?:do\|does\|did\|must\|will\|should\|can)\s+not\|don'?t\|doesn'?t\|didn'?t\|won'?...` |  |  | Negated write/location spans removed before affirmative in-place detection; {place} expands to re_in_place. Other affirmative clauses remain effective. |
 | `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
 | `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
@@ -3915,7 +3987,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.avail_context_codex` | `Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESS...` |  |  | The availability text for a Codex session (no Claude models, Workflow scripts or codex:codex-rescue agent type). |
 | `codex_handover.avail_event` | `SessionStart` |  |  | The hook event name in the availability advisory. |
 | `codex_handover.avail_guard` | `codex-availability` |  |  | The guard id the availability messages answer to. |
-| `codex_handover.avail_instead` | `Workflow scripts have no filesystem and cannot read this fact, so pass args.c...` |  |  | Advice line of the availability tip. |
+| `codex_handover.avail_instead` | `use Codex for correctness review.` |  |  | Advice line of the availability tip. |
 | `codex_handover.avail_note_instead` | `route correctness review to {tier} until then.` |  |  | Advice of the unavailability warning; {tier} is where to route the review. |
 | `codex_handover.avail_note_what` | `Codex unavailable until {until} ({reason}).` |  |  | Headline of the warning that Codex is unavailable; {until} is an ISO time and {reason} the recorded reason. |
 | `codex_handover.avail_source` | `path-probe` |  |  | The source recorded with a PATH probe result. |
@@ -3982,7 +4054,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.nudge_codex_word` | `codex` |  |  | The word in a skill call that marks a Codex review (compared without case). |
 | `codex_handover.nudge_edit_tools` | `Edit, Write, MultiEdit` |  |  | Tool names whose calls count as code edits. |
 | `codex_handover.nudge_guard` | `codex-nudge` |  |  | The guard id of the Codex nudge: its messages, its skip-file key and its escape hatch. |
-| `codex_handover.nudge_instead` | `before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:res...` |  |  | Advice line of the Codex nudge. |
+| `codex_handover.nudge_instead` | `request a Codex review of the diff.` |  |  | Advice line of the Codex nudge. |
 | `codex_handover.nudge_jev_edits_label` | `edits: ` |  |  | The second line of the Codex nudge question's summary, before the edit count. |
 | `codex_handover.nudge_jev_false` | `trivial — only comments/strings/log lines/formatting changed` |  |  | The criterion of a false answer to the Codex nudge question. |
 | `codex_handover.nudge_jev_files` | `20` |  |  | How many edited file names the Codex nudge question's summary lists. |
@@ -4006,7 +4078,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.nudge_summary` | `Stop: one soft nudge to get a Codex second opinion after several substantial ...` |  |  | One-line description of the codex-nudge check in the generated reference. |
 | `codex_handover.nudge_tail_bytes` | `524288` |  | bytes | How much of the end of the transcript the Codex nudge reads. |
 | `codex_handover.nudge_unsure_log_kind` | `codex_nudge_unsure` |  |  | Engine log kind of a codex-nudge case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or the real home under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript, relative_cwd, relative_path (a relative path with no absolute payload cwd), repo_root (a checkout the resolver cannot classify exactly), transcript_line, job_logs, quota, state_parse (a transcript line, Codex job log, quota record or nudge state only V8 reads exactly), state_big (the nudge state over script.read_max_bytes), stale_link (a stale linked nudge state file Node's sweep would unlink; the host never removes a link). |
-| `codex_handover.nudge_what` | `this session made {edits} substantial code edit(s) across {files} file(s) ({n...` |  |  | Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more. |
+| `codex_handover.nudge_what` | `{edits} edits across {files} files have no Codex review.` |  |  | Headline of the Codex nudge; {edits} edits across {files} files, {names} the first file names and {more} the sign of more. |
 | `codex_handover.nudge_why` | `An independent Codex review catches correctness bugs (off-by-one, races, subt...` |  |  | Reason line of the Codex nudge. |
 | `codex_handover.ordinal_re` | `(\d)(?:st\|nd\|rd\|th)\b` |  |  | JavaScript source (flag i) of a day number with its ordinal suffix. |
 | `codex_handover.path_separator` | `:` |  |  | Separator of the entries of the PATH variable. |
@@ -4087,8 +4159,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_handover.snap_title` | `# PRECOMPACT snapshot — {session} · #{n} · {now}` |  |  | First line of a snapshot; {session}, {n} and {now}. |
 | `codex_handover.snap_truncated` | `{head}\n[… truncated {count} chars]` |  |  | A message cut at the limit; {head} is what is kept and {count} how much was cut. |
 | `codex_handover.snap_ts_sep` | ` · ` |  |  | Separator before a message timestamp. |
-| `codex_handover.snaponly_instead` | `read it fully before trusting the compact summary; once state is re-establish...` |  |  | Advice line when only a snapshot exists. |
-| `codex_handover.snaponly_what` | `no HANDOVER*.md was written for this session, but a pre-compaction snapshot e...` |  |  | Headline when only a snapshot exists; {path} and {written}. |
+| `codex_handover.snaponly_instead` | `read the snapshot before continuing.` |  |  | Advice line when only a snapshot exists. |
+| `codex_handover.snaponly_what` | `a snapshot exists, but no session handover was saved.` |  |  | Headline when only a snapshot exists; {path} and {written}. |
 | `codex_handover.snaponly_why` | `It holds git state, a task-list snapshot and the last user messages verbatim,...` |  |  | Reason line when only a snapshot exists. |
 | `codex_handover.state_dir` | `.anti-hall` |  |  | The per-user state directory, relative to the home directory. |
 | `codex_handover.status_deleted` | `deleted` |  |  | The status that removes a task from the snapshot. |
@@ -4167,20 +4239,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.cap_reserve` | `2` |  |  | CPUs kept free when the parallel cap is derived from the CPU count. |
 | `task_guard.codex_patch_tool` | `apply_patch` |  |  | The Codex tool name that marks a Codex payload on its own. |
 | `task_guard.coordinator_owner_re` | `^(main\|orchestrator\|coordinator)$` |  |  | JavaScript regex source (case-insensitive) of an owner that is the orchestrator itself; such a task still counts as unowned. |
-| `task_guard.devswarm_hint` | ` Delegated to a DevSwarm workspace: set the task owner ({upd} owner) to the w...` |  |  | The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool. |
+| `task_guard.devswarm_hint` | ` If a DevSwarm workspace has it, set the owner ({upd} owner) to that workspac...` |  |  | The DevSwarm sentence added to the idle-neglect block's do-instead line while the app database shows a live workspace; `{upd}` is the task update tool. |
 | `task_guard.dispatch_demand_setting` | `5 entries` |  |  | Whether running agents are counted per task from this session's transcript (guards.dispatchDemand, default on); off restores the legacy rule (any fresh agent heartbeat silences the idle-neglect block). |
 | `task_guard.dispatch_list_max` | `12` |  |  | Most tasks the idle-neglect block names. |
-| `task_guard.generic_allowed` | `a genuinely blocked task: mark it via {upd} with blockedBy:[<open task id>] o...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
-| `task_guard.generic_instead` | `pick up pending tasks and dispatch subagents to finish them in parallel (up t...` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
-| `task_guard.generic_what` | `stop blocked: open tasks remain: {list}{more}.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
-| `task_guard.generic_why` | `Tasks should not sit neglected when the session stops.` |  |  | The why line of the generic block. |
+| `task_guard.generic_allowed` | `a task that is truly blocked: mark it with {upd} (blockedBy an open task, or ...` |  |  | The allowed-here line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_instead` | `finish the pending tasks before stopping.` |  |  | The do-instead line of the generic block; `{upd}` is the task update tool. |
+| `task_guard.generic_what` | `open tasks remain unfinished.` |  |  | The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail. |
+| `task_guard.generic_why` | `Open tasks should not be left behind when the session stops.` |  |  | The why line of the generic block. |
 | `task_guard.guard_name` | `task-guard` |  |  | The guard id of task-guard (the skip key and the message prefix). |
 | `task_guard.hash_sep` | ` ` |  |  | The separator between the task ids hashed into the loop state (a NUL character). |
-| `task_guard.idle_allowed` | `a task blocked on the OWNER (hardware, a human decision): mark it metadata.bl...` |  |  | The allowed-here line of the idle-neglect block. |
+| `task_guard.idle_allowed` | `a task waiting on the user (hardware, a decision): mark it blocked on 'owner'...` |  |  | The allowed-here line of the idle-neglect block. |
 | `task_guard.idle_hash_tags` | `idle, no-agents` |  |  | The words that start the hashed text of an idle-neglect block, so its loop state never equals a generic block's. |
-| `task_guard.idle_instead` | `dispatch them now in parallel (one background agent each, cap {cap}), or stop...` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
-| `task_guard.idle_what` | `stop blocked: {n} non-blocked, unassigned task(s) have no in-flight agent: {l...` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
-| `task_guard.idle_why` | `Dispatchable work is sitting idle.` |  |  | The why line of the idle-neglect block. |
+| `task_guard.idle_instead` | `assign the pending tasks to agents.` |  |  | The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing). |
+| `task_guard.idle_what` | `{n} open tasks have no agent working on them.` |  |  | The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail. |
+| `task_guard.idle_why` | `Work that could run in parallel is sitting idle.` |  |  | The why line of the idle-neglect block. |
 | `task_guard.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of an in-progress status (tested unanchored, as Node does). |
 | `task_guard.judge_child_env` | `ANTIHALL_JUDGE_CHILD` |  |  | The environment variable that marks a judge child process; every task hook is a no-op there. |
 | `task_guard.label_max` | `40` |  |  | Longest task subject in the idle-neglect block's list, in UTF-16 units. |
@@ -4283,18 +4355,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `tasklist_guard.ack_dir` | `stop-ack` |  |  | Directory of the acknowledgement files under the anti-hall state directory; also the file prefix (`<dir>/<dir>-<session>.json`). |
-| `tasklist_guard.ack_hint` | `Override (only if the user explicitly confirmed this exact condition is fine)...` |  |  | The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in. |
+| `tasklist_guard.ack_hint` | `Mechanical override, only if the user explicitly confirmed this exact conditi...` |  |  | The acknowledgement hint appended to a block; {key}, {now} and {path} are filled in. |
+| `tasklist_guard.ack_human` | `tell the agent "skip tasklist-guard"` |  |  | The override line of a tasklist-guard block, phrased for the human; the mechanical override is in the details file (ack_hint). |
 | `tasklist_guard.ack_session_max` | `128` |  |  | Longest session part of an acknowledgement file name. |
 | `tasklist_guard.ack_setting` | `6 entries` |  |  | guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session. |
 | `tasklist_guard.ack_sig_len` | `16` |  |  | How many hex digits of the SHA-1 of the dedupe hash make the acknowledgement signature. |
 | `tasklist_guard.advisory_body` | `{"advised":true}` |  |  | Contents of the no-handover advisory marker. |
 | `tasklist_guard.advisory_prefix` | `tasklist-guard-handover-advisory-` |  |  | Prefix of the once-per-session marker of the no-handover advisory (`<prefix><session>.json`). |
-| `tasklist_guard.advisory_text` | `\n💡 anti-hall · handover: no handover exists yet after significant work.\nDo ...` |  |  | The no-handover advisory appended to a block. |
+| `tasklist_guard.advisory_text` | `\n💡 anti-hall · handover: no handover has been saved yet, and a lot of work h...` |  |  | The no-handover advisory appended to a block. |
 | `tasklist_guard.append_claude` | `append with the Edit tool or a one-line `>>`, never the Write tool` |  |  | How to append to the history file (Claude wording). |
 | `tasklist_guard.append_codex` | `append with a one-line `>>`, never overwrite it` |  |  | How to append to the history file (Codex wording). |
 | `tasklist_guard.budget_setting` | `6 entries` |  |  | guards.stopNagBudgetPerPrompt: blocks per user prompt (0 = off). |
 | `tasklist_guard.codex_fields` | `turn_id, model` |  |  | Payload fields that, all non-empty strings, mark a Codex payload (isCodexPayload). |
 | `tasklist_guard.codex_tool` | `apply_patch` |  |  | A tool name only Codex payloads carry (isCodexPayload). |
+| `tasklist_guard.details_dir` | `block-details` |  |  | Directory of the tasklist-guard details file under the anti-hall state directory. |
+| `tasklist_guard.details_ext` | `.md` |  |  | File extension of the tasklist-guard details file. |
+| `tasklist_guard.details_head` | `Task list and progress file: what to do` |  |  | First line of the tasklist-guard details file. |
+| `tasklist_guard.details_label` | `details: ` |  |  | Label of the last line of a tasklist-guard block: the file with the long instructions. |
 | `tasklist_guard.evidence_deferred_prefix` | `deferred_tools` |  |  | Prefix of the attachment type that lists deferred tools. |
 | `tasklist_guard.evidence_names` | `TaskCreate, TaskUpdate, TodoWrite, task_reminder` |  |  | Tool names, attachment types and prefixes that can make a transcript line evidence of task tools (the cheap pre-filter). |
 | `tasklist_guard.evidence_reminder` | `task_reminder` |  |  | Attachment type that proves task tools exist. |
@@ -4312,13 +4389,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.head_bytes` | `65536` |  |  | How much of the start of the transcript is read for the session start time (firstTranscriptIso). |
 | `tasklist_guard.header` | `<!-- session: {session} \| started: {started} -->` |  |  | The header a new progress file gets; {session} is the raw session id (or the unknown-session id), {started} the session start. |
 | `tasklist_guard.history_dir` | `.anti-hall, history` |  |  | The history directory under the project root, as path segments. |
-| `tasklist_guard.instead_capture` | `Capture the work as priority-sorted tasks via TaskCreate/TaskUpdate (TaskList...` |  |  | What to do instead: capture the work as tasks (Claude wording). |
-| `tasklist_guard.instead_capture_codex` | `Capture the work as priority-sorted tasks in your task list (check it first t...` |  |  | What to do instead: capture the work as tasks (Codex wording). |
-| `tasklist_guard.instead_files` | `{progress} (done/in-progress/next); a new file gets this header on top: {head...` |  |  | The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in. |
-| `tasklist_guard.instead_reduced` | `list the open tasks and status in your reply, priority first. Progress: {prog...` |  |  | What to do instead, reduced nag; {progress} and {history} are the files. |
-| `tasklist_guard.instead_reset` | `recreate the open tasks with TaskCreate (see the progress file / handover), t...` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
-| `tasklist_guard.instead_reset_codex` | `recreate the open tasks in your task list (see the progress file / handover),...` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
-| `tasklist_guard.instead_stalled` | `dispatch a background agent for EACH now (do not serialize to one), or set id...` |  |  | What to do about tasks stalled in progress. |
+| `tasklist_guard.instead_capture` | `add the work as tasks, then stop again.` |  |  | What to do instead: capture the work as tasks (Claude wording). |
+| `tasklist_guard.instead_capture_codex` | `add the work as tasks, then stop again.` |  |  | What to do instead: capture the work as tasks (Codex wording). |
+| `tasklist_guard.instead_files` | `Progress file: {progress}\nA new progress file starts with this line: {header...` |  |  | The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in. |
+| `tasklist_guard.instead_progress` | `update the progress file, then stop again.` |  |  | Compact guard message text. |
+| `tasklist_guard.instead_reduced` | `list the open tasks and their status in your reply, priority first.` |  |  | What to do instead, reduced nag; {progress} and {history} are the files. |
+| `tasklist_guard.instead_reset` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Claude wording). |
+| `tasklist_guard.instead_reset_codex` | `restore the open tasks, then stop again.` |  |  | Lead of what to do instead after a task store reset (Codex wording). |
+| `tasklist_guard.instead_stalled` | `assign an agent to each stalled task.` |  |  | What to do about tasks stalled in progress. |
 | `tasklist_guard.jev_false` | `a small bounded chore — task tracking would be overhead, not help` |  |  | What a false answer means. |
 | `tasklist_guard.jev_id` | `tasklistTrivial` |  |  | The Jev integration consulted before the nag (relax-block: a confident trivial verdict in on mode skips it). |
 | `tasklist_guard.jev_instructions` | `This session is about to be nudged to track its work as tasks / refresh its p...` |  |  | The question put to Jev (a noul question). |
@@ -4349,10 +4427,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.policy_reduced_kind` | `no-task-tools` |  |  | Stop-policy bucket kind of the reduced nag (blocks at most once per session). |
 | `tasklist_guard.policy_tail_bytes` | `1572864` |  |  | How much of the end of the transcript is read for the prompt key. |
 | `tasklist_guard.policy_user_marker` | `"user"` |  |  | Text a transcript line must hold to be read as a possible user prompt. |
-| `tasklist_guard.prior_snapshot` | ` A prior session's snapshot exists at {path}: recreate your task list from it...` |  |  | Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path. |
+| `tasklist_guard.prior_detail` | `An earlier session left a snapshot to rebuild the task list from: {path}` |  |  | Line of the tasklist-guard details file that names the snapshot an earlier session left; {path} is its path. |
+| `tasklist_guard.prior_snapshot` | ` An earlier session left a snapshot to rebuild the list from (see the details...` |  |  | Appended to the no-tasks reason when another session of today left a handover state file; {path} is its path. |
 | `tasklist_guard.progress_dir` | `.anti-hall, progress` |  |  | The progress directory under the project root, as path segments. |
 | `tasklist_guard.protocol_setting` | `8 entries` |  |  | context.protocolLevel: full makes the nag form default to full when guards.tasklistNoTaskTools is not set. |
 | `tasklist_guard.reason_max` | `2000` |  |  | Longest block reason, in UTF-16 units; longer text is cut and ends with an ellipsis. |
+| `tasklist_guard.resume_instead` | `verify the handover and record the result.` |  |  | Compact guard message text. |
 | `tasklist_guard.resume_marker_prefix` | `handover-resume-state-` |  |  | Prefix of the per-session marker the handover resume writes (`<prefix><session>.json` under the anti-hall state directory). |
 | `tasklist_guard.resume_nudged_prefix` | `resume-verify-nudged-` |  |  | Prefix of the per-session file that records the one resume-verification nudge. |
 | `tasklist_guard.resume_text` | `A session handover was resumed this session ({file}) but no `resume-verified:...` |  |  | The resume-verification nudge; `{file}` is the handover file. |
@@ -4362,23 +4442,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `tasklist_guard.signal_sep` | `\|` |  |  | Separator of the parts of the dedupe signal. |
 | `tasklist_guard.stale_body` | `{"warned":true}` |  |  | Contents of the stale-handover advisory marker. |
 | `tasklist_guard.stale_prefix` | `tasklist-guard-handover-stale-` |  |  | Prefix of the once-per-session marker of the stale-handover advisory (`<prefix><session>.json`). |
-| `tasklist_guard.stale_text` | `\n⚠️ anti-hall · handover: the saved handover is stale (work happened after i...` |  |  | The stale-handover advisory appended to a block. |
+| `tasklist_guard.stale_text` | `\n⚠️ anti-hall · handover: the saved handover is out of date (work happened a...` |  |  | The stale-handover advisory appended to a block. |
 | `tasklist_guard.state_ext` | `.json` |  |  | File extension of the per-session state and marker files. |
 | `tasklist_guard.state_prefix` | `tasklist-guard-state` |  |  | Family name of the per-session loop state file (`<prefix>-<session>.json` under the anti-hall state directory); also the prune family. |
 | `tasklist_guard.summary` | `Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a...` |  |  | One-line description of the tasklist-guard check in the generated reference. |
 | `tasklist_guard.task_tool_names` | `TaskCreate, TaskUpdate, TodoWrite` |  |  | The tool names that count as task activity. |
 | `tasklist_guard.threshold_setting` | `6 entries` |  |  | How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold). |
 | `tasklist_guard.version_setting` | `6 entries` |  |  | guards.stopHookVersionDowngrade: skip the block while the host registered a newer anti-hall than the running one. |
-| `tasklist_guard.what_no_tasks` | `stop blocked: {n} file-changing actions this session but NO tasks tracked.` |  |  | Block headline when work was done and no task was tracked; {n} is the work count. |
-| `tasklist_guard.what_progress` | `stop blocked: {n} file-changing actions but {path} is missing or stale.` |  |  | Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file. |
-| `tasklist_guard.what_reduced` | `stop blocked: {n} file-changing actions, no tasks tracked.` |  |  | Block headline of the reduced nag (a session without task tools); {n} is the work count. |
-| `tasklist_guard.what_reset` | `the task store was reset (session restore).` |  |  | Block headline when the task store was reset (a session restore). |
-| `tasklist_guard.what_stalled` | `stop blocked: {n} tasks are in_progress but NO background agent is live.` |  |  | Block headline when tasks are in progress with no live agent; {n} is the count. |
+| `tasklist_guard.what_no_tasks` | `{n} files changed but no tasks tracked.` |  |  | Block headline when work was done and no task was tracked; {n} is the work count. |
+| `tasklist_guard.what_progress` | `{n} files changed but progress is missing or stale.` |  |  | Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file. |
+| `tasklist_guard.what_reduced` | `{n} files changed but no work tracked.` |  |  | Block headline of the reduced nag (a session without task tools); {n} is the work count. |
+| `tasklist_guard.what_reset` | `the task list was lost during session restore.` |  |  | Block headline when the task store was reset (a session restore). |
+| `tasklist_guard.what_stalled` | `{n} tasks are marked in progress with no active agent.` |  |  | Block headline when tasks are in progress with no live agent; {n} is the count. |
 | `tasklist_guard.why_no_tasks` | `Work this size needs a task list and a progress file.` |  |  | Block reason when no task was tracked. |
-| `tasklist_guard.why_progress` | `The progress file must track what was done.` |  |  | Block reason when the progress file is missing or stale. |
+| `tasklist_guard.why_progress` | `The progress file must record what was done.` |  |  | Block reason when the progress file is missing or stale. |
 | `tasklist_guard.why_reduced` | `Untracked work gets lost.` |  |  | Block reason of the reduced nag. |
-| `tasklist_guard.why_reset` | `The old task ids are gone, not un-tracked.` |  |  | Block reason when the task store was reset. |
-| `tasklist_guard.why_stalled` | `They are stalled, not worked in parallel.` |  |  | Block reason when tasks are stalled in progress. |
+| `tasklist_guard.why_reset` | `The old tasks are gone, not finished.` |  |  | Block reason when the task store was reset. |
+| `tasklist_guard.why_stalled` | `They are stalled, not running in parallel.` |  |  | Block reason when tasks are stalled in progress. |
 | `tasklist_guard.wide_window_bytes` | `16777216` |  |  | How much of the transcript the fallback search for any task activity reads when the scan window held none (16 MiB). |
 | `tasklist_guard.window_bytes` | `524288` |  |  | How much of the end of the transcript the work and task scan reads (512 KiB). |
 | `tasklist_guard.work_bucket_max` | `8` |  |  | Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here). |
@@ -4499,7 +4579,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.agent_env` | `DEVSWARM_AI_AGENT` |  |  | Environment variable naming the workspace's agent (claude, codex, ...); only claude is told about the idle-wake cron and monitor tools. |
 | `devswarm_role.branch_env` | `DEVSWARM_SOURCE_BRANCH` |  |  | Environment variable that tells a child workspace (non-empty) from a Primary (empty or unset). |
 | `devswarm_role.builder_env` | `DEVSWARM_BUILDER_ID` |  |  | Environment variable holding the workspace id the injected commands name. |
-| `devswarm_role.child_summary` | `SessionStart: injects the DevSwarm mesh-only messaging directive for a child ...` |  |  | One-line description of the devswarm-child-role check in the generated reference. |
+| `devswarm_role.child_summary` | `SessionStart: injects the DevSwarm mesh-only messaging directive and native e...` |  |  | One-line description of the devswarm-child-role check in the generated reference. |
 | `devswarm_role.claude_agent` | `claude` |  |  | The agent name that has the idle-wake cron and monitor tools. |
 | `devswarm_role.cron_charset` | `0123456789*/,-` |  |  | The only characters a cron field may contain (anything else would let the setting inject text into the directive). |
 | `devswarm_role.cron_fields` | `5` |  |  | How many whitespace-separated fields a valid cron schedule has. |
@@ -4568,7 +4648,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_flag_archived` | `archived` |  |  | Contributor flag. |
 | `devswarm_role.pg_flag_gone` | `worktree-gone` |  |  | Contributor flag. |
 | `devswarm_role.pg_foreign` | `NOTE — {ids} {verb} registered under a DIFFERENT project (their worktree no l...` |  |  | The foreign-project note: {ids}, {verb}. |
-| `devswarm_role.pg_frame_head` | `⛔ anti-hall · {guard}: {headline}` |  |  | First line of the framed block (block-message.js frame): {guard}, {headline}. |
+| `devswarm_role.pg_frame_head` | `⛔ {guard}: {headline}` |  |  | First line of the framed block (block-message.js frame): {guard}, {headline}. |
 | `devswarm_role.pg_frame_indent` | `  ` |  |  | Indent of the further body paragraphs. |
 | `devswarm_role.pg_frame_instead` | `Do instead: ` |  |  | Label of the first body paragraph. |
 | `devswarm_role.pg_frame_override` | `Override (only if the user explicitly asked): ` |  |  | Label of the override line. |
@@ -4576,7 +4656,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_gone` | `NOTE — {ids} {verb} a GONE worktree at its recorded path — this cannot be cle...` |  |  | The gone-worktree note: {ids}, {verb}. |
 | `devswarm_role.pg_guard_block_window_ms` | `1800000` |  |  | How recent a child's last coordinator-work-guard block must be (milliseconds) for the parent gate to attribute its stall to the guard instead of to the Primary's neglect. |
 | `devswarm_role.pg_guard_held` | `Held by anti-hall, not neglected: {ids} last hit the coordinator-work-guard b...` |  |  | Note when a flagged child was last stopped by anti-hall's own coordinator-work-guard: {ids}. Such a pass is not counted as neglect. |
-| `devswarm_role.pg_headline` | `Primary turn held: DevSwarm workspaces or messages need attention first.` |  |  | Headline of the block. |
+| `devswarm_role.pg_headline` | `workspace duties need attention before stopping.` |  |  | Headline of the block. |
 | `devswarm_role.pg_hour_per_day` | `24` |  |  | Hours in a day (approxAge). |
 | `devswarm_role.pg_id_key_prefix` | `id:` |  |  | The family key of a row whose worktree resolves to no mesh id (familyKeyOf). |
 | `devswarm_role.pg_ident_unsure_id` | `primary-unresolved` |  |  | The partition id the Primary's Stop gate names when the work tree around its directory could not be resolved exactly (a nested checkout git did not answer for): the gate blocks on an unreadable own mailbox under this id instead of passing. |
@@ -4633,6 +4713,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_set_held` | `5 entries` |  |  | Setting devswarm.heldPartitions: owner-held partition ids. The engine answers only while it is unset everywhere (an empty set). |
 | `devswarm_role.pg_set_neglect_min` | `5 entries` |  |  | Setting devswarm.parentGateNeglectMinUnread: unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default. |
 | `devswarm_role.pg_short_id_len` | `8` |  |  | Characters of an id in its display name. |
+| `devswarm_role.pg_short_instead` | `resolve the pending workspace duties.` |  |  | Compact guard message text. |
 | `devswarm_role.pg_sig_prefix` | `devswarm-parent:` |  |  | Prefix of the hashed block-kind signature. |
 | `devswarm_role.pg_skip_cmd` | `{cli} skip {guard}` |  |  | The override command: {cli} (shell-quoted plugin CLI path) and {guard}. |
 | `devswarm_role.pg_skip_ttl` | ` (15-min TTL)` |  |  | Appended to the override command. |
@@ -4668,6 +4749,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.pg_wake_line` | ` MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{w...` |  |  | The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}. |
 | `devswarm_role.pg_wake_tick` | ``"$CLI" inbox tick {id} --quiet`` |  |  | The tick command of the wake re-verify line: {id}. |
 | `devswarm_role.pg_wake_watch` | `; WATCH={watcher}, `Monitor` on `"$WATCH"` armed with timeout_ms 1800000 (nev...` |  |  | The watcher part of the wake re-verify line: {watcher} (double-quoted). |
+| `devswarm_role.pg_warning_instead` | `review the workspace status instructions.` |  |  | One action for the parent gate's detailed status advisories. |
+| `devswarm_role.pg_warning_what` | `workspace status needs attention.` |  |  | Headline for the parent gate's detailed status advisories. |
 | `devswarm_role.pg_why` | `Unanswered questions or unread mail would be dropped if this turn ended now.` |  |  | Why line of the block. |
 | `devswarm_role.pg_you` | ` (you)` |  |  | Marks the Primary's own row. |
 | `devswarm_role.real_home_escape` | `ANTIHALL_ALLOW_REAL_HOME_TEST` |  |  | Environment variable that lifts the real-home refusal of the Node settings reader (tests that need the real home). |
@@ -4688,8 +4771,6 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_role.seat_notice_stale` | `💡 anti-hall · devswarm-primary-seat: you resumed {current} but {other} was ac...` |  |  | The notice of a session resumed stale: {current}, {other} (the session active since), {until} (its last activity, ISO), {handover} (the handover clause). |
 | `devswarm_role.seat_notice_unknown` | `⚠️ anti-hall · devswarm-primary-seat: could not verify whether session {holde...` |  |  | The notice of a recorded Primary session whose liveness cannot be verified: {holder}, {cli}. |
 | `devswarm_role.seat_stale_handover` | `; newest handover for this worktree: {path}` |  |  | The clause naming the newest handover of the worktree in a stale-resume notice: {path}. |
-| `devswarm_role.shim_cli` | `#!/bin/sh\n# AUTO-GENERATED by anti-hall (ah-engine) - do not edit by hand; r...` |  |  | The source of the DevSwarm CLI shim (placeholder {engine}: the engine binary). POSIX sh, no Node; compared byte for byte with the file on disk and rewritten when it differs. |
-| `devswarm_role.shim_watcher` | `#!/bin/sh\n# AUTO-GENERATED by anti-hall (ah-engine) - do not edit by hand; r...` |  |  | The source of the mailbox-watcher shim (placeholder {engine}: the engine binary). POSIX sh, no Node. |
 | `devswarm_role.sw_child_role` | `4 entries` |  |  | Switch devswarm.childRole (default on): off makes the SessionStart hook a no-op. |
 | `devswarm_role.sw_parent_gate` | `4 entries` |  |  | Switch devswarm.parentGate (default on): off makes the Stop gate a no-op. |
 | `devswarm_role.sw_rearm` | `5 entries` |  |  | Switch devswarm.rearmOnTickOnly (default on): re-arm a lapsed monitor only from the cron tick, never inline on the monitor's own expiry. |
@@ -4710,9 +4791,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
 | `roles.groups` | `11 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
-| `roles.line_max` | `140` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
+| `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
-| `roles.matrix` | `57 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
+| `roles.matrix` | `63 entries` |  |  | Per engine verb: its feature area (`group`, a key of roles.groups), the roles that may run it (`roles`), the roles limited to acting on themselves (`self_only`: a --id or --workspace naming another workspace is refused) and the arguments that make a run owner-level (`owner_args`: with one of them only the roles in `owner_roles` may run it). Every implemented command has a row; a test fails otherwise. Owner-level work (settings changes, restore, stop, go-live and rollback, reaper kill, update, DevSwarm archive, delete, recover and merge) is main (and the Codex main seat) only. |
 | `roles.msg_none` | `none` |  |  | The verb list in the note when the role may run none. |
 | `roles.msg_note` | `anti-hall engine: you are {what} (role: {role}). Engine verbs you may run: {v...` |  |  | The role note injected at SessionStart / SubagentStart. Placeholders: {role}, {what}, {verbs}, {more}, {skill}. |
 | `roles.msg_note_more` | ` (+{n} more, see the guide)` |  |  | Added to the note when the verb list was shortened. Placeholder: {n}. |
@@ -4747,14 +4828,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `lane_test.cargo_toolchain_re` | `^\+\S+$` |  |  | A word between cargo and its subcommand that is a toolchain selector (cargo +nightly test), not the subcommand. Regular expression (Rust syntax). |
 | `lane_test.cargo_value_flags` | `27 items` |  |  | Flags of cargo test and nextest that take the next word as their value (so that word is not a test filter). |
 | `lane_test.guard_name` | `lane-test-guard` |  |  | The guard id the lane test guard answers to in skip.json and in its messages. |
-| `lane_test.msg_instead` | `run cargo check, commit, verification happens at deploy; a filtered single-mo...` |  |  | What to do instead. |
-| `lane_test.msg_override` | `the user sets guards.allowTestSuites, turns the guard off with guards.laneTes...` |  |  | How the user can lift the block (shown on the last line). |
-| `lane_test.msg_policy_instead` | `build only (cargo build or cargo check), commit by explicit path, and report ...` |  |  | What to do instead under testPolicy none. |
-| `lane_test.msg_policy_override` | `the user sets guards.testPolicy to targeted or suites, or skips it for a sess...` |  |  | How the user can lift the testPolicy block (shown on the last line). |
-| `lane_test.msg_policy_what` | ``{cmd}` is blocked: tests are off by owner policy (guards.testPolicy = none);...` |  |  | Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
-| `lane_test.msg_policy_why` | `The owner turned tests off for agents: test runs queue behind the shared buil...` |  |  | Why every test run is blocked under testPolicy none. |
-| `lane_test.msg_what` | ``{cmd}` is blocked: a subagent does not run suite-scale tests ({label}).` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
-| `lane_test.msg_why` | `Suite runs queue behind the shared build lock and keep every waiting agent re...` |  |  | Why suite runs are blocked for subagents. |
+| `lane_test.msg_instead` | `Run a build check or one allowed module test, then report the result.` |  |  | What to do instead. |
+| `lane_test.msg_override` | `tell the agent "skip lane-test-guard"` |  |  | How the user can lift the block (shown on the last line). |
+| `lane_test.msg_policy_instead` | `Build or check syntax, then report the change and that tests were not run.` |  |  | What to do instead under testPolicy none. |
+| `lane_test.msg_policy_override` | `tell the agent "skip lane-test-guard"` |  |  | How the user can lift the testPolicy block (shown on the last line). |
+| `lane_test.msg_policy_what` | `tests are off by owner policy ({label}): {cmd}` |  |  | Heading of the block under testPolicy none. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
+| `lane_test.msg_policy_why` | `The owner chose to verify at deploy instead of running tests here.` |  |  | Why every test run is blocked under testPolicy none. |
+| `lane_test.msg_what` | `a helper cannot run this full suite ({label}): {cmd}` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run. |
+| `lane_test.msg_why` | `Full suites can queue behind a shared build lock and waste the work budget.` |  |  | Why suite runs are blocked for subagents. |
 | `lane_test.nextest_other_words` | `list, archive, show-config, self, help` |  |  | Words after nextest that do not run tests (nextest list, nextest archive): the command is not a suite run. |
 | `lane_test.nextest_run_words` | `run, r` |  |  | Words after nextest that run tests and are not a filter (nextest run); the filter comes after them. |
 | `lane_test.policy_none` | `none` |  |  | The testPolicy value under which every test-runner command is blocked. |
@@ -4790,13 +4871,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.guard_name` | `queued-wait-guard` |  |  | The guard id the queued-wait guard answers to in skip.json and in its messages. |
 | `queued_wait.heavy_res` | `7 items` |  |  | Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it. |
 | `queued_wait.loop_sleep_max_s` | `5` |  | s | A sleep inside a while, until or for loop of more than this many seconds is blocked: a poll loop re-sends the agent's context on every turn it runs. |
-| `queued_wait.msg_instead_bg` | `run it in the foreground under the lock (`lockf <lockfile> ...`): if the lock...` |  |  | What to do instead of a background heavy command. |
-| `queued_wait.msg_instead_sleep` | `run the command in the foreground, or end your turn and let the completion no...` |  |  | What to do instead of a long sleep or poll loop. |
-| `queued_wait.msg_override` | `the user turns the guard off with guards.queuedWaitGuard, or skips it for a s...` |  |  | How the user can lift the block (shown on the last line). |
-| `queued_wait.msg_what_bg` | ``{cmd}` is blocked: a subagent does not start build or test commands in the b...` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
-| `queued_wait.msg_what_loop` | ``{cmd}` is blocked: a poll loop sleeping {secs}s per round (limit {max}s).` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
-| `queued_wait.msg_what_sleep` | ``{cmd}` is blocked: it waits {secs}s (limit {max}s).` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
-| `queued_wait.msg_why` | `An agent that waits keeps acting: every poll or re-read re-sends its whole co...` |  |  | Why background heavy commands and poll loops are blocked. |
+| `queued_wait.msg_instead_bg` | `Run the command in the foreground under the shared lock.` |  |  | What to do instead of a background heavy command. |
+| `queued_wait.msg_instead_sleep` | `End the turn and wait for the completion notification.` |  |  | What to do instead of a long sleep or poll loop. |
+| `queued_wait.msg_override` | `tell the agent "skip queued-wait-guard"` |  |  | How the user can lift the block (shown on the last line). |
+| `queued_wait.msg_what_bg` | `a helper cannot start this build or test in the background: {cmd}` |  |  | Heading of the block on a background heavy command. Placeholders: {cmd} the command as it was written. |
+| `queued_wait.msg_what_loop` | `this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}` |  |  | Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit. |
+| `queued_wait.msg_what_sleep` | `this wait is too long ({secs}s; limit {max}s): {cmd}` |  |  | Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit. |
+| `queued_wait.msg_why` | `Repeated checks while waiting use the work budget without making progress.` |  |  | Why background heavy commands and poll loops are blocked. |
 | `queued_wait.sleep_commands` | `sleep` |  |  | Commands that only wait. Their duration arguments are summed. |
 | `queued_wait.sleep_max_s` | `30` |  | s | A plain sleep of more than this many seconds is blocked (the agent is paying to wait; wait on an event or run the command in the foreground). |
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
@@ -4813,11 +4894,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wide_search.forbidden_roots` | `7 items` |  |  | Search roots that are blocked when a search starts exactly there (a subdirectory of one is fine). `~`, `$HOME` and `${HOME}` stand for the home directory. |
 | `wide_search.guard_name` | `wide-search-guard` |  |  | The guard id the wide-search guard answers to in skip.json and in its messages. |
 | `wide_search.home_aliases` | `~, $HOME, ${HOME}` |  |  | Words that stand for the home directory at the start of a search path. |
-| `wide_search.msg_instead` | `search the project: give the command a path, e.g. `rg <pattern> {repo}` or `f...` |  |  | What to do instead. Placeholders: {repo} the session's working directory. |
-| `wide_search.msg_instead_no_repo` | `search one project directory: give the command that directory's absolute path...` |  |  | What to do instead when the session's working directory is itself a forbidden root. |
-| `wide_search.msg_override` | `the user sets guards.allowWideSearch, adds the path to the wide_search.allow_...` |  |  | How the user can lift the block (shown on the last line). |
-| `wide_search.msg_what` | ``{cmd}` is blocked: it searches the whole of `{root}`.` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches. |
-| `wide_search.msg_why` | `A search rooted at the disk, the home directory or the user and volume folder...` |  |  | Why whole-disk searches are blocked. |
+| `wide_search.msg_instead` | `search within the project folder.` |  |  | What to do instead. Placeholders: {repo} the session's working directory. |
+| `wide_search.msg_instead_no_repo` | `give the search one project folder.` |  |  | What to do instead when the session's working directory is itself a forbidden root. |
+| `wide_search.msg_override` | `tell the agent "skip wide-search-guard" (or set guards.allowWideSearch).` |  |  | How the user can lift the block (shown on the last line). |
+| `wide_search.msg_what` | ``{cmd}` was stopped: it would scan all of `{root}`.` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches. |
+| `wide_search.msg_why` | `Scanning a whole disk or home folder takes minutes and can overload this Mac.` |  |  | Why whole-disk searches are blocked. |
 | `wide_search.summary` | `PreToolUse on Bash, every agent (subagents and the main thread): blocks a who...` |  |  | One-line description of the wide-search-guard check in the generated reference. |
 | `wide_search.sw_allow` | `6 entries` |  |  | Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside). |
 | `wide_search.unresolvable_re` | `[*?\[\]{}$`]` |  |  | A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax). |
@@ -4836,7 +4917,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `broad_kill.lookup_commands` | `8 items` |  |  | The command names that count as a lookup earlier in a pipeline (the same set as broad_kill.lookup_re, by exact name). |
 | `broad_kill.lookup_re` | `(?:^\|[^A-Za-z0-9_./-])(?:pgrep\|pidof\|pstree\|lsof\|fuser\|netstat\|ss\|ps)(?:$\|[^A...` |  |  | A command that finds processes by name, pattern or port. In a command substitution that feeds kill, or earlier in a pipeline that feeds xargs kill, it makes the kill a pattern kill. Regular expression (Rust syntax), matched against the substitution text or the command name. |
 | `broad_kill.max_depth` | `5` |  |  | How deep the guard follows nested scripts and command substitutions (sh -c, eval, $(...), heredocs read by a shell) before it stops looking. |
-| `broad_kill.msg_instead` | `kill by PID after checking the process: record the PID when you start it (`cm...` |  |  | What to do instead. |
+| `broad_kill.msg_instead` | `check the target process and stop only its PID.` |  |  | What to do instead. |
 | `broad_kill.msg_override` | `the user turns the guard off with `guards.broadKill` (a locked safety switch)...` |  |  | How the user can lift the block (shown on the last line). |
 | `broad_kill.msg_what_everyone` | ``{cmd}` is blocked: it signals every process you own, or your whole process g...` |  |  | Heading of the block on `kill -1` / `kill 0`. Placeholders: {cmd} the command as it was written. |
 | `broad_kill.msg_what_lookup` | ``{cmd}` is blocked: it kills whatever a name or port lookup returns, not a pr...` |  |  | Heading of the block on a kill fed by a process or port lookup. Placeholders: {cmd} the command as it was written. |
@@ -4872,13 +4953,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `burn.marker_dir` | `breaker` |  |  | Directory under the tracker directory that holds one marker file per agent while its hard flag is up. |
 | `burn.marker_ext` | `.json` |  |  | Extension of a marker file. |
 | `burn.marker_ttl_ms` | `900000` |  |  | A marker older than this is ignored by the check and removed by the tracker. The tracker rewrites a standing marker on every tick, so an old one means the flag is no longer being kept up (the engine stopped, or the agent left the state without clearing it): the block lifts by itself. |
+| `burn.msg_allowed` | `git commit/add/push/status/log/diff, read-only gh checks, cargo build/check/c...` |  |  | Allowed line of the block: what stays possible while the breaker holds. |
 | `burn.msg_hard` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Hard advisory, delivered to the agent and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
-| `burn.msg_instead` | `To unblock, do ONE of these (the block lifts on the next tracker tick, within...` |  |  | What to do instead: the exact actions that lift the block, with the allowed command forms. |
-| `burn.msg_override` | `the user turns the breaker off with `agents.burnBreaker` or skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
+| `burn.msg_instead` | `save a report of the outcome and stop.` |  |  | What to do instead: the exact actions that lift the block, with the allowed command forms. |
+| `burn.msg_override` | `tell the agent "skip burn-breaker" (or turn off agents.burnBreaker).` |  |  | How the user can lift the block (shown on the last line). |
 | `burn.msg_soft` | `agent tracker: {kind} {agent} spent about {tokens} tokens in the last {window...` |  |  | Soft advisory, delivered to the agent at its next tool call and to the coordinator's wake feed. Placeholders: {agent}, {kind}, {tokens}, {window}. |
-| `burn.msg_what` | `This tool call is blocked: you spent about {tokens} tokens with no commit, fi...` |  |  | Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome. |
-| `burn.msg_what_waste` | `This tool call is blocked: the waste sensor marks you as wasting budget (scor...` |  |  | Heading of the block when the waste sensor (agent_waste.toml) holds the hard mark rather than the token line. Placeholders: {score} the waste score (thousands of tokens per outcome unit), {hard} the hard threshold, {tokens} the tokens of the window, {reason} the sensor's own reason. |
-| `burn.msg_why` | `Tokens without an outcome are wasted budget (a 2026-10-23 swarm burned about ...` |  |  | Why the breaker blocks. |
+| `burn.msg_what` | `this tool call is paused after work with no recorded outcome.` |  |  | Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome. |
+| `burn.msg_what_waste` | `this tool call is paused after repeated work with no outcome.` |  |  | Heading of the block when the waste sensor (agent_waste.toml) holds the hard mark rather than the token line. Placeholders: {score} the waste score (thousands of tokens per outcome unit), {hard} the hard threshold, {tokens} the tokens of the window, {reason} the sensor's own reason. |
+| `burn.msg_why` | `Tokens spent with nothing to show for them are wasted budget; running agents ...` |  |  | Why the breaker blocks. |
 | `burn.quoted_re` | `(?:'[^']*')\|(?:"(?:[^"\\$`]\|\\.)*")` |  |  | Quoted text that cannot run anything (a single-quoted string, or a double-quoted one with no $ or backtick): replaced by "" before the two patterns above are tested, so a commit message may contain `;` or `&`. Regular expression (Rust syntax). |
 | `burn.report_bash_re` | `^\s*(?:cat\|echo\|printf\|tee)\b[^\|&;`$()<>]*>>?\s*["\x27]?([^\s"\x27\|&;`$()<>]+...` |  |  | The one Bash line a blocked subagent may use to write a report: `cat\|echo\|printf\|tee` with a redirect (`>` or `>>`) into one path, optionally followed by a heredoc opener. Group 1 is the path (checked against burn.report_path_res), group 2 the heredoc opener when present. JavaScript syntax; no pipe, `;`, `&`, backtick, `$` or parenthesis before the redirect. |
 | `burn.report_heredoc_re` | `<<-?\s*([\x27"])([A-Za-z_][A-Za-z0-9_]*)\1\s*$` |  |  | A heredoc opener with a QUOTED delimiter (its body is inert data, nothing expands). JavaScript syntax; tested on the first line of a report-writing command that has a body; group 2 is the delimiter, which must end the body with nothing after it. |
@@ -4915,11 +4997,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `uncommitted.insertions_re` | `(\d+) insertions?\(\+\)` |  |  | The insertions count in the summary line. Regular expression (JavaScript and Rust syntax); group 1 is the number. |
 | `uncommitted.lines_per_unread_file` | `50` |  |  | Lines counted for an untracked file that was not read (too many files, too large, unreadable). |
 | `uncommitted.max_untracked_files` | `40` |  |  | Most untracked files whose lines are counted (the rest count as uncommitted_lines_per_unread_file lines each). |
-| `uncommitted.msg_instead` | `Commit what works now (git add and git commit are allowed), then continue edi...` |  |  | What to do instead. |
-| `uncommitted.msg_override` | `the user turns the guard off with `guards.uncommittedWork`, skips it for a se...` |  |  | How the user can lift the block (shown on the last line). |
-| `uncommitted.msg_soft` | `anti-hall uncommitted-guard: your worktree holds {lines} uncommitted lines (s...` |  |  | Soft warning added to the agent's context. Placeholders: {lines} uncommitted lines now, {soft} the soft line, {max} the hard line. |
-| `uncommitted.msg_what` | `This edit is blocked: your worktree holds {lines} uncommitted lines (the limi...` |  |  | Heading of the block. Placeholders: {lines} uncommitted lines now, {max} the hard line. |
-| `uncommitted.msg_why` | `Uncommitted work is lost when an agent stops, is killed or runs out of budget...` |  |  | Why the guard blocks. |
+| `uncommitted.msg_instead` | `Commit the working changes, then continue editing.` |  |  | What to do instead. |
+| `uncommitted.msg_override` | `tell the agent "skip uncommitted-guard"` |  |  | How the user can lift the block (shown on the last line). |
+| `uncommitted.msg_soft` | `{lines} lines are uncommitted (warning at {soft}; edits pause at {max}). Comm...` |  |  | Soft warning added to the agent's context. Placeholders: {lines} uncommitted lines now, {soft} the soft line, {max} the hard line. |
+| `uncommitted.msg_what` | `this edit is paused: {lines} lines are uncommitted (limit {max}).` |  |  | Heading of the block. Placeholders: {lines} uncommitted lines now, {max} the hard line. |
+| `uncommitted.msg_why` | `Large unsaved changes are harder to review and resume.` |  |  | Why the guard blocks. |
 | `uncommitted.soft_warn_every_ms` | `120000` |  |  | Least time between two soft warnings for one directory. |
 | `uncommitted.state_dir` | `.anti-hall/uncommitted` |  |  | Where the per-directory counts are cached, relative to the user home. |
 | `uncommitted.state_ext` | `.json` |  |  | Extension of a cache file. |
@@ -4933,8 +5015,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `devswarm_gates.bash_tool` | `Bash` |  |  | The tool name the reply tracker and the drain nudge observe. |
 | `devswarm_gates.cd_event` | `PostToolUse` |  |  | The hook event name the drain nudge answers in. |
-| `devswarm_gates.cd_message` | `⚠️ anti-hall · devswarm-inbox: {n} unread message(s) addressed to YOU (oldest...` |  |  | The drain nudge: {n} (unread count), {age}, {cli} (the DevSwarm CLI path), {id} (the workspace id). |
-| `devswarm_gates.cd_message_unknown` | `⚠️ anti-hall · devswarm-inbox: the unread count of YOUR mailbox could not be ...` |  |  | The drain nudge when the child's unread count could not be read (a project or message store the engine cannot read exactly): {cli} (the DevSwarm CLI path), {id} (the workspace id). Shown instead of silence, throttled like the counted nudge. |
+| `devswarm_gates.cd_message` | `⚠️ inbox check: {n} unread messages need attention.\nDo instead: read and add...` |  |  | The drain nudge: {n} (unread count), {age}, {cli} (the DevSwarm CLI path), {id} (the workspace id). |
+| `devswarm_gates.cd_message_unknown` | `⚠️ inbox check: the unread count is unknown.\nDo instead: read and address yo...` |  |  | The drain nudge when the child's unread count could not be read (a project or message store the engine cannot read exactly): {cli} (the DevSwarm CLI path), {id} (the workspace id). Shown instead of silence, throttled like the counted nudge. |
 | `devswarm_gates.cd_minutes_suffix` | `m` |  |  | Suffix of the oldest-message age in whole minutes. |
 | `devswarm_gates.cd_state_dir` | `child-drain` |  |  | Directory of the drain nudge's per-workspace throttle state (last count, last shown time), under the DevSwarm state directory. |
 | `devswarm_gates.cd_throttle_ms` | `600000` |  |  | How long an unchanged unread count stays quiet after the drain nudge showed it (THROTTLE_MS); a changed count is shown at once. |
@@ -4954,9 +5036,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_drop_labels` | `3 entries` |  |  | Whitelisted label of each known drop reason of a refused heartbeat summary (any other reason is never echoed). |
 | `devswarm_gates.cg_drop_remedies` | `3 entries` |  |  | Remedy of each known drop reason; the id placeholder (devswarm_role.id_placeholder) is replaced by the workspace id. |
 | `devswarm_gates.cg_drop_unknown` | `your last heartbeat summary was dropped (reason not recognized)` |  |  | The drop description of a reason the gate does not recognize. |
-| `devswarm_gates.cg_err_cap` | `⚠️ anti-hall · devswarm-child-gate: forced-ack cap ({max} per kind) reached f...` |  |  | The once-per-episode stderr notice that the block budget is spent: {max}, {sid} (JSON text). |
-| `devswarm_gates.cg_err_mismatch` | `⚠️ anti-hall · devswarm-child-gate: an attempt record for this workspace's ow...` |  |  | The once-per-session stderr notice of an own-id drop-attempt record that authenticates against neither the nonce nor the session: {sid}, {row}, {own} (JSON texts). |
-| `devswarm_gates.cg_headline` | `Stop held: finish this DevSwarm workspace duty first.` |  |  | Headline of the child gate block. |
+| `devswarm_gates.cg_err_cap` | `⚠️ workspace check: the stop reminder limit was reached.\nDo instead: send a ...` |  |  | The once-per-episode stderr notice that the block budget is spent: {max}, {sid} (JSON text). |
+| `devswarm_gates.cg_err_mismatch` | `⚠️ workspace check: the saved attempt is unauthenticated.\nDo instead: report...` |  |  | The once-per-session stderr notice of an own-id drop-attempt record that authenticates against neither the nonce nor the session: {sid}, {row}, {own} (JSON texts). |
+| `devswarm_gates.cg_headline` | `workspace reporting or inbox duties are unfinished.` |  |  | Headline of the child gate block. |
 | `devswarm_gates.cg_heartbeat` | `Heartbeat: before you stop, emit a heartbeat / self-report to your parent orc...` |  |  | The outbound line that asks for a heartbeat report: {cli}, {id}. |
 | `devswarm_gates.cg_heartbeat_drop` | `Heartbeat: {drop}, THEN stop.` |  |  | The outbound line after a dropped report: {drop}. |
 | `devswarm_gates.cg_heartbeats_dir` | `heartbeats` |  |  | Directory of the workspace heartbeat files, under the DevSwarm state directory (the session-age proxy of the cron check). |
@@ -4981,6 +5063,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_gates.cg_repos_dir` | `.devswarm/repos` |  |  | The DevSwarm worktree layout under the home directory: a session cwd under it corroborates the child role (only Node knows its own working directory, so the engine defers when it exists). |
 | `devswarm_gates.cg_reset_ms` | `300000` |  |  | The first Stop check's report window (RESET_MS): a report older than this before the session's first check does not satisfy it. |
 | `devswarm_gates.cg_session_hash_len` | `16` |  |  | Hex characters of the SHA-1 of the transcript path that key a session without a session id. |
+| `devswarm_gates.cg_short_instead` | `complete the pending workspace duty.` |  |  | Compact guard message text. |
 | `devswarm_gates.cg_state_dir` | `child-gate` |  |  | Directory of the child gate's own per-session state files (block and check times, the one-shot notice flags), under the DevSwarm state directory. |
 | `devswarm_gates.cg_strict_setting` | `5 entries` |  |  | The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue (`hivecontrol workspace message-count`). The engine answers only while it is unset. |
 | `devswarm_gates.cg_tick_fresh_ms` | `120000` |  |  | How recent a zero-unread `inbox tick` marker must be to count as liveness proof for this Stop (TICK_MARKER_FRESH_MS). |
@@ -5154,7 +5237,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `347 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `351 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -5204,7 +5287,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.default_event` | `PreToolUse` |  |  | The hook event a self-test payload is evaluated as when it names none. |
 | `doctor.ds_builder_env` | `DEVSWARM_BUILDER_ID` |  |  | The environment variable that names a child's workspace id. |
 | `doctor.ds_builder_id` | `cg-self-test-child` |  |  | The id of the self-test child workspace. |
-| `doctor.ds_child_env` | `DISABLE_ANTIHALL_DEVSWARM=, ANTIHALL_DEVSWARM_SUPERVISOR=on, DEVSWARM_REPO_ID...` |  |  | The environment of a DevSwarm child workspace in the self-tests: supervisor forced on, a source branch set, the stable launchers off (the throwaway home has none installed, so the gate would defer to the hook that installs them). |
+| `doctor.ds_child_env` | `DISABLE_ANTIHALL_DEVSWARM=, ANTIHALL_DEVSWARM_SUPERVISOR=on, DEVSWARM_REPO_ID...` |  |  | The environment of a DevSwarm child workspace in the self-tests: supervisor forced on and a source branch set. Native command templates need no installed launcher in the throwaway home; the check uses the active plugin root. |
 | `doctor.ds_cursor_dir` | `cursor` |  |  | The directory of workspace cursor files under the DevSwarm directory. |
 | `doctor.ds_heartbeat_dir` | `heartbeats` |  |  | The directory of heartbeat files under the DevSwarm directory. |
 | `doctor.ds_inbox_dir` | `inbox` |  |  | The directory of workspace inbox files under the DevSwarm directory. |
@@ -5224,7 +5307,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.ds_payload_inbox` | `{"hook_event_name":"UserPromptSubmit","session_id":"pi","prompt":"hi","cwd":"...` |  |  | The prompt payload of the parent-inbox self-test; {CWD} is the working directory. |
 | `doctor.ds_payload_stop` | `{"hook_event_name":"Stop","session_id":"{SID}","cwd":"{CWD}"}` |  |  | The Stop payload of the gate self-tests; {SID} is a fresh session id, {CWD} the working directory. |
 | `doctor.ds_payload_turn` | `{"hook_event_name":"UserPromptSubmit","session_id":"ct","prompt":"hi","cwd":"...` |  |  | The prompt payload of the child-turn self-test; {CWD} is the working directory. |
-| `doctor.ds_primary_env` | `DISABLE_ANTIHALL_DEVSWARM=, ANTIHALL_DEVSWARM_SUPERVISOR=on, DEVSWARM_REPO_ID...` |  |  | The environment of a DevSwarm Primary in the self-tests: supervisor forced on, no source branch, the stable launchers off (the throwaway home has none installed, so the gate would defer to the hook that installs them). |
+| `doctor.ds_primary_env` | `DISABLE_ANTIHALL_DEVSWARM=, ANTIHALL_DEVSWARM_SUPERVISOR=on, DEVSWARM_REPO_ID...` |  |  | The environment of a DevSwarm Primary in the self-tests: supervisor forced on and no source branch. Native command templates need no installed launcher in the throwaway home; the check uses the active plugin root. |
 | `doctor.ds_session_prefix` | `sess-` |  |  | The prefix of a self-test workspace's session id. |
 | `doctor.ds_summaries_dir` | `summaries` |  |  | The directory of the shared project summaries under the DevSwarm directory. |
 | `doctor.ds_summary_json` | `{"workspaces":{"wsA":{"total":3,"cursor":0,"unread":3,"directUnread":3}}}` |  |  | The shared summary the parent-inbox self-test publishes: one workspace with three unread messages. |
@@ -5391,6 +5474,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.store_backend_env` | `ANTIHALL_DEVSWARM_STORE_BACKEND` |  |  | The environment variable that forces a DevSwarm store backend. |
 | `doctor.store_db` | `devswarm.db` |  |  | The SQLite database file of a store. |
 | `doctor.stores_aside_dir` | `stores-aside` |  |  | The directory under the DevSwarm directory that leaked stores are moved into. |
+| `doctor.submodule_paths_args` | `config, --file, .gitmodules, --get-regexp, ^submodule\..*\.path$` |  |  | Read registered submodule paths for read-only stray-state diagnostics. |
 | `doctor.systemd_dir` | `.config, systemd, user` |  |  | The user systemd unit directory, as path segments under the home directory. |
 | `doctor.tail_bytes` | `262144` |  |  | How many trailing bytes of a log are sampled for unparsable lines. |
 | `doctor.timer_ext` | `.timer` |  |  | The extension of a systemd timer file. |
@@ -5407,7 +5491,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor.version_alert_check` | `version-alert` |  |  | The built-in check the version-alert self-test runs. |
 | `doctor.version_alert_env` | `ANTIHALL_VERSION_ALERT=` |  |  | Environment pairs of the version-alert self-test (the off switch is cleared so an inherited one cannot fake a pass). |
 | `doctor.version_alert_payload` | `{"hook_event_name":"SessionStart","session_id":"{SID}"}` |  |  | The SessionStart payload of the version-alert self-test; {SID} is a unique session id. |
-| `doctor.version_alert_re` | `"additionalContext"\s*:\s*"[^"]*version-alert: v{stale} is available \(you ar...` |  |  | The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped. |
+| `doctor.version_alert_re` | `"additionalContext"\s*:\s*"[^"]*version[- ]alert: v{stale} is available \(you...` |  |  | The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped. |
 | `doctor.version_alert_sessions` | `doctor-va-stale, doctor-va-current` |  |  | Session id prefixes of the stale-cache and current-cache version-alert runs. |
 | `doctor.version_arg` | `version` |  |  | The argument that makes the engine print its version. |
 | `doctor.version_check_file` | `version-check.json` |  |  | The cached latest-version file the version-alert self-test seeds, under the anti-hall directory. |
@@ -5742,6 +5826,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.stores_none` | `no leaked test-fixture stores found — nothing to repair` |  |  | No leaked test-fixture store. |
 | `doctor_msg.stores_uninspected` | `{n} store(s) use the journal backend, which the engine doctor does not inspec...` |  |  | Stores the engine does not read. Placeholder: {n}. |
 | `doctor_msg.stores_would` | `[dry-run] would move {dir} aside (worktreePath {worktree} no longer exists)` |  |  | The dry run of moving a leaked store aside. Placeholders: {dir}, {worktree}. |
+| `doctor_msg.stray_submodule_history` | `stray submodule history: {path} (left unchanged; history belongs at the super...` |  |  | Existing history inside a submodule; diagnostic only, never moved or removed. |
 | `doctor_msg.thin_missing` | `{file} is missing - Fix: reinstall the plugin` |  |  | HK-01. Placeholder: {file}. |
 | `doctor_msg.thin_not` | `{file} is not the thin form: {n} event(s) differ (first: {first}) - Fix: ah-e...` |  |  | HK-01. Placeholders: {file}, {n}, {first}, {host}. |
 | `doctor_msg.thin_ok` | `{file} is the thin form` |  |  | Thin hooks file. Placeholder: {file}. |
@@ -6201,7 +6286,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.armed_limit_skip` | `limit-skip` |  |  | The watcherArmed word while limit conservation is active. |
 | `mesh_write.astral_base` | `65536` |  |  | The first code point outside the Basic Multilingual Plane, subtracted before the surrogate halves are cut. |
 | `mesh_write.backend_journal` | `journal` |  |  | The marker text of Node's journal backend; a store pinned to it is Node's alone. |
-| `mesh_write.boolean_only_flags` | `9 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
+| `mesh_write.boolean_only_flags` | `10 items` |  |  | Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS). |
 | `mesh_write.broadcast_merge_cap` | `50` |  |  | How many of the newest broadcasts `--with-broadcasts` merges into a read. |
 | `mesh_write.broadcast_partition` | `*mesh-broadcast*` |  |  | The shared partition every broadcast and heartbeat row lands in (Node's BROADCAST_PARTITION_ID). |
 | `mesh_write.builder_type_primary` | `primary` |  |  | The builder type of a Primary checkout. |
@@ -7011,14 +7096,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `sibling_sweep.max_turn_text_chars` | `131072` |  |  | The most assistant text (UTF-16 units, newest first) of one turn that is analysed for cause, fix and sweep statements; the walk back through the turn stops once it is reached. Analysis costs about 0.06 ms per 1,000 characters (measured 2026-10-09, release: 1 MB of turn text took 62 ms against the 50 ms script limit). |
 | `sibling_sweep.meta_re` | `\broot[- ]cause[- ](?:claim\|attribution\|statement\|skill\|nudge\|guard\|hook\|prot...` |  |  | Regex source of mentions of the root-cause machinery itself (the skill, the nudge, a guard, a protocol): a sentence that holds one is about the tooling, not a bug cause. |
 | `sibling_sweep.min_span_chars` | `3` |  | chars | The shortest inline code span that names the pattern in the reminder (a one or two character span is punctuation, not a name). |
-| `sibling_sweep.msg_allowed` | `one honest line is enough when there is none: name the search and say it foun...` |  |  | What stays allowed, in the reminder. |
+| `sibling_sweep.msg_allowed` | `If there are no other matches, report the search and that result.` |  |  | What stays allowed, in the reminder. |
 | `sibling_sweep.msg_bad_setting` | `sibling-sweep: ignoring an invalid value ({setting}), using the shipped one` |  |  | Daemon log line, written once per process, when a settings file holds an invalid value for a sibling_sweep setting (a pattern that does not compile, a rejected config file); the shipped value is used instead. Placeholder: {setting}. |
-| `sibling_sweep.msg_instead` | `search the codebase for the same pattern (rg, grep or Glob), fix or list ever...` |  |  | What to do, in the reminder. |
+| `sibling_sweep.msg_instead` | `search for the same cause and report other matches.` |  |  | What to do, in the reminder. |
 | `sibling_sweep.msg_log_failed` | `sibling-sweep: cannot write {what}: {error}` |  |  | Daemon log line, written once per process, when the telemetry log or the state file cannot be written. Placeholders: {what}, {error}. |
-| `sibling_sweep.msg_override` | `guards.siblingSweep=off in /anti-hall:settings` |  |  | How to turn the reminder off, in the reminder. |
+| `sibling_sweep.msg_override` | `tell the agent "skip sibling-sweep"` |  |  | How to turn the reminder off, in the reminder. |
 | `sibling_sweep.msg_pattern` | ` ({pattern})` |  |  | The text that names the pattern in the reminder. Placeholder: {pattern}. |
-| `sibling_sweep.msg_what` | `this reply states the cause of a bug{pattern} and the turn shows no search fo...` |  |  | What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty). |
-| `sibling_sweep.msg_why` | `a bug cause is rarely unique: fixing one site and calling it done leaves its ...` |  |  | Why it matters, in the reminder. |
+| `sibling_sweep.msg_what` | `this fix has no recorded search for the same cause elsewhere.` |  |  | What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty). |
+| `sibling_sweep.msg_why` | `The same cause may affect more than one place.` |  |  | Why it matters, in the reminder. |
 | `sibling_sweep.operational_re` | `\b(?:git\s+lock\|index\.lock\|(?:leftover\|left-?over\|orphaned?\|hung)\s+(?:git\s...` |  |  | Regex source of environment and operational facts (a leftover git lock file, machine load, disk or network state, other agents' activity): a sentence that states one is no code-bug cause, so there are no sibling code sites to search for and the check stays quiet. A dependency lockfile or a test that times out under load is still a code cause. |
 | `sibling_sweep.question_terminator` | `?` |  |  | The terminator that makes a sentence a question; a question is never a cause statement. |
 | `sibling_sweep.quote_line_re` | `(?m)^[ \t]*>.*$` |  |  | Regex source of a quoted line (a Markdown quote), removed before matching. |
@@ -7193,7 +7278,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `78 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `79 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -7218,6 +7303,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.logic_dir` | `engine/logic` |  |  | Directory of the shipped check scripts, relative to the plugin root. |
 | `script.msg_bad_verdict` | `unexpected verdict {value}` |  |  | Logged reason (then the call defers) when a script returns a value that is not a verdict. |
 | `script.msg_call_error` | `{name}.{func} check={check} event={event}: {error}` |  |  | Reason logged when a loaded script call fails. Placeholders: {name}, {func}, {check}, {event}, {error}. |
+| `script.msg_dead_root` | `state write skipped, no live git work tree at {root}` |  |  | Event-log line when a scripted state write is skipped because its project root is not a live git work tree or project root (for example an archived workspace whose folder was removed); no directory is created. Placeholder: {root}. |
 | `script.msg_deadline_cut` | `{check} ({event}): past the client's deadline, no answer (failure policy appl...` |  |  | Log detail (code script_deadline, rate-limited) of a check cut or not started at its request's client deadline; it takes its failure policy. Placeholders: {check}, {event}. |
 | `script.msg_env_incomplete` | `request environment incomplete` |  |  | Reason logged (then the failure policy applies) when the request's environment is incomplete, so no check can be evaluated. |
 | `script.msg_fail_closed` | `anti-hall {check}: BLOCKED. Its check script failed ({why}) and this guard ha...` |  |  | Block reason of an engine-only check on a guard event whose script could not answer. Placeholders: {check}, {why}. |
@@ -7238,6 +7324,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.override_dir` | `.anti-hall/logic` |  |  | Owner override directory, relative to the home directory: a script (or lib file) of the same name there takes precedence over the shipped one. |
 | `script.p95_budget_by_check` | `20 entries` |  |  | Per-check own-p95 allowance (us) for scripted checks whose latency includes waiting on a child process or a disk sync, which the compiled port paid as well. Measured 2026-10-08 on the golden corpora (release, no LTO, loaded machine), compiled port then script: git p50 92 then 432 us, p95 13,902 then 22,324 us (the p95 is the `git` child processes of alias and handover lookups plus the longest commands' tokenizing); sibling-sweep p50 12,154 then 2,453 us, p95 13,261 then 3,903 us (the compiled state write fsynced). Batch 6 (2026-10-09, release no LTO, machine load average 12 to 17, so roughly twice the quiet figures): speculation-guard p50 236 us, p95 1,064 us (its corpus holds Jev asks and state writes), tasklist-guard p50 881 us, p95 2,775 us (it creates the progress directory, stats the progress and history files and appends to the session indexes); the other batch-6 checks stay under the 1,000 us default (dispatch-tier p95 510, model-routing 607, speculation-judge 338, silent-agent-nudge 967, task-guard 935). The compiled ports were not timed before removal, so these are the scripts' own p95s, not an added figure; merge-side-pick p50 38 then 106 us, p95 7,199 then 6,104 us (both are the per-session state file's locked read-modify-write; measured 2026-10-09 on a machine at load 25-30). Measured 2026-10-09 (lane d88fd, release, thread CPU time, best of three): command p50 77 then 295 us, p95 1,804 then 2,761 us on the 5,827-scenario command-guard lane corpus (the compiled port short-cut commands that cannot write or run anything heavy; the script runs the Node functions, and the corpus is skewed to heavy and write cases, which resolve repositories and spawn `git`); coordinator-work-guard p50 28 then 1,128 us, p95 798 then 3,009 us on its golden corpus, where the compiled port deferred 149 of 192 calls to a Node process (tens of milliseconds each) and the script answers all of them. Batch 7 (lane d88e, 2026-10-09, release no LTO, load average 5 to 8, own p95 over the golden corpus): idle-agent-sweep p95 1.4 ms (it writes the emit-dedupe state file durably, as the compiled port did); session-end-mcp-reaper p50 1.3 s, p95 1.7 s (its 500 ms grace period between the polite and the forced signal, plus the process listing, the age and service-manager probes and the re-listing, each a child process; the compiled port waited for the same); stale-agent-stop-note 207 us, claim-ledger 258 us, auto-handover-pause-nag 409 us and compact-advice-guard 258 us stay under the 1,000 us default. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. A check not listed here is held to script.p95_budget_us. Batch 6 (lane d88fc, 2026-10-09, release no LTO, load average about 40, own p95 over the golden corpus): the three that start `git` wait for the child as the compiled ports did (progress-prune p50 13.5 ms / p95 17 ms: `git check-ignore`; precompact-snapshot p50 34 ms / p95 53 ms: `git status` and `git log`; handover-resume p50 18 ms / p95 28 ms: three `git` calls); limit-conserve-inject p95 1.1 ms and output-verify-guard p95 1.3 ms (state reads and writes, the transcript tail scan); every other batch-6 script is under 0.9 ms. A real 1.5 MB transcript tail takes the precompact script about 190 ms (a script has 50 ms): on a large transcript it defers to Node until a transcript primitive or a per-check time limit exists. Batch 8 (lane d88f, 2026-10-09, release no LTO, load average 13 to 15, own p95 over the golden corpus): task-tracker p50 1.1 ms, p95 8.7 ms (UserPromptSubmit: it reads and parses the transcript tail on every prompt), verify-first p50 0.6 ms, p95 1.26 ms, codex-availability p50 0.37 ms, p95 1.4 ms (it writes the availability record on every session start), codex-nudge p50 0.6 ms, p95 1.2 ms; verify-first-orch p50 0.19 ms, p95 0.63 ms stays under the 1,000 us default. |
 | `script.p95_budget_us` | `1000` |  | us | Latency a scripted check may ADD over its compiled port at the 95th percentile, per call (the D88 go/no-go gate measures against it; the primitives a script calls, such as a transcript read, cost the same either way). |
+| `script.prewarm_checks` | `speculation-guard` |  |  | Script entries loaded on each daemon worker before accepting requests; only definitions are loaded, no decision function runs. Normal fingerprint invalidation still reloads edits. |
+| `script.prewarm_patterns` | `2 entries, 2 entries, 2 entries` |  |  | Shared regex programs compiled before the daemon workers accept requests (defaults key and JavaScript flags). Moves Stop's first marker and acknowledgment compilation out of its client wait. |
 | `script.read_max_bytes` | `4194304` |  | bytes | Upper bound of one `ah.fs.readText` read, whatever the script asks for. |
 | `script.readdir_max` | `10000` |  |  | Most entries `ah.fs.readdir` returns; a directory with more entries answers null (a partial listing is never returned as a whole). |
 | `script.regex_bytes_per_src_byte` | `300` |  | bytes | Estimated compiled size per byte of a pattern's translated source, the fallback weight where the heap of a build is not measured (see script.regex_entry_base_bytes). Programs measure about 13 KB plus 17 bytes per source byte on average, but the `\s`, `.` and `i`-flag expansions make them uneven (a 152-byte pattern kept 52 KB), so the estimate stays on the high side. |
@@ -7474,8 +7562,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.growth_min_gap_ms` | `1800000` |  | ms | The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry. |
 | `task_tracker.guard_name` | `task-tracker` |  |  | The guard name in the message header and in the skip file. |
 | `task_tracker.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of a status that means in progress. |
-| `task_tracker.instead_head` | `give each task a priority (metadata.priority: P0/P1/P2) and keep the list sor...` |  |  | The start of the full directive's 'Do instead' line. |
-| `task_tracker.instead_tail` | `report progress; never finish a turn with a silently dropped request.` |  |  | The end of the full directive's 'Do instead' line. |
+| `task_tracker.instead_head` | `track each request as a priority-sorted task.` |  |  | The start of the full directive's 'Do instead' line. |
+| `task_tracker.instead_tail` | `` |  |  | The end of the full directive's 'Do instead' line. |
 | `task_tracker.jev_id` | `newRequest` |  |  | The Jev integration that labels each prompt. |
 | `task_tracker.jev_instructions` | `Classify the user's message below.` |  |  | The instruction Jev gets with the prompt. |
 | `task_tracker.jev_label_texts` | `a new, previously-unstated request or task, continuing or elaborating on work...` |  |  | What each label means, in the order of the labels. |
@@ -7497,9 +7585,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.peer_prompt_chars` | `400` |  | chars | How many characters at the start of a prompt are tested against peer_prompt_re. |
 | `task_tracker.peer_prompt_re` | `^\s*<cross-session-message\b\|Another Claude session sent a message` |  |  | Regex source (case-insensitive) of a prompt that is another Claude session's message, not a person typing: the tracker stays silent for it (task-tracker.js, the cross-session test). Matched against the first peer_prompt_chars characters. |
 | `task_tracker.pending_status` | `pending` |  |  | The status (lowercase) of a task nobody has started. |
-| `task_tracker.primary_instead` | `a workspace-scale MATTER (feature/fix/deploy: multi-step, own branch, own rev...` |  |  | The 'instead' line of the DevSwarm Primary dispatch-tier block. |
+| `task_tracker.primary_instead` | `assign the feature, fix or deploy to a child workspace.` |  |  | The 'instead' line of the DevSwarm Primary dispatch-tier block. |
 | `task_tracker.primary_key` | `task-tracker-primary` |  |  | The emit-dedupe key of the Primary block, rationed apart from the reminder. |
-| `task_tracker.primary_what` | `Primary dispatch tier: classify each task before you dispatch it.` |  |  | The 'what' line of the DevSwarm Primary dispatch-tier block. |
+| `task_tracker.primary_what` | `workspace-sized work needs a child workspace.` |  |  | The 'what' line of the DevSwarm Primary dispatch-tier block. |
 | `task_tracker.prune_prefix` | `task-tracker` |  |  | The prefix the sweep of stale per-session state files is stamped under. |
 | `task_tracker.segment_joiner` | `\n\n` |  |  | What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed). |
 | `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
@@ -7544,7 +7632,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.unknown_tag` | `tracker` |  |  | The tag the unknown-state note is throttled under. |
 | `task_tracker.unknown_tail` | `): check before dispatching more. ` |  |  | The end of the note that the running-agent count is unknown. |
 | `task_tracker.unknown_unreadable` | `transcript unreadable` |  |  | Part of that note when the transcript could not be read. |
-| `task_tracker.what_full` | `capture EVERY user request as a task (TaskCreate) before starting work, so no...` |  |  | The first line of the full directive. |
+| `task_tracker.what_full` | `requests need tracking before work starts.` |  |  | The first line of the full directive. |
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
 | `task_tracker.window_ms` | `21600000` |  | ms | How long the full directive stays fresh before it is injected again. |
@@ -7553,7 +7641,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `347 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `351 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8292,7 +8380,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `update.git_timeout_error` | `spawnSync {prog} ETIMEDOUT` |  |  | What a call that ran past its timeout reads as. |
 | `update.git_timeout_ms` | `20000` |  | ms | How long one git call of `update` may take before it fails into the offline path. |
 | `update.git_upstream` | `rev-parse, --abbrev-ref, --symbolic-full-name, @{u}` |  |  | git arguments: the upstream ref of the current branch. |
-| `update.harness_args` | `plugin, update, anti-hall@anti-hall` |  |  | The arguments the harness registration runs the Claude binary with. |
+| `update.harness_args` | `plugin, update, {key}` |  |  | The arguments the harness registration runs the Claude binary with; {key} is the owning install identity. |
 | `update.harness_check_args` | `plugin, update` |  |  | The harness arguments before the install key in the update command a `--check` suggests (`claude plugin update <key>`). |
 | `update.harness_timeout_ms` | `20000` |  | ms | How long `claude plugin update` may take before the registration is reported as failed. |
 | `update.heading_re` | `^##\s+v?([0-9]+(?:\.[0-9]+)*)(?-u:\b)` |  |  | A changelog section heading; the first group is the version. |
@@ -8554,9 +8642,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `handovers.md_ext` | `.md` |  |  | The extension of the files the index looks at. |
 | `handovers.md_link_re` | `\]\(([^)\s]+)\)` |  |  | A Markdown link whose target is checked when it is relative (group 1 = the target). |
 | `handovers.meta_line_re` | `^\s*(?:\*\*)?(?:Trigger\|Date\|Repository\|Repo\|Predecessor\|Current release\|Curr...` |  |  | A metadata line at the top of an older handover (`Trigger: ...`, `Date: ...`): when a handover has no Situation, the first paragraph after such lines is taken instead. |
-| `handovers.msg_advisory_instead` | `run `{cmd}` (the scheduled job also repairs the briefs); handover files are n...` |  |  | What to do. Placeholder: {cmd}. |
-| `handovers.msg_advisory_what` | `{count} handover problem(s), {days} day brief(s) out of date in {project}` |  |  | The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}. |
-| `handovers.msg_advisory_why` | `later searches for changes, work and decisions read the handover briefs; an u...` |  |  | Why it matters. |
+| `handovers.msg_advisory_instead` | `run the handover maintenance command.` |  |  | What to do. Placeholder: {cmd}. |
+| `handovers.msg_advisory_what` | `{count} handover problem(s) and {days} day brief(s) out of date in {project}` |  |  | The advisory's first line. Placeholders: {count} (problems), {days} (days needing a rebuild), {project}. |
+| `handovers.msg_advisory_why` | `Searches for earlier work and decisions read these briefs, and a malformed or...` |  |  | Why it matters. |
 | `handovers.msg_busy` | `another handover index run is in progress for this project; try again shortly` |  |  | Printed when another index run holds the project's lock. |
 | `handovers.msg_check_clean` | `{project}: {handovers} handover(s) in {days} day(s): indexed, no problems` |  |  | Printed by `check` when everything is indexed and valid. Placeholders: {project}, {handovers}, {days}. |
 | `handovers.msg_check_summary` | `{project}: {problems} problem(s), {stale} day brief(s) out of date` |  |  | Summary line of `check` with problems. Placeholders: {project}, {problems}, {stale}. |
@@ -8627,6 +8715,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.cmd_chars` | `160` |  |  | A command line in a report or advisory is cut to this many characters. |
 | `procwatch.extra_classes_file` | `procwatch-classes.toml` |  |  | The owner's own orphan classes: a TOML file with `[[classes]]` tables (name, mode = off \| report \| kill, cmd_re, exclude_re, min_age_s, children) in the engine state directory. Its classes are tried before the shipped ones. Example: engine/examples/procwatch-dev.toml. |
 | `procwatch.f_command` | `command` |  |  | The tool input field that holds a shell command. |
+| `procwatch.f_cwd` | `cwd` |  |  | Payload field of the session directory. |
 | `procwatch.f_event` | `hook_event_name` |  |  | The hook payload field that names the event. |
 | `procwatch.f_session` | `session_id` |  |  | The hook payload field that holds the session id. |
 | `procwatch.f_tool_input` | `tool_input` |  |  | The hook payload field that holds the tool input. |
@@ -8644,15 +8733,16 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `procwatch.mode_shell_task` | `7 entries` |  |  | Mode of the shell_task class (background shell commands of ended sessions): off \| report \| kill. |
 | `procwatch.mode_test_runner` | `7 entries` |  |  | Mode of the test_runner class (test runners and their children): off \| report \| kill. |
 | `procwatch.msg_bad_config` | `process watch configuration is invalid (a pattern does not compile)` |  |  | The sweep's error when its configuration does not compile. |
-| `procwatch.msg_killed` | `Stopped {n} orphan(s) (class in kill mode): {list}.` |  |  | Line added when a sweep stopped orphans; {n} count, {list} the stopped ones. |
+| `procwatch.msg_killed` | `Stopped {n} leftover process(es) (their class is set to kill): {list}.` |  |  | Line added when a sweep stopped orphans; {n} count, {list} the stopped ones. |
 | `procwatch.msg_more` | ` and {m} more` |  |  | Remainder note; {m} more. |
-| `procwatch.msg_orphans_instead` | `Nothing was stopped. Opt in per class with procwatch.<class>Mode=kill (/anti-...` |  |  | What to do about orphans. |
-| `procwatch.msg_orphans_what` | `{n} process(es) left behind by ended Claude sessions: {list}{more}.` |  |  | Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note. |
-| `procwatch.msg_orphans_why` | `They keep running (ports, CPU, memory) after the session that started them is...` |  |  | Why the orphan summary matters. |
+| `procwatch.msg_orphans_instead` | `check the process owners before stopping any.` |  |  | What to do about orphans. |
+| `procwatch.msg_orphans_what` | `{n} processes remain from ended sessions.` |  |  | Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note. |
+| `procwatch.msg_orphans_why` | `They keep using ports, CPU and memory after their session ended. Modes: {modes}.` |  |  | Why the orphan summary matters. |
+| `procwatch.msg_other_project` | ` (another project: {folder})` |  |  | Suffix when a process belongs to another checkout; folder is its project name. |
 | `procwatch.msg_proc_cwd` | ` in {cwd}` |  |  | Appended to a named process when the report knows the directory it runs in (the project that owns it). Placeholder: {cwd}. |
-| `procwatch.msg_stuck_instead` | `Check its output file or SendMessage it, then TaskStop it if it is dead. Noth...` |  |  | What to do about a stuck agent. |
-| `procwatch.msg_stuck_what` | `{n} background agent(s) have shown no output for {minutes}+ minutes: {list}{m...` |  |  | Stuck-agent line; {n} agents, {list} the named ones, {more} the remainder note. |
-| `procwatch.msg_stuck_why` | `It may be hung, waiting on input, or finished without reporting; it keeps its...` |  |  | Why a stuck agent matters. |
+| `procwatch.msg_stuck_instead` | `check each silent agent for progress.` |  |  | What to do about a stuck agent. |
+| `procwatch.msg_stuck_what` | `{n} background agent(s) printed nothing for {minutes}+ minutes: {list}{more}.` |  |  | Stuck-agent line; {n} agents, {list} the named ones, {more} the remainder note. |
+| `procwatch.msg_stuck_why` | `They may be stuck, waiting for input, or finished without reporting, and they...` |  |  | Why a stuck agent matters. |
 | `procwatch.orphan_cooldown_s` | `3600` |  | s | Least time between two orphan summaries to the same session. |
 | `procwatch.orphan_max_named` | `5` |  |  | The most orphan candidates one advisory names (the rest are counted). |
 | `procwatch.owner_var` | `CLAUDE_PID` |  |  | The environment variable that holds the pid of the Claude session process that started the process. |
@@ -8694,7 +8784,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.meminfo_path` | `/proc/meminfo` |  |  | The Linux memory statistics file (swap in use is SwapTotal minus SwapFree). |
 | `resource_watch.msg_cpu_limit` | `{pct}% over {window}s` |  |  | CPU threshold text; {pct}. |
 | `resource_watch.msg_cpu_usage` | `{pct}% CPU for {window}s` |  |  | CPU usage text; {pct} percent, {window} seconds. |
-| `resource_watch.msg_instead` | `Nothing was stopped or slowed. Check whether the work is expected; if not, as...` |  |  | What to do. |
+| `resource_watch.msg_instead` | `check whether the resource use is expected.` |  |  | What to do. |
 | `resource_watch.msg_mem_limit` | `{mb} MB` |  |  | Memory threshold text; {mb} MB. |
 | `resource_watch.msg_mem_usage` | `{mb} MB memory` |  |  | Memory usage text; {mb} MB. |
 | `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit})` |  |  | System memory pressure line; {value} the reading, {limit} the threshold. |
@@ -8730,7 +8820,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_watch.growth_top` | `3` |  |  | The most growth directories an advisory names. |
 | `disk_watch.heavy_command_re` | `(^\|[;&\|\s])(cargo +(build\|test\|check\|bench\|install)\|npm +(ci\|install\|i)\b\|yar...` |  |  | Regular expression (JavaScript source, matched case-insensitively) of the shell commands that write a lot of data: the ones warned about at the critical level. |
 | `disk_watch.impact_kind` | `disk_warning` |  |  | Impact kind recorded for every disk warning. |
-| `disk_watch.msg_blocked` | `Blocked: disk space is critical ({list}). Free space, or set diskWatch.blockA...` |  |  | Block reason when diskWatch.blockAtCritical is on; {list} the volume lines. |
+| `disk_watch.msg_blocked` | `this command is blocked: disk space is critical ({list}). Free some space, or...` |  |  | Block reason when diskWatch.blockAtCritical is on; {list} the volume lines. |
 | `disk_watch.msg_growth` | ` Biggest build or cache directories under the watched paths: {list} (suggesti...` |  |  | Growth suggestion; {list} the directories with sizes. |
 | `disk_watch.msg_heavy` | `This command writes a lot of data.` |  |  | Line added at the critical level before a heavy command. |
 | `disk_watch.msg_instead` | `Free space before starting more builds, clones or worktrees; nothing was dele...` |  |  | What to do; {growth} names the biggest growth or is empty. |
@@ -8761,7 +8851,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.channels` | `7 entries` |  |  | The names of the delivery channels, as they appear in telemetry and the status table. |
 | `agent_tracker.claude_cli` | `15 entries` |  |  | The Claude Code CLI as a data source, used only where it beats parsing a transcript. bin: the program name (the environment variable named by env.claude_bin overrides it); version_args: how its version is read; agents_args: the JSON listing of background and interactive sessions (verified: no human-formatted output is ever parsed); verified: the Claude Code version each source was last verified on (a different version re-probes the source before it is trusted, and a failed probe falls back to the transcripts); busy / waiting / blocked / failed: the status words the listing uses; fields: the listing's field names. |
 | `agent_tracker.codex` | `10 entries` |  |  | Field names of a Codex rollout file (Codex's format): its first line is a session_meta record whose payload carries the session id, the working directory and the originator (exec_originators: the originators of one-shot runs, which end for good when a turn ends). A turn is marked in the file by a record of one of start_types or terminal_types (marker: how such a type appears in a record, {} = the type); the last mark in the tail decides whether the turn ended. |
-| `agent_tracker.cooldowns` | `11 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
+| `agent_tracker.cooldowns` | `12 entries` |  |  | Per signal: cooldown_ms (least time between two reminders of the same signal about the same agent), max_per_day (reminders of that signal about that agent per day (UTC), 0 = no cap), once (optional: one reminder per spell the signal stays up, so an unchanged state never repeats), confirm_ticks (optional: ticks the signal must stay up before its first reminder; the limit of the same name when absent). |
 | `agent_tracker.cost_limit` | `50` |  |  | The most agents the cost report (`telemetry summary`, key `agent_cost`) lists, most tokens first. |
 | `agent_tracker.cost_outcome_units` | `commits + pushes + finished steps + passing test runs + files edited` |  |  | What the cost report counts as an outcome when it divides an agent's tokens (input plus output): the work units the tracker keeps per agent. |
 | `agent_tracker.counts` | `7 entries` |  |  | Names of the summary counts in the status JSON. Live = not done. sessions: main and workspace sessions (matches the claude processes in `ps`), subagents, teammates, codex; headless: one-shot runs left out; done_hidden: finished agents older than limits.done_keep_ms left out of the list. |
@@ -8775,18 +8865,20 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.live_plan` | `2 entries` |  |  | The live facts of a DevSwarm workspace's work that the roster shows beside its plan (the plan is the workspace's own `heartbeat --step` report and goes stale). dir: the folder under the tracker's directory holding one file per workspace (task-list completions, commits, pushes, merges and deploys, when it last shipped); stale_ms: how far after the plan's last report a commit, push, merge or deploy must be before the roster says the plan is behind. |
 | `agent_tracker.meta` | `6 entries` |  |  | Field names of a subagent's meta file (the host's format). task_kind and teammate: a subagent whose task_kind field equals teammate is an in-process teammate of an agent team; name: its team name for it; description: the task description the launcher gave it (a stop of the teammate is answered with this text); team: the team; finished: true once the host recorded the agent as finished. |
 | `agent_tracker.native_wake` | `5 entries` |  |  | The native wake of an idle DevSwarm workspace (`workspace reactivate-child`, run after a mesh send to the workspace and by `agents send`; switched with agents.wakeWatch). idle_ms: how long a running-looking workspace must have been silent before it is woken (one that ended its turn is woken at once); cooldown_ms: the least gap between two wakes of one workspace; timeout_ms: the bound of each hivecontrol call; text_cap: characters of a preview or an error kept; dir: the folder (under the tracker's base) holding each workspace's last-wake stamp. |
+| `agent_tracker.no_work` | `5 entries` |  |  | The no_work signal requires a valid transcript scanned from its start through its current end. Partial, truncated or unread scans are unknown and never notify. Rescue wrappers (agent type or Codex job id in a result) are excluded because their work happens elsewhere. max_tools controls the threshold. |
+| `agent_tracker.no_work_states` | `4 entries` |  |  | No-work evidence states in agents status: unknown means incomplete scan, excluded a Codex-rescue wrapper, no_work a proven empty finished child, clear otherwise. |
 | `agent_tracker.owner_setting` | `6 entries` |  |  | Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes that name the owner channel append a notice to the owner notices file. |
 | `agent_tracker.paths` | `31 entries` |  |  | Where the tracker reads and writes. Relative to the user home unless noted: projects (the Claude Code transcripts), base (the anti-hall directory), dir (the tracker's own directory under base), state, series, reminders (one queue file per agent or session), delivered (what the hook delivered), outbox (reminders for DevSwarm workspaces, for the mesh action layer), notices (owner notices), probe (the cached Claude Code capability probe), heartbeats (the agent heartbeat files, under base), devswarm (the DevSwarm directory, under base), subagents (sub-directory of a session directory that holds its subagent transcripts), sessions (the host's registry of live sessions, one file per process), codex (the Codex session tree: year/month/day directories of rollout files), rollout_prefix (the start of a rollout file name). |
-| `agent_tracker.patterns` | `14 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), task_created (the result of a task-list create: captures the new task id), bg_started (the result of a background shell command: captures the task id whose end notice is awaited), ci_wait (a command that checks or watches CI), merge (a pull-request merge, counted as an outcome), deploy (a deploy command, counted as an outcome), build (a compile or check: cargo build, check, clippy, or an npm/go/make/flutter build), build_pass (output that shows it finished), build_fail (output that shows it failed). |
+| `agent_tracker.patterns` | `15 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), task_created (the result of a task-list create: captures the new task id), bg_started (the result of a background shell command: captures the task id whose end notice is awaited), ci_wait (a command that checks or watches CI), merge (a pull-request merge, counted as an outcome), deploy (a deploy command, counted as an outcome), build (a compile or check: cargo build, check, clippy, or an npm/go/make/flutter build), build_pass (output that shows it finished), build_fail (output that shows it failed). |
 | `agent_tracker.primary_prefix` | `primary-` |  |  | The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch. |
 | `agent_tracker.progress_request_text` | `Progress requested from the dashboard: reply with a short status (what is don...` |  |  | The reminder an agent gets when the dashboard asks it for progress. |
 | `agent_tracker.registry` | `9 entries` |  |  | The host's registry of live sessions (agent_tracker.paths.sessions: one JSON file per running process, removed when it exits) as a liveness source: a session whose process is alive is running or waiting, never done, however old its transcript. Fields: pid, session (the session id), cwd, started (ms), status, name. busy / waiting / blocked: the status words (the same words as claude_cli's, plus the registry's own: shell = a shell command is running). A status in none of the lists decides nothing and the transcript does. |
 | `agent_tracker.remind_setting` | `6 entries` |  |  | Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent. |
 | `agent_tracker.roles` | `2 entries` |  |  | The names of the derived role of a session in the status JSON: primary (it coordinates at least one other agent) and solo (it does not). |
 | `agent_tracker.roster` | `7 entries` |  |  | The host's team roster as a liveness source for teammates: <dir>/<team>/<file> lists the members of an agent team (field `members`, each with a `name`); the host removes a teammate when it is stopped or finishes, but writes nothing into the teammate's own transcript, which reads running for as long as it is tracked. A teammate whose meta file names a team and whose name is missing from that team's readable roster, or is listed with a `joined` time later than the agent's start plus rejoin_slack_ms (the name belongs to a newer spawn), is finished. grace_ms: how long a teammate must have been followed before its absence counts (the roster is written at spawn, but a tick may read it between the two writes). A roster that is missing or unreadable decides nothing. |
-| `agent_tracker.routes` | `11 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
+| `agent_tracker.routes` | `12 entries` |  |  | Where each signal goes, by target name (see agent_tracker.targets). self: the agent itself (its session queue, or the mesh for a DevSwarm workspace); coordinator: the session that launched it; wake: the same session through its wake feed, so an idle coordinator is woken; owner: the owner notices file (only while agents.ownerNotify is on). |
 | `agent_tracker.setting` | `6 entries` |  |  | Where the tracker's on/off switch is read from (agents.tracker, default on): off, a tick does nothing. |
-| `agent_tracker.signals` | `11 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
+| `agent_tracker.signals` | `12 items` |  |  | The signals the tick evaluates, in order. A name not listed here is never raised. |
 | `agent_tracker.sources` | `4 entries` |  |  | The names of where an agent's numbers come from (process: a live process in the host's session registry; codex: a Codex rollout file), as they appear in telemetry and the status JSON. |
 | `agent_tracker.spam` | `4 entries` |  |  | Spam control: max_per_tick (reminders queued in one tick, all agents), max_pending (undelivered reminders queued for one agent before more are held back), max_per_delivery (reminders put in front of an agent by one hook event), max_text (characters of one reminder). |
 | `agent_tracker.states` | `5 entries` |  |  | The names of an agent's states: running, waiting (finished its turn with no tool call open, or the host says it waits for input; a host "busy" over an ended turn is a background shell, not work), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window), dead (no live process and its project directory or transcript is gone, or silent past limits.dead_idle_ms with no live parent: out of the live list, its flags cleared, nothing deleted). |
@@ -9934,6 +10026,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.flag_set` | `set` |  |  | The gate flag naming the gates to set. |
 | `devswarm_cli.flag_short` | `short` |  |  | The flag that asks `help` for the one-line-per-verb index. |
 | `devswarm_cli.flag_since` | `since` |  |  | The logs flag keeping the entries of a recent window (`30m`, `2h`, `1d`, or milliseconds). |
+| `devswarm_cli.flag_skip_global` | `global` |  |  | Explicit owner-set global skip instead of the default session scope. |
 | `devswarm_cli.flag_stdin` | `stdin` |  |  | The sync-ui flag that reads the titles from standard input. |
 | `devswarm_cli.flag_steps` | `steps` |  |  | The plan flag carrying the numbered step list. |
 | `devswarm_cli.flag_steps_file` | `steps-file` |  |  | The plan flag naming a file that holds the step list. |
@@ -10151,10 +10244,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.msg_send_target_none` | `send requires --to <meshId>, --to-primary, or --broadcast` |  |  | send's refusal of no target mode. |
 | `devswarm_cli.msg_send_unregistered` | `send --to {to} is not a registered mesh workspace` |  |  | The refusal of a send whose recipient is no registered mesh workspace: `{to}` is the recipient, quoted. |
 | `devswarm_cli.msg_send_urgency` | `send --urgency must be one of {allowed}` |  |  | send's refusal of an unknown urgency. {allowed} are the words, joined by `\|`. |
+| `devswarm_cli.msg_skip_no_session` | `skip needs a session id; pass --session <id> (or --global for an owner-set gl...` |  |  | Refuse an unscoped skip unless the owner explicitly requests --global. |
 | `devswarm_cli.msg_skip_ttl_bad` | `invalid --ttl (must be a positive number of minutes)` |  |  | The error for a --ttl that is not a positive number. |
 | `devswarm_cli.msg_skip_ttl_infinite` | `invalid --ttl (resulting expiry is not a finite value)` |  |  | The error for a --ttl whose expiry overflows. |
 | `devswarm_cli.msg_skip_ttl_missing` | `invalid --ttl (missing value; expected a positive number of minutes)` |  |  | The error for a bare --ttl. |
-| `devswarm_cli.msg_skip_usage` | `usage: ah-engine mesh skip <guard> [--ttl <minutes>]` |  |  | The error for a skip without a guard name. |
+| `devswarm_cli.msg_skip_usage` | `usage: ah-engine mesh skip <guard> [--ttl <minutes>] [--session <id>] [--global]` |  |  | The error for a skip without a guard name. |
 | `devswarm_cli.msg_spawn_bad_value` | `spawn: {label} got {value} as its value, which looks like another option. Giv...` |  |  | The refusal of a create option handed what looks like the next option. {label} {value} {name} {short}. |
 | `devswarm_cli.msg_spawn_no_branch` | `spawn requires a branch name` |  |  | The refusal of spawn without a branch. |
 | `devswarm_cli.msg_spawn_no_value` | `spawn: {label} needs a value, but none was given after {name}.` |  |  | The refusal of a create option with no value. {label} {name}. |
@@ -10782,7 +10876,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.verb_retention` | `retention` |  |  | The verb that shows and runs message retention (tombstoning old, fully read message bodies, archive first). |
 | `devswarm_cli.verb_scope` | `scope` |  |  | The scope verb (`scope add <id>`). |
 | `devswarm_cli.verb_sep` | `\|` |  |  | What joins the verb names in the unknown-command message. |
-| `devswarm_cli.verb_skip` | `skip` |  |  | The skip verb: temporarily disable an anti-hall guard. |
+| `devswarm_cli.verb_skip` | `skip` |  |  | The skip verb: temporarily disable an anti-hall guard for this session. |
 | `devswarm_cli.verb_spawn` | `spawn` |  |  | The verb that creates a workspace through hivecontrol. |
 | `devswarm_cli.verb_supervision_report` | `supervision-report` |  |  | The verb that prints the effectiveness report over the supervision metrics log. |
 | `devswarm_cli.verb_sync_ui` | `sync-ui` |  |  | The verb that reconciles a transcribed screenshot of the DevSwarm sidebar with the app database and anti-hall's records. |
@@ -11143,6 +11237,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_recon.probe_args` | `workspace, info` |  |  | The hivecontrol arguments of a start-up probe, before the workspace id. |
 | `devswarm_recon.probe_stderr_max` | `200` |  |  | Most characters of a failed probe's stderr kept in its diagnostics. |
 | `devswarm_recon.probe_timeout_ms` | `3000` |  | ms | How long one start-up probe may run (Node: PROBE_TIMEOUT_MS). |
+| `devswarm_recon.pull_primary_reason` | `primary-label` |  |  | The pull skip reason for a Primary mesh partition: it has no hivecontrol workspace queue. Must be in pull_skip_reasons. |
 | `devswarm_recon.pull_skip_reasons` | `primary-label` |  |  | The reasons a workspace's pull is SKIPPED by construction, not held: the workspace has no native hivecontrol queue to read (`primary-label`: a Primary checkout's own label, which no DevSwarm workspace answers to), so there is nothing to abandon. Any other reason is a held decision, counted and logged. |
 | `devswarm_recon.re_hc_missing` | `^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT\|EACCES\|ENOTDIR)\b` |  |  | The error text of a drain whose hivecontrol binary is absent (an environment fact, not a failure). |
 | `devswarm_recon.re_legacy_hash` | `^[0-9a-fA-F]{8}$` |  |  | The shape of a legacy store directory name. |
@@ -11729,6 +11824,28 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.word_unknown` | `unknown` |  |  | Said where a role, id or version is not known. |
 | `wake_watch.word_unknown_error` | `unknown read error` |  |  | Said where a failed read gave no reason. |
 
+### refresh.toml / devswarm_compat
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `devswarm_compat.cache` | `.anti-hall/devswarm-compatibility.json` |  |  | Cached version-change dependency probe, relative to HOME; never a gate. |
+| `devswarm_compat.command_timeout_ms` | `3000` |  | ms | Per-command help timeout, further limited by the remaining total compatibility budget. |
+| `devswarm_compat.commands` | `14 items` |  |  | Read-only help probes: command words before \|, required help tokens after it. No operational subcommand is executed. |
+| `devswarm_compat.doctor_summary` | `DevSwarm compatibility: {status} (version {version}); {reason}` |  |  | Doctor compatibility cache summary; {version}, {status}, {reason}. Doctor never runs probes. |
+| `devswarm_compat.environment` | `9 items` |  |  | External DevSwarm identity variables consumed by the engine; presence is reported, their producer semantics are not inferred. |
+| `devswarm_compat.forwarding` | `workspace create: caller argv forwarded; strip anti-hall --from-local; source...` |  |  | Caller-supplied argv is deliberately open-ended; this is the engine transformation contract, not a claim to certify arbitrary supplied options. |
+| `devswarm_compat.help_arg` | `--help` |  |  | Read-only argument appended to compatibility command forms. |
+| `devswarm_compat.help_marker` | `Usage:` |  |  | Token that distinguishes successful CLI help from unrelated stdout. |
+| `devswarm_compat.outputs` | `workspace info:id,branch,path,worktreePath,sourceBranch,parentBranch,startup,...` |  |  | Parsed CLI output dependencies; inventory only, not certified by help. No messaging queue is read by the probe. |
+| `devswarm_compat.paths` | `macOS: Library/Application Support/DevSwarm/devswarm.db, Linux: XDG_CONFIG_HO...` |  |  | External app path defaults and anti-hall descriptor fields used by both orchestration ports; inventory, not proof of producer behavior. |
+| `devswarm_compat.reason_conflict` | `Dependency conflicts ({names}): {issues}. Help and schema do not certify runt...` |  |  | The reason of an incompatible compatibility report; {names} are the conflicting dependencies, {issues} their conflicts. |
+| `devswarm_compat.reason_no_probe` | `no compatibility probe cached` |  |  | The reason of a compatibility report when no probe result is cached. |
+| `devswarm_compat.reason_partial` | `Help and schema only; output fields, environment semantics and descriptor pro...` |  |  | The reason of a compatibility report that only checked help and schema. |
+| `devswarm_compat.reason_stale` | `cached probe differs from current version or dependency manifest` |  |  | The reason of a cached compatibility report whose version or dependency manifest no longer matches. |
+| `devswarm_compat.schema` | `builders:id,repositoryId,sourceBranch,branchName,worktreePath,terminalId,labe...` |  |  | App SQLite read-only schema contract: table followed by required columns. Column presence does not prove row semantics. |
+| `devswarm_compat.semantic_conflicts` | `workspace monitor\\|Without a pane ID\\|Plain-shell monitor excludes messages p...` |  |  | Known incompatible help semantics: command\|help marker\|diagnostic. Detection is advisory only; never acknowledges or consumes mail. |
+| `devswarm_compat.total_budget_ms` | `20000` |  | ms | Total wall-clock budget for version-change compatibility help probes; skipped dependencies stay unverified. SessionStart only queues this native background refresh. |
+
 ### refresh.toml / job
 
 | Key | Default | Env override | Unit | What it is |
@@ -11915,8 +12032,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.line_dry` | `dry run: nothing was changed; add --yes to roll back` |  |  | Without --yes on a rollback. |
 | `routine.line_dry_plan` | `dry run: would install into {roots} plugin root(s) {same}; add --yes to do it` |  |  | Without --yes: what would happen. {roots}, {same}. |
 | `routine.line_installed` | `installed: sha {sha}, {started}` |  |  | The files and binaries are in place. {sha}, {started}. |
+| `routine.line_legacy_scheme` | `running build uses the old version numbering ({running}); treating {target} a...` |  |  | Said when the running build uses the old plugin-numbered versions and the target uses a per-component version, so the target counts as an upgrade. {running}, {target}. |
 | `routine.line_migrated` | `migrated: {n} state item(s) repaired` |  |  | State migrations changed something. {n}. |
-| `routine.line_mismatch_forced` | `update: installing binaries of different versions (forced)` |  |  | A set of different versions is installed because the force flag was given. |
+| `routine.line_mismatch_forced` | `update: installing binaries that are not compatible (forced)` |  |  | An incompatible set is installed because the force flag was given. |
 | `routine.line_new_binary` | `new engine: {version} (sha {sha}) {path}` |  |  | The new binary passed its smoke test. {path}, {version}, {sha}. |
 | `routine.line_new_hook` | `new client: {version} {path}` |  |  | The new thin client passed its smoke test. {path}, {version}. |
 | `routine.line_new_web` | `new dashboard: {version} ({path})` |  |  | The new dashboard binary, shown after the version check. {path}, {version}. |
@@ -11948,7 +12066,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.msg_dirty` | `update: refused: the set was built from uncommitted changes ({which}).\n  reb...` |  |  | A build with uncommitted changes is refused. {which}, {flag}. |
 | `routine.msg_downgrade` | `update: refused: this is a downgrade ({why}).\n  running: {running}\n  target...` |  |  | A downgrade is refused. {running}, {target}, {why}, {flag}. |
 | `routine.msg_flag_value` | `update: {flag} needs a value` |  |  | A flag lacks its value. {flag}. |
-| `routine.msg_mismatch` | `update: refused: the binaries of this set report different versions:\n{set}\n...` |  |  | The binaries of the set do not report the same version. {set} (one line per binary), {flag}. |
+| `routine.msg_mismatch` | `update: refused: the binaries of this set are not compatible:\n{set}\n  build...` |  |  | A binary of the set is older than the new engine supports. {set} (one line per requirement), {flag}. |
 | `routine.msg_no_deploy` | `update: no saved copy of an earlier install under {dir}; name one with --depl...` |  |  | Nothing to roll back. {dir}. |
 | `routine.msg_no_engine` | `update: no ah-engine binary under {dir} (looked at the places routine.engine_...` |  |  | No engine binary under the directory. {dir}. |
 | `routine.msg_no_manifest` | `update: {dir} has no readable manifest` |  |  | No manifest in the saved-copy directory. {dir}. |
@@ -11971,7 +12089,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.problem_audit_run` | `entry-path audit could not run (exit {code}): {out}` |  |  | The audit could not run. {code}, {out}. |
 | `routine.problem_commit` | `the files could not be put in place` |  |  | Putting the files in place failed. |
 | `routine.problem_daemons` | `{n} engine daemon(s) run; exactly 1 must` |  |  | More or fewer than one daemon runs. {n}. |
-| `routine.problem_defaults_error` | `defaults.error written since the start: {text}` |  |  | The defaults error file was written since the start. {text}. |
+| `routine.problem_defaults_error` | `defaults.error written since the start: {text} {writer}` |  |  | The defaults error file was written since the start. {text}, {writer} (pid, ppid, argv, cwd when recorded). |
 | `routine.problem_event` | `engine log since the start: {kind} {code} {detail}` |  |  | A bad row in the engine log since the start. {kind}, {code}, {detail}. |
 | `routine.problem_new_binary` | `the new engine {path} does not answer `version` (got: {got})` |  |  | The new engine binary does not run. {path}, {got}. |
 | `routine.problem_new_hook` | `the new client {path} does not report its version (got: {got})` |  |  | The new thin client does not run. {path}, {got}. |
@@ -11993,7 +12111,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.sources` | `release, local, manual` |  |  | The values of the install record's `source`: `release` (downloaded and verified by the thin client), `local` (a local build) and `manual` (a binary put there by hand: the record does not match what is installed). |
 | `routine.stage_infix` | `.deploy.` |  |  | Between a file's name and the process id in the name of its staging file (renamed into place at commit). |
 | `routine.start_wait_s` | `30` |  | s | How long the new daemon gets to answer a ping after it was started. |
-| `routine.state_file` | `install.json` |  |  | The install record in the state directory: {version, sha, source, time, built_at, previous}. The Updates page and `update --check --json` read it. |
+| `routine.state_file` | `install.json` |  |  | The install record in the state directory: {version, sha, source, time, built_at, previous, plugin_root}. The Updates page and `update --check --json` read it. |
 | `routine.stop_wait_s` | `10` |  | s | How long a stopped daemon gets to exit before it is stopped by its verified pid. |
 | `routine.sweep_cron_backup` | `crontab.before` |  |  | File name, inside the legacy sub-directory of routine.retired_dir, of the crontab as it was before the sweep rewrote it. |
 | `routine.sweep_cron_list` | `crontab, -l` |  |  | The command (program, then arguments) that prints the user's crontab. |
@@ -12014,9 +12132,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.tree_skip_substrings` | `.bak, .deploy., .DS_Store` |  |  | A relative path containing one of these is not synced (backups, staging files, editor files). |
 | `routine.web_candidates` | `ah-web, bin/ah-web, ah-web/target/release/ah-web, target/release/ah-web` |  |  | Where the dashboard binary is looked for under the --from-local directory. Absent = it is not part of the version check. |
 | `routine.web_version_args` | `--version` |  |  | Arguments with which the dashboard binary reports its version (it must exit 0). |
-| `routine.why_build_older` | `same plugin version, older build` |  |  | Why an install is a downgrade: same plugin version, older build. |
-| `routine.why_local_running` | `the running build is a local build of the same plugin version; a release of i...` |  |  | Why an install is refused: the running build is a local or hand-installed build of the same plugin version, which a release of that version does not replace. |
-| `routine.why_plugin_lower` | `its plugin version is lower` |  |  | Why an install is a downgrade: the plugin version is lower. |
+| `routine.why_build_older` | `same engine version, older build` |  |  | Why an install is a downgrade: same engine version, older build. |
+| `routine.why_local_running` | `the running build is a local build of the same engine version; a release of i...` |  |  | Why an install is refused: the running build is a local or hand-installed build of the same engine version, which a release of that version does not replace. |
+| `routine.why_plugin_lower` | `its engine version is lower` |  |  | Why an install is a downgrade: the engine version is lower. |
 | `routine.word_down` | `daemon NOT answering` |  |  | The daemon did not answer after the install. |
 | `routine.word_engine` | `engine` |  |  | How the engine is named in the set messages. |
 | `routine.word_hook` | `client` |  |  | How the thin client is named in the set messages. |
@@ -12031,11 +12149,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `api_guard_v1.max_code_chars` | `600000` |  |  | A code chunk longer than this (JavaScript string length) is not checked, as in the Node guard. |
 | `api_guard_v1.max_modules` | `8` |  |  | Most module groups probed per language (one interpreter run each), as the Node guard bounds them. |
-| `api_guard_v1.msg_instead` | `verify the correct name (check the docs or run a quick `hasattr` / `typeof` p...` |  |  | Block message: what to do instead. |
+| `api_guard_v1.msg_instead` | `verify the API names and correct the references.` |  |  | Block message: what to do instead. |
 | `api_guard_v1.msg_item_prefix` | `  • ` |  |  | Prefix of each fabricated reference listed under the block message. |
 | `api_guard_v1.msg_override` | `only if you target a NEWER version where it exists: write ~/.anti-hall/skip.j...` |  |  | Block message: the override. |
 | `api_guard_v1.msg_timeout` | `anti-hall api-guard: API verification skipped (probe for "{bin}" timed out af...` |  |  | The one stderr line when a probe timed out, was killed or could not run in the time left and nothing was blocked (the edit is allowed unchecked); {bin} is the interpreter, {ms} the asked budget. |
-| `api_guard_v1.msg_what` | `this code references API(s) that do not exist in your installed runtime ({ver...` |  |  | Block headline; {versions} lists the interpreters' version lines. |
+| `api_guard_v1.msg_what` | `this edit references APIs missing from the installed runtime.` |  |  | Block headline; {versions} lists the interpreters' version lines. |
 | `api_guard_v1.msg_why` | `These attributes are absent from the real module/object; they look like fabri...` |  |  | Block message: why. |
 | `api_guard_v1.node_args` | `-e` |  |  | Arguments before the JavaScript probe's source and its two JSON arguments. |
 | `api_guard_v1.node_bin` | `node` |  |  | The JavaScript runtime probed for require() modules and global builtins: the user's own `node` on the request's PATH (when it is not installed, JavaScript references are not checked). |
@@ -12057,8 +12175,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 |---|---|---|---|---|
 | `compact_decl_v1.declaration_forms` | `0, 2` |  |  | Which of the recommendation patterns of the compact-advice rule (its advice list, by position) count as a declaration for this guard: 0 "safe to compact" and 2 "safe for a reset"; the pause nag's mandated "good point to /compact" footer and a bare /compact command do not. |
 | `compact_decl_v1.msg_allowed` | `read-only tools.` |  |  | Block message: what stays allowed. |
-| `compact_decl_v1.msg_instead` | `stop, or retract: write a line "RETRACT SAFE TO COMPACT: <why>", then refresh...` |  |  | Block message: what to do instead. |
-| `compact_decl_v1.msg_what` | `you declared SAFE TO COMPACT this turn ("{phrase}") and then started new work...` |  |  | Block headline; {phrase} is the declaration found, {tool} the tool that started new work. |
+| `compact_decl_v1.msg_instead` | `retract the declaration before continuing.` |  |  | Block message: what to do instead. |
+| `compact_decl_v1.msg_what` | `new work started after a SAFE TO COMPACT declaration.` |  |  | Block headline; {phrase} is the declaration found, {tool} the tool that started new work. |
 | `compact_decl_v1.msg_why` | `The declaration must be the last act of the turn; new work after it makes the...` |  |  | Block message: why. |
 | `compact_decl_v1.this_tool` | `this tool` |  |  | How the block message names the tool when the payload has no tool name. |
 
@@ -12097,8 +12215,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
 | `inbox_read_v1.guard_store` | `devswarm-store-read` |  |  | The guard name a raw store read is blocked under. |
-| `inbox_read_v1.msg_store_instead` | ``~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (or `~/.anti-hall...` |  |  | Store-read block: what to do instead. |
-| `inbox_read_v1.msg_store_what` | `reading the raw DevSwarm store (SQLite db, sidecars, journal NDJSON) directly...` |  |  | Store-read block: what. |
+| `inbox_read_v1.msg_store_instead` | `read through the mesh inbox CLI.` |  |  | Store-read block: what to do instead. |
+| `inbox_read_v1.msg_store_what` | `a raw DevSwarm store read was stopped.` |  |  | Store-read block: what. |
 | `inbox_read_v1.msg_store_why` | `The store is the write/derive layer; a raw read risks a partial view and a la...` |  |  | Store-read block: why. |
 | `inbox_read_v1.store_cli_present` | `true` |  |  | Whether the wrapper's store-read command exists, so a raw read of the DevSwarm store (its database, sidecars and journal) is blocked as well as a raw inbox read. The store-read CLI is present in every shipped plugin since the journal store; the engine ships the same answer. |
 
@@ -12221,22 +12339,22 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `edit_guard.descriptor_ext` | `.json` |  |  | The extension of a workspace descriptor file. |
 | `edit_guard.handover_parts` | `3 entries` |  |  | The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory. |
 | `edit_guard.msg_new_allowed` | `.anti-hall/handovers/**.` |  |  | What stays allowed next to a redirected handover document. |
-| `edit_guard.msg_new_instead` | `write it under .anti-hall/handovers/** and copy elsewhere afterwards if the p...` |  |  | What to do instead for a new handover document. |
-| `edit_guard.msg_new_override` | `{skip} (~/.anti-hall/skip.json, 15-min TTL), then retry` |  |  | The override line of the handover redirect ({skip} is the skip command). |
-| `edit_guard.msg_new_what` | `{tool} of a new session-handover doc at this path is blocked.` |  |  | Heading of the block on a new handover document at the wrong place ({tool} is the tool name). |
-| `edit_guard.msg_new_why` | `New handovers belong under .anti-hall/handovers/<YYYY-MM-DD>/<session-id>/HAN...` |  |  | Why a new handover document is redirected. |
-| `edit_guard.msg_outside_instead` | `write it yourself (the main thread may; no subagent, no override needed) at {...` |  |  | What to do instead ({path} is the canonical handover path). |
-| `edit_guard.msg_outside_what` | `{tool} of a session-handover doc outside the project is blocked.` |  |  | Heading of the block on a handover document outside the project ({tool} is the tool name). |
-| `edit_guard.msg_outside_why` | `Handovers live inside the project, where handover-resume finds them; this pat...` |  |  | Why a handover document outside the project is blocked. |
-| `edit_guard.msg_patch_instead` | `send a well-formed patch (*** Begin Patch ... *** End Patch), or delegate the...` |  |  | What to do instead for an unparseable patch ({sub} names the worker). |
-| `edit_guard.msg_patch_what` | `this apply_patch could not be parsed ({error}), so its targets cannot be chec...` |  |  | Heading of the block on an apply_patch the parser rejects ({error} is the parser's message). |
-| `edit_guard.msg_patch_why` | `Edits in the main thread must be checked against the delegation rule.` |  |  | Why an unparseable patch is blocked on the main thread. |
-| `edit_guard.msg_self_edit_instead` | `ask the user to change it (or delegate the change to {sub}), then the user re...` |  |  | What to do instead ({sub} names the worker). |
-| `edit_guard.msg_self_edit_what` | `{tool} of .anti-hall/edit-allow.json is blocked.` |  |  | Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name). |
-| `edit_guard.msg_self_edit_why` | `That file decides which files the main thread may edit directly, so the main ...` |  |  | Why the repository's own edit allowlist is never edited by the main thread. |
-| `edit_guard.msg_what` | `{tool} blocked: the {who} does not touch files directly.` |  |  | Heading of the delegation block ({tool} is the tool name, {who} the next text). |
+| `edit_guard.msg_new_instead` | `write it at the session handover path.` |  |  | What to do instead for a new handover document. |
+| `edit_guard.msg_new_override` | `tell the agent "skip edit-guard" (lasts 15 minutes).` |  |  | The override line of the handover redirect ({skip} is the skip command). |
+| `edit_guard.msg_new_what` | `a new handover must be written at the session path.` |  |  | Heading of the block on a new handover document at the wrong place ({tool} is the tool name). |
+| `edit_guard.msg_new_why` | `New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOVER.md.` |  |  | Why a new handover document is redirected. |
+| `edit_guard.msg_outside_instead` | `write it yourself at {path}; no subagent or override is needed.` |  |  | What to do instead ({path} is the canonical handover path). |
+| `edit_guard.msg_outside_what` | `{tool} on a handover file outside the project is not allowed.` |  |  | Heading of the block on a handover document outside the project ({tool} is the tool name). |
+| `edit_guard.msg_outside_why` | `Handovers live inside the project, where they are found on resume.` |  |  | Why a handover document outside the project is blocked. |
+| `edit_guard.msg_patch_instead` | `send a well-formed patch.` |  |  | What to do instead for an unparseable patch ({sub} names the worker). |
+| `edit_guard.msg_patch_what` | `this apply_patch could not be read ({error}), so its targets can't be checked.` |  |  | Heading of the block on an apply_patch the parser rejects ({error} is the parser's message). |
+| `edit_guard.msg_patch_why` | `Edits in the main thread are checked against the delegation rule.` |  |  | Why an unparseable patch is blocked on the main thread. |
+| `edit_guard.msg_self_edit_instead` | `ask the user to update and re-trust the edit allowlist.` |  |  | What to do instead ({sub} names the worker). |
+| `edit_guard.msg_self_edit_what` | `{tool} on .anti-hall/edit-allow.json is not allowed.` |  |  | Heading of the block on an edit of the repository's own edit allowlist ({tool} is the tool name). |
+| `edit_guard.msg_self_edit_why` | `That file decides which files the main thread may edit, so the main thread ne...` |  |  | Why the repository's own edit allowlist is never edited by the main thread. |
+| `edit_guard.msg_what` | `{tool} is not allowed: the {who} does not edit files directly.` |  |  | Heading of the delegation block ({tool} is the tool name, {who} the next text). |
 | `edit_guard.nudge_default_threshold` | `5` |  |  | The threshold used when the setting holds nothing usable. |
-| `edit_guard.nudge_note` | `💡 anti-hall · devswarm-primary: you have made several direct file edits while...` |  |  | The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live. |
+| `edit_guard.nudge_note` | `💡 coordinator workload: pending work needs a workspace.\nDo instead: hand the...` |  |  | The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live. |
 | `edit_guard.nudge_prune_prefix` | `inline-work` |  |  | The writer prefix of the stale-file sweep of the counter files. |
 | `edit_guard.nudge_setting` | `6 entries` |  |  | Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on). |
 | `edit_guard.nudge_sid_max` | `128` |  |  | The longest session id kept in the counter file name. |
@@ -12781,7 +12899,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nodeback.shadow_load_max_pct` | `85` |  | % | Skip the shadow while the one-minute load average per core is at or above this percent (0 = do not look at the load). Skips are counted (`shadow` / `skip_load`). |
 | `nodeback.shadow_max_concurrent` | `2` |  |  | Most shadow runs alive at once (each runs its event's Node hooks one after the other). A shadow event that finds every slot taken is skipped and counted (`shadow` / `skip_busy`). |
 | `nodeback.shadow_max_payload_bytes` | `262144` |  | bytes | Largest hook payload the shadow follows; a bigger one is skipped and counted (`shadow` / `skip_payload`). |
-| `nodeback.shadow_mode` | `sampled` |  |  | Which events the Node shadow follows: `off` (none), `sampled` (nodeback.shadow_sample_pct of the events, plus every event the engine blocked when nodeback.shadow_sample_blocks is 1) or `all` (every event of nodeback.shadow_events; heavy, a Node process per hook). |
+| `nodeback.shadow_mode` | `off` |  |  | Which events the Node shadow follows: `off` (none), `sampled` (nodeback.shadow_sample_pct of the events, plus every event the engine blocked when nodeback.shadow_sample_blocks is 1) or `all` (every event of nodeback.shadow_events; heavy, a Node process per hook). |
 | `nodeback.shadow_node_timeout_ms` | `8000` |  | ms | Longest one Node hook may run in the shadow, in ms (the hook's own timeout from the dispatch table applies too; the shorter wins). A hook past it is killed with its process group and recorded as `timeout`. |
 | `nodeback.shadow_sample_blocks` | `1` |  |  | 1 = in `sampled` mode an event the engine blocked is always followed (blocks are rare and the most informative); 0 = blocks are sampled like every other event. |
 | `nodeback.shadow_sample_pct` | `10` |  | % | Share of the shadowed events, in percent, that `sampled` mode follows. |
@@ -12802,6 +12920,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.bind_host` | `127.0.0.1` |  |  | The address the dashboard server binds to. Keep it a loopback address: the page can send agent messages. |
 | `web.boot_marker` | `__AH_BOOT__` |  |  | The text in the index file that the server replaces with the page's boot data (texts and thresholds as JSON). |
 | `web.client_label` | `{project} · {name}` |  |  | How a Health client (a hook session) is named once the tracker knows it. Placeholders: {project}, {name} (its session or agent title). |
+| `web.compat_msg` | `web {web_version} needs engine >= {required}, installed {actual} -> update th...` |  |  | The sentence shown when the engine is older than the lowest version this dashboard works with. Placeholders: {web_version}, {required}, {actual}. |
 | `web.config_rel` | `engine/defaults/web.toml` |  |  | This file's path relative to the plugin root; the engine hands it to the server, which reads it itself. |
 | `web.cookie_name` | `ah_web_session` |  |  | Name of the session cookie the browser receives after it presents the token. |
 | `web.coverage` | `8 entries` |  |  | Which dashboard screen shows which engine feature, for `ah-engine describe --coverage` (the header badge counts what no screen covers). Screen to selectors; a selector is `kind:name` with `*` as a wildcard. Kinds: verbs, checks, settings, files, jobs, jev, switches, sources. |
@@ -13018,6 +13137,61 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_events.msg_no_db` | `mesh calls need db=<path to a devswarm.db>` |  |  | Said when a mesh call names no store. |
 | `mesh_events.msg_no_id` | `mesh-msg needs id=<message id>` |  |  | Said when `mesh-msg` names no message id. |
 | `mesh_events.msg_unreadable` | `the mesh store could not be opened` |  |  | Said when the mesh store cannot be opened read-only. |
+
+### session_switches.toml / repeat
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `repeat.allowed_keys` | `6 entries` |  |  | Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line. |
+| `repeat.guard_names` | `3 entries` |  |  | Checks whose public guard names differ, for per-guard threshold overrides and allowed-form hints. All other checks use their own names. |
+| `repeat.max_keys` | `512` |  |  | Most (session, guard) pairs the learner remembers; the oldest are dropped past it. |
+| `repeat.min_blocks` | `2` |  |  | How many blocks by one guard of one session inside the window make a repeat. |
+| `repeat.min_blocks_floor` | `2` |  |  | The least value `repeat.min_blocks` (also a per-guard override) may take: one block is never a repeat. |
+| `repeat.ms_per_minute` | `60000` |  |  | Milliseconds in a minute: converts `repeat.window_min` to the window the repeat learner counts blocks in. |
+| `repeat.msg_allowed` | `Allowed here: {forms}` |  |  | The one-time allowed-forms line added to the first repeated block of a guard in a session; {forms} the guard's own allowed-forms text. |
+| `repeat.msg_changed` | `This was blocked {n} times in {minutes} min: change approach.` |  |  | The line added to a repeated block; {n} the blocks in the window, {minutes} the window. |
+| `repeat.overrides` | `0 entries` |  |  | Per guard or check name, optional min_blocks (N, at least 2) and window_min (W, at least 1). Either omitted field inherits its global repeat.* key. Example: { command = { min_blocks = 3, window_min = 5 } }. Guard names win over check aliases; both command-guard and command are accepted. |
+| `repeat.setting` | `6 entries` |  |  | Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach. |
+| `repeat.window_min` | `10` |  |  | The repeat window in minutes. |
+
+### session_switches.toml / standdown
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `standdown.codex_host` | `codex` |  |  | The dispatch host whose payload need not include Claude tool names. |
+| `standdown.guard_name` | `delegate-stand-down` |  |  | Name of the stand-down note in its message. |
+| `standdown.guards` | `edit-guard, command-guard, coordinator-work-guard` |  |  | The delegate-only guards: guards whose only remedy is 'hand this to a subagent'. They stand down for the main thread while spawning is stopped. Safety guards (git, kill, search, network, delete) are never listed here. |
+| `standdown.hosts` | `2 entries` |  |  | Host spawn tools and capability fallback when no tool inventory is advertised. Codex must advertise its native tool or explicitly enable guards.agentSpawnAvailable; its hook payload alone does not establish tool availability. |
+| `standdown.msg_bound_hint` | `While spawning is stopped a heavy command is allowed inline when its output i...` |  |  | Added to a heavy-command block that stays up during the stand-down because its output is not bounded. |
+| `standdown.msg_what` | `spawning is stopped ({reason}); doing this inline is allowed.` |  |  | What the stand-down note says; {reason} is rendered from standdown.reasons. |
+| `standdown.msg_why` | `No agent can be spawned right now, so a guard that only says 'delegate' would...` |  |  | Why the delegate-only guards stand down. |
+| `standdown.note_kind` | `standdown_note` |  |  | Advisory kind the stand-down note is counted and de-duplicated under (once per session and reset time). |
+| `standdown.pre_event` | `PreToolUse` |  |  | The hook event name the stand-down note rides on (the delegate-only guards run on PreToolUse). |
+| `standdown.reasons` | `6 entries` |  |  | Reasons can_spawn returns: only model-independent routing bans count; rejecting one model is not a spawn stop. |
+| `standdown.redirect_re` | `(^\|[^0-9&>])>>?\s*(?!/dev/null)[^\s&>\|]` |  |  | A stdout redirect to a file (not /dev/null) in a command segment, JavaScript syntax: the output of that command is bounded. Stderr-only redirects (2>) and fd merges (2>&1) do not count. |
+| `standdown.setting` | `6 entries` |  |  | Switch guards.delegateStandDown (default on): while no agent can be spawned the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking. |
+| `standdown.spawn_setting` | `7 entries` |  |  | Host spawn capability: auto uses the request's advertised tools, otherwise standdown.hosts defaults; on/off is an explicit capability override. Codex hooks do not advertise native agent tools, so auto stands down unless the host supplies its tools. Claude defaults to Agent/Task availability. Applies to Claude and Codex. |
+| `standdown.tool_fields` | `available_tools, tools` |  |  | Optional request/payload tool-inventory fields; an empty array explicitly means no tools. Entries may be names or objects with a name. |
+
+### session_switches.toml / upfront
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `upfront.check` | `switch-notice` |  |  | The check the dispatcher runs for the up-front line (engine/logic/<name>.js); it is an engine-only dispatch row. |
+| `upfront.events` | `UserPromptSubmit, PreToolUse` |  |  | Hook events the dispatcher runs the up-front check at (the first one to come delivers the line; the state is then known). |
+| `upfront.expired_window_ms` | `86400000` |  |  | A skip entry that expired this recently is reported as expired; older ones are history and stay silent. |
+| `upfront.guard_name` | `session-switches` |  |  | Name of the up-front line in its message. |
+| `upfront.guards_join` | `, ` |  |  | Text between guard names in a skip line. |
+| `upfront.join` | ` ` |  |  | Text between the lines of one up-front notice. |
+| `upfront.kind` | `switch_notice` |  |  | Advisory kind the up-front line is counted and de-duplicated under (once per distinct state). |
+| `upfront.min_interval_ms` | `3000` |  |  | Least time between two runs of the up-front check for one session (the state of the switches does not change faster than this matters). |
+| `upfront.msg_clear` | `Session switches are back to normal (spawning allowed, no conserve, no guard ...` |  |  | Line when every switch told earlier is back to normal. |
+| `upfront.msg_conserve` | `Limit conserve is on ({reason}): use cheaper models, fewer agents and tight b...` |  |  | Line for limit conserve being on; {reason} names the bucket(s). |
+| `upfront.msg_skip_expired` | `Guard skips for this session expired, the guards are back on: {guards}.` |  |  | Line for guard skips that just expired; {guards} the names. |
+| `upfront.msg_skip_set` | `Guards skipped for this session on the owner's say-so: {guards}.` |  |  | Line for guard skips being active; {guards} the names. |
+| `upfront.msg_spawn_stop` | `Agent spawning is stopped ({reason}): do the work inline, in small bounded st...` |  |  | Line for spawning being unavailable; {reason} is rendered from standdown.reasons. |
+| `upfront.setting` | `6 entries` |  |  | Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
+| `upfront.summary` | `Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only disp...` |  |  | One-line description of the switch-notice check in the generated reference. |
 
 ## Messages
 
@@ -13500,6 +13674,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.agent_monitor_unarmed` | Reminder to arm a wake path (generic sessions), one short line. Placeholders: {count}, {armed}. |
 | `msg.agent_monitor_unarmed_devswarm` | Reminder to arm the wake-watch (DevSwarm workspaces). Placeholders: {command}. |
 | `msg.agent_no_tool` | What {tool} reads when the agent's last activity was not a tool call. |
+| `msg.agent_no_work` | Advisory to the coordinator: a subagent ended without doing anything. Placeholders: {agent}, {kind}, {tools}. |
 | `msg.agent_status_empty` | What `agents status` prints when no agent is tracked. |
 | `msg.agent_status_source` | The status footer for the Claude Code CLI source. Placeholders: {version}, {ok}. |
 | `msg.agent_status_source_off` | The word for a CLI source that is unavailable or unverified on this version (the transcripts are used). |
@@ -13583,6 +13758,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `launcher_counter` | counter | events | name | Counters the launcher reports with each call (soft and hard limit hits, retries, fallbacks, ...), summed by name. |
 | `maintain_last_ms` | gauge | ms |  | When the last maintenance run happened, in ms since the epoch (0: never). |
 | `maintain_runs` | gauge | runs |  | Maintenance runs recorded in hot.db (D26). |
+| `memory_leak_notices` | counter | notices | top | Memory-registry leak notices, by largest holder. |
 | `panics` | counter | panics |  | Request-handler panics that were contained. |
 | `procwatch_events` | counter | events | kind, class | Process-watch findings, by kind (orphan_candidate, orphan_kill, resource_warning, disk_warning) and class or reason. |
 | `queue_depth` | gauge | connections |  | Connections waiting for a worker when status or metrics is read. |

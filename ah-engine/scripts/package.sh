@@ -16,9 +16,9 @@ bin="$tdir/$triple/release/ah-engine"
 
 # The Command Center server (ah-web, GH #266) ships in the same archive, next to ah-engine, so `ah-engine web open` finds it.
 # The server-owned disk assets ship under web/static beside that binary (the same relative path as web.static_dir).
-# AH_WEB_BIN overrides the build path; when no binary is there the archive is the engine alone (the engine then reports the server missing).
+# AH_WEB_BIN overrides the build path. Every release archive requires the server binary and its static assets.
 webbin="${AH_WEB_BIN:-$root/../ah-web/target/$triple/release/ah-web}"
-[ -f "$webbin" ] || webbin=""
+[ -f "$webbin" ] || { echo "package.sh: build ah-web for $triple first ($webbin missing)" >&2; exit 1; }
 
 # The thin client (ah-hook, crate ah-launcher, GH #151/#164) ships in the same archive. Its own cargo target directory is
 # resolved like the engine's; AH_HOOK_BIN overrides the path. A release archive must carry it (package.sh fails without it

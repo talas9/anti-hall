@@ -705,13 +705,13 @@ mod tests {
         let off = json!(null);
         let on = json!({"guards": {"shipitGate": true}});
         let p = json!({});
-        let env = RequestEnv::default();
+        let env = RequestEnv::from_pairs([("HOME", "/ah-hookcfg-fixture")]);
         fn f<'a>(s: &'a Json, e: &'a crate::cfgstore::Effective) -> LoadedFacts<'a> {
             LoadedFacts { settings: s, effective: e, index: None }
         }
         assert_eq!(eval_with(&w, &p, &env, &f(&off, &loaded), None), Some(false), "the switch's default is off");
         assert_eq!(eval_with(&w, &p, &env, &f(&on, &loaded), None), Some(true));
-        let env_on = RequestEnv::from_pairs([("ANTIHALL_SHIPIT_GATE", "1")]);
+        let env_on = RequestEnv::from_pairs([("HOME", "/ah-hookcfg-fixture"), ("ANTIHALL_SHIPIT_GATE", "1")]);
         assert_eq!(eval_with(&w, &p, &env_on, &f(&off, &loaded), None), Some(true), "the request environment outranks the file, as in Node");
         assert_eq!(eval_with(&w, &p, &env, &NoFacts, None), None, "no loaded settings: unknown");
         assert_eq!(eval_with(&ok(json!({"setting": "daemon.queue", "at_least": 1})), &p, &env, &f(&off, &loaded), None), Some(true), "an engine setting");

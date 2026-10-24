@@ -379,7 +379,7 @@ value = "--steps-file"
 
 [docs.external_flags]
 doc = "Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry."
-value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version"]
+value = ["--allow-empty", "--builtin", "--detach", "--doctor", "--exact", "--help", "--ignored", "--is-ancestor", "--model", "--no-concurrent-recompilation", "--no-concurrent-sparkplug", "--nocapture", "--porcelain", "--reparent-children", "--repo", "--squash", "--system-prompt", "--verify", "--version", "--amend", "--bare", "--config", "--engine", "--socket", "--state"]
 
 
 [flag.key]
@@ -411,3 +411,63 @@ value = "--verb"
 [flag.where]
 doc = "Keep the rows whose fields equal the values: `field=value,field=value` (`query`)."
 value = "--where"
+
+[flag.deploy-dir]
+doc = "Install or update into this directory."
+value = "--deploy-dir"
+
+[flag.engine-bin]
+doc = "Use this ah-engine binary for an operator routine."
+value = "--engine-bin"
+
+[flag.expect-sha]
+doc = "Require the installed engine to have this SHA-256."
+value = "--expect-sha"
+
+[flag.from-local]
+doc = "Use the local checkout or branch as the source."
+value = "--from-local"
+
+[flag.hook-bin]
+doc = "Use this ah-hook binary for an operator routine."
+value = "--hook-bin"
+
+[flag.source]
+doc = "Source directory for the operator routine."
+value = "--source"
+
+[flag.tree]
+doc = "Repository tree for the operator routine."
+value = "--tree"
+
+[flag.no-live]
+doc = "Skip the live-machine section of the entry-path audit."
+value = "--no-live"
+
+[flag.no-open]
+doc = "Print the dashboard address without opening a browser."
+value = "--no-open"
+
+[flag.into]
+doc = "Target branch for a mesh merge."
+value = "--into"
+
+[flag.receipt]
+doc = "Delivery receipt identifier for inbox acknowledgement."
+value = "--receipt"
+
+[flag.stdin]
+doc = "Read the mesh operation input from standard input."
+value = "--stdin"
+
+[flag.urgency]
+doc = "Urgency of a mesh heartbeat."
+value = "--urgency"
+
+[flag.name]
+doc = "Name the generated skill document (`docs --format skill`)."
+value = "--name"
+
+[flag.out]
+doc = "Write generated documentation to the named output file."
+value = "--out"
