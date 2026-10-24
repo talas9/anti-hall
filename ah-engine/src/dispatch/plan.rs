@@ -196,7 +196,7 @@ impl Facts for LiveFacts {
         let layers = self.loaded();
         crate::hookcfg::when::setting_value(r, env, &layers.settings, |key| {
             let entry = defaults::get(key)?;
-            let resolved = crate::cfgstore::resolve_one(entry, layers, &|n| std::env::var(n).ok());
+            let resolved = crate::cfgstore::resolve_one(entry, layers, &|n| env.get(n).map(str::to_owned));
             Val::from_json(&resolved.value)
         })
     }

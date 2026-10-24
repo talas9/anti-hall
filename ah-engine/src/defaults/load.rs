@@ -1029,11 +1029,11 @@ impl Lazy {
         self.lines
             .iter()
             .filter_map(|(ks, ke, bs, be)| {
-                let body = &self.text[*bs..*be];
+                let body = self.text.get(*bs..*be)?;
                 if !body.contains(&section_field) || !body.contains(&key_field) {
                     return None;
                 }
-                self.find(&self.text[*ks..*ke]).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name)
+                self.find(self.text.get(*ks..*ke)?).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name)
             })
             .collect()
     }
