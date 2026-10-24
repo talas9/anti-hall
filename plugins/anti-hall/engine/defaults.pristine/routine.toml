@@ -113,7 +113,7 @@ doc = "More plugin roots to keep in step (used when they exist)."
 value = ["{home}/.anti-hall/ah-engine-live/state/marketplace/plugins/anti-hall"]
 
 [routine.state_file]
-doc = "The install record in the state directory: {version, sha, source, time, built_at, previous}. The Updates page and `update --check --json` read it."
+doc = "The install record in the state directory: {version, sha, source, time, built_at, previous, plugin_root}. The Updates page and `update --check --json` read it."
 value = "install.json"
 
 [routine.deploys_dir]
@@ -505,8 +505,8 @@ doc = "A bad row in the engine log since the start. {kind}, {code}, {detail}."
 value = "engine log since the start: {kind} {code} {detail}"
 
 [routine.problem_defaults_error]
-doc = "The defaults error file was written since the start. {text}."
-value = "defaults.error written since the start: {text}"
+doc = "The defaults error file was written since the start. {text}, {writer} (pid, ppid, argv, cwd when recorded)."
+value = "defaults.error written since the start: {text} {writer}"
 
 [routine.flag_web_bin]
 doc = "The dashboard binary (ah-web) of the set, when it is not at one of routine.web_candidates: only its version stamp is checked against the engine's and the client's (the routine does not install it)."

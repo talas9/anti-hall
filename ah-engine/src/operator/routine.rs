@@ -666,7 +666,12 @@ fn validate(tg: &Target, expect_sha: &str, started_ms: u64, scratch: &Path) -> V
     if let Ok(text) = std::fs::read_to_string(&derr) {
         let stamp = text.split_whitespace().next().and_then(|w| w.parse::<u64>().ok()).unwrap_or(0);
         if stamp * 1000 >= started_ms || stamp == 0 && !text.trim().is_empty() {
-            problems.push(defaults::render("routine.problem_defaults_error", &[("text", &text.trim().chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>())]));
+            // Keep the writer context even when the error itself exceeds the detail limit. Old lines have no suffix.
+            let (detail, writer) = text.trim().rsplit_once("\tpid=").map(|(d, w)| (d, format!("pid={w}"))).unwrap_or((text.trim(), String::new()));
+            problems.push(defaults::render("routine.problem_defaults_error", &[
+                ("text", &detail.chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>()),
+                ("writer", &writer),
+            ]));
         }
     }
     problems
@@ -793,6 +798,8 @@ fn manual_rollback(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
                 let record = json!({
                     "version": from["version"], "sha": sha, "source": from["source"].as_str().unwrap_or(t("routine.source_manual")),
                     "time": now_s(), "built_at": mtime_s(&tg.engine), "rolled_back_from": dir.display().to_string(),
+                    (crate::bootstrap::INSTALL_ROOT_FIELD): from.get(crate::bootstrap::INSTALL_ROOT_FIELD).cloned()
+                        .unwrap_or_else(|| json!(tg.roots.first())),
                 });
                 if let Err(e) = write_atomic(&record_path(&tg), &serde_json::to_string_pretty(&record).unwrap_or_default()) {
                     log.say(defaults::render("routine.msg_record_failed", &[("why", &e)]));
@@ -995,6 +1002,7 @@ fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, sam
         "version": pre.version, "sha": pre.sha, "source": o.source, "time": now_s(), "built_at": new_built,
         "previous": {"version": cur.version, "sha": cur.sha, "source": cur.source},
         "deploy": jdir.display().to_string(),
+        (crate::bootstrap::INSTALL_ROOT_FIELD): tg.roots.first(),
     });
     if let Err(e) = write_atomic(&record_path(tg), &serde_json::to_string_pretty(&record).unwrap_or_default()) {
         log.say(defaults::render("routine.msg_record_failed", &[("why", &e)]));

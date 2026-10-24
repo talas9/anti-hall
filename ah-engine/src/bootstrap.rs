@@ -13,7 +13,8 @@
 //! 2. `CLAUDE_PLUGIN_ROOT`, then `PLUGIN_ROOT`: the variables the hosts export to hook commands.
 //! 3. The root recorded in the snapshot cache by the last successful load (an invocation with no environment at all,
 //!    such as `ah-engine status` from a terminal, still finds the plugin the daemon runs).
-//! 4. A development checkout: walking up from the executable until a directory holds
+//! 4. The live plugin root recorded by the install routine in the state directory.
+//! 5. A development checkout: walking up from the executable until a directory holds
 //!    `plugins/anti-hall/engine/defaults/index.toml` (a `cargo build` tree inside the repository).
 //!
 //! `AH_ENGINE_PLUGIN_ROOT`, when set, is an explicit choice: if it has no `index.toml` the load fails (it is not replaced by
@@ -50,6 +51,10 @@ pub const DEFAULTS_ERROR_ENV: &str = "AH_DOCTOR_DEFAULTS_ERROR";
 pub const CACHE_FILE: &str = "defaults.cache";
 /// The last-resort error note inside the state directory (written when no defaults could be loaded, so no log path exists).
 pub const ERROR_FILE: &str = "defaults.error";
+/// The install record, needed before defaults can be read (matches `routine.state_file`).
+pub const INSTALL_FILE: &str = "install.json";
+/// The install record field shared by the bootstrap reader and install writer.
+pub const INSTALL_ROOT_FIELD: &str = "plugin_root";
 /// The temporary-file suffix of an atomic write made before any defaults are loaded (the same as the shipped
 /// `atomic.tmp_suffix`; a test keeps them equal).
 pub const TMP_SUFFIX: &str = ".tmp";
@@ -125,7 +130,14 @@ pub fn locate_root(cache_root: Option<&Path>) -> Option<PathBuf> {
     if let Some(r) = env_root() {
         return has_index(&r).then_some(r);
     }
-    cache_root.map(Path::to_path_buf).filter(|r| has_index(r)).or_else(dev_checkout)
+    cache_root.map(Path::to_path_buf).filter(|r| has_index(r)).or_else(installed_root).or_else(dev_checkout)
+}
+
+fn installed_root() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(state_dir()?.join(INSTALL_FILE)).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = PathBuf::from(record.get(INSTALL_ROOT_FIELD)?.as_str()?);
+    (!root.as_os_str().is_empty() && has_index(&root)).then_some(root)
 }
 
 fn dev_checkout() -> Option<PathBuf> {

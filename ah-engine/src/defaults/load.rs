@@ -918,12 +918,18 @@ pub fn files_print(root: &Path) -> String {
     d.as_ref()[..12].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The root a cache file records, without reading the rest of it.
+/// The root a cache file records, independent of the writer version, if its defaults index still exists.
 pub fn cache_root(path: &Path) -> Option<PathBuf> {
     let mut head = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?), &mut head).ok()?;
     let mut f = head.trim_end_matches('\n').splitn(4, '\t');
-    (f.next()? == MAGIC && f.next()? == env!("CARGO_PKG_VERSION")).then(|| f.nth(1).map(PathBuf::from).unwrap_or_default())
+    if f.next()? != MAGIC {
+        return None;
+    }
+    let _version = f.next()?;
+    let _print = f.next()?;
+    let root = PathBuf::from(f.next()?);
+    (!root.as_os_str().is_empty() && bootstrap::has_index(&root)).then_some(root)
 }
 
 /// The client's view of the defaults: the cache file, with a line index, parsed one key at a time.
@@ -1046,7 +1052,12 @@ pub fn log_start_failure(e: &DefaultsError) {
 /// Note why no defaults could be loaded where an operator can find it: the event log needs the very settings that are
 /// missing, so this is one line in `defaults.error` in the state directory (overwritten each time) and the same on stderr.
 pub fn report_unavailable(e: &DefaultsError) {
-    let line = format!("ah-engine: defaults unavailable: {e}");
+    // Defaults are unavailable: diagnostics cannot read configurable limits or texts here.
+    let argv: Vec<String> = std::env::args_os().take(4).map(|a| a.to_string_lossy().chars().take(160).collect()).collect();
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    // SAFETY: getppid has no arguments or memory-safety preconditions.
+    let ppid = unsafe { libc::getppid() };
+    let line = format!("ah-engine: defaults unavailable: {e}\tpid={} ppid={ppid} argv={argv:?} cwd={cwd:?}", std::process::id());
     crate::discard::harmless(writeln!(std::io::stderr(), "{line}")); // keep: a closed stderr leaves nobody to tell
     if let Some(p) = bootstrap::state_dir().map(|d| d.join(bootstrap::ERROR_FILE)) {
         crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
