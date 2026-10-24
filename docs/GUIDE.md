@@ -85,7 +85,7 @@ Guards are pattern- and rule-based. They can block or nag when they should not, 
 
 | To do this | Use |
 |---|---|
-| Skip one guard for a short time | Tell the assistant to skip it. It writes `~/.anti-hall/skip.json` (per guard name, 15 minutes by default). `"all"` covers the noisy guards but never `git-guard`; name `git-guard` to skip it. See [User-override escape hatch](#user-override-escape-hatch-skip-guard). |
+| Skip one guard for a short time | Tell the assistant to skip it. It writes `~/.anti-hall/skip.json` (per guard and per session: key `<guard>@<session-id>`, 15 minutes by default; `--global` writes a bare `<guard>` key that covers every session). `"all"` covers the noisy guards but never `git-guard`; name `git-guard` to skip it. See [User-override escape hatch](#user-override-escape-hatch-skip-guard). |
 | Turn a safety guard off | `safety.gitGuard`, `safety.commandGuard`, `safety.editGuard`, `safety.swarmGuard`. Changing them needs `--confirmed`. |
 | Turn another guard off or down | `guards.*`, for example `guards.apiGuard`, `guards.speculationGuard`, `guards.modelRouting` = `advisory` or `off`. |
 | Silence an advisory message | `guards.failureRootCauseNudge`, `guards.silentAgentNudge`, `guards.scanThrottle`, `codexNudge.enabled`, `autoHandover.nag`, `limitConserve.mode` = `off`. |
@@ -460,7 +460,7 @@ the audit reads the new HEAD and tells the agent to amend.
 The user's explicit instruction outranks any guard. When the user **clearly and directly**
 asks the agent to skip a guard, the agent records that consent via the shared `skip-guard.js`
 primitive — a TTL'd JSON marker at `~/.anti-hall/skip.json`, e.g.
-`{ "tasklist-guard": <unix-ms expiry>, "all": <unix-ms expiry> }`. Every guard checks it at
+`{ "tasklist-guard@<session-id>": <unix-ms expiry> }` (a skip applies to the session it was set in; a bare `"tasklist-guard"` key, written with `--global`, applies to every session). Every guard checks it at
 startup and fail-opens while it is in effect; the marker auto-expires (default 15 min) so a
 safety guard is never left silently disabled.
 

@@ -10,6 +10,7 @@ the update.
 
 ### Summary
 
+- Components: this release ships the engine, the hook client and the dashboard at version 0.2.0 each (plugin 0.301.1). Each component carries its own version and a declared minimum for the others.
 - Agent tracker: a nudge delivery now marks the child's flag as delivered, and a waste warning needs real token spend (a stalled agent that spent nothing is not waste).
 - Guards: the nested-spawn guard also covers Codex `spawn_agent`; a wide-search guard refuses `find`/`grep -r` rooted at `/` or `$HOME` (switch `guards.allowWideSearch`).
 - Versions: the header shows `<version> (<sha8>)`; the full build stamp stays in `version --json`, the tooltip and the Updates page. The install routine refuses a `-dirty` build or an engine/hook/dashboard set whose versions differ, unless `--force`.
@@ -17,9 +18,21 @@ the update.
 
 ### Changed
 
+- Per-component versions: the engine, the hook client and the dashboard each report their own version (0.2.0), with minimum supported versions for each other, checked on install, update and `doctor`. Old plugin-numbered component versions (0.30x) count as older, so upgrading from 0.301.x to 0.2.0 needs no `--force`.
+- Guard messages are two lines: an icon, the plain reason and what to do; details sit in a details file.- Guard rules are shown up front: a short notice names the rules in force when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired).
+- Updates show short versions and the real installed version, and a release never replaces a local or hand-installed build of the same plugin version.
+- The dashboard chart asset is packaged in the dashboard package, outside the plugin tree.
+- `git push` is classified as a heavy command, and the doctor version-alert probe handles plain guard names.
+
 - **Auto-handover now fires 5% of the window before auto-compact: shipped defaults `autoHandover.pct` 85 -> 93 and `autoHandover.maxTokens` 0 -> 500000.** The handover is written while the agent still has room. They pair with Claude Code's auto-compact at 98% (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=98`) for 200k models, and with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000` for 1M models (Claude Code clamps that value to the model window, so 200k models are unaffected). `pct` and `maxTokens` fire on whichever comes first, so the 500000 ceiling only bites on 1M sessions. On one machine, over 7 days and about 4.3k transcripts, turns above 550k context were 41% of input tokens, and a 55% cap simulated about 32% less input (a measured example, not a guarantee). Settings you set yourself are kept. Docs: settings, handover and system-briefing skills (Claude and Codex), `docs/GUIDE.md`, `llms.txt`; removes the stale "170k tokens" claim. The PreCompact "since the last handover" delta is documented as planned only.
 
 ### Added
+
+- Guard skips are per session: a skip is stored under `<guard>@<session-id>` in `~/.anti-hall/skip.json` and applies only to the session that set it. `--global` writes a bare `<guard>` key for all sessions.
+- Per-component build stamps: `version --json` and the pulse report the plugin, engine, hook client and dashboard versions; the dashboard shows all four.
+- Dashboard: screen, tab and filters live in the URL hash; the Agents tree and cost-per-agent share one layout; the Jev table shows model calls, cached and skipped with reasons; Health clients are named by project and session title.
+- One install routine for release, local build and deploy: pre-check, rollback copy, validate, auto-rollback and a downgrade gate.
+- Guards: `testPolicy` can block test runners for subagents, delegate guards stand down when no spawn tool exists, and a repeated block is learned and shortened.
 
 - **Every hook command runs the thin client directly; the plugin ships one shell file (`hooks/install.sh`).** `hooks.json` (31 Claude Code events, 10 Codex events) is generated from the one template `hooks_form.template`: `[ -x "$HOME/.anti-hall/ah-engine/bin/ah-hook" ] && exec "$HOME/.anti-hall/ah-engine/bin/ah-hook" <Event> [--host codex] || exec sh "${CLAUDE_PLUGIN_ROOT}/hooks/install.sh" <Event> [--host codex]` (`exec`, so a block's exit 2 reaches the host; without the client `install.sh` prints one notice per session, exits 0 and downloads nothing unless you opted in with `engine.bootstrap` = true, default false). Verified on Codex 0.163 that a hook command runs through the user's shell. `hooks/ah-hook.sh` and the nine no-op script shims moved to `plugins/anti-hall-node/legacy-sh/`; dispatch rows carry no `command` (engine-only rows have none, the Node commands are the hand-kept `ah-fallback*.map.json` of the Node backup plugin, which the generated list and registry now read), so the published config has no Node text. `ah-hook doctor` accepts only the direct form and fails (`doctor_l.install_health_fail` = 1) on old-form commands, Node on an entry path or a second shell file; its repair, and the engine's update migration, rewrite a `statusLine` that still runs `sh .../scripts/ah-run.sh --stdin statusline` to `"<home>/.anti-hall/ah-engine/bin/ah-hook" statusline` (backup kept, nothing deleted, idempotent; reverses the earlier "migrations never write statusLine" rule for this one string). The thin client no longer waits on a start request for a daemon that has died (its stale socket is newer than the request), and with the fallback switch on but the Node backup missing it lets the engine decide instead of letting the call through unchecked. Prevention tests: the plugin ships exactly one `.sh`, every hooks.json command equals the template, every table row has a check or a command in the map.
 
@@ -28,6 +41,13 @@ the update.
 - **An idle coordinating session is woken when an agent it launched goes idle with open work, loops, burns tokens or a watched process ends (#256).** New route target `wake` (config rows in `agent_tracker.targets`), the Monitor `ah-engine agents wake-watch --auto` armed at SessionStart (off switch `agents.wakeWatch`), and the config-defined signals `idle_open_task` and `watched_exit`. `monitor_unarmed` now sees a live wake-watch and is one short line.
 
 ### Fixed
+
+- `agent_tick` no longer crashes: the agent-tick slice at a non-boundary byte offset is fixed, and `no_work.max_tools` is read from the shipped table.
+- No state is written into removed workspaces: scripted state writes never re-create a project root that is not a live git work tree (archived DevSwarm workspaces).
+- Wake rows are no longer counted as unread mail, and the wake-watch no longer fires with no real unread mail.
+- The hook client finds the plugin root across engine versions and logs the exact file and error when defaults are unusable; `doctor` resolves the plugin root without a flag.
+- Task scan continues past unparseable lines (#237); in-place detection ignores negated clauses (#179); history stays at the canonical superproject root (#182); updates and alerts resolve the owning install (#216).
+- The dashboard Impact bars and percentages use the same per-day rates; latency percentiles show histogram bounds.
 
 - **Guard blocks are queryable.** Every block is recorded in `hot.db` (`guard_blocks`: time, guard, rule id, hook event, session, subagent, tool, project hash and the first line of the message; kept `telemetry.block_keep_days`, message capped at `telemetry.block_reason_chars`) and read with `ah-engine query guard_blocks [--guard G] [--session S] [--agent A] [--window 7d]`.
 - **Retired Node leftovers.** The `devswarm.stableLauncher` setting rows, the wake-monitor stage's check for the Node watcher file, the unused stage file lists and `wake_watch.stale_script_rel` are gone; the capability scan names `ah-engine migrate` for pending state migrations.

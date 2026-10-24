@@ -230,10 +230,10 @@ Not registered in `hooks.json` and so not covered: `doctor.js` (a CLI, section 2
 
 **Kill switches**, narrowest first:
 
-1. **skip file:** `~/.anti-hall/skip.json`, `{"<skip name>": <unix-ms expiry>}`. A
+1. **skip file:** `~/.anti-hall/skip.json`, `{"<skip name>@<session-id>": <unix-ms expiry>}` (per session; a bare `"<skip name>"` key is a global skip, written with `--global`). A
    broad `"all"` entry covers every guard except `git-guard`, `devswarm-read-guard` and
    `git-stash-guard` (`DESTRUCTIVE` in `skip-guard.js`), which must be named. Also written
-   by `ah-hook mesh skip <guard> [--ttl <minutes>]`.
+   by `ah-hook mesh skip <guard> [--ttl <minutes>] [--session <id>] [--global]`.
 2. **setting:** the key in the table, through the normal precedence. Locked `safety.*`
    keys need `--confirmed` to turn off.
 3. **plugin:** disabling the plugin in the harness removes every hook.
@@ -274,7 +274,7 @@ Frozen per hook: its script name, event, matcher, the setting and skip name, and
 | Path | What | Source |
 |---|---|---|
 | `~/.anti-hall/settings.json` | `{ "<section>": { "<key>": value } }` | `settings` |
-| `~/.anti-hall/skip.json` | `{ "<guard>": <unix-ms expiry> }` | `skip-guard` |
+| `~/.anti-hall/skip.json` | `{ "<guard>@<session-id>": <unix-ms expiry> }` (bare `<guard>` = global) | `skip-guard` |
 | `~/.anti-hall/trusted-command-allow.json` | repo realpath to sha256 of the trusted allowlist | `command-allow` |
 | `~/.anti-hall/defects/` | local defect reports | `defect-store` |
 | `~/.anti-hall/logs/` | JSONL event and error logs | `anti-hall-log` |

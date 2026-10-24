@@ -64,6 +64,8 @@ A short re-triage of the parked items happens after R1.
 
 Order: [#53](https://github.com/talas9/anti-hall/issues/53) → [#41](https://github.com/talas9/anti-hall/issues/41) → [#40](https://github.com/talas9/anti-hall/issues/40) → [#42](https://github.com/talas9/anti-hall/issues/42) → [#20](https://github.com/talas9/anti-hall/issues/20) → [#36](https://github.com/talas9/anti-hall/issues/36) → [#37](https://github.com/talas9/anti-hall/issues/37) → [#34](https://github.com/talas9/anti-hall/issues/34) → [#35](https://github.com/talas9/anti-hall/issues/35) → [#39](https://github.com/talas9/anti-hall/issues/39) → [#18](https://github.com/talas9/anti-hall/issues/18)
 
+Planned, priority P3: [#289](https://github.com/talas9/anti-hall/issues/289) rules as data (action catalogue, TOML routines and CEL conditions, no JavaScript in the plugin).
+
 ## v1.0 — release candidate
 
 **Goal:** proven stable, contract frozen.

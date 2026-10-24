@@ -282,7 +282,7 @@ Codex: no `/config`, use the skill.
 
 Env-only: `ANTIHALL_CONTEXT_WINDOW_TOKENS`, `ANTI_HALL_THROTTLE_PATTERNS`,
 `ANTIHALL_DEVSWARM_APP_DB` (path or `off`). The ~35 DevSwarm tuning knobs are advanced
-settings (`show --section devswarm --all`). No switch on purpose (`settings.js show` lists
+settings (`show --section devswarm --all`). No switch on purpose (`ah-engine settings show` lists
 the reasons): skip-guard, coordinator-detect, omc-detect, phase-tracker, fable-availability,
 codex-availability, emit-dedupe-reset, agent-watchdog, command-guard's data-safety
 sub-guards.
@@ -293,7 +293,7 @@ sub-guards.
 |---|---|
 | settings.json | the settings store |
 | ah-engine/ | the engine (core component): `bin/ah-engine` (installed from the pinned release, `ah-engine.prev` kept), `bootstrap.log`, `defaults.lkg/` (last-known-good engine files), `hot.db`/`archive.db` (state and local-only telemetry), socket and health files |
-| skip.json | per-guard TTL'd user override (git-guard must be named explicitly) |
+| skip.json | per-guard, per-session TTL'd user override (key `<guard>@<session-id>`; `--global` for all sessions; git-guard must be named explicitly) |
 | jev.json | legacy Jev config (still read as a fallback; never deleted) |
 | update-sweep-state.json | per-migration repair markers (update, doctor, repair-on-reload) |
 | version-check.json, version-alert-reload.json | version-alert cache and reload-nudge dedupe |
