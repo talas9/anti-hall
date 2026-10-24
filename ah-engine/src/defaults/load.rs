@@ -1020,6 +1020,24 @@ impl Lazy {
             .collect()
     }
 
+    /// Find setting descriptors without materializing unrelated cached values (including script sources).
+    pub(super) fn setting_entries(&self, section: &str, name: &str) -> Vec<&'static Entry> {
+        // Cache bodies are compact serde_json objects. These are candidate filters only: inspect the parsed
+        // top-level value too, so nested fields or text cannot masquerade as a descriptor.
+        let section_field = format!("\"section\":{}", Json::from(section));
+        let key_field = format!("\"key\":{}", Json::from(name));
+        self.lines
+            .iter()
+            .filter_map(|(ks, ke, bs, be)| {
+                let body = &self.text[*bs..*be];
+                if !body.contains(&section_field) || !body.contains(&key_field) {
+                    return None;
+                }
+                self.find(&self.text[*ks..*ke]).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name)
+            })
+            .collect()
+    }
+
     pub(super) fn all(&self) -> &'static [&'static Entry] {
         let all: Vec<&'static Entry> = (0..self.lines.len()).filter_map(|i| self.find(&self.text[self.lines[i].0..self.lines[i].1])).collect();
         leak_slice(all)
@@ -1338,6 +1356,32 @@ mod tests {
     }
 
     // ---- the snapshot cache -----------------------------------------------------------------------------------------------
+
+    #[test]
+    fn setting_lookup_keeps_unrelated_cached_defaults_unparsed() {
+        let root = plugin_with_pristine("setting-lookup");
+        let data = load_from(&root, None, None).unwrap();
+        let cache = root.with_extension("state").join("defaults.cache");
+        write_cache(&data, &cache).unwrap();
+        let lazy = Lazy::open(&cache, Some(&root)).unwrap();
+        let section = "devswarm";
+        let name = "supervisorMode";
+        let expected: Vec<_> =
+            data.index.iter().map(|(_, e)| e).filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name).map(|e| e.key).collect();
+        assert!(!expected.is_empty());
+        let found = lazy.setting_entries(section, name);
+        assert_eq!(found.iter().map(|e| e.key).collect::<Vec<_>>(), expected);
+        assert_eq!(lazy.memo.lock().unwrap().len(), found.len(), "only matching descriptors are decoded");
+        assert!(lazy.setting_entries("no-such-section", "no-such-setting").is_empty());
+        assert_eq!(lazy.memo.lock().unwrap().len(), found.len(), "a missing setting must not decode the cache either");
+        // Every descriptor remains discoverable, including dotted setting names and duplicate definitions.
+        for e in data.index.iter().map(|(_, e)| e) {
+            let (section, name) = (e.value.str_field("section"), e.value.str_field("key"));
+            if !section.is_empty() && !name.is_empty() {
+                assert!(lazy.setting_entries(section, name).iter().any(|x| x.key == e.key), "{}", e.key);
+            }
+        }
+    }
 
     #[test]
     fn the_client_cache_is_stale_once_a_defaults_file_changes() {

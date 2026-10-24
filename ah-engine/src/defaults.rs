@@ -626,6 +626,14 @@ pub fn with_prefix(prefix: &str) -> Vec<&'static Entry> {
     }
 }
 
+/// Descriptors for one settings.json switch or enum, without loading unrelated defaults in a hook client.
+pub(crate) fn setting_entries(section: &str, name: &str) -> Vec<&'static Entry> {
+    match backend().as_ref() {
+        Backend::Full(d) => d.entries.iter().copied().filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name).collect(),
+        Backend::Lazy(l) => l.setting_entries(section, name),
+    }
+}
+
 /// Every shipped setting, in file order (sorted by key within a file). A cache-backed snapshot has no docs and lists by key.
 pub fn all() -> Arc<[&'static Entry]> {
     match backend().as_ref() {

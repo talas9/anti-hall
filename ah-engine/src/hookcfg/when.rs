@@ -42,7 +42,7 @@ pub enum Val {
 }
 
 impl Val {
-    fn from_json(v: &Json) -> Option<Val> {
+    pub(crate) fn from_json(v: &Json) -> Option<Val> {
         match v {
             Json::Bool(b) => Some(Val::Bool(*b)),
             Json::Number(n) => n.as_i64().map(Val::Int).or_else(|| Some(Val::Str(n.to_string()))),
@@ -350,7 +350,8 @@ fn parse_test(o: &serde_json::Map<String, Json>) -> Result<Test, WhenError> {
 
 fn find_setting(key: &str) -> Option<SettingRef> {
     let (section, name) = key.split_once('.')?;
-    for e in defaults::all().iter().copied() {
+    let entries = defaults::setting_entries(section, name);
+    for e in entries.iter().copied() {
         if let V::Table(_) = e.value
             && e.value.str_field("section") == section
             && e.value.str_field("key") == name
@@ -359,7 +360,7 @@ fn find_setting(key: &str) -> Option<SettingRef> {
             return Some(SettingRef::Switch(&e.value));
         }
     }
-    for e in defaults::all().iter().copied() {
+    for e in entries.iter().copied() {
         if e.value.str_field("section") == section && e.value.str_field("key") == name && e.value.get("values").is_some() {
             return Some(SettingRef::Enum(&e.value));
         }
@@ -580,24 +581,28 @@ pub struct LoadedFacts<'a> {
 
 impl Facts for LoadedFacts<'_> {
     fn setting(&self, r: &SettingRef, env: &RequestEnv) -> Option<Option<Val>> {
-        if env.is_incomplete() {
-            return None;
-        }
-        // The same usable-home and unreadable-settings guards as the scripts, before a predicate may skip their load.
-        let st = crate::checks::devswarm_role::usable_settings(env)?;
-        if crate::checks::guardkit::settings::unreadable_settings_file(&st.home) {
-            return None;
-        }
-        Some(match r {
-            SettingRef::Enum(entry) => Some(Val::Str(crate::checks::guardkit::settings::get_enum(&st, entry))),
-            SettingRef::Engine(k) => self.effective.get(k).and_then(|x| Val::from_json(&x.value)),
-            SettingRef::Switch(entry) => Some(Val::Bool(switch_value(entry, env, self.settings))),
-        })
+        setting_value(r, env, self.settings, |k| self.effective.get(k).and_then(|x| Val::from_json(&x.value)))
     }
 
     fn transcript(&self, _: &Json, f: Fact) -> Option<Option<Val>> {
         self.index.map(|ix| Some(f.read(ix)))
     }
+}
+
+/// Shared request guards and switch semantics; a one-shot client resolves only the requested engine key.
+pub(crate) fn setting_value(r: &SettingRef, env: &RequestEnv, settings: &Json, engine: impl FnOnce(&str) -> Option<Val>) -> Option<Option<Val>> {
+    if env.is_incomplete() {
+        return None;
+    }
+    let st = crate::checks::devswarm_role::usable_settings(env)?;
+    if crate::checks::guardkit::settings::unreadable_settings_file(&st.home) {
+        return None;
+    }
+    Some(match r {
+        SettingRef::Enum(entry) => Some(Val::Str(crate::checks::guardkit::settings::get_enum(&st, entry))),
+        SettingRef::Engine(k) => engine(k),
+        SettingRef::Switch(entry) => Some(Val::Bool(switch_value(entry, env, settings))),
+    })
 }
 
 /// A shipped boolean switch resolved against the request environment, then the loaded `settings.json`, then its default
