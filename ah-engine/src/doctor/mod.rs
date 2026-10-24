@@ -497,6 +497,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     let engine_usable = install::section(&mut doc, &mut fixes, &ctx, root_path, &host) || path_engine(&mut doc, &ctx);
     runtime::state_section(&mut doc, &mut fixes, uid);
     plugin::config_section(&mut doc, &mut fixes, &ctx);
+    detect::stray_submodule_state(&mut doc, &ctx);
     plugin::registry_section(&mut doc, &ctx, root_path, &version);
     for flag in defaults::list("doctor.unhandled_flags") {
         if p.rest.iter().any(|a| a == flag) {

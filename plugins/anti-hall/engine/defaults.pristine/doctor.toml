@@ -2496,3 +2496,11 @@ value = "{file} was not changed: no backup could be kept"
 doc = "Placeholder: {file}."
 value = "{file} could not be written; the backup is untouched"
 
+
+[doctor.submodule_paths_args]
+doc = "Read registered submodule paths for read-only stray-state diagnostics."
+value = ["config", "--file", ".gitmodules", "--get-regexp", '^submodule\..*\.path$']
+
+[doctor_msg.stray_submodule_history]
+doc = "Existing history inside a submodule; diagnostic only, never moved or removed."
+value = "stray submodule history: {path} (left unchanged; history belongs at the superproject root)"

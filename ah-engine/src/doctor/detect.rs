@@ -284,3 +284,36 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
         doc.infol(defaults::text("doctor_msg.foreign_none").to_string());
     }
 }
+
+/// Stray history in submodules is diagnostic only: never move, repair or remove it.
+pub(super) fn stray_submodule_state(doc: &mut Doc, ctx: &Ctx) {
+    use crate::checks::jsport::{gitrun, ident};
+    use crate::reqenv::RequestEnv;
+    let env = RequestEnv::from_pairs(ctx.env.clone());
+    let context = ident::resolve_context(&ctx.cwd, false, &env);
+    if context.unsure { return; }
+    let Some(root) = context.worktree_root else { return };
+    let canonical = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
+    let mut pending = vec![(canonical.clone(), 0u64)];
+    let history = defaults::list("task_lifecycle_log.history_dir").join("/");
+    while let Some((dir, depth)) = pending.pop() {
+        if depth >= defaults::num("codex_handover.max_submodule_hops") { continue; }
+        let args = defaults::list("doctor.submodule_paths_args");
+        let Some(out) = gitrun::git_scrubbed(&dir.to_string_lossy(), &args,
+            defaults::millis("codex_handover.identity_git_timeout_ms"), &env,
+            &defaults::list("codex_handover.git_scrub_env")) else { continue };
+        for line in out.lines() {
+            let Some((_, rel)) = line.split_once(' ') else { continue };
+            let Ok(sub) = std::fs::canonicalize(dir.join(rel)) else { continue };
+            if !sub.starts_with(&canonical) || sub == dir { continue; }
+            // An uninitialised submodule is a plain directory, not a separate checkout.
+            let c = ident::resolve_context(&sub.to_string_lossy(), false, &env);
+            if c.toplevel.as_deref() != sub.to_str() { continue; }
+            let state = sub.join(&history);
+            if state.is_dir() {
+                doc.warnl(defaults::render("doctor_msg.stray_submodule_history", &[("path", &state.to_string_lossy())]));
+            }
+            pending.push((sub, depth + 1));
+        }
+    }
+}

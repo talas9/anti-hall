@@ -174,7 +174,10 @@ pub fn resolve_context(cwd: &str, ancestor: bool, env: &RequestEnv) -> Ctx {
             env,
             &scrub,
         );
-        let s = out?;
+        let Some(s) = out else {
+            *unsure = true;
+            return None;
+        };
         let s = crate::checks::guardkit::text::js_trim(&s);
         if s.is_empty() { None } else { real(s) }
     };

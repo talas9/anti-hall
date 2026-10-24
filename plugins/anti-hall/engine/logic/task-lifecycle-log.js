@@ -1,6 +1,6 @@
 // check = "task-lifecycle-log" (TaskCreated, TaskCompleted): append one line per task event to the per-session history ledger
 // `<root>/.anti-hall/history/<UTC date>/<session>.md` and register that file once in `<root>/.anti-hall/history/INDEX.md`.
-// Log-only: it never blocks, so the answer is always allow (after doing what Node does) (a cut through a surrogate pair drops the half pair, a nested checkout falls back to the cwd, an index too big to search is not re-registered; each counted). Mirrors hooks/task-lifecycle-log.js and hooks/session-history-index.js.
+// Log-only: it never blocks, so the answer is always allow (after doing what Node does) (a cut through a surrogate pair drops the half pair, an unresolved checkout skips the write, an index too big to search is not re-registered; each counted). Mirrors hooks/task-lifecycle-log.js and hooks/session-history-index.js.
 // Keys and limits: engine/defaults/task_guards.toml (task_lifecycle_log.*).
 'use strict';
 
@@ -38,7 +38,7 @@ function decide(p) {
   // submodule or nested repository), ask the host's git-aware resolver; a cwd inside a submodule keys on its superproject.
   var root = task.sessionProjectRoot(cwd, ah.home());
   if (root === null) root = ho.sessionProjectRoot(cwd);
-  if (root === null) { ah.unable('task-lifecycle-log:root_unsure'); root = cwd; } // a checkout the host cannot classify keys on the directory itself
+  if (root === null) { ah.unable('task-lifecycle-log:root_unsure', 'abandoned'); return 'allow'; } // never create state at an unconfirmed project root
   var dir = ah.cfg('task_lifecycle_log.history_dir').join('/'), ext = ah.cfg('task_lifecycle_log.ledger_ext');
   var index = dir + '/' + ah.cfg('task_lifecycle_log.index_name');
   // The index is read whole in Node; one larger than a script may read cannot be searched here: the ledger line is written and the index left as it is (counted).
