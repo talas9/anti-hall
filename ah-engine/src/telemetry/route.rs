@@ -109,23 +109,34 @@ pub fn chains(events: &[Event], window_ms: u64) -> (Vec<Chain>, usize) {
     for e in events {
         match &e.extras {
             Extras::Route(r) => routes.entry(r.spawn_key.as_str()).or_default().push((e, r)),
-            Extras::Spawn(s) => spawns.push((e, s)),
+            Extras::Spawn(s) if s.usage != Usage::default() => spawns.push((e, s)),
             _ => {}
         }
     }
     for v in routes.values_mut() {
         v.sort_by_key(|(e, _)| e.ts_ms);
     }
-    spawns.sort_by_key(|(e, _)| e.ts_ms);
+    // Pending and stored copies of one completed child are one outcome. The latest evidence wins without deleting history.
+    let mut identities: HashMap<&str, (&Event, &Spawn)> = HashMap::new();
+    spawns.retain(|(e, s)| {
+        if let Some(key) = &s.agent_key {
+            let old = identities.entry(key.as_str()).or_insert((*e, *s));
+            if e.ts_ms >= old.0.ts_ms { *old = (*e, *s); }
+            false
+        } else { true }
+    });
+    spawns.extend(identities.into_values());
+    spawns.sort_by_key(|(e, s)| s.started_ms.unwrap_or(e.ts_ms));
     let mut last_spawn: HashMap<&str, u64> = HashMap::new();
     let mut linked = 0;
     let mut out = Vec::new();
     for (se, s) in spawns {
         let key = s.spawn_key.as_str();
-        let from = last_spawn.get(key).copied().map(|t| t + 1).unwrap_or_else(|| se.ts_ms.saturating_sub(window_ms));
-        last_spawn.insert(key, se.ts_ms);
+        let started = s.started_ms.unwrap_or(se.ts_ms);
+        let from = last_spawn.get(key).copied().map(|t| t + 1).unwrap_or_else(|| started.saturating_sub(window_ms));
+        last_spawn.insert(key, started);
         let group: Vec<&Route> =
-            routes.get(key).map(|v| v.iter().filter(|(e, _)| e.ts_ms >= from && e.ts_ms <= se.ts_ms).map(|(_, r)| *r).collect()).unwrap_or_default();
+            routes.get(key).map(|v| v.iter().filter(|(e, _)| e.ts_ms >= from && e.ts_ms <= started).map(|(_, r)| *r).collect()).unwrap_or_default();
         if let Some(first) = group.first() {
             linked += group.len();
             out.push(Chain { origin: (*first).clone(), decisions: group.len(), spawn: s.clone() });
@@ -300,7 +311,7 @@ mod tests {
             o: Outcome::Allow,
             ms: 0,
             ib: 0,
-            extras: Extras::Spawn(Spawn { spawn_key: t(key), actual_model: t(ran), usage }),
+            extras: Extras::Spawn(Spawn { started_ms: None, agent_key: None, spawn_key: t(key), actual_model: t(ran), usage }),
         }
     }
 

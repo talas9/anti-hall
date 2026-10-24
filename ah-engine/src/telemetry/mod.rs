@@ -224,6 +224,21 @@ impl Telemetry {
         self.sink(Staged::Event(ev));
     }
 
+    /// Observe launch identities and finished outcomes without guessing models or usage.
+    pub fn observe_spawn(&self, event: &str, payload: &Value, now: u64) {
+        let launch = spawn_result::event_of(event, payload, now);
+        if launch.is_none() && event != defaults::text("telemetry.spawn_stop_event") { return; }
+        let since = now.saturating_sub(defaults::num("telemetry.spawn_link_retention_ms"));
+        let mut events = self.tel.as_ref().map(|t| t.impact_events(since)).unwrap_or_default();
+        events.extend(self.rec.pending_events());
+        if let Some(ev) = launch.and_then(|ev| spawn_result::link_launch(ev, &events)) {
+            let complete = spawn_result::launch_completion(payload, &ev, now);
+            self.event(complete.unwrap_or(ev));
+        }
+        if event == defaults::text("telemetry.spawn_stop_event")
+            && let Some(ev) = spawn_result::completion(payload, now, &events) { self.event(ev); }
+    }
+
     /// Record a model-routing decision (D77): the event, plus an impact event of kind `route` whose reason is what the
     /// check did, so the ledger counts decisions in both directions.
     pub fn route(&self, ev: Event, project: &str) {
@@ -624,6 +639,8 @@ mod tests {
             kind: Kind::Spawn,
             ts_ms: now + 5,
             extras: Extras::Spawn(Spawn {
+                started_ms: None,
+                agent_key: None,
                 spawn_key: tk("key1"),
                 actual_model: tk("haiku"),
                 usage: Usage { input: 10, output: 5, cache_read: 0, cache_write: 0 },

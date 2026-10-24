@@ -612,3 +612,68 @@ value = { kind = "counter", unit = "events", labels = ["name"] }
 [metric.fail_open]
 doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
 value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
+
+[telemetry.spawn_tools]
+doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."
+value = ["Agent", "Task"]
+
+
+[telemetry.spawn_agent_fields]
+doc = "Response keys holding the actual spawned child identity, in precedence order."
+value = ["agentId", "agent_id"]
+
+
+[telemetry.spawn_model_fields]
+doc = "Response keys holding the actual resolved model, never the requested routing choice."
+value = ["resolvedModel", "resolved_model", "model"]
+
+
+[telemetry.spawn_stop_event]
+doc = "Completion hook on both host ports."
+value = "SubagentStop"
+
+
+[telemetry.spawn_transcript_field]
+doc = "The completed child's explicitly supplied transcript; never the parent's transcript."
+value = "agent_transcript_path"
+
+
+[telemetry.spawn_transcript_max_bytes]
+doc = "Maximum complete child transcript read for outcome recovery. Oversized or malformed files stay unmeasured."
+value = 16777216
+
+
+[telemetry.spawn_link_retention_ms]
+doc = "How far back to look for persisted launch identities on completion."
+value = 604800000
+
+
+[telemetry.spawn_unknown_model]
+doc = "Identity-only launch marker, excluded from routing savings until actual model and usage arrive."
+value = "unknown"
+
+
+[telemetry.spawn_parent_transcript_field]
+doc = "Explicit launching-session transcript from which the configured child transcript layout can be resolved."
+value = "transcript_path"
+
+
+[telemetry.spawn_transcript_fields]
+doc = "Child transcript schema for actual usage; required input/output counts, optional cache classes default to zero only when absent."
+value = { type = "type", assistant = "assistant", message = "message", id = "id", model = "model" }
+
+
+[telemetry.spawn_background_field]
+doc = "Launch input flag identifying a running background child; partial response usage is not a finished outcome."
+value = "run_in_background"
+
+
+[telemetry.spawn_status_field]
+doc = "Response status field; transcript recovery on PostToolUse requires explicit completion evidence."
+value = "status"
+
+
+[telemetry.spawn_completed_status]
+doc = "Response status proving a child is complete; absence is not proof of completion."
+value = "completed"
+

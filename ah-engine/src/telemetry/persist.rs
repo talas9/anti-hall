@@ -101,6 +101,25 @@ fn add_count(c: &Connection, day: i64, d: &Delta) -> Result<(), DbError> {
 }
 
 fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
+    // A completed background launch repairs its identity-only row in place. Replayed completions update the same row;
+    // legacy rows without a proven child identity are never guessed, merged, or deleted.
+    if let super::event::Extras::Spawn(incoming) = &e.extras
+        && let Some(key) = &incoming.agent_key
+    {
+        let mut stmt = c.prepare_cached("SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1")?;
+        let rows = stmt.query_map(params![incoming.spawn_key.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, data) = row?;
+            let old = serde_json::from_str(&data).ok().and_then(|v| Event::from_json(&v).ok());
+            if let Some(Event { extras: super::event::Extras::Spawn(old), .. }) = old
+                && old.agent_key.as_ref() == Some(key)
+            {
+                if incoming.usage == super::event::Usage::default() && old.usage != super::event::Usage::default() { return Ok(0); }
+                if incoming.usage == old.usage && incoming.actual_model == old.actual_model && incoming.started_ms == old.started_ms { return Ok(0); }
+                return Ok(c.execute("UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4", params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id])?);
+            }
+        }
+    }
     Ok(c.prepare_cached(sql::TEL_EVENT_INSERT)?.execute(params![
         e.ts_ms as i64,
         e.kind.name(),

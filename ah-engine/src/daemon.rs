@@ -1027,9 +1027,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         return Reply::Busy;
     }
     // an agent launch that finished: what it ran on and used, linked to its routing decision by the spawn key
-    if let Some(ev) = telemetry::spawn_result::event_of(&meta.event, &p, crate::health::now_ms()) {
-        sh.telemetry.event(ev);
-    }
+    sh.telemetry.observe_spawn(&meta.event, &p, crate::health::now_ms());
     // D87: what the client's plan did to each entry (ran, skipped by predicate or cap or budget, shadowed, off), by event and entry
     sh.telemetry.with_metrics(|m| {
         for (id, outcome) in &meta.plan {
