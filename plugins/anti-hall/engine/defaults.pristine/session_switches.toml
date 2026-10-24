@@ -1,0 +1,135 @@
+# Session-wide switches and the guard learner (owner 2026-10-24). Three parts:
+#   standdown.*  the delegate-only guards stand down while no agent can be spawned (the usage hard stop), so the work has a path;
+#   upfront.*    ONE short line when the set of session-wide switches changes (spawn stop, limit conserve, guard skips);
+#   repeat.*     a guard that blocks the same session again and again says what is allowed and asks for a different approach.
+# Logic: engine/logic/lib/81-standdown.js (shared), engine/logic/switch-notice.js (the up-front line, run by the dispatcher on
+# UserPromptSubmit and PreToolUse), ah-engine/src/learn.rs (the repeat learner, run on every blocking answer).
+
+[standdown.setting]
+doc = "Switch guards.delegateStandDown (default on): while the spawn-usage hard stop is active the delegate-only guards (standdown.guards) allow the main thread to do the work inline; off keeps them blocking."
+value = { section = "guards", key = "delegateStandDown", type = "boolean", env = "ANTIHALL_DELEGATE_STAND_DOWN", option = "", default = true }
+
+[standdown.guard_name]
+doc = "Name of the stand-down note in its message."
+value = "delegate-stand-down"
+
+[standdown.guards]
+doc = "The delegate-only guards: guards whose only remedy is 'hand this to a subagent'. They stand down for the main thread while spawning is stopped. Safety guards (git, kill, search, network, delete) are never listed here."
+value = ["edit-guard", "command-guard", "coordinator-work-guard"]
+
+[standdown.pre_event]
+doc = "The hook event name the stand-down note rides on (the delegate-only guards run on PreToolUse)."
+value = "PreToolUse"
+
+[standdown.note_kind]
+doc = "Advisory kind the stand-down note is counted and de-duplicated under (once per session and reset time)."
+value = "standdown_note"
+
+[standdown.msg_what]
+doc = "What the stand-down note says; {limit} the bucket, {pct} its usage, {resets} the reset clause."
+value = "spawning is stopped ({limit} usage limit at {pct}%, {resets}); doing this inline is allowed."
+
+[standdown.msg_why]
+doc = "Why the delegate-only guards stand down."
+value = "No agent can be spawned right now, so a guard that only says 'delegate' would leave no way forward."
+
+[standdown.msg_bound_hint]
+doc = "Added to a heavy-command block that stays up during the stand-down because its output is not bounded."
+value = "While spawning is stopped a heavy command is allowed inline when its output is bounded: pipe it to head or tail, or write it to a file."
+
+[standdown.redirect_re]
+doc = "A stdout redirect to a file (not /dev/null) in a command segment, JavaScript syntax: the output of that command is bounded. Stderr-only redirects (2>) and fd merges (2>&1) do not count."
+value = "(^|[^0-9&>])>>?\\s*(?!/dev/null)[^\\s&>|]"
+
+[upfront.setting]
+doc = "Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call."
+value = { section = "guards", key = "upfrontNotice", type = "boolean", env = "ANTIHALL_UPFRONT_NOTICE", option = "", default = true }
+
+[upfront.guard_name]
+doc = "Name of the up-front line in its message."
+value = "session-switches"
+
+[upfront.kind]
+doc = "Advisory kind the up-front line is counted and de-duplicated under (once per distinct state)."
+value = "switch_notice"
+
+[upfront.events]
+doc = "Hook events the dispatcher runs the up-front check at (the first one to come delivers the line; the state is then known)."
+value = ["UserPromptSubmit", "PreToolUse"]
+
+[upfront.expired_window_ms]
+doc = "A skip entry that expired this recently is reported as expired; older ones are history and stay silent."
+value = 86400000
+min = 0
+
+[upfront.msg_spawn_stop]
+doc = "Line for the spawn stop being on; {limit}, {pct}, {resets} as in standdown.msg_what."
+value = "Agent spawning is stopped ({limit} usage limit at {pct}%, {resets}): do the work inline, in small bounded steps."
+
+[upfront.msg_conserve]
+doc = "Line for limit conserve being on; {reason} names the bucket(s)."
+value = "Limit conserve is on ({reason}): use cheaper models, fewer agents and tight briefs."
+
+[upfront.msg_skip_set]
+doc = "Line for guard skips being active; {guards} the names."
+value = "Guards skipped on the owner's say-so: {guards}."
+
+[upfront.msg_skip_expired]
+doc = "Line for guard skips that just expired; {guards} the names."
+value = "Guard skips expired, the guards are back on: {guards}."
+
+[upfront.msg_clear]
+doc = "Line when every switch told earlier is back to normal."
+value = "Session switches are back to normal (spawning allowed, no conserve, no guard skips)."
+
+[upfront.join]
+doc = "Text between the lines of one up-front notice."
+value = " "
+
+[upfront.guards_join]
+doc = "Text between guard names in a skip line."
+value = ", "
+
+[repeat.setting]
+doc = "Switch guards.repeatHint (default on): a guard that blocks the same session again and again appends what is allowed and a request to change approach."
+value = { section = "guards", key = "repeatHint", type = "boolean", env = "ANTIHALL_REPEAT_HINT", option = "", default = true }
+
+[repeat.min_blocks]
+doc = "How many blocks by one guard of one session inside the window make a repeat."
+value = 2
+min = 2
+
+[repeat.window_min]
+doc = "The repeat window in minutes."
+value = 10
+min = 1
+
+[repeat.max_keys]
+doc = "Most (session, guard) pairs the learner remembers; the oldest are dropped past it."
+value = 512
+min = 16
+
+[repeat.msg_changed]
+doc = "The line added to a repeated block; {n} the blocks in the window, {minutes} the window."
+value = "This was blocked {n} times in {minutes} min: change approach."
+
+[repeat.msg_allowed]
+doc = "The one-time allowed-forms line added to the first repeated block of a guard in a session; {forms} the guard's own allowed-forms text."
+value = "Allowed here: {forms}"
+
+[repeat.allowed_keys]
+doc = "Per guard: the defaults key of its own allowed-forms text, appended once on a repeat. A guard not listed gets only the change-approach line."
+value = { command-guard = "command.msg_heavy_allowed", coordinator-work-guard = "coordinator_work.block_allowed", edit-guard = "edit_guard.msg_new_allowed", wide-search-guard = "wide_search.msg_instead", lane-test-guard = "lane_test.msg_instead", queued-wait-guard = "queued_wait.msg_instead_bg" }
+
+[upfront.check]
+doc = "The check the dispatcher runs for the up-front line (engine/logic/<name>.js); it is not a hook row."
+value = "switch-notice"
+
+[upfront.min_interval_ms]
+doc = "Least time between two runs of the up-front check for one session (the state of the switches does not change faster than this matters)."
+value = 3000
+min = 0
+
+[upfront.summary]
+doc = "One-line description of the switch-notice check in the generated reference."
+value = "Run by the dispatcher on UserPromptSubmit and PreToolUse (not a hook row): tells the agent one short line when the session-wide switches change (spawn-usage stop, limit conserve, a guard skip set or expired in skip.json), once per state. Switch guards.upfrontNotice."

@@ -59,7 +59,15 @@ pub enum Answer {
 /// Run `entry`'s built-in check on the payload. The Node guard blocks with exit 2 and the reason plus a newline on
 /// stderr, and prints an advisory as one JSON line; the verdict is turned into exactly those bytes.
 pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
-    let Some(check) = entry.check.as_deref().and_then(checks::get) else { return Answer::Defer };
+    match entry.check.as_deref() {
+        Some(name) => run_check(name, &entry.id, meta, p),
+        None => Answer::Defer,
+    }
+}
+
+/// Run the built-in check `name` for the answer of `id` (an entry of the table, or an internal step of the dispatcher).
+pub(crate) fn run_check(name: &str, id: &str, meta: &Meta, p: &Value) -> Answer {
+    let Some(check) = checks::get(name) else { return Answer::Defer };
     let null = Value::Null;
     let subject = Subject {
         event: &meta.event,
@@ -70,11 +78,11 @@ pub fn run_entry(entry: &Entry, meta: &Meta, p: &Value) -> Answer {
     };
     let opts = json!({ "plugin_root": meta.root, "payload_sha1": meta.payload_sha1, "host": meta.host });
     let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _boundary = crate::crash::enter("check", "D", &meta.event, &entry.id, "");
+        let _boundary = crate::crash::enter("check", "D", &meta.event, id, "");
         checks::run_env_guarded(check, &subject, p, &opts, &meta.env)
     }));
     match verdict {
-        Ok(v) => answer_of(&entry.id, v),
+        Ok(v) => answer_of(id, v),
         Err(_) => Answer::Defer,
     }
 }
@@ -163,7 +171,8 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
                 crate::budget::note_dropped(guard_event, check, &meta.event, "cpu_budget");
                 Answer::Defer
             } else {
-                a
+                // a block that keeps coming back from the same guard tells what is allowed and asks for a different approach
+                crate::learn::annotate(meta, p, check, a)
             }
         };
         crate::deadline::beat();
@@ -181,6 +190,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
         observe(&e, &a, started.elapsed().as_micros() as u64);
         out.push((e.id, a));
     }
+    crate::learn::upfront_notice(meta, p, &mut out);
     out
 }
 

@@ -615,6 +615,8 @@ impl Shared {
                     .map(|c| serde_json::json!({"event": c["labels"]["event"], "kind": c["labels"]["kind"], "reason": c["labels"]["reason"], "count": c["value"]}))
                     .collect::<Vec<_>>()),
             }),
+            // blocks a guard repeated for the same session inside the repeat window (THIS daemon), by guard: the agent kept retrying
+            "repeat_blocks": crate::learn::repeat_blocks(),
             "degraded": degraded,
             "mem_limit": self.rlimit,
             "malloc_stack_logging": cfg.malloc_stack_logging,

@@ -245,6 +245,15 @@ fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
     (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms")).then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
 }
 
+/// A subagent that is known to have finished (it said so, or its task ended) and spoke at all, without making a single tool call: it did nothing, whatever its last message says ("Done"). Raised once,
+/// so the parent is told not to take the report for a result. `agent_tracker.no_work.max_tools` is the most tool calls that still count.
+fn no_work(a: &Agent) -> Option<Raised> {
+    if !super::is_child(a) || !(a.finished || a.gone) || a.dead || a.tout == 0 || a.tools > defaults::num("agent_tracker.no_work.max_tools") {
+        return None;
+    }
+    Some((a.tools, String::new()))
+}
+
 /// A background shell task the agent started has ended (a test run, a soak, a build): the session that waits for it is told once.
 fn watched_exit(a: &Agent, now: u64) -> Option<Raised> {
     let fresh: Vec<&(String, u64)> = a.exited.iter().filter(|(_, t)| now.saturating_sub(*t) <= lim("exit_keep_ms")).collect();
@@ -290,6 +299,7 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
+            "no_work" => no_work(a),
             _ => None,
         };
         if let Some(r) = r {
@@ -385,6 +395,7 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
             &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("task", &f.text)],
         ),
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
+        "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
             defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }

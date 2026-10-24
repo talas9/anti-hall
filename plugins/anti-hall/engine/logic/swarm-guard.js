@@ -160,36 +160,6 @@ function swgDescribe(p) {
 // check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
-function swgUsageBuckets(home) {
-  var rel = ah.cfg('ctxbudget.usage_cache'), path = ah.path.join(home, rel), size = ah.fs.size(path);
-  if (size === null) return null;
-  if (size > ah.cfgNum('script.read_max_bytes')) { ah.unable('swarm-guard:usage_big'); return null; }
-  var raw = ah.fs.readText(path), parsed;
-  if (raw === null) return null;
-  try { parsed = JSON.parse(raw); } catch (e) { return null; }
-  if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
-  var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
-  var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names'), out = [];
-  for (var i = 0; i < pcts.length; i++) {
-    var at = typeof d[resets[i]] === 'string' ? d[resets[i]] : null, pct = typeof d[pcts[i]] === 'number' ? d[pcts[i]] : 0;
-    if (at) { var rt = new Date(at).getTime(); if (isFinite(rt) && rt < now) pct = 0; } // a window that already reset counts as empty
-    else if (ts > 0 && (now - ts) > ah.cfgNum('ctxbudget.usage_max_stale_ms')) pct = 0; // a stale reading with no reset time
-    out.push({ name: names[i], pct: pct, resetsAt: at });
-  }
-  return out;
-}
-
-// The fullest bucket {name, pct, resetsAt}, or null when there is no reading.
-function swgFullest(buckets) {
-  if (!buckets || !buckets.length) return null;
-  return buckets.reduce(function (a, b) { return b.pct > a.pct ? b : a; });
-}
-
-function swgResetText(b) {
-  var t = b.resetsAt ? new Date(b.resetsAt).getTime() : NaN;
-  return isFinite(t) ? text.render(ah.cfg('spawn_usage.msg_resets_at'), { at: new Date(t).toISOString().slice(0, 16) + 'Z' }) : ah.cfg('spawn_usage.msg_resets_unknown');
-}
-
 // The ceiling at this usage: the base, less the reduce of the highest step whose percent the fullest bucket has reached, never under the floor.
 function swgCeiling(full) {
   var ceil = ah.cfgNum('spawn_ceiling.base'), at = ah.cfg('spawn_ceiling.step_pct'), cut = ah.cfg('spawn_ceiling.step_reduce');

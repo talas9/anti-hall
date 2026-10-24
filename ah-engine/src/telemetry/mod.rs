@@ -376,6 +376,7 @@ impl Telemetry {
                 tool: who.tool.clone(),
                 project: project.into(),
                 reason,
+                repeat: crate::learn::take_repeat(),
             }));
         }
         match verdict {

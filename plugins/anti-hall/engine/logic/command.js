@@ -3174,6 +3174,35 @@ function isBoundedVerificationCommand(command, ctx) {
   return sawQualifying;
 }
 
+// cmdOutputBounded(command) -> true iff every pipeline that runs something other than a plain light command ends in a bounded sink
+// (head, tail, wc, grep -c) or writes its stdout to a file. Used by the delegate stand-down: while spawning is stopped a heavy command
+// may run inline only when its output cannot flood the context. An unquoted `#` or a background `&` is never judged bounded.
+function cmdOutputBounded(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (RX82.test(neutralizeQuotedContents(command))) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+  const redirect = new RegExp(ah.cfg('standdown.redirect_re'));
+  const ends = [';', '&&', '||', '\n', 'end'];
+  let heavy = false;
+  let bounded = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (seg) {
+      if (redirect.test(neutralizeQuotedContents(seg)) || isBoundedSinkSegment(seg)) bounded = true;
+      else if (!(i > 0 && delims[i - 1] === '|') && !isPlainLightSegment(seg, command)) heavy = true;
+      else if (i > 0 && delims[i - 1] === '|') heavy = true;
+    }
+    const d = delims[i];
+    if (d === '|') continue;
+    if (ends.indexOf(d) < 0) return false;
+    if (heavy && !bounded) return false;
+    heavy = false;
+    bounded = false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Per-project command allowlist (owner-approved 2026-09-26). Lets a PROJECT
 // declare its own sanctioned exact commands (e.g. its deploy script) that run
@@ -5050,7 +5079,15 @@ function mainFlow(payload) {
   const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
-  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude');
+  // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
+  const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));
+  if (standStop) {
+    if (guarded(() => cmdOutputBounded(command))) {
+      const standNote = guarded(() => sd.note(payload, standStop)) || '';
+      return standNote ? { advisory: text.advisoryJson('PreToolUse', standNote) } : 'allow';
+    }
+  }
+  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
   const reason = bm.blockMessage({
     guard: ah.cfg('command.guard_name'),
     what: heavyWhat,

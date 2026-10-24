@@ -180,6 +180,7 @@ impl TelDb {
                         tool: r.get(6)?,
                         project: r.get(7)?,
                         reason: r.get(8)?,
+                        repeat: r.get::<_, i64>(9)?.max(0) as u64,
                     })
                 })?;
                 rows.collect()

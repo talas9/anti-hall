@@ -52,6 +52,8 @@ pub struct BlockRow {
     pub project: String,
     /// The first line of the block message.
     pub reason: String,
+    /// 0, or how many blocks this guard gave this session inside the repeat window when this one was the repeat (`session_switches.toml`).
+    pub repeat: u64,
 }
 
 /// Which events a query wants; an empty field matches everything.

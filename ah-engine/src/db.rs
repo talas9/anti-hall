@@ -591,7 +591,7 @@ fn apply(c: &Connection, op: &Op) -> Result<String, DbError> {
             Ok(String::new())
         }
         Op::Block(b) => {
-            c.prepare_cached(sql::BLOCK_INSERT)?.execute(params![b.ts_ms as i64, b.guard, b.rule, b.event, b.session, b.agent, b.tool, b.project, b.reason])?;
+            c.prepare_cached(sql::BLOCK_INSERT)?.execute(params![b.ts_ms as i64, b.guard, b.rule, b.event, b.session, b.agent, b.tool, b.project, b.reason, b.repeat as i64])?;
             let keep = defaults::num("telemetry.block_keep_days").saturating_mul(86_400_000);
             c.prepare_cached(sql::BLOCK_PRUNE)?.execute(params![b.ts_ms.saturating_sub(keep) as i64])?;
             Ok(String::new())

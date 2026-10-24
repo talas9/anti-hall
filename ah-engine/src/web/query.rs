@@ -91,7 +91,7 @@ fn guard_blocks(rest: &[String], need: usize) -> Value {
         .map(|t| t.blocks(since, need))
         .unwrap_or_default()
         .into_iter()
-        .map(|b| json!({"ts_ms": b.ts_ms, "guard": b.guard, "rule": b.rule, "event": b.event, "session": b.session, "agent": b.agent, "tool": b.tool, "project": b.project, "reason": b.reason}))
+        .map(|b| json!({"ts_ms": b.ts_ms, "guard": b.guard, "rule": b.rule, "event": b.event, "session": b.session, "agent": b.agent, "tool": b.tool, "project": b.project, "reason": b.reason, "repeat": b.repeat}))
         .collect();
     json!({"blocks": rows, "window": {"days": days}})
 }

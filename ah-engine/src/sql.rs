@@ -6,7 +6,7 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7, HOT_V8];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7, HOT_V8, HOT_V9];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
 pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3, ARCHIVE_V4];
@@ -239,14 +239,19 @@ CREATE TABLE IF NOT EXISTS guard_blocks (id INTEGER PRIMARY KEY, ts_ms INTEGER N
 CREATE INDEX IF NOT EXISTS guard_blocks_ts ON guard_blocks (ts_ms);
 ";
 
+/// hot.db v9: how many blocks the guard had given the session inside the repeat window when this one was a repeat (0: not a repeat).
+const HOT_V9: &str = "
+ALTER TABLE guard_blocks ADD COLUMN repeat INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Record one guard block.
-pub const BLOCK_INSERT: &str = "INSERT INTO guard_blocks (ts_ms, guard, rule, event, session, agent, tool, project, reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)";
+pub const BLOCK_INSERT: &str = "INSERT INTO guard_blocks (ts_ms, guard, rule, event, session, agent, tool, project, reason, repeat) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
 
 /// Drop the blocks older than a time.
 pub const BLOCK_PRUNE: &str = "DELETE FROM guard_blocks WHERE ts_ms < ?1";
 
 /// The newest blocks since a time.
-pub const BLOCK_RECENT: &str = "SELECT ts_ms, guard, rule, event, session, agent, tool, project, reason FROM guard_blocks WHERE ts_ms >= ?1 ORDER BY id DESC LIMIT ?2";
+pub const BLOCK_RECENT: &str = "SELECT ts_ms, guard, rule, event, session, agent, tool, project, reason, repeat FROM guard_blocks WHERE ts_ms >= ?1 ORDER BY id DESC LIMIT ?2";
 
 /// Insert or replace one realtime entity.
 pub const RT_ENTITY_PUT: &str = "INSERT INTO rt_entity (ns, key, body, src_sig, observed_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (ns, key) DO UPDATE SET body = excluded.body, src_sig = excluded.src_sig, observed_ms = excluded.observed_ms";

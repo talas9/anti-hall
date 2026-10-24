@@ -62,6 +62,9 @@ What the automatic guards check and how to read a block.
 - `guards.testPolicyMainThread` = false: Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents
 - `guards.queuedWaitGuard` = true: Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops
 - `guards.allowWideSearch` = false: Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside)
+- `guards.delegateStandDown` = true: Switch guards.delegateStandDown (default on): while the spawn-usage hard stop is active the delegate-only guards (standdown.guards: edit-guard, command-guard heavy commands, coordinator-work-guard) allow the main thread to work inline, with one note saying why.
+- `guards.upfrontNotice` = true: Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), once per state.
+- `guards.repeatHint` = true: Switch guards.repeatHint (default on): a guard that blocks the same session again within the repeat window appends what is allowed (once) and a request to change approach.
 - `guards.broadKill` = true: Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills
 - `guards.uncommittedWork` = true: Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted
 - `statusline.devswarm.enabled` = true: Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace...

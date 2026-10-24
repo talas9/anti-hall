@@ -288,6 +288,12 @@ function cwMain(payload, post) {
   // a DevSwarm child workspace is a worker on its own branch (as edit-guard and command-guard treat it): its commits, deploys and suite runs
   // are its task, so the window never counts or blocks them. Without this a child that must run its project's suite had no permitted path.
   if (cmdChildWorker(typeof payload.cwd === 'string' ? payload.cwd : '')) return 'allow';
+  // while spawning is stopped there is nobody to delegate to: the window neither counts nor blocks, and one note says why
+  var standStop = sd.applies(payload, ah.cfg('coordinator_work.guard_name'));
+  if (standStop !== null) {
+    var standNote = post ? '' : sd.note(payload, standStop);
+    return standNote === '' ? 'allow' : { advisory: text.advisoryJson(ah.cfg('standdown.pre_event'), standNote) };
+  }
   if (ah.settings.skipped(ah.cfg('coordinator_work.command_guard_name'))) return 'allow';
   if (!ah.settings.bool('coordinator_work.command_guard_setting')) return 'allow';
   var cfg = cwConfig();
