@@ -21,7 +21,7 @@ Scope: shared native engine integration for Claude/OMC and Codex/OMX. No app mut
 | pull_requests / repositories required columns | **Schema present**; row semantics unverified | Read-only sqlite_master output below; defaults mesh_write.app_cols_pull_requests/app_cols_repositories |
 | DEVSWARM_AI_AGENT, BUILDER_ID, BUILDER_NAME, DEFAULT_BRANCH, REPO_ID, SOURCE_BRANCH | Engine dependency source-confirmed; complete runtime producer semantics unverified | Dependency manifest refresh.toml; default keys engine.env_allow, devswarm_role, devswarm_cli; CLI top help observed repo/default branch/agent only |
 | DEVSWARM_BUILDER_TERMINAL_ID, BUILDER_TERMINAL_GENERATION, REPO_KEY | Engine dependency source-confirmed; producer compatibility unverified | Rust source inventory below; installed CLI17114 reads terminal ID; no live identity mutation/probe |
-| macOS app DB path | Existing, schema read successfully | `/Users/talas9/Library/Application Support/DevSwarm/devswarm.db`, sqlite3 -readonly |
+| macOS app DB path | Existing, schema read successfully | `~/Library/Application Support/DevSwarm/devswarm.db`, sqlite3 -readonly |
 | Linux/XDG path; ANTIHALL_DEVSWARM_APP_DB override | Engine path contract inspected; Linux runtime unverified | ident.rs701–714; defaults mesh_write.app_db_linux/env_app_db |
 | hivecontrol executable, alias, path cache | Installed alias source-confirmed; cache not read | Installed cli/hivecontrol1–6 execs sibling devswarm; ingest/monitor.rs25–39 reads configured override/cache `hivecontrol` field |
 | Workspace descriptors and fields | Consumer contract source-confirmed; producer/current records unverified | dswire/facts.rs21–58; manifest inventory lists fields; no live descriptors touched |
@@ -477,7 +477,7 @@ Options:
   -h, --help  display help for command
 ```
 
-## Probe ['sqlite3', '-readonly', '/Users/talas9/Library/Application Support/DevSwarm/devswarm.db', 'SELECT name, sql FROM sqlite_master WHERE type="table" AND name IN ("builders","builder_terminals","pull_requests","repositories");'] exit 0
+## Probe ['sqlite3', '-readonly', '~/Library/Application Support/DevSwarm/devswarm.db', 'SELECT name, sql FROM sqlite_master WHERE type="table" AND name IN ("builders","builder_terminals","pull_requests","repositories");'] exit 0
 ```text
 repositories|CREATE TABLE `repositories` (
 	`id` text PRIMARY KEY NOT NULL,
