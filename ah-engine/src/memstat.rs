@@ -182,6 +182,11 @@ unsafe impl GlobalAlloc for Counting {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc` call.
                 unsafe { JEMALLOC.alloc(l) }
             }
+            #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
+            Allocator::Jemalloc => {
+                // SAFETY: forwarded unchanged; targets without jemalloc use the system allocator.
+                unsafe { SYSTEM.alloc(l) }
+            }
             Allocator::System => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc` call.
                 unsafe { SYSTEM.alloc(l) }
@@ -199,6 +204,11 @@ unsafe impl GlobalAlloc for Counting {
             Allocator::Jemalloc => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc_zeroed` call.
                 unsafe { JEMALLOC.alloc_zeroed(l) }
+            }
+            #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
+            Allocator::Jemalloc => {
+                // SAFETY: forwarded unchanged; targets without jemalloc use the system allocator.
+                unsafe { SYSTEM.alloc_zeroed(l) }
             }
             Allocator::System => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::alloc_zeroed` call.
@@ -218,6 +228,11 @@ unsafe impl GlobalAlloc for Counting {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::dealloc` call.
                 unsafe { JEMALLOC.dealloc(p, l) }
             }
+            #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
+            Allocator::Jemalloc => {
+                // SAFETY: forwarded unchanged; targets without jemalloc use the system allocator.
+                unsafe { SYSTEM.dealloc(p, l) }
+            }
             Allocator::System => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::dealloc` call.
                 unsafe { SYSTEM.dealloc(p, l) }
@@ -232,6 +247,11 @@ unsafe impl GlobalAlloc for Counting {
             Allocator::Jemalloc => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::realloc` call.
                 unsafe { JEMALLOC.realloc(p, l, new) }
+            }
+            #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_env = "gnu"))))]
+            Allocator::Jemalloc => {
+                // SAFETY: forwarded unchanged; targets without jemalloc use the system allocator.
+                unsafe { SYSTEM.realloc(p, l, new) }
             }
             Allocator::System => {
                 // SAFETY: forwarded unchanged from this unsafe `GlobalAlloc::realloc` call.

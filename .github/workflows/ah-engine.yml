@@ -81,6 +81,11 @@ jobs:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      - name: Check target without jemalloc (macOS x86_64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --target x86_64-apple-darwin
       - name: Build the thin client for hook and install tests
         working-directory: ah-launcher
         run: cargo build --release --locked
