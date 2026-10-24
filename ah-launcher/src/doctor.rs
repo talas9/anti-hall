@@ -422,13 +422,13 @@ impl Doc<'_> {
                 }
             }
             if !reported.is_empty() {
-                if !pinned.is_empty() && !reported.contains(&pinned) {
+                if !pinned.is_empty() && older_than(&reported, &pinned) {
                     self.warnl("bin_version_differs", &[("have", &reported), ("want", &pinned), ("bootstrap", &install)]);
                 } else {
                     let triple = format!("{}-{}", self.host_arch, self.host_os);
                     self.ok("bin_ok", &[("path", &b), ("triple", &triple), ("ver", &reported)]);
                 }
-            } else if !m_ver.is_empty() && !pinned.is_empty() && m_ver != pinned {
+            } else if !m_ver.is_empty() && !pinned.is_empty() && older_than(&m_ver, &pinned) {
                 self.warnl("bin_version_differs", &[("have", &m_ver), ("want", &pinned), ("bootstrap", &install)]);
             }
         }
@@ -1094,4 +1094,21 @@ fn print_out(t: &str) {
     let mut o = std::io::stdout();
     let _ = o.write_all(t.as_bytes());
     let _ = o.flush();
+}
+
+/// Whether the engine version `have` is lower than the lock's `want`. The lock names the release the plugin was published with; an
+/// engine at or above it (a newer release, a local build) is compatible, since each part has its own version. Unparsable text counts as
+/// not older.
+fn older_than(have: &str, want: &str) -> bool {
+    fn nums(v: &str) -> Vec<u64> {
+        v.split(|c: char| c.is_whitespace()).next().unwrap_or("").trim_start_matches('v').split(['+', '-']).next().unwrap_or("").split('.').map_while(|p| p.parse().ok()).collect()
+    }
+    let (mut a, mut b) = (nums(have), nums(want));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a < b
 }
