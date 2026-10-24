@@ -98,6 +98,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the suffix of the one rotated ledger file: the ledger keeps exactly one previous generation, as the engine's ledger does",
     ),
     (
+        "src/proc.rs",
+        "child_deadline budget_ms=",
+        "key=value deadline diagnostics for developers; no policy values or user messages",
+    ),
+    (
         "src/launcher.rs",
         "event={}",
         "key=value diagnostic and log records for developers and the integrity tooling, not messages shown to a user or an agent",

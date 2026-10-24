@@ -194,13 +194,11 @@ impl L {
                     .join(self.key("launcher.run_base_dir")),
             );
         }
-        if let Some(t) = env_nonempty(&self.key("env.tmpdir")) {
-            bases.push(PathBuf::from(t).join(format!(
-                "{}{}",
-                self.key("launcher.tmp_dir_prefix"),
-                uid()
-            )));
-        }
+        // Linux need not export TMPDIR. Keep the private fallback even when HOME is unusable and that variable is absent.
+        let tmp = env_nonempty(&self.key("env.tmpdir"))
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        bases.push(tmp.join(format!("{}{}", self.key("launcher.tmp_dir_prefix"), uid())));
         for b in bases {
             let _ = std::fs::DirBuilder::new()
                 .recursive(true)

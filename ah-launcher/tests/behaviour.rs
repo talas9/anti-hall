@@ -1021,3 +1021,30 @@ fn plugin_root_reaches_the_engine_in_canonical_form() {
         env.log()
     );
 }
+
+/// Linux commonly has no TMPDIR; a broken HOME must still leave the wait/done marker channel available.
+#[test]
+fn an_unusable_home_without_tmpdir_keeps_the_slow_reply_and_done_mark() {
+    let env = Env::new("no-tmpdir");
+    let homefile = env.path("homefile");
+    std::fs::write(&homefile, b"not a directory").unwrap();
+    let home = homefile.join("h");
+    let e = engine(
+        &env,
+        ": >\"$AH_ENGINE_WAIT_FILE\"\nsleep 1\nprintf ANSWER\n: >\"$AH_ENGINE_DONE_FILE\"\nexit 1",
+    );
+    let mut c = env.command(
+        "UserPromptSubmit",
+        &[],
+        Some(&e),
+        &[("AH_HOOK_TIMEOUT_MS", "500")],
+    );
+    c.env("HOME", &home).env_remove("TMPDIR");
+    let o = env.run_with(c, |mut si| si.write_all(PAYLOAD).unwrap());
+    assert_eq!(
+        (o.code, o.out.as_slice()),
+        (1, b"ANSWER".as_slice()),
+        "{}",
+        o.err
+    );
+}

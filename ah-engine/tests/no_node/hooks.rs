@@ -227,6 +227,7 @@ fn drive(host: &str) {
         "daemon_node_starts": daemon,
         "decision_mismatches": mismatched,
         "engine_event_log_tail": w.event_log_tail(),
+        "launcher_log": std::fs::read_to_string(w.state.join("launcher.log")).unwrap_or_default(),
         "rows": rows,
     });
     expected::finish(&format!("hooks-{host}"), report, &problems);

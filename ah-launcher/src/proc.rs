@@ -704,6 +704,19 @@ pub fn run_child(o: &Opts) -> Run {
             .recv_timeout(o.slow_max.saturating_sub(start.elapsed()))
             .ok();
     }
+    if status.is_none()
+        && let Some(log) = crate::launcher::LOG.get()
+    {
+        log.append(&format!(
+            "child_deadline budget_ms={} slow_ms={} elapsed_ms={} markers={} wait={} done={}",
+            o.budget.as_millis(),
+            o.slow_max.as_millis(),
+            start.elapsed().as_millis(),
+            o.wait_file.is_some(),
+            o.wait_file.is_some_and(Path::exists),
+            o.done_file.is_some_and(Path::exists)
+        ));
+    }
     // The answer is already written when the done mark exists: a child that is still not gone at the hard deadline is cut, but
     // what it printed is delivered (with its exit code when it leaves within the grace, else 0) instead of being dropped.
     let mut answered_cut = false;
