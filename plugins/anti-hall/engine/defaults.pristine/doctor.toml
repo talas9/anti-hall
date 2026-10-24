@@ -154,7 +154,7 @@ value = "\"decision\"\\s*:\\s*\"block\""
 
 [doctor.version_alert_re]
 doc = "The pattern of the version nudge in what the version-alert check prints; {stale} is the cached newer version, already escaped."
-value = "\"additionalContext\"\\s*:\\s*\"[^\"]*version-alert: v{stale} is available \\(you are running v"
+value = "\"additionalContext\"\\s*:\\s*\"[^\"]*version[- ]alert: v{stale} is available \\(you are running v"
 
 
 [doctor.version_check_file]
