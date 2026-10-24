@@ -46,6 +46,7 @@ struct Opts {
     from: Option<PathBuf>,
     engine: Option<PathBuf>,
     hook: Option<PathBuf>,
+    web: Option<PathBuf>,
     tree: Option<PathBuf>,
     deploy: Option<PathBuf>,
     source: String,
@@ -71,6 +72,7 @@ fn parse(p: &Parsed) -> Result<Opts, String> {
             x if x == flag("from_local") => o.from = Some(PathBuf::from(val(a)?)),
             x if x == flag("engine_bin") => o.engine = Some(PathBuf::from(val(a)?)),
             x if x == flag("hook_bin") => o.hook = Some(PathBuf::from(val(a)?)),
+            x if x == flag("web_bin") => o.web = Some(PathBuf::from(val(a)?)),
             x if x == flag("tree") => o.tree = Some(PathBuf::from(val(a)?)),
             x if x == flag("deploy") => o.deploy = Some(PathBuf::from(val(a)?)),
             x if x == flag("source") => {
@@ -163,6 +165,7 @@ fn first_line(s: &str) -> String {
 struct Source {
     engine: PathBuf,
     hook: Option<PathBuf>,
+    web: Option<PathBuf>,
     tree: Option<PathBuf>,
 }
 
@@ -178,12 +181,13 @@ fn resolve_source(o: &Opts) -> Result<Source, String> {
         return Err(defaults::render("routine.msg_not_file", &[("path", &engine.display())]));
     }
     let hook = o.hook.clone().or_else(|| under("routine.hook_candidates")).filter(|h| h.is_file());
+    let web = o.web.clone().or_else(|| under("routine.web_candidates")).filter(|w| w.is_file());
     let marker = t("routine.tree_marker");
     let tree = o.tree.clone().or_else(|| dir.as_deref().and_then(|d| defaults::list("routine.tree_candidates").iter().map(|r| d.join(r)).find(|p| p.join(marker).is_file())));
     if let Some(tr) = tree.as_ref().filter(|tr| !tr.join(marker).is_file()) {
         return Err(defaults::render("routine.msg_bad_tree", &[("path", &tr.display()), ("marker", &marker)]));
     }
-    Ok(Source { engine, hook, tree })
+    Ok(Source { engine, hook, web, tree })
 }
 
 struct Target {
@@ -487,11 +491,14 @@ fn integrity_accept(tg: &Target, scratch: &Path) {
 struct Pre {
     problems: Vec<String>,
     version: String,
+    /// The version stamps the new thin client and dashboard report (empty when not part of the set).
+    hook_version: String,
+    web_version: String,
     sha: String,
 }
 
 fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) -> Pre {
-    let mut pre = Pre { problems: Vec::new(), version: String::new(), sha: sha_of(&src.engine).unwrap_or_default() };
+    let mut pre = Pre { problems: Vec::new(), version: String::new(), hook_version: String::new(), web_version: String::new(), sha: sha_of(&src.engine).unwrap_or_default() };
     let limit = defaults::secs("routine.call_timeout_s");
     let envs = scratch_env(scratch, src.tree.as_deref().or(tg.roots.first().map(PathBuf::as_path)));
     let v = run(&src.engine, &["version"], &envs, limit, scratch, None);
@@ -507,7 +514,18 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
         if r.code != Some(0) {
             pre.problems.push(defaults::render("routine.problem_new_hook", &[("path", &h.display()), ("got", &first_line(&r.out))]));
         } else {
-            log.say(defaults::render("routine.line_new_hook", &[("path", &h.display()), ("version", &first_line(&r.out))]));
+            pre.hook_version = first_line(&r.out);
+            log.say(defaults::render("routine.line_new_hook", &[("path", &h.display()), ("version", &pre.hook_version)]));
+        }
+    }
+    if let Some(w) = &src.web {
+        let args: Vec<&str> = defaults::list("routine.web_version_args");
+        let r = run(w, &args, &[], limit, scratch, None);
+        if r.code != Some(0) {
+            pre.problems.push(defaults::render("routine.problem_new_web", &[("path", &w.display()), ("got", &first_line(&r.out))]));
+        } else {
+            pre.web_version = first_line(&r.out);
+            log.say(defaults::render("routine.line_new_web", &[("path", &w.display()), ("version", &pre.web_version)]));
         }
     }
     if let Some(tree) = &src.tree {
@@ -802,6 +820,29 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
         }
         log.say(t("routine.line_check_failed").to_string());
         return (Done::Failed, json!({"action": "install", "problems": pre.problems}));
+    }
+    // a set to install is one build: no uncommitted changes in it, and one version stamp across engine, client and dashboard
+    let set: Vec<(&str, &str)> = [(t("routine.word_engine"), pre.version.as_str()), (t("routine.word_hook"), pre.hook_version.as_str()), (t("routine.word_web"), pre.web_version.as_str())]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+    let dirty = set.iter().filter(|(_, v)| v.ends_with(t("routine.dirty_suffix"))).map(|(n, v)| format!("{n} {v}")).collect::<Vec<_>>();
+    if !dirty.is_empty() {
+        let msg = defaults::render("routine.msg_dirty", &[("which", &dirty.join(", ")), ("flag", &flag("force"))]);
+        if !o.force {
+            log.say(msg);
+            return (Done::Refused, json!({"action": "install", "refused": "dirty", "which": dirty}));
+        }
+        log.say(defaults::render("routine.line_dirty_forced", &[("which", &dirty.join(", "))]));
+    }
+    if set.iter().any(|(_, v)| *v != set[0].1) {
+        let list = set.iter().map(|(n, v)| format!("  {n}: {v}")).collect::<Vec<_>>().join("\n");
+        let msg = defaults::render("routine.msg_mismatch", &[("set", &list), ("flag", &flag("force"))]);
+        if !o.force {
+            log.say(msg);
+            return (Done::Refused, json!({"action": "install", "refused": "mismatch", "set": set.iter().map(|(n, v)| json!({"name": n, "version": v})).collect::<Vec<_>>()}));
+        }
+        log.say(defaults::render("routine.line_mismatch_forced", &[]));
     }
     if let Some(why) = downgrade(&cur, &pre.version, new_built, &o.source) {
         let msg = defaults::render("routine.msg_downgrade", &[("running", &cur.version), ("target", &pre.version), ("why", &why), ("flag", &flag("force"))]);

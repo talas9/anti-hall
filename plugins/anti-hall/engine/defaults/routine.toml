@@ -507,3 +507,55 @@ value = "engine log since the start: {kind} {code} {detail}"
 [routine.problem_defaults_error]
 doc = "The defaults error file was written since the start. {text}."
 value = "defaults.error written since the start: {text}"
+
+[routine.flag_web_bin]
+doc = "The dashboard binary (ah-web) of the set, when it is not at one of routine.web_candidates: only its version stamp is checked against the engine's and the client's (the routine does not install it)."
+value = "--web-bin"
+
+[routine.web_candidates]
+doc = "Where the dashboard binary is looked for under the --from-local directory. Absent = it is not part of the version check."
+value = ["ah-web", "bin/ah-web", "ah-web/target/release/ah-web", "target/release/ah-web"]
+
+[routine.web_version_args]
+doc = "Arguments with which the dashboard binary reports its version (it must exit 0)."
+value = ["--version"]
+
+[routine.problem_new_web]
+doc = "The new dashboard binary does not report a version. {path}, {got}."
+value = "the new dashboard binary {path} does not report a version (got: {got})"
+
+[routine.line_new_web]
+doc = "The new dashboard binary, shown after the version check. {path}, {version}."
+value = "new dashboard: {version} ({path})"
+
+[routine.word_engine]
+doc = "How the engine is named in the set messages."
+value = "engine"
+
+[routine.word_hook]
+doc = "How the thin client is named in the set messages."
+value = "client"
+
+[routine.word_web]
+doc = "How the dashboard is named in the set messages."
+value = "dashboard"
+
+[routine.dirty_suffix]
+doc = "The ending of a build stamp made from uncommitted changes."
+value = "-dirty"
+
+[routine.msg_dirty]
+doc = "A build with uncommitted changes is refused. {which}, {flag}."
+value = "update: refused: the set was built from uncommitted changes ({which}).\n  rebuild from a clean commit, or pass {flag} to install it anyway; nothing was changed"
+
+[routine.line_dirty_forced]
+doc = "A dirty build is installed because the force flag was given. {which}."
+value = "update: installing a build from uncommitted changes (forced): {which}"
+
+[routine.msg_mismatch]
+doc = "The binaries of the set do not report the same version. {set} (one line per binary), {flag}."
+value = "update: refused: the binaries of this set report different versions:\n{set}\n  build them all from one commit, or pass {flag} to install the set anyway; nothing was changed"
+
+[routine.line_mismatch_forced]
+doc = "A set of different versions is installed because the force flag was given."
+value = "update: installing binaries of different versions (forced)"

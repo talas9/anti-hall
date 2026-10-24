@@ -6,7 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.301.1
+
+### Summary
+
+- Agent tracker: a nudge delivery now marks the child's flag as delivered, and a waste warning needs real token spend (a stalled agent that spent nothing is not waste).
+- Guards: the nested-spawn guard also covers Codex `spawn_agent`; a wide-search guard refuses `find`/`grep -r` rooted at `/` or `$HOME` (switch `guards.allowWideSearch`).
+- Versions: the header shows `<version> (<sha8>)`; the full build stamp stays in `version --json`, the tooltip and the Updates page. The install routine refuses a `-dirty` build or an engine/hook/dashboard set whose versions differ, unless `--force`.
+
 
 ### Changed
 

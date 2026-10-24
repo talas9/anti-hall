@@ -2701,7 +2701,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `17 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `18 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
@@ -3695,7 +3695,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `nested_spawn.msg_what` | `this agent is a worker and may not start agents of its own (nested spawn).` |  |  | What the block says. |
 | `nested_spawn.msg_why` | `A worker that fans out hides its cost from the coordinator: one nested spawn ...` |  |  | Why nested spawns are blocked. |
 | `nested_spawn.setting` | `6 entries` |  |  | Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of its own; off blocks the Agent and Task call when its caller is not the main session. |
-| `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task: blocks a spawn whose caller is a s...` |  |  | One-line description of the nested-spawn check in the generated reference. |
+| `nested_spawn.summary` | `Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): b...` |  |  | One-line description of the nested-spawn check in the generated reference. |
 
 ### spawn_guards.toml / spawn_ceiling
 
@@ -11877,6 +11877,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.defaults_dirs` | `engine/defaults, engine/defaults.pristine` |  |  | The plugin sub-directories synced first and taken whole (the engine reads them at start and on change). |
 | `routine.deploys_dir` | `deploys` |  |  | Directory in the state directory that holds the saved copy of every install (its manifest, the replaced files, the previous binaries). |
 | `routine.detail_chars` | `160` |  |  | Characters of an event detail or error text shown in a problem line. |
+| `routine.dirty_suffix` | `-dirty` |  |  | The ending of a build stamp made from uncommitted changes. |
 | `routine.empty_toml` | `empty.toml` |  |  | Name of the empty file `config validate` is given in the pre-check. |
 | `routine.engine_candidates` | `ah-engine, bin/ah-engine, ah-engine/target/release/ah-engine, target/release/...` |  |  | Where the engine binary is looked for under the --from-local directory (first existing file wins): the directory itself, then a cargo build of the repository checkout. |
 | `routine.env_roots` | `AH_DEPLOY_ROOTS` |  |  | Environment variable naming the plugin roots to install into (colon separated); when set it replaces the lookup below. Tests and scratch homes use it. |
@@ -11892,6 +11893,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.flag_rollback` | `--rollback` |  |  | Restore the previous install from its saved copy (also what the automatic rollback does). |
 | `routine.flag_source` | `--source` |  |  | Where the build came from, recorded in the install record (one of routine.sources). |
 | `routine.flag_tree` | `--tree` |  |  | The plugin tree (a directory holding routine.tree_marker) to install, when it is not at one of routine.tree_candidates. |
+| `routine.flag_web_bin` | `--web-bin` |  |  | The dashboard binary (ah-web) of the set, when it is not at one of routine.web_candidates: only its version stamp is checked against the engine's and the client's (the routine does not install it). |
 | `routine.flag_yes` | `--yes` |  |  | Do it. Without it the routine prints what it would do and changes nothing. |
 | `routine.hold_ttl_s` | `180` |  | s | Lifetime of the maintenance hold (hooks start no engine while the binary is swapped); refreshed at each step. 0 = no hold. A crashed install leaves the guards off for at most this long. |
 | `routine.home_token` | `{home}` |  |  | The placeholder for the home directory in the paths below. |
@@ -11906,12 +11908,15 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.line_auto_rollback` | `VALIDATION FAILED for sha {sha}: rolling back to the saved copy` |  |  | Validation failed: going back. {sha}. |
 | `routine.line_check_failed` | `CHECK FAILED: nothing was changed` |  |  | The pre-check found problems; nothing was changed. |
 | `routine.line_check_ok` | `CHECK OK: {roots} plugin root(s) {same}; nothing was changed` |  |  | The pre-check passed. {roots}, {same}. |
+| `routine.line_dirty_forced` | `update: installing a build from uncommitted changes (forced): {which}` |  |  | A dirty build is installed because the force flag was given. {which}. |
 | `routine.line_downgrade_forced` | `downgrade allowed by --force: {running} -> {target}` |  |  | A downgrade went ahead because of --force. {running}, {target}. |
 | `routine.line_dry` | `dry run: nothing was changed; add --yes to roll back` |  |  | Without --yes on a rollback. |
 | `routine.line_dry_plan` | `dry run: would install into {roots} plugin root(s) {same}; add --yes to do it` |  |  | Without --yes: what would happen. {roots}, {same}. |
 | `routine.line_installed` | `installed: sha {sha}, {started}` |  |  | The files and binaries are in place. {sha}, {started}. |
+| `routine.line_mismatch_forced` | `update: installing binaries of different versions (forced)` |  |  | A set of different versions is installed because the force flag was given. |
 | `routine.line_new_binary` | `new engine: {version} (sha {sha}) {path}` |  |  | The new binary passed its smoke test. {path}, {version}, {sha}. |
 | `routine.line_new_hook` | `new client: {version} {path}` |  |  | The new thin client passed its smoke test. {path}, {version}. |
+| `routine.line_new_web` | `new dashboard: {version} ({path})` |  |  | The new dashboard binary, shown after the version check. {path}, {version}. |
 | `routine.line_no_roots` | `plugin roots: none found; only the binaries are installed` |  |  | No plugin root was found to install into. |
 | `routine.line_problem` | `PROBLEM: {text}` |  |  | One problem. {text}. |
 | `routine.line_restored` | `restored {n} file(s) from {dir}` |  |  | Files restored. {n}, {dir}. |
@@ -11931,8 +11936,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.msg_bad_source` | `update: unknown source {source} (allowed: {allowed})` |  |  | --source got an unknown word. {source}, {allowed}. |
 | `routine.msg_bad_tree` | `update: {path} is not a plugin tree (no {marker})` |  |  | The tree has no marker file. {path}, {marker}. |
 | `routine.msg_commit_failed` | `update: cannot put {path} in place: {why}` |  |  | A staged file could not be renamed into place. {path}, {why}. |
+| `routine.msg_dirty` | `update: refused: the set was built from uncommitted changes ({which}).\n  reb...` |  |  | A build with uncommitted changes is refused. {which}, {flag}. |
 | `routine.msg_downgrade` | `update: refused: this is a downgrade ({why}).\n  running: {running}\n  target...` |  |  | A downgrade is refused. {running}, {target}, {why}, {flag}. |
 | `routine.msg_flag_value` | `update: {flag} needs a value` |  |  | A flag lacks its value. {flag}. |
+| `routine.msg_mismatch` | `update: refused: the binaries of this set report different versions:\n{set}\n...` |  |  | The binaries of the set do not report the same version. {set} (one line per binary), {flag}. |
 | `routine.msg_no_deploy` | `update: no saved copy of an earlier install under {dir}; name one with --depl...` |  |  | Nothing to roll back. {dir}. |
 | `routine.msg_no_engine` | `update: no ah-engine binary under {dir} (looked at the places routine.engine_...` |  |  | No engine binary under the directory. {dir}. |
 | `routine.msg_no_manifest` | `update: {dir} has no readable manifest` |  |  | No manifest in the saved-copy directory. {dir}. |
@@ -11959,6 +11966,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.problem_event` | `engine log since the start: {kind} {code} {detail}` |  |  | A bad row in the engine log since the start. {kind}, {code}, {detail}. |
 | `routine.problem_new_binary` | `the new engine {path} does not answer `version` (got: {got})` |  |  | The new engine binary does not run. {path}, {got}. |
 | `routine.problem_new_hook` | `the new client {path} does not report its version (got: {got})` |  |  | The new thin client does not run. {path}, {got}. |
+| `routine.problem_new_web` | `the new dashboard binary {path} does not report a version (got: {got})` |  |  | The new dashboard binary does not report a version. {path}, {got}. |
 | `routine.problem_no_hook` | `no thin client installed: the guards cannot be probed` |  |  | No thin client to probe the guards with. |
 | `routine.problem_probe` | `guard probe: a force push to main was blocked {blocked}/{n} times (a guard fa...` |  |  | The guard probe was not blocked every time. {blocked}, {n}. |
 | `routine.problem_root` | `the new engine refuses the plugin defaults on {root} (exit {code}): {out}` |  |  | The new binary refuses the new defaults on a root. {root}, {code}, {out}. |
@@ -11981,13 +11989,18 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `routine.tree_marker` | `engine/defaults/index.toml` |  |  | The file whose presence makes a directory a plugin tree / plugin root. |
 | `routine.tree_skip_dirs` | `.git, node_modules` |  |  | Directory names the plugin-tree sync never enters. |
 | `routine.tree_skip_substrings` | `.bak, .deploy., .DS_Store` |  |  | A relative path containing one of these is not synced (backups, staging files, editor files). |
+| `routine.web_candidates` | `ah-web, bin/ah-web, ah-web/target/release/ah-web, target/release/ah-web` |  |  | Where the dashboard binary is looked for under the --from-local directory. Absent = it is not part of the version check. |
+| `routine.web_version_args` | `--version` |  |  | Arguments with which the dashboard binary reports its version (it must exit 0). |
 | `routine.why_build_older` | `same plugin version, older build` |  |  | Why an install is a downgrade: same plugin version, older build. |
 | `routine.why_local_running` | `the running build is a local build of the same plugin version; a release of i...` |  |  | Why an install is refused: the running build is a local or hand-installed build of the same plugin version, which a release of that version does not replace. |
 | `routine.why_plugin_lower` | `its plugin version is lower` |  |  | Why an install is a downgrade: the plugin version is lower. |
 | `routine.word_down` | `daemon NOT answering` |  |  | The daemon did not answer after the install. |
+| `routine.word_engine` | `engine` |  |  | How the engine is named in the set messages. |
+| `routine.word_hook` | `client` |  |  | How the thin client is named in the set messages. |
 | `routine.word_no_client` | `no thin client installed` |  |  | Reported as the latest-release error when no thin client is installed. |
 | `routine.word_same` | `(same binary: only the plugin files change)` |  |  | Said when the new engine binary is identical to the installed one (only the plugin files change). |
 | `routine.word_up` | `daemon up` |  |  | The daemon answered after the install. |
+| `routine.word_web` | `dashboard` |  |  | How the dashboard is named in the set messages. |
 
 ### guards_v1.toml / api_guard_v1
 
@@ -12907,7 +12920,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `web.topo_subsystems` | `3 entries, 3 entries, 3 entries, 3 entries, 3 entries` |  |  | How the Topology screen groups the engine's stores into parts, as id/label/stores. This is display grouping chosen here, not something the engine reports; a store listed nowhere hangs off the engine directly. |
 | `web.topo_viewers` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Stores the Topology screen can open in the viewer: the I/O registry store id and the id `ah-engine diag file` takes. |
 | `web.topo_warn_fail_pct` | `1` |  |  | Share of failed calls (percent) at which a client or store turns amber on the Topology screen. |
-| `web.ui` | `264 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
+| `web.ui` | `266 entries` |  |  | Every label the page shows, by key. Edit here; reload the page. |
 
 ### io.toml / act
 

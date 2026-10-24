@@ -875,6 +875,15 @@ fn HeartbeatLegend() -> impl IntoView {
     }
 }
 
+/// A build stamp (`<version>+<branch>.<sha8>[-dirty]`) as the short display `<version> (<sha8>)`; the text is the `ver_short` template. A stamp
+/// that does not have that shape (a release build: only the version) is shown as it is.
+fn short_stamp(stamp: &str) -> String {
+    let Some((version, tail)) = stamp.split_once('+') else { return stamp.to_string() };
+    let tail = tail.strip_suffix("-dirty").unwrap_or(tail);
+    let sha = tail.rsplit('.').next().unwrap_or(tail);
+    tx("ver_short").replace("{version}", version).replace("{sha}", sha)
+}
+
 /// The header's version badge: the plugin and engine versions at a glance (amber when they differ), a popover with all of them.
 #[component]
 fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
@@ -891,16 +900,17 @@ fn VersionBadge(snap: RwSignal<Snapshot>) -> impl IntoView {
     let hook_none = tx("ver_hook_none");
     let p1 = plugin.clone();
     view! {
-        <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver">
-            {move || pulse(|p| p.version.clone()).map(|v| format!("{} {v}", tx("ver_engine"))).or_else(|| sha().map(|s| format!("{} {s}", tx("ver_engine")))).unwrap_or_else(|| n1.clone())}
+        <button type="button" class=move || if skew.get() { "ver ver-skew" } else { "ver" } popovertarget="ver-pop" aria-label=tx("ver_label") style="anchor-name:--ver"
+            title=move || pulse(|p| p.version.clone()).map(|v| tx("ver_tip").replace("{full}", &v)).unwrap_or_default()>
+            {move || pulse(|p| p.version.clone()).map(|v| format!("{} {}", tx("ver_engine"), short_stamp(&v))).or_else(|| sha().map(|s| format!("{} {s}", tx("ver_engine")))).unwrap_or_else(|| n1.clone())}
         </button>
         <div id="ver-pop" popover="auto" class="menu ver-pop" role="dialog" aria-label=tx("ver_title") style="position-anchor:--ver">
             <dl class="kv">
                 <dt>{tx("ver_plugin")}</dt><dd>{if p1.is_empty() { none.clone() } else { format!("v{p1}") }}</dd>
                 <dt>{tx("ver_engine_plugin")}</dt><dd>{move || engine_plugin().map(|v| format!("v{v}")).unwrap_or_else(|| n5.clone())}</dd>
-                <dt>{tx("ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).map(|v| sha().map_or_else(|| v.clone(), |h| format!("{v} \u{b7} {h}"))).unwrap_or_else(|| n3.clone())}</dd>
-                <dt>{tx("ver_web")}</dt><dd>{web.clone()}</dd>
-                <dt>{tx("ver_hook")}</dt><dd>{move || pulse(|p| p.hook_version.clone()).filter(|v| !v.is_empty()).unwrap_or_else(|| hook_none.clone())}</dd>
+                <dt>{tx("ver_engine")}</dt><dd title=move || pulse(|p| p.version.clone()).unwrap_or_default()>{move || pulse(|p| p.version.clone()).map(|v| short_stamp(&v)).unwrap_or_else(|| n3.clone())}</dd>
+                <dt>{tx("ver_web")}</dt><dd title=web.clone()>{short_stamp(&web)}</dd>
+                <dt>{tx("ver_hook")}</dt><dd title=move || pulse(|p| p.hook_version.clone()).unwrap_or_default()>{move || pulse(|p| p.hook_version.clone()).filter(|v| !v.is_empty()).map(|v| short_stamp(&v)).unwrap_or_else(|| hook_none.clone())}</dd>
                 <dt>{tx("ver_uptime")}</dt><dd>{move || snap.with(|s| s.pulse.as_ref().map(|p| fmt_age(p.uptime_s))).unwrap_or_else(|| "\u{2014}".into())}</dd>
                 <dt>{tx("ver_update")}</dt><dd>{tx("ver_update_unknown")}</dd>
             </dl>
