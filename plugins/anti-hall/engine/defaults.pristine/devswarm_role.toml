@@ -310,7 +310,7 @@ value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {t
 
 [devswarm_role.pg_frame_head]
 doc = "First line of the framed block (block-message.js frame): {guard}, {headline}."
-value = "🛑 {guard}: {headline}"
+value = "⛔ {guard}: {headline}"
 
 [devswarm_role.pg_frame_why]
 doc = "Label of the why line."

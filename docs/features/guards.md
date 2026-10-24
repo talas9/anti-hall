@@ -19,7 +19,7 @@ skip hints stay in a details file, linked only when the action needs them.
 <div class="ah-term" markdown>
 
 ```text
-🛑 git safety: commit has an AI co-author line.
+⛔ git safety: commit has an AI co-author line.
 Do instead: remove the Co-Authored-By line and commit again.
 ```
 
@@ -54,7 +54,7 @@ coordinator keeps the overview and checks each helper's result instead of trusti
 <div class="ah-term" markdown>
 
 ```text
-🛑 command check: this heavy command was stopped in the main thread.
+⛔ command check: this heavy command was stopped in the main thread.
 Do instead: hand the command to a helper agent.
 ```
 
@@ -73,7 +73,7 @@ once:
 <div class="ah-term" markdown>
 
 ```text
-🛑 claim check: your reply makes an unverified claim ("probably").
+⛔ claim check: your reply makes an unverified claim ("probably").
 Do instead: verify the claim or label it unverified.
 ```
 

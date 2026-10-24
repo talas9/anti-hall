@@ -83,7 +83,7 @@ value = ".anti-hall"
 
 [guardkit.icons]
 doc = "Leading icon of a block or advisory message, by kind."
-value = { block = "🛑", warn = "⚠️", tip = "💡", ok = "💡", update = "💡", error = "🛑" }
+value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "💡", update = "💡", error = "⛔" }
 
 [guardkit.msg_head]
 doc = "Text between the icon and the guard name in every block or advisory message."
@@ -94,8 +94,8 @@ doc = "Labels of the optional lines of a block or advisory message."
 value = { "why" = "Why: ", "instead" = "Do instead: ", "allowed" = "Allowed here: ", "override" = "To allow this once: ", "details" = "details: " }
 
 [messages.style_guide]
-doc = "Every guard message uses at most two lines and one leading emoji: block 🛑, warning ⚠️, tip 💡. Line 1: <emoji> <plain name>: <what stopped, short>. Line 2: Do instead: <one action>. No emoji on labels; no separate Why, override or Details line. Fold a short reason into line 1 only when needed to understand the action. Aim for 160 characters; never exceed 250 including filled placeholders and a details tail. Save skip instructions, long instructions and paths in a details file. Link it only when the action needs them, as (details: <path>) at the end of line 2. Plain text, no markdown. Both Claude/OMC and Codex/OMX use this shared renderer."
-value = "🛑 <plain name>: <what stopped>\nDo instead: <one action>"
+doc = "Every guard message uses at most two lines and one leading emoji: block ⛔, warning ⚠️, tip 💡. Line 1: <emoji> <plain name>: <what stopped, short>. Line 2: Do instead: <one action>. No emoji on labels; no separate Why, override or Details line. Fold a short reason into line 1 only when needed to understand the action. Aim for 160 characters; never exceed 250 including filled placeholders and a details tail. Save skip instructions, long instructions and paths in a details file. Link it only when the action needs them, as (details: <path>) at the end of line 2. Plain text, no markdown. Both Claude/OMC and Codex/OMX use this shared renderer."
+value = "⛔ <plain name>: <what stopped>\nDo instead: <one action>"
 
 # ---- merge-side-pick ----------------------------
 
