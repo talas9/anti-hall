@@ -203,8 +203,12 @@ fn devswarm(env: &Env, st: &mut State) {
         if !step.is_empty() {
             facts::set_step(a, &step);
         }
-        // a Primary's DevSwarm watcher arms only while it has a live child (its idle-skip), so "unarmed" says nothing about it
-        let armed = (!id.starts_with(defaults::text("agent_tracker.primary_prefix"))).then(|| watcher_armed(env, &id));
+        // The app may register the Primary checkout under a non-primary id. Judge its
+        // checkout, then use the watcher's live-child decision rather than its id spelling.
+        let primary = crate::meshw::ident::resolve_context(&wt, true).ok().is_some_and(|c|
+            crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
+        let idle = primary && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
+        let armed = Some(idle || watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done });
         live_plan(env, &id, a, done);
     }

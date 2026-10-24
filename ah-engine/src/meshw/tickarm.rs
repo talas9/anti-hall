@@ -159,13 +159,7 @@ pub(crate) fn decide(inv: &Inv, id: &str, child: bool, lock_armed: bool) -> Arme
     if child && crate::wakew::arch::own_child_archived(&proc_of(inv, &inv.cwd), id) {
         return Armed::Skip(defaults::text("mesh_write.armed_archived_skip"));
     }
-    if !child
-        && let Some(OVal::Obj(_)) = ident::read_descriptor(&inv.home, id)
-        && let Some(OVal::Str(scope)) = ident::read_descriptor(&inv.home, id).as_ref().and_then(|d| d.get(defaults::text("mesh_write.field_worktree_path")).cloned())
-        && !scope.is_empty()
-        // an answer that depends on a source the wake watcher does not read leaves the tick re-arming, as Node does on any doubt
-        && matches!(crate::wakew::arch::idle_skip(&proc_of(inv, &scope)), Ok(crate::wakew::arch::IdleSkip::Applies))
-    {
+    if !child && crate::meshw::watcher::idle_for_workspace(&inv.home, id, &inv.settings()) {
         return Armed::Skip(defaults::text("mesh_write.armed_idle_skip"));
     }
     let env: std::collections::BTreeMap<String, String> = inv.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();

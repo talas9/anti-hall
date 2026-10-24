@@ -32,6 +32,18 @@ pub fn lock_live(home: &Path, id: &str, now: i64) -> R<bool> {
     Ok(fresh && alive != Some(false))
 }
 
+/// The same no-live-children decision used by wake-watch and inbox tick.
+pub fn idle_for_workspace(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> bool {
+    let Some(d) = crate::meshw::ident::read_descriptor(home, id) else { return false };
+    let Some(OVal::Str(scope)) = d.get(defaults::text("mesh_write.field_worktree_path")) else { return false };
+    if scope.is_empty() { return false; }
+    let p = crate::wakew::who::Proc {
+        home: home.to_path_buf(), cwd: scope.clone(), env: st.env.clone(), st: st.clone(),
+        root: defaults::root().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    matches!(crate::wakew::arch::idle_skip(&p), Ok(crate::wakew::arch::IdleSkip::Applies))
+}
+
 /// What [`live_for_workspace`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Armed {
