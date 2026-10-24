@@ -79,6 +79,8 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
+            // External CARGO_TARGET_DIR builds cannot discover the checkout by walking up from the executable.
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
             // these tests drive the mapped Node commands only
             .env("PATH", path_without_codex())
@@ -125,6 +127,8 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
+            // External CARGO_TARGET_DIR builds cannot discover the checkout by walking up from the executable.
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             // the codex-availability check probes PATH for a `codex` binary and answers with a context line when it finds one;
             // these tests drive the mapped Node commands only
             .env("PATH", path_without_codex())
@@ -384,10 +388,20 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     let (code, out, err) = e.run(&stop_args, true, &silent, true);
     e.stop();
     assert_eq!(code, 0, "{out:?} {err:?}");
-    assert!(
-        out.starts_with("{\"decision\":\"block\",\"reason\":\"") && out.contains("silent-agent-nudge: 1 of your own") && !err.contains("NODE-RAN"),
-        "{out:?} {err:?}"
+    let shown = ah_engine::defaults::render("silent_nudge.msg_item", &[("label", &"a1b2c3d4e5f601"), ("mins", &90)]);
+    let what = ah_engine::defaults::render(
+        "silent_nudge.msg_what",
+        &[
+            ("count", &1),
+            ("noun", &ah_engine::defaults::text("silent_nudge.noun_agent")),
+            ("min", &ah_engine::defaults::num("silent_nudge.min_default")),
+            ("shown", &shown),
+            ("more", &""),
+        ],
     );
+    let reply: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(reply["decision"], "block", "{out:?} {err:?}");
+    assert!(reply["reason"].as_str().unwrap().contains(&what) && !err.contains("NODE-RAN"), "{out:?} {err:?}");
 }
 
 #[test]
@@ -626,6 +640,8 @@ fn killed_dispatcher_leaves_no_spool_file(signal: i32, tag: &str) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.args(["hook", "--event", "SessionStart"])
         .env_clear()
+        // External CARGO_TARGET_DIR builds cannot discover the checkout by walking up from the executable.
+        .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", e.dir.join("home"))
         .env("AH_ENGINE_DIR", e.state())
@@ -747,6 +763,7 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let p = bash(&["git push", "--force origin main"].join(" "), &e.dir);
     let off = [("ANTIHALL_GIT_GUARD", "0")];
+    let stable_text = [("ANTIHALL_REPEAT_HINT", "0")];
     // the first call starts the daemon (with the switch off in ITS environment) and is answered through Node: allowed
     assert_eq!(e.run_with(&args, false, &p, true, &off).0, 0);
     // wait until the daemon answers (bounded polling; not an assertion about speed)
@@ -759,9 +776,9 @@ fn two_clients_with_different_environments_get_answers_for_their_own() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(up, "the daemon did not come up");
-    let guarded = e.run(&args, false, &p, true);
+    let guarded = e.run_with(&args, false, &p, true, &stable_text);
     let unguarded = e.run_with(&args, false, &p, true, &off);
-    let guarded_again = e.run(&args, false, &p, true);
+    let guarded_again = e.run_with(&args, false, &p, true, &stable_text);
     e.stop();
     assert_eq!(guarded.0, 2, "client without the switch: blocked although the daemon's own environment has it off: {guarded:?}");
     assert_eq!(unguarded, (0, String::new(), String::new()), "client with the switch: allowed");
@@ -782,10 +799,11 @@ fn the_engine_fails_closed_on_unparsable_guard_payloads() {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(["hook", "--event", "PreToolUse"])
             .env_clear()
+            // External CARGO_TARGET_DIR builds cannot discover the checkout by walking up from the executable.
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", e.dir.join("home"))
             .env("AH_ENGINE_DIR", e.state())
-            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -935,11 +953,11 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let args = ["hook", "--event", "UserPromptSubmit"];
     let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
     warm(&e, &args, &on);
-    let marker = ah_engine::defaults::text("inject_gate.task_long_prefix");
+    let marker = ah_engine::defaults::text("task_tracker.what_full");
     let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload_tr("sess-on", &tr), true, &on).1)).collect();
     e.stop();
     assert!(seen[0].contains(marker), "the first turn of the session carries the directive: {seen:?}");
-    assert!(seen[1..].iter().all(|c| !c.contains("task-tracker")), "the turns after it repeat nothing: {seen:?}");
+    assert!(seen[1..].iter().all(|c| !c.contains(marker)), "the turns after it repeat nothing: {seen:?}");
     // a new session starts whole again
     let e = Env::new("inject-gate-new");
     let tr = e.dir.join("tr.jsonl");
@@ -1006,12 +1024,15 @@ fn a_missing_table_row_is_closed_instead_of_allowing() {
 #[test]
 fn two_built_in_blocks_both_reach_the_host_in_table_order() {
     let e = Env::new("two-blocks-pre");
-    // git-guard's check and command-guard's check both block the force push in the main thread: the host, running both hooks,
+    // git-guard's check and command-guard's check block a force push followed by heavy work in the main thread: the host, running both hooks,
     // would show both reasons, git-guard's first (table order)
-    let p = bash(&["git push", "--force origin main"].join(" "), &e.dir);
+    let p = bash(&["git push", "--force origin main && npm test"].join(" "), &e.dir);
     let (code, out, err) = e.run_with(&["hook", "--event", "PreToolUse"], true, &p, true, &[("CLAUDE_CODE_ENTRYPOINT", "cli")]);
     assert_eq!(code, 2, "{out:?} {err:?}");
-    let (git_at, command_at) = (err.find("git-guard: force push"), err.find("command-guard: state-changing remote command"));
+    let (git_at, command_at) = (
+        err.find(ah_engine::defaults::raw("git.msg_force_push").str_field("what")),
+        err.find(ah_engine::defaults::raw("guardkit.brief_what").str_field("command-guard")),
+    );
     assert!(git_at.is_some() && command_at.is_some() && git_at < command_at, "both reasons, in table order: {err:?}");
 }
 
@@ -1026,7 +1047,7 @@ fn a_reminder_that_is_cut_is_no_output_not_an_empty_context() {
     let first = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
     let second = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
     e.stop();
-    assert!(context_of(&first.1).contains("task-tracker"), "{first:?}");
+    assert!(context_of(&first.1).contains(ah_engine::defaults::text("task_tracker.what_full")), "{first:?}");
     assert_eq!(second, (0, String::new(), String::new()), "a suppressed reminder prints nothing, not an empty additionalContext");
 }
 
@@ -1066,7 +1087,7 @@ fn the_dispatcher_makes_the_speculation_judge_call_itself_after_the_daemon_defer
     // in process
     let (code, out, err) = e.run_with(&args, true, &payload("jc-1"), true, &env);
     assert_eq!(code, 0, "{out:?} {err:?}");
-    assert!(out.contains("\"decision\":\"block\"") && out.contains("the cache is stale"), "{out:?} {err:?}");
+    assert!(out.contains("\"decision\":\"block\"") && out.contains(ah_engine::defaults::text("speculation_judge.msg_what")), "{out:?} {err:?}");
     assert!(!err.contains("NODE-RAN"), "the Node hook must not run: {err:?}");
     assert_eq!(calls(), 1);
     // through the daemon: the first call may fail open while the daemon starts; a later call is answered by the daemon,
@@ -1080,7 +1101,10 @@ fn the_dispatcher_makes_the_speculation_judge_call_itself_after_the_daemon_defer
         std::thread::sleep(Duration::from_millis(50));
     }
     e.stop();
-    assert!(last.1.contains("\"decision\":\"block\"") && last.1.contains("the cache is stale") && !last.2.contains("NODE-RAN"), "{last:?}");
+    assert!(
+        last.1.contains("\"decision\":\"block\"") && last.1.contains(ah_engine::defaults::text("speculation_judge.msg_what")) && !last.2.contains("NODE-RAN"),
+        "{last:?}"
+    );
     assert!(calls() >= 2, "the dispatcher made the call for the daemon-deferred check: {}", calls());
     let tel = std::fs::read_to_string(home.join(".anti-hall/logs/judge-calls.ndjson")).unwrap();
     assert!(tel.lines().all(|l| l.contains("\"integration\":\"speculation\"") && l.contains("\"decision\":\"block\"")) && tel.lines().count() >= 2, "{tel}");
@@ -1135,7 +1159,7 @@ fn a_dispatcher_that_works_on_after_the_reply_still_confirms_the_daemon_verdict(
     std::thread::sleep(ah_engine::defaults::millis("wire.res_wait_ms") * 2);
     let health = log();
     e.stop();
-    assert!(last.1.contains("\"decision\":\"block\"") && last.1.contains("the cache is stale"), "{last:?}");
+    assert!(last.1.contains("\"decision\":\"block\"") && last.1.contains(ah_engine::defaults::text("speculation_judge.msg_what")), "{last:?}");
     assert!(!health.contains("\tundelivered_verdict\t"), "a verdict that reached stdout is not undelivered:\n{health}");
     assert!(!health.contains("\tclient_ack_res\t"), "the ACK(res) reaches the daemon:\n{health}");
 }
@@ -1166,7 +1190,12 @@ impl Drop for ScriptedDaemon {
 }
 
 fn scripted_daemon(e: &Env, script: Vec<(u64, ah_engine::frame::Kind, &'static str)>) -> ScriptedDaemon {
+    scripted_daemon_gated(e, script, false)
+}
+
+fn scripted_daemon_gated(e: &Env, script: Vec<(u64, ah_engine::frame::Kind, &'static str)>, wait_for_late: bool) -> ScriptedDaemon {
     std::fs::create_dir_all(e.state()).unwrap();
+    let log = e.state().join(ah_engine::health::log_name());
     let sock = ah_engine::paths::socket_in(&e.state());
     ah_engine::discard::harmless(std::fs::remove_file(&sock));
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
@@ -1180,11 +1209,20 @@ fn scripted_daemon(e: &Env, script: Vec<(u64, ah_engine::frame::Kind, &'static s
                 Ok((mut stream, _)) => {
                     let i = s.fetch_add(1, Ordering::AcqRel);
                     let (delay, kind, body) = script[i.min(script.len() - 1)];
+                    let log = log.clone();
                     std::thread::spawn(move || {
                         stream.set_nonblocking(false).unwrap();
                         let mut req = Vec::new();
                         ah_engine::discard::harmless(stream.read_to_end(&mut req));
-                        std::thread::sleep(Duration::from_millis(delay));
+                        if wait_for_late {
+                            let until = Instant::now() + common::scaled(Duration::from_secs(5));
+                            while !std::fs::read_to_string(&log).is_ok_and(|s| s.contains("\tclient_late\t")) {
+                                assert!(Instant::now() < until, "client never reached its late-reply wait");
+                                std::thread::yield_now();
+                            }
+                        } else {
+                            std::thread::sleep(Duration::from_millis(delay));
+                        }
                         ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(kind, body)));
                     });
                 }
@@ -1218,13 +1256,14 @@ fn a_late_reply_is_waited_for_and_never_runs_the_node_hooks_twice() {
     let e = Env::new("slow-not-down");
     let marker = e.dir.join("node-ran");
     let map = event_map(&e, "PreToolUse", &format!("touch {}; echo NODEBLOCK >&2; exit 2", marker.display()), "true");
-    // the daemon answers at 400 ms (past the 100 ms deadline, inside the window) with a verdict for the call
-    let d = scripted_daemon(&e, vec![(400, ah_engine::frame::Kind::Ok, "[]"), FAST_OK]);
+    // Reply only after the client has entered its late-reply wait, independent of scheduler timing.
+    let d = scripted_daemon_gated(&e, vec![FAST_OK], true);
     let (code, _, _) = slow_call(&e, &map, &[("AH_ENGINE_SLOW_FALLBACK_MAX_MS", "1500")]); // window 1100 ms
     assert_eq!(d.seen(), 1, "the call reaches the daemon exactly once");
-    assert!(engine_log(&e).contains("client_late"), "{}", engine_log(&e));
-    assert!(!engine_log(&e).contains("client_slow"), "a reply inside the window is not a slow call: {}", engine_log(&e));
-    let _ = (code, marker); // the dispatch decision on a "[]" answer is not what this test pins
+    assert!(engine_log(&e).contains("\tclient_late\t"), "{}", engine_log(&e));
+    assert!(!engine_log(&e).contains("\tclient_slow\t"), "a reply inside the window is not a slow call: {}", engine_log(&e));
+    assert!(!marker.exists(), "the late daemon reply must not run the Node hook");
+    let _ = code; // the dispatch decision on a "[]" answer is not what this test pins
 }
 
 #[test]
@@ -1239,7 +1278,7 @@ fn a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_strea
     assert!(err.contains("went through unchecked"), "the session is told once (#229): {err:?}");
     assert!(t.elapsed() < common::scaled(Duration::from_millis(7000)), "bounded by the window, not the daemon: {:?} {}", t.elapsed(), engine_log(&e));
     assert!(!marker.exists(), "the Node hook must not run for a call the daemon may have processed");
-    assert!(engine_log(&e).contains("client_slow"), "{}", engine_log(&e));
+    assert!(engine_log(&e).contains("\tclient_slow\t"), "{}", engine_log(&e));
     assert!(!e.state().join("daemon.down.until").exists(), "one slow call must not mark the daemon down");
     let (code, _, err) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
     assert_eq!((code, err.as_str()), (0, ""), "the same session is not told twice");

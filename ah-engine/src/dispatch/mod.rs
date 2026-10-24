@@ -711,6 +711,9 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Vec::new()
         }
         (Some(_), _) if entries.iter().all(|e| e.check.is_none()) => Vec::new(),
+        // Apply the daemon's request cap before entering QuickJS in process too. Oversized requests take the existing
+        // unanswered/infra policy instead of exhausting the interpreter while parsing or scanning the command.
+        (Some(_), _) if request_line(&meta, raw).is_none_or(|req| request_too_big(&req)) => Vec::new(),
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,

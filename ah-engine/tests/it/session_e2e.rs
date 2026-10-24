@@ -51,6 +51,8 @@ impl Env {
         let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
         c.args(args)
             .env_clear()
+            // External CARGO_TARGET_DIR builds cannot discover the checkout by walking up from the executable.
+            .env("AH_ENGINE_PLUGIN_ROOT", std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", home)
             .env("AH_ENGINE_DIR", self.state())
@@ -108,7 +110,9 @@ fn payload(e: &Env) -> String {
 }
 
 const CLI_FILE: &str = ".anti-hall/claude-cli-version.json";
-const ADVICE: &str = "Claude Code CLI 2.2.0 is installed; anti-hall's harness KB is audited against 2.1.238.";
+fn advice() -> String {
+    ah_engine::defaults::render("session.claude_cli_what", &[("installed", &"2.2.0"), ("baseline", &ah_engine::defaults::text("session.claude_cli_baseline"))])
+}
 
 #[test]
 fn the_in_process_dispatcher_answers_a_fresh_cache_itself_and_writes_the_client_home() {
@@ -120,7 +124,7 @@ fn the_in_process_dispatcher_answers_a_fresh_cache_itself_and_writes_the_client_
     let a = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
     let (code, out, err) = e.run(&a, true, &payload(&e), &home, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains(ADVICE) && !out.contains("NODE-RAN-CLI"), "the built-in check answered, not the Node command: {out}");
+    assert!(out.contains(&advice()) && !out.contains("NODE-RAN-CLI"), "the built-in check answered, not the Node command: {out}");
     assert!(std::fs::read_to_string(home.join(CLI_FILE)).unwrap().contains("\"lastAdvised\":{\"installed\":\"2.2.0\",\"baseline\":\"2.1.238\"}"));
 }
 
@@ -137,7 +141,7 @@ fn a_stale_cache_asks_the_refresh_job_and_leaves_the_cache_alone() {
     let a = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
     let (code, out, _) = e.run(&a, true, &payload(&e), &home, &[]);
     assert_eq!(code, 0);
-    assert!(!out.contains("NODE-RAN-CLI") && !out.contains(ADVICE), "{out}");
+    assert!(!out.contains("NODE-RAN-CLI") && !out.contains(&advice()), "{out}");
     assert_eq!(std::fs::read_to_string(home.join(CLI_FILE)).unwrap(), stale);
     let req = std::fs::read_to_string(home.join(".anti-hall/refresh/claude_cli.json")).expect("a refresh request");
     assert!(req.contains("\"requestedAt\":"), "{req}");
@@ -163,8 +167,8 @@ fn the_daemon_evaluates_a_request_with_the_clients_home_and_switches() {
     let second = e.run(&a, false, &payload(&e), &b_home, &[]);
     let third = e.run(&a, false, &payload(&e), &a_home, &[("ANTIHALL_CLAUDE_CLI_VERSION_ALERT", "off")]);
     e.stop();
-    assert!(second.1.contains(ADVICE) && !second.1.contains("NODE-RAN-CLI"), "daemon answered for client B: {second:?}");
+    assert!(second.1.contains(&advice()) && !second.1.contains("NODE-RAN-CLI"), "daemon answered for client B: {second:?}");
     assert!(std::fs::read_to_string(b_home.join(CLI_FILE)).unwrap().contains("lastAdvised"));
     assert_eq!(std::fs::read_to_string(a_home.join(CLI_FILE)).unwrap(), before_a, "nothing written under the daemon starter's home");
-    assert!(!third.1.contains(ADVICE), "client A's own switch still silences it: {third:?}");
+    assert!(!third.1.contains(&advice()), "client A's own switch still silences it: {third:?}");
 }
