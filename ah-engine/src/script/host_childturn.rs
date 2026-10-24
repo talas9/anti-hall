@@ -699,7 +699,7 @@ mod tests {
         ident::rows_of(&store.reader().roster().unwrap())
     }
 
-    /// 2026-10-23 (SkyCrew, `child-turn-defer: prepare:registry-collision`): a registry row of the id at another worktree stopped the
+    /// 2026-10-23 (a downstream project, `child-turn-defer: prepare:registry-collision`): a registry row of the id at another worktree stopped the
     /// registration for good. Node writes the descriptor, and the registry's collision guard leaves the row alone.
     #[test]
     fn a_registry_row_at_another_worktree_does_not_stop_the_registration() {

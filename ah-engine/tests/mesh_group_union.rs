@@ -341,7 +341,7 @@ fn an_address_that_lands_on_a_row_without_an_inbox_is_refused_like_node_not_defe
     }
 }
 
-/// The SkyCrew Primary's hot path: twin rows on one worktree, each carrying an archive marker that a newer occupant of the id
+/// A downstream Primary's hot path: twin rows on one worktree, each carrying an archive marker that a newer occupant of the id
 /// superseded (the live session differs from the marker's) and a caller whose session is not the anchor's. Node reads such a
 /// marker as "not archived" and answers; the engine used to defer (`marker-superseded`) the text read and the tick.
 #[test]

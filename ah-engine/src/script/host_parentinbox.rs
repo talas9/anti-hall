@@ -692,12 +692,12 @@ mod tests {
     fn a_journal_only_store_has_no_refresh_text_instead_of_a_handoff() {
         let home = std::env::temp_dir().join(format!("ah-pi-derive-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
-        let key = "proj-12345678";
-        let dir = crate::meshw::union::store_dir(&home, key);
+        let proj = "proj-a";
+        let dir = crate::meshw::union::store_dir(&home, proj);
         let journal = dir.join(defaults::text("devswarm_role.pg_journal_dir"));
         std::fs::create_dir_all(&journal).unwrap();
         std::fs::write(journal.join("a.ndjson"), "{}\n").unwrap();
         let inv = Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
-        assert_eq!(derive_text(&inv, key).unwrap(), json!({"text": Value::Null}));
+        assert_eq!(derive_text(&inv, proj).unwrap(), json!({"text": Value::Null}));
     }
 }
