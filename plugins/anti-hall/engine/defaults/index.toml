@@ -103,5 +103,6 @@ files = [
     "nodeback.toml",
     "web.toml",
     "io.toml",
+    "session_switches.toml",
 ]
 extra_dir = "hooks.d"
