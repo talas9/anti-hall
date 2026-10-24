@@ -245,5 +245,5 @@ Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critic
 (or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.
 
 After relaying the report, if anything failed: the most common fix is the **engine binary missing**
-(`~/.anti-hall/ah-engine/bin/ah-hook install`). For older anti-hall statusline entries, run `uninstall-statusline`
+(run the `activate` skill, which installs it). For older anti-hall statusline entries, run `uninstall-statusline`
 to clean them up.
