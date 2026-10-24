@@ -277,20 +277,20 @@ doc = "Shown for a command that did not exit (it timed out or could not start)."
 value = "no exit"
 
 [routine.why_plugin_lower]
-doc = "Why an install is a downgrade: the plugin version is lower."
-value = "its plugin version is lower"
+doc = "Why an install is a downgrade: the engine version is lower."
+value = "its engine version is lower"
 
 [routine.why_local_running]
-doc = "Why an install is refused: the running build is a local or hand-installed build of the same plugin version, which a release of that version does not replace."
-value = "the running build is a local build of the same plugin version; a release of it is not newer"
+doc = "Why an install is refused: the running build is a local or hand-installed build of the same engine version, which a release of that version does not replace."
+value = "the running build is a local build of the same engine version; a release of it is not newer"
 
 [routine.source_release]
 doc = "The install-record source of a verified release."
 value = "release"
 
 [routine.why_build_older]
-doc = "Why an install is a downgrade: same plugin version, older build."
-value = "same plugin version, older build"
+doc = "Why an install is a downgrade: same engine version, older build."
+value = "same engine version, older build"
 
 # ---- messages ----------------------------------------------------------------------------------------------------------------
 

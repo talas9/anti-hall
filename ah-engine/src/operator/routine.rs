@@ -608,7 +608,7 @@ fn downgrade(cur: &Running, target_version: &str, target_built: u64, target_sour
     }
     match crate::version_cmp(target_version, &cur.version) {
         std::cmp::Ordering::Less => Some(t("routine.why_plugin_lower").to_string()),
-        // a release (or a file) of the SAME plugin version is not newer than a local or hand-installed build of it
+        // a release (or a file) of the SAME engine version is not newer than a local or hand-installed build of it
         std::cmp::Ordering::Equal if target_source != t("routine.source_local") && (cur.source != t("routine.source_release") || cur.version.contains('+')) => Some(t("routine.why_local_running").to_string()),
         std::cmp::Ordering::Equal if cur.built > 0 && target_built > 0 && target_built < cur.built => Some(t("routine.why_build_older").to_string()),
         _ => None,
