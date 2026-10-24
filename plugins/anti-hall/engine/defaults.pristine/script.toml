@@ -270,6 +270,10 @@ value = "path outside the allowed shape"
 doc = "Refusal reason of a scripted write that would pass through a symbolic link below the write root."
 value = "symbolic link below the write root"
 
+[script.msg_dead_root]
+doc = "Event-log line when a scripted state write is skipped because its project root is not a live git work tree or project root (for example an archived workspace whose folder was removed); no directory is created. Placeholder: {root}."
+value = "state write skipped, no live git work tree at {root}"
+
 [script.msg_write_refused]
 doc = "Error a script sees when its write was refused. Placeholder: {why}."
 value = "write refused: {why}"
