@@ -19,11 +19,10 @@ the update.
 ### Changed
 
 - Per-component versions: the engine, the hook client and the dashboard each report their own version (0.2.0), with minimum supported versions for each other, checked on install, update and `doctor`. Old plugin-numbered component versions (0.30x) count as older, so upgrading from 0.301.x to 0.2.0 needs no `--force`.
-- Guard messages are two lines: an icon, the plain reason and what to do; details sit in a details file. Blocks use the same wording on Claude and Codex.
-- Guard rules are shown up front: a short notice names the rules in force when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired).
+- Guard messages are two lines: an icon, the plain reason and what to do; details sit in a details file.- Guard rules are shown up front: a short notice names the rules in force when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired).
 - Updates show short versions and the real installed version, and a release never replaces a local or hand-installed build of the same plugin version.
 - The dashboard chart asset is packaged in the dashboard package, outside the plugin tree.
-- `git push` is classified as a heavy command; `git-guard` and the doctor version probe accept plain guard names.
+- `git push` is classified as a heavy command, and the doctor version-alert probe handles plain guard names.
 
 - **Auto-handover now fires 5% of the window before auto-compact: shipped defaults `autoHandover.pct` 85 -> 93 and `autoHandover.maxTokens` 0 -> 500000.** The handover is written while the agent still has room. They pair with Claude Code's auto-compact at 98% (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=98`) for 200k models, and with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000` for 1M models (Claude Code clamps that value to the model window, so 200k models are unaffected). `pct` and `maxTokens` fire on whichever comes first, so the 500000 ceiling only bites on 1M sessions. On one machine, over 7 days and about 4.3k transcripts, turns above 550k context were 41% of input tokens, and a 55% cap simulated about 32% less input (a measured example, not a guarantee). Settings you set yourself are kept. Docs: settings, handover and system-briefing skills (Claude and Codex), `docs/GUIDE.md`, `llms.txt`; removes the stale "170k tokens" claim. The PreCompact "since the last handover" delta is documented as planned only.
 
