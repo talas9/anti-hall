@@ -391,7 +391,7 @@ value = "Searches for earlier work and decisions read these briefs, and a malfor
 
 [handovers.msg_advisory_instead]
 doc = "What to do. Placeholder: {cmd}."
-value = "run `{cmd}` (the scheduled job also repairs the briefs); it never edits handover files."
+value = "run the handover maintenance command."
 
 [handovers.cmd_index]
 doc = "The command the advisory tells the owner to run."

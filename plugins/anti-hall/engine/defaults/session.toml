@@ -159,15 +159,15 @@ value = "v{mirrored} is already downloaded (you are running v{running})."
 
 [session.reload_instead]
 doc = "Advice for that case when the registry does not name a newer build than the running one."
-value = "tell the user now: run /reload-plugins (Claude; restart Claude Code if a hook or skill path still shows the old version afterwards) or restart Codex / start a fresh session (Codex)."
+value = "reload plugins in Claude or restart Codex."
 
 [session.reload_instead_ahead]
 doc = "Advice for that case when the registry already names a newer build than the running one ({running} is the running version)."
-value = "tell the user now: run /reload-plugins to load it (if a hook or skill path still shows v{running} afterwards, restart Claude Code: exit and resume the session). Codex: restart Codex / start a fresh session."
+value = "reload plugins in Claude or restart Codex."
 
 [session.unregistered_what]
 doc = "Headline when a newer release is mirrored but the host has not registered it."
-value = "v{mirrored} is downloaded locally (you are running v{running}) but the Claude Code harness has not registered it yet."
+value = "v{mirrored} is downloaded but not registered in Claude."
 
 [session.unregistered_why]
 doc = "Why line for that case."
@@ -175,7 +175,7 @@ value = "A reload alone will not pick it up until the harness registers it."
 
 [session.unregistered_instead]
 doc = "Advice for that case."
-value = "tell the user now: run /anti-hall:update (Claude; syncs the cache AND the harness registration) or the anti-hall-update skill (Codex), then /reload-plugins (Claude) or restart (Codex)."
+value = "run the anti-hall update skill for your host."
 
 [session.update_what]
 doc = "Headline when the remote-latest cache names a newer release; {latest} and {running} are the two versions."
@@ -183,7 +183,7 @@ value = "v{latest} is available (you are running v{running})."
 
 [session.update_instead]
 doc = "Advice for that case."
-value = "tell the user now: run /anti-hall:update (Claude) or the anti-hall-update skill (Codex), then do what it ends with: /reload-plugins (Claude; restart Claude Code only if a hook or skill path still shows the old version afterwards); restart Codex / start a fresh session (Codex)."
+value = "run the anti-hall update skill for your host."
 
 # ---- devswarm-version --------------------------------------
 
@@ -205,7 +205,7 @@ value = "2.5.1"
 
 [session.devswarm_what]
 doc = "Headline of the DevSwarm drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
-value = "DevSwarm {installed} is installed; anti-hall's integration is verified against {baseline}{newer}."
+value = "DevSwarm {installed} differs from KB baseline {baseline}."
 
 [session.devswarm_instead]
 doc = "Advice of the DevSwarm drift advisory."
@@ -231,7 +231,7 @@ value = "2.1.238"
 
 [session.claude_cli_what]
 doc = "Headline of the Claude CLI drift advisory; {installed}, {baseline} and {newer} (the older-suffix or nothing)."
-value = "Claude Code CLI {installed} is installed; anti-hall's harness KB is audited against {baseline}{newer}."
+value = "Claude CLI {installed} differs from KB baseline {baseline}."
 
 [session.claude_cli_instead]
 doc = "Advice of the Claude CLI drift advisory."

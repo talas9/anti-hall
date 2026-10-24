@@ -1943,7 +1943,9 @@ function expandAlias(args, sub, rest, dir, env) {
 function annotate(msg, note) {
   const guard = ah.cfg('git.guard_name');
   const prefix = ah.cfg('guardkit.icons').block + ah.cfg('guardkit.msg_head') + (ah.cfg('guardkit.plain_names')[guard] || guard) + ': ';
-  return String(msg).startsWith(prefix) ? prefix + note + ' ' + String(msg).slice(prefix.length) : String(msg);
+  if (!String(msg).startsWith(prefix)) return String(msg);
+  const lines = String(msg).slice(prefix.length).split('\n');
+  return text.message('block', guard, { what: lines[0], instead: (lines[1] || '').replace(/^Do instead: /, ''), extra: [note] });
 }
 
 function aliasBodyCommand(v) {

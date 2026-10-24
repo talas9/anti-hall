@@ -263,7 +263,7 @@ value = "{why_head} until it is {past}."
 
 [idle_sweep.instead]
 doc = "Advisory advice; {verb} close or stop, {call} the exact call for the first agent."
-value = "if you have no more work for them, {verb} each one, e.g. {call} (one call per agent). Keep any you will re-task."
+value = "{verb} each finished agent you will not reuse."
 
 [idle_sweep.call_claude]
 doc = "The call that stops a Claude teammate; {id} is its name."

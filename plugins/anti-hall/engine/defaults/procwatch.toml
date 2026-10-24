@@ -136,7 +136,7 @@ value = "procwatch"
 
 [procwatch.msg_orphans_what]
 doc = "Orphan summary line; {n} candidates, {list} the named ones, {more} the remainder note."
-value = "{n} leftover process(es) from ended Claude sessions, with the folder each ran in (some may belong to other projects): {list}{more}."
+value = "{n} processes remain from ended sessions."
 
 [procwatch.msg_orphans_why]
 doc = "Why the orphan summary matters."
@@ -144,7 +144,7 @@ value = "They keep using ports, CPU and memory after their session ended. Modes:
 
 [procwatch.msg_orphans_instead]
 doc = "What to do about orphans."
-value = "nothing was stopped. Check each folder and end the ones that are yours, or set procwatch.<class>Mode=kill in /anti-hall:settings."
+value = "check the process owners before stopping any."
 
 [procwatch.msg_killed]
 doc = "Line added when a sweep stopped orphans; {n} count, {list} the stopped ones."
@@ -160,7 +160,7 @@ value = "They may be stuck, waiting for input, or finished without reporting, an
 
 [procwatch.msg_stuck_instead]
 doc = "What to do about a stuck agent."
-value = "check each one's output file or message it, then stop it with TaskStop if it is dead. Nothing was stopped."
+value = "check each silent agent for progress."
 
 [procwatch.msg_proc_cwd]
 doc = "Appended to a named process when the report knows the directory it runs in (the project that owns it). Placeholder: {cwd}."

@@ -109,7 +109,7 @@ value = "A runaway process slows every session on this machine and can push it i
 
 [resource_watch.msg_instead]
 doc = "What to do."
-value = "Nothing was stopped or slowed. Check whether the work is expected; if not, ask the agent that started it to end it."
+value = "check whether the resource use is expected."
 
 [resource_watch.impact_kind]
 doc = "Impact kind recorded for every resource warning."

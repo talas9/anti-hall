@@ -471,7 +471,7 @@ value = '\s+'
 
 [speculation_judge.msg_what]
 doc = "What the block says; {claim} is the sanitized claim."
-value = "your reply states '{claim}' as fact, but nothing this session checked shows it and it is not flagged as unverified."
+value = "your reply states an unchecked claim as fact."
 
 [speculation_judge.msg_why]
 doc = "Why the block matters."
@@ -479,7 +479,7 @@ value = "Unverified claims read as facts."
 
 [speculation_judge.msg_instead]
 doc = "What to do instead."
-value = "verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue."
+value = "verify the claim or label it unverified."
 
 # ---- tool evidence and the user request -------------
 

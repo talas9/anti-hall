@@ -505,7 +505,7 @@ value = "apply_patch"
 
 [task_guard.idle_what]
 doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
-value = "can't stop yet: {n} task(s) have no agent working on them: {list}{more}."
+value = "{n} open tasks have no agent working on them."
 
 [task_guard.idle_why]
 doc = "The why line of the idle-neglect block."
@@ -517,7 +517,7 @@ value = " If a DevSwarm workspace has it, set the owner ({upd} owner) to that wo
 
 [task_guard.idle_instead]
 doc = "The do-instead line of the idle-neglect block; `{cap}` is the parallel cap, `{upd}` the task update tool, `{devswarm}` the DevSwarm sentence (or nothing)."
-value = "start a background agent for each (up to {cap}), or tell the user which task truly needs them. Waiting on another task: set blockedBy ({upd} addBlockedBy). Already covered by an agent: set it as owner ({upd} owner).{devswarm}"
+value = "assign the pending tasks to agents."
 
 [task_guard.idle_allowed]
 doc = "The allowed-here line of the idle-neglect block."
@@ -525,7 +525,7 @@ value = "a task waiting on the user (hardware, a decision): mark it blocked on '
 
 [task_guard.generic_what]
 doc = "The first line of the generic block; `{list}` is the listed tasks, `{more}` the tail."
-value = "can't stop yet: open tasks remain: {list}{more}."
+value = "open tasks remain unfinished."
 
 [task_guard.generic_why]
 doc = "The why line of the generic block."
@@ -533,7 +533,7 @@ value = "Open tasks should not be left behind when the session stops."
 
 [task_guard.generic_instead]
 doc = "The do-instead line of the generic block; `{upd}` is the task update tool."
-value = "start agents to finish them in parallel, mark them completed or deferred ({upd}), or tell the user what is pending and why you are stopping."
+value = "finish the pending tasks before stopping."
 
 [task_guard.generic_allowed]
 doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
@@ -894,7 +894,7 @@ value = "<!-- session: {session} | started: {started} -->"
 
 [tasklist_guard.what_reset]
 doc = "Block headline when the task store was reset (a session restore)."
-value = "can't stop yet: the task list was lost when the session restored."
+value = "the task list was lost during session restore."
 
 [tasklist_guard.why_reset]
 doc = "Block reason when the task store was reset."
@@ -902,7 +902,7 @@ value = "The old tasks are gone, not finished."
 
 [tasklist_guard.what_no_tasks]
 doc = "Block headline when work was done and no task was tracked; {n} is the work count."
-value = "can't stop yet: {n} file changes this session and no tasks tracked."
+value = "{n} files changed but no tasks tracked."
 
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."
@@ -914,7 +914,7 @@ value = " An earlier session left a snapshot to rebuild the list from (see the d
 
 [tasklist_guard.what_stalled]
 doc = "Block headline when tasks are in progress with no live agent; {n} is the count."
-value = "can't stop yet: {n} tasks are marked in progress but no agent is working on them."
+value = "{n} tasks are marked in progress with no active agent."
 
 [tasklist_guard.why_stalled]
 doc = "Block reason when tasks are stalled in progress."
@@ -922,7 +922,7 @@ value = "They are stalled, not running in parallel."
 
 [tasklist_guard.what_progress]
 doc = "Block headline when the progress file is missing or stale; {n} is the work count, {path} the progress file."
-value = "can't stop yet: {n} file changes and the progress file is missing or out of date."
+value = "{n} files changed but progress is missing or stale."
 
 [tasklist_guard.why_progress]
 doc = "Block reason when the progress file is missing or stale."
@@ -930,7 +930,7 @@ value = "The progress file must record what was done."
 
 [tasklist_guard.what_reduced]
 doc = "Block headline of the reduced nag (a session without task tools); {n} is the work count."
-value = "can't stop yet: {n} file changes and nothing tracked."
+value = "{n} files changed but no work tracked."
 
 [tasklist_guard.why_reduced]
 doc = "Block reason of the reduced nag."
@@ -942,23 +942,23 @@ value = "list the open tasks and their status in your reply, priority first."
 
 [tasklist_guard.instead_reset]
 doc = "Lead of what to do instead after a task store reset (Claude wording)."
-value = "recreate the open tasks with TaskCreate, then continue. "
+value = "restore the open tasks, then stop again."
 
 [tasklist_guard.instead_reset_codex]
 doc = "Lead of what to do instead after a task store reset (Codex wording)."
-value = "recreate the open tasks in your task list, then continue. "
+value = "restore the open tasks, then stop again."
 
 [tasklist_guard.instead_stalled]
 doc = "What to do about tasks stalled in progress."
-value = "start a background agent for each stalled task, or set idle ones back to pending. "
+value = "assign an agent to each stalled task."
 
 [tasklist_guard.instead_capture]
 doc = "What to do instead: capture the work as tasks (Claude wording)."
-value = "write the work down as tasks (TaskCreate/TaskUpdate) and update the progress file."
+value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_capture_codex]
 doc = "What to do instead: capture the work as tasks (Codex wording)."
-value = "write the work down as tasks in your task list and update the progress file."
+value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
@@ -1105,7 +1105,7 @@ value = "tell the agent \"skip tasklist-guard\""
 
 [tasklist_guard.details_label]
 doc = "Label of the last line of a tasklist-guard block: the file with the long instructions."
-value = "📄 Details: "
+value = "details: "
 
 [tasklist_guard.details_dir]
 doc = "Directory of the tasklist-guard details file under the anti-hall state directory."
@@ -1220,3 +1220,11 @@ value = '[\\/]\.codex[\\/]'
 [tasklist_guard.low_priorities]
 doc = "Priorities (lowercase) below the actionable floor for the stalled-in-progress count."
 value = ["p2", "low", "deferred"]
+
+[tasklist_guard.instead_progress]
+doc = "Compact guard message text."
+value = "update the progress file, then stop again."
+
+[tasklist_guard.resume_instead]
+doc = "Compact guard message text."
+value = "verify the handover and record the result."

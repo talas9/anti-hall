@@ -310,7 +310,7 @@ value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {t
 
 [devswarm_role.pg_frame_head]
 doc = "First line of the framed block (block-message.js frame): {guard}, {headline}."
-value = "⛔ anti-hall · {guard}: {headline}"
+value = "🛑 {guard}: {headline}"
 
 [devswarm_role.pg_frame_why]
 doc = "Label of the why line."
@@ -330,7 +330,7 @@ value = "Override (only if the user explicitly asked): "
 
 [devswarm_role.pg_headline]
 doc = "Headline of the block."
-value = "Primary turn held: DevSwarm workspaces or messages need attention first."
+value = "workspace duties need attention before stopping."
 
 [devswarm_role.pg_why]
 doc = "Why line of the block."
@@ -818,3 +818,14 @@ value = "\n\n"
 doc = "The count a fresh seat-conflict marker starts at."
 value = 1
 
+[devswarm_role.pg_short_instead]
+doc = "Compact guard message text."
+value = "resolve the pending workspace duties."
+
+[devswarm_role.pg_warning_what]
+doc = "Headline for the parent gate's detailed status advisories."
+value = "workspace status needs attention."
+
+[devswarm_role.pg_warning_instead]
+doc = "One action for the parent gate's detailed status advisories."
+value = "review the workspace status instructions."

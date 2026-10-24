@@ -133,4 +133,4 @@ value = "Fable routing is re-enabled per MODEL-POLICY.md (2026-07-12); revisit i
 
 [fable_availability.msg_instead]
 doc = "Do-instead line of the availability message."
-value = "pass args.fableAvailable=true into ship-it/deadly-loop Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then Opus."
+value = "pass args.fableAvailable=true to the review workflow."

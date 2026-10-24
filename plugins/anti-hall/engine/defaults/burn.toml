@@ -118,11 +118,11 @@ value = "agent tracker: {kind} {agent} spent about {tokens} tokens in the last {
 
 [burn.msg_what]
 doc = "Heading of the block. Placeholders: {tokens} the tokens spent since the last outcome."
-value = "this tool call is paused: about {tokens} tokens were spent with no commit, finished step, passing check or new file."
+value = "this tool call is paused after work with no recorded outcome."
 
 [burn.msg_what_waste]
 doc = "Heading of the block when the waste sensor (agent_waste.toml) holds the hard mark rather than the token line. Placeholders: {score} the waste score (thousands of tokens per outcome unit), {hard} the hard threshold, {tokens} the tokens of the window, {reason} the sensor's own reason."
-value = "this tool call is paused: the waste sensor scores this session {score} (limit {hard}; about {tokens} tokens in the window) - {reason}."
+value = "this tool call is paused after repeated work with no outcome."
 
 [burn.lift_bash_re]
 doc = "A segment that lifts the block at once: a git commit or push (optionally with `-C <dir>` / `-c k=v`). A commit is the outcome the block asks for; the tracker counts it on its next tick and raises the flag again only if the hard condition still holds. Regular expression (Rust syntax), tested like burn.allowed_bash_re."
@@ -134,7 +134,7 @@ value = "Tokens spent with nothing to show for them are wasted budget; running a
 
 [burn.msg_instead]
 doc = "What to do instead: the exact actions that lift the block, with the allowed command forms."
-value = "commit what works (`git commit`, then push), or write your report to a file and stop. The pause lifts within about a minute."
+value = "save a report of the outcome and stop."
 
 [burn.msg_allowed]
 doc = "Allowed line of the block: what stays possible while the breaker holds."

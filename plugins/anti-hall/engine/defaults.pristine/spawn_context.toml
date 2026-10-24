@@ -102,7 +102,7 @@ value = "It does not drain the queue, but bypasses the durable cursor, so messag
 
 [inbox_read.msg_inbox_instead]
 doc = "What to do instead of reading the inbox."
-value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`."
+value = "read through the mesh inbox CLI."
 
 [inbox_read.msg_override]
 doc = "How to disable the guard entirely."

@@ -1039,16 +1039,12 @@ function pgWakeLine(ownId, l) {
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js.
 function pgFrame(body, skip) {
-  var clean = text.clean;
-  var lines = [text.render(ah.cfg('devswarm_role.pg_frame_head'), { guard: clean(ah.cfg('devswarm_role.gate_guard')), headline: clean(ah.cfg('devswarm_role.pg_headline')) })];
-  lines.push(ah.cfg('devswarm_role.pg_frame_why') + clean(ah.cfg('devswarm_role.pg_why')));
-  var paras = body.split(/\n{2,}/).map(clean).filter(function (x) { return x !== ''; });
-  if (paras.length > 0) {
-    lines.push(ah.cfg('devswarm_role.pg_frame_instead') + paras[0]);
-    paras.slice(1).forEach(function (x) { lines.push(ah.cfg('devswarm_role.pg_frame_indent') + x); });
-  }
-  lines.push(ah.cfg('devswarm_role.pg_frame_override') + clean(skip + ah.cfg('devswarm_role.pg_skip_ttl')));
-  return lines.join('\n');
+  return text.message('block', ah.cfg('devswarm_role.gate_guard'), {
+    what: ah.cfg('devswarm_role.pg_headline'),
+    instead: ah.cfg('devswarm_role.pg_short_instead'),
+    override: skip + ah.cfg('devswarm_role.pg_skip_ttl'),
+    extra: [body], details: true,
+  });
 }
 
 function pgReasonLabel(reason, path, errno) {
@@ -1146,6 +1142,10 @@ function pgReason(blocking, own, escalate, hasIntent, q) {
 
 // Apply what the gate decided.
 function pgApply(fx) {
+  if (fx.err) fx.err = text.message('warn', ah.cfg('devswarm_role.gate_guard'), {
+    what: ah.cfg('devswarm_role.pg_warning_what'), instead: ah.cfg('devswarm_role.pg_warning_instead'),
+    extra: [fx.err], details: true,
+  }, 'warnings') + '\n';
   if (fx.unlink !== null || fx.write !== null || fx.extra.length || fx.cacheOwed || fx.drainClear !== null) ah.commit();
   if (fx.drainClear !== null) ah.state.remove(fx.drainClear); // clearDrainMarker, best-effort
   // the advisory writes are best-effort, as Node's (a failed write shows the line again next Stop)

@@ -16,7 +16,7 @@ value = "That file decides which files the main thread may edit, so the main thr
 
 [edit_guard.msg_self_edit_instead]
 doc = "What to do instead ({sub} names the worker)."
-value = "ask the user to change it (or delegate to {sub}); the user then re-trusts it with `~/.anti-hall/ah-engine/bin/ah-engine settings trust-edit-allow <repo> --confirmed`."
+value = "ask the user to update and re-trust the edit allowlist."
 
 [edit_guard.msg_outside_what]
 doc = "Heading of the block on a handover document outside the project ({tool} is the tool name)."
@@ -32,7 +32,7 @@ value = "write it yourself at {path}; no subagent or override is needed."
 
 [edit_guard.msg_new_what]
 doc = "Heading of the block on a new handover document at the wrong place ({tool} is the tool name)."
-value = "{tool} on a new handover file at this path is not allowed."
+value = "a new handover must be written at the session path."
 
 [edit_guard.msg_new_why]
 doc = "Why a new handover document is redirected."
@@ -40,7 +40,7 @@ value = "New handovers belong under .anti-hall/handovers/<date>/<session>/HANDOV
 
 [edit_guard.msg_new_instead]
 doc = "What to do instead for a new handover document."
-value = "write it there and copy it elsewhere afterwards if the project wants one."
+value = "write it at the session handover path."
 
 [edit_guard.msg_new_allowed]
 doc = "What stays allowed next to a redirected handover document."
@@ -60,7 +60,7 @@ value = "Edits in the main thread are checked against the delegation rule."
 
 [edit_guard.msg_patch_instead]
 doc = "What to do instead for an unparseable patch ({sub} names the worker)."
-value = "send a well-formed patch (*** Begin Patch ... *** End Patch) or delegate the edit to {sub}."
+value = "send a well-formed patch."
 
 [edit_guard.handover_parts]
 doc = "The canonical handover path under the project root, as its parts before the date directory, and the file name after the session directory."
@@ -189,4 +189,4 @@ value = "developer"
 
 [edit_guard.nudge_note]
 doc = "The once-per-session note to a DevSwarm Primary that keeps editing inline while actionable tasks are pending and no workspace is live."
-value = "💡 anti-hall · devswarm-primary: you have made several direct file edits while actionable tasks are pending and no child workspace is live. Workspace-scale work (a feature/fix/deploy: multi-step, own branch, own review) belongs in a child workspace: `~/.anti-hall/ah-engine/bin/ah-engine mesh spawn <branch> -p \"<brief>\"`. Keep inline edits to small, scoped changes."
+value = "💡 coordinator workload: pending work needs a workspace.\nDo instead: hand the remaining work to a child workspace."

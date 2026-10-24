@@ -424,7 +424,7 @@ value = " To run the check inline, use `cd <dir> &&`, not `;`."
 
 [command.msg_edit_what]
 doc = "Heading of the Bash edit parity block ({who} is the next text)."
-value = "a Bash file write (sed -i, tee, cp, mv, redirect, inline code) is not allowed: the {who} does not edit files directly."
+value = "this shell file edit must run in a helper agent."
 
 [command.msg_edit_who_orch]
 doc = "Who is blocked when DevSwarm is active."
@@ -678,7 +678,7 @@ value = "anti-hall's shared mesh store is the only agent-initiated messaging tra
 
 [command.msg_send_instead]
 doc = "What to do instead of a native send."
-value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary \"<text>\"` to report status."
+value = "send the message through the DevSwarm mesh."
 
 [command.msg_send_override]
 doc = "The override of the native-send block."
@@ -690,7 +690,7 @@ value = "devswarm-mailbox"
 
 [command.msg_mailbox_what]
 doc = "Heading of the subagent mailbox block."
-value = "a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent."
+value = "a helper tried to drain the DevSwarm mailbox."
 
 [command.msg_mailbox_why]
 doc = "Why a subagent may not touch the mailbox."
@@ -698,7 +698,7 @@ value = "A subagent that acks or reads advances the shared cursor, so the main t
 
 [command.msg_mailbox_instead]
 doc = "What to do instead."
-value = "report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs."
+value = "report back so the main agent can drain it."
 
 [command.msg_mailbox_allowed]
 doc = "What stays allowed."
@@ -726,7 +726,7 @@ value = "A stash can swallow another agent's protected WIP (defect b08b26566b92)
 
 [command.msg_stash_instead]
 doc = "What to do instead of a stash."
-value = "commit the work (even as a WIP commit); never delegate a stash to a subagent."
+value = "save the work in a WIP commit."
 
 [command.msg_stash_allowed]
 doc = "What stays allowed."
@@ -746,7 +746,7 @@ value = "It does not drain the queue, but bypasses the durable cursor, so messag
 
 [command.msg_rawread_inbox_instead]
 doc = "What to do instead of a raw inbox read."
-value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`."
+value = "read the inbox through the mesh CLI."
 
 [command.msg_rawread_override]
 doc = "The override of the raw read block."
@@ -774,7 +774,7 @@ value = "`message-count` reflects the NATIVE queue only; a 0 does not mean nothi
 
 [command.msg_dsread_instead]
 doc = "What to do instead of a native read."
-value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (durable cursor). Do not delegate this to a subagent either."
+value = "read the inbox through the mesh CLI."
 
 [command.msg_dsread_inbox_cmd_prefix]
 doc = "Added before the text above when a consumer-configured inbox command is set."

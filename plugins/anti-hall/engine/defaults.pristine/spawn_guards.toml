@@ -66,11 +66,11 @@ value = '^(.*?)\s*\[[0-9a-f]{4,16}\]\s*$'
 
 [devswarm_comms.msg_main_what]
 doc = "What the label says for the coordinator address."
-value = "SendMessage target \"main\" is this session's own coordinator address, not a cross-session peer."
+value = "target \"main\" points back to this session."
 
 [devswarm_comms.msg_block_what]
 doc = "What the block says; {to} is the target and {cwd} the peer session's directory."
-value = "SendMessage target \"{to}\" resolves to a DevSwarm workspace-backed peer session (cwd: {cwd})."
+value = "target \"{to}\" belongs to a DevSwarm workspace."
 
 [devswarm_comms.msg_block_why]
 doc = "Why the block applies."
@@ -78,11 +78,11 @@ value = "Direct Claude remote-agent messaging between a DevSwarm Primary/child a
 
 [devswarm_comms.msg_block_instead]
 doc = "What to do instead of the blocked send."
-value = "use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name)."
+value = "send through the DevSwarm mesh."
 
 [devswarm_comms.msg_ok_what]
 doc = "What the label says for a live peer session that is not a workspace; {to} is the target and {cwd} the session's directory."
-value = "target \"{to}\" resolves to a live session (cwd: {cwd}) that is not a DevSwarm workspace path; allowed."
+value = "target \"{to}\" is a live session; messaging is allowed."
 
 # ---- swarm-guard -------------------------------------------------------------------------------------------
 
@@ -255,7 +255,7 @@ value = "anti-hall swarm-guard: memory pressure critical ({avail} MB available o
 
 [swarm_guard.msg_rate_what]
 doc = "What the rate block says; {count} is the spawns in the window and {cap} the cap."
-value = "agent spawn-rate ceiling reached ({count} spawns in the last 60s, cap is {cap})."
+value = "spawn limit reached ({count} in 60s, cap {cap})."
 
 [swarm_guard.msg_rate_why]
 doc = "Why the rate block applies."
@@ -263,7 +263,7 @@ value = "A runaway swarm can make the OS unusable."
 
 [swarm_guard.msg_rate_instead]
 doc = "What to do instead of spawning past the cap."
-value = "pause new agents and let running ones finish, then launch the next wave; respect the concurrency cap (~min(16, cores-2))."
+value = "wait for running agents to finish before spawning more."
 
 [swarm_guard.sysctl_boottime]
 doc = "The macOS sysctl name that holds the boot time (the lock records it to tell machines apart)."
@@ -377,7 +377,7 @@ max = 64
 
 [swarm_guard.msg_shared_what]
 doc = "What the shared-tree advisory says."
-value = "another write-capable agent is still running in this working tree, and this spawn is write-capable too."
+value = "another agent is already writing in this working tree."
 
 [swarm_guard.msg_shared_why]
 doc = "Why the shared-tree advisory applies."
@@ -385,7 +385,7 @@ value = "Two such agents can stage and commit each other's uncommitted changes."
 
 [swarm_guard.msg_shared_instead]
 doc = "What to do instead, when the repo does not forbid worktrees."
-value = 'pass isolation:"worktree", serialize them, or give each its own scratch clone.'
+value = "give the new agent its own worktree."
 
 [swarm_guard.msg_shared_instead_no_worktrees]
 doc = "What to do instead, when the repo forbids worktrees."
@@ -449,7 +449,7 @@ value = "; "
 
 [spawn_ceiling.msg_what]
 doc = "What the ceiling block says; {n} running, {ceiling} the ceiling now, {names} the listed agents, {more} the remainder clause."
-value = "{n} agents are already running (limit {ceiling}): {names}{more}."
+value = "{n} agents are running (limit {ceiling})."
 
 [spawn_ceiling.msg_more]
 doc = "The remainder clause when more agents run than are listed; {n} is how many are not listed."
@@ -461,7 +461,7 @@ value = "More agents rarely add results, and each one costs tokens whether or no
 
 [spawn_ceiling.msg_instead]
 doc = "What to do instead of spawning past the ceiling."
-value = "wait for or stop a finished or idle agent, then spawn. The limit rises when usage headroom returns; to lift it now, tell the agent \"skip spawn-ceiling\"."
+value = "wait for a running agent to finish."
 
 # ---- spawn-usage: usage-aware dispatch (GH #270) -----------------------------------------------------------------
 # Reads the usage cache the limit-conserve check reads. Soft: allow, plus advice to use cheaper models and fewer agents (counted).
@@ -517,7 +517,7 @@ value = "Another spawn could use up the limit and stop all work, including agent
 
 [spawn_usage.msg_block_instead]
 doc = "What to do instead of the blocked spawn."
-value = "finish the running work, do small steps yourself, or wait for the reset. To allow spawning anyway, tell the agent \"skip spawn-usage\"."
+value = "wait for the usage limit to reset."
 
 [spawn_usage.msg_soft_what]
 doc = "What the soft advice says; {limit}, {pct} and {resets} as in msg_block_what."
@@ -529,7 +529,7 @@ value = "Headroom is getting short; avoid spending tokens that produce no commit
 
 [spawn_usage.msg_soft_instead]
 doc = "What to do instead, in the soft advice."
-value = "use cheaper models for routine work, start fewer agents, and give each a tight brief with a clear finish."
+value = "use cheaper models for routine work."
 
 # ---- nested spawns (a subagent or teammate starting agents of its own) ----------------------------------------
 
@@ -555,4 +555,4 @@ value = "Nested agents hide their cost from the coordinator (one burned about 2.
 
 [nested_spawn.msg_instead]
 doc = "What to do instead of a nested spawn."
-value = "do the task yourself and report back; if it needs more agents, say so and the coordinator will spawn them. To allow it, tell the agent \"skip nested-spawn-guard\"."
+value = "report back to the coordinator if more agents are needed."

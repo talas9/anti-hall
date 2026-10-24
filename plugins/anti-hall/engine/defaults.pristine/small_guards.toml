@@ -83,7 +83,7 @@ value = ".anti-hall"
 
 [guardkit.icons]
 doc = "Leading icon of a block or advisory message, by kind."
-value = { block = "⛔", warn = "⚠️", tip = "💡", ok = "✅", update = "⬆️", error = "❌" }
+value = { block = "🛑", warn = "⚠️", tip = "💡", ok = "💡", update = "💡", error = "🛑" }
 
 [guardkit.msg_head]
 doc = "Text between the icon and the guard name in every block or advisory message."
@@ -91,11 +91,11 @@ value = " "
 
 [guardkit.msg_labels]
 doc = "Labels of the optional lines of a block or advisory message."
-value = { "why" = "❓ Why: ", "instead" = "👉 Do instead: ", "allowed" = "✅ Allowed here: ", "override" = "🔓 To allow this once: ", "details" = "📄 Details: " }
+value = { "why" = "Why: ", "instead" = "Do instead: ", "allowed" = "Allowed here: ", "override" = "To allow this once: ", "details" = "details: " }
 
 [messages.style_guide]
-doc = "Style guide for every block or advisory text a guard shows (owner rule 2026-10-24: blocking messages must be human friendly). Line 1: `⛔ <plain-words name>: <what was stopped, in plain words>`. Line 2: `❓ Why: <one short sentence>`. Line 3: `👉 Do instead: <one concrete action>`. Optional last lines: `🔓 To allow this once: tell the agent \"skip <guard>\"` (override phrased for the human) and `📄 Details: <one file path>`. At most 4 lines and about 350 characters before the optional details line. Plain text only; no markdown. Shared labels and plain names come from guardkit. No raw ids, hashes, epoch numbers or JSON in the message; long instructions (file paths, file headers, ledger rules, the mechanical override) go in a details file the engine writes (see tasklist_guard.details_dir). Keep every {placeholder} the code fills; keep key names stable."
-value = "⛔ <plain name>: <what stopped>\n❓ Why: <one short reason>\n👉 Do instead: <one action>\n🔓 To allow this once: tell the agent \"skip <id>\"\n📄 Details: <file path, when needed>"
+doc = "Every guard message uses at most two lines and one leading emoji: block 🛑, warning ⚠️, tip 💡. Line 1: <emoji> <plain name>: <what stopped, short>. Line 2: Do instead: <one action>. No emoji on labels; no separate Why, override or Details line. Fold a short reason into line 1 only when needed to understand the action. Aim for 160 characters; never exceed 250 including filled placeholders and a details tail. Save skip instructions, long instructions and paths in a details file. Link it only when the action needs them, as (details: <path>) at the end of line 2. Plain text, no markdown. Both Claude/OMC and Codex/OMX use this shared renderer."
+value = "🛑 <plain name>: <what stopped>\nDo instead: <one action>"
 
 # ---- merge-side-pick ----------------------------
 
@@ -169,7 +169,7 @@ value = 120
 
 [merge_side_pick.msg_what]
 doc = "Advisory headline; {pick} is the recorded side-pick command."
-value = "pushing after a conflict was resolved by taking one side wholesale ({pick}) with no test run since"
+value = "a push follows a one-sided conflict resolution with no tests."
 
 [merge_side_pick.msg_why]
 doc = "Advisory reason."
@@ -177,7 +177,7 @@ value = "taking --ours/--theirs (or -X ours/theirs) silently drops the other sid
 
 [merge_side_pick.msg_instead]
 doc = "Advisory advice."
-value = "run the tests first, review the discarded side in `git diff`, then push."
+value = "verify the conflict resolution before pushing."
 
 [merge_side_pick.scope_unknown_re]
 doc = "Regex source: a segment after which the checkout a git command runs in cannot be told (cd, pushd, GIT_DIR, GIT_WORK_TREE, --git-dir, --work-tree). A push then keeps the advisory."
@@ -331,7 +331,7 @@ value = "if this is genuinely a smaller change, unset ANTIHALL_SHIPIT_GATE or us
 
 [ship_it.msg_adv_what]
 doc = "Advisory headline; {file} is the first target outside the declared files and {plan} the plan path."
-value = "{file} does not appear in any phase's declared \"files:\" list in {plan} (advisory, not a block)."
+value = "{file} is missing from the plan phase file list."
 
 [ship_it.msg_adv_why]
 doc = "Advisory reason."
@@ -339,7 +339,7 @@ value = "It may be a legitimate shared-file touch (`files:` is free text, so fal
 
 [ship_it.msg_adv_instead]
 doc = "Advisory advice."
-value = "if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase."
+value = "check the phase scope in PLAN.md."
 
 # ---- scan-throttle ----------------------------------------------------------------
 
@@ -393,7 +393,7 @@ value = "$("
 
 [scan_throttle.msg_group_what]
 doc = "Advisory headline when the scan is not the first simple command."
-value = "a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified."
+value = "a grouped command contains a heavy project scan."
 
 [scan_throttle.msg_group_instead]
 doc = "Advice when the scan is not the first simple command; {prefix} is the throttle prefix without its trailing space."
@@ -401,7 +401,7 @@ value = "consider running the scan background-throttled, e.g. `{prefix} <that co
 
 [scan_throttle.msg_first_what]
 doc = "Advisory headline when the scan is the first simple command."
-value = "this is a heavy repo-wide scan; the command was NOT modified."
+value = "a heavy project scan needs throttling."
 
 [scan_throttle.msg_first_why]
 doc = "Advisory reason when the scan is the first simple command."
@@ -817,7 +817,7 @@ value = "Auth/secret edge cases get mishandled by a cheap model."
 
 [model_routing.msg_row1_what]
 doc = "Row-1 block headline."
-value = "execution-shaped task on a flagship model (model: '{model}') is blocked."
+value = "routine execution was assigned to a flagship model."
 
 [model_routing.msg_row1_why]
 doc = "Row-1 block reason."
@@ -829,7 +829,7 @@ value = "respawn with model:'haiku' (or 'sonnet' if it authors code)."
 
 [model_routing.msg_row1_role_what]
 doc = "Row-1 role-exempt advisory headline."
-value = "execution-shaped spawn on a flagship model ('{model}'), exempt because a debate-role word is in its description."
+value = "flagship spawn allowed for a debate role."
 
 [model_routing.msg_row1_role_instead]
 doc = "Row-1 role-exempt advisory advice."
@@ -837,7 +837,7 @@ value = "if it is genuinely mechanical work, prefer model:'haiku'."
 
 [model_routing.msg_row1_research_what]
 doc = "Row-1 research-exempt advisory headline."
-value = "execution-shaped spawn on a flagship model ('{model}'), exempt from blocking because it reads as research with no unambiguous execution verb."
+value = "flagship spawn allowed for research."
 
 [model_routing.msg_row2_block_what]
 doc = "Row-2 strict block headline."
@@ -869,7 +869,7 @@ value = "An omitted model inherits the orchestrator's, so mechanical work may ru
 
 [model_routing.msg_row1_jev_what]
 doc = "Row-1 Jev relaxation advisory headline."
-value = "execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mechanical, so the block is downgraded."
+value = "flagship spawn allowed after a non-mechanical verdict."
 
 [model_routing.msg_row1_jev_instead]
 doc = "Row-1 Jev relaxation advisory advice."
@@ -877,7 +877,7 @@ value = "if it is genuinely mechanical work, prefer model:'haiku'."
 
 [model_routing.msg_row2_jev_what]
 doc = "Row-2 Jev relaxation advisory headline."
-value = "omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded."
+value = "default-model spawn allowed after a non-mechanical verdict."
 
 [model_routing.msg_row2_jev_instead]
 doc = "Row-2 Jev relaxation advisory advice."
@@ -937,15 +937,15 @@ value = "plan-review"
 
 [model_routing.msg_row3_what]
 doc = "Row-3 advisory headline."
-value = "execution-shaped task on a flagship model ('{model}') via custom subagent_type '{subagent_type}'."
+value = "a custom agent uses a flagship model for execution."
 
 [model_routing.msg_row3_instead]
 doc = "Row-3 advisory advice."
-value = "unless that agent is pinned to a flagship on purpose, prefer model:'haiku'."
+value = "choose a cheaper model unless the role requires a flagship."
 
 [model_routing.msg_row4_what]
 doc = "Row-4 advisory headline."
-value = "planning-shaped task (architecture/design/plan/brainstorm/deep review) runs on haiku."
+value = "planning work was assigned to haiku."
 
 [model_routing.msg_row4_instead]
 doc = "Row-4 advisory advice."
@@ -957,7 +957,7 @@ value = "research/read-only-shaped spawn uses subagent_type:'general-purpose'."
 
 [model_routing.msg_row6_instead]
 doc = "Row-6 advisory advice."
-value = "re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents."
+value = "use an Explore agent for read-only research."
 
 [model_routing.msg_row6_why]
 doc = "Row-6 advisory reason."
@@ -1171,7 +1171,7 @@ value = "this command failed{cmd}."
 
 [failure_nudge.msg_instead]
 doc = "Advisory advice."
-value = "before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom."
+value = "trace the failure before retrying or patching."
 
 # ---- coordinator-work-guard, PostToolUse pass ----
 
@@ -1408,7 +1408,7 @@ value = "hand the rest to a subagent now; step {block_at} in this window will be
 
 [coordinator_work.block_what]
 doc = "Block headline; {count} is the number of work calls in the window and {minutes} the window length."
-value = "this step is blocked: {count} file-changing steps in the main thread within {minutes} min."
+value = "this step was stopped after repeated main-thread edits."
 
 [coordinator_work.block_why]
 doc = "Why a work call past the block threshold is blocked. {clear_min} is the minutes until the oldest counted calls age out and this call is allowed."
@@ -1416,7 +1416,7 @@ value = "Too much hands-on work in the main thread. This is not a question for t
 
 [coordinator_work.block_instead]
 doc = "What to do instead of a blocked work call. {clear_min} is the minutes until the window clears."
-value = "hand this and the remaining steps to a subagent that returns a short summary, or read for about {clear_min} min and retry. Test suites run here once the window clears."
+value = "hand the remaining work to a helper agent."
 
 [coordinator_work.block_allowed]
 doc = "What stays allowed past the block threshold."
@@ -1514,7 +1514,7 @@ min = 1
 
 [merge_gate.msg_what]
 doc = "The block message's first line; {hedge} is the last hedge phrase found."
-value = "the merge is paused: recent work is still unverified (\"{hedge}\")."
+value = "the merge is paused while recent work remains unverified."
 
 [merge_gate.msg_why]
 doc = "The block message's reason."
@@ -1522,7 +1522,7 @@ value = "Merging now could ship unfinished work."
 
 [merge_gate.msg_instead]
 doc = "The block message's alternative."
-value = "Verify the agreed result, or get the owner to accept the gap before merging."
+value = "verify the agreed result before merging."
 
 [merge_gate.msg_override]
 doc = "The block message's override line."
@@ -1656,7 +1656,7 @@ value = [".anti-hall", "bin"]
 
 [edit_guard.msg_launcher_what]
 doc = "Launcher-directory block headline; {tool} is the tool name."
-value = "{tool} into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed."
+value = "an edit to the managed launcher folder was stopped."
 
 [edit_guard.msg_launcher_why]
 doc = "Launcher-directory block reason."
@@ -2077,7 +2077,7 @@ max = 65536
 
 [guardkit.plain_names]
 doc = "Human names on the first line; unknown guard ids fall back to themselves."
-value = { "tasklist-guard" = "task list check", "git-guard" = "git safety", "command-guard" = "command check", "edit-guard" = "file-edit check", "spawn-usage" = "usage limit", "wide-search-guard" = "wide search", "burn-breaker" = "runaway-work breaker", "task-guard" = "idle tasks check", "coordinator-work-guard" = "coordinator workload", "procwatch" = "process watch", "lane-test-guard" = "test run check", "queued-wait-guard" = "waiting check", "uncommitted-guard" = "uncommitted work check", "sibling-sweep" = "similar bugs check", "merge-gate" = "merge check", "speculation-guard" = "claim check", "swarm-guard" = "agent spawn check", "api-guard" = "API check", "ship-it-guard" = "change plan check", "merge-side-pick" = "merge review", "scan-throttle" = "search workload" }
+value = { "tasklist-guard" = "task list check", "git-guard" = "git safety", "command-guard" = "command check", "edit-guard" = "file-edit check", "spawn-usage" = "usage limit", "wide-search-guard" = "wide search", "burn-breaker" = "runaway-work breaker", "task-guard" = "idle tasks check", "coordinator-work-guard" = "coordinator workload", "procwatch" = "process watch", "lane-test-guard" = "test run check", "queued-wait-guard" = "waiting check", "uncommitted-guard" = "uncommitted work check", "sibling-sweep" = "similar bugs check", "merge-gate" = "merge check", "speculation-guard" = "claim check", "swarm-guard" = "agent spawn check", "api-guard" = "API check", "ship-it-guard" = "change plan check", "merge-side-pick" = "merge review", "scan-throttle" = "search workload", "devswarm-child-gate" = "workspace check", "agent-reminders" = "agent reminders", "task-tracker" = "task tracker", "devswarm-parent-gate" = "workspace check", "idle-agents" = "idle agents", "devswarm-comms-guard" = "devswarm comms", "spawn-ceiling" = "spawn ceiling", "nested-spawn-guard" = "nested spawn", "broad-kill-guard" = "broad kill", "ask-guard" = "ask", "stale-stop" = "stale stop", "silent-agent-nudge" = "silent agent nudge", "engine-role-guard" = "engine role", "fable-availability" = "fable availability", "compact-declaration-guard" = "compact declaration", "model-routing-guard" = "model routing", "model-routing" = "model routing", "failure-root-cause-nudge" = "failure root cause nudge", "root-cause" = "root cause", "jev-scorecard" = "jev scorecard", "repair-on-reload" = "repair on reload", "handover-hygiene" = "handover hygiene", "speculation-judge" = "speculation judge", "claim-ledger" = "claim ledger", "output-verify-guard" = "output verify" }
 
 [guardkit.override_human]
 doc = "Human consent hint; the id is the skip key."
@@ -2097,7 +2097,7 @@ value = "session"
 
 [guardkit.brief_what]
 doc = "Short headlines; full context is saved in the details file."
-value = { "burn-breaker" = "this tool call is paused after work with no recorded outcome.", "edit-guard" = "the main agent cannot make this project edit.", "command-guard" = "the main agent cannot run this heavy command." }
+value = { "burn-breaker" = "this tool call is paused after work with no recorded outcome.", "edit-guard" = "the main agent cannot make this project edit.", "command-guard" = "this heavy command was stopped in the main thread." }
 
 [guardkit.brief_why]
 doc = "Short reasons; full context is saved in the details file."
@@ -2105,4 +2105,12 @@ value = { "burn-breaker" = "Further work needs a saved outcome.", "edit-guard" =
 
 [guardkit.brief_instead]
 doc = "Short actions; full instructions are saved in the details file."
-value = { "burn-breaker" = "Save working changes in a commit, or write your report and stop.", "edit-guard" = "Hand the edit to a helper agent.", "command-guard" = "Hand the command to a helper agent for a short summary." }
+value = { "burn-breaker" = "Save working changes in a commit, or write your report and stop.", "edit-guard" = "Hand the edit to a helper agent.", "command-guard" = "hand the command to a helper agent." }
+
+[guardkit.long_instructions]
+doc = "Full instructions retained when visible guard text is shortened; placeholders describe the original command fields. Saved only in details files."
+value = { "api-guard" = "msg_what: this code references API(s) that do not exist in your installed runtime ({versions}):\n\nmsg_instead: verify the correct name (check the docs or run a quick `hasattr` / `typeof` probe) and fix the reference before writing.", "ask-guard" = "advise_instead: take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.\n\nblock_instead: decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line.", "auto-handover" = "lc_instead: route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff).\n\nah_nag_instead: {bloat} Mention {reset} to the user again when convenient.\n\nah_soft_instead: consider checking with the user about writing a handover and compacting/clearing soon. {bloat}\n\nah_pause_instead: {bloat} Mention {reset} to the user now.\n\nah_gate_what: post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budget {budget}).\n\nah_gate_instead: if it is bigger than the budget, do not start it; {ask}: (a) add it to the task list and the handover, then start it after {reset}; (b) proceed now anyway.\n\nah_backstop_what: post-handover budget exceeded: context is ~{pct}%, more than {b} points past the ~{hp}% at which the handover was saved.\n\nah_backstop_instead: refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after {reset}. This reminder fires once per handover.\n\nca_instead: retract it in one line, e.g. \"RETRACT SAFE TO COMPACT: context is {ctx}; no need to compact\", then continue or end the turn.", "broad-kill-guard" = "msg_instead: kill by PID after checking the process: record the PID when you start it (`cmd & echo $!`), check it with `ps -p <pid> -o pid,command`, then `kill <pid>`. To stop your own children only, `pkill -P $$` is allowed.", "burn-breaker" = "msg_what: this tool call is paused: about {tokens} tokens were spent with no commit, finished step, passing check or new file.\n\nmsg_what_waste: this tool call is paused: the waste sensor scores this session {score} (limit {hard}; about {tokens} tokens in the window) - {reason}.\n\nmsg_instead: commit what works (`git commit`, then push), or write your report to a file and stop. The pause lifts within about a minute.", "command-guard" = "msg_edit_what: a Bash file write (sed -i, tee, cp, mv, redirect, inline code) is not allowed: the {who} does not edit files directly.\n\nmsg_send_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --message-file <path>` (or `--to <meshId>`) to message, `~/.anti-hall/ah-engine/bin/ah-engine mesh heartbeat <id> --summary \"<text>\"` to report status.\n\nmsg_mailbox_what: a DevSwarm mailbox verb (inbox pull/ack/ack-primary/read/read-primary/drain-primary-legacy/tick, inbox messages --ack, mesh read, roster --ack, reap-orphans, register, archive, heartbeat) is blocked in a subagent.\n\nmsg_mailbox_instead: report what you learned to your parent; the main thread drains the mailbox itself. Never delegate mailbox verbs.\n\nmsg_rawread_inbox_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>`.\n\nmsg_dsread_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` then `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (durable cursor). Do not delegate this to a subagent either.", "compact-declaration-guard" = "msg_what: you declared SAFE TO COMPACT this turn (\"{phrase}\") and then started new work ({tool}).\n\nmsg_instead: stop, or retract: write a line \"RETRACT SAFE TO COMPACT: <why>\", then refresh the handover before declaring again.", "coordinator-work-guard" = "block_instead: hand this and the remaining steps to a subagent that returns a short summary, or read for about {clear_min} min and retry. Test suites run here once the window clears.", "devswarm-comms-guard" = "msg_block_what: SendMessage target \"{to}\" resolves to a DevSwarm workspace-backed peer session (cwd: {cwd}).\n\nmsg_block_instead: use the DevSwarm mesh: `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to <meshId> --message \"...\"` (resolve <meshId> from the DevSwarm workspace registry, not this session name).\n\nmsg_ok_what: target \"{to}\" resolves to a live session (cwd: {cwd}) that is not a DevSwarm workspace path; allowed.", "edit-guard" = "msg_launcher_what: {tool} into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed.", "fable-availability" = "msg_instead: pass args.fableAvailable=true into ship-it/deadly-loop Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then Opus.", "failure-root-cause-nudge" = "msg_instead: before retrying or patching, trace WHY it failed (see /anti-hall:root-cause) rather than guessing a fix from the symptom.", "git-guard" = "msg_launcher: writing into ~/.anti-hall/bin/ (the anti-hall launcher folder) is not allowed.\nanti-hall manages those files itself; overwriting one could run unwanted code under a trusted name.\nleave that folder alone; if the path is only text in a note, write the note with the Write tool.\n\nmsg_reused_message: this commit would reuse a message ({origin}) that has an AI co-author line.\nCommits in this setup carry no AI co-author line, even when the message is reused.\nremove the Co-Authored-By line and commit again with an explicit message (-m or -F).\n\nmsg_gh_credit: this gh pr/issue/release text has an AI credit line (\"Generated with\", Co-Authored-By or a claude.com link).\nPull requests and issues in this setup carry no AI credit.\nremove that line and run the command again.\n\nmsg_gh_credit_elsewhere: this gh command is chained with `{elsewhere}`, which has an AI credit line.\nThe credit line is in the `{elsewhere}` part, not in the gh text; nothing here carries AI credit.\nremove the credit line from the `{elsewhere}` text and run again.\n\nmsg_runner_placeholder: a force or delete flag next to an xargs/find/parallel placeholder command is not allowed.\nThe placeholder is filled in at run time, so the command could secretly be a git push.\nrun the git command directly, naming the subcommand.\n\nmsg_runner_no_subcommand: `{runner} git` with no subcommand next to a force or delete flag is not allowed.\n{runner} supplies the subcommand later, so it could be a push with that flag.\nrun the git command directly, naming the subcommand.\n\nmsg_runner_push: a force push through `{runner} git push` is not allowed.\n{runner} adds words to the command, so a hidden --force can't be ruled out.\nrun the git push directly with explicit arguments.\n\nmsg_find_push: pushing through `find -exec git push ... {}` is not allowed.\nfind fills in the arguments, so a force push (`+ref`) can't be ruled out.\nrun the git push directly with explicit arguments.\n\nmsg_handover: this commit includes a session handover ({shown}).\nHandovers are private session notes and are never committed.\nunstage it with `git restore --staged <path>` (if already tracked: `git rm --cached <path>` and commit that removal).\ntell the agent \"skip git-guard\", only if you want this file committed.\n\nmsg_force_push: a force push is not allowed.\nRewriting published history should be a deliberate human decision.\nask the owner to run it themselves, or push normally.\n\nmsg_delete_ref: deleting a remote branch or tag is not allowed.\nDeleting published refs needs the owner's explicit OK.\nleave the remote ref alone.\ntell the agent \"skip git-guard\", only for this exact deletion.\n\nmsg_push_cmdsubst: a git push with an argument built by command substitution or backticks is not allowed.\nIt could hide a --force flag from the check.\nrun the push with plain, literal arguments. If it is only message text inside printf/echo, write that file with the Write tool.\n\nmsg_trailer_remap: a git config that remaps a trailer to an AI credit line is not allowed.\nCommits in this setup carry no AI co-author line.\nremove the trailer setting and commit again.\n\nmsg_commit_credit: this commit message has an AI co-author line (Co-Authored-By or \"Generated with\").\nCommits in this setup carry no AI co-author line.\nremove the Co-Authored-By line and commit again.\n\nmsg_commit_file_credit: this commit message (from -F, a file or a heredoc) has an AI co-author line.\nCommits in this setup carry no AI co-author line.\nremove the Co-Authored-By line from it and commit again.\n\nmsg_gh_jev: this gh pr/issue/release text appears to credit an AI assistant (worded freely, caught by the Jev check).\nPull requests and issues in this setup carry no AI credit.\nreword it without the credit and run the command again.\n\nmsg_commit_jev: this commit message appears to credit an AI assistant (worded freely, caught by the Jev check).\nCommits in this setup carry no AI co-author line.\nreword the message without the credit and commit again.\n\nmsg_commit_file_jev: this commit message (from -F or a file) appears to credit an AI assistant (worded freely, caught by the Jev check).\nCommits in this setup carry no AI co-author line.\nreword the message without the credit and commit again.\n\nmsg_creating_credit: this command creates a commit (git {sub}) with an AI co-author line in it.\nCommits in this setup carry no AI co-author line, however it reaches git.\nremove the Co-Authored-By line and commit again.\n\nmsg_creating_credit_elsewhere: this command creates a commit (git {sub}) and is chained with `{elsewhere}`, which has an AI credit line.\nThe credit line is in the `{elsewhere}` part, not in the commit message.\nremove the credit line from the `{elsewhere}` text and run again.\n\nmsg: anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last {window_min} min) {hits} carry an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") - added by a git hook, template, cherry-pick/rebase, or an editor. Commits carry no AI co-author credit: reword them now (`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing.", "handover-hygiene" = "msg_advisory_instead: run `{cmd}` (the scheduled job also repairs the briefs); it never edits handover files.", "handover-resume" = "avail_instead: Workflow scripts have no filesystem and cannot read this fact, so pass args.codexAvailable=true into ship-it/deadly-loop Workflow invocations (same pattern as args.fableAvailable) so the Critic seat attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat and for everyday correctness-review plus a share of implementation load; coordinators there should read ~/.anti-hall/codex-availability.json instead of re-probing.\n\nnudge_instead: before calling it done, spawn a `codex:codex-rescue` agent (or run /codex:rescue) on the diff; keep planning/architecture review on Opus.\n\nnudge_what: this session made {edits} substantial code edit(s) across {files} file(s) ({names}{more}) with no Codex second opinion (advisory).\n\nsnaponly_instead: read it fully before trusting the compact summary; once state is re-established, write a real handover with the anti-hall handover skill.\n\nsnaponly_what: no HANDOVER*.md was written for this session, but a pre-compaction snapshot exists: {path} (written {written}).", "idle-agents" = "instead: if you have no more work for them, {verb} each one, e.g. {call} (one call per agent). Keep any you will re-task.", "inbox-read-guard" = "msg_store_instead: `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read <id>` (or `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox pull <id>` first to import).", "merge-side-pick" = "msg_what: pushing after a conflict was resolved by taking one side wholesale ({pick}) with no test run since", "model-routing-guard" = "msg_row1_role_what: execution-shaped spawn on a flagship model ('{model}'), exempt because a debate-role word is in its description.\n\nmsg_row1_research_what: execution-shaped spawn on a flagship model ('{model}'), exempt from blocking because it reads as research with no unambiguous execution verb.\n\nmsg_row1_jev_what: execution-shaped spawn on a flagship model ('{model}'); Jev judged it non-mechanical, so the block is downgraded.\n\nmsg_row2_jev_what: omitted-model spawn looks execution-shaped; Jev judged it non-mechanical, so the strict block is downgraded.\n\nmsg_row3_what: execution-shaped task on a flagship model ('{model}') via custom subagent_type '{subagent_type}'.\n\nmsg_row6_instead: re-dispatch as subagent_type:'Explore' (WebSearch/WebFetch, no Agent tool, so it cannot recurse). Keep general-purpose only if it must write files or spawn sub-agents.", "nested-spawn-guard" = "msg_instead: do the task yourself and report back; if it needs more agents, say so and the coordinator will spawn them. To allow it, tell the agent \"skip nested-spawn-guard\".", "output-verify-guard" = "msg_what: this Bash command's output contains {bits} in the same run (advisory, not a block).\n\nmsg_instead: before reporting \"tests pass\" / \"build succeeded\", re-read the full output and confirm the actual pass/fail counts and exit code.", "procwatch" = "msg_orphans_what: {n} leftover process(es) from ended Claude sessions, with the folder each ran in (some may belong to other projects): {list}{more}.\n\nmsg_orphans_instead: nothing was stopped. Check each folder and end the ones that are yours, or set procwatch.<class>Mode=kill in /anti-hall:settings.\n\nmsg_stuck_instead: check each one's output file or message it, then stop it with TaskStop if it is dead. Nothing was stopped.", "scan-throttle" = "msg_group_what: a repo-wide scan command was detected in a compound or grouped command (not the first simple command); it was NOT modified.", "ship-it-guard" = "msg_adv_what: {file} does not appear in any phase's declared \"files:\" list in {plan} (advisory, not a block).\n\nmsg_adv_instead: if intentional, proceed; if not, update the PLAN.md Blast radius / phase `files:` list, or re-plan this phase.", "silent-agent-nudge" = "msg_instead: check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume.", "spawn-ceiling" = "msg_what: {n} agents are already running (limit {ceiling}): {names}{more}.\n\nmsg_instead: wait for or stop a finished or idle agent, then spawn. The limit rises when usage headroom returns; to lift it now, tell the agent \"skip spawn-ceiling\".", "spawn-usage" = "msg_block_instead: finish the running work, do small steps yourself, or wait for the reset. To allow spawning anyway, tell the agent \"skip spawn-usage\".\n\nmsg_soft_instead: use cheaper models for routine work, start fewer agents, and give each a tight brief with a clear finish.", "speculation-guard" = "msg_what: your reply states something speculative ('{marker}') without verifying it or flagging it as unverified.\n\nmsg_instead: verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue.\n\nmsg_what_jev: your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference).", "swarm-guard" = "msg_rate_instead: pause new agents and let running ones finish, then launch the next wave; respect the concurrency cap (~min(16, cores-2)).\n\nmsg_shared_what: another write-capable agent is still running in this working tree, and this spawn is write-capable too.", "task-guard" = "idle_what: can't stop yet: {n} task(s) have no agent working on them: {list}{more}.\n\nidle_instead: start a background agent for each (up to {cap}), or tell the user which task truly needs them. Waiting on another task: set blockedBy ({upd} addBlockedBy). Already covered by an agent: set it as owner ({upd} owner).{devswarm}\n\ngeneric_what: can't stop yet: open tasks remain: {list}{more}.\n\ngeneric_instead: start agents to finish them in parallel, mark them completed or deferred ({upd}), or tell the user what is pending and why you are stopping.", "tasklist-guard" = "resume_text: A session handover was resumed this session ({file}) but no `resume-verified:` marker was recorded in it. Run the resume-verification checklist (git status, pwd, smoke command) and append `resume-verified: <ISO timestamp> -- <summary>` to that file before continuing.\n\nwhat_no_tasks: can't stop yet: {n} file changes this session and no tasks tracked.\n\nwhat_stalled: can't stop yet: {n} tasks are marked in progress but no agent is working on them.\n\nwhat_progress: can't stop yet: {n} file changes and the progress file is missing or out of date.\n\nwhat_reduced: can't stop yet: {n} file changes and nothing tracked.", "wide-search-guard" = "msg_instead: search the project: give a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>` (git grep and git ls-files cover tracked files).\n\nmsg_instead_no_repo: search one project folder: give the command that folder's absolute path (git grep and git ls-files cover tracked files)." }
+
+[guardkit.details_actions]
+doc = "Compact guard message text."
+value = ["send the message through the DevSwarm mesh.", "read the inbox through the mesh CLI.", "read through the mesh inbox CLI.", "send through the DevSwarm mesh.", "ask the user to update and re-trust the edit allowlist.", "write it at the session handover path.", "run the handover maintenance command."]

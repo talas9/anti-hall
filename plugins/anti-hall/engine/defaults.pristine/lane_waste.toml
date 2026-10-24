@@ -319,11 +319,11 @@ value = "Scanning a whole disk or home folder takes minutes and can overload thi
 
 [wide_search.msg_instead]
 doc = "What to do instead. Placeholders: {repo} the session's working directory."
-value = "search the project: give a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>` (git grep and git ls-files cover tracked files)."
+value = "search within the project folder."
 
 [wide_search.msg_instead_no_repo]
 doc = "What to do instead when the session's working directory is itself a forbidden root."
-value = "search one project folder: give the command that folder's absolute path (git grep and git ls-files cover tracked files)."
+value = "give the search one project folder."
 
 [wide_search.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

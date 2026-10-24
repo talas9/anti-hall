@@ -168,7 +168,7 @@ value = "Usage is near a plan limit."
 
 [ctxbudget.lc_instead]
 doc = "The start of the Do instead line of the directive (the reset clause and the downshift text follow)."
-value = "route execution to Codex (codex:codex-rescue, separate limit) and cheap Claude (Sonnet, or Haiku for trivial work, uses less of the shared Claude pool; no Claude model is a separate bucket); keep the MAIN agent on Claude and send hard reasoning to subagents; if Codex is unavailable or rate-limited degrade to Sonnet, never retry-loop (backoff)."
+value = "route routine execution to Codex or cheaper Claude helpers."
 
 [ctxbudget.lc_resets_at]
 doc = "The reset clause when a tripped bucket states its reset time ({at}, rounded per ctxbudget.lc_reset_round)."
@@ -405,7 +405,7 @@ value = "context is now ~{pct}% (handover already saved earlier this session)."
 
 [ctxbudget.ah_nag_instead]
 doc = "The milestone nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
-value = "{bloat} Mention {reset} to the user again when convenient."
+value = "remind the user to {reset}."
 
 [ctxbudget.ah_soft_what]
 doc = "The soft advisory's first line; {pct} is the rounded percent."
@@ -417,7 +417,7 @@ value = "This session's exact context window could not be determined, so treat t
 
 [ctxbudget.ah_soft_instead]
 doc = "The soft advisory's instructions; {bloat} the bloat sentence."
-value = "consider checking with the user about writing a handover and compacting/clearing soon. {bloat}"
+value = "offer to save a handover."
 
 [ctxbudget.ah_pause_what]
 doc = "The pause nag's first line; {pct} is the rounded percent."
@@ -425,7 +425,7 @@ value = "good stopping point: context is still ~{pct}% and a handover is already
 
 [ctxbudget.ah_pause_instead]
 doc = "The pause nag's instructions; {bloat} the bloat sentence, {reset} the reset commands."
-value = "{bloat} Mention {reset} to the user now."
+value = "tell the user to {reset}."
 
 [ctxbudget.ah_clear_claude]
 doc = "The command that starts a fresh session on Claude."
@@ -477,7 +477,7 @@ value = "ask the user to choose between two options"
 
 [ctxbudget.ah_gate_what]
 doc = "The gate's first line; {pct} context percent, {hp} handover percent, {budget} the budget label."
-value = "post-handover new-work gate (context ~{pct}%, handover saved at ~{hp}%; budget {budget})."
+value = "new work exceeds the post-handover budget ({budget})."
 
 [ctxbudget.ah_gate_why]
 doc = "The gate's Why line."
@@ -485,7 +485,7 @@ value = "Before starting this request, judge YOURSELF whether it needs more than
 
 [ctxbudget.ah_gate_instead]
 doc = "The gate's instructions; {ask} how to ask, {reset} the reset commands."
-value = "if it is bigger than the budget, do not start it; {ask}: (a) add it to the task list and the handover, then start it after {reset}; (b) proceed now anyway."
+value = "ask whether to save the work for after {reset}."
 
 [ctxbudget.ah_gate_allowed]
 doc = "The gate's Allowed line."
@@ -497,11 +497,11 @@ value = "if the user has explicitly insisted on proceeding, proceed"
 
 [ctxbudget.ah_backstop_what]
 doc = "The backstop's first line; {pct} context percent, {b} budget, {hp} handover percent."
-value = "post-handover budget exceeded: context is ~{pct}%, more than {b} points past the ~{hp}% at which the handover was saved."
+value = "context is ~{pct}%, past the post-handover budget."
 
 [ctxbudget.ah_backstop_instead]
 doc = "The backstop's instructions; {skill} the handover skill, {reset} the reset commands."
-value = "refresh the handover now ({skill}: write the next HANDOVER-<n>.md) so it covers the work since, then offer the user to park the rest in the task list + handover and continue after {reset}. This reminder fires once per handover."
+value = "refresh the handover with {skill}."
 
 [ctxbudget.ah_parts_sep]
 doc = "What joins the parts of one auto-handover context (backstop, gate, nag)."
@@ -627,7 +627,7 @@ value = '"No background agents running" is necessary, not sufficient; only the a
 
 [ctxbudget.ca_instead]
 doc = "The block's instructions; {ctx} is the context clause."
-value = 'retract it in one line, e.g. "RETRACT SAFE TO COMPACT: context is {ctx}; no need to compact", then continue or end the turn.'
+value = "retract the compact advice and continue."
 
 [ctxbudget.ca_ctx_pct]
 doc = "The context clause of the instructions when the percent is known ({pct} rounded)."

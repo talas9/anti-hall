@@ -214,7 +214,7 @@ value = '‘[^‘’\n]*’'
 
 [speculation_guard.msg_what]
 doc = "Block headline; {marker} is the hedge found."
-value = "your reply states something speculative ('{marker}') without verifying it or flagging it as unverified."
+value = "your reply makes an unverified claim (\"{marker}\")."
 
 [speculation_guard.msg_why]
 doc = "Block reason."
@@ -222,7 +222,7 @@ value = "Unverified claims read as facts."
 
 [speculation_guard.msg_instead]
 doc = "Block advice."
-value = "verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue."
+value = "verify the claim or label it unverified."
 
 [speculation_guard.jev_id]
 doc = "The Jev integration id of the speculation question (add-block trust)."
@@ -297,7 +297,7 @@ value = '\(unverified\)|\bnot yet measured\b'
 
 [speculation_guard.msg_what_jev]
 doc = "Block headline when Jev added the block."
-value = "your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference)."
+value = "your reply asserts a cause or outcome without evidence."
 
 [speculation_guard.outcome_override]
 doc = "Outcome recorded for the previous block when the user skipped the guard."
@@ -603,7 +603,7 @@ value = "|"
 
 [output_verify.msg_what]
 doc = "Advisory headline; {bits} are the signals found."
-value = "this Bash command's output contains {bits} in the same run (advisory, not a block)."
+value = "command output contains conflicting results."
 
 [output_verify.msg_why]
 doc = "Advisory reason."
@@ -611,4 +611,4 @@ value = "A mixed summary is not a clean pass."
 
 [output_verify.msg_instead]
 doc = "Advisory advice."
-value = "before reporting \"tests pass\" / \"build succeeded\", re-read the full output and confirm the actual pass/fail counts and exit code."
+value = "read the full output before reporting the result."

@@ -151,7 +151,7 @@ function decide(p) {
       if (critical && typeof cmd === 'string' && ah.re.test(ah.cfg('disk_watch.heavy_command_re'), 'i', cmd)) {
         if (ah.settings.bool('disk_watch.block_at_critical')) {
           pwSave(st, nowS);
-          return { block: text.message('block', ah.cfg('procwatch.guard_name'), { what: text.render(ah.cfg('disk_watch.msg_blocked'), { list: pwDiskLines(low).join('; ') }) }) };
+          return { block: text.message('block', ah.cfg('procwatch.guard_name'), { what: text.render(ah.cfg('disk_watch.msg_blocked'), { list: pwDiskLines(low).join('; ') }), instead: pwDiskInstead(disk) }) };
         }
         if (pwFire(st, 'heavy:' + sid, nowS, cooldown)) {
           parts.push(pwMsg('warn', ah.cfg('disk_watch.msg_heavy') + ' ' + text.render(ah.cfg('disk_watch.msg_what'), { list: pwDiskLines(low).join('; ') }), ah.cfg('disk_watch.msg_why'), pwDiskInstead(disk)));

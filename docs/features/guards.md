@@ -12,17 +12,15 @@ setting, and you can skip one for a short while.
 
 ## How a block looks
 
-Every block has the same three parts: what was stopped, why, and what to do instead. The
-assistant reads it and takes the other path. Long instructions go in a details file; the
-message links to it. The first line uses a plain name; the override keeps the guard id
-so the agent can record your consent. For example:
+Every message has one leading emoji and at most two lines: what was stopped, then one
+action. Messages aim for 160 characters and never exceed 250. Long instructions and
+skip hints stay in a details file, linked only when the action needs them.
 
 <div class="ah-term" markdown>
 
 ```text
-⛔ git safety: this commit message has an AI co-author line (Co-Authored-By or "Generated with").
-❓ Why: Commits in this setup carry no AI co-author line.
-👉 Do instead: remove the Co-Authored-By line and commit again.
+🛑 git safety: commit has an AI co-author line.
+Do instead: remove the Co-Authored-By line and commit again.
 ```
 
 </div>
@@ -56,17 +54,15 @@ coordinator keeps the overview and checks each helper's result instead of trusti
 <div class="ah-term" markdown>
 
 ```text
-⛔ command check: the main agent cannot run this heavy command.
-❓ Why: Long output would crowd the main conversation.
-👉 Do instead: Hand the command to a helper agent for a short summary.
-🔓 To allow this once: tell the agent "skip command-guard"
-📄 Details: /Users/you/.anti-hall/block-details/command-guard-session.md
+🛑 command check: this heavy command was stopped in the main thread.
+Do instead: hand the command to a helper agent.
 ```
 
 </div>
 
 Short checks are still allowed in the main session, such as one or two test files piped
-to `tail`, or a `--check` / `--dry-run` run. The full list is in the details file linked from the message.
+to `tail`, or a `--check` / `--dry-run` run. Long instructions and skip hints are saved in
+`~/.anti-hall/block-details/`. A message links its details file only when the action needs it.
 
 ## Checking claims
 
@@ -77,9 +73,8 @@ once:
 <div class="ah-term" markdown>
 
 ```text
-⛔ claim check: your reply states something speculative ('probably') without verifying it or flagging it as unverified.
-❓ Why: Unverified claims read as facts.
-👉 Do instead: verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue.
+🛑 claim check: your reply makes an unverified claim ("probably").
+Do instead: verify the claim or label it unverified.
 ```
 
 </div>

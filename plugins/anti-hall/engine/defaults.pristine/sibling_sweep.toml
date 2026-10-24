@@ -326,7 +326,7 @@ min = 1024
 
 [sibling_sweep.msg_what]
 doc = "What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty)."
-value = "this bug fix has no recorded search for the same cause elsewhere{pattern}."
+value = "this fix has no recorded search for the same cause elsewhere."
 
 [sibling_sweep.msg_pattern]
 doc = "The text that names the pattern in the reminder. Placeholder: {pattern}."
@@ -338,7 +338,7 @@ value = "The same cause may affect more than one place."
 
 [sibling_sweep.msg_instead]
 doc = "What to do, in the reminder."
-value = "Search for the same pattern; fix or list other matches and report the search."
+value = "search for the same cause and report other matches."
 
 [sibling_sweep.msg_allowed]
 doc = "What stays allowed, in the reminder."

@@ -242,11 +242,11 @@ value = "do not hold work on a question."
 
 [ask_guard.advise_instead]
 doc = "What to do instead, in the standing-rule advice."
-value = "take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+value = "continue with the recommended reversible option."
 
 [ask_guard.block_what]
 doc = "Headline of the block message."
-value = "AskUserQuestion blocked by guards.noBlockingQuestions."
+value = "this question would pause authorized work."
 
 [ask_guard.block_why]
 doc = "Why line of the block message."
@@ -254,7 +254,7 @@ value = "Work should not wait on a question."
 
 [ask_guard.block_instead]
 doc = "What to do instead, in the block message."
-value = "decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+value = "continue with the recommended reversible option."
 
 [ask_guard.block_allowed]
 doc = "What stays allowed, in the block message."
@@ -584,7 +584,7 @@ value = "Advisory only; nothing was auto-killed."
 
 [silent_nudge.msg_instead]
 doc = "Do-instead line of the nudge; {them} is the pronoun for one agent or several."
-value = "check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume."
+value = "check the silent agents for progress."
 
 [silent_nudge.pronoun_one]
 doc = "The pronoun for one silent agent."
