@@ -895,6 +895,15 @@ pub(crate) fn delivered(st: &mut State, v: &Value, ts: u64) -> bool {
     true
 }
 
+/// The tracker signal a nudge delivery row stands for: the row carries the nudge's own signal word, the flag it answers is the child's
+/// trigger signal of that nudge. `None` for any other row (the row's own signal names its flag).
+pub(crate) fn flag_signal(st: &State, v: &Value) -> Option<String> {
+    if v["signal"].as_str() != Some(word("signal")) {
+        return None;
+    }
+    v["agent"].as_str().and_then(|c| st.nudges.get(c)).map(|n| n.signal.clone()).filter(|s| !s.is_empty())
+}
+
 /// One nudge pass, after the signals of this tick.
 pub(crate) fn tick(env: &Env, st: &mut State) {
     if !env.act || !env.switch("agent_nudge.setting") {

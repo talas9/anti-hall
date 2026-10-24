@@ -252,10 +252,13 @@ function decide(p) {
   // nested spawn: a worker (subagent or teammate) starting agents of its own; independent of the swarm-guard switch
   if (!ah.settings.bool('nested_spawn.setting') && !ah.settings.skipped(ah.cfg('nested_spawn.guard_name')) && coordinator.subagentByPayload(p)) {
     ah.advisory('flagged', 'nested_spawn_block');
-    return swgBlock(text.message('block', ah.cfg('nested_spawn.guard_name'), {
+    var nested = text.message('block', ah.cfg('nested_spawn.guard_name'), {
       what: ah.cfg('nested_spawn.msg_what'), why: ah.cfg('nested_spawn.msg_why'), instead: ah.cfg('nested_spawn.msg_instead'),
-    }));
+    });
+    // Codex reads the reason from stderr on exit 2; Claude's block keeps its empty stderr
+    return coordinator.isCodexPayload(p) ? { exact: { code: 2, out: text.blockJson(nested), err: nested + '\n' } } : swgBlock(nested);
   }
+  if (coordinator.isCodexPayload(p)) return 'allow'; // the rate and budget gates below count Claude's Agent and Task spawns
   if (!ah.settings.bool('swarm_guard.setting')) return 'allow';
   if (ah.settings.skipped(ah.cfg('swarm_guard.guard_name'))) return 'allow';
   var now = Date.now(), label = swgDescribe(p);

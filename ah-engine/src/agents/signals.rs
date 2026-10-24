@@ -597,10 +597,12 @@ fn take_deliveries(env: &Env, st: &mut State) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (agent, sig, ts) = (v["agent"].as_str().unwrap_or(""), v["signal"].as_str().unwrap_or(""), v["ts"].as_u64().unwrap_or(env.now_ms));
         super::nudge::delivered(st, &v, ts);
-        let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(sig)).map(|f| {
+        // a nudge row names the nudge, not the flag: the flag it answers is the child's trigger signal (#207: those flags stayed at 0)
+        let flag = super::nudge::flag_signal(st, &v).unwrap_or_else(|| sig.to_string());
+        let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(flag.as_str())).map(|f| {
             f.delivered_at = ts;
             f.delivered_to = v["key"].as_str().unwrap_or("").to_string();
-            ts.saturating_sub(f.reminded_at) / fmtn("ms_per_s")
+            ts.saturating_sub(if f.reminded_at > 0 { f.reminded_at } else { f.since }) / fmtn("ms_per_s")
         });
         if env.act {
             st.day(env).delivered += 1;

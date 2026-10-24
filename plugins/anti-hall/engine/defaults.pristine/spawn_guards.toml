@@ -539,7 +539,7 @@ value = "nested-spawn-guard"
 
 [nested_spawn.summary]
 doc = "One-line description of the nested-spawn check in the generated reference."
-value = "Runs inside swarm-guard on Agent and Task: blocks a spawn whose caller is a subagent or teammate unless guards.allowNestedSpawns is on."
+value = "Runs inside swarm-guard on Agent and Task (Claude) and spawn_agent (Codex): blocks a spawn whose caller is a subagent or teammate unless guards.allowNestedSpawns is on. The spawn rate and budget gates of swarm-guard stay Claude-only."
 
 [nested_spawn.msg_what]
 doc = "What the block says."

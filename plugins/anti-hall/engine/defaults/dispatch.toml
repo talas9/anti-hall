@@ -624,6 +624,7 @@ value = [
   { id = "merge-gate", matcher = "Bash", timeout = 10, check = "merge-gate" },
   { id = "compact-declaration-guard", matcher = "Bash", timeout = 10, check = "compact-declaration-guard" },
   { id = "orch-on-spawn", matcher = "^(?:collaboration)?spawn_agent$", timeout = 10, check = "orch-on-spawn" },
+  { id = "swarm-guard", matcher = "^(?:collaboration)?spawn_agent$", timeout = 10, check = "swarm-guard" },
   { id = "api-guard", matcher = "apply_patch|Bash", timeout = 45, check = "api-guard" },
   { id = "ship-it-guard", matcher = "apply_patch|Bash", timeout = 10, check = "ship-it-guard" },
   { id = "edit-guard", matcher = "apply_patch", timeout = 10, check = "edit-guard" },

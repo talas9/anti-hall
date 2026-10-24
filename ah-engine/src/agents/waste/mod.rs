@@ -353,7 +353,7 @@ pub(crate) fn update(env: &Env, a: &mut Agent, budget: &mut u64) {
     // hard without a spend to show for it
     let spent = measured && i.tokens >= lim("evidence_min_tokens");
     let waste = if fresh {
-        pol("waste_verdicts").contains(&a.waste.verdict.as_str())
+        spent && pol("waste_verdicts").contains(&a.waste.verdict.as_str())
     } else {
         a.waste.source = word("formula").into();
         a.waste.verdict.clear();
