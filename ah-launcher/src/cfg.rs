@@ -13,11 +13,13 @@ pub struct Cfg {
 }
 
 impl Cfg {
-    /// None when the file is missing, unreadable (including non-UTF-8) or not valid TOML.
-    pub fn load(path: &Path) -> Option<Cfg> {
-        let text = std::fs::read_to_string(path).ok()?;
-        Some(Cfg {
-            doc: text.parse().ok()?,
+    /// Err(path and the read or parse error) when the file is missing, unreadable (including non-UTF-8) or not valid TOML.
+    pub fn load_why(path: &Path) -> Result<Cfg, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Cfg {
+            doc: text.parse::<toml::Table>().map_err(|e| {
+                format!("{}: {}", path.display(), e.to_string().replace('\n', " "))
+            })?,
         })
     }
 
@@ -39,7 +41,13 @@ pub struct Settings {
     engine: Cfg,
     dispatch: Cfg,
     messages: Cfg,
+    /// `doctor.toml`, loaded only by the doctor (`with_doctor`): the hook path never pays for parsing it.
+    doctor: Cfg,
+    /// `nodeback.toml`, loaded only by the Node fallback (`with_nodeback`).
+    nodeback: Cfg,
     pub bad_files: Vec<String>,
+    /// One reason per unusable file of `bad_files` (path plus the read or parse error), for the log.
+    pub bad_why: Vec<String>,
 }
 
 fn nonneg(v: &toml::Value) -> Option<u64> {
@@ -50,9 +58,11 @@ impl Settings {
     /// Reads the three files of `dir`. An empty `dir` (no plugin root found) is all built-in.
     pub fn load(dir: &Path) -> Settings {
         let mut bad = Vec::new();
+        let mut why = Vec::new();
         let mut one = |name: &str| {
-            Cfg::load(&dir.join(name)).unwrap_or_else(|| {
+            Cfg::load_why(&dir.join(name)).unwrap_or_else(|e| {
                 bad.push(name.to_string());
+                why.push(e);
                 Cfg::default()
             })
         };
@@ -63,14 +73,46 @@ impl Settings {
             engine,
             dispatch,
             messages,
+            doctor: Cfg::default(),
+            nodeback: Cfg::default(),
             bad_files: bad,
+            bad_why: why,
         }
     }
 
+    /// Add the doctor's own file (`doctor.*` and `doctor_msg.*` keys) from `dir`.
+    pub fn with_doctor(mut self, dir: &Path) -> Settings {
+        match Cfg::load_why(&dir.join(builtin::CFG_DOCTOR_FILE)) {
+            Ok(c) => self.doctor = c,
+            Err(e) => {
+                self.bad_files.push(builtin::CFG_DOCTOR_FILE.to_string());
+                self.bad_why.push(e);
+            }
+        }
+        self
+    }
+
+    /// Add the Node backup's own file (`nodeback.*` keys and `files.shadow_ledger`) from `dir`.
+    pub fn with_nodeback(mut self, dir: &Path) -> Settings {
+        match Cfg::load_why(&dir.join(builtin::CFG_NODEBACK_FILE)) {
+            Ok(c) => self.nodeback = c,
+            Err(e) => {
+                self.bad_files.push(builtin::CFG_NODEBACK_FILE.to_string());
+                self.bad_why.push(e);
+            }
+        }
+        self
+    }
+
     fn table(&self, key: &str) -> &Cfg {
+        if key == builtin::NODEBACK_LEDGER_KEY {
+            return &self.nodeback;
+        }
         match key.split('.').next() {
+            Some("nodeback") => &self.nodeback,
             Some("dispatch") => &self.dispatch,
             Some("msg") => &self.messages,
+            Some("doctor") | Some("doctor_msg") | Some("doctor_l") => &self.doctor,
             _ => &self.engine,
         }
     }
@@ -146,6 +188,26 @@ impl Settings {
             });
         from_file
             .or_else(|| builtin::list(key).map(|l| l.iter().map(|s| s.to_string()).collect()))
+            .unwrap_or_default()
+    }
+
+    /// One field of a table of lists (`{ decision = ["block"], .. }`): the file's entry, else the built-in table's.
+    pub fn list_for(&self, key: &str, field: &str) -> Vec<String> {
+        let from_file: Option<Vec<String>> = self
+            .table(key)
+            .value(key)
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get(field))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            });
+        from_file
+            .or_else(|| {
+                builtin::list_table(key, field).map(|l| l.iter().map(|s| s.to_string()).collect())
+            })
             .unwrap_or_default()
     }
 

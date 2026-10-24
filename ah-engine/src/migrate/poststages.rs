@@ -1,6 +1,6 @@
 //! Four post-update store stages of `update.js`, run by the engine (roadmap #61 chunk C1): `reader-cursors-import`,
 //! `reader-floor-repair` and `dual-partition-acks` (the reader-cursor repairs of `devswarm-lib/repair.js`) and
-//! `promote-unclaimed` (`devswarm-lib/identity.js`). Each returns the counts Node's `devswarm.js` function returned; the shaping of the
+//! `promote-unclaimed`. Each returns the counts Node's `devswarm.js` function returned; the shaping of the
 //! answer (keys, detail text, the one-time marker) is the stage table's, in `operator/postpull.rs`.
 //!
 //! Every stage is idempotent (a second run finds nothing to do), fail-open (an error is counted and the stage retries next run),

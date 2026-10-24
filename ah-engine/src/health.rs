@@ -1,6 +1,8 @@
 //! Engine health state, all inside the engine's own state dir (`paths::dir()`): the event log, the
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
+pub mod starts;
+
 use crate::config::ClientConfig;
 use crate::defaults;
 use crate::paths;
@@ -109,10 +111,81 @@ fn append_to(p: &std::path::Path, line: &str) -> std::io::Result<()> {
 /// hook prints.
 pub fn log_event(kind: &str, code: &str, detail: &str) {
     let line = event_line(kind, code, detail);
+    let line = match queue_line(line) {
+        None => return,
+        Some(line) => line,
+    };
     if let Err(e) = append_event_line(&line)
         && !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
     {
         crate::discard::harmless(std::io::stderr().write_all(line.as_bytes())); // keep: a closed pipe leaves nobody to tell
+    }
+}
+
+/// What the daemon's log thread receives: a line, or a request to say when everything before it is written.
+enum LogMsg {
+    Line(String),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+static LOG_QUEUE: std::sync::OnceLock<std::sync::mpsc::SyncSender<LogMsg>> = std::sync::OnceLock::new();
+
+/// Hand a line to the log thread; `Some(line)` gives it back when there is no thread (any process but the daemon) or its queue is full,
+/// and the caller then appends it itself.
+fn queue_line(line: String) -> Option<String> {
+    let Some(tx) = LOG_QUEUE.get() else { return Some(line) };
+    match tx.try_send(LogMsg::Line(line)) {
+        Ok(()) => None,
+        Err(std::sync::mpsc::TrySendError::Full(LogMsg::Line(l)) | std::sync::mpsc::TrySendError::Disconnected(LogMsg::Line(l))) => Some(l),
+        Err(_) => None,
+    }
+}
+
+/// The daemon's single log writer: lines are queued by every worker and written in batches (one stat, one lock, one open and one
+/// write per batch instead of per line; with four workers the per-line lock was where they waited). Other processes (hook calls,
+/// one-shot commands) still append directly under the same shared lock, so the trim keeps its guarantee.
+pub fn start_log_thread() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<LogMsg>(defaults::num("health.log_queue") as usize);
+    if LOG_QUEUE.set(tx).is_err() {
+        return;
+    }
+    let batch_max = defaults::num("health.log_batch") as usize;
+    let spawned = std::thread::Builder::new().name("ah-log".into()).spawn(move || {
+        let mut acks: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
+        while let Ok(first) = rx.recv() {
+            let mut text = String::new();
+            let mut n = 0;
+            let mut next = Some(first);
+            while let Some(m) = next.take() {
+                match m {
+                    LogMsg::Line(l) => text.push_str(&l),
+                    LogMsg::Flush(a) => acks.push(a),
+                }
+                n += 1;
+                if n < batch_max {
+                    next = rx.try_recv().ok();
+                }
+            }
+            if !text.is_empty()
+                && let Err(e) = append_event_line(&text)
+                && !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+            {
+                crate::discard::harmless(std::io::stderr().write_all(text.as_bytes())); // keep: a closed pipe leaves nobody to tell
+            }
+            for a in acks.drain(..) {
+                crate::discard::harmless(a.send(())); // keep: the waiter may have given up
+            }
+        }
+    });
+    crate::discard::logged("log_thread_spawn", spawned.map(drop));
+}
+
+/// Wait (bounded) until every line queued so far is on disk: for the daemon's exit and for a reader that must see its own lines.
+pub fn flush_log() {
+    let Some(tx) = LOG_QUEUE.get() else { return };
+    let (ack, done) = std::sync::mpsc::channel();
+    if tx.send(LogMsg::Flush(ack)).is_ok() {
+        crate::discard::harmless(done.recv_timeout(defaults::millis("health.log_flush_ms"))); // keep: a stuck writer must not hold the exit
     }
 }
 
@@ -651,7 +724,9 @@ pub fn add_fail_open_reason(summary: &mut Value, unhealthy: Option<(u64, String)
 /// fallback of a `health.degraded_kinds` kind in the window). Everything is
 /// read from the event log, so it works with the daemon down and survives a restart.
 pub fn summary() -> Value {
-    summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining())
+    let mut summary = summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining());
+    starts::add_summary(&mut summary);
+    summary
 }
 
 /// Every cause of `degraded`, each with how often it happened and when it was first and last seen: a restart (by kind and code) in

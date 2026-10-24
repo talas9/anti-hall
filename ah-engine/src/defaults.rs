@@ -23,6 +23,11 @@
 //!
 //! Where the plugin root is found is documented in [`crate::bootstrap`].
 mod load;
+
+/// The plugin root the snapshot cache at `path` records, if its defaults index still exists.
+pub(crate) fn cache_root(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    load::cache_root(path)
+}
 pub use load::{DefaultsError, Fingerprint, Healed, Layer, Note, Report, fingerprint, heal, heal_file, heal_line, in_checkout, load_from, write_lkg};
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an absent field is the empty value
@@ -618,6 +623,14 @@ pub fn with_prefix(prefix: &str) -> Vec<&'static Entry> {
     match backend().as_ref() {
         Backend::Full(d) => d.entries.iter().copied().filter(|e| e.key.starts_with(prefix)).collect(),
         Backend::Lazy(l) => l.with_prefix(prefix),
+    }
+}
+
+/// Descriptors for one settings.json switch or enum, without loading unrelated defaults in a hook client.
+pub(crate) fn setting_entries(section: &str, name: &str) -> Vec<&'static Entry> {
+    match backend().as_ref() {
+        Backend::Full(d) => d.entries.iter().copied().filter(|e| e.value.str_field("section") == section && e.value.str_field("key") == name).collect(),
+        Backend::Lazy(l) => l.setting_entries(section, name),
     }
 }
 

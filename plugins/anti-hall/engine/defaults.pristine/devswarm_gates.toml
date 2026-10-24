@@ -5,15 +5,15 @@
 
 [devswarm_gates.child_gate_summary]
 doc = "One-line description of the devswarm-child-gate check in the generated reference."
-value = "DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget (port of devswarm-child-gate.js); an archived workspace and the shapes it cannot read exactly defer to the Node gate."
+value = "DevSwarm child Stop gate: makes a child workspace report to its parent (a heartbeat summary) and drain its parent mail before it stops, within a per-kind block budget; an archived workspace and the shapes it cannot read exactly defer to the Node gate."
 
 [devswarm_gates.reply_tracker_summary]
 doc = "One-line description of the devswarm-parent-reply-tracker check in the generated reference."
-value = "DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call (port of devswarm-parent-reply-tracker.js)."
+value = "DevSwarm Primary reply tracker: records a direct `devswarm send` (or a send receipt of this turn) as the Primary's reply to that child, so the Stop gate stops counting the child's question as unanswered; silent for every other Bash call."
 
 [devswarm_gates.child_drain_summary]
 doc = "One-line description of the devswarm-child-drain check in the generated reference."
-value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged (port of devswarm-child-drain.js)."
+value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged."
 
 [devswarm_gates.child_gate_setting]
 doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
@@ -112,7 +112,7 @@ doc = "Stop payload field that is exactly `true` when the model is already conti
 value = "stop_hook_active"
 
 [devswarm_gates.cg_hook]
-doc = "The hook name of the child Stop gate in the shared stop-policy budgets (`<session>|<hook>|<kind>`, hooks/lib/stop-policy.js)."
+doc = "The hook name of the child Stop gate in the shared stop-policy budgets (`<session>|<hook>|<kind>`)."
 value = "child-gate"
 
 [devswarm_gates.cg_policy_dir]
@@ -213,7 +213,7 @@ value = "-?\\d+"
 
 [devswarm_gates.cg_headline]
 doc = "Headline of the child gate block."
-value = "Stop held: finish this DevSwarm workspace duty first."
+value = "workspace reporting or inbox duties are unfinished."
 
 [devswarm_gates.cg_why]
 doc = "Why line of the child gate block."
@@ -277,11 +277,11 @@ value = "store-read-error"
 
 [devswarm_gates.cg_err_mismatch]
 doc = "The once-per-session stderr notice of an own-id drop-attempt record that authenticates against neither the nonce nor the session: {sid}, {row}, {own} (JSON texts)."
-value = "⚠️ anti-hall · devswarm-child-gate: an attempt record for this workspace's own id exists for session {sid} but authenticated against NEITHER this process's nonce nor its session (row nonce prefix {row} vs own nonce prefix {own}) — treated as unauthenticated; this Stop re-blocks as if no attempt was made.\n"
+value = "⚠️ workspace check: the saved attempt is unauthenticated.\nDo instead: report from this workspace again.\n"
 
 [devswarm_gates.cg_err_cap]
 doc = "The once-per-episode stderr notice that the block budget is spent: {max}, {sid} (JSON text)."
-value = "⚠️ anti-hall · devswarm-child-gate: forced-ack cap ({max} per kind) reached for session {sid} — block cap reached for this reason; not blocking again until you send a report. After that the limit starts over, so send a fresh heartbeat before each stop.\n"
+value = "⚠️ workspace check: the stop reminder limit was reached.\nDo instead: send a fresh heartbeat before stopping.\n"
 
 [devswarm_gates.cd_state_dir]
 doc = "Directory of the drain nudge's per-workspace throttle state (last count, last shown time), under the DevSwarm state directory."
@@ -293,7 +293,7 @@ value = 600000
 
 [devswarm_gates.cd_message_unknown]
 doc = "The drain nudge when the child's unread count could not be read (a project or message store the engine cannot read exactly): {cli} (the DevSwarm CLI path), {id} (the workspace id). Shown instead of silence, throttled like the counted nudge."
-value = "⚠️ anti-hall · devswarm-inbox: the unread count of YOUR mailbox could not be read here, so messages addressed to YOU may be waiting. Drain NOW via `{cli} inbox pull {id} && {cli} inbox ack {id}` before continuing; a parent ruling may change what you are building."
+value = "⚠️ inbox check: the unread count is unknown.\nDo instead: read and address your mesh inbox."
 
 [devswarm_gates.cd_unknown_count]
 doc = "The count the drain nudge's throttle state records for an unreadable mailbox (below zero, so it never equals a real count and the nudge repeats only after devswarm_gates.cd_throttle_ms)."
@@ -313,7 +313,7 @@ value = "PostToolUse"
 
 [devswarm_gates.cd_message]
 doc = "The drain nudge: {n} (unread count), {age}, {cli} (the DevSwarm CLI path), {id} (the workspace id)."
-value = "⚠️ anti-hall · devswarm-inbox: {n} unread message(s) addressed to YOU (oldest {age}). Drain NOW via `{cli} inbox pull {id} && {cli} inbox ack {id}` before continuing; a parent ruling may change what you are building."
+value = "⚠️ inbox check: {n} unread messages need attention.\nDo instead: read and address your mesh inbox."
 
 [devswarm_gates.rt_send_action]
 doc = "The `action` of a send line in the DevSwarm CLI output and of a send receipt."
@@ -370,3 +370,7 @@ value = "Save a handover (`/anti-hall:handover`) to `{path}` (never a flat file)
 [devswarm_gates.cg_archived_path_fallback]
 doc = "The handover path named when the canonical one cannot be worked out."
 value = ".anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md"
+
+[devswarm_gates.cg_short_instead]
+doc = "Compact guard message text."
+value = "complete the pending workspace duty."

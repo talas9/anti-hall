@@ -25,8 +25,8 @@ function vaNewestMirrored(root) {
 }
 
 // The first bullet under that version's heading in the mirrored copy's CHANGELOG.md, or null.
-function vaHeadline(home, dir) {
-  var raw = ah.fs.readText(home + '/' + ah.cfg('session.mirror_cache_root') + '/' + dir + '/' + ah.cfg('session.changelog_file'));
+function vaHeadline(cacheRoot, dir) {
+  var raw = ah.fs.readText(cacheRoot + '/' + dir + '/' + ah.cfg('session.changelog_file'));
   if (raw === null) return null;
   var bare = dir.replace(/^v/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), heading = new RegExp('^##\\s+v?' + bare + '\\b');
   var inSection = false, lines = raw.split('\n');
@@ -44,17 +44,17 @@ function vaHeadline(home, dir) {
 function vaIsSemver(v) { return typeof v === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(v.trim().replace(/^v/i, '')); }
 
 // The version the host's plugin registry (installed_plugins.json) names, found the way the update skill finds it; null when none.
-function vaHarnessVersion(home) {
+function vaHarnessVersion(home, owner) {
   var marketplace = home + '/' + ah.cfg('session.marketplace_dir'), override = ah.env.get(ah.cfg('session.marketplace_env'));
   if (override !== null && override !== '' && ah.path.isAbsolute(override) && ah.fs.isDir(override)) marketplace = override;
-  var file = ah.path.resolveAbs(marketplace + '/../..') + '/' + ah.cfg('session.registry_file');
+  var file = owner ? owner.registry : ah.path.resolveAbs(marketplace + '/../..') + '/' + ah.cfg('session.registry_file');
   var size = ah.fs.size(file);
   if (size === null || size > ah.cfgNum('session.registry_max_bytes')) return null;
   var raw = ah.fs.readText(file), data;
   if (raw === null) return null;
   try { data = JSON.parse(raw); } catch (e) { return null; }
   if (!data || typeof data !== 'object') return null;
-  var reg = data.plugins && typeof data.plugins === 'object' ? data.plugins : data, entry = reg[ah.cfg('session.registry_key')];
+  var reg = data.plugins && typeof data.plugins === 'object' ? data.plugins : data, entry = reg[owner ? owner.key : ah.cfg('session.registry_key')];
   if (Array.isArray(entry)) {
     var valid = entry.filter(function (e) { return e && typeof e === 'object' && vaIsSemver(e.version); });
     var pick = valid.find(function (e) { return e.scope === 'user'; }) || valid.find(function (e) { return e.scope === 'project'; }) || valid[0];
@@ -78,14 +78,15 @@ function decide(p, opts) {
   if (raw === null) return 'allow';
   try { var pj = JSON.parse(raw); running = pj.version; } catch (e) { return 'allow'; }
   if (typeof running !== 'string' || !running) return 'allow';
+  var owner = ah.plugin.install(root), cacheRoot = owner ? owner.cache : home + '/' + ah.cfg('session.mirror_cache_root');
   var now = ah.clock.now();
   // CASE 2: a newer release is already mirrored locally: reload only
-  var mirrored = vaNewestMirrored(home + '/' + ah.cfg('session.mirror_cache_root'));
+  var mirrored = vaNewestMirrored(cacheRoot);
   if (mirrored && vaGreater(mirrored, running)) {
     var markFile = ah.cfg('session.reload_mark_file'), marker = sess.readCache(markFile);
     var key = { 'case': ah.cfg('session.case_reload'), sessionId: sessionId, mirrored: mirrored, running: running };
     if (sessionId && marker && sess.alreadyAdvised(marker, key)) return 'allow';
-    var headline = vaHeadline(home, mirrored), harness = vaHarnessVersion(home), registered = true, ahead = false;
+    var headline = vaHeadline(cacheRoot, mirrored), harness = vaHarnessVersion(home, owner), registered = true, ahead = false;
     if (vaIsSemver(harness)) {
       if (vaGreater(mirrored, harness)) registered = false;
       else if (vaGreater(harness, running)) ahead = true;

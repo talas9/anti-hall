@@ -16,6 +16,8 @@ impl Env {
         let dir = std::env::temp_dir().join(format!("ahd-ctxb-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
+        // These cases exercise the configured 85% threshold, independently of the shipped default.
+        std::fs::write(dir.join("home/.anti-hall/settings.json"), r#"{"autoHandover":{"pct":85}}"#).unwrap();
         Env { dir }
     }
 
@@ -40,6 +42,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "ctxbudget-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
             .envs(extra.iter().copied())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
@@ -120,14 +123,14 @@ fn a_prompt_fire_and_the_post_handover_gate_are_answered_by_the_scripts() {
     let tr = e.transcript(180_000); // 90 percent: the fire directive
     let (code, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
     assert_eq!(code, 0);
-    assert!(!out.contains("NODE-") && out.contains("auto-handover: context is at ~90%"), "{out:?}");
+    assert!(!out.contains("NODE-") && out.contains("handover: context is at ~90%"), "{out:?}");
     let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW, ("ANTIHALL_LIMIT_CONSERVE", "on")]);
     assert!(!out.contains("NODE-") && out.contains("limit conservation is active (manual-on)"), "{out:?}");
     // the post-handover gate on a prompt with text (it asks Jev without waiting, as Node does) is answered by the script too
     std::fs::create_dir_all(e.dir.join("home/.anti-hall/auto-handover")).unwrap();
     std::fs::write(e.dir.join("home/.anti-hall/auto-handover/e2e.json"), r#"{"fired":true,"firedPct":85,"lastNagPct":89,"handoverPct":80}"#).unwrap();
     let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[WINDOW]);
-    assert!(!out.contains("NODE-") && out.contains("post-handover new-work gate"), "{out:?}");
+    assert!(!out.contains("NODE-") && out.contains("new work exceeds the post-handover budget"), "{out:?}");
 }
 
 #[test]
@@ -140,7 +143,7 @@ fn a_quiet_stop_a_stop_fire_and_a_relative_transcript_are_answered_by_the_engine
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "nothing to nag about, no compact recommendation");
     let high = e.transcript(180_000);
     let (_, out, err) = e.run("Stop", &map, &stop(&high), &[WINDOW]);
-    assert!(!err.contains("NODEBLOCK-") && format!("{out}{err}").contains("auto-handover: context is at ~90%"), "{out:?} {err:?}");
+    assert!(!err.contains("NODEBLOCK-") && format!("{out}{err}").contains("handover: context is at ~90%"), "{out:?} {err:?}");
     // a relative transcript path is opened from the hook's directory (the payload cwd, /tmp, holds no such file): answered natively
     let (code, _, err) = e.run("Stop", &map, &stop("tr.jsonl"), &[WINDOW]);
     assert_eq!(code, 0, "{err:?}");
@@ -225,5 +228,8 @@ fn a_handover_over_the_read_cap_still_fires_the_stop_fire_natively() {
     let high = e.transcript(180_000);
     let p = serde_json::json!({"session_id":"e2e","hook_event_name":"Stop","stop_hook_active":false,"cwd":proj,"transcript_path":high}).to_string();
     let (code, out, err) = e.run("Stop", &map, &p, &[WINDOW]);
-    assert!(code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("write a handover now"), "{out:?} {err:?}");
+    assert!(
+        code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("Do instead: follow the saved instructions."),
+        "{out:?} {err:?}"
+    );
 }

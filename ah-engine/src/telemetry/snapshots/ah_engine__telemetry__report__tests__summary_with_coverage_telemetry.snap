@@ -1,5 +1,6 @@
 ---
 source: src/telemetry/report.rs
+assertion_line: 468
 expression: "serde_json::to_string_pretty(&v).unwrap()"
 ---
 {
@@ -172,14 +173,20 @@ expression: "serde_json::to_string_pretty(&v).unwrap()"
         "speculation": {
           "breaker_open": 1,
           "cache_hits": 1,
+          "cached": 1,
           "calls": 3,
           "cost_uc": 85,
           "errors": 1,
-          "mean_ms": 536,
+          "mean_ms": 410,
+          "model_calls": 1,
           "modes": {
             "on": 3
           },
           "ms_max": 1200,
+          "skip_reasons": {
+            "http-500": 1
+          },
+          "skipped": 1,
           "verdicts": {
             "added": 1,
             "no-answer": 1,

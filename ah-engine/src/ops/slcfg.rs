@@ -7,8 +7,9 @@
 //! alone, and the write itself is atomic and keeps the file's mode and link. The text and exit code are the scripts' own.
 //!
 //! A file it cannot read or parse is reported the way the scripts report it (the same lines and exit codes; Node's words for an
-//! operating-system error, the engine's own for a parse error) and nothing is written. Migration/update/doctor paths no longer
-//! rewrite or upgrade Claude `settings.statusLine`; they only leave cleanup guidance for `uninstall-statusline`.
+//! operating-system error, the engine's own for a parse error) and nothing is written. The one write left is the persisted-shape
+//! migration of an existing statusLine that runs the retired shell wrapper: it becomes the thin client's command (update and
+//! `doctor --repair`; backup kept, nothing deleted). Nothing installs a new statusLine.
 #![allow(dead_code)] // install-statusline is retired as a no-op; uninstall still uses the cleanup half of this port.
 use super::jsio::{self, join};
 use super::{env_snapshot, home, plugin_root};
@@ -533,17 +534,71 @@ fn legacy_form(cmd: &str) -> bool {
     })
 }
 
-/// Historical persisted-shape migration of an existing install. Retired: migration/update/doctor paths must not write or
-/// upgrade Claude `settings.statusLine`; cleanup is explicit through `uninstall-statusline`.
-fn upgrade_file(path: &str, home: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
-    let _ = (path, home, env, cwd, dry_run);
-    None
+/// A statusLine command the retired shell wrapper runs (`sh "<…/scripts/ah-run.sh>" --stdin statusline [-- "<dispatcher>"]`): the command
+/// starts with `sh ` and holds every text of `hooks_form.statusline_old_form`.
+fn retired_wrapper_form(cmd: &str) -> bool {
+    let parts = defaults::list("hooks_form.statusline_old_form");
+    !parts.is_empty() && cmd.starts_with(t("hooks_form.statusline_old_prefix")) && parts.iter().all(|p| cmd.contains(p))
 }
 
-/// Retired statusline-upgrade sweep. Kept as a no-op so older callers cannot write `settings.statusLine`.
+/// The thin client (`<home>/<paths.base_dir>/<paths.state_dir>/<slcfg.client_bin_rel>`) when it is installed and executable.
+fn client_path(home: &str) -> Option<String> {
+    let p = join(home, &format!("{}/{}/{}", t("paths.base_dir"), t("paths.state_dir"), t("slcfg.client_bin_rel")));
+    (crate::checks::jsport::fsx::is_file(&p) && crate::checks::jsport::fsx::is_executable(&p)).then_some(p)
+}
+
+/// The persisted-shape migration of an existing install: a statusLine that still runs the retired shell wrapper
+/// (`sh …/scripts/ah-run.sh --stdin statusline`; the Node-only form is left alone) becomes the thin
+/// client's command (`hooks_form.statusline_template`). Idempotent (the new form is not an old one), fail-open (anything unclear is
+/// left exactly as it is), it only ever changes that one string, in place in the file's own text, after the one-time backup, and it
+/// deletes nothing. `None`: nothing to do.
+fn upgrade_file(path: &str, home: &str, env: &BTreeMap<String, String>, cwd: &str, dry_run: bool) -> Option<Upgrade> {
+    if jsio::config_write_refused(path, env, cwd) {
+        return None;
+    }
+    let text = read_text(path)?;
+    let settings = parse(&text).ok()?;
+    let old = command_of(settings.get("statusLine"))?.to_string();
+    if !retired_wrapper_form(&old) {
+        return None;
+    }
+    let client = client_path(home).filter(|c| shell_safe(c))?;
+    let new = fill("hooks_form.statusline_template", &[("client", &client)]);
+    if new == old {
+        return None;
+    }
+    let (old_lit, new_lit) = (json::quote(&old), json::quote(&new));
+    let report = |status: &'static str, key: &str| Some(Upgrade { status, msg: fill(key, &[("path", &path), ("command", &new)]) });
+    if text.matches(&old_lit).count() != 1 {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    let next = text.replacen(&old_lit, &new_lit, 1);
+    if parse(&next).ok().is_none_or(|n| command_of(n.get("statusLine")) != Some(new.as_str())) {
+        return report("skipped", "slcfg.mig_ambiguous");
+    }
+    if dry_run {
+        return report("skipped", "slcfg.mig_dry_run");
+    }
+    let backup = path.to_string() + t("slcfg.backup_suffix");
+    if !exists(&backup) && std::fs::copy(path, &backup).is_err() {
+        return report("failed", "slcfg.mig_backup_failed");
+    }
+    match jsio::write_file(path, next.as_bytes()) {
+        Ok(()) => report("fixed", "slcfg.mig_fixed"),
+        Err(_) => report("failed", "slcfg.mig_write_failed"),
+    }
+}
+
+/// The settings files an install may have written: the user's, and the project's own two.
 pub(crate) fn upgrade_commands(home: &str, cwd: &str, env: &BTreeMap<String, String>, dry_run: bool) -> Vec<Upgrade> {
-    let _ = (home, cwd, env, dry_run);
-    Vec::new()
+    let claude = t("slcfg.claude_dir");
+    let mut files = vec![join(home, &format!("{claude}/{}", t("slcfg.settings_file")))];
+    if !cwd.is_empty() {
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.local_file"))));
+        files.push(join(cwd, &format!("{claude}/{}", t("slcfg.settings_file"))));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    files.into_iter().filter(|f| seen.insert(f.clone())).filter_map(|f| upgrade_file(&f, home, env, cwd, dry_run)).collect()
 }
 
 // ---- uninstall --------------------------------------------------------------------------------------------------------

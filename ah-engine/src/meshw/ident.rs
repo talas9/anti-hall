@@ -22,66 +22,162 @@ use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-/// The engine cannot reproduce Node's answer here without running what Node runs; the verb goes to Node.
+/// The reason a resolution stopped: a refusal that is the verb's own answer ([`refuse`]), a store failure the verb prints as its
+/// error ([`Defer::reason`]) or a case the caller holds and retries. Nothing is ever handed to Node; the name is historical.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Defer(pub String);
 
+impl Defer {
+    /// The carrier of a stopped resolution with its reason text (every reason is logged or printed by the caller).
+    pub fn reason(why: impl Into<String>) -> Self {
+        Self(why.into())
+    }
+}
+
 /// Shorthand for a deferral with a reason code (the code names a `mesh_write.defer_*` setting's purpose).
 pub fn defer<T>(code: &str) -> Result<T, Defer> {
-    Err(Defer(code.to_string()))
+    Err(Defer::reason(code))
+}
+
+/// JavaScript `String(v)` of a JSON value: `null` is "null", arrays join their elements with a comma (null as empty), an object is
+/// "[object Object]".
+pub fn js_to_string(v: &OVal) -> String {
+    match v {
+        OVal::Null => "null".to_string(),
+        OVal::Bool(b) => b.to_string(),
+        OVal::Num(n) => crate::checks::jsport::num::to_js_string(*n),
+        OVal::Str(s) => s.clone(),
+        OVal::Arr(a) => a.iter().map(|e| if matches!(e, OVal::Null) { String::new() } else { js_to_string(e) }).collect::<Vec<_>>().join(","),
+        OVal::Obj(_) => "[object Object]".to_string(),
+    }
+}
+
+/// A refusal of the verb that no later code can undo (Node returns it as the verb's result with exit 2), carried up through the
+/// deferral channel: the reason is `mesh_write.refusal_prefix` and the refusal's JSON body (without the `action`, which the front
+/// door adds from the verb's name). The front door prints it with `mesh_write.exit_refused`; it is never a deferral to Node.
+pub fn refuse<T>(body: &str) -> Result<T, Defer> {
+    Err(Defer::reason(format!("{}{body}", defaults::text("mesh_write.refusal_prefix"))))
+}
+
+/// The verb's own refusal for a store, registry or table that cannot be opened, read or written (Node throws there too): exit 2,
+/// reason `store-unavailable`, `what` the `mesh_write.what_*` key naming the thing and `detail` the error's own text.
+pub fn unavailable<T>(what_key: &str, detail: &dyn std::fmt::Display) -> Result<T, Defer> {
+    let mut body = common_obj();
+    body.push(("ok".to_string(), OVal::Bool(false)));
+    body.push(("reason".to_string(), OVal::Str(defaults::text("mesh_write.reason_store_unavailable").to_string())));
+    let what = defaults::text(what_key);
+    body.push(("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_store_unavailable", &[("what", &what), ("detail", detail)]))));
+    refuse(&OVal::Obj(body).stringify())
+}
+
+fn common_obj() -> Vec<(String, OVal)> {
+    Vec::new()
+}
+
+/// [`refuse`] for a failure that is the verb's own answer: `{"ok":false,"error":<text of `msg_key` with `vars`>}`.
+pub fn refuse_text<T>(msg_key: &str, vars: &[(&str, &str)]) -> Result<T, Defer> {
+    let mut o = crate::meshw::common::Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("error", OVal::Str(defaults::render(msg_key, &vars.iter().map(|(k, v)| (*k, v as &dyn std::fmt::Display)).collect::<Vec<_>>())));
+    refuse(&o.done().stringify())
+}
+
+/// The JSON body of a refusal carried by [`refuse`]; `None` for any other deferral.
+pub fn refusal_body(d: &Defer) -> Option<&str> {
+    d.0.strip_prefix(defaults::text("mesh_write.refusal_prefix"))
 }
 
 /// Result of a resolution that may defer.
 pub type R<T> = Result<T, Defer>;
 
 /// The bytes of a mesh file a path names (a descriptor's inbox or cursor file, a harness session record), read the way Node's
-/// `readFileSync` in a try/catch reads it where that is safe: `Ok(None)` when it is absent, a directory or cannot be opened (Node's
-/// catch), the bytes of a regular file of at most `mesh_write.file_read_max_bytes`, and a deferral for anything else: a FIFO, socket or
-/// device (a read could block a worker thread for good) or a file over the cap (an unbounded allocation). Opened non-blocking, and
-/// read no further than the cap, so a file that grows or is swapped after the check cannot do either.
+/// `readFileSync` in a try/catch reads it: `Ok(None)` when it is absent, a directory or cannot be opened (Node's catch), and the
+/// bytes of a regular file otherwise. A regular file past `mesh_write.file_read_max_bytes` (the soft limit) is still read, counted
+/// and logged; one past `mesh_write.file_read_hard_max_bytes` (Node's own string limit, where its read fails into the same catch)
+/// is read as absent, counted and logged. Opened non-blocking, and read no further than the hard limit, so a file that grows or is
+/// swapped after the check cannot make it allocate without bound.
+///
+/// A FIFO, socket or device is the one refusal: Node's read of a FIFO blocks for good (a socket or device fails), so there is no
+/// answer of Node's to copy, and a mutating caller must never open such a path to append. It is the verb's own refusal (exit 2,
+/// `not-a-regular-file`); [`read_or_skip`] is for the callers that carry on without the file.
 pub fn read_bounded(path: &Path) -> R<Option<Vec<u8>>> {
+    read_with_site(path, defaults::text("mesh_write.site_read_bounded"))
+}
+
+/// Count and log a mesh file that was skipped or read past a limit (`mesh_descriptor_read_skipped`), with the site and the reason.
+fn note_read_limit(path: &Path, site: &str, reason: &str) {
+    crate::metrics::bump("mesh_descriptor_read_skipped", &[("site", site), ("reason", reason)]);
+    crate::debug::violated(
+        "meshw",
+        &defaults::render("mesh_write.msg_descriptor_read_skipped", &[("site", &site), ("reason", &reason), ("path", &path.display())]),
+    );
+}
+
+/// The verb's own refusal for a path that is a FIFO, socket or device (a read would block for good; Node's blocks too): exit 2,
+/// reason `not-a-regular-file`.
+fn not_regular<T>(path: &Path) -> R<T> {
+    let body = vec![
+        ("ok".to_string(), OVal::Bool(false)),
+        ("reason".to_string(), OVal::Str(defaults::text("mesh_write.read_why_not_regular").to_string())),
+        ("error".to_string(), OVal::Str(defaults::render("mesh_write.msg_not_regular", &[("path", &path.display())]))),
+    ];
+    refuse(&OVal::Obj(body).stringify())
+}
+
+fn read_with_site(path: &Path, site: &str) -> R<Option<Vec<u8>>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
-    let cap = defaults::num("mesh_write.file_read_max_bytes");
+    let soft = defaults::num("mesh_write.file_read_max_bytes");
+    let hard = defaults::num("mesh_write.file_read_hard_max_bytes").max(soft);
     let Ok(m) = std::fs::metadata(path) else { return Ok(None) };
     if m.is_dir() {
         return Ok(None);
     }
     if !m.is_file() {
-        return defer("not-a-regular-file");
+        return not_regular(path);
     }
-    if m.len() > cap {
-        return defer("file-over-cap");
+    if m.len() > hard {
+        note_read_limit(path, site, defaults::text("mesh_write.read_why_over_hard"));
+        return Ok(None);
     }
     let Ok(f) = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path) else { return Ok(None) };
     if !f.metadata().is_ok_and(|m| m.is_file()) {
-        return defer("not-a-regular-file");
+        return not_regular(path);
     }
     let mut buf = Vec::new();
-    if f.take(cap.saturating_add(1)).read_to_end(&mut buf).is_err() {
+    if f.take(hard.saturating_add(1)).read_to_end(&mut buf).is_err() {
         return Ok(None);
     }
-    if buf.len() as u64 > cap {
-        return defer("file-over-cap");
+    if buf.len() as u64 > hard {
+        note_read_limit(path, site, defaults::text("mesh_write.read_why_over_hard"));
+        return Ok(None);
+    }
+    if buf.len() as u64 > soft {
+        note_read_limit(path, site, defaults::text("mesh_write.read_why_over_soft"));
     }
     Ok(Some(buf))
 }
 
 /// [`read_bounded`] for a verb that carries on without the file: the bytes, or `None` when the file is absent, unreadable or one a
-/// read must not touch (a FIFO, socket, device or a file over the cap). The last two are counted (`mesh_descriptor_read_skipped`)
+/// read must not touch (a FIFO, socket or device, or a file past the hard limit). Those, and a read past the soft limit, are counted
 /// and logged with the site and the reason, so a skipped file is seen instead of read as an empty one in silence.
 pub fn read_or_skip(path: &Path, site: &str) -> Option<Vec<u8>> {
-    match read_bounded(path) {
+    match read_with_site(path, site) {
         Ok(bytes) => bytes,
-        Err(Defer(reason)) => {
-            crate::metrics::bump("mesh_descriptor_read_skipped", &[("site", site), ("reason", reason.as_str())]);
-            crate::debug::violated(
-                "meshw",
-                &defaults::render("mesh_write.msg_descriptor_read_skipped", &[("site", &site), ("reason", &reason), ("path", &path.display())]),
-            );
+        Err(_) => {
+            note_read_limit(path, site, defaults::text("mesh_write.read_why_not_regular"));
             None
         }
     }
+}
+
+/// `path.resolve(p)` for any path: a relative one is taken against the working directory, as Node's `process.cwd()` is.
+pub fn abs_from_cwd(p: &str) -> String {
+    if p.starts_with('/') {
+        return resolve_abs(p);
+    }
+    let cwd = std::env::current_dir().ok().and_then(|c| c.to_str().map(str::to_string)).unwrap_or_else(|| "/".to_string());
+    resolve_abs(&format!("{cwd}/{p}"))
 }
 
 /// `path.resolve(p)` for an absolute path.
@@ -160,10 +256,7 @@ pub fn mesh_id_for_real_path(p: &str) -> String {
 
 /// `worktreeRealPath(wt)`: its real path, else `path.resolve(wt)`.
 pub fn worktree_real_path(wt: &str) -> R<String> {
-    if !wt.starts_with('/') {
-        return defer("relative-path");
-    }
-    Ok(realpath(wt).unwrap_or_else(|| resolve_abs(wt)))
+    Ok(realpath(wt).unwrap_or_else(|| abs_from_cwd(wt)))
 }
 
 /// `primaryWorkspaceId(wt)`.
@@ -176,10 +269,7 @@ pub fn raw_path_mesh_id(p: &str) -> R<Option<String>> {
     if p.is_empty() {
         return Ok(None);
     }
-    if !p.starts_with('/') {
-        return defer("relative-path");
-    }
-    Ok(Some(mesh_id_for_real_path(&resolve_abs(p))))
+    Ok(Some(mesh_id_for_real_path(&abs_from_cwd(p))))
 }
 
 struct GitDir {
@@ -280,14 +370,15 @@ static SUPER_CACHE: std::sync::Mutex<Option<SuperCache>> = std::sync::Mutex::new
 
 /// `gitSuperproject(dir)`: the real path of the superproject checkout git names for the nested checkout `root` (a `.git`
 /// directory, or a `.git` file layout the disk does not classify, below another repository), `None` for none. A git call that
-/// fails or times out, or an answer whose path does not resolve, is [`Defer`]: Node reads both as "uncertain".
-fn git_superproject(root: &str) -> R<Option<String>> {
+/// fails or times out, or an answer whose path does not resolve, is `None` too and sets `uncertain` (Node's `c.uncertain`: the
+/// answer is "no superproject", flagged as not trustworthy, and is not cached so the next call asks again).
+fn git_superproject(root: &str, uncertain: &std::cell::Cell<bool>) -> Option<String> {
     let ttl = defaults::millis("mesh_write.super_cache_ttl_ms");
     if let Ok(g) = SUPER_CACHE.lock()
         && let Some((ans, at)) = g.as_ref().and_then(|m| m.get(root))
         && at.elapsed() < ttl
     {
-        return Ok(ans.clone());
+        return ans.clone();
     }
     let argv: Vec<String> = defaults::list("codex_handover.argv_super").iter().map(|a| a.replace("{root}", root)).collect();
     let out = crate::checks::jsport::gitrun::git_scrubbed(
@@ -297,14 +388,20 @@ fn git_superproject(root: &str) -> R<Option<String>> {
         &crate::reqenv::RequestEnv::default(),
         &defaults::list("codex_handover.git_scrub_env"),
     );
-    let Some(out) = out else { return defer("git-superproject") };
+    let Some(out) = out else {
+        uncertain.set(true);
+        return None;
+    };
     let s = crate::checks::guardkit::text::js_trim(&out);
     let ans = if s.is_empty() {
         None
     } else {
         match realpath(s) {
             Some(r) => Some(r),
-            None => return defer("git-superproject"),
+            None => {
+                uncertain.set(true);
+                return None;
+            }
         }
     };
     if let Ok(mut g) = SUPER_CACHE.lock() {
@@ -317,7 +414,7 @@ fn git_superproject(root: &str) -> R<Option<String>> {
         }
         m.insert(root.to_string(), (ans.clone(), std::time::Instant::now()));
     }
-    Ok(ans)
+    ans
 }
 
 fn under(child: &str, parent: &str) -> bool {
@@ -339,6 +436,9 @@ pub struct Ctx {
     pub main_worktree: Option<String>,
     /// `repoKeyForCommonDir(commonDir)`.
     pub repo_key: Option<String>,
+    /// A superproject query git could not answer (failed, timed out, or an unresolvable path) read as "none": the keys above are
+    /// Node's, but not confirmed (`c.uncertain`).
+    pub uncertain: bool,
 }
 
 fn null_ctx(kind: &str) -> Ctx {
@@ -347,10 +447,7 @@ fn null_ctx(kind: &str) -> Ctx {
 
 /// `resolveContext(cwd, { memo: false, superCache: true, missingPath })`; `ancestor` = `missingPath: 'ancestor'`.
 pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
-    if !cwd.starts_with('/') {
-        return defer("relative-path");
-    }
-    let abs = resolve_abs(cwd);
+    let abs = abs_from_cwd(cwd);
     let cwd_real = match realpath(&abs) {
         Some(r) => r,
         None => {
@@ -375,7 +472,9 @@ pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
     if under(&cwd_real, &info.g) {
         return Ok(null_ctx(defaults::text("mesh_write.kind_non_git")));
     }
-    // superOf(root, ri): Some(Some(p)) a superproject, Some(None) none, Err when only git can tell
+    // a git call that failed or timed out reads as "no superproject" and flags the whole resolution (Node's `c.uncertain`)
+    let uncertain = std::cell::Cell::new(false);
+    // superOf(root, ri): a superproject, or none; git is asked only where the disk cannot tell
     let super_of = |root: &str, ri: &GitDir| -> R<Option<String>> {
         let Some(p) = nearest_dot_git(&dirname(root)) else { return Ok(None) };
         if p == root {
@@ -395,7 +494,7 @@ pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
                 return Ok(None);
             }
         }
-        git_superproject(root)
+        Ok(git_superproject(root, &uncertain))
     };
     let mut root = t.clone();
     let t = t.clone();
@@ -431,6 +530,7 @@ pub fn resolve_context(cwd: &str, ancestor: bool) -> R<Ctx> {
         main_worktree: Some(dirname(&common)),
         repo_key: Some(repo_key_for_common_dir(&common)),
         common_dir: Some(common),
+        uncertain: uncertain.get(),
     })
 }
 
@@ -477,7 +577,7 @@ pub fn canonical_mesh_id(p: &str) -> R<Option<String>> {
 /// The process environment the verb runs with.
 pub type Env = HashMap<String, String>;
 
-fn env_nonempty<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
+pub(crate) fn env_nonempty<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
     env.get(name).map(String::as_str).filter(|s| !s.is_empty())
 }
 
@@ -620,10 +720,7 @@ fn norm_path(p: &str) -> R<Option<String>> {
     if p.is_empty() {
         return Ok(None);
     }
-    if !p.starts_with('/') {
-        return defer("relative-path");
-    }
-    let r = resolve_abs(p);
+    let r = abs_from_cwd(p);
     Ok(Some(realpath(&r).unwrap_or(r)))
 }
 
@@ -990,6 +1087,112 @@ mod tests {
         std::fs::write(dir.join("ok.json"), b"{}").unwrap();
         assert_eq!(read_or_skip(&dir.join("ok.json"), "test"), Some(b"{}".to_vec()), "a regular file reads as before");
         assert_eq!(read_or_skip(&dir.join("none.json"), "test"), None, "an absent file is Node's caught read");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "protocol.file.allow=always", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&st.stderr));
+    }
+
+    /// A checkout inside a submodule keys the mesh on its superproject, so every verb that resolves a context may run there:
+    /// the context's key is the superproject's, and its kind only labels the nesting (2026-10-23: four verbs deferred on the label).
+    #[test]
+    fn a_submodule_checkout_resolves_to_its_superprojects_key() {
+        let root = scratch("submodule");
+        let (sup, lib) = (root.join("sup"), root.join("lib"));
+        std::fs::create_dir_all(&sup).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        git(&lib, &["init", "-q", "-b", "main"]);
+        std::fs::write(lib.join("f"), "x").unwrap();
+        git(&lib, &["add", "f"]);
+        git(&lib, &["commit", "-q", "-m", "l"]);
+        git(&sup, &["init", "-q", "-b", "main"]);
+        git(&sup, &["submodule", "add", "-q", lib.to_str().unwrap(), "vendor/lib"]);
+        git(&sup, &["commit", "-q", "-m", "s"]);
+        let sup_s = sup.canonicalize().unwrap().to_str().unwrap().to_string();
+        let sub = format!("{sup_s}/vendor/lib");
+        let outer = resolve_context(&sup_s, true).unwrap();
+        let inner = resolve_context(&sub, true).unwrap();
+        assert!(inner.kind.starts_with(defaults::text("mesh_write.kind_submodule_prefix")), "{}", inner.kind);
+        assert_eq!(inner.repo_key, outer.repo_key);
+        assert!(inner.repo_key.is_some());
+        crate::discard::harmless(std::fs::remove_dir_all(root)); // keep: cleanup of a scratch directory
+    }
+
+    // ---- the cases that used to hand the verb to Node (2026-10-23, #171) ----
+
+    /// Node's `path.resolve` takes a relative path against the working directory; no verb defers on it.
+    #[test]
+    fn a_relative_path_is_taken_against_the_working_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        let want = mesh_id_for_real_path(&format!("{}/rel-dir", cwd.display()));
+        assert_eq!(raw_path_mesh_id("rel-dir").unwrap(), Some(want.clone()));
+        assert_eq!(worktree_real_path("rel-dir/../rel-dir").unwrap(), format!("{}/rel-dir", cwd.display()));
+        assert_eq!(primary_workspace_id("rel-dir").unwrap(), want);
+        assert_eq!(abs_from_cwd("/a/b/../c"), "/a/c");
+        let ctx = resolve_context("rel-dir-that-does-not-exist", false).unwrap();
+        assert_eq!(ctx.kind, defaults::text("mesh_write.kind_deleted"));
+    }
+
+    /// An empty `cwd` is the process's own (`resolveContext` takes `process.cwd()` for it).
+    #[test]
+    fn an_empty_cwd_resolves_from_the_process_directory() {
+        let c = resolve_context("", true).unwrap();
+        let here = resolve_context(std::env::current_dir().unwrap().to_str().unwrap(), true).unwrap();
+        assert_eq!(c, here);
+    }
+
+    /// A resolution git was never asked about is not uncertain.
+    #[test]
+    fn a_plain_checkout_resolves_with_certainty() {
+        let root = scratch("certain");
+        git(&root, &["init", "-q", "-b", "main"]);
+        let c = resolve_context(root.canonicalize().unwrap().to_str().unwrap(), true).unwrap();
+        assert!(c.repo_key.is_some() && !c.uncertain);
+        crate::discard::harmless(std::fs::remove_dir_all(root)); // keep: cleanup of a scratch directory
+    }
+
+    /// A file past the soft limit is still read (counted and logged); a path past the hard limit reads as absent, as Node's failed read does.
+    #[test]
+    fn a_file_between_the_soft_and_hard_limit_is_read_and_one_past_the_hard_limit_is_absent() {
+        let dir = scratch("limits");
+        let soft = dir.join("soft.ndjson");
+        std::fs::File::create(&soft).unwrap().set_len(defaults::num("mesh_write.file_read_max_bytes") + 1).unwrap();
+        assert_eq!(read_bounded(&soft).unwrap().map(|b| b.len() as u64), Some(defaults::num("mesh_write.file_read_max_bytes") + 1));
+        let hard = dir.join("hard.ndjson");
+        std::fs::File::create(&hard).unwrap().set_len(defaults::num("mesh_write.file_read_hard_max_bytes") + 1).unwrap();
+        assert_eq!(read_bounded(&hard).unwrap(), None);
+        assert_eq!(read_or_skip(&hard, "test"), None);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// A store that cannot be opened or written is the verb's own refusal (exit 2, `store-unavailable`), not a hand-over.
+    #[test]
+    fn an_unavailable_store_is_a_worded_refusal() {
+        let err = unavailable::<()>("mesh_write.what_store", &"disk full").unwrap_err();
+        let body = refusal_body(&err).unwrap();
+        assert!(body.contains("store-unavailable") && body.contains("the mesh store is unavailable (disk full)"), "{body}");
+        assert_eq!(js_to_string(&OVal::Arr(vec![OVal::Num(1.0), OVal::Null, OVal::Str("a".into())])), "1,,a");
+        assert_eq!(js_to_string(&OVal::Obj(vec![])), "[object Object]");
+    }
+
+    /// A FIFO read as a mesh file is the verb's refusal (exit 2, `not-a-regular-file`), and returns at once.
+    #[test]
+    fn a_fifo_is_a_clean_refusal() {
+        let dir = scratch("fifo-refusal");
+        let f = dir.join("in.ndjson");
+        fifo(&f);
+        let g = f.clone();
+        let err = within("read_bounded", move || read_bounded(&g)).unwrap_err();
+        let body = refusal_body(&err).unwrap();
+        assert!(body.contains("not-a-regular-file") && body.contains("in.ndjson"), "{body}");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
 }

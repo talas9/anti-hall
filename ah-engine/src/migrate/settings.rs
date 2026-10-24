@@ -599,6 +599,37 @@ fn with_lock(ctx: &Ctx, f: impl FnOnce() -> Outcome) -> Outcome {
     r
 }
 
+/// The override `settings.json` holds for one key (flat or dotted-nested form), `None` when it holds none.
+pub(crate) fn file_value(ctx: &Ctx, section: &str, key: &str) -> Option<J> {
+    lookup(load(ctx).get(section), key).cloned()
+}
+
+/// Write (`Some`) or drop (`None`) the `settings.json` override of one key as it is, under the settings lock; the caller has
+/// validated the value. Every other key stays as it is. The web API's audited writes and their undo go through this.
+pub(crate) fn write_raw(ctx: &Ctx, section: &str, key: &str, value: Option<J>) -> Outcome {
+    with_lock(ctx, || {
+        backup_corrupt(ctx);
+        let store = load(ctx);
+        let mut next = store.clone();
+        let mut members: Vec<(String, J)> = match store.get(section) {
+            Some(J::Obj(m)) => m.clone(),
+            _ => Vec::new(),
+        };
+        members.retain(|(k, _)| k != key);
+        if let Some(v) = value {
+            members.push((key.to_string(), v));
+        }
+        if members.is_empty() {
+            if let J::Obj(m) = &mut next {
+                m.retain(|(k, _)| k != section);
+            }
+        } else {
+            next.set(section, J::Obj(members));
+        }
+        write_store(ctx, &next)
+    })
+}
+
 fn write_store(ctx: &Ctx, next: &J) -> Outcome {
     let file = settings_path(ctx);
     if let Some(dir) = file.parent()

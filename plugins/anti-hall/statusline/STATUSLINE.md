@@ -20,7 +20,7 @@ This directory remains for two reasons:
 If an older install still has an anti-hall `statusLine`, run:
 
 ```sh
-sh scripts/ah-run.sh uninstall-statusline [--user|--project] [--purge-base]
+ah-engine uninstall-statusline [--user|--project] [--purge-base]
 ```
 
 The uninstaller tries these cleanup strategies in order:

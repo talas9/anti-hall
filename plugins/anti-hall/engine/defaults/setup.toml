@@ -109,7 +109,7 @@ value = "no plugin tree to read: pass --root <plugin directory>, or run it where
 doc = "Printed by the helper commands when the home directory variable is not set, because their files live under it."
 value = "the home directory is not set"
 
-# ---- harvest (scripts/harvest-debt.js) ---------------------------------------------------------------------------------
+# ---- harvest ---------------------------------------------------------------------------------
 
 [setup.harvest_leaders]
 doc = "The comment leaders a debt marker may follow, in the order the Node pattern tries them."
@@ -197,7 +197,7 @@ value = "No anti-hall debt markers found."
 doc = "The title line of the `harvest` text table."
 value = "anti-hall debt markers"
 
-# ---- capability-scan (scripts/capability-scan.js) ----------------------------------------------------------------------
+# ---- capability-scan ----------------------------------------------------------------------
 
 [setup.cap_listing_fn]
 doc = "The name of the installer export that lists every installed unit; an installer that exports it is checked with it (the per-worktree readback contract)."
@@ -217,9 +217,9 @@ value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/companion/{file}"'
 
 [setup.cap_how_migrations]
 doc = "How pending state migrations are applied."
-value = 'node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/scripts/migrate-state.js"'
+value = "~/.anti-hall/ah-engine/bin/ah-engine migrate"
 
-# ---- briefing (scripts/briefing.js) ------------------------------------------------------------------------------------
+# ---- briefing ------------------------------------------------------------------------------------
 
 [setup.brief_registry_file]
 doc = "The per-hook registry under hooks/ that the briefing groups by event."
@@ -305,9 +305,9 @@ value = "migration (auto-safe: idempotent, non-destructive, single-consumer-lock
 
 [setup.brief_doctor_line]
 doc = "The last line of the briefing."
-value = "Health check (do the guards actually fire?): node hooks/doctor.js"
+value = "Health check (do the guards actually fire?): ah-engine doctor"
 
-# ---- jev-setup (scripts/jev-setup.js) ----------------------------------------------------------------------------------
+# ---- jev-setup ----------------------------------------------------------------------------------
 
 [setup.known_integrations]
 doc = "The integrations `jev-setup status` always lists, in the order the Node script lists them (every one has a settings key)."
@@ -519,7 +519,7 @@ value = "set-key --role fallback: no fallback transport is configured — run `e
 
 [setup.msg_setkey_empty]
 doc = "Why `set-key` refused: nothing arrived on stdin."
-value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | node jev-setup.js set-key`"
+value = "set-key: no key received on stdin — pipe the key in, e.g. `printf '%s' \"$KEY\" | ah-engine jev-setup set-key`"
 
 [setup.msg_setkey_nonprintable]
 doc = "Why `set-key` refused: the key holds a control character."
@@ -731,8 +731,8 @@ doc = "The two ways an installer lists the function among its exports (a shortha
 value = ["{name},", "{name}:"]
 
 [setup.cap_companion_dir]
-doc = "The directory of a plugin tree that holds the companion installers."
-value = "companion"
+doc = "The directory that holds the companion installers, relative to the plugin root."
+value = "../anti-hall-node/companion"
 
 [setup.cap_installer_prefix]
 doc = "What a companion installer's file name starts with."
@@ -846,7 +846,7 @@ doc = "The DevSwarm store module, relative to the plugin root."
 value = "../anti-hall-node/companion/lib/devswarm-store.js"
 
 [setup.brief_cli_file]
-doc = "The DevSwarm command-line script, relative to the plugin root."
+doc = "The old Node DevSwarm command-line script, relative to the plugin root. Read only to list its documented subcommands in the briefing; absent once the Node tree is retired (the briefing then lists none)."
 value = "../anti-hall-node/scripts/devswarm.js"
 
 [setup.brief_companion_dir]

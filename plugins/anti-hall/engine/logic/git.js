@@ -104,12 +104,7 @@ function gitSettingOn(key) { return ah.settings.bool(key); }
 // gm(opts) -> the block text in the shared layout (hooks/lib/block-message.js, guard git-guard).
 function gitClean(s) { return String(s).split(/\s+/).filter(Boolean).join(' '); }
 function gm(o) {
-  const lines = [ah.cfg('git.block_emoji') + ah.cfg('git.block_mark') + gitClean(o.what)];
-  if (o.why) lines.push(ah.cfg('git.label_why') + gitClean(o.why));
-  if (o.instead) lines.push(ah.cfg('git.label_instead') + gitClean(o.instead));
-  if (o.allowed) lines.push(ah.cfg('git.label_allowed') + gitClean(o.allowed));
-  if (o.override) lines.push(ah.cfg('git.label_override') + gitClean(o.override));
-  return lines.join('\n');
+  return text.message('block', ah.cfg('git.guard_name'), o);
 }
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
@@ -117,9 +112,7 @@ function gmKey(key, args) {
   return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
 }
 function skipCmd(k) {
-  // the engine's executable DevSwarm shim under the home (it runs the engine's own `skip`; no Node is involved)
-  const cli = text.render(ah.cfg('devswarm_role.engine_cli'), { home: ah.env.get(ah.cfg('env.home')) || '' });
-  return text.render(ah.cfg('git.skip_command'), { script: cli.split("'").join("'\\''"), key: k });
+  return text.render(ah.cfg('git.skip_command'), { key: k });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -206,7 +199,18 @@ function splitSegmentsUncached(cmd) {
   const n = cmd.length;
   function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
   function flushWithSubst() { cur += ' ' + CMDSUBST_SENTINEL + ' '; flush(); }
+  // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
+  // (a shell reading it is scanned by stdinScriptVerdict, a git message by the heredoc-body scans); same walk as the command check
+  let heredoc = null;
   while (i < n) {
+    if (heredoc && i >= heredoc.lineEnd) {
+      flush();
+      i = Math.max(i, heredoc.end);
+      heredoc = null;
+      inSingle = false;
+      inDouble = false;
+      continue;
+    }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
     if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
@@ -224,6 +228,17 @@ function splitSegmentsUncached(cmd) {
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
     if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+    // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
+    // is two segments); a second `<<` on the same line is left as text, so its body is still scanned
+    if (c === '<' && c2 === '<' && !heredoc) {
+      const parsed = shellScan.parseHeredocAt(cmd, i);
+      if (parsed) {
+        cur += cmd.slice(i, parsed.openerEnd);
+        i = parsed.openerEnd;
+        if (parsed.lineEnd !== undefined) heredoc = parsed;
+        continue;
+      }
+    }
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
     if (c === '|') {
@@ -1926,7 +1941,11 @@ function expandAlias(args, sub, rest, dir, env) {
 }
 
 function annotate(msg, note) {
-  return String(msg).replace(new RegExp('^(\\S+' + gitEsc(ah.cfg('git.block_mark')) + ')'), '$1' + note + ' ');
+  const guard = ah.cfg('git.guard_name');
+  const prefix = ah.cfg('guardkit.icons').block + ah.cfg('guardkit.msg_head') + (ah.cfg('guardkit.plain_names')[guard] || guard) + ': ';
+  if (!String(msg).startsWith(prefix)) return String(msg);
+  const lines = String(msg).slice(prefix.length).split('\n');
+  return text.message('block', guard, { what: lines[0], instead: (lines[1] || '').replace(/^Do instead: /, ''), extra: [note] });
 }
 
 function aliasBodyCommand(v) {
@@ -2474,6 +2493,51 @@ function backstopEnv(cmd) {
   return env;
 }
 
+// The command with the BODY of every terminated heredoc removed, unless a shell reads it (`bash <<EOF`, `cat <<EOF | sh`, `eval`, ...):
+// the body of any other consumer is text, not a command of this chain, so the line-by-line backstop must not read it as one. A shell
+// body is scanned by stdinScriptVerdict; an unterminated heredoc keeps its tail (stricter, as in the command check).
+function withoutPlainHeredocBodies(cmd) {
+  if (cmd.indexOf('<<') === -1) return cmd;
+  let out = '', last = 0, i = 0, inSingle = false, inDouble = false;
+  const n = cmd.length;
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { i += 2; continue; }
+      if (c === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = true; i++; continue; }
+    if (c === '<' && c2 === '<') {
+      const parsed = shellScan.parseHeredocAt(cmd, i);
+      if (parsed) {
+        if (parsed.terminated && parsed.lineEnd !== undefined && !heredocOpenerLineHasShell(cmd, i, parsed.lineEnd)) {
+          out += cmd.slice(last, parsed.lineEnd + 1);
+          last = parsed.end;
+        }
+        i = parsed.end;
+        if (!parsed.terminated) break;
+        continue;
+      }
+    }
+    i++;
+  }
+  return last === 0 ? cmd : out + cmd.slice(last);
+}
+
+function heredocOpenerLineHasShell(cmd, openerAt, lineEnd) {
+  const line = cmd.slice(cmd.lastIndexOf('\n', openerAt - 1) + 1, lineEnd);
+  for (const seg of splitSegments(line)) {
+    const ev = effectiveVerb(tokenize(seg));
+    if (ev && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) return true;
+  }
+  return false;
+}
+
 function gitBackstopLines(cmd, d, heredocBodies, cwd) {
   const benv = backstopEnv(cmd);
   const joined = cmd.replace(/\\\r?\n/g, ' ');
@@ -2498,6 +2562,7 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
 
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
   const benv = backstopEnv(cmd);
+  const scanned = withoutPlainHeredocBodies(cmd);
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
   if (d < 3) {
     for (const payload of pipedEchoShellPayloads(cmd)) {
@@ -2505,7 +2570,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       if (hit) return hit;
     }
   }
-  for (const raw of backstopPieces(cmd)) {
+  for (const raw of backstopPieces(scanned)) {
     const trimmed = raw.replace(/^\s+/, '');
     const variants = [trimmed];
     if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
@@ -2533,7 +2598,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       }
     }
   }
-  return gitBackstopLines(cmd, d, heredocBodies, cwd);
+  return gitBackstopLines(scanned, d, heredocBodies, cwd);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

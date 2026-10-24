@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn the_shipped_table_is_valid_and_complete() {
         JevSettings::validate_table().unwrap();
-        assert_eq!(known_integrations().len(), 21);
+        assert_eq!(known_integrations().len(), 25);
         assert_eq!(default_mode("dispatchTier"), Some(Mode::On));
     }
 }

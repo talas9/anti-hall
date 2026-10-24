@@ -176,10 +176,8 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         )
     }
     fn wrapper_cmd(&self) -> Command {
-        let wrapper = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall/hooks/ah-hook.sh");
-        let mut c = Command::new("sh");
-        c.arg(wrapper)
-            .arg("PreToolUse")
+        let mut c = Command::new(common::launcher_bin());
+        c.arg("PreToolUse")
             .arg("--tool-from-payload")
             .env("AH_WRAPPER_TEST", "1")
             .env("REAL_AH_ENGINE_BIN", BIN)
@@ -190,7 +188,9 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
             .env("AH_ENGINE_RULES", self.dir.join("rules.json"))
             .env("AH_ENGINE_VERSION", "0.1.0")
             .env("AH_ENGINE_TEST_HOOKS", "1")
-            .env("AH_KILL_GRACE_S", "0");
+            .env("AH_KILL_GRACE_S", "0")
+            .arg("--plugin-root")
+            .arg(plugin_root());
         c.env("AH_ENGINE_BIN", self.engine_wrapper());
         for (k, v) in &self.extra {
             c.env(k, v);
@@ -206,7 +206,21 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
     }
 
     fn diag(&self) -> String {
-        format!("\n--- ah-engine.log ---\n{}\n--- status ---\n{}", self.health_log(), self.ctl("status").unwrap_or_else(|| "<no status>".to_string()))
+        let read = |f: &str| std::fs::read_to_string(self.eng().join(f)).unwrap_or_default();
+        format!(
+            "\n--- files ---\n{}\n--- ah-engine.log ---\n{}\n--- launcher.log ---\n{}\n--- launcher.spawns ---\n{}\n--- status ---\n{}",
+            std::fs::read_dir(self.eng())
+                .map(|rd| rd
+                    .flatten()
+                    .map(|e| format!("{} {:?}", e.file_name().to_string_lossy(), e.metadata().map(|m| m.len()).unwrap_or(0)))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+                .unwrap_or_default(),
+            self.health_log(),
+            read("launcher.log"),
+            read("launcher.spawns"),
+            self.ctl("status").unwrap_or_else(|| "<no status>".to_string())
+        )
     }
     fn ctl(&self, verb: &str) -> Option<String> {
         let o = self.cmd().args(["ctl", verb]).output().unwrap();
@@ -1028,7 +1042,7 @@ fn a_worker_stuck_during_a_drain_still_ends_the_daemon() {
     }
     assert!(!alive(old), "a drain with a stuck worker must still end the daemon (it lived {:?})", t.elapsed());
     let log = std::fs::read_to_string(e.eng().join("ah-engine.log")).unwrap();
-    assert!(log.contains("\tstuck\t") && log.contains("\texit\tforced\t"), "{log}");
+    assert!(log.contains("\tstuck\t") && (log.contains("\texit\tforced\t") || log.contains("\texit\torphaned\tsocket_gone")), "{log}");
     h.join().unwrap();
 }
 

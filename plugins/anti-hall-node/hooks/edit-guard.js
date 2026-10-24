@@ -871,7 +871,6 @@ function main() {
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('edit-guard')) process.exit(0);
 
   let payload;
   try {
@@ -879,6 +878,8 @@ function main() {
   } catch (_) {
     process.exit(0);
   }
+
+  if (isSkipped('edit-guard', undefined, payload && payload.session_id)) process.exit(0);
 
   const toolName = payload && payload.tool_name;
   // Codex file edits arrive as tool_name "apply_patch" with the raw patch text in

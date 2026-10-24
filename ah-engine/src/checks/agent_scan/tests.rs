@@ -140,6 +140,7 @@ fn names_agent_matches_a_full_id_or_a_unique_prefix() {
         last_seen_ms: f64::NAN,
         pending_message: false,
         task_type: String::new(),
+        shell_kind: String::new(),
         spawn_input: None,
     };
     launched.set("a1b2c3d4e5f60718", rec());

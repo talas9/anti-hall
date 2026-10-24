@@ -9,9 +9,9 @@ on:
   push:
     branches: [engine-proto, dev, main]
     tags: ['v*']
-    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/engine/**', '.github/workflows/ah-engine.yml']
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
     - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes
@@ -25,6 +25,28 @@ env:
   AH_FULL: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the gate builds it on both OSes.
+  launcher:
+    name: ah-hook (${{ matrix.os }})
+    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: ah-launcher
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-launcher
+      - run: cargo build --release --locked
+
   rust:
     name: rust (${{ matrix.os }})
     if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
@@ -39,6 +61,9 @@ jobs:
       run:
         working-directory: ah-engine
     env:
+      # The Rust hook and install contract tests need the thin client in this job's checkout (jobs do not share builds).
+      AH_HOOK_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_LAUNCHER_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
       # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
       AH_ENGINE_SCRIPT_TIME_MS: "2000"
       # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
@@ -56,6 +81,9 @@ jobs:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      - name: Build the thin client for hook and install tests
+        working-directory: ah-launcher
+        run: cargo build --release --locked
       # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
       # daemon-survivor check). Clippy runs only here, once.
       - name: test.sh (gate)

@@ -209,6 +209,10 @@ function cmdNudge(id, flags, ctx) {
 // pointed agents at a mechanism with no CLI entry point.
 function cmdSkip(guard, flags, ctx) {
   const home = ctx.home;
+  const global = Array.isArray(flags.global) && flags.global.length > 0;
+  const session = one(flags, 'session') || require('../../hooks/skip-guard.js').sessionId(ctx.env);
+  if (!global && !session) return { ok: false, error: 'skip needs a session id; pass --session <id> (or --global for an owner-set global skip)' };
+  const key = global ? guard : guard + '@' + session;
   // A bare `--ttl` (no following value, e.g. end-of-argv or immediately
   // followed by another `--flag`) parses to boolean `true` in parseArgs(),
   // which one() maps to `undefined` — indistinguishable from "--ttl not
@@ -256,7 +260,7 @@ function cmdSkip(guard, flags, ctx) {
   if (!Number.isFinite(expiresAt)) {
     return { ok: false, error: 'invalid --ttl (resulting expiry is not a finite value)' };
   }
-  data[guard] = expiresAt;
+  data[key] = expiresAt;
   fs.mkdirSync(dir, { recursive: true });
   const tmp = file + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2));

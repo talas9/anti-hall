@@ -1229,11 +1229,29 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
     let mut titled = false;
     let worktree = created_path(&raw);
     let mut mesh_id: Option<String> = None;
+    let mut registry_id: Option<String> = None;
+    let mut registry_pending: Option<String> = None;
     if let Some(wt) = &worktree
         && let Ok(id) = ident::primary_workspace_id(wt)
     {
         mesh_id = Some(id.clone());
-        registered = seed_registry(inv, &id, wt, clock(inv));
+        // never register under the label alone: the row is keyed by the app's own id for the worktree; when the app has not named
+        // it yet, the label row stands in as PENDING and the reconcile sweep fills the id in later (`recon::labelfill`)
+        let lookup = crate::meshw::appid::lookup_with_retry(&inv.home, &inv.env, wt);
+        let seed_id = match &lookup {
+            crate::meshw::appid::Lookup::Found(uuid) => uuid.clone(),
+            _ => id.clone(),
+        };
+        registered = seed_registry(inv, &seed_id, wt, clock(inv));
+        match lookup {
+            crate::meshw::appid::Lookup::Found(uuid) => registry_id = Some(uuid),
+            crate::meshw::appid::Lookup::Missing => {
+                let note = tpl("devswarm_cli.sp_uuid_pending_note", &[("label", &id), ("worktree", wt)]);
+                crate::discard::note("spawn_uuid_pending", &note);
+                registry_pending = Some(note);
+            }
+            crate::meshw::appid::Lookup::NoApp => {}
+        }
         if registered && let Some(title) = title.as_deref().filter(|x| !x.is_empty()) {
             let mut targs: Vec<&str> = tl("devswarm_cli.sp_hc_update_title");
             targs.extend([branch, title]);
@@ -1241,6 +1259,9 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
             titled = gated_call(inv, runner, verb, &targs, defaults::millis("devswarm_cli.hc_unbounded_ms")).call.ok;
             if titled {
                 crate::dssup::appsync::state::write_name(&inv.home, &id, title, clock(inv));
+                if let Some(uuid) = &registry_id {
+                    crate::dssup::appsync::state::write_name(&inv.home, uuid, title, clock(inv));
+                }
             }
         }
     }
@@ -1309,6 +1330,12 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
         .put("registered", OVal::Bool(registered))
         .put("titled", OVal::Bool(titled))
         .put("sourceCheck", sc.obj);
+    if let Some(uuid) = &registry_id {
+        o.put(t("devswarm_cli.sp_field_registry_id"), s(uuid));
+    }
+    if let Some(note) = &registry_pending {
+        o.put(t("devswarm_cli.sp_field_registry_pending"), OVal::Bool(true)).put(t("devswarm_cli.sp_field_registry_note"), s(note));
+    }
     if !failures.is_empty() {
         o.put("submoduleFailures", OVal::Arr(failures.iter().map(Failure::json).collect()));
     }

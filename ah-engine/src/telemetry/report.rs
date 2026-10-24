@@ -17,24 +17,25 @@ use crate::defaults;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// A window like `7d`, `36h` or `14` (days) as whole days (at least 1); `None` when it is not one of those shapes.
+/// A window like `7d` or `14` (days); `None` when it is not one of those shapes. The data is kept in per-day buckets, so a finer
+/// unit (`36h`, `15m`) is refused rather than silently rounded to whole days.
 pub fn parse_window(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let (num, unit) = match s.strip_suffix('d') {
-        Some(n) => (n, 24),
-        None => match s.strip_suffix('h') {
-            Some(n) => (n, 1),
-            None => (s, 24),
-        },
-    };
-    let n: u64 = num.parse().ok()?;
-    Some((n * unit).div_ceil(24).max(1))
+    let num = s.strip_suffix('d').unwrap_or(s);
+    num.parse::<u64>().ok().map(|n| n.max(1))
 }
 
-/// The window in days: the requested one, else `telemetry.default_window_days`.
+/// The window in days for a user-given value: empty means `telemetry.default_window_days`; anything that is not days is an error
+/// naming the accepted form.
+pub fn check_window(requested: &str) -> Result<u64, String> {
+    if requested.trim().is_empty() {
+        return Ok(defaults::num("telemetry.default_window_days"));
+    }
+    parse_window(requested).ok_or_else(|| defaults::render("msg.window_bad", &[("window", &requested)]))
+}
+
+/// The window in days: the requested one, else `telemetry.default_window_days` (callers that take a user's value check it with
+/// [`check_window`] first).
 pub fn window_days(requested: &str) -> u64 {
     parse_window(requested).unwrap_or_else(|| defaults::num("telemetry.default_window_days"))
 }
@@ -74,9 +75,10 @@ fn window_rows(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u
     rows
 }
 
-/// Bytes injected into model context by hooks in `rows` (the whole-hook rows; per-check `ib` is attribution, not an addition).
+/// Bytes injected into model context in `rows`: the kinds `telemetry.injection_kinds` lists (checks and spills).
 fn hook_injected(rows: &[DayRow]) -> u64 {
-    rows.iter().filter(|r| r.delta.k == "hook").map(|r| r.delta.ib_sum).sum()
+    let kinds = defaults::list("telemetry.injection_kinds");
+    rows.iter().filter(|r| kinds.contains(&r.delta.k.as_str())).map(|r| r.delta.ib_sum).sum()
 }
 
 fn add(m: &mut Map<String, Value>, key: &str, by: u64) {
@@ -123,7 +125,21 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
         let failed = matches!(e.o, super::event::Outcome::Error | super::event::Outcome::Timeout);
         add(slot, "calls", 1);
         add(slot, "cost_uc", j.cost_uc);
-        add(slot, "ms_sum", e.ms as u64);
+        // what a "call" was: a fresh model call, a cache hit (no model), or no answer at all (the rule baseline stood: skipped by the
+        // context gate, mode off, breaker open, ...), with the reason the call recorded
+        if backend == "cache" {
+            add(slot, "cached", 1);
+        } else if backend == defaults::text("telemetry.jev_skip_backend") {
+            add(slot, "skipped", 1);
+            let why = j.more.get_tok("error").filter(|w| !w.is_empty()).unwrap_or(defaults::text("telemetry.jev_skip_reason_default"));
+            let reasons = slot.entry("skip_reasons").or_insert_with(|| json!({}));
+            if let Some(m) = reasons.as_object_mut() {
+                bump(m, why);
+            }
+        } else {
+            add(slot, "model_calls", 1);
+            add(slot, "ms_sum", e.ms as u64);
+        }
         let max = slot.get("ms_max").and_then(Value::as_u64).unwrap_or(0).max(e.ms as u64);
         slot.insert("ms_max".into(), json!(max));
         let verdicts = slot.entry("verdicts").or_insert_with(|| json!({}));
@@ -152,9 +168,13 @@ fn detail_sections(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_m
     let jev_by: Map<String, Value> = jev
         .into_iter()
         .map(|(k, mut m)| {
-            let calls = m.get("calls").and_then(Value::as_u64).unwrap_or(0);
+            // the mean time is over the calls that reached a model; a cached or skipped call took no model time
+            let model_calls = m.get("model_calls").and_then(Value::as_u64).unwrap_or(0);
             let sum = m.remove("ms_sum").and_then(|v| v.as_u64()).unwrap_or(0);
-            m.insert("mean_ms".into(), json!(sum.checked_div(calls).unwrap_or(0)));
+            m.insert("mean_ms".into(), json!(sum.checked_div(model_calls).unwrap_or(0)));
+            for k in ["model_calls", "cached", "skipped"] {
+                m.entry(k).or_insert(json!(0));
+            }
             (k, Value::Object(m))
         })
         .collect();
@@ -315,6 +335,35 @@ pub fn events_json(tel: Option<&TelDb>, rec: Option<&Recorder>, kind: &str, days
     json!({"window": {"days": days}, "kind": kind, "count": events.len(), "events": events})
 }
 
+/// Separate counterfactual scenarios from observed routing economics; never add these to NET.
+pub fn avoided_waste_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now: u64) -> Value {
+    let rows = window_rows(tel, rec, days, now);
+    let cfg = defaults::raw("impact.avoided_waste");
+    let price = PriceTable::from_defaults().price(cfg.str_field("model"));
+    let mut figures = Map::new();
+    for (name, spec) in cfg.get("events").and_then(defaults::V::as_table).unwrap_or_default() {
+        let check = spec.str_field("check");
+        let count: u64 = rows.iter().filter(|r| r.delta.k == "check" && r.delta.h == check && r.delta.o == "block").map(|r| r.delta.n).sum();
+        let n = |k| spec.get(k).and_then(defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+        let tokens = n("tokens_per_event");
+        let seconds = n("seconds_per_event");
+        figures.insert(
+            name.to_string(),
+            json!({
+                "label": defaults::text("impact.estimate_label"), "events_label": defaults::text("impact.measured_label"),
+                "events": if check.is_empty() { None } else { Some(count) }, "check": check,
+                "tokens_per_event": tokens, "seconds_per_event": seconds, "priced_as": cfg.str_field("model"),
+                "estimated_tokens": if check.is_empty() { None } else { count.checked_mul(tokens) },
+                "estimated_seconds": if check.is_empty() { None } else { count.checked_mul(seconds) },
+                "estimated_usd": if check.is_empty() { None } else { price.map(|p| count as f64 * tokens as f64 * p.input as f64 / 1e12) },
+                "formula": cfg.str_field("formula"), "how_counted": cfg.str_field("how_counted"),
+                "unavailable": if check.is_empty() { Some(cfg.str_field("unavailable")) } else { None },
+            }),
+        );
+    }
+    json!({"label": defaults::text("impact.estimate_label"), "included_in_net": false, "window": {"days": days}, "figures": figures})
+}
+
 /// The NET section of `impact` for the last `days` days: routing saved and spent up in both directions, minus the spenders.
 pub fn net_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u64) -> Value {
     let since = now_ms.saturating_sub(days * DAY_MS);
@@ -340,10 +389,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_parse_in_days_and_hours() {
+    fn windows_parse_in_days_only() {
         assert_eq!(parse_window("7d"), Some(7));
-        assert_eq!(parse_window("36h"), Some(2));
-        assert_eq!(parse_window("1h"), Some(1));
+        assert_eq!(parse_window("36h"), None);
+        assert_eq!(parse_window("15m"), None);
         assert_eq!(parse_window("14"), Some(14));
         assert_eq!(parse_window("soon"), None);
         assert_eq!(parse_window(""), None);

@@ -2,8 +2,8 @@
 //!
 //! The daemon records the sha256 of its own binary (`files.healthy_binary`) once it has stayed up for `daemon.healthy_after_s`
 //! (a binary that dies on start never gets there). When the crash-loop rule trips on a binary that has no such record, the
-//! client asks the plugin's integrity script (`rollback.script`, POSIX sh) to restore the last known-good binary: it writes
-//! `files.rollback_request` and starts the script detached. The script owns the swap, because a hung or exiting binary cannot be
+//! client asks the thin client (`ah-hook integrity check`, `rollback.client`) to restore the last known-good binary: it writes
+//! `files.rollback_request` and starts the check detached. The thin client owns the swap, because a hung or exiting binary cannot be
 //! trusted to replace itself. A crash-loop cooldown also ends by itself when the binary is replaced (see [`cooldown_binary_replaced`]).
 //! Every function is best-effort: a state-dir problem never breaks a hook call. Nothing here deletes a binary.
 use crate::defaults;
@@ -84,16 +84,20 @@ pub fn on_crashloop_trip() -> bool {
     true
 }
 
-/// Start `sh <plugin>/rollback.script check` detached, with the state dir this engine uses. Best effort.
+/// Start the thin client's integrity check (`<state>/bin/ah-hook integrity check`) detached, with the state dir this engine uses.
+/// Best effort.
 fn start_integrity_check() {
     let env = crate::ops::env_snapshot();
-    let Some(root) = crate::ops::plugin_root(&env) else { return };
-    let script = Path::new(&root).join(defaults::text("rollback.script"));
-    if !script.is_file() {
+    let client = paths::dir().join(defaults::text("rollback.bin_dir")).join(defaults::text("rollback.client"));
+    if !client.is_file() {
         return;
     }
-    let spawned = std::process::Command::new(defaults::text("rollback.shell"))
-        .arg(&script)
+    let mut cmd = std::process::Command::new(&client);
+    if let Some(root) = crate::ops::plugin_root(&env) {
+        cmd.arg("--plugin-root").arg(root);
+    }
+    let spawned = cmd
+        .arg(defaults::text("launcher.cli_integrity_verb"))
         .arg("check")
         .env(defaults::env_name("dir"), paths::dir())
         .stdin(std::process::Stdio::null())
@@ -132,7 +136,7 @@ pub fn cooldown_binary_replaced() -> bool {
     }
 }
 
-/// The last roll-back the integrity script recorded, as one line (empty when none).
+/// The last roll-back the integrity check recorded, as one line (empty when none).
 pub fn last_rollback() -> String {
     std::fs::read_to_string(state_file("rollback_last")).map(|t| t.trim().to_string()).unwrap_or_default()
 }

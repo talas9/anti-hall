@@ -16,8 +16,6 @@ pub struct Stale {
     /// Its plugin root when the build is complete on disk (its manifest exists): the handoff target. The engine itself runs
     /// again with this root, so no interpreter is involved.
     pub root: Option<PathBuf>,
-    /// Its Node watcher script path, only for the re-arm instruction the refused-handoff line prints.
-    pub script: PathBuf,
     /// The harness registry itself names it.
     pub registered: bool,
     /// The version the registry names.
@@ -61,29 +59,8 @@ fn string_of(v: Option<&J>) -> Option<String> {
 /// Which install owns `root`, from the harness's own records (read only): the root is inside that marketplace's cache, or inside
 /// the directory a registered marketplace lives in. `None` when the root belongs to no registered install.
 fn owning_install(p: &Proc) -> Option<Install> {
-    let plugins = p.home.join(t("wake_watch.plugins_rel"));
-    let root = canon(Path::new(&p.root));
-    let cache_top = canon(&plugins.join(t("wake_watch.cache_dir")));
-    let name = string_of(json_at(&root.join(t("wake_watch.manifest_rel")))?.get(t("wake_watch.manifest_name_field")))?;
-    let known = json_at(&plugins.join(t("wake_watch.known_marketplaces_file")));
-    let location = |key: &str| -> Option<PathBuf> {
-        let J::Obj(entries) = known.as_ref()? else { return None };
-        let v = &entries.iter().find(|(k, _)| k == key)?.1;
-        Some(canon(Path::new(&string_of(v.get(t("wake_watch.install_location_field")))?)))
-    };
-    let mkt = if let Ok(rel) = root.strip_prefix(&cache_top) {
-        rel.components().next()?.as_os_str().to_string_lossy().into_owned()
-    } else {
-        let J::Obj(entries) = known.as_ref()? else { return None };
-        entries.iter().find_map(|(k, _)| location(k).filter(|loc| root.starts_with(loc)).map(|_| k.clone()))?
-    };
-    let marketplace = location(&mkt);
-    Some(Install {
-        key: format!("{name}{}{mkt}", t("wake_watch.key_sep")),
-        cache: cache_top.join(&mkt).join(&name),
-        registry: plugins.join(t("wake_watch.installed_file")),
-        marketplace,
-    })
+    let owner = crate::install::owning(&p.home.to_string_lossy(), &p.root)?;
+    Some(Install { key: owner.key, cache: owner.cache, registry: owner.registry, marketplace: owner.marketplace })
 }
 
 /// `enabledPlugins[key] === true` in the user's settings. An unreadable file or a missing entry is "not enabled".
@@ -142,9 +119,8 @@ pub fn check(p: &Proc, own: Option<&str>) -> Option<Stale> {
     let newest = newest.filter(|n| compare_versions(own, n) < 0)?;
     let registered = registry.as_deref().is_some_and(|j| compare_versions(j, &newest) >= 0);
     let build = install.cache.join(&newest);
-    let script = build.join(t("wake_watch.stale_script_rel"));
     let root = build.join(t("wake_watch.manifest_rel")).is_file().then_some(build);
-    Some(Stale { root, script, registered, registered_version: registry, newest })
+    Some(Stale { root, registered, registered_version: registry, newest })
 }
 
 /// `canHandoff(ownVersion, newestVersion, env)`: strictly newer than this build, and strictly newer than the previous handoff's
@@ -160,9 +136,9 @@ pub fn can_handoff(own: &str, newest: &str, stamp: Option<&str>) -> bool {
 }
 
 /// `formatStaleVersionLine`
-pub fn stale_line(role: &str, id: &str, own: Option<&str>, newest: &str, _script: &str) -> String {
+pub fn stale_line(role: &str, id: &str, own: Option<&str>, newest: &str, home: &std::path::Path) -> String {
     // the re-arm command is the version-independent watcher shim, not the running build's script
-    let script = crate::checks::devswarm_role::text::engine_watcher(&std::env::var(defaults::text("env.home")).unwrap_or_default());
+    let script = crate::checks::devswarm_role::text::engine_watcher(&home.to_string_lossy());
     defaults::render(
         "wake_watch.line_stale",
         &[("role", &word(role)), ("id", &word(id)), ("own", &own.map_or_else(|| word(""), str::to_string)), ("newest", &newest), ("script", &script.as_str())],

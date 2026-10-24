@@ -1,6 +1,6 @@
 [package]
 name = "ah-hook"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Thin hook launcher for ah-engine: watchdog, fail-open/fail-closed outcome table, cold-start guard wait"
@@ -12,8 +12,17 @@ path = "src/main.rs"
 [dependencies]
 # kill(2)/killpg for the process-group watchdog; std has no signal API
 libc = "0.2.190"
+# sha256 of the engine binary for the integrity check (pure Rust; the shell script shelled out to sha256sum/shasum/openssl)
+serde_json = { version = "1", default-features = false, features = ["std"] }
+sha2 = { version = "=0.10.9", default-features = false }
+# the Node fallback's tool matchers (a list row's matcher that is not a plain name list is an unanchored regex, as the host reads it)
+regex = { version = "1.12.3", default-features = false, features = ["std"] }
 # the plugin's defaults (the engine's own parser; A/B against a hand-written reader in THIN-LAUNCHER.md)
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
+
+# the integrity verbs hash the whole engine binary: keep the hash fast in debug builds (the tests) too
+[profile.dev.package.sha2]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

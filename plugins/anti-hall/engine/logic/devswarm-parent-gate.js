@@ -660,7 +660,7 @@ function pgGate(p, root, l) {
     var fam = families[fidx];
     var famChild = own.id !== entries[fam.survivor].id;
     var union = 0, unknown = false, archivedMemberUnread = 0, liveMembers = 0;
-    var unknownMembers = [], contributors = [], foreignAll = fam.members.length > 0, gone = false, allDoneOrIdle = true;
+    var unknownMembers = [], contributors = [], foreignAll = fam.members.length > 0, gone = false, allDoneOrIdle = true, allDone = true, guardBlocked = false;
     if (!famChild && fam.members.some(function (mi) { return entries[mi].stateSkipped; })) ah.unable('devswarm-parent-gate:archived_twin'); // an archived twin of the Primary's own row: listed with the family
     var famBusy = false, famWaiting = false, famAgeUnknown = false, famStoreOnly = false, famOldest = null, famUrgency = null;
     var famSoe = false, famStatus = '', famPending = false;
@@ -672,6 +672,8 @@ function pgGate(p, root, l) {
       }
       liveMembers += 1;
       if (!(m.done || (m.live && !m.busy && !m.waiting))) allDoneOrIdle = false;
+      if (!m.done) allDone = false; // only the gate-proven done state (default: done, merged, tests_passed) makes a child safe to archive; idle proves nothing
+      if (!m.done && m.session && pgGuardBlocked(home, m.session, now)) guardBlocked = true;
       famAgeUnknown = famAgeUnknown || m.ageUnknown;
       famBusy = famBusy || m.busy;
       famWaiting = famWaiting || m.waiting;
@@ -731,7 +733,7 @@ function pgGate(p, root, l) {
     blocking.push({
       id: entries[fam.survivor].id, unread: union, unknown: unknown, unknownMembers: unknownMembers, contributors: contributors,
       notOwnCountOnly: contributors.some(function (c) { return own.id !== c[0]; }), foreign: foreignAll, worktreeGone: gone,
-      doneOrIdle: liveMembers > 0 && famChild && allDoneOrIdle, mergedTwins: fam.mergedTwins, waitingOnInput: famWaiting,
+      doneOrIdle: liveMembers > 0 && famChild && allDoneOrIdle, allDone: liveMembers > 0 && famChild && allDone, guardBlocked: famChild && guardBlocked, mergedTwins: fam.mergedTwins, waitingOnInput: famWaiting,
       waiting: fam.members.map(function (x) { return entries[x]; }).filter(function (x) { return x.waiting; }).map(function (x) { return [x.id, x.waitingQ]; }),
       busyStaleAgeMin: busyStaleAgeMin, urgency: famUrgency, status: famSoe ? famStatus : '',
     });
@@ -786,6 +788,12 @@ function pgGate(p, root, l) {
   // an unanswered question or a truncated question list bypasses the neglect cap; the question set has its own ceiling
   var bypassCap = unanswered.length > 0 || !!truncated;
   if (!bypassCap && effEscalated) return fx; // already escalated once: quiet
+  // every flagged child is held by anti-hall's own guard, not neglected by the Primary: a notice, no block, and nothing counted toward the
+  // forced-acknowledgement cap or the escalation (the loop state is left as it is)
+  if (!bypassCap && blocking.length > 0 && blocking.every(function (b) { return b.guardBlocked && own.id !== b.id; })) {
+    fx.err += text.render(ah.cfg('devswarm_role.pg_guard_held'), { ids: pgListMore(blocking.map(function (b) { return b.id; }), ah.cfgNum('devswarm_role.pg_max_shown')) });
+    return fx;
+  }
   var cap = ah.settings.num('devswarm_role.pg_set_cap');
   var nextBlocks = effBlocks + 1, nextEscalated = effEscalated, nextAcks = effAcks;
   var effQBlocks = qSig === lastQSig ? qBlocks : 0, effQEscalated = qSig === lastQSig && qEscalated;
@@ -828,6 +836,15 @@ function pgGate(p, root, l) {
   var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), guard: ah.cfg('devswarm_role.gate_guard') });
   fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
   return fx;
+}
+
+// True when the child's session was last stopped by anti-hall's own coordinator-work-guard within pg_guard_block_window_ms (its window file
+// keeps lastBlockAt): the child is held by the guard, not neglected by the Primary.
+function pgGuardBlocked(home, sid, now) {
+  if (typeof sid !== 'string' || sid === '') return false;
+  var safe = sid.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, ah.cfgNum('coordinator_work.session_id_max'));
+  var f = pgJson(home + '/' + ah.cfg('script.write_root') + '/' + ah.cfg('coordinator_work.session_file_prefix') + safe + ah.cfg('guardkit.state_ext'));
+  return jx.isObj(f) && piFinite(f.lastBlockAt) && f.lastBlockAt > 0 && now - f.lastBlockAt <= ah.cfgNum('devswarm_role.pg_guard_block_window_ms');
 }
 
 // `heldPartitionIdsFrom(env)`: the ids of `devswarm.heldPartitions` (comma separated, trimmed, empty parts dropped).
@@ -1022,16 +1039,12 @@ function pgWakeLine(ownId, l) {
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js.
 function pgFrame(body, skip) {
-  var clean = text.clean;
-  var lines = [text.render(ah.cfg('devswarm_role.pg_frame_head'), { guard: clean(ah.cfg('devswarm_role.gate_guard')), headline: clean(ah.cfg('devswarm_role.pg_headline')) })];
-  lines.push(ah.cfg('devswarm_role.pg_frame_why') + clean(ah.cfg('devswarm_role.pg_why')));
-  var paras = body.split(/\n{2,}/).map(clean).filter(function (x) { return x !== ''; });
-  if (paras.length > 0) {
-    lines.push(ah.cfg('devswarm_role.pg_frame_instead') + paras[0]);
-    paras.slice(1).forEach(function (x) { lines.push(ah.cfg('devswarm_role.pg_frame_indent') + x); });
-  }
-  lines.push(ah.cfg('devswarm_role.pg_frame_override') + clean(skip + ah.cfg('devswarm_role.pg_skip_ttl')));
-  return lines.join('\n');
+  return text.message('block', ah.cfg('devswarm_role.gate_guard'), {
+    what: ah.cfg('devswarm_role.pg_headline'),
+    instead: ah.cfg('devswarm_role.pg_short_instead'),
+    override: skip + ah.cfg('devswarm_role.pg_skip_ttl'),
+    extra: [body], details: true,
+  });
 }
 
 function pgReasonLabel(reason, path, errno) {
@@ -1081,7 +1094,8 @@ function pgReason(blocking, own, escalate, hasIntent, q) {
   if (escalate !== null) {
     return lead + text.render(ah.cfg('devswarm_role.pg_escalation'), {
       shown: stable + more, times: String(escalate), intent: hasIntent ? ah.cfg('devswarm_role.pg_escalation_intent') : '',
-      archive: flagged.length > 0 && flagged.every(function (b) { return b.doneOrIdle; }) ? ah.cfg('devswarm_role.pg_escalation_archive') : '',
+      archive: flagged.length > 0 && flagged.every(function (b) { return b.allDone; }) ? ah.cfg('devswarm_role.pg_escalation_archive')
+        : flagged.some(function (b) { return b.doneOrIdle && !b.allDone; }) ? ah.cfg('devswarm_role.pg_escalation_idle') : '',
     });
   }
   var ownEntry = null;
@@ -1117,6 +1131,8 @@ function pgReason(blocking, own, escalate, hasIntent, q) {
   if (foreign.length > 0) body += text.render(ah.cfg('devswarm_role.pg_foreign'), { ids: pgListMore(foreign, max), verb: foreign.length === 1 ? ah.cfg('devswarm_role.pg_verb_is') : ah.cfg('devswarm_role.pg_verb_are') });
   var gone = blocking.filter(function (b) { return b.worktreeGone && !b.foreign; }).map(function (b) { return b.id; });
   if (gone.length > 0) body += text.render(ah.cfg('devswarm_role.pg_gone'), { ids: pgListMore(gone, max), verb: gone.length === 1 ? ah.cfg('devswarm_role.pg_verb_has') : ah.cfg('devswarm_role.pg_verb_have') });
+  var heldByGuard = blocking.filter(function (b) { return b.guardBlocked && !isOwn(b.id); }).map(function (b) { return b.id; });
+  if (heldByGuard.length > 0) body += text.render(ah.cfg('devswarm_role.pg_guard_held'), { ids: pgListMore(heldByGuard, max) });
   if (anyChild) body += ah.cfg('devswarm_role.pg_inspect');
   if (blocking.some(function (b) { return b.status === ah.cfg('devswarm_role.pg_status_stale') || b.status === ah.cfg('devswarm_role.pg_status_escalated'); })) body += ah.cfg('devswarm_role.pg_stale_note');
   return body + ah.cfg('devswarm_role.pg_tail');
@@ -1126,6 +1142,10 @@ function pgReason(blocking, own, escalate, hasIntent, q) {
 
 // Apply what the gate decided.
 function pgApply(fx) {
+  if (fx.err) fx.err = text.message('warn', ah.cfg('devswarm_role.gate_guard'), {
+    what: ah.cfg('devswarm_role.pg_warning_what'), instead: ah.cfg('devswarm_role.pg_warning_instead'),
+    extra: [fx.err], details: true,
+  }, 'warnings') + '\n';
   if (fx.unlink !== null || fx.write !== null || fx.extra.length || fx.cacheOwed || fx.drainClear !== null) ah.commit();
   if (fx.drainClear !== null) ah.state.remove(fx.drainClear); // clearDrainMarker, best-effort
   // the advisory writes are best-effort, as Node's (a failed write shows the line again next Stop)

@@ -11,7 +11,7 @@
 //! Each command reproduces the script's text and `--json` output byte for byte and leaves the same files behind. The
 //! parity tests (`tests/it/operator_parity.rs`) run the real Node script and the command on the same seeded scratch home and
 //! compare both. The schema, the message texts and every limit are the plugin's own files (`engine/defaults/`), read at run
-//! time; the settings schema is generated from `hooks/lib/settings-schema.js` (`parity/gen-settings-cli.js`).
+//! time; the settings schema is generated from `hooks/lib/settings-schema.js`.
 //!
 //! Where the Node tool's behaviour cannot be reproduced exactly (a lock held by a live writer, a repository layout the
 //! resolver cannot classify) the command writes nothing, says so on stderr and exits with the deferral code, so the Node

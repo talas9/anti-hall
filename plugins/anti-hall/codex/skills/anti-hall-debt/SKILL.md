@@ -27,9 +27,9 @@ test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not fou
 Run the engine's debt harvester:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest --json
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --dir src --stale-days 60
 ```
 
 Debt marker format:

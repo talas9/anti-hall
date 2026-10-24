@@ -109,23 +109,38 @@ pub fn chains(events: &[Event], window_ms: u64) -> (Vec<Chain>, usize) {
     for e in events {
         match &e.extras {
             Extras::Route(r) => routes.entry(r.spawn_key.as_str()).or_default().push((e, r)),
-            Extras::Spawn(s) => spawns.push((e, s)),
+            Extras::Spawn(s) if s.usage != Usage::default() => spawns.push((e, s)),
             _ => {}
         }
     }
     for v in routes.values_mut() {
         v.sort_by_key(|(e, _)| e.ts_ms);
     }
-    spawns.sort_by_key(|(e, _)| e.ts_ms);
+    // Pending and stored copies of one completed child are one outcome. The latest evidence wins without deleting history.
+    let mut identities: HashMap<&str, (&Event, &Spawn)> = HashMap::new();
+    spawns.retain(|(e, s)| {
+        if let Some(key) = &s.agent_key {
+            let old = identities.entry(key.as_str()).or_insert((*e, *s));
+            if e.ts_ms >= old.0.ts_ms {
+                *old = (*e, *s);
+            }
+            false
+        } else {
+            true
+        }
+    });
+    spawns.extend(identities.into_values());
+    spawns.sort_by_key(|(e, s)| s.started_ms.unwrap_or(e.ts_ms));
     let mut last_spawn: HashMap<&str, u64> = HashMap::new();
     let mut linked = 0;
     let mut out = Vec::new();
     for (se, s) in spawns {
         let key = s.spawn_key.as_str();
-        let from = last_spawn.get(key).copied().map(|t| t + 1).unwrap_or_else(|| se.ts_ms.saturating_sub(window_ms));
-        last_spawn.insert(key, se.ts_ms);
+        let started = s.started_ms.unwrap_or(se.ts_ms);
+        let from = last_spawn.get(key).copied().map(|t| t + 1).unwrap_or_else(|| started.saturating_sub(window_ms));
+        last_spawn.insert(key, started);
         let group: Vec<&Route> =
-            routes.get(key).map(|v| v.iter().filter(|(e, _)| e.ts_ms >= from && e.ts_ms <= se.ts_ms).map(|(_, r)| *r).collect()).unwrap_or_default();
+            routes.get(key).map(|v| v.iter().filter(|(e, _)| e.ts_ms >= from && e.ts_ms <= started).map(|(_, r)| *r).collect()).unwrap_or_default();
         if let Some(first) = group.first() {
             linked += group.len();
             out.push(Chain { origin: (*first).clone(), decisions: group.len(), spawn: s.clone() });
@@ -166,7 +181,7 @@ pub fn net(i: &NetInput<'_>) -> Value {
             *by_model.entry(r.parent_model.as_str()).or_insert(0) += 1;
         }
     }
-    let (mut saved, mut spent_up) = (0i128, 0i128);
+    let (mut saved, mut spent_up, mut actual_spend, mut baseline_spend) = (0i128, 0i128, 0i128, 0i128);
     let (mut saved_n, mut up_n, mut same_n, mut unpriced, mut no_usage) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut tokens = Usage::default();
     let mut unpriced_models = std::collections::BTreeSet::new();
@@ -189,7 +204,11 @@ pub fn net(i: &NetInput<'_>) -> Value {
         tokens.output += u.output;
         tokens.cache_read += u.cache_read;
         tokens.cache_write += u.cache_write;
-        let diff = asked.numer(u) as i128 - ran.numer(u) as i128;
+        let asked_cost = asked.numer(u) as i128;
+        let actual_cost = ran.numer(u) as i128;
+        actual_spend += actual_cost;
+        baseline_spend += asked_cost;
+        let diff = asked_cost - actual_cost;
         match diff.cmp(&0) {
             std::cmp::Ordering::Greater => {
                 saved += diff;
@@ -213,40 +232,61 @@ pub fn net(i: &NetInput<'_>) -> Value {
     let jev: Vec<&super::event::Jev> = i.events.iter().filter_map(|e| if let Extras::Jev(j) = &e.extras { Some(j) } else { None }).collect();
     let jev_uc: u64 = jev.iter().map(|j| j.cost_uc).sum();
     let routing_net = saved - spent_up;
-    let priced_any = !chains.is_empty() && unpriced < chains.len() as u64;
+    let priced_any = saved_n + up_n + same_n > 0;
     let net_numer = routing_net - injection.unwrap_or(0) - jev_uc as i128 * 1_000_000;
+    // a spender with no data is not measured, which is not the same as costing nothing
+    let not_measured = |name: &str, measured: bool| (!measured).then(|| defaults::render("msg.net_not_measured", &[("name", &name)]));
+    let gaps: Vec<String> = [
+        not_measured(defaults::text("telemetry.net_name_injection"), i.injected_bytes > 0),
+        not_measured(defaults::text("telemetry.net_name_jev"), !jev.is_empty()),
+        not_measured(defaults::text("telemetry.net_name_routing"), priced_any && unlinked == 0 && no_usage == 0 && unpriced == 0),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let have_prices = priced_any || injection.is_some() || jev_uc > 0;
     json!({
         "label": "estimate",
         "method": defaults::text("impact.savings_method"),
         "net_method": defaults::text("telemetry.net_method"),
+        "how_counted": defaults::text("impact.net_how_counted"),
         "price_table": {"date": i.prices.date, "source": i.prices.source},
         "routing": {
             "decisions": outcomes.values().sum::<u64>(),
             "by_outcome": outcomes,
             "linked_spawns": chains.len(),
             "decisions_without_result": unlinked,
+            "unlinked_how_counted": defaults::text("impact.unlinked_how_counted"),
             "spawns_cheaper": saved_n,
             "spawns_dearer": up_n,
             "spawns_same_price": same_n,
             "unpriced_spawns": unpriced,
             "unpriced_models": no_price,
             "spawns_without_usage": no_usage,
+            "tokens_compared_label": defaults::text("impact.measured_label"),
             "tokens_compared": {"input": tokens.input, "output": tokens.output, "cache_read": tokens.cache_read, "cache_write": tokens.cache_write},
-            "saved_usd": usd(saved),
-            "spent_up_usd": usd(spent_up),
-            "net_usd": usd(routing_net),
+            "actual_list_price_usd": if priced_any { Some(usd(actual_spend)) } else { None },
+            "counterfactual_list_price_usd": if priced_any { Some(usd(baseline_spend)) } else { None },
+            "saved_usd": if priced_any { Some(usd(saved)) } else { None },
+            "spent_up_usd": if priced_any { Some(usd(spent_up)) } else { None },
+            "net_usd": if priced_any { Some(usd(routing_net)) } else { None },
+            "label": defaults::text("impact.estimate_label"),
+            "how_counted": defaults::text("impact.routing_how_counted"),
         },
         "spenders": {
+            "how_counted": defaults::text("impact.spenders_how_counted"),
+            "injection_label": defaults::text("impact.estimate_label"),
+            "jev_label": defaults::text("impact.recorded_label"),
             "injected_bytes": i.injected_bytes,
             "injected_tokens_estimate": inj_tokens,
-            "injection_usd": injection.map(usd),
+            "injection_usd": if i.injected_bytes > 0 { injection.map(usd) } else { None },
             "injection_priced_as": parent,
             "jev_calls": jev.len(),
-            "jev_usd": jev_uc as f64 / 1e6,
+            "jev_usd": if jev.is_empty() { None } else { Some(jev_uc as f64 / 1e6) },
         },
         "net_usd": if have_prices { json!(usd(net_numer)) } else { Value::Null },
-        "complete": unpriced == 0 && (i.injected_bytes == 0 || injection.is_some()),
+        "not_measured": gaps,
+        "complete": gaps.is_empty() && unlinked == 0 && no_usage == 0 && unpriced == 0 && (i.injected_bytes == 0 || injection.is_some()),
     })
 }
 
@@ -289,7 +329,7 @@ mod tests {
             o: Outcome::Allow,
             ms: 0,
             ib: 0,
-            extras: Extras::Spawn(Spawn { spawn_key: t(key), actual_model: t(ran), usage }),
+            extras: Extras::Spawn(Spawn { started_ms: None, agent_key: None, spawn_key: t(key), actual_model: t(ran), usage }),
         }
     }
 
@@ -317,11 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_table_prices_opus_5_5_and_nothing_else() {
+    fn the_shipped_table_prices_current_and_explicit_older_models() {
         let t = PriceTable::from_defaults();
         let p = t.price("claude-opus-5-5").expect("opus 5.5 is priced");
-        assert_eq!((p.input, p.output, p.cache_read, p.cache_write), (4_000_000, 20_000_000, 200_000, 8_000_000));
-        assert!(t.price("claude-sonnet-5-5").is_none() && t.price("claude-haiku-4-5-20251001").is_none(), "other models stay unpriced, never guessed");
+        assert_eq!((p.input, p.output, p.cache_read, p.cache_write), (4_000_000, 20_000_000, 200_000, 5_000_000));
+        assert_eq!(t.price("claude-sonnet-5-5").unwrap().cache_read, 100_000);
+        assert_eq!(t.price("claude-haiku-4-5-20251001").unwrap().input, 1_000_000);
         assert_eq!(defaults::render("msg.no_price_for_model", &[("model", &"claude-sonnet-5-5")]), "no price for model claude-sonnet-5-5");
     }
 
@@ -395,7 +436,7 @@ mod tests {
         let ev = vec![route(1, "k", "mystery-model", "opus", RouteOutcome::Allow), spawn(2, "k", "haiku", u(100, 100))];
         let v = net(&NetInput { events: &ev, injected_bytes: 0, prices: &prices(), link_window_ms: 1000, bytes_per_token: 4 });
         assert_eq!(v["routing"]["unpriced_spawns"], 1);
-        assert_eq!(v["routing"]["saved_usd"].as_f64(), Some(0.0));
+        assert!(v["routing"]["saved_usd"].is_null());
         assert_eq!(v["complete"], false);
         // with no table at all there is no figure
         let none = PriceTable::default();

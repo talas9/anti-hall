@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 const MIN: u64 = 60_000;
 
 fn home(tag: &str) -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("test-agents").join(format!("{tag}-{}", std::process::id()));
+    let d = std::env::temp_dir().join("ah-test-agents").join(format!("{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".claude/projects/p")).unwrap();
     d
@@ -27,7 +27,8 @@ fn env(h: &Path, now: u64) -> Env {
         now_ms: now,
         plugin_root: None,
         use_cli: false,
-        settings: Settings { home: h.to_string_lossy().to_string(), env: HashMap::new() },
+        // These are plain reminder routing cases; the nudge loop has its own tests.
+        settings: Settings { home: h.to_string_lossy().to_string(), env: HashMap::from([("ANTIHALL_AGENT_NUDGE".into(), "false".into())]) },
         act: true,
     }
 }
@@ -78,6 +79,14 @@ fn queue(h: &Path, key: &str) -> Vec<Value> {
     std::fs::read_to_string(p).map(|t| t.lines().map(|l| serde_json::from_str(l).unwrap()).collect()).unwrap_or_default()
 }
 
+/// The prompt that takes a session's queued reminders: the queue's cursor moves to the end of the file.
+fn take_queue(h: &Path, key: &str) {
+    let q = h.join(".anti-hall/agent-tracker/reminders").join(format!("{key}.ndjson"));
+    let mut cur = q.clone().into_os_string();
+    cur.push(super::pth("cursor_ext"));
+    std::fs::write(cur, queue(h, key).len().to_string()).unwrap();
+}
+
 fn ticks(h: &Path, st: &mut State, at: &[u64]) {
     for n in at {
         tick(&env(h, *n), st);
@@ -113,6 +122,97 @@ fn a_normal_agent_is_counted_once_and_raises_nothing() {
     assert_eq!(state::of(a), state_name("waiting"));
     assert!(queue(&h, "s1").is_empty());
     assert_eq!(a.samples.len(), 2, "a series sample per tick");
+}
+
+/// The cost report (GH #270): tokens, commits, pushes and guard fires per agent, and tokens per outcome.
+#[test]
+fn the_cost_report_counts_commits_pushes_and_guard_fires_per_agent() {
+    let h = home("cost");
+    let n = now0();
+    let block = "\u{26d4} anti-hall \u{b7} lane-test-guard: `cargo test` is blocked: a subagent does not run suite-scale tests (cargo test).";
+    write(
+        &sess(&h, "s1"),
+        &[
+            prompt(n - 9 * MIN, "/w"),
+            tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": "cargo test"})),
+            result(n - 7 * MIN, "u1", block, true),
+            tool(n - 6 * MIN, "m2", 200, "u2", "Bash", json!({"command": "git commit -m x && git push origin b"})),
+            result(n - 5 * MIN, "u2", "ok", false),
+            tool(n - 4 * MIN, "m3", 300, "u3", "Bash", json!({"command": "git push origin c"})),
+            result(n - 3 * MIN, "u3", "ok", false),
+            tool(n - 2 * MIN, "m4", 400, "u4", "Bash", json!({"command": "git push origin d"})),
+            result(n - MIN, "u4", "rejected", true),
+        ],
+    );
+    write(
+        &sess(&h, "s2"),
+        &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "k1", 5000, "v1", "Read", json!({"file_path": "/w/a.rs"})), result(n - 7 * MIN, "v1", "ok", false)],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.commits, a.pushes, a.guard_fires, a.errors), (1, 2, 1, 2), "a failed push is no push; the block text is one guard fire");
+    let r = status::cost_json(&st);
+    assert_eq!(r["outcome_units"], defaults::text("agent_tracker.cost_outcome_units"));
+    let rows = r["agents"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["agent"], "s2", "the agent that spent most tokens comes first");
+    assert_eq!((rows[0]["outcomes"].as_u64(), rows[0]["tokens_per_outcome"].is_null()), (Some(0), true), "no outcome: no ratio");
+    let s1 = &rows[1];
+    assert_eq!((s1["commits"].as_u64(), s1["pushes"].as_u64(), s1["guard_fires"].as_u64(), s1["outcomes"].as_u64()), (Some(1), Some(2), Some(1), Some(3)));
+    assert_eq!(s1["tokens_per_outcome"].as_u64(), Some(s1["tokens"].as_u64().unwrap() / 3));
+    assert_eq!(r["totals"]["agents"], 2);
+    assert_eq!(r["totals"]["pushes"], 2);
+}
+
+/// 2026-10-23 burn-breaker false blocks: a commit or push in another clone (git -C / cd), and a finished cargo build or check, are outcomes
+/// that restart the waste window; a failed build and a failed push are not.
+#[test]
+fn a_commit_a_push_or_a_finished_build_in_any_repo_restarts_the_waste_window() {
+    let h = home("restart");
+    let n = now0();
+    write(
+        &sess(&h, "s1"),
+        &[
+            prompt(n - 9 * MIN, "/w"),
+            tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": "cargo check -j4"})),
+            result(n - 7 * MIN, "u1", "error[E0425]: cannot find value\nerror: could not compile `x`", false),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n - 6 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.builds_ok, a.waste.reset_at, a.progress), (0, 0, 0), "a build that did not compile is no outcome");
+    append(
+        &sess(&h, "s1"),
+        &[
+            tool(n - 5 * MIN, "m2", 200, "u2", "Bash", json!({"command": "lockf /x/cargo-heavy.lock nice -n 10 cargo build --release -j4 2>&1 | tail -3"})),
+            result(n - 4 * MIN, "u2", "Finished `release` profile in 1m", false),
+        ],
+    );
+    ticks(&h, &mut st, &[n - 3 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.builds_ok, a.progress), (1, crate::agents::weight("build")));
+    assert!(a.waste.reset_at > 0, "a finished build restarts the window");
+    let after_build = a.waste.reset_at;
+    append(
+        &sess(&h, "s1"),
+        &[
+            tool(
+                n - 2 * MIN,
+                "m3",
+                300,
+                "u3",
+                "Bash",
+                json!({"command": "git -C /home/x/.anti-hall/work/wt-eng commit -m done && git -C /home/x/.anti-hall/work/wt-eng push origin b"}),
+            ),
+            result(n - MIN, "u3", "ok", false),
+        ],
+    );
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "s1");
+    assert_eq!((a.commits, a.pushes), (1, 1), "git -C <other clone> counts");
+    assert!(a.waste.reset_at > after_build, "a commit and push in another clone restart the window");
 }
 
 mod state {
@@ -222,6 +322,34 @@ fn heavy_spend_with_no_progress_is_token_waste_and_a_commit_clears_it() {
     assert!(!agent(&st2, "s1").flags.contains_key("token_waste"));
 }
 
+// ---- burn breaker (GH #270) ---------------------------------------------------------------------------------
+
+#[test]
+fn burn_without_outcome_warns_at_the_soft_line_blocks_at_the_hard_line_and_a_commit_resets_it() {
+    let h = home("burn");
+    let n = now0();
+    let p = sess(&h, "s1");
+    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "thinking"}]), None)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let marker = h.join(".anti-hall").join("agent-tracker").join("breaker").join("s1.json");
+    // between the soft and the hard line: soft flag only, no marker
+    append(&p, &[asst(n + 19 * MIN, "m1", 2_000_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    ticks(&h, &mut st, &[n + 20 * MIN]);
+    assert!(agent(&st, "s1").flags.contains_key("burn_soft") && !agent(&st, "s1").flags.contains_key("burn_hard"));
+    assert!(!marker.exists());
+    // past the hard line: the hard flag and the marker the burn-breaker check reads
+    append(&p, &[asst(n + 24 * MIN, "m2", 2_000_000, 10, json!([{"type": "text", "text": "reading more"}]), None)]);
+    ticks(&h, &mut st, &[n + 25 * MIN]);
+    assert!(agent(&st, "s1").flags.contains_key("burn_hard"), "{:?}", agent(&st, "s1").flags.keys().collect::<Vec<_>>());
+    assert!(marker.exists());
+    // a commit is an outcome: the count restarts and the marker goes
+    append(&p, &[tool(n + 26 * MIN, "m3", 10, "u1", "Bash", json!({"command": "git commit -m done"})), result(n + 27 * MIN, "u1", "ok", false)]);
+    ticks(&h, &mut st, &[n + 28 * MIN]);
+    assert!(!agent(&st, "s1").flags.contains_key("burn_hard") && !agent(&st, "s1").flags.contains_key("burn_soft"));
+    assert!(!marker.exists());
+}
+
 // ---- drift --------------------------------------------------------------------------------------------------
 
 fn drift_lines(n: u64, path: &str) -> Vec<String> {
@@ -275,6 +403,8 @@ fn a_hung_subagent_is_reported_to_the_session_that_launched_it() {
     let dir = h.join(".claude/projects/p/parent/subagents");
     write(&dir.join("agent-abc.jsonl"), &[prompt(n - 40 * MIN, "/w"), asst(n - 35 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
     std::fs::write(dir.join("agent-abc.meta.json"), r#"{"description":"Identify skipped tests"}"#).unwrap();
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     let a = agent(&st, "abc");
@@ -302,6 +432,8 @@ fn a_stopped_subagent_is_done_not_hung_and_a_live_one_still_is() {
             &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
         );
     }
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     assert_eq!(signals::state_of(agent(&st, "abc")), "done", "a killed agent is done");
@@ -333,6 +465,8 @@ fn a_subagent_stopped_with_task_stop_is_done_not_hung() {
             &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
         );
     }
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     assert_eq!(signals::state_of(agent(&st, "abc")), "done", "an answered TaskStop ends the agent");
@@ -377,6 +511,8 @@ fn a_teammate_stopped_by_name_is_done_not_hung() {
             &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)],
         );
     }
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     assert_eq!(signals::state_of(agent(&st, "aw3-1111")), "done", "stopped by name, answered with another task id");
@@ -403,6 +539,8 @@ fn background_work_with_no_wake_path_gets_an_arm_reminder() {
     let h = home("unarmed");
     let n = now0();
     parent_with_bg(&h, n, None);
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     let f = agent(&st, "parent").flags.get("monitor_unarmed").expect("monitor_unarmed");
@@ -474,7 +612,12 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     let rows = outbox(&h);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!((rows[0]["workspace"].as_str(), rows[0]["to_parent"].as_bool()), (Some("ws1"), Some(false)));
-    assert!(rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT=\"/plug\"") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
+    assert!(
+        rows[0]["text"].as_str().unwrap().contains("exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\"")
+            && !rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT")
+            && !rows[0]["text"].as_str().unwrap().contains("node "),
+        "{rows:?}"
+    );
     assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
@@ -564,6 +707,7 @@ fn a_cooldown_holds_the_next_reminder_back_and_says_so_once() {
     let evs = emit::take_queued();
     let held = evs.iter().filter(|e| e.h.as_str() == "reminder" && e.o == crate::telemetry::event::Outcome::Skip).count();
     assert_eq!(held, 1, "the suppression is recorded once per cooldown, not once per tick");
+    take_queue(&h, "s1"); // a reminder still waiting for its prompt is never queued twice, so the first one is taken before the cooldown ends
     ticks(&h, &mut st, &[n + 40 * MIN]);
     assert_eq!(queue(&h, "s1").len(), 2, "after the cooldown it is queued again");
     assert_eq!(st.today(&env(&h, n)).queued, 2);
@@ -571,11 +715,11 @@ fn a_cooldown_holds_the_next_reminder_back_and_says_so_once() {
 }
 
 #[test]
-fn an_agent_with_undelivered_reminders_is_not_flooded() {
+fn an_agent_with_an_undelivered_reminder_is_not_flooded() {
     let (h, n, _) = hung_home("pending-cap");
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 35 * MIN, n + 70 * MIN, n + 105 * MIN, n + 140 * MIN]);
-    assert_eq!(queue(&h, "s1").len(), 3, "max_pending undelivered reminders, then they are held back");
+    assert_eq!(queue(&h, "s1").len(), 1, "the same reminder about the same agent waits for its prompt instead of stacking");
 }
 
 #[test]
@@ -805,6 +949,7 @@ fn wake_rows(h: &Path, key: &str) -> Vec<Value> {
 
 /// A coordinating main session and one subagent that finished its turn `idle_min` minutes ago with a task still open.
 fn idle_subagent(h: &Path, n: u64, idle_min: u64) {
+    register(h, std::process::id(), "parent", "idle", n);
     write(&sess(h, "parent"), &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
     let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
     write(
@@ -924,6 +1069,7 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
     let run = |tag: &str, armed: bool| {
         let h = home(tag);
         let n = now0();
+        register(&h, std::process::id(), "m1", "busy", n);
         write(&sess(&h, "m1"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
         write(
             &h.join(".claude/projects/p/m1/subagents/agent-r1.jsonl"),
@@ -940,7 +1086,7 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
     let (flagged, q) = run("unarmed-main", false);
     assert!(flagged);
     let line = q.iter().find(|r| r["signal"] == "monitor_unarmed").expect("the reminder is queued")["text"].as_str().unwrap().to_string();
-    assert!(!line.contains('\n') && line.len() < 260, "one short line: {line}");
+    assert!(!line.contains('\n') && line.len() < 320, "one short line: {line}");
     assert!(!run("armed-main", true).0, "a live wake-watch is a wake path");
 }
 
@@ -1026,9 +1172,9 @@ fn a_live_process_is_running_or_waiting_whatever_its_transcript_says_and_a_dead_
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     let (b, i, d) = (agent(&st, "busy1"), agent(&st, "idle1"), agent(&st, "dead1"));
-    assert_eq!((b.kind.as_str(), state::of(b), b.pid), ("main", "running", me), "a busy process is running though its transcript ended its turn 8 h ago");
+    assert_eq!((b.kind.as_str(), state::of(b), b.pid), ("main", "waiting", me), "a busy shell does not reopen a completed assistant turn");
     assert_eq!((state::of(i), i.pid), ("waiting", me), "an idle process waits");
-    assert_eq!(state::of(d), "done", "a session whose process is gone is done, even with an unfinished turn");
+    assert_eq!(state::of(d), "dead", "a gone process with a missing cwd is dead, even with an unfinished turn");
 }
 
 fn teammate(h: &Path, n: u64) {
@@ -1081,7 +1227,7 @@ fn a_solo_session_outside_devswarm_is_main_running_and_solo() {
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     let a = agent(&st, "solo1");
-    assert_eq!((a.kind.as_str(), state::of(a)), ("main", "running"));
+    assert_eq!((a.kind.as_str(), state::of(a)), ("main", "waiting"));
     let doc = status::document(&env(&h, n + MIN), &st, &sources::Listing::default());
     let r = &doc["agents"][0];
     assert_eq!((r["role"].as_str(), r["project"].as_str(), r["pid"].as_u64()), (Some("solo"), Some("/proj"), Some(std::process::id() as u64)));
@@ -1179,12 +1325,17 @@ fn a_primary_is_not_told_to_arm_the_devswarm_watcher_it_declines_while_idle() {
     let h = home("primary-ws");
     let n = now0();
     devswarm(&h, n, None);
+    let checkout = h.join("checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&checkout).status().unwrap().success());
     std::fs::rename(h.join(".anti-hall/devswarm/workspaces/ws1.json"), h.join(".anti-hall/devswarm/workspaces/primary-1.json")).unwrap();
-    std::fs::write(h.join(".anti-hall/devswarm/workspaces/primary-1.json"), r#"{"id":"primary-1","sessionId":"sessW","worktreePath":"/wt/x"}"#).unwrap();
+    std::fs::write(h.join(".anti-hall/devswarm/workspaces/primary-1.json"), json!({"id":"primary-1","sessionId":"sessW","worktreePath":checkout}).to_string())
+        .unwrap();
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
     let a = agent(&st, "sessW");
-    assert!(a.ws.as_ref().is_some_and(|w| w.armed.is_none()), "a Primary's DevSwarm watcher state is not judged");
+    assert!(a.ws.as_ref().is_some_and(|w| w.armed == Some(true)), "an idle Primary is covered by the watcher idle-skip decision");
     assert!(outbox(&h).is_empty() && queue(&h, "sessW").iter().all(|r| !r["text"].as_str().unwrap().contains("wake-watch --auto")), "nobody is told to arm it");
 }
 
@@ -1241,6 +1392,8 @@ fn a_stopped_teammate_stays_done_after_the_stop_left_the_scan_window() {
         &h.join(".claude/projects/p/parent/subagents/agent-sub9.jsonl"),
         &[prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s9", 5, 5, json!([{"type": "text", "text": "done"}]), Some("end_turn"))],
     );
+    // A child doing work has a live launching session.
+    register(&h, std::process::id(), "parent", "busy", n);
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
     assert_eq!(signals::state_of(agent(&st, "agone-1")), "done", "stopped by name, no longer on the roster");
@@ -1249,6 +1402,62 @@ fn a_stopped_teammate_stays_done_after_the_stop_left_the_scan_window() {
     assert!(agent(&st, "aquiet-2").flags.contains_key("hung"), "an alive teammate that is truly silent still alerts");
     assert!(!agent(&st, "aidle-3").finished, "an idle teammate on the roster is not finished");
     assert_eq!(signals::state_of(agent(&st, "sub9")), "done", "a subagent that ended its turn");
+}
+
+/// The real answer to a `TaskStop` of an in-process teammate (session 44895798, 2026-10-22): the host's own task id plus the task's
+/// description, nothing that names the agent. The teammate is still on the roster at that moment, so only the answer ends it.
+#[test]
+fn a_taskstop_answer_names_the_teammate_by_its_launch_description() {
+    let h = home("stopanswer");
+    let n = now0();
+    let cwd = h.to_string_lossy().to_string(); // a missing working directory reads as dead
+    let launch = |ts: u64, tuid: &str, name: &str, desc: &str| {
+        asst(ts, &format!("m{tuid}"), 5, 5, json!([{"type": "tool_use", "id": tuid, "name": "Agent", "input": {"name": name, "description": desc}}]), None)
+    };
+    let stop_answer = |ts: u64, tuid: &str, desc: &str| {
+        json!({"type": "user", "timestamp": iso(ts),
+               "toolUseResult": {"message": "Successfully stopped task", "task_id": "tzzz", "task_type": "in_process_teammate", "command": desc},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tuid, "content": "ok"}]}})
+        .to_string()
+    };
+    let parent = vec![
+        prompt(n - 80 * MIN, &cwd),
+        launch(n - 70 * MIN, "toolu_a0", "stopped", "Fix the stopped thing"),
+        launch(n - 70 * MIN + 1, "toolu_a1", "kept", "Fix the kept thing"),
+        tool(n - 50 * MIN, "p3", 5, "toolu_s1", "TaskStop", json!({"task_id": "tzzz"})),
+        stop_answer(n - 50 * MIN + 1000, "toolu_s1", "Fix the stopped thing"),
+    ];
+    write(&sess(&h, "parent"), &parent);
+    let silent = vec![prompt(n - 70 * MIN, &cwd), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), None)];
+    mate(&h, "astopped-1", "stopped", "team-r", &silent);
+    mate(&h, "akept-2", "kept", "team-r", &[prompt(n - 70 * MIN, &cwd), asst(n - MIN, "s2", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
+    // The host records the launch description in the teammate metadata used to match stop answers.
+    for (id, name, desc) in [("astopped-1", "stopped", "Fix the stopped thing"), ("akept-2", "kept", "Fix the kept thing")] {
+        let p = h.join(format!(".claude/projects/p/parent/subagents/agent-{id}.meta.json"));
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        v["description"] = json!(desc);
+        assert_eq!(v["name"], name);
+        std::fs::write(&p, v.to_string()).unwrap();
+        age_file(&p, 70 * MIN);
+    }
+    roster(&h, "team-r", &["stopped", "kept"]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
+    assert_eq!(signals::state_of(agent(&st, "astopped-1")), "done", "the stop answer carries the launch description");
+    {
+        let k = agent(&st, "akept-2");
+        assert_eq!(
+            signals::state_of(k),
+            "running",
+            "a teammate no stop names stays running; cwd={:?} last={} now={} run={} fin={} pend={}",
+            k.cwd,
+            k.last_output_ms,
+            n,
+            k.running,
+            k.finished,
+            k.pending.len()
+        );
+    }
 }
 
 /// Prevention: every way the host says an agent has ended must end an agent whose own transcript still reads "running and silent".
@@ -1276,7 +1485,8 @@ fn every_end_signal_ends_a_silent_running_agent() {
                 let p = h.join(".claude/teams/team-e/config.json");
                 let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
                 v["members"][1]["joinedAt"] = json!(n + 60 * MIN);
-                std::fs::write(p, v.to_string()).unwrap();
+                std::fs::write(&p, v.to_string()).unwrap();
+                age_file(&p, 70 * MIN);
             }
             _ => {
                 roster(&h, "team-e", &["ax"]);
@@ -1290,6 +1500,8 @@ fn every_end_signal_ends_a_silent_running_agent() {
             }
         }
         std::fs::write(dir.join("agent-ax-1.meta.json"), meta.to_string()).unwrap();
+        // A child doing work has a live launching session.
+        register(&h, std::process::id(), "parent", "busy", n);
         let mut st = State::default();
         if case == "not_rediscovered" {
             // followed first, then left out of the tick (the cap) while the host drops it from the roster

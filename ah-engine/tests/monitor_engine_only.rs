@@ -26,7 +26,7 @@ struct Run {
     out: String,
 }
 
-/// Run the monitor command with a stub engine (`engine_body`, absent when None) and a stub launcher that must never run.
+/// Run the monitor command with a stub engine (`engine_body`, absent when None) and a stub installer that must never run.
 fn run(tag: &str, engine_body: Option<&str>) -> Run {
     let root: PathBuf = std::env::temp_dir().join(format!("ah-monfb-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
@@ -36,8 +36,8 @@ fn run(tag: &str, engine_body: Option<&str>) -> Run {
     if let Some(b) = engine_body {
         script(&home.join(".anti-hall/ah-engine/bin/ah-engine"), b);
     }
-    script(&plugin.join("scripts/ah-run.sh"), "echo \"LAUNCHER $*\"");
-    script(&plugin.join("../anti-hall-node/companion/lib/devswarm-wake-watch.js"), "echo NODE-WATCHER");
+    script(&plugin.join("hooks/install.sh"), "echo \"LAUNCHER $*\"");
+    script(&plugin.join("companion/lib/devswarm-wake-watch.js"), "echo NODE-WATCHER");
     let o = Command::new("/bin/sh")
         .arg("-c")
         .arg(monitor_command())

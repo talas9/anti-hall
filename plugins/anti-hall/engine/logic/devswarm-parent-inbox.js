@@ -863,15 +863,15 @@ function piJsonBounded(p) {
 
 // `newestKnownAntiHallVersion({ env, home })`: the highest of the registered, the cached and the marketplace version, or null.
 function piNewestVersion(home) {
-  var marketplace = home + '/' + ah.cfg('devswarm_parent.marketplace_default');
+  var owner = ah.plugin.install(), marketplace = owner && owner.marketplace ? owner.marketplace : home + '/' + ah.cfg('devswarm_parent.marketplace_default');
   var override = ah.env.get(ah.cfg('devswarm_parent.env_marketplace_dir'));
   if (override && ah.path.isAbsolute(override) && ah.fs.isDir(override)) marketplace = override;
   var root = ah.path.resolveAbs(marketplace + '/../..');
   var installed = null;
-  var data = piJsonBounded(root + '/' + ah.cfg('devswarm_parent.installed_rel'));
+  var data = piJsonBounded(owner ? owner.registry : root + '/' + ah.cfg('devswarm_parent.installed_rel'));
   if (data && typeof data === 'object') {
     var reg = data.plugins && typeof data.plugins === 'object' ? data.plugins : data;
-    var entry = reg[ah.cfg('devswarm_parent.plugin_registry_key')];
+    var entry = reg[owner ? owner.key : ah.cfg('devswarm_parent.plugin_registry_key')];
     if (Array.isArray(entry)) {
       var valid = entry.filter(function (e) { return e && typeof e === 'object' && piSemver(e.version); });
       var pick = null;
@@ -881,7 +881,7 @@ function piNewestVersion(home) {
     } else if (typeof entry === 'string') installed = piSemver(entry) ? entry : null;
     else if (entry && typeof entry === 'object' && piSemver(entry.version)) installed = entry.version;
   }
-  var cacheRoot = root + '/' + ah.cfg('devswarm_parent.cache_rel');
+  var cacheRoot = owner ? owner.cache : root + '/' + ah.cfg('devswarm_parent.cache_rel');
   var cached = null;
   var names = ah.fs.readdir(cacheRoot);
   if (names !== null) {
@@ -900,8 +900,7 @@ function piStaleBuild(home, id, newest) {
   var hb = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + '.json');
   var rec = hb && typeof hb.version === 'string' ? hb.version : null;
   if (!(piSemver(rec) && jx.cmpVersions(rec, newest.version) < 0)) return null;
-  var target = newest.cacheRoot + '/' + newest.version + '/' + ah.cfg('devswarm_parent.cli_rel');
-  var cmd = ah.fs.isFile(target) ? text.render(ah.cfg('devswarm_parent.stale_build_cmd'), { path: target }) : ah.cfg('devswarm_parent.stale_build_cmd_unknown');
+  var cmd = ah.cfg('devswarm_parent.stale_build_cmd'); // the native thin client drains it; no per-version script path
   return { version: rec, message: text.render(ah.cfg('devswarm_parent.stale_build_message'), { version: rec, cmd: cmd }) };
 }
 

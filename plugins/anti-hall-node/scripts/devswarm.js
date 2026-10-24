@@ -418,7 +418,7 @@ const VERB_HELP = {
     + 'Read a child\'s status: `roster` (mesh-wide liveness/gates) or `inbox pull <childId>`/`inbox messages <childId>` (its own inbox).',
     mutates: 'MUTATES — forwards the raw argv tail straight to the hivecontrol child process' },
   merge: { synopsis: 'check-merge + merge-into-source via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards to hivecontrol AND unconditionally sends a mesh broadcast reporting the outcome' },
-  skip: { synopsis: 'skip <guard> [--ttl <minutes>] — temporarily disable an anti-hall guard', mutates: 'writes a skip-file entry' },
+  skip: { synopsis: 'skip <guard> [--ttl <minutes>] [--session <id>] [--global] — temporarily disable an anti-hall guard for this session', mutates: 'writes a skip-file entry' },
   'gate-intent': { synopsis: 'record a stated-intent signal for the Stop-hook parent gate', mutates: 'writes a gate-intent record' },
   'auto-archive': { synopsis: 'show the auto-archive plan (done+merged+clean+no-unread+idle workspaces)', mutates: 'read-only' },
   'prune-archived': { synopsis: 'prune-archived --older-than <days> (dry run) | --confirm-ids <ids> --plan <nonce>', mutates: 'dry run writes a plan file; --confirm-ids DELETES the listed archived workspaces via hivecontrol (owner-approved only)' },
@@ -993,13 +993,13 @@ function runArmed(cmd, positionals, flags, ctx, argv) {
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'skip': {
-        // The escape-hatch CLI entry point: `skip <guard> [--ttl <minutes>]`.
+        // The escape-hatch CLI entry point: `skip <guard> [--ttl <minutes>] [--session <id>] [--global]`.
         // No isSafeId gate here — guard names ("edit-guard", "all", ...) are a
         // fixed, code-defined vocabulary read back by skip-guard.js's own
         // isSkipped(), not a filesystem id.
         const guard = positionals[1];
         if (!guard) {
-          return { code: 2, result: { ok: false, error: 'usage: devswarm.js skip <guard> [--ttl <minutes>]' } };
+          return { code: 2, result: { ok: false, error: 'usage: devswarm.js skip <guard> [--ttl <minutes>] [--session <id>] [--global]' } };
         }
         const r = cmdSkip(guard, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };

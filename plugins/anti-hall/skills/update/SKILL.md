@@ -31,7 +31,7 @@ takes effect in-session — this skill does not over-promise.
 - **Version authority** — `plugins/anti-hall/.claude-plugin/plugin.json` in the clone.
   `CHANGELOG.md` (repo root) carries one `## <version>` section per release.
 - **DevSwarm ingest daemon's baked script path** — `install-devswarm-ingest.js`'s daemon
-  unit bakes the **marketplace clone's own `companion/devswarm-ingest.js`** (this is the
+  unit bakes the **marketplace clone's own the engine ingest duty** (this is the
   ONE path this skill `git pull --ff-only`s in place — never a version-pinned cache dir,
   which is a NEW directory per release). That is what makes the daemon survive an update
   without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
@@ -39,7 +39,7 @@ takes effect in-session — this skill does not over-promise.
 
 ## What the helper does (`ah-engine update`)
 
-macOS + Linux (Windows is not supported), fail-open
+Runs inside the thin client (`ah-engine update`), macOS + Linux (Windows is not supported), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).
@@ -82,7 +82,7 @@ its own purposes).
      --ff-only`ed **in place**) so a fresh install never goes stale again — but a daemon
      installed *before* this fix shipped is still pointed at a path that may now be gone,
      and needs a one-time re-bake. `healIngestDaemon` runs ONLY under the same
-     DevSwarm-session-only gate `hooks/lib/doctor-repair.js`'s own GATED ingest fix uses
+     DevSwarm-session-only gate `doctor-repair`'s own GATED ingest fix uses
      (`isDevswarmActive(env) && resolveWorktree(cwd) !== null`) and reuses that module's
      already-tested classify/detect helpers rather than re-deriving the logic; it re-runs
      the (freshly-pulled) installer only when the unit is genuinely `wrong-path` or
@@ -160,7 +160,7 @@ its own purposes).
      up on the NEXT `update`/`doctor` call rather than lost: every one of these stages is
      independently idempotent/resumable (fold/heal/fold-archived-rows persist their own
      resume markers; the one-time-per-version stages simply re-attempt next call). As of
-     v0.96.1, the periodic supervisor sweep (`companion/devswarm-supervisor.js`) also picks
+     v0.96.1, the periodic supervisor sweep (the engine supervisor duty) also picks
      up `fold-all-stores`, `heal-orphan-partitions`, `fold-archived-rows` and (v0.102.1)
      `heal-registry-rows` — one deferred
      stage per supervisor pass, within `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default
@@ -178,16 +178,16 @@ its own purposes).
    never reach cache sync).
 
 Modes:
-- `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" update --check` — `git fetch` + compare local vs remote
+- `"$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check` — `git fetch` + compare local vs remote
   `plugin.json` version. **No pull, no writes.** Answers "is anti-hall up to date?".
-- `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" update` — the full update above.
+- `"$HOME/.anti-hall/ah-engine/bin/ah-engine" update` — the full update above.
 
 ## Steps
 
 1. Pick the mode from the user's words:
    - "is anti-hall up to date" / "check for an update" → `--check`
    - "update" / "upgrade anti-hall" → full update
-2. The helper is a `node` script (a state change — it pulls, may copy into the
+2. The helper (`ah-engine update`; a state change — it pulls, may copy into the
    cache, and runs migrations), so **run it directly in the main session, in the
    foreground, with a generous Bash `timeout`** (e.g. 600000) — never delegate it
    to a subagent: the main session holds the context needed to judge a migration
@@ -195,8 +195,8 @@ Modes:
    handed to a cheaper model. command-guard allows exactly this invocation
    (optionally piped to a bounded sink). Run exactly one of:
    ```
-   sh "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/scripts/ah-run.sh" update --check
-   sh "$HOME/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/scripts/ah-run.sh" update
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check
+   "$HOME/.anti-hall/ah-engine/bin/ah-engine" update
    ```
    Never spawn a subagent for it (model-routing-guard blocks an update spawn;
    `guards.updateInSession`).
@@ -250,7 +250,7 @@ Modes:
    the opt-in `migrate-state.js --restore-planning --dir <worktree>`. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
-7. Run the capability scan (`sh plugins/anti-hall/scripts/ah-run.sh capability-scan`)
+7. Run the capability scan (`"$HOME/.anti-hall/ah-engine/bin/ah-engine" capability-scan`)
    to find what's missing on **this machine** vs what this build **ships**.
    Read-only — it never installs anything. It reports each opt-in capability
    (companions under `companion/install-*.js`, statusline, pending state

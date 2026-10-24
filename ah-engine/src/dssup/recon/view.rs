@@ -4,7 +4,7 @@
 use super::{Pre, RegRow};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::ident::{Defer, R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::store::{RegistryRow, hex};
 use std::path::{Path, PathBuf};
 
@@ -56,33 +56,46 @@ pub fn exists(home: &Path, rel: &str) -> bool {
     home.join(rel).exists()
 }
 
-fn marker_of(home: &Path, hash: &str) -> String {
-    std::fs::read_to_string(home.join(store_rel(hash)).join(defaults::text("mesh.backend_marker"))).map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default()
+/// The backend a store directory is on, as `resolveStoreBackend` decides it: the pinned marker when it names one, else what is on disk
+/// (a database with data is sqlite, a journal directory with files is the journal), else sqlite. Node also writes the marker it
+/// inferred; the engine's reads and writes work on the database itself, so an unpinned store needs no marker to be read.
+fn backend_of(home: &Path, hash: &str) -> String {
+    let dir = home.join(store_rel(hash));
+    let marker = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).map(|m| m.trim().to_ascii_lowercase()).unwrap_or_default();
+    let (sqlite, journal) = (defaults::text("mesh.backend_sqlite"), defaults::text("mesh_write.backend_journal"));
+    if marker == sqlite || marker == journal {
+        return marker;
+    }
+    if std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).is_ok_and(|m| m.len() > 0) {
+        return sqlite.to_string();
+    }
+    if std::fs::read_dir(dir.join(defaults::text("devswarm_sup.rt_journal_dir"))).is_ok_and(|mut d| d.next().is_some()) {
+        return journal.to_string();
+    }
+    sqlite.to_string()
 }
 
-/// Every registry row of a store as stored, ordered by id, or a deferral: not a sqlite store, no database, a registry without
-/// `write_seq`, a column the reader cannot decode.
+/// Every registry row of a store as stored, ordered by id. A store on the legacy journal backend (Node older than 22.5) is refused with
+/// `reason_store_backend`: the engine has no journal reader, nothing waits for it, and the stage counts it `disabled`. A registry from
+/// before `write_seq` is upgraded the way Node's store open does it (the additive column), then read.
 pub fn registry(home: &Path, hash: &str) -> R<Vec<RegRow>> {
-    let marker = marker_of(home, hash);
-    if marker == defaults::text("mesh_write.backend_journal") {
-        // the legacy journal backend (Node older than 22.5): the engine does not read it, and nothing waits for it (see `reason_store_backend`)
-        return defer(defaults::text("devswarm_recon.reason_store_backend"));
-    }
-    if marker != defaults::text("mesh.backend_sqlite") {
-        return defer(defaults::text("devswarm_recon.reason_store_unpinned"));
+    if backend_of(home, hash) == defaults::text("mesh_write.backend_journal") {
+        return Err(crate::dssup::failure(defaults::text("devswarm_recon.reason_store_backend")));
     }
     let db = store_db(home, hash);
-    let reader = crate::mesh::MeshReader::open(&db).map_err(|e| Defer(format!("store-open:{e}")))?;
-    let c = reader.conn();
-    let cols: Vec<String> = {
-        let mut st = c.prepare(crate::sql::MESHW_TABLE_INFO_REGISTRY).map_err(|e| Defer(format!("registry-shape:{e}")))?;
-        let it = st.query_map([], |r| r.get::<_, String>(1)).map_err(|e| Defer(format!("registry-shape:{e}")))?;
-        it.flatten().collect()
+    let mut reader = crate::mesh::MeshReader::open(&db).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
+    let has_seq = |rd: &crate::mesh::MeshReader| -> R<bool> {
+        let mut st = rd.conn().prepare(crate::sql::MESHW_TABLE_INFO_REGISTRY).map_err(|e| crate::dssup::failure(format!("registry-shape:{e}")))?;
+        let it = st.query_map([], |r| r.get::<_, String>(1)).map_err(|e| crate::dssup::failure(format!("registry-shape:{e}")))?;
+        Ok(it.flatten().any(|x| x == defaults::text("mesh_write.write_seq_column")))
     };
-    if !cols.iter().any(|x| x == defaults::text("mesh_write.write_seq_column")) {
-        return defer("no-write-seq");
+    if !has_seq(&reader)? {
+        // Node's `ensureRegistryWriteSeqColumn` runs on every open; opening the store for writing does the same ALTER
+        crate::meshw::store::MeshStore::open(&db).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
+        reader = crate::mesh::MeshReader::open(&db).map_err(|e| crate::dssup::failure(format!("store-open:{e}")))?;
     }
-    let mut st = c.prepare(crate::sql::RECON_REGISTRY_ALL).map_err(|e| Defer(format!("registry-shape:{e}")))?;
+    let c = reader.conn();
+    let mut st = c.prepare(crate::sql::RECON_REGISTRY_ALL).map_err(|e| crate::dssup::failure(format!("registry-shape:{e}")))?;
     let rows = st
         .query_map([], |r| {
             Ok(RegRow {
@@ -98,8 +111,8 @@ pub fn registry(home: &Path, hash: &str) -> R<Vec<RegRow>> {
                 write_seq: r.get(7)?,
             })
         })
-        .map_err(|e| Defer(format!("registry-shape:{e}")))?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| Defer(format!("registry-shape:{e}")))
+        .map_err(|e| crate::dssup::failure(format!("registry-shape:{e}")))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| crate::dssup::failure(format!("registry-shape:{e}")))
 }
 
 /// `|| null` of `rowToDescriptor`: an empty text reads as no value.
@@ -131,13 +144,11 @@ pub fn descriptor_of(r: &RegRow) -> RegistryRow {
     }
 }
 
-/// `String(v)` of a descriptor field the engine reproduces: a string as is, `null` as `None`; any other JSON type is a state
-/// the engine does not model (`String(5)`, `String({})`), so the caller defers.
+/// `String(v)` of a descriptor field: a string as is, absent or `null` as `None`, any other JSON type as JavaScript prints it.
 pub fn str_field(d: &OVal, key: &str) -> R<Option<String>> {
     match d.get(key) {
         None | Some(OVal::Null) => Ok(None),
-        Some(OVal::Str(s)) => Ok(Some(s.clone())),
-        Some(_) => defer("descriptor-field-type"),
+        Some(v) => Ok(Some(crate::dssup::appsync::plan::js_str(v))),
     }
 }
 
@@ -146,8 +157,11 @@ pub fn str_field(d: &OVal, key: &str) -> R<Option<String>> {
 /// One message row as the fold copies it (`listMessages`' shape, the columns the forward uses).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Msg {
-    /// Milliseconds since the epoch (an integer; any other stored type is a deferral).
+    /// Milliseconds since the epoch: `Number(ts)` of the stored value (an integer in every store the product writes).
     pub ts: i64,
+    /// `ts` is exactly the stored number (a whole value that fits). A fractional, text or missing timestamp is read as far as it
+    /// goes and is never copied into another partition: a forward treats the row as one it cannot carry, a re-home refuses.
+    pub exact_ts: bool,
     /// The dedupe hash.
     pub hash: Option<String>,
     /// The body (`''` for SQL NULL, as `listMessages` reads it).
@@ -171,7 +185,7 @@ pub struct Msg {
 }
 
 fn shape<T, E: std::fmt::Display>(r: Result<T, E>, what: &str) -> R<T> {
-    r.map_err(|e| Defer(format!("{what}:{e}")))
+    r.map_err(|e| crate::dssup::failure(format!("{what}:{e}")))
 }
 
 /// A read-only handle on a store the fold plans from.
@@ -185,14 +199,21 @@ pub fn messages_of(rd: &crate::mesh::MeshReader, id: &str) -> R<Vec<Msg>> {
     let mut rows = shape(st.query(rusqlite::params![id]), "messages-shape")?;
     let mut out = Vec::new();
     while let Some(r) = shape(rows.next(), "messages-read")? {
-        let ts = match shape(r.get_ref(1), "messages-read")? {
-            rusqlite::types::ValueRef::Integer(i) => i,
-            _ => return defer("message-ts-type"),
+        let (ts, exact_ts) = match shape(r.get_ref(1), "messages-read")? {
+            rusqlite::types::ValueRef::Integer(i) => (i, true),
+            // `Number(r.ts)`: a real or text value reads as the number it spells; only a whole one is exact
+            rusqlite::types::ValueRef::Real(f) => (f as i64, f.is_finite() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0),
+            rusqlite::types::ValueRef::Text(s) => {
+                let n = crate::checks::guardkit::text::js_number_of_str(&String::from_utf8_lossy(s));
+                (if n.is_finite() { n as i64 } else { 0 }, n.is_finite() && n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0)
+            }
+            _ => (0, false),
         };
         let text = |i: usize| shape(r.get::<_, Option<String>>(i), "message-text-type");
         let flag = |i: usize| shape(r.get::<_, Option<i64>>(i), "message-flag-type").map(|v| v == Some(1));
         out.push(Msg {
             ts,
+            exact_ts,
             hash: text(2)?,
             body: text(3)?.unwrap_or_default(),
             sender: text(4)?,
@@ -221,7 +242,7 @@ pub fn hash_present(rd: &crate::mesh::MeshReader, hash: &str) -> R<bool> {
 
 /// The `reader_cursors` rows of a partition.
 pub fn cursor_rows(rd: &crate::mesh::MeshReader, id: &str) -> R<Vec<crate::meshw::store::CursorRow>> {
-    crate::meshw::cursors::rows_from_reader(rd, id).map_err(|e| Defer(format!("cursor-rows:{e}")))
+    crate::meshw::cursors::rows_from_reader(rd, id).map_err(|e| crate::dssup::failure(format!("cursor-rows:{e}")))
 }
 
 /// `cursors.value` of a partition (0 when there is no row).

@@ -22,7 +22,7 @@ from re-adding a command-backed statusline.
 For cleanup of older installs, run:
 
 ```bash
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" uninstall-statusline
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" uninstall-statusline
 ```
 
 That command remains supported and restores/removes the old `statusLine`

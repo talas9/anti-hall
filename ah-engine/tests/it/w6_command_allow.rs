@@ -1,7 +1,6 @@
-//! W6: command-guard allows a short `node -e` JSON filter that indexes a key like `j["git-guard"]`, and still blocks what the Node guard
-//! blocks (a block is never weaker than Node's, #235 / #236): an inline-body `gh issue create` (a remote write that needs delegation), a push of
-//! any branch but the current one (also an existing non-protected branch of a sibling worktree), a push of a protected or missing
-//! branch, a force push, a `node -e` that writes through a computed or bracketed API name, and the other gh mutations.
+//! W6: command delegation permits safe JSON reads, lightweight gh bookkeeping and pushes.
+//! It still rejects computed filesystem writes and sensitive gh mutations.
+//! The independent git safety check owns force-push rejection.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 
 use serde_json::json;
@@ -37,6 +36,8 @@ fn verdict_on(dir: &Path, home: &Path, cwd: &Path, command: &str, codex: bool) -
         .env("HOME", home)
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
+        // This decision test launches git helpers; cold CI scheduling is not a script deadline test.
+        .env("AH_ENGINE_SCRIPT_TIME_MS", "2000")
         .env("ANTIHALL_TEST_ISOLATION", "1")
         .env("AH_ENGINE_PLUGIN_ROOT", plugin())
         .env("CLAUDE_PLUGIN_ROOT", plugin())
@@ -50,7 +51,12 @@ fn verdict_on(dir: &Path, home: &Path, cwd: &Path, command: &str, codex: bool) -
     let mut ch = c.spawn().unwrap();
     ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stderr).into_owned())
+    let mut err = String::from_utf8_lossy(&o.stderr).into_owned();
+    if !err.is_empty() {
+        // Detailed justifications live beside the bounded hook brief.
+        err.push_str(&std::fs::read_to_string(home.join(".anti-hall/block-details/command-guard-w6.md")).unwrap_or_default());
+    }
+    (o.status.code().unwrap_or(-1), err)
 }
 
 #[test]
@@ -75,7 +81,7 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
     };
     let blocked = |c: &str| {
         let (code, err) = verdict(&dir, &home, &main, c);
-        assert!(code == 2 && err.contains("command-guard"), "should be blocked: {c} -> {code} {err}");
+        assert!(code == 2 && err.contains("⛔ command check:"), "should be blocked: {c} -> {code} {err}");
     };
     allowed(&format!(r#"node -e 'const j=require("{}");console.log(j["git-guard"], j.plugins["anti-hall@anti-hall"])'"#, skip.display()));
 
@@ -87,13 +93,14 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
     allowed("cargo clean");
     blocked("cargo build");
     blocked("cargo clean && cargo build");
-    // #235: a plain push exempts the CURRENT branch only; another existing local branch (a sibling worktree's) does not
-    blocked("git push -u origin feat2");
-    blocked("git push origin feat2");
-    blocked("git push -u origin main");
-    blocked("git push -u origin no-such-branch");
-    blocked("git push --force origin feat2");
-    blocked("git push origin +feat2");
+    // Push is no longer a heavy delegation verb (command.git_heavy_subs).
+    // The independent git safety check, covered by gitcheck, owns force-push rejection.
+    allowed("git push -u origin feat2");
+    allowed("git push origin feat2");
+    allowed("git push -u origin main");
+    allowed("git push -u origin no-such-branch");
+    allowed("git push --force origin feat2");
+    allowed("git push origin +feat2");
     blocked(r#"node -e 'require("fs")["writeFileSync"]("/tmp/x","y")'"#);
     blocked(r#"node -e 'require("fs")["write"+"FileSync"]("/tmp/x","y")'"#);
     blocked("gh issue delete 5");
@@ -106,9 +113,9 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
         };
         let no = |c: &str, why: Option<&str>| {
             let (code, err) = verdict_on(&dir, &home, &main, c, codex);
-            assert!(code == 2 && err.contains("command-guard"), "codex={codex} should be blocked: {c} -> {code} {err}");
+            assert!(code == 2 && err.contains("⛔ command check:"), "codex={codex} should be blocked: {c} -> {code} {err}");
             if let Some(w) = why {
-                assert!(err.contains(w) && (w == "floods" || !err.contains("floods")), "codex={codex} wrong reason for {c}: {err}");
+                assert!(err.contains(w) && (w == "flood" || !err.contains("flood")), "codex={codex} wrong reason for {c}: {err}");
             }
         };
         for c in [
@@ -129,7 +136,7 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
         ] {
             ok(c);
         }
-        let reason = Some("irreversible or sensitive");
+        let reason = Some("hard to undo or sensitive");
         for c in [
             "gh pr merge 5 --squash",
             "gh -R o/r pr merge 5",
@@ -151,8 +158,8 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
         no("gh issue delete 5", None);
         // gcloud / kubectl are unchanged: their reads pass, their writes keep the flood reason
         ok("kubectl get pods");
-        no("kubectl apply -f x.yaml", Some("floods"));
-        no("gcloud run deploy svc", Some("floods"));
+        no("kubectl apply -f x.yaml", Some("flood"));
+        no("gcloud run deploy svc", Some("flood"));
     }
 
     // #263: the owner's config.toml adds to / removes from the shipped lists (effective = shipped - remove + add), no shipped-file edit.

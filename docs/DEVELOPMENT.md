@@ -1,6 +1,6 @@
 # Development guide
 
-How to build, test, run and release anti-hall from a fresh checkout on macOS or Linux (including WSL). Windows is not supported. It covers the plugin (Node hooks, skills, scripts) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
+How to build, test, run and release anti-hall from a fresh checkout on macOS or Linux (including WSL). Windows is not supported. It covers the plugin (skills, TOML defaults, engine rule logic) and the `ah-engine/` Rust engine. Anything not built yet is marked **planned (D-n)**, where `D-n` is an entry in [`ah-engine/DECISIONS.md`](../ah-engine/DECISIONS.md).
 
 Every shell command in this guide is run by `ah-engine/scripts/doc-check.sh` in a fresh clone (see [Keeping this guide true](#keeping-this-guide-true)). A command that needs credentials, installs something globally or writes outside the clone is marked as skipped there.
 
@@ -9,7 +9,7 @@ Every shell command in this guide is run by `ah-engine/scripts/doc-check.sh` in 
 | Tool | Version | Used for |
 |---|---|---|
 | Rust | `1.99.0`, pinned in [`ah-engine/rust-toolchain.toml`](../ah-engine/rust-toolchain.toml) with `rustfmt` and `clippy` | building and testing `ah-engine/` |
-| Node.js | 22 or newer (`engines` in `package.json`; CI runs 22 and 24) | the plugin, which is still the live implementation, plus `tools/`, `evals/` and the parity harnesses. No `npm install`: everything is built-ins only |
+| Node.js | 22 or newer, optional | only the repo tools (`tools/`, `evals/`, the parity harnesses against the Node backup in `plugins/anti-hall-node`); anti-hall itself needs no Node |
 | git | any recent | everything |
 | `actionlint` | tested with 1.7.12 | linting `.github/workflows/*.yml` |
 | `shellcheck` | tested with 0.11.0 | linting the shell scripts |
@@ -76,16 +76,12 @@ ah-engine/scripts/build.sh --checks
 | Engine, everything | `./test.sh` | `ah-engine/` |
 | Engine, one former file (now a module of the single `it` test binary) | `cargo test --locked --test it -- <name>::` or `cargo nextest run -E 'test(/^<name>::/)'` | `ah-engine/tests/it/<name>.rs` |
 | Engine, lint and docs | `cargo fmt --check`, clippy, `cargo doc` | `ah-engine/` |
-| Plugin | `node --test` | repo root |
-| Generated files | `node tools/gen-*.js --check` | repo root |
 
 All engine integration tests are ONE binary (`ah-engine/tests/it/main.rs`, one `mod` per former `tests/<name>.rs`), so the
 crate compiles and links once instead of once per file. Three tests keep their own binary under `ah-engine/tests/` because they
 `set_var` process-global variables (`HOME`, the proxy variables) and need a process to themselves under plain `cargo test`:
 `config_hotswap`, `runtime_config` and `jev_http` (select them with `--test <name>`). Under nextest every test is its own
 process anyway. Add a new test as a module of `tests/it/` (declare it in `main.rs`), not as a new file in `tests/`.
-| Parity harnesses | `node parity/run-*.js` | `ah-engine/parity/` |
-| Evals | `node evals/anti-hall/run.js` | repo root, spends money |
 
 **Engine.** `./test.sh` runs the whole suite, then fails if any `ah-engine serve` daemon from this build tree is still alive (tests reap their own daemons and use their own `HOME`). Run one test runner at a time.
 
@@ -176,35 +172,18 @@ cd ah-engine
 cargo bench --locked --bench parsers
 ```
 
-**Plugin.** From the repo root, with no install step. The Node test suite is retired; these generated-file checks remain.
+**Plugin.** There is no install step and no Node test suite. A plugin change (TOML defaults, skills, docs) is checked by loading it into the engine and reading the result:
 
+<!-- doc-check: skip (needs an installed engine) -->
 ```sh
-node tools/gen-protocol.js --check
-node tools/gen-agents-catalog.js --check
-node tools/gen-kb-counts.js --check
+~/.anti-hall/ah-engine/bin/ah-hook doctor --check
 ```
 
-<!-- doc-check: skip (needs an installed engine under the real home) -->
-```sh
-~/.anti-hall/ah-engine/bin/ah-engine doctor --check
-```
-
-A green local run is not a green CI run. CI runs on ubuntu and macOS, slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Tests must never touch the real home: see "Test isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-**Evals.** `evals/anti-hall/run.js` runs the benchmark suite through `claude plugin eval`. It needs a logged-in `claude`, spends API money and requires `--max-cost-usd`; read [BENCHMARK-METHOD.md](BENCHMARK-METHOD.md) first. The harness's own unit tests run as part of `node --test`.
-
-<!-- doc-check: skip (needs claude login and spends API money) -->
-```sh
-node evals/anti-hall/run.js --arm anti-hall --max-cost-usd 3 --label smoke
-```
-
-**Parity.** The Node parity harnesses and the `node_parity` test module are retired with the Node tests (owner order 2026-10-23); the engine's own tests are the reference.
-
-Set `AH_PARITY_DUMP=<dir>` to write each lane's corpus and summary there, `AH_PARITY_ONLY=<text>` to run only the scenarios whose id contains it (the sandbox lanes), and `AH_PARITY_REAL_CMDS`, `AH_PARITY_REAL_EDITS` or `AH_PARITY_REAL_TRANSCRIPTS=1` to add real commands, edits or transcripts from local data to the lanes that took them (never committed).
+A green local build is not a green CI run. CI runs on ubuntu and macOS, slower, with a real `HOME` and a detached `HEAD`; read the Actions result on your pull request. Never point anything you run at the real home: see "Isolation" in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Run the plugin against a local engine
 
-The plugin's hooks call the engine whenever a binary is installed at `~/.anti-hall/ah-engine/bin/ah-engine` (the bootstrap installs the release pinned by `ah-engine.lock` and never overwrites a binary it did not install, so a local build copied there stays). To keep a test run off your real home, exercise the engine directly, in a throwaway state directory (keep its path short, because the daemon's socket lives there):
+The plugin's hooks run the thin client `~/.anti-hall/ah-engine/bin/ah-hook`, which calls the engine installed at `~/.anti-hall/ah-engine/bin/ah-engine` (the installer installs the release pinned by `ah-engine.lock` and never overwrites a binary it did not install, so a local build copied there stays). To keep a test run off your real home, exercise the engine directly, in a throwaway state directory (keep its path short, because the daemon's socket lives there):
 
 ```sh
 E="$PWD/ah-engine/target/release/ah-engine"
@@ -218,7 +197,7 @@ echo "$PAYLOAD" | "$E" check git || test $? -eq 2
 # the hook path: the client starts a daemon if none runs and prints the host's JSON answer (a block is exit 2); a check the
 # engine defers runs the hook's Node command from the fallback map, found through the plugin root
 export CLAUDE_PLUGIN_ROOT="$PWD/plugins/anti-hall" AH_ENGINE_PLUGIN_ROOT="$PWD/plugins/anti-hall"
-echo "$PAYLOAD" | "$E" hook --event PreToolUse --tool Bash --host claude --fallback-map "$CLAUDE_PLUGIN_ROOT/hooks/ah-fallback.map.json" || test $? -eq 2
+echo "$PAYLOAD" | "$E" hook --event PreToolUse --tool Bash --host claude --fallback-map "$CLAUDE_PLUGIN_ROOT/../anti-hall-node/hooks/ah-fallback.map.json" || test $? -eq 2
 # the daemon starts in the background while the first call is answered, so give it a few seconds to bind its socket
 for _ in 1 2 3 4 5 6 7 8 9 10; do "$E" ctl ping >/dev/null 2>&1 && break; sleep 1; done
 "$E" ctl ping
@@ -346,7 +325,7 @@ benchmark with live-like data went from 22.0 % to 1.23 % of a core. The lesson f
 
 ## Porting a guard to the engine
 
-The workflow is the one in D31 and D57: port check by check, each through parity, shadow and review. The plugin stays Node and live until a guard has passed all three.
+The workflow is the one in D31 and D57: port check by check, each through parity, shadow and review. (Historical: every guard has been ported; the engine decides every hook and the Node hooks are a backup outside the published plugin. New guards are written for the engine only, see CONTRIBUTING.md.)
 
 1. **Read the Node guard** and its tests under `plugins/anti-hall/hooks/` and `tests/hooks/`. The guard's `evaluate(payload, env)` is the authority; a mismatch is a Rust bug, never a reason to change the Node guard.
 2. **Implement `Check`** in its own module under `ah-engine/src/checks/`, and list it in the registry. Put every table, limit and message in `plugins/anti-hall/engine/defaults/*.toml` (the `no_hardcoded_tunables` test fails otherwise) and cite the Node function each Rust function mirrors. Where the engine cannot decide exactly, return a deferral so Node decides; never guess.
@@ -359,7 +338,7 @@ New capability goes into the engine, not into new Node code in the plugin (D80).
 
 ## Branches and pull requests
 
-- `dev` is the working branch. Pushes to `dev` run no CI, so run `node --test` (and the engine suite when you touched `ah-engine/`) before pushing.
+- `dev` is the working branch. Pushes to `dev` run no CI, so run `cargo check` and a release build of what you touched before pushing.
 - `main` is what users and the plugin directory install from. It changes only through a pull request from `dev`; a ruleset blocks direct pushes. A pull request to `main` from any other branch fails the required `dev-only` check.
 - **Contributors open pull requests against `dev`.** The engine prototype lives on `engine-proto` and goes to `dev` by pull request when a phase is done and tested (D55).
 - Never force-push. Commit messages are conventional (`fix(area): ...`, `feat(area): ...`, `docs: ...`) with no AI-credit lines ([CONTRIBUTING.md](../CONTRIBUTING.md)).
@@ -397,7 +376,7 @@ The plugin and the engine have separate versions and separate release procedures
 
 - **Plugin:** Node built-ins only, no dependencies, cross-platform. Hooks fail open: a parse, read or state error exits 0 and never blocks a turn. A guard blocks only on a positive match of the dangerous form. Large hook JSON goes out with `fs.writeSync(1, ...)`, not `process.stdout.write`.
 - **Both ports:** a change to a hook, skill or model-routing doc lands on the Claude side and the Codex mirror, or the pull request says why one side does not apply ([AGENTS.md](../AGENTS.md)).
-- **Settings:** every feature has a key in `plugins/anti-hall-node/hooks/lib/settings-schema.js`; change settings through `/anti-hall:settings`, never by hand.
+- **Settings:** every feature has a key in `plugins/anti-hall/engine/defaults/settings_cli.toml`; change settings through `/anti-hall:settings`, never by hand.
 - **Engine:** no hardcoded tunables, tables or messages (D17): they live in the plugin's `engine/defaults/*.toml` with a `doc`, read at run time, never compiled in. Every public item has `//!` or `///` docs, errors are typed, and `rustfmt.toml` sets the width. Clippy and `cargo doc` run with warnings denied. Tests take no timing dependence (CI runners are slower), never touch the real home, and reap every daemon they start.
 - **Dependencies:** a Rust crate you add is at its latest released version, and an old pin needs a written reason in `ah-engine/DECISIONS.md` (D84).
 - **Docs:** a new hook, skill or setting is documented in `docs/GUIDE.md`, `llms.txt` and the briefing skill; the hygiene tests name what is missing. Mark unbuilt work "planned (D-n)".

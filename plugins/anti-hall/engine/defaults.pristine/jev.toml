@@ -1,6 +1,6 @@
 # ah-engine shipped Jev defaults (D34-D38): the optional Jev lane (the `src/jev/` module). Format: see the header of engine.toml.
 #
-# Every value mirrors the Node client it ports (hooks/lib/jev-client.js, jev-assist.js, settings-schema.js); the comment on each
+# Every value mirrors the Node client it ports; the comment on each
 # entry names its Node source so a change there shows up here in review. Jev is OFF unless the owner enables it; with it off,
 # or missing, over budget or failing, every caller gets its own deterministic baseline (D35).
 
@@ -196,7 +196,7 @@ doc = "How much of an error body is read to classify an out-of-balance answer; t
 value = 2048
 unit = "bytes"
 
-# ---- keys: where a vendor's key may come from (credentials.js) --------------------------------------------
+# ---- keys: where a vendor's key may come from --------------------------------------------
 
 [jev.key_file_vercel]
 doc = "Default key file for the Vercel vendor, relative to the home directory; read only when jev.allowLegacyKeyRead is on (Node: defaultKeyFilePath)."
@@ -219,7 +219,7 @@ unit = "bytes"
 
 [jev.default_modes]
 doc = "Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36)."
-value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on" }
+value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on", agentWaste = "on", agentHealth = "on", nudgeReason = "on", nudgeReply = "on" }
 
 [jev.unlisted_mode]
 doc = "Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones)."
@@ -372,7 +372,7 @@ value = "the home directory is not set, so there are no Jev settings to read"
 
 [msg.jev_usage]
 doc = "Usage line of `ah-engine jev`."
-value = "usage: ah-engine jev ask|status|scrub|triage|evidence (ask reads one JSON request per line on stdin, scrub one JSON string per line, triage one jev-triage-worker request, evidence one evidence pack per line)"
+value = "usage: ah-engine jev ask|status|scrub|triage|evidence|sweep|arrival (arrival drains the arrival queue once, ask reads one JSON request per line on stdin, scrub one JSON string per line, triage one jev-triage-worker request, evidence one evidence pack per line)"
 
 # ---- metrics (D51) --------------------------------------------------------------------------------------------
 
@@ -486,7 +486,7 @@ doc = "Directory of the daily rollups, relative to the log directory (Node: jev-
 value = "jev-daily"
 
 [jev.scrub_rules]
-doc = "The outbound secret-scrub rules every Jev request body passes through, in order (Node: hooks/lib/secret-scrub.js scrubSecrets, rule for rule): `pattern` (Rust regex syntax: JavaScript look-behind is `no_alnum_before`, a hit right after an ASCII letter or digit is skipped; `\\s` is spelled as JavaScript's whitespace set; the `i` flag as explicit [xX] classes), `to` the replacement (`${n}` a group). A rule that does not compile makes the scrubber redact the whole text (jev.scrub_failed_text)."
+doc = "The outbound secret-scrub rules every Jev request body passes through, in order : `pattern` (Rust regex syntax: JavaScript look-behind is `no_alnum_before`, a hit right after an ASCII letter or digit is skipped; `\\s` is spelled as JavaScript's whitespace set; the `i` flag as explicit [xX] classes), `to` the replacement (`${n}` a group). A rule that does not compile makes the scrubber redact the whole text (jev.scrub_failed_text)."
 value = [
   { pattern = '''-----BEGIN [A-Z0-9 ]+-----(?s:.)*?(?:-----END [A-Z0-9 ]+-----|$)''', to = '''[REDACTED_PEM]''', no_alnum_before = false },
   { pattern = '''(?-u:\b)([a-zA-Z][a-zA-Z0-9+.-]*://)[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}/:@]+:[^\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}/@]+@''', to = '''${1}[REDACTED]@''', no_alnum_before = false },

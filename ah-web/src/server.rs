@@ -1,0 +1,845 @@
+//! The HTTP side: loopback only, a Host check against DNS rebinding, a session cookie minted from the one-time token in the
+//! printed address, the page, its files and the event stream.
+use crate::app::App;
+use crate::data;
+use crate::model::Out;
+use ah_web_proto::{ActionReq, ActionRes, Boot, DELTA_EVENT, Detail, SNAPSHOT_EVENT};
+use axum::Json;
+use axum::Router;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{get, post};
+use serde::Deserialize;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::IntervalStream;
+
+type Shared = Arc<App>;
+
+/// The routes.
+pub fn router(app: Shared) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/static/{*path}", get(static_file))
+        .route("/pkg/{*path}", get(pkg_file))
+        .route("/api/stream", get(stream))
+        .route("/api/action", post(action))
+        .route("/api/agent/{id}", get(detail))
+        .route(ah_web_proto::LIVE_MAP_PATH, get(live_map))
+        .route(ah_web_proto::HEALTH_PATH, get(health))
+        .route(ah_web_proto::TOPO_ACTION_PATH, post(topo_action))
+        .route("/api/manage/cfg", get(manage_cfg))
+        .route("/api/manage/data", get(manage_data))
+        .route("/api/manage/file", get(manage_file))
+        .route("/api/manage/history", get(manage_history))
+        .route("/api/manage/write", post(manage_write))
+        .route(ah_web_proto::ops::OPS_CFG_PATH, get(crate::ops::config))
+        .route(
+            ah_web_proto::ops::OPS_ACCOUNTS_PATH,
+            get(crate::ops::accounts),
+        )
+        .route(
+            ah_web_proto::ops::OPS_UPDATE_PATH,
+            post(crate::ops::update_check),
+        )
+        .route(ah_web_proto::ops::OPS_LOGS_PATH, get(crate::ops::logs))
+        .route("/api/telemetry", get(tel_doc))
+        .route("/api/impact", get(impact_doc))
+        .route("/api/telemetry/export", get(tel_export))
+        .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .with_state(app)
+}
+
+/// Constant-time equality for the token.
+fn ct_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
+    let name = app.settings().cookie_name.clone();
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .any(|(k, v)| k == name && ct_eq(v, &app.token))
+}
+
+/// Every request: note activity, refuse a Host header that is not this server's own loopback address, add the security headers.
+async fn guard(State(app): State<Shared>, req: Request, next: Next) -> Response {
+    app.touch();
+    let s = app.settings();
+    let host_ok = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| {
+            let (name, port) = h.rsplit_once(':').unwrap_or((h, ""));
+            port == app.port.to_string() && (name == s.bind_host || name == "localhost")
+        });
+    if !host_ok {
+        return StatusCode::MISDIRECTED_REQUEST.into_response();
+    }
+    let mut resp = next.run(req).await;
+    if let Ok(v) = HeaderValue::from_str(&s.csp) {
+        resp.headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    resp.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
+pub(crate) fn refuse(app: &App) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        app.settings().msg_unauthorized.clone(),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct TokenQuery {
+    t: Option<String>,
+}
+
+/// `/`: with the token in the address, set the session cookie and go to the clean address; with the cookie, the page.
+async fn index(
+    State(app): State<Shared>,
+    Query(q): Query<TokenQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let s = app.settings();
+    if let Some(t) = q.t.as_deref()
+        && ct_eq(t, &app.token)
+    {
+        let cookie = format!(
+            "{}={}; HttpOnly; SameSite=Strict; Path=/",
+            s.cookie_name, app.token
+        );
+        let mut r = Redirect::to("/").into_response();
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            r.headers_mut().insert(header::SET_COOKIE, v);
+        }
+        return r;
+    }
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let path = app.root.join(&s.static_dir).join(&s.index_file);
+    let Ok(html) = tokio::fs::read_to_string(&path).await else {
+        return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
+    };
+    let boot = Boot {
+        ui: {
+            let mut u = crate::ops::merged_ui(&app, &s.ui);
+            u.extend(crate::tel::boot_texts(&app));
+            u
+        },
+        heartbeat_warn_s: s.heartbeat_warn_s,
+        heartbeat_stale_s: s.heartbeat_stale_s,
+        kind_order: s.kind_order.clone(),
+        mode: s.mode.clone(),
+        limits: s.limits(),
+        actions: s.menu(),
+        feed_max: s.feed_max,
+        graph: crate::cfg::graph_json(&app.root.join(&s.live_graph_rel)).unwrap_or_default(),
+        live: s.live(),
+        plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| {
+                v.get("version")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default(),
+        web_version: env!("AH_BUILD_VERSION").to_string(),
+        number: s.number(),
+        topo: s.topo(),
+    };
+    // the JSON sits inside a <script> element: keep a "</" in a text from closing it
+    let json = serde_json::to_string(&boot)
+        .unwrap_or_default()
+        .replace("</", "<\\/");
+    let mut r = html.replace(&s.boot_marker, &json).into_response();
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    r
+}
+
+async fn serve_from(
+    app: &App,
+    headers: &HeaderMap,
+    dir: &std::path::Path,
+    packaged: Option<&std::path::Path>,
+    rel: &str,
+) -> Response {
+    if !cookie_ok(app, headers) {
+        return refuse(app);
+    }
+    let s = app.settings();
+    // plain relative names only: no "..", no absolute path, no hidden file
+    if rel
+        .split('/')
+        .any(|p| p.is_empty() || p == ".." || p.starts_with('.'))
+    {
+        return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
+    }
+    let ext = rel.rsplit('.').next().unwrap_or_default();
+    let Some(mime) = s.mime.get(ext) else {
+        return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
+    };
+    let bytes = match tokio::fs::read(dir.join(rel)).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match packaged {
+            Some(root) => tokio::fs::read(root.join(rel)).await,
+            None => Err(e),
+        },
+        other => other,
+    };
+    match bytes {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime.clone())], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response(),
+    }
+}
+
+async fn static_file(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Path(p): Path<String>,
+) -> Response {
+    let dir = app.settings().static_dir.clone();
+    // ah-web ships its own disk assets beside the binary, under the same configured static directory.
+    // Plugin-owned files keep precedence; the browser URL and access checks are shared by both roots.
+    let packaged = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join(&dir)));
+    serve_from(
+        &app,
+        &headers,
+        &app.root.join(&dir),
+        packaged.as_deref(),
+        &p,
+    )
+    .await
+}
+
+async fn pkg_file(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Path(p): Path<String>,
+) -> Response {
+    let dir = app.settings().pkg_dir.clone();
+    serve_from(&app, &headers, &app.root.join(&dir), None, &p).await
+}
+
+/// Counts an open stream in its tier; the poller stops when the last one is gone.
+struct StreamGuard(Shared, bool);
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        let counter = if self.1 {
+            &self.0.lite_streams
+        } else {
+            &self.0.full_streams
+        };
+        counter.fetch_sub(1, Ordering::SeqCst);
+        self.0.touch();
+    }
+}
+
+#[derive(Deserialize)]
+struct StreamQuery {
+    /// `lite` or `full`; anything else (or nothing) takes the configured start tier, `auto` counting as full.
+    mode: Option<String>,
+}
+
+/// `/api/stream?mode=`: the current snapshot at once, then only what changed, at the tier's rate.
+async fn stream(
+    State(app): State<Shared>,
+    Query(q): Query<StreamQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    if app.streams() >= s.max_streams {
+        return (StatusCode::SERVICE_UNAVAILABLE, s.msg_busy.clone()).into_response();
+    }
+    let lite = match q.mode.as_deref().unwrap_or(&s.mode) {
+        "lite" => true,
+        _ => false,
+    };
+    let counter = if lite {
+        &app.lite_streams
+    } else {
+        &app.full_streams
+    };
+    counter.fetch_add(1, Ordering::SeqCst);
+    let guard = StreamGuard(app.clone(), lite);
+    if app
+        .polling
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        tokio::spawn(data::poll(app.clone()));
+    }
+    let ms = if lite { s.lite_push_ms } else { s.full_push_ms }.max(s.push_min_ms);
+    let mut tick = tokio::time::interval(Duration::from_millis(ms));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last: Option<u64> = None;
+    let events = IntervalStream::new(tick).filter_map(move |_| {
+        let _held = &guard;
+        let out = {
+            let m = guard.0.model();
+            if !m.ready {
+                return None;
+            }
+            match last {
+                None => Out::Snapshot(m.snapshot()),
+                Some(n) => m.since(n),
+            }
+        };
+        match out {
+            Out::Nothing => None,
+            Out::Delta(d) => {
+                last = Some(d.seq);
+                Event::default()
+                    .event(DELTA_EVENT)
+                    .json_data(&d)
+                    .ok()
+                    .map(Ok::<Event, Infallible>)
+            }
+            Out::Snapshot(snap) => {
+                last = Some(snap.seq);
+                Event::default()
+                    .event(SNAPSHOT_EVENT)
+                    .json_data(&snap)
+                    .ok()
+                    .map(Ok::<Event, Infallible>)
+            }
+        }
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(s.sse_keepalive_s)))
+        .into_response()
+}
+
+/// An agent id is a tracker id: letters, digits and `-_.:` only, so it can be put in an engine argument or a control request.
+fn id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+}
+
+fn res(ok: bool, outcome: &str, message: String) -> Response {
+    Json(ActionRes {
+        ok,
+        outcome: outcome.into(),
+        message,
+    })
+    .into_response()
+}
+
+/// `POST /api/action`: run one menu action on one agent as an engine verb (the engine audits it). Actions that ask first are refused
+/// until the request says the person confirmed.
+async fn action(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    let Ok(req) = serde_json::from_slice::<ActionReq>(&body) else {
+        return res(false, "refused", s.msg_action_unknown.clone());
+    };
+    let Some(def) = s.actions.iter().find(|a| a.name == req.action) else {
+        return res(false, "refused", s.msg_action_unknown.clone());
+    };
+    if !id_ok(&req.id) {
+        return res(false, "refused", s.msg_action_bad_id.clone());
+    }
+    if def.confirm && !req.confirmed {
+        return res(false, "refused", s.msg_action_confirm.clone());
+    }
+    if def.local {
+        return res(true, "done", String::new());
+    }
+    let args: Vec<String> = def
+        .args
+        .iter()
+        .map(|a| a.replace("{id}", &req.id))
+        .collect();
+    let run = tokio::process::Command::new(&app.engine)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await
+    else {
+        return res(false, "failed", s.msg_action_timeout.clone());
+    };
+    let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let ok = body
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let text = |k: &str| {
+        body.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    if ok {
+        // the sentence from the menu entry, with the verb's own numbers filled in ({backlog}, {live}, ...)
+        let result = body.get("result").and_then(serde_json::Value::as_object);
+        let note = result.map_or_else(String::new, |r| {
+            r.iter().fold(def.done.clone(), |t, (k, v)| {
+                let text = match v {
+                    serde_json::Value::String(x) => x.clone(),
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => String::new(),
+                    other => other.to_string(),
+                };
+                t.replace(&format!("{{{k}}}"), &text)
+            })
+        });
+        res(
+            true,
+            "done",
+            note.chars().take(s.action_note_max_chars).collect(),
+        )
+    } else {
+        res(
+            false,
+            &text("outcome").unwrap_or_else(|| "failed".into()),
+            text("error").unwrap_or_else(|| s.msg_action_failed.clone()),
+        )
+    }
+}
+
+/// `GET /api/agent/{id}`: what the tracker knows of one agent, as label/value rows.
+async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    if !id_ok(&id) {
+        return (StatusCode::BAD_REQUEST, s.msg_action_bad_id.clone()).into_response();
+    }
+    let Ok(doc) = crate::ctl::call(
+        &app.socket,
+        &format!("agents agent={id}"),
+        Duration::from_millis(s.ctl_timeout_ms),
+        s.ctl_max_bytes,
+    )
+    .await
+    else {
+        return (StatusCode::BAD_GATEWAY, s.msg_action_timeout.clone()).into_response();
+    };
+    let mut rows = Vec::new();
+    if let Some(a) = doc
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(serde_json::Value::as_object)
+    {
+        for (k, v) in a {
+            if s.detail_skip_keys.contains(k) || v.is_null() {
+                continue;
+            }
+            let text = match v {
+                serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::Number(n) if n.is_u64() && !s.number_raw_keys.contains(k) => {
+                    s.number().fmt(n.as_u64().unwrap_or_default())
+                }
+                other => other.to_string(),
+            };
+            rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));
+        }
+    }
+    let tasks = doc
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(|a| a.get("tasks"))
+        .and_then(serde_json::Value::as_array)
+        .map(|l| {
+            let t = |v: &serde_json::Value, k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            l.iter()
+                .map(|v| ah_web_proto::TaskRow {
+                    subject: t(v, "subject"),
+                    status: t(v, "status"),
+                    priority: t(v, "priority"),
+                    changed_ms: v
+                        .get("updated_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Json(Detail { rows, tasks }).into_response()
+}
+
+/// `GET /api/live/map`: which checks answer which hook events, for the Live screen.
+async fn live_map(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    Json(crate::live::map(&app, &s).await).into_response()
+}
+
+/// `GET /api/health`: one reduced reading of the engine for the Health and Topology screens.
+async fn health(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    Json(crate::health::read(&app).await).into_response()
+}
+
+/// `POST /api/topo/action`: run one topology node action as an engine command. The engine arguments come from the settings; the page
+/// names only the node and the action, and a viewer file is looked up here, never taken from the request.
+async fn topo_action(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let s = app.settings();
+    let Ok(req) = serde_json::from_slice::<ah_web_proto::TopoReq>(&body) else {
+        return res(false, "refused", s.msg_topo_unknown.clone());
+    };
+    let Some(def) = s
+        .topo_actions
+        .iter()
+        .find(|a| a.kind == req.kind && a.name == req.action)
+    else {
+        return res(false, "refused", s.msg_topo_unknown.clone());
+    };
+    if !id_ok(&req.id) {
+        return res(false, "refused", s.msg_action_bad_id.clone());
+    }
+    if def.confirm && !req.confirmed {
+        return res(false, "refused", s.msg_action_confirm.clone());
+    }
+    if def.local {
+        return res(true, "done", String::new());
+    }
+    let viewer = s
+        .topo_viewers
+        .iter()
+        .find(|v| req.kind == "store" && v.store == req.id)
+        .map(|v| v.file.clone());
+    if def.needs_viewer && viewer.is_none() {
+        return res(false, "refused", s.msg_topo_no_viewer.clone());
+    }
+    let pid = crate::health::read(&app).await.pid.to_string();
+    let args: Vec<String> = def
+        .args
+        .iter()
+        .map(|a| {
+            a.replace("{id}", &req.id)
+                .replace("{pid}", &pid)
+                .replace("{viewer}", viewer.as_deref().unwrap_or_default())
+        })
+        .collect();
+    let run = tokio::process::Command::new(&app.engine)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await
+    else {
+        return res(false, "failed", s.msg_action_timeout.clone());
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    let refused = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
+        == Some(false);
+    let ok = out.status.success() && !refused;
+    res(
+        ok,
+        if ok { "done" } else { "failed" },
+        text.trim().chars().take(s.topo_action_max_chars).collect(),
+    )
+}
+
+/// The Settings screens: each handler reads `web_manage.toml`, asks the engine and answers JSON (`{"error": text}` with 502 on a failure).
+async fn manage_run<F, Fut>(app: &App, headers: &HeaderMap, f: F) -> Response
+where
+    F: FnOnce(crate::manage::Cfg) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+    if !cookie_ok(app, headers) {
+        return refuse(app);
+    }
+    let cfg = match crate::manage::Cfg::load(&app.config_path, &app.settings().manage_file) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response();
+        }
+    };
+    match f(cfg).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+async fn manage_cfg(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    manage_run(&app, &headers, |c| async move { Ok(c.for_page()) }).await
+}
+
+async fn manage_data(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::data(&a, &c).await
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    name: String,
+}
+
+async fn manage_file(
+    State(app): State<Shared>,
+    Query(q): Query<FileQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::file_keys(&a, &c, &q.name).await
+    })
+    .await
+}
+
+async fn manage_history(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::history(&a, &c).await
+    })
+    .await
+}
+
+async fn manage_write(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let a = app.clone();
+    manage_run(&app, &headers, |c| async move {
+        let w = serde_json::from_slice::<crate::manage::Write>(&body)
+            .map_err(|_| c.msg_bad_request.clone())?;
+        crate::manage::write(&a, &c, w).await
+    })
+    .await
+}
+
+/// `GET /api/telemetry`: the Telemetry screen's document.
+async fn tel_doc(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    match crate::tel::telemetry(&app).await {
+        Ok(d) => Json(&*d).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// `GET /api/impact`: the Impact screen's document.
+async fn impact_doc(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    match crate::tel::impact(&app).await {
+        Ok(d) => Json(&*d).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    table: String,
+    #[serde(default)]
+    format: String,
+    #[serde(default)]
+    q: String,
+}
+
+/// `GET /api/telemetry/export?table=&format=csv|json&q=`: one table as a download.
+async fn tel_export(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<ExportQuery>,
+) -> Response {
+    if !cookie_ok(&app, &headers) {
+        return refuse(&app);
+    }
+    let Ok(doc) = crate::tel::telemetry(&app).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            app.settings().msg_busy.clone(),
+        )
+            .into_response();
+    };
+    match crate::tel::export(&doc, &q.table, &q.format, &q.q) {
+        Some((name, mime, body)) => (
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{name}\""),
+                ),
+            ],
+            body,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, app.settings().msg_not_found.clone()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path as FsPath, PathBuf};
+
+    fn fixture() -> (App, HeaderMap, PathBuf) {
+        let root = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let config = root.join("engine/defaults/web.toml");
+        let settings = crate::cfg::Settings::load(&config).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{}=test-token", settings.cookie_name)).unwrap(),
+        );
+        let app = App::new(
+            settings,
+            config,
+            root,
+            PathBuf::new(),
+            PathBuf::new(),
+            "test-token".into(),
+            12345,
+        );
+        (
+            app,
+            headers,
+            FsPath::new(env!("CARGO_MANIFEST_DIR")).join("web/static"),
+        )
+    }
+
+    #[tokio::test]
+    async fn packaged_chart_keeps_its_bytes_mime_and_access_checks() {
+        let (app, headers, packaged) = fixture();
+        let plugin = app.root.join(&app.settings().static_dir);
+        let file = "vendor/apexcharts.min.js";
+        assert!(
+            !plugin.join(file).exists(),
+            "the oversized asset must stay outside the plugin"
+        );
+        let response = serve_from(&app, &headers, &plugin, Some(&packaged), file).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            app.settings().mime["js"]
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            body.as_ref(),
+            include_bytes!("../web/static/vendor/apexcharts.min.js")
+        );
+        assert!(body.starts_with(b"/*!\n * ApexCharts v4.7.0"));
+        assert_eq!(
+            serve_from(&app, &HeaderMap::new(), &plugin, Some(&packaged), file)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for path in [
+            "../Cargo.toml",
+            "/vendor/apexcharts.min.js",
+            "vendor/.hidden.js",
+            "vendor/missing.js",
+        ] {
+            assert_eq!(
+                serve_from(&app, &headers, &plugin, Some(&packaged), path)
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+        // WASM/pkg assets have no server-package fallback.
+        assert_eq!(
+            serve_from(&app, &headers, &plugin, None, file)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_static_files_still_take_precedence() {
+        let (app, headers, packaged) = fixture();
+        let dir = app.root.join(&app.settings().static_dir);
+        let file = &app.settings().index_file;
+        let response = serve_from(&app, &headers, &dir, Some(&packaged), file).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), std::fs::read(dir.join(file)).unwrap());
+    }
+}

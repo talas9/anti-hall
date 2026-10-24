@@ -40,7 +40,7 @@ impl Sys for Fake {
 }
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("test-units").join(format!("{tag}-{}", std::process::id()));
+    let d = std::env::temp_dir().join("test-units").join(format!("{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join("home")).unwrap();
     d

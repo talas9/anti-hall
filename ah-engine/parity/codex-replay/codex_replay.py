@@ -267,7 +267,7 @@ def matcher_ok(m, tool):
 
 def rows(plugin):
     d, ev = {}, None
-    for l in open(plugin + '/hooks/ah-fallback.codex.list'):
+    for l in open(plugin + '/../anti-hall-node/hooks/ah-fallback.codex.list'):
         l = l.rstrip('\n')
         if not l or l.startswith('#'):
             continue
@@ -312,7 +312,7 @@ def run(a):
         shutil.rmtree(st, ignore_errors=True)
         os.makedirs(st, mode=0o700)
         env.update(AH_ENGINE_DIR=st, AH_ENGINE_PLUGIN_ROOT=plugin)
-        fm = json.load(open(plugin + '/hooks/ah-fallback.codex.map.json'))
+        fm = json.load(open(plugin + '/../anti-hall-node/hooks/ah-fallback.codex.map.json'))
         for ev in fm:
             for i in fm[ev]:
                 # engine-only: the fallback row records that the engine deferred it and runs NO Node

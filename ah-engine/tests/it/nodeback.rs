@@ -215,13 +215,18 @@ fn the_fallback_command_writes_and_removes_the_marker() {
 }
 
 #[test]
-fn the_fallback_switch_makes_the_wrapper_run_the_node_hooks_and_off_returns_to_the_engine() {
+fn the_fallback_switch_makes_the_thin_client_run_the_node_hooks_and_off_returns_to_the_engine() {
     let e = Env::new("fbwrap", "");
-    let wrapper = plugin().join("hooks/ah-hook.sh");
+    let launcher = crate::common::launcher_bin();
     let p = e.payload(FORCE);
     let run = |e: &Env| {
-        let mut c = e.cmd(Path::new("/bin/sh"));
-        c.arg(&wrapper).arg("PreToolUse").env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine")).env("AH_HOOK_TIMEOUT_S", "30");
+        let mut c = e.cmd(&launcher);
+        c.arg("PreToolUse")
+            .arg("--plugin-root")
+            .arg(plugin())
+            .env("AH_WRAPPER_TEST", "1")
+            .env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine"))
+            .env("AH_HOOK_TIMEOUT_S", "30");
         e.run(&mut c, &p)
     };
     // switch on: the Node git-guard answers, and its verdict is in the ledger as source node (no engine row)
@@ -256,9 +261,13 @@ fn without_the_node_directory_the_fallback_switch_is_a_logged_no_op_and_the_engi
     let (code, _, err, _) = e.engine(&["fallback", "node"], "");
     assert_eq!(code, 0);
     assert!(err.contains("missing") || e.engine(&["fallback", "status"], "").1.contains("marker: yes"));
-    let wrapper = e.plugin.join("hooks/ah-hook.sh");
-    let mut c = e.cmd(Path::new("/bin/sh"));
-    c.arg(&wrapper).arg("PreToolUse").env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine")).env("AH_HOOK_TIMEOUT_S", "30");
+    let mut c = e.cmd(&crate::common::launcher_bin());
+    c.arg("PreToolUse")
+        .arg("--plugin-root")
+        .arg(&e.plugin)
+        .env("AH_WRAPPER_TEST", "1")
+        .env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine"))
+        .env("AH_HOOK_TIMEOUT_S", "30");
     let (code, out, err, _) = e.run(&mut c, &e.payload(FORCE));
     assert_eq!(code, 2, "the engine blocks the force push: {out} {err}");
     assert!(err.contains("Node backup directory"), "the no-op is logged: {err}");

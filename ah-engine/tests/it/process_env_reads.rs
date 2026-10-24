@@ -8,6 +8,13 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, why the process environment is the right one there).
 const ALLOW: &[(&str, &str)] = &[
+    ("src/meshw/orphan.rs", "the one-shot mesh orphan classifier snapshots its CLI invocation environment, not a hook request"),
+    ("src/web/manage.rs", "the CLI configuration writer records the actor of its own process in history"),
+    ("src/refresh/devswarm_compat.rs", "the refresh command probes the installed DevSwarm from its own CLI environment"),
+    ("src/operator/sweep.rs", "the installer sweep is a one-shot operator command; its child commands inherit the caller environment"),
+    ("src/operator/routine.rs", "one-shot install/update commands locate caller PATH tools and explicitly configured roots"),
+    ("src/doctor/mod.rs", "degraded doctor runs before defaults load and locates the callers installed thin client from HOME"),
+    ("src/audit/mod.rs", "the one-shot audit CLI selects the callers HOME when --home was not supplied"),
     ("src/hcguard.rs", "the test-build guard: the scratch-stub roots and HOME of the process it guards (read only while the guard is active, a test build)"),
     (
         "src/daemonenv.rs",

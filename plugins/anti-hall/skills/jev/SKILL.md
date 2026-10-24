@@ -13,7 +13,7 @@ Jev is anti-hall's opt-in classifier backend (see `docs/KB-jev-classifier.md` in
 full design). It is **default OFF** and, once enabled, only ever ADDS or RELAXES a
 decision within a trust rule the caller controls — see the KB doc's "Fallback
 semantics" section. This skill is the activation/config/status front door;
-`scripts/jev-setup.js` does the actual work and never prints the key.
+`ah-engine jev-setup` does the actual work and never prints the key.
 
 ## The credential never travels through the model
 
@@ -25,7 +25,7 @@ else.**
 
 ## Primary flow: "activate jev" / "enable jev" / "set up jev"
 
-1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup status` first.
+1. Run `"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup status` first.
 2. **If a key is already present** (`key present: yes`, or the user says they
    already stored one through the plugin options): skip straight to step 5
    (enable) — don't ask for a key again.
@@ -60,7 +60,7 @@ else.**
    straight to `set-key`:
 
    ```
-   ! read -rs K && printf '%s' "$K" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport vercel && unset K
+   ! read -rs K && printf '%s' "$K" | "$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup set-key --transport vercel && unset K
    ```
 
    (swap `--transport vercel` for `--transport typesafe` if that's what they
@@ -69,11 +69,11 @@ else.**
    reply**:
 
    ```
-   printf '%s' "<the key they pasted>" | sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup set-key --transport <vercel|typesafe>
+   printf '%s' "<the key they pasted>" | "$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup set-key --transport <vercel|typesafe>
    ```
 
    Confirm only with the script's own output — never with the key itself.
-5. Enable: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable [--transport vercel|typesafe]`
+5. Enable: `"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup enable [--transport vercel|typesafe]`
    (pass `--transport` again if the user picked typesafe, so it's recorded even on
    a repeat run).
 6. Test: `~/.anti-hall/ah-engine/bin/ah-engine jev-setup test` — this makes
@@ -114,7 +114,7 @@ budget (a retry with under ~150 ms left is skipped; the primary is held back ~60
 After 3 consecutive eligible failures a per-vendor circuit breaker skips that vendor for 5 minutes, then probes it
 again (state: `~/.anti-hall/cache/jev-breaker.json`).
 
-- Set: `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup enable --transport typesafe --fallback vercel`
+- Set: `"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup enable --transport typesafe --fallback vercel`
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
@@ -135,13 +135,13 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `ah-run.sh jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
 ## "disable jev"
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup disable`. Mention the
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup disable`. Mention the
 per-session alternative: `ANTIHALL_JEV=0` force-disables for one session without
 touching `jev.json`.
 
@@ -157,7 +157,7 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
   spend; otherwise it reports cost as `n/a`.
 - **Real** (automatic, when available): every Jev call already parses its own
   response for a gateway-reported cost or token usage (see
-  `hooks/lib/jev-client.js`'s `extractCostAndUsage` — verified against Vercel AI
+  `jev-client`'s `extractCostAndUsage` — verified against Vercel AI
   Gateway's docs at
   https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#look-up-a-generation).
   The TypeSafe "systemone" endpoint this build calls does **not** currently return
@@ -196,7 +196,7 @@ it.
 This is the full tracking loop, end to end — run it whenever the user asks how
 Jev is doing:
 
-1. Run `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report` (add `--window 24h|7d`
+1. Run `"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report` (add `--window 24h|7d`
    to narrow the cost window; default shows both).
 2. For EACH integration row, read its **suggestion** column and explain what it
    means and what to do next:
@@ -254,7 +254,7 @@ Jev is doing:
 
 ### "label that decision right/wrong"
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp` — see
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report label <hash> tp|fp` — see
 "jev report" below for the full mechanics. Mention that
 `~/.anti-hall/jev.json`'s `"audit": {"snippets": true}` must be turned on
 BEFORE the decision was made for `label <hash>` (no verdict) to show the actual
@@ -274,8 +274,8 @@ change with no evidence behind it yet.
 one combined table:
 
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by project
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --by session
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report --by project
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report --by session
 ```
 
 `--project <name>` filters to one project BEFORE reporting (combine with
@@ -317,7 +317,7 @@ Use this when the user wants a bad/accidental run out of the numbers without
 editing the log file directly:
 
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report \
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report \
   --exclude-window 2026-09-24T19:56:00Z..2026-09-24T22:23:00Z
 ```
 
@@ -331,12 +331,12 @@ flags happened to be typed."
 
 ### Weekly scorecard (automatic + on-demand)
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report --weekly [--json]` — a
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report --weekly [--json]` — a
 compact, ALWAYS-7-day summary: one line per integration with its current
 `[mode]`, KEEP/REVIEW/REMOVE suggestion, a short reason, and call count. Same
 thresholds as the full report, just condensed.
 
-Separately, a SessionStart hook (`hooks/jev-weekly-scorecard.js`) checks this
+Separately, a SessionStart hook (`jev-weekly-scorecard`) checks this
 automatically, AT MOST once every 7 days (a latch at
 `~/.anti-hall/state/jev-weekly-notice.json` enforces the cadence — the check
 runs at most once per week regardless of outcome, so a quiet week doesn't
@@ -365,7 +365,7 @@ per-session cron — a session cron dies with the session.
 A review becomes DUE for a `shadow` integration once it has run in shadow for
 `jev.reviewAfterDays` (default 7) AND logged at least `jev.reviewMinDecisions`
 (default 30) decisions, unless it is currently snoozed or was already reviewed
-within that same window. A SessionStart hook (`hooks/jev-review-reminder.js`,
+within that same window. A SessionStart hook (`jev-review-reminder`,
 main session only) and `doctor` both surface a due integration; the hook
 injects one line like:
 
@@ -404,7 +404,7 @@ For every integration except `triage` this comes from `jev-assist.ndjson`
 decision rows' `ms` field; the `triage` row is sourced from
 `jev-triage.ndjson`'s own classification rows' `ms` field instead (its real
 decisions never land in `jev-assist.ndjson` — a separate file/schema, see
-`hooks/lib/jev-triage.js` — so `buildReport` merges them in as their own
+`jev-triage` — so `buildReport` merges them in as their own
 `triage` integration, `backend` always one of `jev`/`cache`/`baseline-only`,
 never left `undefined`). Either way it is still **classifier latency**, NOT
 reply turnaround. The separate **"triage answer-time"** section underneath the
@@ -432,7 +432,7 @@ denominator; read it alongside the percentage, not the percentage alone.
 
 ## "jev report"
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report [--window 24h|7d]` — a
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report [--window 24h|7d]` — a
 read-only per-integration summary (call volume, agreement %, decisions changed,
 good-outcome rate, latency, estimated cost, real cost) with a KEEP/REVIEW/REMOVE
 suggestion per integration. Never mutates state.
@@ -441,10 +441,10 @@ Each changed decision's content hash `h` doubles as its stable id. Label one as
 a confirmed true/false positive:
 
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report label <hash> tp|fp
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report label <hash> tp|fp
 ```
 
-This is the ONLY write path `ah-run.sh jev-report` has — it appends to a separate,
+This is the ONLY write path `ah-engine jev-report` has — it appends to a separate,
 append-only `~/.anti-hall/logs/jev-labels.ndjson`, never touching
 `jev-assist.ndjson`. A human label always wins over an AUTO label for the same
 hash. AUTO labels are derived, at report time, from the SAME mechanical outcome
@@ -474,7 +474,7 @@ hash. `label <hash>` prints it if one exists. Deletion is manual-only, never
 automatic:
 
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-report prune-audit --days N
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-report prune-audit --days N
 ```
 
 This is off by default precisely because it stores a piece of the actual
@@ -491,7 +491,7 @@ speculation: 6 changed/24h · 5 TP (3 human, 2 auto) · $0.02/TP · p50=120ms ·
 
 ## Per-integration modes
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" jev-setup mode <integration> on|shadow|off`
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" jev-setup mode <integration> on|shadow|off`
 — `on` lets Jev actually influence that integration's outcome (bounded by its own
 trust rule), `shadow` consults and logs Jev but never changes the result (useful to
 gather `jev report` data before trusting it), `off` skips it entirely. `speculation`
@@ -501,13 +501,13 @@ other integration defaults to `shadow` until promoted.
 **v0.108.4:** each of the integrations below (13 then; `postHandoverGate` added in v0.109.0) is also its own row/setting in the
 `jevIntegrations` settings-schema section (`jevIntegrations.<id>`, e.g.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
-(`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section jevIntegrations`)
+(`"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --section jevIntegrations`)
 (it has no row in Claude Code's native `/config` panel, which carries only
 the headline switches). `jev-setup.js mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for
 back-compat); a pre-existing `jev.json integrations.<id>` value, or a pre-0.108.4
 settings.json `jev["integrations.<id>"]` value, keeps working and forward-migrates
-into the new key automatically (see `companion/lib/migrations.js`
+into the new key automatically (see `migrations`
 `migrateJevIntegrationsSection`) — nothing is ever deleted.
 
 ### All integrations
@@ -524,12 +524,12 @@ into the new key automatically (see `companion/lib/migrations.js`
 | `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` | yes | yes |
 | `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` | yes | yes |
 | `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
-| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — `companion/devswarm-supervisor.js` identity-binds to `claude --resume` processes specifically |
+| `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — the engine supervisor duty identity-binds to `claude --resume` processes specifically |
 | `codexNudgeSubstantial` | are these file edits genuinely substantial (not just formatting) | `relax-block` | `shadow` | yes | no — nudges a Claude session to seek an independent Codex review; self-referential/meaningless inside a Codex session |
 | `findingDedup` | do two deadly-loop TRIO findings describe the same underlying issue | `advisory` | `on` — 65/65 correct at confidence ≥0.85 on a 30-day, 3-project offline benchmark (see CHANGELOG 0.108.4) | yes | yes |
 | `postHandoverGate` | does this new request fit in the remaining post-handover context budget | `advisory` | `off` — an offline benchmark (n=299) found park-recall 17.6% vs 28.8% for the agent's own size judgment plus the measured budget backstop, no gain over that baseline | yes | yes |
 | `speculationFramed` | when a deterministic speculation-guard hedge hit sits under a FRAMED heading/line prefix (Expected/Plan/"Should be \<verb\>:"/Unverified/"not yet measured"), is it a stated expectation/plan or an unverified claim presented as fact | `relax-block` (Jev may only turn the framed hit's block into a non-block; an unframed hedge never consults Jev) | `shadow` | yes | yes |
-| `dispatchTier` | how should each dispatchable task be dispatched: `workspace` / `workflow` / `subagent` (annotates the DISPATCH NOW line; the Primary makes the final call) | `advisory` (never blocks or forces) | `on` — advisory annotation only; asked `askDetached` when a task's text changes (PostToolUse TaskCreate/TaskUpdate); a no-workspaces repo (CLAUDE.md/AGENTS.md "no workspaces for real work", or `jev.dispatchTierNoWorkspaceRepos`) never gets `workspace`. Outcomes: followed/overridden, subagent one-lane vs escalated, workflow fan-out — `scripts/dispatch-report.js` | yes | n/a — Codex has no TaskCreate/Agent task tools, so there is nothing to annotate |
+| `dispatchTier` | how should each dispatchable task be dispatched: `workspace` / `workflow` / `subagent` (annotates the DISPATCH NOW line; the Primary makes the final call) | `advisory` (never blocks or forces) | `on` — advisory annotation only; asked `askDetached` when a task's text changes (PostToolUse TaskCreate/TaskUpdate); a no-workspaces repo (CLAUDE.md/AGENTS.md "no workspaces for real work", or `jev.dispatchTierNoWorkspaceRepos`) never gets `workspace`. Outcomes: followed/overridden, subagent one-lane vs escalated, workflow fan-out — `ah-engine dispatch-report` | yes | n/a — Codex has no TaskCreate/Agent task tools, so there is nothing to annotate |
 | `devswarmOnBrief` | is a child's off-scope work off its brief | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
 | `devswarmExtraSanctioned` | did the user ask for this off-scope work (threshold 0.9) | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
 | `devswarmWaitKind` | is an idle/stalled child stuck or waiting on CI/owner/peer | recommendation (annotates a straying warning; never suppresses, blocks or kills) | `on` | yes | yes (shared hooks; burn input is Claude-transcript only) |
@@ -539,7 +539,7 @@ into the new key automatically (see `companion/lib/migrations.js`
 `gitGuardSelfCredit`/`modelRouting`/`claimLedger`/`mergeGateHedge`/`tasklistTrivial`/
 `codexNudgeSubstantial`/`findingDedup`/`postHandoverGate` use a real classifier call (`ask`/`askSync`/`askDetached`);
 `parentGateQuestion`/`supervisorBlockerLabel` never make a network call at all —
-both reuse an ALREADY-cached `hooks/lib/jev-triage.js` label populated by a
+both reuse an ALREADY-cached `jev-triage` label populated by a
 different surface that classified the same message earlier, so promoting either
 to `on` is a config change only, no extra cost. `supervisorBlockerLabel`'s
 sweep runs every ~90s but only asks/logs once per DISTINCT input (childId +
@@ -555,7 +555,7 @@ reported no label instead of the still-valid one). `mergeGateHedge` uses `askDet
 changes what gets LOGGED for now. `tasklistTrivial`/`codexNudgeSubstantial` log
 fire-and-forget in shadow, but in `on` they ask synchronously (1.5 s cap,
 fail-open to the nudge) and a confident "trivial" verdict skips the nudge.
-`findingDedup` is called from `scripts/finding-dedup.js` (a standalone CLI, not a
+`findingDedup` is called from `ah-engine finding-dedup` (a standalone CLI, not a
 hook), one async `ask()` call per candidate finding pair, concurrency 4, capped at
 200 pairs per run — see the `deadly-loop`/`deadly-loop-multi` skills' Phase B3/step-5
 wiring. See `docs/KB-jev-classifier.md` §10 for the full table

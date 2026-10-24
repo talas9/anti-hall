@@ -65,7 +65,7 @@ fn task_json(t: &Task) -> Value {
 
 /// `transcriptTasks(path, variant, window, wide)`: JSON text.
 ///
-/// `variant` is `guard` (`task-guard.js` `parseTasksFromFile`), `state` (`lib/task-state.js` `reconstructTasks`) or `scan` (the
+/// `variant` is `guard`, `state` or `scan` (the
 /// task part of `tasklist-guard.js` `scanTranscript`). `window` is the tail read in bytes; a cut tail is completed from before the
 /// window the way `lib/task-subject-backfill.js` does (a bounded, exact scan; where Node's clock would decide, the answer is
 /// `unsure`). `wide` is only read by `scan`: the widened window searched for task activity when a cut tail holds none.
@@ -97,6 +97,7 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
             Ok(Some(s)) => json!({
+                "unsure": s.unsure,
                 "sawTaskActivity": s.saw_task_activity,
                 "taskStoreReset": s.task_store_reset,
                 "inProgressCount": s.in_progress_count,
@@ -119,9 +120,10 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
     };
     let Ok(mut facts) = reconstruct(&lines, v) else { return unsure() };
     if truncated && backfill(&mut facts, path, window).is_err() {
-        return unsure();
+        facts.unsure = true;
     }
     json!({
+        "unsure": facts.unsure,
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
         "windowReset": facts.window_reset,
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },
@@ -144,6 +146,7 @@ pub fn rec_json(id: &str, r: &agent_scan::Rec) -> Value {
         "lastSeenMs": r.last_seen_ms,
         "pendingMessage": r.pending_message,
         "taskType": r.task_type,
+        "shellKind": r.shell_kind,
         "spawnInput": r.spawn_input,
     })
 }
@@ -208,7 +211,7 @@ fn plugin_versions(root: &str) -> rquickjs::Result<String> {
     use crate::checks::session::jval::{J, Parsed, parse};
     let (home, env) = with_settings(|st| (st.home.clone(), crate::reqenv::RequestEnv::from_pairs(st.env.clone())))?;
     let mut unsure = false;
-    let registered = match crate::checks::session::version_alert::harness_version(&env, &home) {
+    let registered = match crate::checks::session::version_alert::harness_version(&env, &home, root) {
         Ok(v) => v,
         Err(()) => {
             unsure = true;

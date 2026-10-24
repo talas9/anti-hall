@@ -245,6 +245,8 @@ fn whole_file_state_is_written_atomically_outside_the_listed_exceptions() {
             "src/ops/",
             "the operator command-line tools (settings, defect, statusline, phase, install-statusline) write the very files Node's scripts write, in place or via their own tmp+rename, and the shadow scratch files; the parity tests compare the bytes",
         ),
+        ("src/operator/routine.rs", "staged files renamed into place and disposable validation/probe payloads, not published state"),
+        ("src/operator/sweep.rs", "launchctl listing copied into a new backup file before retiring the old unit"),
         ("src/operator/install_codex.rs", "writes .codex/hooks.json exactly as install-codex.js does; the parity test compares the file"),
         ("src/dssup/witness.rs", "the witness spec file in its scratch directory (never state)"),
         ("src/dssup/recon/mirror.rs", "files of the scratch mirror the reconcile runs against (never the real store)"),

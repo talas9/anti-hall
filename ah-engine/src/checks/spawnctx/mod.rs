@@ -66,7 +66,7 @@ pub fn state_home(env: &HashMap<String, String>) -> Home {
     Home::Ok(home)
 }
 
-/// True when the hook should do nothing because it runs inside a judge child (`hooks/lib/judge-child-exit.js`).
+/// True when the hook should do nothing because it runs inside a judge child.
 pub fn judge_child(env: &HashMap<String, String>) -> bool {
     env.get(defaults::text("spawn_ctx.judge_child_env")).is_some_and(|v| v == defaults::text("spawn_ctx.judge_child_value"))
 }

@@ -55,7 +55,7 @@ A short re-triage of the parked items happens after R1.
 | A | [#43](https://github.com/talas9/anti-hall/issues/43) migration status report → [#66](https://github.com/talas9/anti-hall/issues/66) doctor → [#61](https://github.com/talas9/anti-hall/issues/61) update |
 | B | [#68](https://github.com/talas9/anti-hall/issues/68) Stop nudges → [#23](https://github.com/talas9/anti-hall/issues/23) CI on Linux and Intel macOS → [#17](https://github.com/talas9/anti-hall/issues/17) test-suite speed-up |
 | C | [#64](https://github.com/talas9/anti-hall/issues/64) DevSwarm supervisor and ingest → [#14](https://github.com/talas9/anti-hall/issues/14) DevSwarm CLI remainder → [#72](https://github.com/talas9/anti-hall/issues/72) prompt-side hooks → [#73](https://github.com/talas9/anti-hall/issues/73) gates and roles |
-| Then, in series | [#77](https://github.com/talas9/anti-hall/issues/77) skills and docs call the engine directly → pass-through plus notice → [#76](https://github.com/talas9/anti-hall/issues/76) runtime cutover → [#78](https://github.com/talas9/anti-hall/issues/78) delete the Node files and tests → [#16](https://github.com/talas9/anti-hall/issues/16) umbrella closes with evidence |
+| Then, in series | [#77](https://github.com/talas9/anti-hall/issues/77) skills and docs call the engine through the thin client `ah-hook` → pass-through plus notice → [#76](https://github.com/talas9/anti-hall/issues/76) runtime cutover → [#78](https://github.com/talas9/anti-hall/issues/78) delete the Node files and tests → [#16](https://github.com/talas9/anti-hall/issues/16) umbrella closes with evidence |
 
 ## v0.302 — features
 
@@ -63,6 +63,8 @@ A short re-triage of the parked items happens after R1.
 **Exit gate (per feature):** one `<feature>.enabled` setting; all tunables in plugin TOML; Claude and Codex parity test; effectiveness metrics in `ah-engine telemetry report`; no regression (no-Node suite green, replay 0 weaker, bounded added latency and memory); judgement features ship in shadow mode until measured precision is accepted; 0 open P0/P1.
 
 Order: [#53](https://github.com/talas9/anti-hall/issues/53) → [#41](https://github.com/talas9/anti-hall/issues/41) → [#40](https://github.com/talas9/anti-hall/issues/40) → [#42](https://github.com/talas9/anti-hall/issues/42) → [#20](https://github.com/talas9/anti-hall/issues/20) → [#36](https://github.com/talas9/anti-hall/issues/36) → [#37](https://github.com/talas9/anti-hall/issues/37) → [#34](https://github.com/talas9/anti-hall/issues/34) → [#35](https://github.com/talas9/anti-hall/issues/35) → [#39](https://github.com/talas9/anti-hall/issues/39) → [#18](https://github.com/talas9/anti-hall/issues/18)
+
+Planned, priority P3: [#289](https://github.com/talas9/anti-hall/issues/289) rules as data (action catalogue, TOML routines and CEL conditions, no JavaScript in the plugin).
 
 ## v1.0 — release candidate
 

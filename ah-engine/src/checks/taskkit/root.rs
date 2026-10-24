@@ -78,7 +78,7 @@ fn common_dir_names_worktree(g: &Path) -> bool {
     std::fs::read(common_dir.join("config")).map(|b| core_section_names_worktree(&String::from_utf8_lossy(&b))).unwrap_or(false)
 }
 
-/// True when the first `[core]` section of a git config holds a `worktree = <value>` line (`coreWorktreeOf` of identity.js).
+/// True when the first `[core]` section of a git config holds a `worktree = <value>` line.
 /// Where the key is present but its value does not resolve, Node does not climb; the engine still reports it present, which
 /// only means more deferrals.
 fn core_section_names_worktree(cfg: &str) -> bool {

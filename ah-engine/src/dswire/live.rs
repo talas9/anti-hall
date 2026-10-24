@@ -92,7 +92,16 @@ impl RtLive<'_> {
         let merged = self.merged_fact(app, b, &wt, head.as_deref(), done["boundToHead"] == json!(true) && done["done"] == json!(true), verified.as_deref());
         let (clean, why) = if fresh { git.clean_now(&wt) } else { git.clean(&wt) };
         let probe = FsProbe::new(&self.home, self.now);
-        let act = facts::activity_ms(&self.home, &probe, b, &mine);
+        // Node's real-work clock never reads earlier than the newest inbound message or the last commit: both floor it here, and a
+        // clock that cannot be floored (the store cannot be read) or a turn that cannot be shown finished holds the workspace
+        let mut act = facts::activity_ms(&self.home, &probe, b, &mine);
+        let commit = crate::dssup::liveness::worktree_activity(self.runner, &wt).map(|ms| ms as i64);
+        let inbound = facts::last_inbound_ms(&self.home, repo_key.as_deref(), &ids);
+        act = [act, commit, inbound.map(|t| t as i64)].into_iter().flatten().max();
+        let uncertain = inbound.is_none() || facts::idle_uncertain(&self.home, &mine);
+        if uncertain {
+            crate::discard::note("devswarm_idle_uncertain", &defaults::render("devswarm_wire.msg_idle_uncertain", &[("id", &b.id)]));
+        }
         let last = self.last_selected(&b.id);
         // the newest inbound message and the commit time are floors under the idle clock, as in Node's real-work rule; the legacy
         // rule has neither, so they are not applied here (they could only make the workspace look less idle than Node does)
@@ -101,7 +110,7 @@ impl RtLive<'_> {
             "isPrimary": is_primary(b), "hasSummary": summary.is_some(), "done": done, "merged": merged,
             "clean": clean, "cleanReason": why, "unread": facts::unread_fact(&self.home, repo_key.as_deref(), summary.as_ref(), &ids),
             "hasLastSelected": last.is_some(), "lastSelectedAt": last.flatten(), "head": head,
-            "idle": {"ts": act, "via": "activity", "openRealTurn": false, "pendingBackground": false},
+            "idle": {"ts": act, "via": "activity", "openRealTurn": false, "pendingBackground": false, "uncertain": uncertain},
         })
     }
 

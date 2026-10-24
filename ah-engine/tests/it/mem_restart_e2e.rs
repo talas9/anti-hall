@@ -24,8 +24,8 @@ fn lower(plugin: &Path, dir: &str) {
     let p = plugin.join("engine").join(dir).join("mem.toml");
     let text = std::fs::read_to_string(&p).unwrap();
     let text = text
-        .replace("value = 125829120", "value = 1048576") // mem.global_hard_bytes
-        .replace("value = 100663296", "value = 1048576") // mem.global_soft_bytes
+        .replace(&format!("value = {}", ah_engine::defaults::num("mem.global_hard_bytes")), "value = 1048576") // mem.global_hard_bytes
+        .replace(&format!("value = {}", ah_engine::defaults::num("mem.global_soft_bytes")), "value = 1048576") // mem.global_soft_bytes
         .replace("value = 60\nmin = 1\nunit = \"s\"", "value = 1\nmin = 1\nunit = \"s\""); // mem.global_restart_after_s
     assert!(text.contains("value = 1\nmin = 1\nunit = \"s\""), "restart_after_s was not lowered");
     std::fs::write(p, text).unwrap();

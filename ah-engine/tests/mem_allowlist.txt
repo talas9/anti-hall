@@ -95,3 +95,20 @@ devswarm_rt/linefile.rs | LAST | a single entry: the rows text (one short row pe
 obs/counters.rs | LOGGED | emptied at diagnostics.abandoned_log_keys_max entries; one entry per abandoned site and reason | when an abandoned site last logged and how many were counted since, to throttle the event log
 script/mod.rs | SESSIONS | at most script.notice_max entries (one per serving thread); cleared when full | the session of the request each serving thread is answering, so a guard that is not guarding is told once per session
 script/mod.rs | SEEN | at most script.notice_max (session, check) pairs; cleared when full: at worst one notice repeats | the pairs already told that a guard is not guarding
+
+# Current daemon diagnostics, request scratch and dashboard holders.
+budget.rs | DROPPED | answer_drop.dropped_keys_max entries | per-daemon dropped-answer counters
+budget.rs | DROPPED_LOGGED | diagnostics.abandoned_log_keys_max entries; clears at cap | dropped-answer log cadence
+budget.rs | LAST_DROP | one reason, consumed after the check | per-worker check scratch
+daemon.rs | Shared.hook_version | one string, replaced by the latest bounded request environment | last client version
+daemon.rs | Shared.hook_engine_min | one string, replaced by the latest bounded request environment | last client's minimum engine version
+daemon.rs | Shared.plugin_version | one cached manifest version string | replaced on manifest refresh
+dispatch/table.rs | CACHE | one commands map per host at the process's loaded plugin root | fallback command tables
+jev/assist.rs | ASKING_CHECK | one current check name per worker | replaced before each check
+script/host_mesh.rs | IDENT | cleared at each script call | request-local mesh identities
+script/host_parentinbox.rs | CACHE | devswarm_parent.drift_cache_keys_max; clears at cap | transcript session listings
+script/host_parentinbox.rs | CWDS | devswarm_parent.drift_cache_keys_max times drift_cache_cwd_factor; clears at cap | transcript head working directories
+script/mod.rs | CACHE | one library fingerprint snapshot for the current directory pair | replaced when home/root or TTL changes
+web/decisions.rs | RING | decisions.ring rows; drops oldest at cap | dashboard check decisions
+web/io.rs | Reg.names | io.max_clients slots, io.client_name_max characters each | dashboard client registry
+web/pulse.rs | SHA | web.build_sha_bytes rendered as hex, computed once | executable identity

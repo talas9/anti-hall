@@ -10,7 +10,7 @@
 use super::table::Entry;
 use crate::defaults;
 use crate::hookcfg::session::SessionStore;
-use crate::hookcfg::when::{Ctx, Facts, LoadedFacts, NoFacts, SettingRef, Val};
+use crate::hookcfg::when::{Ctx, Facts, NoFacts, SettingRef, Val};
 use crate::hookcfg::{HookCfg, Mode};
 use crate::reqenv::RequestEnv;
 use serde_json::Value;
@@ -173,7 +173,7 @@ pub fn build(event: &str, matched: Vec<Entry>, cfg: &HookCfg, occ: &Occurrence<'
 
 /// Settings and transcript facts loaded on first use, from the engine's own config files (never from Node).
 pub struct LiveFacts {
-    loaded: std::sync::OnceLock<(Value, crate::cfgstore::Effective)>,
+    loaded: std::sync::OnceLock<crate::cfgstore::Layers>,
 }
 
 impl Default for LiveFacts {
@@ -183,19 +183,22 @@ impl Default for LiveFacts {
 }
 
 impl LiveFacts {
-    fn loaded(&self) -> &(Value, crate::cfgstore::Effective) {
+    fn loaded(&self) -> &crate::cfgstore::Layers {
         self.loaded.get_or_init(|| {
             let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
-            let eff = crate::cfgstore::Effective::resolve_process(&layers);
-            (layers.settings, eff)
+            layers
         })
     }
 }
 
 impl Facts for LiveFacts {
     fn setting(&self, r: &SettingRef, env: &RequestEnv) -> Option<Option<Val>> {
-        let (s, e) = self.loaded();
-        LoadedFacts { settings: s, effective: e, index: None }.setting(r, env)
+        let layers = self.loaded();
+        crate::hookcfg::when::setting_value(r, env, &layers.settings, |key| {
+            let entry = defaults::get(key)?;
+            let resolved = crate::cfgstore::resolve_one(entry, layers, &|n| env.get(n).map(str::to_owned));
+            Val::from_json(&resolved.value)
+        })
     }
 
     fn transcript(&self, payload: &Value, f: crate::hookcfg::when::Fact) -> Option<Option<Val>> {
@@ -213,10 +216,8 @@ pub fn load_config(cwd: &str) -> HookCfg {
             Default::default()
         }
     };
-    let project = crate::hookcfg::load_project(cwd).unwrap_or_else(|e| {
-        crate::health::log_event("config_invalid", e.code(), &e.to_string());
-        None
-    });
+    // the project layer is found from the project root (not the raw cwd) and cached per project, tighten-only (layers.rs)
+    let project = crate::layers::project(cwd).map(|p| p.hooks.clone());
     HookCfg::new(project, user)
 }
 
@@ -288,6 +289,25 @@ mod tests {
 
     fn post() -> Value {
         serde_json::from_str(POST_BASH).unwrap()
+    }
+
+    #[test]
+    fn live_predicate_facts_match_loaded_switch_and_engine_layers() {
+        use crate::hookcfg::when::LoadedFacts;
+        let layers = crate::cfgstore::Layers {
+            settings: serde_json::json!({"guards": {"shipitGate": true}}),
+            user: [("daemon.queue".to_string(), serde_json::json!(17))].into(),
+            ..Default::default()
+        };
+        let effective = crate::cfgstore::Effective::resolve_process(&layers);
+        let loaded = LoadedFacts { settings: &layers.settings, effective: &effective, index: None };
+        let live = LiveFacts { loaded: std::sync::OnceLock::from(layers.clone()) };
+        let env = RequestEnv::from_pairs([("HOME", "/ah-hookcfg-fixture")]);
+        let switch = defaults::setting_entries("guards", "shipitGate").into_iter().next().unwrap();
+        for setting in [SettingRef::Switch(&switch.value), SettingRef::Engine("daemon.queue")] {
+            assert_eq!(live.setting(&setting, &env), loaded.setting(&setting, &env));
+        }
+        assert_eq!(live.setting(&SettingRef::Engine("daemon.queue"), &env), Some(Some(Val::Int(17))));
     }
 
     #[test]

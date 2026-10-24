@@ -109,6 +109,10 @@ fn rel_of(home: &Path, p: &Path) -> Option<String> {
 /// crash tests kill the process there).
 pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
     let node = |why: &str| Stage::Node(why.to_string());
+    // Primary mesh partitions have a mailbox but no hivecontrol workspace/native queue.
+    if crate::meshw::heartbeat::is_primary_label(id) {
+        return node(defaults::text("devswarm_recon.pull_primary_reason"));
+    }
     let inv = inv_for(ctx.home, &ctx.st.env, ctx.now, cwd);
     let Some(desc) = read_descriptor(ctx.home, id) else { return node("no-descriptor") };
     let mut plan = match pull::prepare_swept(&inv, id, Some(&desc)) {

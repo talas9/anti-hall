@@ -192,7 +192,7 @@ function ovDecide(p, pend) {
   }
   var reason = text.message('warn', ah.cfg('output_verify.guard_name'), {
     what: text.render(ah.cfg('output_verify.msg_what'), { bits: bits.join(ah.cfg('output_verify.bits_sep')) }),
-    why: ah.cfg('output_verify.msg_why'), instead: ah.cfg('output_verify.msg_instead'),
+    why: ah.cfg('output_verify.msg_why'), instead: ah.cfg('output_verify.msg_instead'), extra: bits,
   });
   return { exact: { code: 0, out: text.advisoryJson(ah.cfg('output_verify.event'), reason) + '\n', err: '' } };
 }

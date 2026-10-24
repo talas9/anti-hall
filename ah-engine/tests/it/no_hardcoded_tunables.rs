@@ -32,6 +32,28 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
+    (
+        "src/budget.rs",
+        "static LAST_DROP",
+        "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",
+    ),
+    ("src/learn.rs", "static LAST_REPEAT", "a thread-local counter slot that starts at zero and is set per block: an initial value, not a tunable"),
+    (
+        "src/lib.rs",
+        "pub const FEATURES",
+        "the capability names of this build that an updater reads from `version --json`: a build fact versioned with the binary, not a setting",
+    ),
+    (
+        "src/mesh.rs",
+        "vec![\"?\"; senders.len()]",
+        "SQL bind placeholders sized to the sender list (the query syntax, not a tunable); the empty list yields an empty quoted literal",
+    ),
+    (
+        "src/operator/routine.rs",
+        "std::env::var_os(\"PATH\")",
+        "the name of the standard PATH environment variable that a cleared-environment child inherits: an OS interface name, not a setting",
+    ),
+    ("src/operator/sweep.rs", "take(2)", "the label of a plugin root is its last two path components: the shape of the label, not a limit anyone tunes"),
     // ---- wire and host protocols: part of the interface, versioned with it, not tunables --------------------
     (
         "src/checks/taskstate/mod.rs",
@@ -47,6 +69,21 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "src/main.rs",
         "static ALLOC",
         "the dhat allocator hook of the `diag` feature (developer diagnostics only, not compiled into a release build): a global-allocator declaration, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const PLUGIN_MIN",
+        "the lowest plugin version this build runs: a protocol/format compatibility constant of the build, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const HOOK_MIN",
+        "the lowest hook client version this build serves: a protocol/format compatibility constant of the build, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const WEB_MIN",
+        "the lowest dashboard version this build serves: a protocol/format compatibility constant of the build, not a tunable",
     ),
     ("src/frame.rs", "const MAGIC", "reply frame magic: the wire format identifier"),
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
@@ -147,6 +184,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable",
     ),
     ("src/script/host_mesh.rs", "static OWED", "a thread-local list of the app-cache writes the call's lookups owe, initialised empty: state, not a tunable"),
+    ("src/script/host_mesh.rs", "static IDENT", "a thread-local cache of the resolved mesh identity of this call, initialised empty: state, not a tunable"),
     ("src/script/host_mesh.rs", "static APP", "a thread-local slot initialised empty (the app database read this call made): state, not a tunable"),
     ("src/script/host_childturn.rs", "static PLANNED", "a thread-local slot for the registration the call planned, initialised empty: state, not a tunable"),
     (
@@ -305,6 +343,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),
     ("src/frame.rs", ".take(64)", "the longest reply-frame header scanned: a bound of the wire format"),
+    (
+        "src/jev/assist.rs",
+        "static ASKING_CHECK",
+        "a per-thread cell that starts empty and holds the name of the check now running (runtime state); it carries no configured value, so there is nothing to move to the defaults",
+    ),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     (
         "src/sql.rs",

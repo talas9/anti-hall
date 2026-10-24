@@ -31,6 +31,12 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
     let findings = scratch.join("findings.json");
     std::fs::write(&findings, "[]").unwrap();
     vec![
+        ("audit", s(&["entry-paths", "--no-live", "--json"])),
+        ("post-update-check", s(&["--dry-run"])),
+        ("proc", s(&["list", "--json"])),
+        ("web", s(&["status"])),
+        ("describe", s(&[])),
+        ("query", s(&["sources"])),
         ("status", s(&[])),
         ("status", s(&["--memory"])),
         ("metrics", s(&[])),
@@ -79,7 +85,7 @@ fn runs(scratch: &Path) -> Vec<(&'static str, Vec<String>)> {
 }
 
 #[test]
-fn read_only_verbs_create_nothing_in_an_empty_home() {
+fn read_only_verbs_create_no_state_beyond_the_documented_process_audit() {
     let root = std::env::temp_dir().join(format!("ah-readonly-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
@@ -101,6 +107,16 @@ fn read_only_verbs_create_nothing_in_an_empty_home() {
             .unwrap();
         let mut now = Vec::new();
         tree(&home, &mut now);
+        // `proc` is explicitly audited, including list/status (web::actions::finish).
+        if cmd == "proc" {
+            let audit = home.join(".anti-hall/ah-engine/actions.ndjson");
+            let rows = std::fs::read_to_string(&audit).unwrap();
+            assert_eq!(rows.lines().count(), 1, "one audit record per read");
+            now.retain(|p| ![home.join(".anti-hall"), home.join(".anti-hall/ah-engine"), audit.clone()].iter().any(|a| a.to_string_lossy() == p.as_str()));
+            std::fs::remove_file(audit).unwrap();
+            std::fs::remove_dir(home.join(".anti-hall/ah-engine")).unwrap();
+            std::fs::remove_dir(home.join(".anti-hall")).unwrap();
+        }
         if !now.is_empty() {
             wrote.push(format!("{cmd} {args:?} (exit {:?}) created {now:?}", out.status.code()));
             std::fs::remove_dir_all(&home).unwrap();

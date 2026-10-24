@@ -24,6 +24,8 @@ Object.assign(ah.jev, {
   cacheHas: function (hash) { return ahNull(ahHost.jevCacheHas(hash)); },
 });
 ah.plugin = {
+  root: function () { return ahHost.pluginRoot() || null; },
+  install: function (root) { return JSON.parse(ahHost.pluginInstall(root || '')); },
   // {running, registered, unsure}: the version of the plugin at `root` (null when unreadable) and the one the host registered.
   versions: function (root) { return JSON.parse(ahHost.pluginVersions(root || '')); },
 };

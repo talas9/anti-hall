@@ -281,6 +281,15 @@ pub fn scoped(root: &str, rel: &str, text: &str, op: Op) -> rquickjs::Result<boo
     }
 }
 
+/// Whether state may be written under `root`: the request's home directory (outside a request every root is taken as home), or a
+/// directory holding a `.git` entry (a live work tree or project root). A project root whose folder is gone, or has no `.git`
+/// (an archived DevSwarm workspace), is never re-created.
+fn live_project_root(root: &str) -> bool {
+    let Ok(home) = with_settings(|st| st.home.clone()) else { return true };
+    let same = |a: &str, b: &str| a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(x, y)| x == y);
+    same(root, &home) || std::fs::symlink_metadata(Path::new(root).join(defaults::text("taskkit.git_entry"))).is_ok()
+}
+
 /// Validate a scoped write target and prepare its directory: `Err` for a policy violation, `Ok(None)` for an I/O failure,
 /// `Ok(Some(path))` for the file to write.
 fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs::Result<Option<PathBuf>> {
@@ -296,6 +305,10 @@ fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs:
     let parts: Vec<&str> = rel.split('/').collect();
     if parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") || parts.len() < 2 || parts[0] != defaults::text("script.write_root") {
         return Err(refused(defaults::text("script.write_why_path")));
+    }
+    if !live_project_root(home) {
+        crate::discard::note("state.dead_root", &defaults::render("script.msg_dead_root", &[("root", &home)]));
+        return Ok(None);
     }
     let root: PathBuf = Path::new(home).join(parts[0]);
     let mut cur = root.clone();
@@ -582,13 +595,14 @@ fn scoped_existing(home: &str, rel: &str) -> rquickjs::Result<Option<PathBuf>> {
 
 /// `cfgLive(key)`: the effective value of a defaults key as JSON text, resolved through the editable layers (the request home's
 /// `settings.json`, then the engine's `config.toml`, then the shipped default), so an owner edit applies on the next call.
-/// Cached per pair of files (path, size, modification time) and per defaults generation, so a call costs two `stat`s.
+/// Cache the layers per pair of files (path, size, modification time) and defaults generation,
+/// then resolve only the requested key. A cold Stop must not materialize every unrelated setting.
 pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
-    use crate::cfgstore::{self, Effective, Paths};
+    use crate::cfgstore::{self, Layers, Paths};
     use std::sync::{Arc, Mutex};
     type Stamp = Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>;
-    static CACHE: Mutex<Option<(Stamp, u64, Arc<Effective>)>> = Mutex::new(None);
-    entry(key)?;
+    static CACHE: Mutex<Option<(Stamp, u64, Arc<Layers>)>> = Mutex::new(None);
+    let requested = entry(key)?;
     let home = with_settings(|st| st.home.clone())?;
     let base = Path::new(&home).join(defaults::text("paths.base_dir"));
     let paths = Paths { user: Paths::from_env().user, settings: Some(base.join(defaults::text("config.settings_file"))) };
@@ -598,19 +612,19 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
         now.push(one(s));
     }
     let generation = defaults::generation();
-    let eff = {
+    let layers = {
         let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
             Some((s, at, e)) if *s == now && *at == generation => Arc::clone(e),
             _ => {
                 let (layers, _problems) = cfgstore::load_layers_cold(&paths);
-                let e = Arc::new(Effective::resolve(&layers, &|_| None));
+                let e = Arc::new(layers);
                 *g = Some((now, generation, Arc::clone(&e)));
                 e
             }
         }
     };
-    eff.get(key).map_or_else(|| entry(key).map(|e| e.value.to_json().to_string()), |r| Ok(r.value.to_string()))
+    Ok(cfgstore::resolve_one(requested, &layers, &|_| None).value.to_string())
 }
 
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the

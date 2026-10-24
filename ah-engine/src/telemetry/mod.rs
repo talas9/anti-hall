@@ -20,6 +20,7 @@ pub mod recorder;
 pub mod report;
 pub mod rollup;
 pub mod route;
+pub mod spawn_result;
 
 use crate::checks::Verdict;
 use crate::defaults;
@@ -58,6 +59,7 @@ enum Staged {
     Record(Kind, String, String, Outcome, u64, u64),
     Event(Event),
     Impact(ImpactEvent),
+    Block(crate::storage::BlockRow),
 }
 
 thread_local! {
@@ -112,6 +114,37 @@ pub fn decision_name(v: &Verdict) -> &'static str {
     }
 }
 
+/// Whose call a check ran for (the hook payload's session, subagent and tool).
+#[derive(Debug, Clone, Default)]
+pub struct Who {
+    /// The session id.
+    pub session: String,
+    /// The subagent id (empty for the main thread).
+    pub agent: String,
+    /// The tool name.
+    pub tool: String,
+    /// The hook event, when the caller knows it better than the check label does (empty: use the check's own).
+    pub event: String,
+}
+
+impl Who {
+    /// Read the three fields from a hook payload (`hook.session_keys`, `hook.agent_keys`, `hook.tool_keys`).
+    pub fn of(p: &Value) -> Who {
+        let pick = |list: &str| defaults::list(list).into_iter().find_map(|k| p.get(k).and_then(Value::as_str)).unwrap_or("").to_string();
+        Who { session: pick("hook.session_keys"), agent: pick("hook.agent_keys"), tool: pick("hook.tool_keys"), event: String::new() }
+    }
+}
+
+/// The message of a block verdict (a block, or an exit-2 answer), `None` for anything else.
+fn block_text(v: &Verdict) -> Option<&str> {
+    match v {
+        Verdict::Block(t) => Some(t),
+        Verdict::Exact(x) if x.code == 2 => Some(&x.err),
+        Verdict::Routed(inner, _) => block_text(inner),
+        _ => None,
+    }
+}
+
 impl Telemetry {
     fn sink(&self, item: Staged) {
         match staged(item) {
@@ -119,6 +152,7 @@ impl Telemetry {
             Some(Staged::Record(k, h, e, o, us, ib)) => self.rec.record(k, &h, &e, o, us, ib),
             Some(Staged::Event(ev)) => self.rec.event(ev),
             Some(Staged::Impact(ev)) => self.store.record_impact(ev),
+            Some(Staged::Block(row)) => self.store.record_block(row),
         }
     }
 
@@ -190,6 +224,26 @@ impl Telemetry {
         self.sink(Staged::Event(ev));
     }
 
+    /// Observe launch identities and finished outcomes without guessing models or usage.
+    pub fn observe_spawn(&self, event: &str, payload: &Value, now: u64) {
+        let launch = spawn_result::event_of(event, payload, now);
+        if launch.is_none() && event != defaults::text("telemetry.spawn_stop_event") {
+            return;
+        }
+        let since = now.saturating_sub(defaults::num("telemetry.spawn_link_retention_ms"));
+        let mut events = self.tel.as_ref().map(|t| t.impact_events(since)).unwrap_or_default();
+        events.extend(self.rec.pending_events());
+        if let Some(ev) = launch.and_then(|ev| spawn_result::link_launch(ev, &events)) {
+            let complete = spawn_result::launch_completion(payload, &ev, now);
+            self.event(complete.unwrap_or(ev));
+        }
+        if event == defaults::text("telemetry.spawn_stop_event")
+            && let Some(ev) = spawn_result::completion(payload, now, &events)
+        {
+            self.event(ev);
+        }
+    }
+
     /// Record a model-routing decision (D77): the event, plus an impact event of kind `route` whose reason is what the
     /// check did, so the ledger counts decisions in both directions.
     pub fn route(&self, ev: Event, project: &str) {
@@ -242,13 +296,17 @@ impl Telemetry {
 
     /// The `telemetry` control verb: `summary` or `events`, with `window=`, `kind=`, `limit=`.
     pub fn telemetry_json(&self, sub: &str, window: &str, kind: &str, limit: usize) -> Value {
-        let days = report::window_days(window);
+        let days = match report::check_window(window) {
+            Ok(d) => d,
+            Err(e) => return json!({"error": e}),
+        };
         let now = now_ms();
         match sub {
             "events" => report::events_json(self.tel.as_ref(), Some(&self.rec), kind, days, limit, now),
             _ => {
                 let mut v = report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now);
                 v["dropped"]["inbox_refused"] = json!(self.inbox_bad.load(std::sync::atomic::Ordering::Relaxed));
+                v["agent_cost"] = crate::agents::cost_report();
                 v
             }
         }
@@ -277,6 +335,12 @@ impl Telemetry {
     /// A built-in check finished while serving hook event `event`: count the run, time it, record its telemetry (outcome,
     /// latency, bytes injected) and the impact of a block or advisory.
     pub fn observe_check_in(&self, event: &str, check: &str, rule_id: &str, verdict: &Verdict, micros: u64, project: &str) {
+        self.observe_check_who(event, check, rule_id, verdict, micros, project, &Who::default());
+    }
+
+    /// [`Telemetry::observe_check_in`] that also says whose call it was, so a block can be asked about afterwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_check_who(&self, event: &str, check: &str, rule_id: &str, verdict: &Verdict, micros: u64, project: &str, who: &Who) {
         let decision = decision_name(verdict);
         let effective;
         let verdict = match verdict {
@@ -304,11 +368,30 @@ impl Telemetry {
             m.inc("check_decisions", &[("check", check), ("decision", decision)]);
             m.observe("check_latency_us", &[("check", check)], micros);
         }
+        if let Some(text) = block_text(verdict) {
+            let cap = defaults::num("telemetry.block_reason_chars") as usize;
+            let reason: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(cap).collect();
+            self.sink(Staged::Block(crate::storage::BlockRow {
+                ts_ms: now_ms(),
+                guard: check.into(),
+                rule: rule_id.into(),
+                event: if who.event.is_empty() { event.into() } else { who.event.clone() },
+                session: who.session.clone(),
+                agent: who.agent.clone(),
+                tool: who.tool.clone(),
+                project: project.into(),
+                reason,
+                repeat: crate::learn::take_repeat(),
+            }));
+        }
         match verdict {
             Verdict::Block(_) => self.impact("block", check, rule_id, project),
             Verdict::Advisory(_) => self.impact("advisory", check, rule_id, project),
             Verdict::Exact(_) if decision == "block" || decision == "advisory" => self.impact(decision, check, rule_id, project),
-            Verdict::Defer => self.impact("fallback", check, "defer", project),
+            Verdict::Defer => {
+                let why = crate::budget::take_drop_reason().unwrap_or_else(|| defaults::text("telemetry.no_answer_reason").to_string());
+                self.impact("fallback", check, &why, project)
+            }
             Verdict::Allow | Verdict::Exact(_) | Verdict::Routed(_, _) => {}
         }
     }
@@ -393,16 +476,25 @@ impl Telemetry {
         self.impact_json_in(filter, recent, "")
     }
 
-    /// The `impact` command's body, with the NET savings section (D77) for the last `window` (`7d`, `36h`; empty: the
+    /// The `impact` command's body, with the NET savings section (D77) for the last `window` (`7d`; empty: the
     /// default). When routing decisions exist, the model-routing saving carries the computed estimate.
     pub fn impact_json_in(&self, filter: &ImpactFilter, recent: usize, window: &str) -> Value {
+        let days = match report::check_window(window) {
+            Ok(d) => d,
+            Err(e) => return json!({"error": e}),
+        };
         let mut v = crate::impact::summary(&*self.store, filter, recent);
-        let net = report::net_json(self.tel.as_ref(), Some(&self.rec), report::window_days(window), now_ms());
+        let net = report::net_json(self.tel.as_ref(), Some(&self.rec), days, now_ms());
         if net["routing"]["decisions"].as_u64().unwrap_or(0) > 0 {
             let r = &mut v["savings"]["model_routing"];
             r["estimated_usd"] = net["routing"]["net_usd"].clone();
-            r["status"] = json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])]));
+            r["status"] = if net["routing"]["net_usd"].is_null() {
+                json!(defaults::text("impact.routing_unknown_status"))
+            } else {
+                json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])]))
+            };
         }
+        v["savings"]["avoided_waste"] = report::avoided_waste_json(self.tel.as_ref(), Some(&self.rec), days, now_ms());
         v["net"] = net;
         v
     }
@@ -510,7 +602,7 @@ mod tests {
         let t2 = Telemetry::with_store(Box::new(crate::storage::SqliteStore::new(db2)));
         let s = t2.telemetry_json("summary", "1d", "", 10);
         assert_eq!(s["invocations"], 2, "everything up to the last flush is there, and the unflushed one is not: {s}");
-        assert_eq!(s["injected_bytes"], 300);
+        assert_eq!(s["injected_bytes"], 0, "hook totals do not duplicate the check injection ledger");
         assert_eq!(s["by_outcome"]["advise"], 1);
         // a clean shutdown flushes first, so nothing is lost
         t2.record_hook("Stop", Outcome::Allow, 10, 0);
@@ -558,6 +650,8 @@ mod tests {
             kind: Kind::Spawn,
             ts_ms: now + 5,
             extras: Extras::Spawn(Spawn {
+                started_ms: None,
+                agent_key: None,
                 spawn_key: tk("key1"),
                 actual_model: tk("haiku"),
                 usage: Usage { input: 10, output: 5, cache_read: 0, cache_write: 0 },
@@ -570,9 +664,9 @@ mod tests {
         assert_eq!(imp["by_kind"]["route"], 1, "the decision is in the impact ledger: {imp}");
         let r = &imp["net"]["routing"];
         assert_eq!((r["decisions"].as_u64(), r["linked_spawns"].as_u64()), (Some(1), Some(1)), "the spawn result joined by key: {imp}");
-        // the shipped price table has no verified prices yet, so the join is reported but no dollar figure is invented
-        assert_eq!(r["unpriced_spawns"], 1);
-        assert!(imp["net"]["net_usd"].is_null());
+        // The shipped table now prices both requested opus and selected haiku.
+        assert_eq!(r["unpriced_spawns"], 0);
+        assert!(imp["net"]["net_usd"].is_number());
         assert_eq!(imp["net"]["label"], "estimate");
         let ev = t.telemetry_json("events", "7d", "route", 10);
         assert_eq!(ev["count"], 1);

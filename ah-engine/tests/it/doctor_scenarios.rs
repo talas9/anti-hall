@@ -1,7 +1,7 @@
 //! `ah-engine doctor` against every documented failure scenario, each simulated in a scratch HOME:
 //! stub and fixture binaries (a wrong-OS or wrong-architecture header, a quarantined file), fake sockets and lock holders,
 //! read-only and unowned directories, a scratch copy of the plugin with its files broken, stub `node`/`git` programs on a
-//! restricted PATH. The shell doctor (`ah-hook.sh --doctor`) runs on the same fixtures and must say the same thing for every
+//! restricted PATH. The thin client's built-in doctor (`ah-hook doctor --builtin`) runs on the same fixtures and must say the same thing for every
 //! check both make. Nothing here touches the real HOME.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::fs;
@@ -252,14 +252,29 @@ impl Sc {
         Out { code: o.status.code().unwrap_or(-1), text: String::from_utf8_lossy(&o.stdout).into_owned(), err: String::from_utf8_lossy(&o.stderr).into_owned() }
     }
 
-    /// The shell doctor of the same plugin.
+    /// The built-in doctor of the thin client, on the same plugin.
     fn shell(&self) -> Out {
-        let mut c = Command::new("sh");
-        c.arg(self.plugin.join("hooks/ah-hook.sh")).arg("--doctor");
+        let mut c = builtin_doctor(&self.plugin);
         self.env(&mut c);
         c.env("AH_WRAPPER_TEST", "1");
         self.finish(c)
     }
+}
+
+/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): AH_HOOK_BIN, else the release or debug
+/// build of `ah-launcher` in this checkout.
+fn builtin_doctor(plugin: &Path) -> Command {
+    let bin = std::env::var_os("AH_HOOK_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+            ["release", "debug"].iter().map(|b| root.join(b).join("ah-hook")).find(|p| p.is_file())
+        })
+        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN");
+    let mut c = Command::new(bin);
+    c.arg("--plugin-root").arg(plugin).arg("doctor").arg("--builtin").env("AH_WRAPPER_TEST", "1");
+    c
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -317,7 +332,7 @@ fn bin_01_missing() {
     let mut sc = Sc::new();
     sc.own_plugin();
     let d = sc.doctor(&[]);
-    d.has("warn", &["engine binary not installed at", "bin/ah-engine", "- Fix: sh", "ah-engine-bootstrap.sh -v"]);
+    d.has("warn", &["engine binary not installed at", "bin/ah-engine", "- Fix: sh", "install.sh --download -v"]);
     d.has("bad", &["no working engine: the anti-hall hooks do not run"]);
     assert_eq!(d.code, 1, "Node is no fallback: a missing installed engine is a failure\n{}", d.text);
 }
@@ -1017,7 +1032,7 @@ fn cf_05_unknown_settings_are_reported_not_failed() {
     sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let f = sc.plugin.join("engine/defaults/doctor.toml");
     let mut text = fs::read_to_string(&f).unwrap();
-    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo\"\nvalue = 1\n");
+    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo.\"\nvalue = 1\n");
     fs::write(&f, text).unwrap();
     let d = sc.doctor(&[]);
     d.has("info", &["doctor.toml: unknown setting(s) doctor.not_a_real_key", "a typo?"]);
@@ -1040,9 +1055,13 @@ fn cf_06_07_the_users_own_config_and_settings_files() {
 }
 
 #[test]
-fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_shell_doctor() {
+fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_thin_clients_builtin_doctor() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    // the installed thin client is what the engine hands over to
+    let client = sc.home.join(ah_engine::bootstrap::CLIENT_REL);
+    fs::create_dir_all(client.parent().unwrap()).unwrap();
+    fs::copy(crate::common::launcher_bin(), &client).unwrap();
     fs::remove_dir_all(sc.plugin.join("engine/defaults.pristine")).unwrap();
     fs::write(sc.plugin.join("engine/defaults/index.toml"), "[[[ garbage").unwrap();
     let mut c = Command::new(BIN);
@@ -1051,7 +1070,9 @@ fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_shell_doctor() {
     let d = sc.finish(c);
     assert_eq!(d.code, 1, "{}\n{}", d.text, d.err);
     assert!(d.err.contains("defaults unavailable"), "the engine says why on stderr: {}", d.err);
-    d.has("bad", &["engine defaults cannot be loaded:", "hooks use the Node fallback"]);
+    // the thin client's built-in diagnosis answered (it needs neither the engine nor its defaults)
+    d.has("bad", &["no working engine"]);
+    assert!(d.text.contains("Hooks wiring"), "{}", d.text);
     assert!(d.text.contains("anti-hall doctor v"), "{}", d.text);
     assert!(!sc.state().join("defaults.error").exists(), "the doctor wrote nothing");
     // with no plugin root at all there is nobody to hand over to: a plain failure
@@ -1181,7 +1202,7 @@ fn hk_01_hooks_json_not_the_thin_form() {
     sc.own_plugin();
     sc.doctor(&[]).has("ok", &["hooks/hooks.json is the thin form"]);
     let f = sc.plugin.join("hooks/hooks.json");
-    let text = fs::read_to_string(&f).unwrap().replace("ah-hook.sh\\\" PreToolUse", "git-guard.js\\\" PreToolUse");
+    let text = fs::read_to_string(&f).unwrap().replace("hooks/install.sh\\\" PreToolUse", "hooks/git-guard.js\\\" PreToolUse");
     fs::write(&f, text).unwrap();
     let d = sc.doctor(&[]);
     d.has("bad", &["hooks/hooks.json is not the thin form: 1 event(s) differ", "PreToolUse", "ah-engine gen-hooks --host claude"]);
@@ -1195,15 +1216,15 @@ fn hk_01_hooks_json_not_the_thin_form() {
 }
 
 #[test]
-fn hk_02_03_hooks_json_missing_or_broken_and_wrapper_missing() {
+fn hk_02_03_hooks_json_missing_or_broken_and_installer_missing() {
     let mut sc = Sc::new();
     sc.own_plugin();
     fs::write(sc.plugin.join("hooks/hooks.json"), "{ nope").unwrap();
     sc.doctor(&[]).has("bad", &["hooks.json"]);
     fs::remove_file(sc.plugin.join("hooks/hooks.json")).unwrap();
     sc.doctor(&[]).has("bad", &["hooks/hooks.json is missing", "reinstall the plugin"]);
-    fs::remove_file(sc.plugin.join("hooks/ah-hook.sh")).unwrap();
-    sc.doctor(&[]).has("bad", &["ah-hook.sh is missing; every hook command fails"]);
+    fs::remove_file(sc.plugin.join("hooks/install.sh")).unwrap();
+    sc.doctor(&[]).has("bad", &["install.sh is missing; the hook commands cannot install the thin client"]);
 }
 
 // ---- ND / EV: Node, tools, HOME, PATH -------------------------------------------------------------------------------------------
@@ -1230,7 +1251,7 @@ fn nd_node_is_never_probed_and_no_engine_is_the_failure() {
 
 #[test]
 fn nd_an_engine_on_path_is_a_working_engine_when_the_home_install_is_not_executable() {
-    // the hook wrapper runs ah-engine from PATH when the home install is not executable (ah-hook.sh): both doctors count it
+    // the hook wrapper runs ah-engine from PATH when the home install is not executable (the thin client): both doctors count it
     let mut sc = Sc::new();
     sc.own_plugin();
     sc.programs(&[("ah-engine", "[ \"$1\" = version ] && echo 0.1.0\nexit 0")], &[]);
@@ -1306,16 +1327,16 @@ fn ev_01_02_03_home_unset_relative_or_not_a_directory() {
     let d = sc.finish(c);
     d.has("bad", &["HOME is not set; the engine cannot find its state", "export HOME="]);
     assert_eq!(d.code, 1);
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor").env_clear().env("PATH", &sc.path).current_dir(&sc.cwd);
+    let mut s = builtin_doctor(&sc.plugin);
+    s.env_clear().env("PATH", &sc.path).current_dir(&sc.cwd);
     sc.finish(s).has("bad", &["HOME is not set; the engine cannot find its state"]);
     // relative
     let mut c = Command::new(BIN);
     c.arg("doctor").arg("--check").arg("--plugin-root").arg(&sc.plugin).env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
     let d = sc.finish(c);
     d.has("bad", &["HOME is \"rel/home\", a relative path"]);
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor").env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
+    let mut s = builtin_doctor(&sc.plugin);
+    s.env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
     sc.finish(s).has("bad", &["HOME is \"rel/home\", a relative path"]);
     // not a directory
     let missing = sc.root.join("no-such-home");
@@ -1357,8 +1378,7 @@ fn ev_08_path_oddities() {
     run(&format!("{sys}::/tmp")).has("warn", &["PATH has an empty entry"]);
     run("/nonexistent").has("warn", &["PATH lacks /usr/bin, /bin"]);
     // the shell doctor says the same
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor");
+    let mut s = builtin_doctor(&sc.plugin);
     sc.env(&mut s);
     s.env("PATH", format!("{sys}:."));
     sc.finish(s).has("warn", &["PATH has . entry, resolved against the current directory"]);

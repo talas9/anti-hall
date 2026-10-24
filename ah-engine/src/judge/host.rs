@@ -1,4 +1,4 @@
-//! The speculation judge's model call, as the one host function its plugin script (`engine/logic/speculation-judge.js`) needs.
+//! The speculation judge's model call, as the one host function its plugin script needs.
 //!
 //! Decisions stay in the script (the switches, the loop guards, the state file, the block text); this is only the I/O the
 //! script cannot do: read the evidence and the user request out of the transcript tail, build the judge's input, run one

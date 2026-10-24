@@ -33,6 +33,8 @@ impl World {
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         std::fs::create_dir_all(dir.join("proj/.anti-hall")).unwrap();
+        // Scoped writes require a live project, identified by its .git entry.
+        std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
         World { dir, plugin: plugin_root() }
     }
 
@@ -574,7 +576,9 @@ fn the_session_start_advisory_names_the_problem_once_and_stays_silent_when_clean
     let v: Value = serde_json::from_str(&out).expect("an advisory JSON");
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
-    assert!(ctx.contains("handover-hygiene") && ctx.contains("ah-engine handovers index") && ctx.contains("out of date"), "{ctx}");
+    assert!(ctx.contains("handover hygiene") && ctx.contains("run the handover maintenance command") && ctx.contains("out of date"), "{ctx}");
+    let details = std::fs::read_to_string(w.dir.join("home/.anti-hall/block-details/handover-hygiene-session.md")).unwrap();
+    assert!(details.contains("ah-engine handovers index"), "{details}");
     // the same problem set is not repeated on the next session
     assert_eq!(session_start(&w), (String::new(), 0));
     // after the index it is clean and silent; a new problem speaks again

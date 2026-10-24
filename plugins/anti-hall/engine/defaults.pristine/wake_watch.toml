@@ -152,16 +152,28 @@ doc = "End of the temporary file a cursor is written to before the rename."
 value = ".tmp"
 
 [wake_watch.active_cache_file]
-doc = "The supervisor's cache of the hivecontrol active list, under the DevSwarm state directory. While it exists the engine does not decide the idle-skip for a worktree the app database has no opinion on: Node does."
+doc = "The supervisor's cache of the hivecontrol active list, under the DevSwarm state directory (isAppArchived reads it for a worktree under the app's repos root that the app database has no opinion on)."
 value = "hivecontrol-active.json"
+
+[wake_watch.env_active_max_age]
+doc = "The variable that overrides how old the active-list cache may be and still be believed (a positive integer, milliseconds)."
+value = "ANTIHALL_DEVSWARM_ARCHIVED_CACHE_MAX_AGE_MS"
+
+[wake_watch.active_max_age_mult]
+doc = "How many reconcile-sweep intervals old the active-list cache may be and still be believed (one missed sweep is tolerated, two is not)."
+value = 2
+
+[wake_watch.sweep_fallback_ms]
+doc = "The reconcile-sweep interval the cache age bound uses when the setting is no positive number: 15 minutes."
+value = 900000
+
+[wake_watch.set_archived_grace_ms]
+doc = "The setting devswarm.archivedGraceMs: how much newer than a child's descriptor the active-list snapshot must be before the child's absence from it reads as archived (milliseconds)."
+value = { section = "devswarm", key = "archivedGraceMs", type = "number", min = 0, default = 600000, env = "ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS" }
 
 [wake_watch.manifest_rel]
 doc = "The plugin manifest that names the build the watcher runs, relative to the plugin root."
 value = ".claude-plugin/plugin.json"
-
-[wake_watch.stale_script_rel]
-doc = "The Node watcher script of another build, relative to that build's cache directory: named only in the re-arm line printed when a handoff is refused. A handoff itself needs only that build's manifest and never runs this script."
-value = "../anti-hall-node/companion/lib/devswarm-wake-watch.js"
 
 [wake_watch.plugins_rel]
 doc = "The harness's plugins directory, relative to the home: its cache, registry and marketplace records."
@@ -325,7 +337,7 @@ value = "[wake-watch] ERROR watching {role} {id}: {n} consecutive read failures 
 
 [wake_watch.line_stale]
 doc = "A newer build is installed and its watcher script exists, but the watcher may not hand over: the re-arm instruction, then exit. {role} {id} {own} {newest} {script}."
-value = "[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {own}, but {newest} is registered/cached. Re-arm with `{script}` (Monitor tool, persistent: true if supported — otherwise max timeout_ms + re-arm on the tool's final/expired event) to pick it up. Exiting now — never running on as a silent stale watcher."
+value = "[wake-watch] STALE BUILD: this watcher for {role} {id} is running anti-hall {own}, but {newest} is registered/cached. Re-arm with `{script}` (Monitor tool with timeout_ms 1800000, plus persistent: true if supported; re-arm on the tool's final/expired event) to pick it up. Exiting now — never running on as a silent stale watcher."
 
 [wake_watch.line_update_registered]
 doc = "A newer version is registered but not yet copied into the cache: say so once and keep running. {role} {id} {own} {newest}."
@@ -385,26 +397,27 @@ value = "[wake-watch] lock restamp failed transiently for longer than the lock s
 doc = "Printed once, then the watcher exits 0, when a Primary has no live child workspace (the idle-skip). One stdout line wakes the session, so it says what to do next."
 value = "[wake-watch] idle-skip: no live child workspaces - not arming. Arm this watcher again after you spawn a workspace; the mailbox tick stays your fallback wake path."
 
-[wake_watch.diag_deferred]
-doc = "Printed (stderr; stdout too when armed by hand) when the engine cannot decide and ends with the defer exit code instead of arming. {why}."
-value = "[wake-watch] not armed: {why}\n"
+[wake_watch.diag_no_home]
+doc = "Printed (stderr) when no home directory can be found; exit 1, as Node's uncaught `os.homedir()` failure does."
+value = "[wake-watch] no home directory; exiting.\n"
 
-[wake_watch.why_settings]
-doc = "Why: the settings file cannot be parsed the way the host reads it."
-value = "a settings file could not be read"
+[wake_watch.diag_no_cwd]
+doc = "Printed (stderr) when the working directory is gone; exit 1, as Node's uncaught `process.cwd()` failure does."
+value = "[wake-watch] the working directory is not readable; exiting.\n"
 
-[wake_watch.why_gate]
-doc = "Why: the DevSwarm check could not be answered."
-value = "could not tell whether this is a DevSwarm session"
 
-[wake_watch.why_identity]
-doc = "Why: the workspace identity could not be resolved (the checkout may be nested in another one)."
-value = "could not resolve the DevSwarm workspace identity"
+[wake_watch.rebin_enabled]
+doc = "1: a watcher whose engine binary on disk was replaced (a deploy or an update) re-executes itself with the same arguments, so a fix takes effect without a manual re-arm. 0: it keeps running the binary it started from."
+value = 1
 
-[wake_watch.why_idle_check]
-doc = "Why: the live-children check could not be answered."
-value = "could not check for live child workspaces"
+[wake_watch.line_rebin]
+doc = "The watcher re-executed itself because its engine binary was replaced (its output continues on the same stream). {path}."
+value = "[wake-watch] engine binary replaced, restarting from {path}"
 
-[wake_watch.why_repo]
-doc = "Why: the repo identity needed to find the mailbox summary could not be resolved."
-value = "could not resolve the repo identity of this checkout"
+[wake_watch.diag_rebin_failed]
+doc = "Printed (stderr) when the watcher could not re-execute the replaced binary; it ends (exit 1) and must be re-armed. {path}, {why}."
+value = "[wake-watch] cannot restart from the replaced binary {path}: {why}; re-arm the watcher.\n"
+
+[wake_watch.env_rebin]
+doc = "Environment variable a watcher sets (to the time, seconds since the epoch) on the successor it starts after its engine binary was replaced; the post-update check reads it to tell a watcher that already re-executed from one still on the old image."
+value = "AH_WAKE_WATCH_REBIN"

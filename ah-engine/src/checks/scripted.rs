@@ -254,6 +254,23 @@ pub static ENGINE_ROLE_GUARD: Scripted = Scripted::new("engine-role-guard", "rol
 /// `broad-kill-guard` (PreToolUse on Bash, every agent; engine-only): blocks pkill, killall, `kill -9 -1` and the pattern kills.
 pub static BROAD_KILL_GUARD: Scripted = Scripted::new("broad-kill-guard", "broad_kill.summary");
 
+/// `burn-breaker` (PreToolUse on every tool, subagents only; engine-only): blocks a subagent's calls while its hard burn flag is up (GH #270).
+pub static BURN_BREAKER: Scripted = Scripted::new("burn-breaker", "burn.summary");
+
+/// `uncommitted-guard` (PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only; engine-only): warns and then blocks a subagent whose worktree holds too many uncommitted lines (GH #270).
+pub static UNCOMMITTED_GUARD: Scripted = Scripted::new("uncommitted-guard", "uncommitted.summary");
+/// `queued-wait-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
+pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "queued_wait.summary");
+
+/// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
+pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
+
+/// `switch-notice` (run by the dispatcher on UserPromptSubmit and PreToolUse, not a hook row; engine-only): the up-front line about the session-wide switches.
+pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.summary");
+
+/// `wide-search-guard` (PreToolUse on Bash, every agent; engine-only; GH #174): blocks a whole-disk search rooted at /, ~, /Users or /Volumes.
+pub static WIDE_SEARCH_GUARD: Scripted = Scripted::new("wide-search-guard", "wide_search.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 

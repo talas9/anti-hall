@@ -176,7 +176,7 @@ doc = "The git arguments that list a remote's tags; the remote is appended."
 value = ["ls-remote", "--tags"]
 
 [refresh.tag_remote]
-doc = "The remote the version probe asks first (live network), as hooks/version-alert-refresh.js."
+doc = "The remote the version probe asks first (live network)."
 value = "https://github.com/talas9/anti-hall"
 
 [refresh.tag_fallback_remote]
@@ -200,11 +200,11 @@ doc = "An X.Y token, used only when a stream has no full token; again exactly on
 value = '(?-u:\b)v?([0-9]+\.[0-9]+)(?-u:\b)'
 
 [refresh.claude_cli_bins]
-doc = "The programs the Claude Code probe asks, in order (hooks/claude-cli-version-refresh.js)."
+doc = "The programs the Claude Code probe asks, in order."
 value = ["claude"]
 
 [refresh.devswarm_bins]
-doc = "The programs the DevSwarm probe asks, in order (hooks/devswarm-version-refresh.js: the CLI, then the hivecontrol shim)."
+doc = "The programs the DevSwarm probe asks, in order (the CLI, then the hivecontrol shim)."
 value = ["devswarm", "hivecontrol"]
 
 # ---- the reload repair ------------------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ min = 1000
 unit = "ms"
 
 [refresh.repair_lock_file]
-doc = "The repair lock of hooks/repair-on-reload.js (Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together."
+doc = "The repair lock of the reload repair (the Node lock protocol), relative to the anti-hall directory, so the engine and a Node repair never run together."
 value = "repair-on-reload.lock"
 
 [refresh.repair_lock_stale_ms]
@@ -228,3 +228,79 @@ doc = "A repair lock older than this is taken over (longer than refresh.repair_t
 value = 660000
 min = 1000
 unit = "ms"
+
+# Read-only compatibility contract shared by Claude/OMC and Codex/OMX. Help proves
+# command/flag availability only; JSON behavior remains unknown until observed.
+[devswarm_compat.cache]
+doc = "Cached version-change dependency probe, relative to HOME; never a gate."
+value = ".anti-hall/devswarm-compatibility.json"
+
+[devswarm_compat.commands]
+doc = "Read-only help probes: command words before |, required help tokens after it. No operational subcommand is executed."
+value = ["workspace|", "workspace list all|", "workspace list children|", "workspace children|", "workspace info|", "workspace create|-s,--source,-a,--agent,-p,--prompt,-t,--title", "workspace archive|", "workspace delete|", "workspace update-title|-b,--branch", "workspace check-merge|", "workspace merge-into-source|", "workspace message-count|", "workspace read-messages|", "workspace monitor|-i,--interval,-t,--timeout"]
+
+[devswarm_compat.schema]
+doc = "App SQLite read-only schema contract: table followed by required columns. Column presence does not prove row semantics."
+value = ["builders:id,repositoryId,sourceBranch,branchName,worktreePath,terminalId,label,createdAt,lastAccessed,rank,isHidden,pullRequestId,builderType,isPinned,isActive,lastSelectedAt", "builder_terminals:id,builderId,terminalId,terminalType,aiAgent,ai_session_config,isActive,panelStatus,createdAt,lastViewedAt,initialPrompt,initialPromptDeliveredAt,initialPromptWithheldAt", "pull_requests:id,repositoryId,branchName,number,state,isDraft,url,checkStatus,reviewStatus,lastSyncedAt", "repositories:id,path,name,defaultBaseBranch"]
+
+[devswarm_compat.environment]
+doc = "External DevSwarm identity variables consumed by the engine; presence is reported, their producer semantics are not inferred."
+value = ["DEVSWARM_AI_AGENT", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_NAME", "DEVSWARM_BUILDER_TERMINAL_GENERATION", "DEVSWARM_BUILDER_TERMINAL_ID", "DEVSWARM_DEFAULT_BRANCH", "DEVSWARM_REPO_ID", "DEVSWARM_REPO_KEY", "DEVSWARM_SOURCE_BRANCH"]
+
+[devswarm_compat.outputs]
+doc = "Parsed CLI output dependencies; inventory only, not certified by help. No messaging queue is read by the probe."
+value = ["workspace info:id,branch,path,worktreePath,sourceBranch,parentBranch,startup,startupState,terminalId,agent,terminals,isArchived,archivedAt", "workspace list:array|workspaces|children,id,branch,branchName,path,worktreePath,isArchived,archivedAt", "workspace create:workspace,path,worktreePath,id,branch", "workspace check-merge:isMergeable,hasConflicts,targetDirectoryClean,sourceBranchCheckedOut,sourceBranchPath", "workspace message-count:count,unread,unreadCount,messages,total,pending", "workspace read-messages / monitor:array|messages|data,fromBranch,toBranch,message,status,createdAt"]
+
+[devswarm_compat.paths]
+doc = "External app path defaults and anti-hall descriptor fields used by both orchestration ports; inventory, not proof of producer behavior."
+value = ["macOS: Library/Application Support/DevSwarm/devswarm.db", "Linux: XDG_CONFIG_HOME/DevSwarm/devswarm.db (fallback ~/.config)", "override: ANTIHALL_DEVSWARM_APP_DB", "executable override: ANTIHALL_DEVSWARM_HIVECONTROL", "~/.anti-hall/devswarm/hivecontrol-path.json:hivecontrol", "~/.anti-hall/devswarm/workspaces/*.json:id,worktreePath,sessionId,inboxPath,cursorPath,repoId,repoKey,ownerKey,nudgeCommand,escalateCommand"]
+
+[devswarm_compat.semantic_conflicts]
+doc = "Known incompatible help semantics: command|help marker|diagnostic. Detection is advisory only; never acknowledges or consumes mail."
+value = ["workspace monitor|Without a pane ID|Plain-shell monitor excludes messages present at its initial poll (DevSwarm 2.5.7 selectMonitorMessages); engine scrubs pane identity. Backlog handling requires review.", "workspace read-messages|without consuming or hiding anything|Read-messages retains history; engine must not assume destructive consumption. Existing hash dedup does not record native dispositions."]
+
+[devswarm_compat.doctor_summary]
+doc = "Doctor compatibility cache summary; {version}, {status}, {reason}. Doctor never runs probes."
+value = "DevSwarm compatibility: {status} (version {version}); {reason}"
+
+[devswarm_compat.reason_no_probe]
+doc = "The reason of a compatibility report when no probe result is cached."
+value = "no compatibility probe cached"
+
+[devswarm_compat.reason_stale]
+doc = "The reason of a cached compatibility report whose version or dependency manifest no longer matches."
+value = "cached probe differs from current version or dependency manifest"
+
+[devswarm_compat.reason_conflict]
+doc = "The reason of an incompatible compatibility report; {names} are the conflicting dependencies, {issues} their conflicts."
+value = "Dependency conflicts ({names}): {issues}. Help and schema do not certify runtime compatibility."
+
+[devswarm_compat.reason_partial]
+doc = "The reason of a compatibility report that only checked help and schema."
+value = "Help and schema only; output fields, environment semantics and descriptor producers remain unverified"
+
+[devswarm_compat.total_budget_ms]
+doc = "Total wall-clock budget for version-change compatibility help probes; skipped dependencies stay unverified. SessionStart only queues this native background refresh."
+value = 20000
+min = 100
+max = 60000
+unit = "ms"
+
+[devswarm_compat.command_timeout_ms]
+doc = "Per-command help timeout, further limited by the remaining total compatibility budget."
+value = 3000
+min = 100
+max = 10000
+unit = "ms"
+
+[devswarm_compat.help_marker]
+doc = "Token that distinguishes successful CLI help from unrelated stdout."
+value = "Usage:"
+
+[devswarm_compat.help_arg]
+doc = "Read-only argument appended to compatibility command forms."
+value = "--help"
+
+[devswarm_compat.forwarding]
+doc = "Caller-supplied argv is deliberately open-ended; this is the engine transformation contract, not a claim to certify arbitrary supplied options."
+value = ["workspace create: caller argv forwarded; strip anti-hall --from-local; source/title/prompt parsed as -s/--source,-t/--title,-p/--prompt", "workspace merge-into-source: caller argv forwarded unchanged", "workspace archive/delete: workspace id positional", "workspace update-title: -b branch then title positional", "workspace info: workspace id positional"]

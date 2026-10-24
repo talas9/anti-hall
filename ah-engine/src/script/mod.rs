@@ -52,7 +52,7 @@ pub mod host_mesh;
 pub mod host_parentinbox;
 pub mod host_port;
 pub mod host_proc;
-mod host_seat;
+pub(crate) mod host_seat;
 pub mod host_shell;
 pub mod host_spawn;
 pub mod host_transcript;
@@ -332,7 +332,7 @@ pub fn regex_diag() -> serde_json::Value {
     let (patterns, held) = recache::usage();
     let (compiled, est, measured, n) = recache::compiled_totals();
     serde_json::json!({
-        "patterns_held": patterns, "bytes_held_by_cache_weights": held,
+        "patterns_held": patterns, "bytes_held_by_cache_weights": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
         "compiled": {"programs": compiled, "estimated_bytes": est, "measured_programs": n, "measured_bytes": measured},
     })
 }
@@ -377,12 +377,20 @@ fn dirs(home: &str) -> Vec<PathBuf> {
     out
 }
 
-/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
-/// script exists for `name`.
-fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
-    let ext = defaults::text("script.ext");
-    let ds = dirs(home);
-    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+/// The lib files (by name) of the logic directories `ds`, each with its size and modification time. The listing is the same for every
+/// check, so it is taken once per `script.fingerprint_ttl_ms` and shared by all worker threads: a check call used to list the library
+/// directory and stat every lib file (about 40 file operations per check, 15 checks per tool call). An edited or added lib file is seen
+/// within the interval; 0 lists on every call.
+fn lib_fingerprint(ds: &[PathBuf], ext: &str) -> Fingerprint {
+    static CACHE: std::sync::Mutex<Option<(Vec<PathBuf>, std::time::Instant, Fingerprint)>> = std::sync::Mutex::new(None);
+    let ttl = std::time::Duration::from_millis(defaults::num("script.fingerprint_ttl_ms"));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((key, at, fp)) = cache.as_ref()
+        && key.as_slice() == ds
+        && at.elapsed() < ttl
+    {
+        return fp.clone();
+    }
     let mut libs: std::collections::BTreeMap<String, (PathBuf, u64, u128)> = std::collections::BTreeMap::new();
     // the shipped directory last, so an override of the same file name wins
     for d in ds.iter().rev() {
@@ -396,7 +404,18 @@ fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
             }
         }
     }
-    let libs: Fingerprint = libs.into_values().collect();
+    let fp: Fingerprint = libs.into_values().collect();
+    *cache = Some((ds.to_vec(), std::time::Instant::now(), fp.clone()));
+    fp
+}
+
+/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
+/// script exists for `name`.
+fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
+    let ext = defaults::text("script.ext");
+    let ds = dirs(home);
+    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+    let libs = lib_fingerprint(&ds, ext);
     let mut fp: Fingerprint = Vec::new();
     // scripts the owner's configuration says this check builds on (`script.includes`: check name to script names), loaded as
     // libraries after the shared helpers and before the check's own script, which may then redefine the entry
@@ -539,7 +558,7 @@ pub fn set_session(id: &str) {
     m.insert(thread_key(), id.to_string());
 }
 
-fn session() -> String {
+pub(crate) fn session() -> String {
     SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&thread_key()).cloned().unwrap_or_default()
 }
 
@@ -609,6 +628,46 @@ fn limit_ms(name: &str, event: &str) -> u64 {
         .iter()
         .find_map(|k| by.get(k).and_then(defaults::V::as_integer))
         .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
+}
+
+/// Prepare the configured cold entries on their owning worker, without calling their decision functions.
+/// File fingerprints still invalidate these entries normally after an owner edit or plugin update.
+pub(crate) fn prewarm() {
+    if defaults::num("script.enabled") == 0 {
+        return;
+    }
+    let st = Settings::from_env(&RequestEnv::capture());
+    // Optional warm-up settings may be absent in the immutable pristine fallback.
+    for name in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.strings()) {
+        let Some((libs, own)) = resolve(name, &st.home) else { continue };
+        let result = host::with_call(st.clone(), || {
+            POOL.with(|cell| -> Result<(), String> {
+                let mut slot = cell.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(Pool::new().ok_or("runtime")?);
+                }
+                let pool = slot.as_mut().ok_or("runtime")?;
+                ensure_entry(pool, name, &libs, &own, defaults::text("script.entry"))?;
+                Ok(())
+            })
+        });
+        crate::discard::logged("script_prewarm", result);
+    }
+}
+
+/// Compile shared patterns before workers accept their first Stop. No decision or state write runs here.
+pub(crate) fn prewarm_patterns() {
+    crate::checks::guardkit::mask::mask_quoted_text("");
+    for row in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.as_array().unwrap_or_default()) {
+        if row.get("key").is_none() {
+            continue;
+        }
+        let value = defaults::raw(row.str_field("key"));
+        let patterns = value.as_str().map(|s| vec![s]).unwrap_or_else(|| value.strings());
+        for pattern in patterns {
+            crate::discard::logged("script_pattern_prewarm", recache::get(pattern, row.str_field("flags")));
+        }
+    }
 }
 
 /// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
@@ -820,6 +879,25 @@ pub fn cut(name: &str, event: &str) -> Verdict {
     Verdict::Defer
 }
 
+/// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the
+/// request first, then the actual defaults snapshot (including its cached install root), never the daemon's environment.
+/// Keep an explicit nonempty option and every other option intact.
+fn script_options(opts: &Value, st: &Settings) -> Value {
+    if opts.get("plugin_root").and_then(Value::as_str).is_some_and(|r| !r.is_empty()) {
+        return opts.clone();
+    }
+    let root =
+        st.env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned().or_else(|| defaults::root().map(|r| r.to_string_lossy().into_owned()));
+    let Some(root) = root else { return opts.clone() };
+    let mut resolved = match opts {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(o) => o.clone(),
+        _ => return opts.clone(),
+    };
+    resolved.insert("plugin_root".into(), Value::String(root));
+    Value::Object(resolved)
+}
+
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let mut was_cut = false;
     let mut timed_out = false;
@@ -831,7 +909,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let pool = slot.as_mut().ok_or("runtime")?;
         let ctx = ensure_entry(pool, name, libs, own, defaults::text("script.entry"))?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
-        let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
+        let opts_raw = serde_json::to_string(&script_options(opts, &st)).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
@@ -841,6 +919,9 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
                 let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
                 let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
+                let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
+                api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
                 let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
                 if v.is_undefined() || v.is_null() {
                     return Ok("null".into());

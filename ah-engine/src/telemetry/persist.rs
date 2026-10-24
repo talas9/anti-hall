@@ -12,6 +12,7 @@
 use super::event::Event;
 use super::recorder::Delta;
 use crate::db::{Db, Op};
+use crate::defaults;
 use crate::discard::Logged;
 use crate::error::DbError;
 use crate::sql;
@@ -101,6 +102,29 @@ fn add_count(c: &Connection, day: i64, d: &Delta) -> Result<(), DbError> {
 }
 
 fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
+    // A completed background launch repairs its identity-only row in place. Replayed completions update the same row;
+    // legacy rows without a proven child identity are never guessed, merged, or deleted.
+    if let super::event::Extras::Spawn(incoming) = &e.extras
+        && let Some(key) = &incoming.agent_key
+    {
+        let mut stmt = c.prepare_cached(defaults::text("telemetry.sql_spawn_by_key"))?;
+        let rows = stmt.query_map(params![incoming.spawn_key.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, data) = row?;
+            let old = serde_json::from_str(&data).ok().and_then(|v| Event::from_json(&v).ok());
+            if let Some(Event { extras: super::event::Extras::Spawn(old), .. }) = old
+                && old.agent_key.as_ref() == Some(key)
+            {
+                if incoming.usage == super::event::Usage::default() && old.usage != super::event::Usage::default() {
+                    return Ok(0);
+                }
+                if incoming.usage == old.usage && incoming.actual_model == old.actual_model && incoming.started_ms == old.started_ms {
+                    return Ok(0);
+                }
+                return Ok(c.execute(defaults::text("telemetry.sql_update_event"), params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id])?);
+            }
+        }
+    }
     Ok(c.prepare_cached(sql::TEL_EVENT_INSERT)?.execute(params![
         e.ts_ms as i64,
         e.kind.name(),
@@ -142,6 +166,32 @@ pub fn apply(c: &Connection, op: &TelOp) -> Result<String, DbError> {
 #[derive(Clone)]
 pub struct TelDb {
     db: Arc<Db>,
+}
+
+impl TelDb {
+    /// The guard blocks since `since_ms`, newest first, at most `limit`.
+    pub fn blocks(&self, since_ms: u64, limit: usize) -> Vec<crate::storage::BlockRow> {
+        self.db
+            .read(|c| {
+                let mut st = c.prepare_cached(crate::sql::BLOCK_RECENT)?;
+                let rows = st.query_map(rusqlite::params![since_ms as i64, limit as i64], |r| {
+                    Ok(crate::storage::BlockRow {
+                        ts_ms: r.get::<_, i64>(0)?.max(0) as u64,
+                        guard: r.get(1)?,
+                        rule: r.get(2)?,
+                        event: r.get(3)?,
+                        session: r.get(4)?,
+                        agent: r.get(5)?,
+                        tool: r.get(6)?,
+                        project: r.get(7)?,
+                        reason: r.get(8)?,
+                        repeat: r.get::<_, i64>(9)?.max(0) as u64,
+                    })
+                })?;
+                rows.collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<DayRow> {

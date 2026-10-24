@@ -138,9 +138,10 @@ mod tests {
 
     #[test]
     fn dssup_suplog_keeps_the_oldest_generation_when_rows_cannot_be_rolled_up() {
-        // a signal named like an array index is a name the report leaves to Node: no roll-up, so no generation may be dropped
+        // An unwritable roll-up destination must preserve the oldest generation, regardless of the signal name.
         let (_dir, home) = fixture("suplog-keep", "7");
         let p = log_path(&home);
+        std::fs::write(p.parent().unwrap().join(defaults::text("devswarm_cli.sr_daily_dir")), "occupied").unwrap();
         let keep = defaults::num("mesh_write.supervision_rotated_files");
         for i in 1..=keep {
             std::fs::write(generation(&p, i), format!("gen {i}\n")).unwrap();

@@ -29,11 +29,11 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Use the engine's update helper:
+Use the thin client's update helper (`ah-engine update`):
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update --check
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" update
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" update --check
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" update
 ```
 
 This is already the STALE-VERSION-SAFE path — `$ANTI_HALL_ROOT` is derived
@@ -49,13 +49,13 @@ freshly-pulled version's own copy internally as a second line of defense.
 For Codex, also re-run the Codex hook installer after a successful update:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex
 ```
 
 or for global Codex hooks:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" install-codex --global
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" install-codex --global
 ```
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
@@ -69,7 +69,7 @@ daemon. The installer now bakes the **git marketplace clone's own copy** of
 `devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
 **in place**), so a fresh install never goes stale again.
 
-The update helper (`skills/update/scripts/update.js`) ALSO attempts to heal an already-installed daemon
+The update helper (`ah-engine update`) ALSO attempts to heal an already-installed daemon
 in-process via `healIngestDaemon` — no separate step needed. **v0.86.0 — the heal fires
 when EITHER this run synced new bytes into the cache OR the installed unit fails to
 classify `ok`.** Gating it on a cache sync alone made it unreachable in exactly the state
@@ -80,7 +80,7 @@ run (a unit enumeration plus a few `statSync`s — no spawn, no writes) and deli
 does NOT treat `absent` as "needs heal", so a no-op update can never first-install an
 opt-in daemon for a user who never enabled it. It runs ONLY under the same
 DevSwarm-session-only gate
-`hooks/lib/doctor-repair.js`'s own gated ingest fix uses
+`doctor-repair`'s own gated ingest fix uses
 (`isDevswarmActive(env) && resolveWorktree(cwd) !== null`), and re-runs the
 (freshly-pulled) installer only when the unit is genuinely `wrong-path` or `stale-script`
 — an `ok` or `absent` unit is left untouched. The daemon also now logs
@@ -137,7 +137,7 @@ deferred WHOLE, reported as `deferred: true` on its stage result, and picked up 
 `update`/`doctor` call rather than lost: every one of these stages is independently
 idempotent/resumable (fold/heal/fold-archived-rows persist their own resume markers; the
 one-time-per-version stages simply re-attempt next call). As of v0.96.1, the periodic
-supervisor sweep (`companion/devswarm-supervisor.js`) also picks up `fold-all-stores`,
+supervisor sweep (the engine supervisor duty) also picks up `fold-all-stores`,
 `heal-orphan-partitions`, `fold-archived-rows` and (v0.102.1) `heal-registry-rows` — one
 deferred stage per supervisor pass,
 within `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20000ms) — so a machine that always
@@ -147,7 +147,7 @@ call to make progress on those stages.
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" capability-scan
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" capability-scan
 ```
 
 Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js` and pending state migrations) as `{name, available, active, how}`. The retired statusline installer is intentionally not an enableable capability. Present a concise available-vs-active summary:

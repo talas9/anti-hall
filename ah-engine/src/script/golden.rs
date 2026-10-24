@@ -377,13 +377,15 @@ pub fn repeat_of(case: &Value) -> usize {
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
 pub fn regen_defers_local(check: &str) {
-    if std::env::var("AH_REGEN_DEFERS").is_err() {
+    // Explicit authoring mode refreshes current golden answers, then the comparison still runs.
+    let all = std::env::var_os("AH_REGEN_GOLDENS").is_some();
+    if std::env::var("AH_REGEN_DEFERS").is_err() && !all {
         return;
     }
     let mut out = String::new();
     for c in load(check) {
         let mut c = c;
-        if c["expect"]["v"] == "defer" {
+        if c["expect"]["v"] == "defer" || all {
             let l = lay(&c);
             if check == "task-tracker" {
                 // the corpus's dispatch cap was recorded on a 16-core machine (see `golden_report`): pin it the same way here

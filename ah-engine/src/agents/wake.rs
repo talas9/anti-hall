@@ -58,6 +58,16 @@ fn stamp(path: &Path, now: u64) {
     crate::discard::harmless(crate::atomic::write(path, body)); // keep: a missed stamp only makes the next tick re-stamp
 }
 
+/// Atomic per-session ownership; a crashed watcher releases the flock automatically.
+fn acquire(stamp: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = stamp.parent()?;
+    std::fs::create_dir_all(parent).ok()?;
+    let lock = crate::paths::lock_for(stamp);
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(lock).ok()?;
+    crate::health::flock(&file, libc::LOCK_EX | libc::LOCK_NB).then_some(file)
+}
+
 /// Another live watcher already holds a fresh stamp for this session.
 fn held_elsewhere(env: &Env, path: &Path) -> bool {
     let fresh = crate::checks::agent_scan::mtime_ms(path).is_some_and(|m| env.now_ms.saturating_sub(m as u64) <= lim("stale_lock_ms"));
@@ -71,8 +81,8 @@ fn emit(line: &str) {
     crate::discard::harmless(out.flush()); // keep: same
 }
 
-/// New complete rows of the feed since `offset`; returns the lines to print and the new offset.
-fn drain(feed: &Path, offset: u64) -> (Vec<String>, u64) {
+/// New complete rows of the feed since `offset`; returns the rows with the line to print for each, and the new offset.
+fn drain(feed: &Path, offset: u64) -> (Vec<(Value, String)>, u64) {
     let Ok(t) = std::fs::read(feed) else { return (Vec::new(), offset) };
     let len = t.len() as u64;
     if len < offset {
@@ -83,9 +93,19 @@ fn drain(feed: &Path, offset: u64) -> (Vec<String>, u64) {
     let lines = String::from_utf8_lossy(&tail[..end])
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter_map(|v| v["text"].as_str().map(|t| defaults::render("msg.agent_wake_line", &[("text", &t)])))
+        .filter_map(|v| {
+            let line = v["text"].as_str().map(|t| defaults::render("msg.agent_wake_line", &[("text", &t)]))?;
+            Some((v, line))
+        })
         .collect();
     (lines, offset + end as u64)
+}
+
+/// Record a printed wake row as delivered, in the same file and shape the `agent-reminders` check writes, so the tick stamps the
+/// flag's `delivered_at` for a wake delivery too (it read only the hook's deliveries before, and a woken idle session never showed one).
+fn record(env: &Env, sid: &str, v: &Value, now: u64) {
+    let row = serde_json::json!({"id": v["id"], "key": super::sinks::key_of(sid), "signal": v["signal"], "agent": v["agent"], "ts": now, "channel": super::chan("wake")});
+    crate::discard::harmless(super::sinks::append(&env.dir().join(pth("delivered")), &row)); // keep: a lost row only leaves delivered_at at 0
 }
 
 /// Run the watcher until the process that started it is gone. Returns the exit code.
@@ -103,12 +123,16 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     }
     let Some(sid) = session(&env) else { return refuse(defaults::text("msg.agent_wake_reason_no_session")) };
     let armed = WakeFeed::stamp(&env, &sid);
+    // Hold a kernel lock for the whole watcher lifetime: the old check-then-stamp race let two starters both enter pump.
+    // The separate stable inode stays locked while the JSON stamp is atomically replaced by each renewal.
+    let Some(_lease) = acquire(&armed) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
     if held_elsewhere(&env, &armed) {
         return refuse(defaults::text("msg.agent_wake_reason_held"));
     }
     // SAFETY: getppid(2) takes no arguments and cannot fail.
     let start_ppid = unsafe { libc::getppid() };
     let poll = Duration::from_millis(setting_num("agent_tracker.wake_poll_ms"));
+    crate::web::actions::register(&format!("{}-{}", defaults::text("act.watcher_name"), super::sinks::key_of(&sid)), defaults::text("act.watcher_kind"), &[]);
     pump(&env, &sid, poll, &mut |l| emit(l), &|| parent_gone(start_ppid));
     0
 }
@@ -127,7 +151,10 @@ pub(crate) fn pump(env: &Env, sid: &str, poll: Duration, out: &mut dyn FnMut(&st
             last_stamp = now;
         }
         let (lines, next) = drain(&feed, offset);
-        lines.iter().for_each(|l| out(l));
+        for (v, l) in &lines {
+            out(l);
+            record(env, sid, v, now);
+        }
         if next != offset {
             offset = next;
             let mut cur = feed.clone().into_os_string();

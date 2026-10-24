@@ -166,10 +166,19 @@ fn devswarm(env: &Env, st: &mut State) {
     let f = defaults::raw("agent_tracker.devswarm_fields");
     let g = |v: &Value, k: &str| v.get(f.str_field(k)).and_then(Value::as_str).unwrap_or("").to_string();
     let plans: Vec<Value> = read_dir(&root.join(pth("plans"))).iter().filter_map(|p| json_of(p)).collect();
+    // the workspace's display title (DevSwarm's name cache) names its agent; an archived workspace keeps its title
+    let title_of = |id: &str| json_of(&root.join(pth("names")).join(format!("{id}{}", pth("json_ext")))).map(|t| g(&t, "title")).unwrap_or_default();
+    for p in read_dir(&root.join(pth("archived"))) {
+        let Some(d) = json_of(&p) else { continue };
+        let title = title_of(&g(&d, "id"));
+        if let Some(a) = st.agents.get_mut(&g(&d, "session")).filter(|_| !title.is_empty()) {
+            a.name = super::cap(&title, lim("text_cap"));
+        }
+    }
     for p in descs {
         let Some(d) = json_of(&p) else { continue };
         let (id, session, wt) = (g(&d, "id"), g(&d, "session"), g(&d, "worktree"));
-        if id.is_empty() || root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+        if id.is_empty() {
             continue;
         }
         let key = if st.agents.contains_key(&session) {
@@ -178,6 +187,13 @@ fn devswarm(env: &Env, st: &mut State) {
             st.agents.iter().find(|(_, a)| a.kind == kind_name("main") && !wt.is_empty() && a.cwd == wt).map(|(k, _)| k.clone())
         };
         let Some(a) = key.and_then(|k| st.agents.get_mut(&k)) else { continue };
+        let title = title_of(&id);
+        if !title.is_empty() {
+            a.name = super::cap(&title, lim("text_cap"));
+        }
+        if root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+            continue;
+        }
         a.kind = kind_name("workspace").into();
         let (mut step, mut done) = (String::new(), 0u64);
         if let Some(plan) = plans.iter().find(|pl| g(pl, "worktree") == wt) {
@@ -195,10 +211,34 @@ fn devswarm(env: &Env, st: &mut State) {
         if !step.is_empty() {
             facts::set_step(a, &step);
         }
-        // a Primary's DevSwarm watcher arms only while it has a live child (its idle-skip), so "unarmed" says nothing about it
-        let armed = (!id.starts_with(defaults::text("agent_tracker.primary_prefix"))).then(|| watcher_armed(env, &id));
+        // The app may register the Primary checkout under a non-primary id. Judge its
+        // checkout, then use the watcher's live-child decision rather than its id spelling.
+        let primary = crate::meshw::ident::resolve_context(&wt, true)
+            .ok()
+            .is_some_and(|c| crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
+        let idle = primary && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
+        let armed = Some(idle || watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done });
+        live_plan(env, &id, a, done);
     }
+}
+
+/// The live facts of a workspace's work (task-list completions, commits, pushes, merges and deploys, and when it last shipped), kept in
+/// one small file per workspace for the roster: its plan is the workspace's own report (`heartbeat --step`) and stays as stale as the
+/// last report, so the roster shows these facts next to it. Written only when they change.
+fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
+    if !env.act || (a.steps_done == 0 && a.commits == 0 && a.shipped == 0 && a.pushes == 0) {
+        return;
+    }
+    let path = env.dir().join(defaults::raw("agent_tracker.live_plan").str_field("dir")).join(format!("{id}{}", pth("json_ext")));
+    let facts = serde_json::json!({"tasks_done": a.steps_done, "commits": a.commits, "pushes": a.pushes, "shipped": a.shipped, "last_ship_ms": a.last_ship_ms, "plan_done": plan_done});
+    if json_of(&path).is_some_and(|v| v["facts"] == facts) {
+        return;
+    }
+    if let Some(d) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports a missing directory
+    }
+    crate::discard::harmless(crate::atomic::write(path, serde_json::json!({"ts": env.now_ms, "facts": facts}).to_string())); // keep: the next tick writes it again
 }
 
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
@@ -311,6 +351,73 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     }
 }
 
+/// The stops a launching session answered for in-process teammates, as task description -> latest stop time (ms): the host answers a
+/// `TaskStop` of a teammate with its own task id (not the agent id or the name) plus the task's description, which is the `description`
+/// field of that teammate's meta file. Only the answer is read here (the recent tail of the transcript), so a stop whose launch line is
+/// long gone from the window still counts; the caller matches it to a teammate by description and start time.
+fn teammate_stops(parent: &str) -> std::collections::HashMap<String, u64> {
+    use std::collections::{HashMap, HashSet};
+    let cfg = defaults::raw("agent_tracker.stop_result");
+    let field = |k: &str| cfg.str_field(k);
+    let stop_tool = defaults::text("agent_scan.stop_tool");
+    let Some(text) = tail_of(parent, defaults::num("agent_scan.tail_bytes")) else { return HashMap::new() };
+    let mut stop_calls: HashSet<String> = HashSet::new();
+    let mut stopped: HashMap<String, u64> = HashMap::new();
+    for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
+        let blocks = v["message"]["content"].as_array().map_or(&[][..], Vec::as_slice);
+        for b in blocks.iter().filter(|b| b["type"] == field("use_type") && b["name"] == stop_tool) {
+            stop_calls.insert(b["id"].as_str().unwrap_or_default().to_string());
+        }
+        let res = &v[field("result")];
+        let answers_stop = blocks.iter().any(|b| b["tool_use_id"].as_str().is_some_and(|i| stop_calls.contains(i)));
+        if answers_stop
+            && res[field("kind")] == field("teammate")
+            && let Some(desc) = res[field("command")].as_str()
+        {
+            let ts = crate::checks::agent_scan::date_parse(v[super::tr("ts")].as_str().unwrap_or_default())
+                .ok()
+                .filter(|t| t.is_finite())
+                .map_or(u64::MAX, |t| t as u64);
+            let e = stopped.entry(desc.to_string()).or_insert(0);
+            *e = (*e).max(ts);
+        }
+    }
+    stopped
+}
+
+fn tail_of(path: &str, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// A teammate its launching session stopped with `TaskStop` is finished at once, without waiting for the host to drop it from the team
+/// roster (which [`off_roster`] reads, later and only for a team that has a roster). The teammate's description comes from its own meta
+/// file; a stop counts only when it is not older than the agent's start (a teammate launched again under the same description is new).
+fn stopped_teammates(st: &mut State) {
+    let mf = defaults::raw("agent_tracker.meta");
+    let mut seen: std::collections::HashMap<String, std::collections::HashMap<String, u64>> = std::collections::HashMap::new();
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished) {
+        let Some(dir) = Path::new(&a.path).parent().and_then(Path::parent) else { continue };
+        let meta_file = facts::meta_path(&a.path);
+        let desc =
+            json_of(Path::new(&meta_file)).and_then(|m| m.get(mf.str_field("description")).and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        if desc.is_empty() {
+            continue;
+        }
+        let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
+        let stops = seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent));
+        let started = mtime_ms(Path::new(&meta_file)).map_or(0, |m| m as u64);
+        if stops.get(&desc).is_some_and(|t| *t >= started) {
+            a.finished = true;
+        }
+    }
+}
+
 /// A teammate the host's team roster (`agent_tracker.roster`) no longer lists - or lists as joined after this agent started, so the name
 /// belongs to a newer spawn - was stopped or finished. The host writes nothing into such a teammate's own transcript, and the scan of
 /// the launching session's transcript only sees a stop still inside its window, so the roster is the one record that stays true. A
@@ -341,6 +448,43 @@ fn off_roster(env: &Env, st: &mut State) {
         let started = mtime_ms(Path::new(&facts::meta_path(&a.path))).map_or(0, |m| m as u64);
         if roster.get(&a.name).is_none_or(|joined| *joined > started.saturating_add(num("rejoin_slack_ms"))) {
             a.finished = true;
+        }
+    }
+}
+
+/// Whether a session agent (main or workspace) has a live process: the registry gave it a pid that is alive.
+pub(super) fn proc_live(a: &Agent) -> bool {
+    a.pid != 0 && !a.gone && crate::health::pid_alive(a.pid)
+}
+
+/// Mark the agents nothing can bring back as dead (decided afresh each tick, so new output revives one; nothing is deleted). A Claude
+/// subagent or teammate has no process of its own: it is dead when its transcript or working directory is gone, or when it has been
+/// silent past `dead_idle_ms` while its launching session has no live process either (nobody is left to deliver to or to stop it). A
+/// session is dead on the same terms with its own process in place of the parent's, once the host calls it gone. Codex rows and heartbeats keep their own rules.
+fn mark_dead(env: &Env, st: &mut State) {
+    let limit = lim("dead_idle_ms");
+    let live: std::collections::BTreeSet<String> = st.agents.values().filter(|a| proc_live(a)).map(|a| a.id.clone()).collect();
+    let missing = |p: &str| !p.is_empty() && !Path::new(p).exists();
+    for a in st.agents.values_mut() {
+        let session = a.kind == kind_name("main") || a.kind == kind_name("workspace");
+        if !(session || super::is_child(a)) {
+            continue;
+        }
+        let owner_live = if session { live.contains(&a.id) } else { live.contains(&a.parent) };
+        let silent = limit > 0 && env.now_ms.saturating_sub(a.last_output_ms) > limit;
+        let was = a.dead;
+        // a session also needs the host to call it gone, so a host without a registry never reads an idle session as dead
+        // a child that finished (the host's meta says so) or ended its turn with no call open completed: it is done, never dead
+        let completed = !session && (a.finished || (!a.running && a.pending.is_empty()));
+        a.dead = !completed && !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
+        if a.dead && !was {
+            super::signals::rec(
+                env,
+                "state",
+                super::state_name("dead"),
+                crate::telemetry::event::Outcome::Allow,
+                super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")),
+            );
         }
     }
 }
@@ -383,17 +527,40 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
             continue;
         }
         facts::ingest(a, now);
+        // Host metadata can identify a rescue before its transcript has any tool uses.
+        let nw = defaults::raw("agent_tracker.no_work");
+        if let Some(meta) = json_of(Path::new(&facts::meta_path(&a.path))) {
+            a.codex_rescue |= nw
+                .get("agent_type_fields")
+                .map(V::strings)
+                .unwrap_or_default()
+                .iter()
+                .any(|k| meta.get(*k).and_then(Value::as_str) == Some(nw.str_field("rescue_type")));
+        }
         if !super::is_child(a) && a.kind != kind_name("workspace") {
             a.kind = kind_name("main").into();
         }
     }
+    // Rescue type belongs to the parent's launch input on hosts that omit it from child metadata.
+    let rescue_children: std::collections::BTreeSet<String> = st.agents.values().flat_map(|a| a.rescue_children.iter().cloned()).collect();
+    for id in rescue_children {
+        if let Some(child) = st.agents.get_mut(&id) {
+            child.codex_rescue = true;
+        }
+    }
+    // a rollout that aged out of the scan is no longer found, so its row is judged again from its last write
+    for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {
+        live::codex_state(env, a, a.last_output_ms);
+    }
     stopped_subagents(env, st);
+    stopped_teammates(st);
     off_roster(env, st);
     heartbeats(env, st);
     devswarm(env, st);
     let again = relist(env, st, due);
     let l = cli(env, st, again);
     live::apply(st, sessions.as_deref(), l.cli_used);
+    mark_dead(env, st);
     let keep = lim("active_window_ms");
     st.agents.retain(|_, a| now.saturating_sub(a.seen) <= keep);
     l

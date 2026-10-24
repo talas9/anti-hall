@@ -21,10 +21,8 @@ only when they are present.
 ## Common problems
 
 ??? question "Nothing happens. Are the hooks running?"
-    The Rust engine answers hooks; the temporary Node.js compatibility fallback (removed in
-    v1.0) answers the rest. If the engine is not installed and `node` is not on the `PATH`
-    of the shell Claude Code starts hooks from, those hooks are skipped without an error.
-    Run the doctor, check `node --version` (22 or newer, for now), then restart Claude Code
+    The Rust engine answers hooks. If the engine is not installed, the hooks are skipped without an error.
+    Run `ah-hook doctor` (it names what is missing), then restart Claude Code
     so a new session starts.
 
 ??? question "The statusline does not show"
@@ -83,7 +81,8 @@ rather than guessing a fix from the symptom.
 ## Turning a check off { #turning-a-check-off }
 
 **For a few minutes:** tell the assistant, for example "skip the tasklist-guard for now".
-It records your consent in `~/.anti-hall/skip.json`, and the skip expires after 15 minutes
+It records your consent in `~/.anti-hall/skip.json` for the current session only (key
+`<guard>@<session-id>`; `--global` covers all sessions), and the skip expires after 15 minutes
 by default. A skip for `"all"` never covers `git-guard`; that one has to be named.
 
 **For good:** turn off its setting. Say "turn off the speculation guard", or use the

@@ -24,7 +24,7 @@
 //! reported when given; the Node doctor stays in place for them).
 mod detect;
 mod devswarm;
-mod facts;
+pub(crate) mod facts;
 mod install;
 mod jev;
 mod logs;
@@ -205,13 +205,12 @@ fn flags(p: &Parsed) -> Flags {
     }
 }
 
-/// The engine the hook wrapper falls back to: `ah-engine` on PATH, used only when the home install is not executable
-/// (`ah-hook.sh`). True (and an info line naming it) when that engine exists, so a PATH-installed engine is not "no engine".
+/// The engine the thin client falls back to: `ah-engine` on PATH, used only when the home install is not executable. True (and an info line naming it) when that engine exists, so a PATH-installed engine is not "no engine".
 fn path_engine(doc: &mut Doc, ctx: &migrate::Ctx) -> bool {
     let name = defaults::text("doctor.bin_name");
     let home_bin = install::engine_dir(&ctx.home).join(defaults::text("doctor.bin_dir")).join(name);
     if system::which(name, home_bin.parent().map(|p| p.to_string_lossy().into_owned()).as_deref().unwrap_or("")).is_some() {
-        return false; // the wrapper runs the home install, executable but unusable: nothing else is tried
+        return false; // the thin client runs the home install, executable but unusable: nothing else is tried
     }
     let Some(found) = system::which(name, ctx.env.get("PATH").map(String::as_str).unwrap_or("")) else { return false };
     doc.infol(defaults::render("doctor_msg.engine_on_path", &[("path", &found.display())]));
@@ -234,6 +233,13 @@ fn plugin_root(p: &Parsed, env: &std::collections::BTreeMap<String, String>) -> 
     flag.or_else(|| env.get(defaults::env_name("plugin_root")).cloned())
         .or_else(|| defaults::list("doctor.plugin_root_envs").iter().find_map(|k| env.get(*k).cloned()))
         .filter(|r| !r.is_empty())
+        .or_else(rootless_root)
+}
+
+/// The root the engine's own defaults load finds with no flag or variable (snapshot-cache root, install record, dev checkout).
+fn rootless_root() -> Option<String> {
+    let cached = crate::bootstrap::cache_path().as_deref().and_then(crate::defaults::cache_root);
+    crate::bootstrap::locate_root(cached.as_deref()).map(|r| r.to_string_lossy().into_owned())
 }
 
 fn hooks_section(doc: &mut Doc, root: &Path) {
@@ -305,6 +311,17 @@ fn audit_section(doc: &mut Doc) {
     doc.head(defaults::text("doctor_msg.head_audit"));
     for (level, text) in crate::dsact::audit::findings(&a) {
         if level == "warn" { doc.warnl(text) } else { doc.ok(text) }
+    }
+}
+
+/// The entry-path audit's summary line (`ah-engine audit entry-paths` has the table): a warning when the plugin tree or the machine has a
+/// js/sh/wrong-entry leftover, an ok line otherwise.
+fn entry_paths_section(doc: &mut Doc, root: Option<&Path>, home: &str) {
+    let Some(root) = root else { return };
+    doc.head(defaults::text("entry_audit_msg.doctor_head"));
+    match crate::audit::doctor_line(root, Path::new(home)) {
+        Some(line) => doc.warnl(line),
+        None => doc.ok(defaults::text("entry_audit_msg.doctor_clean").to_string()),
     }
 }
 
@@ -397,9 +414,12 @@ fn repair_section(doc: &mut Doc, ctx: &migrate::Ctx, f: &Flags, fixes: &[Fix], r
             Err(e) => doc.bad(defaults::render("doctor_msg.repair_failed", &[("id", &id), ("msg", &e)])),
         }
     }
+    // the legacy sweep (old install files and artefacts moved aside, state migrations): fail-open, idempotent, never deletes
+    let swept = crate::operator::sweep::for_doctor(f.dry_run, &mut |l| doc.infol(l));
+    done += (swept.files + swept.legacy + swept.migrated) as u64;
     crate::telemetry::emit::add_items(done);
     let units = crate::setup::units::heal_changes(f.dry_run);
-    if rows.is_empty() && fixes.is_empty() && units.is_none() && doc.fail == 0 {
+    if rows.is_empty() && fixes.is_empty() && units.is_none() && swept.files + swept.legacy + swept.migrated == 0 && doc.fail == 0 {
         doc.infol(defaults::text("doctor_msg.repair_none").to_string());
     }
     for r in &rows {
@@ -479,6 +499,18 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     doc.ok(defaults::render("doctor_msg.platform", &[("platform", &platform), ("arch", &arch)]));
     if root.is_some() {
         doc.ok(defaults::render("doctor_msg.plugin_version", &[("version", &version)]));
+        if let Some(v) = ctx.version.as_deref() {
+            // only the pairs this process can see (plugin and engine): the hook client and dashboard versions are in `status --json` compat
+            let report = crate::compat::report(v, "", "", "");
+            let bad = crate::compat::mismatches(&report);
+            if bad.is_empty() {
+                let checked = report["pairs"].as_array().map_or(0, |a| a.iter().filter(|r| r["state"] != defaults::text("compat.state_unknown")).count());
+                doc.ok(defaults::render("compat.msg_ok", &[("count", &checked)]));
+            }
+            for line in bad {
+                doc.warnl(line);
+            }
+        }
     } else {
         doc.warnl(defaults::text("doctor_msg.no_plugin_root").to_string());
     }
@@ -486,6 +518,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     let engine_usable = install::section(&mut doc, &mut fixes, &ctx, root_path, &host) || path_engine(&mut doc, &ctx);
     runtime::state_section(&mut doc, &mut fixes, uid);
     plugin::config_section(&mut doc, &mut fixes, &ctx);
+    detect::stray_submodule_state(&mut doc, &ctx);
     plugin::registry_section(&mut doc, &ctx, root_path, &version);
     for flag in defaults::list("doctor.unhandled_flags") {
         if p.rest.iter().any(|a| a == flag) {
@@ -521,6 +554,7 @@ pub fn run_doctor(p: &Parsed) -> i32 {
         logs::section(&mut doc, &ctx);
     }
     audit_section(&mut doc);
+    entry_paths_section(&mut doc, root_path, &ctx.home);
     jev::section(&mut doc, Path::new(&ctx.home), &ctx.env);
     if do_repair {
         repair_section(&mut doc, &ctx, &f, &fixes, root_path);
@@ -563,16 +597,32 @@ fn no_context(p: &Parsed, why: &str) -> i32 {
     1
 }
 
-/// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the shell
-/// doctor next to the hook wrapper (its own texts, POSIX sh only) gives the diagnosis. `err` is why the load failed.
+/// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the thin client's
+/// built-in diagnosis (`ah-hook doctor --builtin`, its own texts) gives the diagnosis. `err` is why the load failed.
 pub fn degraded(p: &Parsed, err: &str) -> i32 {
-    let root = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).map(PathBuf::from).or_else(crate::bootstrap::env_root);
-    let wrapper = root.as_deref().map(|r| r.join(crate::bootstrap::WRAPPER_REL)).filter(|w| w.is_file());
+    let root = p
+        .rest
+        .iter()
+        .position(|a| a == "--plugin-root")
+        .and_then(|i| p.rest.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(crate::bootstrap::env_root)
+        .filter(|r| r.is_dir());
+    let client = std::env::var_os(crate::bootstrap::HOME_ENV).map(|h| PathBuf::from(h).join(crate::bootstrap::CLIENT_REL)).filter(|c| c.is_file());
     eprintln!("ah-engine: defaults unavailable: {err}");
-    let Some(w) = wrapper else { return 70 };
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg(&w).arg(crate::bootstrap::SHELL_DOCTOR_ARG).args(p.rest.iter().filter(|a| a.starts_with("--")));
-    cmd.env(crate::bootstrap::ROOT_ENVS[0], root.unwrap_or_default());
+    let (Some(c), Some(root)) = (client, root) else { return 70 };
+    let mut cmd = std::process::Command::new(c);
+    cmd.arg(crate::bootstrap::CLIENT_ROOT_ARG).arg(&root).args(crate::bootstrap::CLIENT_DOCTOR_ARGS);
+    // the flags of the call (not the plugin root and its value, which the client already got)
+    let mut rest = p.rest.iter();
+    while let Some(a) = rest.next() {
+        if a == crate::bootstrap::CLIENT_ROOT_ARG {
+            rest.next();
+        } else if a.starts_with("--") {
+            cmd.arg(a);
+        }
+    }
+    cmd.env(crate::bootstrap::ROOT_ENVS[0], &root);
     cmd.env(crate::bootstrap::DEFAULTS_ERROR_ENV, err.split_whitespace().collect::<Vec<_>>().join(" "));
     cmd.status().map_or(70, |s| s.code().unwrap_or(70))
 }

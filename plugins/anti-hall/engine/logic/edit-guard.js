@@ -90,13 +90,13 @@ function egDelegation(tool, cwd, p) {
     var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
     var tierText = false;
     try { tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd); } catch (e) { if (cmdFatal(e)) throw e; tierText = false; }
-    return text.message('block', guard, {
+    return text.detailsMessage('block', guard, {
       what: what, why: ah.cfg('command.msg_edit_why_orch'),
       instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
       allowed: notes, override: override,
-    });
+    }, p && p.session_id);
   }
-  return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+  return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, p && p.session_id);
 }
 
 function egBlock(reason, codexPatch) { return { exact: { code: 2, out: text.blockJson(reason), err: codexPatch ? reason + '\n' : '' } }; }
@@ -198,7 +198,7 @@ function egMain(p) {
     at = paths[i];
   }
   var nudge = egNudge(p, tool, cwd);
-  var reason = null;
+  var reason = null, standNote = '';
   if (verdict === 'block-self-edit') {
     reason = text.message('block', guard, {
       what: text.render(ah.cfg('edit_guard.msg_self_edit_what'), { tool: tool }), why: ah.cfg('edit_guard.msg_self_edit_why'),
@@ -217,7 +217,10 @@ function egMain(p) {
       override: text.render(ah.cfg('edit_guard.msg_new_override'), { skip: LIB['./lib/skip-cmd.js'].skipCommand(ah.cfg('command.edit_guard_name')) }),
     });
   } else if (verdict !== 'allow') {
-    reason = egDelegation(tool, cwd, p);
+    // while spawning is stopped there is nobody to delegate to: the edit is allowed inline, with a one-time note
+    var stop = sd.applies(p, guard);
+    if (stop === null) reason = egDelegation(tool, cwd, p);
+    else standNote = sd.note(p, stop);
   }
   var say = null;
   if (nudge !== null) {
@@ -229,6 +232,7 @@ function egMain(p) {
     } catch (e) { /* best effort, as in Node */ }
   }
   if (reason !== null) return egBlock(reason, codexPatch);
+  if (standNote !== '') say = say === null ? standNote : say + '\n' + standNote;
   return say === null ? 'allow' : { advisory: text.advisoryJson('PreToolUse', say) };
 }
 

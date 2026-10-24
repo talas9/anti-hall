@@ -8,6 +8,8 @@
 //!   the outbound redaction on its own, so it can be compared with Node's `scrubSecrets` over a large corpus.
 //! * `jev evidence` reads evidence packs as JSON, one per stdin line, and prints what the evidence gate did with each (a rule
 //!   answer, a skip for insufficient evidence, or a Jev / Haiku answer with the facts that were present); see [`super::evidence`].
+//! * `jev arrival` runs one arrival-labelling worker: it drains the queue the sends fill (the scheduled job `jev_arrival`), see
+//!   [`super::arrival`].
 //! * `jev status` prints the resolved settings and every integration's mode. It never prints a key, only whether one
 //!   resolves.
 use super::assist::{AskRequest, Decision, Jev, Trust};
@@ -152,6 +154,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         "evidence" => evidence(),
         "sweep" => home().map(|h| super::sweep::run(&h)),
         "triage" => Ok(crate::judge::triage::run_cmd()),
+        "arrival" => home().map(|h| super::arrival::run_cmd(&h)),
         _ => Err(JevError::Request(defaults::text("msg.jev_usage").to_string())),
     };
     match result {

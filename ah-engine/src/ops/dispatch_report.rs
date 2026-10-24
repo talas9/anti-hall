@@ -1,7 +1,7 @@
 //! `ah-engine dispatch-report [--json]`: read-only effectiveness metrics of the parallel-dispatch demand, the Jev dispatch tier and
 //! the coordinator-work window. Port of `scripts/dispatch-report.js` (with the `summary` functions of `hooks/lib/dispatch-demand.js`,
 //! `dispatch-tier.js` and `coordinator-work.js`). The command reads the metrics files and the live session files and asks the rules
-//! script (`rules/operator-cli.js`, `dispatchReportRun`) for the summaries and the text.
+//! script for the summaries and the text.
 use super::{env_snapshot, home, opcli_call, opcli_cfg, out, read_lossy};
 use crate::cli::Parsed;
 use crate::defaults;

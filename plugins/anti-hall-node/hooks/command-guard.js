@@ -82,7 +82,7 @@ const HEAVY_PATTERNS = [
   /\byarn\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b/i,
   /\bpnpm\s+(?:run\s+)?(?:build|test|deploy|start|lint|typecheck|check)\b/i,
   // git push/pull/fetch/clone (not git status/log/diff etc.)
-  /\bgit\s+(?:push|pull|fetch|clone)\b/i,
+  /\bgit\s+(?:pull|fetch|clone)\b/i,
   // python/node/deno long-running scripts
   /\bpython[23]?\s+\S+\.py\b/i,
   /\bnode\s+\S+\.(?:js|mjs|cjs)\b/i,
@@ -1460,7 +1460,7 @@ function isSafeGitFetch(segment) {
 // between `git` and the subcommand cannot hide it) of push/pull/clone
 // (always heavy) or fetch without isSafeGitFetch's safety. This is the fix
 // for the P1 bypass above: the plain-substring git HEAVY_PATTERN
-// (`\bgit\s+(?:push|pull|fetch|clone)\b`) only matches when the subcommand
+// (`\bgit\s+(?:pull|fetch|clone)\b`) only matches when the subcommand
 // is textually ADJACENT to `git`, so it never even sees a global-option-
 // prefixed invocation — this check runs the same tokenized, option-aware
 // parse used by isSafeGitFetch, so the two can never disagree about where
@@ -1477,7 +1477,7 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'push' || sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull' || sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }
@@ -4490,7 +4490,7 @@ function main(payload, env) {
   if (payload === undefined) return io.decision(0);
 
   const skipGuard = require('./skip-guard.js');
-  const isSkipped = (name) => skipGuard.isSkipped(name, env);
+  const isSkipped = (name) => skipGuard.isSkipped(name, env, payload.session_id);
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 

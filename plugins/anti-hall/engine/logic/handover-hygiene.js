@@ -881,7 +881,7 @@ function opAdvisory(payload) {
     what: hhTpl('handovers.msg_advisory_what', { count: n, days: c.staleDays, project: hh.root }),
     why: ah.cfg('handovers.msg_advisory_why'),
     instead: hhTpl('handovers.msg_advisory_instead', { cmd: ah.cfg('handovers.cmd_index') }),
-    extra: extra,
+    details: true, extra: extra.concat([ah.cfg('handovers.cmd_index')]),
   });
   return { advisory: text.advisoryJson('SessionStart', t) };
 }
