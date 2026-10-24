@@ -522,7 +522,8 @@ mod tests {
         let answers = evaluate(&meta, &p, &|_| false, &|_, _, _| {});
         let (_, answer) = answers.iter().find(|(id, _)| id == "verify-first-subagent").unwrap();
         let Answer::Decided(result, _) = answer else { panic!("loaded root must answer: {answer:?}") };
-        let root = crate::defaults::root().unwrap();
+        // The protocol helper resolves its probe with realpath; Cargo's root may still contain `..`.
+        let root = crate::defaults::root().unwrap().canonicalize().unwrap();
         assert!(result.out.contains(&format!("{}/PROTOCOL.md", root.display())), "{}", result.out);
     }
 

@@ -390,8 +390,25 @@ value = { git = 30000, sibling-sweep = 5000, fable-availability = 2000, handover
 
 [script.prewarm_checks]
 doc = "Script entries loaded on each daemon worker before accepting requests; only definitions are loaded, no decision function runs. Normal fingerprint invalidation still reloads edits."
-value = ["speculation-guard"]
+value = ["speculation-guard", "sibling-sweep"]
 
 [script.prewarm_patterns]
-doc = "Shared regex programs compiled before the daemon workers accept requests (defaults key and JavaScript flags). Moves Stop's first marker and acknowledgment compilation out of its client wait."
-value = [{ key = "speculation_guard.markers", flags = "i" }, { key = "speculation_guard.ack_ci", flags = "i" }, { key = "speculation_guard.ack_cs", flags = "" }]
+doc = "Shared regex programs compiled before the daemon workers accept requests (defaults key and JavaScript flags). Moves Stop's first marker, acknowledgment and sibling-scan compilation out of its client wait."
+value = [
+  { key = "speculation_guard.markers", flags = "i" },
+  { key = "speculation_guard.ack_ci", flags = "i" },
+  { key = "speculation_guard.ack_cs", flags = "" },
+  { key = "sibling_sweep.attributed_re", flags = "i" },
+  { key = "sibling_sweep.bash_search_re", flags = "" },
+  { key = "sibling_sweep.fence_re", flags = "" },
+  { key = "sibling_sweep.fix_context_re", flags = "i" },
+  { key = "sibling_sweep.hedge_any_re", flags = "i" },
+  { key = "sibling_sweep.hedge_before_re", flags = "i" },
+  { key = "sibling_sweep.injected_re", flags = "i" },
+  { key = "sibling_sweep.meta_re", flags = "i" },
+  { key = "sibling_sweep.operational_re", flags = "i" },
+  { key = "sibling_sweep.quote_line_re", flags = "m" },
+  { key = "sibling_sweep.search_tool_re", flags = "" },
+  { key = "sibling_sweep.cause_cues", flags = "i" },
+  { key = "sibling_sweep.sweep_statement_re", flags = "i" },
+]

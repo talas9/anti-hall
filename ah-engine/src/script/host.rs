@@ -595,13 +595,14 @@ fn scoped_existing(home: &str, rel: &str) -> rquickjs::Result<Option<PathBuf>> {
 
 /// `cfgLive(key)`: the effective value of a defaults key as JSON text, resolved through the editable layers (the request home's
 /// `settings.json`, then the engine's `config.toml`, then the shipped default), so an owner edit applies on the next call.
-/// Cached per pair of files (path, size, modification time) and per defaults generation, so a call costs two `stat`s.
+/// Cache the layers per pair of files (path, size, modification time) and defaults generation,
+/// then resolve only the requested key. A cold Stop must not materialize every unrelated setting.
 pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
-    use crate::cfgstore::{self, Effective, Paths};
+    use crate::cfgstore::{self, Layers, Paths};
     use std::sync::{Arc, Mutex};
     type Stamp = Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>;
-    static CACHE: Mutex<Option<(Stamp, u64, Arc<Effective>)>> = Mutex::new(None);
-    entry(key)?;
+    static CACHE: Mutex<Option<(Stamp, u64, Arc<Layers>)>> = Mutex::new(None);
+    let requested = entry(key)?;
     let home = with_settings(|st| st.home.clone())?;
     let base = Path::new(&home).join(defaults::text("paths.base_dir"));
     let paths = Paths { user: Paths::from_env().user, settings: Some(base.join(defaults::text("config.settings_file"))) };
@@ -611,19 +612,19 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
         now.push(one(s));
     }
     let generation = defaults::generation();
-    let eff = {
+    let layers = {
         let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         match g.as_ref() {
             Some((s, at, e)) if *s == now && *at == generation => Arc::clone(e),
             _ => {
                 let (layers, _problems) = cfgstore::load_layers_cold(&paths);
-                let e = Arc::new(Effective::resolve(&layers, &|_| None));
+                let e = Arc::new(layers);
                 *g = Some((now, generation, Arc::clone(&e)));
                 e
             }
         }
     };
-    eff.get(key).map_or_else(|| entry(key).map(|e| e.value.to_json().to_string()), |r| Ok(r.value.to_string()))
+    Ok(cfgstore::resolve_one(requested, &layers, &|_| None).value.to_string())
 }
 
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the

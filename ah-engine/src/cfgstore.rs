@@ -479,7 +479,7 @@ impl Effective {
 }
 
 /// One setting through the layers (see the module docs for the order). A locked key (`config.locked`) is always the shipped default.
-fn resolve_one(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<String>) -> Resolved {
+pub(crate) fn resolve_one(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<String>) -> Resolved {
     if locked(e.key) {
         return Resolved { value: e.value.to_json(), source: Source::Default };
     }

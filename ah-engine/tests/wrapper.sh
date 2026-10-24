@@ -906,7 +906,11 @@ test_cold_guard_waits_for_a_daemon_that_comes_up() {
   [ "$cg_rc" -eq 2 ] && grep -q denied-by-daemon "$cg_dir/err" || ok=0
   [ "$cg_ms" -lt 2000 ] || ok=0
   [ "$(grep -c ColdStartKick "$cg_log")" -eq 1 ] || ok=0
-  [ "$ok" -eq 1 ] || printf 'cold guard ready: rc=%s ms=%s err=%s log=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" "$(cat "$cg_log")" >&2
+  [ "$ok" -eq 1 ] || {
+    printf 'cold guard ready: rc=%s ms=%s err=%s log=%s\n' "$cg_rc" "$cg_ms" "$(cat "$cg_dir/err")" "$(cat "$cg_log")" >&2
+    # Preserve the launcher's diagnostics when CI misses the stand-in's expected denial.
+    [ ! -f "$cg_state/launcher.log" ] || cat "$cg_state/launcher.log" >&2
+  }
   cg_cleanup
   [ "$ok" -eq 1 ]
 }
