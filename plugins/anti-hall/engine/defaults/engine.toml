@@ -2294,6 +2294,10 @@ value = "--builtin"
 doc = "File name, in the plugin root, of the engine lock: when present the session start may bootstrap the engine."
 value = "ah-engine.lock"
 
+[launcher.legacy_scheme_floor]
+doc = "The first version of the OLD numbering. Builds made while the engine, hook client and web server carried the plugin's number report 0.300.x / 0.301.x (`0.301.1+<branch>.<sha>`); each component now has its own version (0.2.0, ...). An engine, hook client or web server at or above this floor counts as OLDER than any version below it, in every comparison: the install routine's downgrade check, the Updates page and `ah-hook doctor`. So nobody needs --force to go from 0.301.1 to 0.2.0. Plugin versions are never compared through this floor."
+value = "0.300.0"
+
 [launcher.engine_bin_rel]
 doc = "Path of the installed engine binary below the engine state directory."
 value = "bin/ah-engine"

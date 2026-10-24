@@ -28,7 +28,7 @@ fn meets(required: &str, actual: &str) -> Option<bool> {
     if required.is_empty() || actual.is_empty() {
         return None;
     }
-    Some(crate::version_cmp(actual, required) != std::cmp::Ordering::Less)
+    Some(crate::component_cmp(actual, required) != std::cmp::Ordering::Less)
 }
 
 /// The mismatch line for one requirement, or `None` when it holds or one side is not known.

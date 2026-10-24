@@ -1269,9 +1269,9 @@ impl U<'_> {
         if !local {
             return false;
         }
-        let core = |v: &str| -> Vec<u64> { v.trim_start_matches('v').split(['+', '-']).next().unwrap_or("").split('.').map(|p| p.parse().unwrap_or(0)).collect() };
-        // a stable release must have a strictly higher plugin version; a dev pre-release carries none, so it cannot be newer
-        if channel == self.c.ch_stable && core(want) > core(&running) {
+        // a stable release must have a strictly higher component version; a dev pre-release carries none, so it cannot be newer
+        let floor = self.s.text("launcher.legacy_scheme_floor");
+        if channel == self.c.ch_stable && crate::compat::component_cmp(&floor, want, &running) == Some(std::cmp::Ordering::Greater) {
             return false;
         }
         self.say(&self.m("msg.updater_auto_not_newer", &[("running", &running), ("release", if want.is_empty() { tag } else { want })]));

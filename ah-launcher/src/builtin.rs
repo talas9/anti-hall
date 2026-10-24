@@ -142,6 +142,7 @@ pub const STRS: &[(&str, &str)] = &[
     ("launcher.knob_install_retry_s", "AH_BOOTSTRAP_RETRY_S"),
     ("launcher.knob_install_run_s", "AH_BOOTSTRAP_RUN_S"),
     ("launcher.engine_lock_file", "ah-engine.lock"),
+    ("launcher.legacy_scheme_floor", "0.300.0"),
     ("launcher.engine_bin_rel", "bin/ah-engine"),
     ("launcher.engine_bin_name", "ah-engine"),
     ("launcher.run_base_dir", "tmp"),

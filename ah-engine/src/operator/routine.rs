@@ -606,7 +606,7 @@ fn downgrade(cur: &Running, target_version: &str, target_built: u64, target_sour
     if cur.version.is_empty() {
         return None;
     }
-    match crate::version_cmp(target_version, &cur.version) {
+    match crate::component_cmp(target_version, &cur.version) {
         std::cmp::Ordering::Less => Some(t("routine.why_plugin_lower").to_string()),
         // a release (or a file) of the SAME engine version is not newer than a local or hand-installed build of it
         std::cmp::Ordering::Equal if target_source != t("routine.source_local") && (cur.source != t("routine.source_release") || cur.version.contains('+')) => Some(t("routine.why_local_running").to_string()),
@@ -873,6 +873,9 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
         }
         log.say(defaults::render("routine.line_mismatch_forced", &[]));
     }
+    if !cur.version.is_empty() && crate::legacy_scheme(&cur.version) && !crate::legacy_scheme(&pre.version) {
+        log.say(defaults::render("routine.line_legacy_scheme", &[("running", &cur.version), ("target", &pre.version)]));
+    }
     if let Some(why) = downgrade(&cur, &pre.version, new_built, &o.source) {
         let msg = defaults::render("routine.msg_downgrade", &[("running", &cur.version), ("target", &pre.version), ("why", &why), ("flag", &flag("force"))]);
         if !o.force {
@@ -1072,8 +1075,10 @@ pub fn engine_facts() -> Value {
         json!({"error": t("routine.word_no_client")})
     };
     let _ = std::fs::remove_dir_all(&scratch); // keep: our own scratch directory
+    // the one place the Updates page's "newer release" is decided: it must not repeat the comparison with its own rules
+    let release_newer = latest.get("version").and_then(Value::as_str).is_some_and(|v| !v.is_empty() && !cur.version.is_empty() && crate::component_cmp(v, &cur.version) == std::cmp::Ordering::Greater);
     json!({
-        "build_version": cur.version, "sha": cur.sha, "source": cur.source,
+        "build_version": cur.version, "sha": cur.sha, "source": cur.source, "release_newer": release_newer,
         "installed_at": rec["time"], "previous": rec["previous"], "latest_release": latest,
     })
 }

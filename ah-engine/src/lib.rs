@@ -125,10 +125,42 @@ pub fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     x.cmp(&y)
 }
 
+/// Whether `v` is a component version (engine, hook client, web server) from the OLD numbering, where those binaries carried the
+/// plugin's number: at or above `launcher.legacy_scheme_floor`. The floor comes from the plugin's TOML; an empty floor means none.
+pub fn legacy_scheme(v: &str) -> bool {
+    legacy_with(defaults::text("launcher.legacy_scheme_floor"), v)
+}
+
+fn legacy_with(floor: &str, v: &str) -> bool {
+    !floor.is_empty() && version_cmp(v, floor) != std::cmp::Ordering::Less
+}
+
+/// Compare two COMPONENT versions: like [`version_cmp`], except an old-numbering version counts as older than any version below the
+/// floor. The ONE comparison for engine/hook/web versions; plugin versions use [`version_cmp`].
+pub fn component_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    component_with(defaults::text("launcher.legacy_scheme_floor"), a, b)
+}
+
+fn component_with(floor: &str, a: &str, b: &str) -> std::cmp::Ordering {
+    match (legacy_with(floor, a), legacy_with(floor, b)) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => version_cmp(a, b),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cmp::Ordering::*;
+    #[test]
+    fn legacy_versions_are_older_than_per_component_ones() {
+        assert_eq!(component_with("0.300.0", "0.301.1+v301-x.abc12345", "0.2.0"), Less);
+        assert_eq!(component_with("0.300.0", "0.2.0", "0.300.1"), Greater);
+        assert_eq!(component_with("0.300.0", "0.301.1", "0.300.1"), Greater);
+        assert_eq!(component_with("0.300.0", "0.2.0", "0.1.0"), Greater);
+        assert_eq!(component_with("", "0.301.1", "0.2.0"), Greater);
+    }
     #[test]
     fn version_ordering() {
         assert_eq!(version_cmp("0.10.0", "0.9.0"), Greater);

@@ -748,17 +748,17 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         }
         sh.note_hook_version(&env);
         let reply = hook(payload, &env, sh, cfg);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("D ") {
         let reply = dispatch(body, sh, cfg);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("G ") {
         let reply = inject_gate(body, sh);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(cwd) = head.strip_prefix("P ") {

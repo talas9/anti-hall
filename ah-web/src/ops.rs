@@ -445,8 +445,10 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     let build_version = s(&eng, "build_version");
     let rel = eng.get("latest_release").cloned().unwrap_or(Value::Null);
     let latest_release = [s(&rel, "version"), s(&rel, "tag")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
-    let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && version_nums(&s(&rel, "version")) > version_nums(&build_version);
-    let local_ahead = !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && version_nums(&s(&rel, "version")) <= version_nums(&build_version);
+    // newer-or-not is the engine's call (`release_newer`): it knows the old-numbering floor, so 0.301.1 -> 0.2.0 reads as an upgrade
+    let release_newer = eng.get("release_newer").and_then(Value::as_bool).unwrap_or(false);
+    let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && release_newer;
+    let local_ahead = !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && !release_newer;
     let c = UpdateCheck {
         ok: out.status.success(),
         installed,

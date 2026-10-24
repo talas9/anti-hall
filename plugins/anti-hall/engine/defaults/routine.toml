@@ -276,6 +276,10 @@ value = "no thin client installed"
 doc = "Shown for a command that did not exit (it timed out or could not start)."
 value = "no exit"
 
+[routine.line_legacy_scheme]
+doc = "Said when the running build uses the old plugin-numbered versions and the target uses a per-component version, so the target counts as an upgrade. {running}, {target}."
+value = "running build uses the old version numbering ({running}); treating {target} as an upgrade"
+
 [routine.why_plugin_lower]
 doc = "Why an install is a downgrade: the engine version is lower."
 value = "its engine version is lower"
