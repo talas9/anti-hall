@@ -167,6 +167,7 @@ pub fn status_json(rt: &Rt) -> Value {
         "mode": format!("{:?}", rt.mode()).to_lowercase(), "generation": snap.generation, "appReadable": snap.app_readable,
         "workspaces": snap.workspaces.len(), "line": super::consume::line(rt), "repairs": rt.repairs(),
         "executors": defaults::list("devswarm_wire.act_kinds").iter().map(|k| (k.to_string(), json!(format!("{:?}", super::executor(k)).to_lowercase()))).collect::<serde_json::Map<_, _>>(),
+        "compatibility": defaults::env_var("home").map(|h| crate::refresh::devswarm_compat::cached(Path::new(&h))),
     })
 }
 

@@ -215,6 +215,12 @@ pub fn section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
         return;
     }
     doc.head(text("doctor_msg.head_devswarm"));
+    let compat = crate::refresh::devswarm_compat::cached(Path::new(&ctx.home));
+    doc.infol(defaults::render("devswarm_compat.doctor_summary", &[
+        ("version", &compat.get("version").and_then(Value::as_str).unwrap_or("unknown")),
+        ("status", &compat.get("status").and_then(Value::as_str).unwrap_or("unverified")),
+        ("reason", &compat.get("reason").and_then(Value::as_str).unwrap_or("")),
+    ]));
     for t in tests {
         match t {
             Verdict::Pass(m) => doc.ok(m),

@@ -189,7 +189,7 @@ value = "tell the user now: run /anti-hall:update (Claude) or the anti-hall-upda
 
 [session.devswarm_summary]
 doc = "One-line description of the devswarm-version check in the generated reference."
-value = "SessionStart advisory: the DevSwarm CLI drifted by major or minor from the verified version; a stale cache defers to Node, which starts the probe."
+value = "SessionStart advisory: the DevSwarm CLI differs from the verified version (including patch releases); a stale cache requests the native refresh and read-only dependency probe."
 
 [session.devswarm_guard]
 doc = "The guard id of devswarm-version, in its messages and in the skip file."

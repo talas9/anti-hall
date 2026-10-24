@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+pub mod devswarm_compat;
+
 /// One handled (or skipped) probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Done {
@@ -304,7 +306,17 @@ fn probe_cli(home: &Path, bins: Vec<&str>, cache: &str, baseline: &str) -> (&'st
         Some((v, b)) => (Value::from(v.as_str()), Value::from(*b)),
         None => (Value::Null, Value::Null),
     };
-    let text = format!("{{\"installed\":{installed},\"baseline\":{},\"checkedAt\":{now},\"source\":{source}}}", Value::from(baseline));
+    let mut cache_value = read_object(&target).unwrap_or_default();
+    cache_value.insert("installed".into(), installed);
+    cache_value.insert("baseline".into(), json!(baseline));
+    cache_value.insert("checkedAt".into(), json!(now));
+    cache_value.insert("source".into(), source);
+    if cache == defaults::text("session.devswarm_cache")
+        && let Some((version, bin)) = &found
+    {
+        devswarm_compat::refresh(home, bin, version);
+    }
+    let text = Value::Object(cache_value).to_string();
     let shown = target.to_string_lossy().into_owned();
     match write_file(&target, &text) {
         Ok(()) => (defaults::text("refresh.outcome_refreshed"), String::new(), shown, true),

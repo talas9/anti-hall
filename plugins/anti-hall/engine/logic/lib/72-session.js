@@ -75,6 +75,7 @@ var sess = {
     if (!sess.isFresh(cache, now, ah.cfgNum('session.drift_cache_ttl_ms'))) { sess.requestRefresh(o.probe); return 'allow'; }
     if (cache.installed === null || typeof cache.installed !== 'string' || !cache.installed) return 'allow';
     var baseline = ah.cfg(o.baseline), drift = sess.classify(cache.installed, baseline);
+    if (o.exact && drift.reason === 'patch') drift.advise = true;
     if (!drift.advise) return 'allow';
     var key = o.keyed ? { installed: cache.installed, baseline: baseline } : null;
     if (o.keyed ? sess.alreadyAdvised(cache, key) : (cache.lastAdvised && typeof cache.lastAdvised === 'object' && cache.lastAdvised.installed === cache.installed && cache.lastAdvised.baseline === baseline)) return 'allow';
