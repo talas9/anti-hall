@@ -529,7 +529,8 @@ impl Run<'_> {
         }
         cleanup(self.cell, true);
         emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
-        let err = std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
+        let err =
+            std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
         diag(&defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
         Some(Flow::Stop(1))
     }
@@ -553,9 +554,7 @@ impl Run<'_> {
         cleanup(self.cell, true);
         emit(&stale::handoff_line(&s.newest, s.registered, s.registered_version.as_deref()));
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(std::env::args().skip(1))
-            .env(text("wake_watch.env_handoff"), &s.newest)
-            .env(defaults::env_name("plugin_root"), root);
+        cmd.args(std::env::args().skip(1)).env(text("wake_watch.env_handoff"), &s.newest).env(defaults::env_name("plugin_root"), root);
         let err = cmd.exec(); // only returns on failure
         diag(&format!("{err}\n"));
         emit(&stale::stale_line(role, &self.a.id.id, self.own_version.as_deref(), &s.newest, &self.p.home));

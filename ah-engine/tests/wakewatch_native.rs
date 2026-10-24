@@ -59,7 +59,8 @@ fn scratch(tag: &str, c: &Setup) -> Scratch {
     build(&own_root, c.own);
     std::fs::create_dir_all(&plugins).unwrap();
     std::fs::write(plugins.join("known_marketplaces.json"), format!("{{\"live\":{{\"installLocation\":\"{}\"}}}}", mk.display())).unwrap();
-    std::fs::write(plugins.join("installed_plugins.json"), format!("{{\"version\":2,\"plugins\":{{\"anti-hall@live\":[{{\"version\":\"{}\"}}]}}}}", c.own)).unwrap();
+    std::fs::write(plugins.join("installed_plugins.json"), format!("{{\"version\":2,\"plugins\":{{\"anti-hall@live\":[{{\"version\":\"{}\"}}]}}}}", c.own))
+        .unwrap();
     if let Some(v) = c.live_newer {
         build(&plugins.join("cache/live/anti-hall").join(v), v);
     }

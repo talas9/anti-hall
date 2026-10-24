@@ -109,7 +109,11 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     match sub {
         "status" => {
             match running() {
-                Some(r) => say(p, defaults::render("web.msg_status_running", &[("pid", &r.pid), ("url", &r.url)]), json!({ "running": true, "pid": r.pid, "url": r.url })),
+                Some(r) => say(
+                    p,
+                    defaults::render("web.msg_status_running", &[("pid", &r.pid), ("url", &r.url)]),
+                    json!({ "running": true, "pid": r.pid, "url": r.url }),
+                ),
                 None => say(p, defaults::text("web.msg_status_stopped").to_string(), json!({ "running": false })),
             }
             0

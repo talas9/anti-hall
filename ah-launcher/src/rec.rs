@@ -39,10 +39,13 @@ pub fn stamp_name(t: u64) -> String {
 
 /// `key=value key=value ...` of the leading pairs and then the rest.
 pub fn pairs(head: &[(&str, &str)], rest: &[(&str, &str)]) -> String {
-    let all: Vec<String> = head.iter().chain(rest).map(|(k, v)| format!("{k}={v}")).collect();
+    let all: Vec<String> = head
+        .iter()
+        .chain(rest)
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     all.join(" ")
 }
-
 
 /// Append one record to `path`; the file is cut back to its last `keep` lines first when it is larger than `max` bytes.
 pub fn append(path: &Path, max: u64, keep: usize, event: &str, kv: &[(&str, &str)]) {
@@ -55,7 +58,11 @@ pub fn append(path: &Path, max: u64, keep: usize, event: &str, kv: &[(&str, &str
         body.push('\n');
         let _ = fs::write(path, body);
     }
-    let line = format!("{} {}", stamp_log(epoch_s()), pairs(&[("event", event)], kv));
+    let line = format!(
+        "{} {}",
+        stamp_log(epoch_s()),
+        pairs(&[("event", event)], kv)
+    );
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{line}");
     }

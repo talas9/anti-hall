@@ -72,7 +72,10 @@ type CommandsCache = HashMap<std::path::PathBuf, (Option<std::time::SystemTime>,
 fn commands(host: &str) -> Arc<Commands> {
     static CACHE: Mutex<Option<CommandsCache>> = Mutex::new(None);
     let empty = Arc::new(Commands::new());
-    let Some(path) = defaults::root().map(|r| r.join(defaults::text("nodeback.node_dir")).join(defaults::text(&format!("launcher.fallback_map_{host}")))) else { return empty };
+    let Some(path) = defaults::root().map(|r| r.join(defaults::text("nodeback.node_dir")).join(defaults::text(&format!("launcher.fallback_map_{host}"))))
+    else {
+        return empty;
+    };
     let meta = std::fs::metadata(&path).ok();
     let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
     let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

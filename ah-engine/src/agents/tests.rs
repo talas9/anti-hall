@@ -143,7 +143,10 @@ fn the_cost_report_counts_commits_pushes_and_guard_fires_per_agent() {
             result(n - MIN, "u4", "rejected", true),
         ],
     );
-    write(&sess(&h, "s2"), &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "k1", 5000, "v1", "Read", json!({"file_path": "/w/a.rs"})), result(n - 7 * MIN, "v1", "ok", false)]);
+    write(
+        &sess(&h, "s2"),
+        &[prompt(n - 9 * MIN, "/w"), tool(n - 8 * MIN, "k1", 5000, "v1", "Read", json!({"file_path": "/w/a.rs"})), result(n - 7 * MIN, "v1", "ok", false)],
+    );
     let mut st = State::default();
     ticks(&h, &mut st, &[n]);
     let a = agent(&st, "s1");
@@ -194,7 +197,14 @@ fn a_commit_a_push_or_a_finished_build_in_any_repo_restarts_the_waste_window() {
     append(
         &sess(&h, "s1"),
         &[
-            tool(n - 2 * MIN, "m3", 300, "u3", "Bash", json!({"command": "git -C /home/x/.anti-hall/work/wt-eng commit -m done && git -C /home/x/.anti-hall/work/wt-eng push origin b"})),
+            tool(
+                n - 2 * MIN,
+                "m3",
+                300,
+                "u3",
+                "Bash",
+                json!({"command": "git -C /home/x/.anti-hall/work/wt-eng commit -m done && git -C /home/x/.anti-hall/work/wt-eng push origin b"}),
+            ),
             result(n - MIN, "u3", "ok", false),
         ],
     );
@@ -591,7 +601,12 @@ fn a_workspace_without_a_live_wake_watch_is_told_the_exact_arm_command_in_its_se
     let rows = outbox(&h);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!((rows[0]["workspace"].as_str(), rows[0]["to_parent"].as_bool()), (Some("ws1"), Some(false)));
-    assert!(rows[0]["text"].as_str().unwrap().contains("exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\"") && !rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT") && !rows[0]["text"].as_str().unwrap().contains("node "), "{rows:?}");
+    assert!(
+        rows[0]["text"].as_str().unwrap().contains("exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\"")
+            && !rows[0]["text"].as_str().unwrap().contains("AH_ENGINE_PLUGIN_ROOT")
+            && !rows[0]["text"].as_str().unwrap().contains("node "),
+        "{rows:?}"
+    );
     assert!(rows[0]["text"].as_str().unwrap().contains("devswarm wake-watch --auto"), "{rows:?}");
     // root cause of a Primary never being told (2026-10-22): the mesh outbox has no reader, so the workspace's own session queue is the
     // delivery that reaches it; it is a session, and its hook delivers the queue
@@ -655,34 +670,6 @@ fn a_stale_running_heartbeat_reminds_the_newest_main_session_and_a_finished_one_
     assert!(st.agents.contains_key("heartbeatjob1") && !st.agents.contains_key("heartbeatjob2"));
     let q = queue(&h, "main1");
     assert!(q.iter().any(|r| r["text"].as_str().unwrap().contains("compiling")), "{q:?}");
-}
-
-#[test]
-fn the_heartbeat_rule_agrees_with_the_node_watchdog_on_running_agents() {
-    let Ok(node) = std::process::Command::new("node").arg("--version").output() else { return };
-    if !node.status.success() {
-        return;
-    }
-    let h = home("witness");
-    let n = now0();
-    let hb = h.join(".anti-hall/agents");
-    std::fs::create_dir_all(&hb).unwrap();
-    for (id, age) in [("old", 30 * MIN), ("fresh", MIN), ("older", 90 * MIN)] {
-        std::fs::write(hb.join(format!("{id}.json")), json!({"id": id, "ts": n - age, "status": "running"}).to_string()).unwrap();
-    }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/agent-watchdog.js");
-    let out = std::process::Command::new("node").arg(root).arg(lim("heartbeat_stale_ms").to_string()).env("HOME", &h).output().unwrap();
-    let mut node_ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("STALE "))
-        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
-        .collect();
-    node_ids.sort();
-    let mut st = State::default();
-    tick(&env(&h, n), &mut st);
-    let mut ours: Vec<String> = st.agents.values().filter(|a| a.flags.contains_key("heartbeat_stale")).map(|a| a.name.clone()).collect();
-    ours.sort();
-    assert_eq!(ours, node_ids, "the engine and the Node watchdog flag the same running heartbeats");
 }
 
 // ---- cooldowns, caps, outcomes ------------------------------------------------------------------------------
@@ -1010,7 +997,11 @@ fn an_agent_idle_for_less_than_the_window_or_with_no_open_task_wakes_nobody() {
     let done = json!({"todos": [{"content": "Port the gauge", "status": "completed", "activeForm": "Porting the gauge"}]});
     append(
         &h2.join(".claude/projects/p/parent/subagents/agent-w1.jsonl"),
-        &[tool(n - 29 * MIN, "s3", 5, "t2", "TodoWrite", done), result(n - 29 * MIN + 1000, "t2", "ok", false), asst(n - 28 * MIN, "s4", 5, 5, json!([{"type": "text", "text": "all done"}]), Some("end_turn"))],
+        &[
+            tool(n - 29 * MIN, "s3", 5, "t2", "TodoWrite", done),
+            result(n - 29 * MIN + 1000, "t2", "ok", false),
+            asst(n - 28 * MIN, "s4", 5, 5, json!([{"type": "text", "text": "all done"}]), Some("end_turn")),
+        ],
     );
     let mut st = State::default();
     ticks(&h2, &mut st, &[n, n + MIN]);
@@ -1051,7 +1042,10 @@ fn a_watched_background_process_that_ends_wakes_the_session_once() {
 fn a_notice_for_a_task_the_agent_did_not_start_is_not_a_watched_exit() {
     let h = home("watched-other");
     let n = now0();
-    write(&sess(&h, "s1"), &[prompt(n - 30 * MIN, "/w"), user_text(n - 5 * MIN, "<task-notification>\n<task-id>zz9</task-id>\n<status>completed</status>\n</task-notification>")]);
+    write(
+        &sess(&h, "s1"),
+        &[prompt(n - 30 * MIN, "/w"), user_text(n - 5 * MIN, "<task-notification>\n<task-id>zz9</task-id>\n<status>completed</status>\n</task-notification>")],
+    );
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN]);
     assert!(wake_rows(&h, "s1").is_empty());
@@ -1093,7 +1087,9 @@ fn the_wake_watch_prints_each_row_once_and_marks_the_session_armed() {
     let (seen, stop) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicBool::new(false)));
     let t = {
         let (seen, stop, e2) = (Arc::clone(&seen), Arc::clone(&stop), env(&h, n));
-        std::thread::spawn(move || wake::pump(&e2, "parent", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed)))
+        std::thread::spawn(move || {
+            wake::pump(&e2, "parent", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed))
+        })
     };
     let wait = |want: usize| {
         for _ in 0..200 {
@@ -1250,8 +1246,17 @@ fn a_codex_rollout_is_a_codex_agent_running_while_it_is_written() {
 fn headless_one_shot_runs_are_not_agents_and_are_not_counted() {
     let h = home("headless");
     let n = now0();
-    let line = |ts: u64| json!({"type": "user", "timestamp": iso(ts), "cwd": "/w", "entrypoint": "sdk-cli", "message": {"role": "user", "content": "judge"}}).to_string();
-    write(&sess(&h, "judge1"), &[json!({"type": "queue-operation", "timestamp": iso(n)}).to_string(), line(n - MIN), asst(n - MIN, "j1", 5, 5, json!([{"type": "text", "text": "{}"}]), Some("end_turn"))]);
+    let line = |ts: u64| {
+        json!({"type": "user", "timestamp": iso(ts), "cwd": "/w", "entrypoint": "sdk-cli", "message": {"role": "user", "content": "judge"}}).to_string()
+    };
+    write(
+        &sess(&h, "judge1"),
+        &[
+            json!({"type": "queue-operation", "timestamp": iso(n)}).to_string(),
+            line(n - MIN),
+            asst(n - MIN, "j1", 5, 5, json!([{"type": "text", "text": "{}"}]), Some("end_turn")),
+        ],
+    );
     write(&h.join(".claude/projects/-x-double-shot-latte/judge2.jsonl"), &[prompt(n - MIN, "/w")]);
     write(&sess(&h, "real1"), &[prompt(n - MIN, "/w"), asst(n - MIN, "m1", 5, 5, json!([{"type": "text", "text": "ok"}]), None)]);
     let mut st = State::default();
@@ -1265,11 +1270,17 @@ fn headless_one_shot_runs_are_not_agents_and_are_not_counted() {
 fn the_list_is_live_agents_plus_a_short_recently_finished_window_and_the_summary_counts_live_ones() {
     let h = home("window");
     let n = now0();
-    write(&sess(&h, "parent"), &[prompt(n - 3 * 3_600_000, "/w"), asst(n - 2 * 3_600_000, "p1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))]);
+    write(
+        &sess(&h, "parent"),
+        &[prompt(n - 3 * 3_600_000, "/w"), asst(n - 2 * 3_600_000, "p1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))],
+    );
     register(&h, std::process::id(), "parent", "busy", n);
     let dir = h.join(".claude/projects/p/parent/subagents");
     for (id, ago) in [("old", 2 * 3_600_000), ("fresh", 5 * MIN)] {
-        write(&dir.join(format!("agent-{id}.jsonl")), &[prompt(n - ago - MIN, "/w"), asst(n - ago, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))]);
+        write(
+            &dir.join(format!("agent-{id}.jsonl")),
+            &[prompt(n - ago - MIN, "/w"), asst(n - ago, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), Some("end_turn"))],
+        );
         std::fs::write(dir.join(format!("agent-{id}.meta.json")), r#"{"finished":true}"#).unwrap();
     }
     let mut st = State::default();
@@ -1404,7 +1415,20 @@ fn a_taskstop_answer_names_the_teammate_by_its_launch_description() {
     let mut st = State::default();
     ticks(&h, &mut st, &[n, n + MIN, n + 5 * MIN]);
     assert_eq!(signals::state_of(agent(&st, "astopped-1")), "done", "the stop answer carries the launch description");
-    { let k = agent(&st, "akept-2"); assert_eq!(signals::state_of(k), "running", "a teammate no stop names stays running; cwd={:?} last={} now={} run={} fin={} pend={}", k.cwd, k.last_output_ms, n, k.running, k.finished, k.pending.len()); }
+    {
+        let k = agent(&st, "akept-2");
+        assert_eq!(
+            signals::state_of(k),
+            "running",
+            "a teammate no stop names stays running; cwd={:?} last={} now={} run={} fin={} pend={}",
+            k.cwd,
+            k.last_output_ms,
+            n,
+            k.running,
+            k.finished,
+            k.pending.len()
+        );
+    }
 }
 
 /// Prevention: every way the host says an agent has ended must end an agent whose own transcript still reads "running and silent".

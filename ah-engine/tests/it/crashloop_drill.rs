@@ -103,8 +103,14 @@ impl World {
         let payload = self.root.join("payload.json");
         std::fs::write(&payload, r#"{"hook_event_name":"UserPromptSubmit","prompt":"x","session_id":"drill"}"#).unwrap();
         let t = Instant::now();
-        let out =
-            self.cmd(launcher_bin().to_str().unwrap()).arg("UserPromptSubmit").arg("--plugin-root").arg(&self.plugin).stdin(std::fs::File::open(&payload).unwrap()).output().unwrap();
+        let out = self
+            .cmd(launcher_bin().to_str().unwrap())
+            .arg("UserPromptSubmit")
+            .arg("--plugin-root")
+            .arg(&self.plugin)
+            .stdin(std::fs::File::open(&payload).unwrap())
+            .output()
+            .unwrap();
         (out.status.code().unwrap_or(-1), t.elapsed().as_secs_f64())
     }
 
@@ -227,7 +233,11 @@ fn crashloop_trip_on_a_tampered_never_healthy_binary_rolls_it_back_end_to_end() 
     std::fs::write(w.state.join("bin/ah-engine.expected"), format!("{}\n", "a".repeat(64))).unwrap();
     w.run_to_trip(12);
     // the thin client sets the bad binary aside first and records the roll-back last: wait for the record, not the rename
-    wait_for("the roll-back", || asides(&w) == 1 && w.state.join("rollback.last").exists(), || format!("integrity.log:\n{}\nengine log:\n{}", std::fs::read_to_string(w.state.join("integrity.log")).unwrap_or_default(), w.log()));
+    wait_for(
+        "the roll-back",
+        || asides(&w) == 1 && w.state.join("rollback.last").exists(),
+        || format!("integrity.log:\n{}\nengine log:\n{}", std::fs::read_to_string(w.state.join("integrity.log")).unwrap_or_default(), w.log()),
+    );
     assert!(w.state.join("rollback.last").exists(), "the roll-back is recorded");
     assert_eq!(sha_of(&w.state.join("bin/ah-engine")), good_sha, "the known-good binary is back in place");
     assert!(w.log().contains("\trollback_request\tcrashloop\t"), "{}", w.log());

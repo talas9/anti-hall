@@ -55,9 +55,8 @@ pub(super) fn refresh(home: &Path, bin: &str, version: &str) {
         let mut args: Vec<&str> = command.split_whitespace().collect();
         args.push(defaults::text("devswarm_compat.help_arg"));
         let remaining = budget.saturating_sub(started.elapsed());
-        let result = if remaining.is_zero() { None } else {
-            super::exec(bin, &args, None, remaining.min(defaults::millis("devswarm_compat.command_timeout_ms")))
-        };
+        let result =
+            if remaining.is_zero() { None } else { super::exec(bin, &args, None, remaining.min(defaults::millis("devswarm_compat.command_timeout_ms"))) };
         let mut conflicts = Vec::new();
         let (status, missing) = match result {
             Some((Some(0), out, _)) if out.contains(defaults::text("devswarm_compat.help_marker")) => {
@@ -104,12 +103,10 @@ pub(super) fn refresh(home: &Path, bin: &str, version: &str) {
         .map(|name| json!({"name": name, "present": env.get(*name).is_some_and(|v| !v.is_empty()), "status": "semantics_unverified"}))
         .collect();
     let incompatible = checks.iter().any(|c| c["status"] == "incompatible");
-    let issues: Vec<&str> = checks.iter()
-        .flat_map(|c| c.get("semanticConflicts").and_then(Value::as_array).into_iter().flatten())
-        .filter_map(Value::as_str).collect();
+    let issues: Vec<&str> =
+        checks.iter().flat_map(|c| c.get("semanticConflicts").and_then(Value::as_array).into_iter().flatten()).filter_map(Value::as_str).collect();
     let reason = if incompatible {
-        let names: Vec<&str> = checks.iter().filter(|c| c["status"] == "incompatible")
-            .filter_map(|c| c.get("dependency").and_then(Value::as_str)).collect();
+        let names: Vec<&str> = checks.iter().filter(|c| c["status"] == "incompatible").filter_map(|c| c.get("dependency").and_then(Value::as_str)).collect();
         format!("Dependency conflicts ({}): {}. Help and schema do not certify runtime compatibility.", names.join(", "), issues.join("; "))
     } else {
         "Help and schema only; output fields, environment semantics and descriptor producers remain unverified".to_string()

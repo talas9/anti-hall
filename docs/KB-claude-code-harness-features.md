@@ -53,16 +53,16 @@ capability only; do not propose it as a cross-machine coordination layer for thi
 "Other LOCAL Claude Code sessions" row in §3's cross-session-messaging table) is itself
 account-scoped was not tested this session — flagged, not asserted either way.
 
-**[APPENDED 2026-08-21] This repo's own `eval/` harness (distinct from `evals/`).**
-`eval/` (singular) exists at the repo root: `run.js` (433 lines) + 4 pilot graders
+**[APPENDED 2026-08-21] This repo's own `tools/eval/` harness (distinct from `evals/`).**
+`tools/eval/` (singular) exists at the repo root: `run.js` (433 lines) + 4 pilot graders
 (`ship-it`, `scope-fidelity`, `rule-behavior`, `false-done`, 986 lines total) +
 `README.md` (296 lines). `evals/` (plural — the `claude plugin eval` CLI convention
 scaffolded by `eval init`) does **not** exist in this repo; the two names are easy to
 conflate and refer to different, non-interoperating things.
 
-**Capability boundary — honest, not equivalent to `claude plugin eval`:** the `eval/`
+**Capability boundary — honest, not equivalent to `claude plugin eval`:** the `tools/eval/`
 pilots score what the agent **STATES it would do**, not what it actually did — see
-`eval/…/ship-it-pilot.mjs:7-11`, which documents this directly. `claude plugin eval` run
+`tools/eval/…/ship-it-pilot.mjs:7-11`, which documents this directly. `claude plugin eval` run
 with `--allow-tools` plus a `tool_used: Skill` grader is categorically different: it
 proves the skill **actually fired** as a real tool call in a sandboxed execution, not
 merely that the model claimed it would. Neither harness subsumes the other — the
@@ -71,7 +71,7 @@ verified alternative, with actual case execution still UNVERIFIED this session (
 `claude plugin eval` entry in §3's Additions table above).
 
 **[APPENDED 2026-08-21] CI gap.** `package.json:7`'s `"test"` script is `node --test`
-only — CI runs no `eval/` pilot and no `claude plugin eval` suite. Neither harness's
+only — CI runs no `tools/eval/` pilot and no `claude plugin eval` suite. Neither harness's
 result gates a merge or release today.
 
 ---

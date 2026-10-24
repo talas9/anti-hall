@@ -59,7 +59,9 @@ fn repair_for_serde(txt: &str) -> Option<String> {
                     i += 1;
                 }
                 b'\\' if b.get(i + 1) == Some(&b'u') => match hex4(i + 2) {
-                    Some(hi @ 0xD800..=0xDBFF) if b.get(i + 6) == Some(&b'\\') && b.get(i + 7) == Some(&b'u') && matches!(hex4(i + 8), Some(0xDC00..=0xDFFF)) => {
+                    Some(hi @ 0xD800..=0xDBFF)
+                        if b.get(i + 6) == Some(&b'\\') && b.get(i + 7) == Some(&b'u') && matches!(hex4(i + 8), Some(0xDC00..=0xDFFF)) =>
+                    {
                         out.push_str(&txt[i..i + 12]);
                         let _ = hi;
                         i += 12;

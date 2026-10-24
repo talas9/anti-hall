@@ -244,7 +244,8 @@ fn merge_store_with(ctx: &super::Ctx, hash: &str, now: i64, dry: bool) -> StoreR
     let home = Path::new(&ctx.home);
     let dir = rc::store_dir(home, hash);
     let jdir = dir.join(defaults::text("update_post.journal_dir"));
-    let split = std::fs::read_dir(&jdir).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with(defaults::text("mesh_write.ndjson_suffix"))));
+    let split =
+        std::fs::read_dir(&jdir).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with(defaults::text("mesh_write.ndjson_suffix"))));
     let mut out = StoreResult { split, ok: true, ..StoreResult::default() };
     if !split {
         return out;
@@ -281,7 +282,13 @@ fn merge_store_with(ctx: &super::Ctx, hash: &str, now: i64, dry: bool) -> StoreR
                         seen_hash.insert(h.clone());
                     }
                     None => {
-                        let row = MeshRow { sender: m.sender.clone(), recipient: m.recipient.clone(), mtype: m.mtype.clone(), body: m.body.clone(), ..MeshRow::default() };
+                        let row = MeshRow {
+                            sender: m.sender.clone(),
+                            recipient: m.recipient.clone(),
+                            mtype: m.mtype.clone(),
+                            body: m.body.clone(),
+                            ..MeshRow::default()
+                        };
                         seen_null.insert(null_key(id, Some(m.ts), &row));
                     }
                 }
@@ -421,7 +428,12 @@ mod tests {
             let st = MeshStore::open(&store.join(defaults::text("mesh_write.store_file"))).unwrap();
             let row = |h: &str, body: &str| MeshRow { workspace_id: "w1".into(), ts: 1000, hash: Some(h.into()), body: body.into(), ..MeshRow::default() };
             assert!(st.append_mesh_row(&row("h1", "A")).unwrap().inserted);
-            st.upsert_registry(&RegistryRow { id: "w1".into(), worktree_path: Some("/wt/1".into()), session_id: Some("old".into()), ..RegistryRow::default() }, 5, |_, _| true).unwrap();
+            st.upsert_registry(
+                &RegistryRow { id: "w1".into(), worktree_path: Some("/wt/1".into()), session_id: Some("old".into()), ..RegistryRow::default() },
+                5,
+                |_, _| true,
+            )
+            .unwrap();
         }
         write(&store.join(defaults::text("mesh.backend_marker")), "sqlite\n");
         let journal = store.join(defaults::text("update_post.journal_dir"));

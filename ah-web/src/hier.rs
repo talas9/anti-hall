@@ -38,10 +38,23 @@ fn find_root(s: &Settings, home: &str, path: &str) -> String {
                 return dir.display().to_string();
             }
             if git.is_file() {
-                let pointed = std::fs::read_to_string(&git).ok().and_then(|t| t.trim().strip_prefix("gitdir:").map(|r| r.trim().to_string()));
+                let pointed = std::fs::read_to_string(&git).ok().and_then(|t| {
+                    t.trim()
+                        .strip_prefix("gitdir:")
+                        .map(|r| r.trim().to_string())
+                });
                 // the pointer may be relative to the folder that holds the file
-                let pointed = pointed.map(|p| if Path::new(&p).is_absolute() { p } else { clean(&dir.join(&p)) });
-                return match pointed.as_deref().and_then(|p| p.find(&s.project_gitdir_split).map(|i| &p[..i])) {
+                let pointed = pointed.map(|p| {
+                    if Path::new(&p).is_absolute() {
+                        p
+                    } else {
+                        clean(&dir.join(&p))
+                    }
+                });
+                return match pointed
+                    .as_deref()
+                    .and_then(|p| p.find(&s.project_gitdir_split).map(|i| &p[..i]))
+                {
                     Some(repo) if !repo.is_empty() => repo.to_string(),
                     _ => dir.display().to_string(),
                 };
@@ -54,17 +67,27 @@ fn find_root(s: &Settings, home: &str, path: &str) -> String {
     if let Some(i) = path.find(&s.project_workspace_marker) {
         let after = &path[i + s.project_workspace_marker.len()..];
         if let Some(set) = after.split('/').next().filter(|x| !x.is_empty()) {
-            let file = Path::new(&path[..i + s.project_workspace_marker.len()]).join(set).join(&s.project_workspace_file);
+            let file = Path::new(&path[..i + s.project_workspace_marker.len()])
+                .join(set)
+                .join(&s.project_workspace_file);
             let repo = std::fs::read_to_string(file)
                 .ok()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-                .and_then(|v| v[s.project_workspace_folders.as_str()][0][s.project_workspace_path.as_str()].as_str().map(str::to_string));
+                .and_then(|v| {
+                    v[s.project_workspace_folders.as_str()][0][s.project_workspace_path.as_str()]
+                        .as_str()
+                        .map(str::to_string)
+                });
             if let Some(repo) = repo.filter(|r| !r.is_empty()) {
                 return repo;
             }
         }
         let keep: Vec<&str> = after.split('/').take(3).collect();
-        return format!("{}{}", &path[..i + s.project_workspace_marker.len()], keep.join("/"));
+        return format!(
+            "{}{}",
+            &path[..i + s.project_workspace_marker.len()],
+            keep.join("/")
+        );
     }
     path.to_string()
 }
@@ -108,23 +131,42 @@ pub fn link(s: &Settings, agents: &mut Vec<Agent>) {
     }
     // a project's Primary: the agent of a primary kind and role that is not itself inside a workspace checkout
     let mut primary: BTreeMap<String, String> = BTreeMap::new();
-    for a in agents.iter().filter(|a| !a.project_root.is_empty() && a.role == s.project_primary_role && s.project_primary_kinds.contains(&a.kind) && !is_workspace_row(s, a)) {
-        let slot = primary.entry(a.project_root.clone()).or_insert_with(|| a.id.clone());
+    for a in agents.iter().filter(|a| {
+        !a.project_root.is_empty()
+            && a.role == s.project_primary_role
+            && s.project_primary_kinds.contains(&a.kind)
+            && !is_workspace_row(s, a)
+    }) {
+        let slot = primary
+            .entry(a.project_root.clone())
+            .or_insert_with(|| a.id.clone());
         if a.id < *slot {
             *slot = a.id.clone();
         }
     }
     let ids: BTreeSet<String> = agents.iter().map(|a| a.id.clone()).collect();
     // workspace rows by directory, so a Codex row finds the workspace it runs in
-    let workspaces: Vec<(String, String)> = agents.iter().filter(|a| is_workspace_row(s, a)).map(|a| (a.project.clone(), a.id.clone())).collect();
+    let workspaces: Vec<(String, String)> = agents
+        .iter()
+        .filter(|a| is_workspace_row(s, a))
+        .map(|a| (a.project.clone(), a.id.clone()))
+        .collect();
     for a in agents.iter_mut().filter(|a| a.parent.is_empty()) {
-        let root_primary = primary.get(&a.project_root).filter(|p| **p != a.id).cloned();
+        let root_primary = primary
+            .get(&a.project_root)
+            .filter(|p| **p != a.id)
+            .cloned();
         if is_workspace_row(s, a) {
             if let Some(p) = root_primary {
                 a.parent = p;
             }
         } else if a.kind == "codex" {
-            let inside = workspaces.iter().filter(|(dir, id)| *id != a.id && (a.project == *dir || a.project.starts_with(&format!("{dir}/")))).max_by_key(|(dir, _)| dir.len());
+            let inside = workspaces
+                .iter()
+                .filter(|(dir, id)| {
+                    *id != a.id && (a.project == *dir || a.project.starts_with(&format!("{dir}/")))
+                })
+                .max_by_key(|(dir, _)| dir.len());
             if let Some(w) = inside.map(|(_, id)| id.clone()).or(root_primary) {
                 a.parent = w;
             }
@@ -132,10 +174,19 @@ pub fn link(s: &Settings, agents: &mut Vec<Agent>) {
     }
     // a parent the tracker does not list stands in as a row of its own, under the Primary of the project its children work in
     let mut stand_in: BTreeMap<String, Agent> = BTreeMap::new();
-    for a in agents.iter().filter(|a| !a.parent.is_empty() && !ids.contains(&a.parent)) {
+    for a in agents
+        .iter()
+        .filter(|a| !a.parent.is_empty() && !ids.contains(&a.parent))
+    {
         let entry = stand_in.entry(a.parent.clone()).or_insert_with(|| Agent {
             id: a.parent.clone(),
-            label: s.placeholder_label.replace("{id}", &a.parent.chars().take(s.placeholder_id_chars).collect::<String>()),
+            label: s.placeholder_label.replace(
+                "{id}",
+                &a.parent
+                    .chars()
+                    .take(s.placeholder_id_chars)
+                    .collect::<String>(),
+            ),
             kind: s.placeholder_kind.clone(),
             state: s.placeholder_state.clone(),
             parent: primary.get(&a.project_root).cloned().unwrap_or_default(),

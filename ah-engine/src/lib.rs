@@ -7,9 +7,9 @@
 #![recursion_limit = "256"]
 #![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::redundant_explicit_links)]
 pub mod actlog;
-pub mod audit;
 pub mod agents;
 pub mod atomic;
+pub mod audit;
 pub mod backup;
 pub mod binguard;
 pub mod bootstrap;
@@ -49,8 +49,8 @@ pub mod health;
 pub mod hookcfg;
 pub mod hookio;
 pub mod hooksgen;
-pub mod install;
 pub mod impact;
+pub mod install;
 pub mod jev;
 pub mod judge;
 pub mod layers;
@@ -66,9 +66,9 @@ pub mod meshw;
 pub mod metrics;
 pub mod migrate;
 pub mod migration;
-pub mod operator;
 pub mod nodeback;
 pub mod obs;
+pub mod operator;
 pub mod ops;
 pub mod paths;
 pub mod proc;
@@ -92,8 +92,8 @@ pub mod threads;
 pub mod tier;
 pub mod transcript;
 pub mod wakew;
-pub mod web;
 pub mod watch;
+pub mod web;
 pub mod webcli;
 pub mod wire;
 

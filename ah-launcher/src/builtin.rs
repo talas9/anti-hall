@@ -105,9 +105,15 @@ pub const STRS: &[(&str, &str)] = &[
     ("launcher.diag_env", "AH_ENGINE_WRAPPER_DIAG"),
     ("launcher.in_process_env", "AH_ENGINE_DISPATCH_IN_PROCESS"),
     ("launcher.fallback_list_claude", "hooks/ah-fallback.list"),
-    ("launcher.fallback_list_codex", "hooks/ah-fallback.codex.list"),
+    (
+        "launcher.fallback_list_codex",
+        "hooks/ah-fallback.codex.list",
+    ),
     ("launcher.fallback_map_claude", "hooks/ah-fallback.map.json"),
-    ("launcher.fallback_map_codex", "hooks/ah-fallback.codex.map.json"),
+    (
+        "launcher.fallback_map_codex",
+        "hooks/ah-fallback.codex.map.json",
+    ),
     ("launcher.arg_tool_from_payload", "--tool-from-payload"),
     ("launcher.nodeback_tool_field", "tool_name"),
     ("dispatch.context_joiner", "\n\n"),
@@ -123,14 +129,29 @@ pub const STRS: &[(&str, &str)] = &[
     ("launcher.cli_install_verb", "install"),
     ("launcher.cli_update_verb", "update"),
     ("launcher.cli_doctor_verb", "doctor"),
-    ("launcher.help_install", "usage: ah-hook install [--lock <file>] [--print-target] [--auto] [-v]\n\nInstall the engine (and the thin client) pinned by the plugin's ah-engine.lock; --auto is the session-start form and installs only when engine.bootstrap says so."),
-    ("launcher.help_doctor", "usage: ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]\n\nDiagnose the install (engine, thin client, plugin files); --repair fixes what is safe to fix."),
-    ("launcher.help_selftest", "usage: ah-hook --selftest [--engine <file>]\n\nRun the thin client's built-in self test against an engine binary."),
-    ("launcher.help_integrity", "usage: ah-hook integrity <record|accept|check|fail|status|lock|unlock>\n\nRecord and check the expected sha256 of the installed engine binary."),
+    (
+        "launcher.help_install",
+        "usage: ah-hook install [--lock <file>] [--print-target] [--auto] [-v]\n\nInstall the engine (and the thin client) pinned by the plugin's ah-engine.lock; --auto is the session-start form and installs only when engine.bootstrap says so.",
+    ),
+    (
+        "launcher.help_doctor",
+        "usage: ah-hook doctor [--builtin] [--check] [--repair [--dry-run]]\n\nDiagnose the install (engine, thin client, plugin files); --repair fixes what is safe to fix.",
+    ),
+    (
+        "launcher.help_selftest",
+        "usage: ah-hook --selftest [--engine <file>]\n\nRun the thin client's built-in self test against an engine binary.",
+    ),
+    (
+        "launcher.help_integrity",
+        "usage: ah-hook integrity <record|accept|check|fail|status|lock|unlock>\n\nRecord and check the expected sha256 of the installed engine binary.",
+    ),
     ("launcher.arg_builtin", "--builtin"),
     ("launcher.knob_doctor_rosetta", "AH_DOCTOR_ROSETTA"),
     ("launcher.knob_update_api_base", "AH_UPDATE_API_BASE"),
-    ("launcher.knob_update_download_base", "AH_UPDATE_DOWNLOAD_BASE"),
+    (
+        "launcher.knob_update_download_base",
+        "AH_UPDATE_DOWNLOAD_BASE",
+    ),
     ("launcher.knob_update_git_url", "AH_UPDATE_GIT_URL"),
     ("launcher.knob_update_triple", "AH_UPDATE_TRIPLE"),
     ("launcher.knob_update_no_attest", "AH_UPDATE_NO_ATTEST"),
@@ -166,8 +187,14 @@ pub const STRS: &[(&str, &str)] = &[
         "anti-hall: the Node backup directory {dir} is missing, so the Node shadow and fallback do nothing; the engine keeps deciding",
     ),
     ("msg.launcher_nodeback_why_no_list", "no fallback list"),
-    ("msg.launcher_nodeback_why_no_match", "no matching fallback hooks"),
-    ("msg.launcher_nodeback_why_not_run", "fallback hooks did not run"),
+    (
+        "msg.launcher_nodeback_why_no_match",
+        "no matching fallback hooks",
+    ),
+    (
+        "msg.launcher_nodeback_why_not_run",
+        "fallback hooks did not run",
+    ),
     (
         "msg.launcher_nodeback_why_hard",
         "fallback hook failed before producing a complete answer",
@@ -259,13 +286,34 @@ pub const STRS: &[(&str, &str)] = &[
         "msg.engine_unreachable_notice",
         "anti-hall: the engine did not answer this {event} call ({why}); it went through unchecked. Run `ah-engine doctor` if it keeps happening.",
     ),
-    ("msg.launcher_unreachable_why_missing", "the engine is not installed"),
-    ("msg.launcher_unreachable_why_down", "the engine is marked down"),
-    ("msg.launcher_unreachable_why_handed_back", "the engine handed the call back"),
-    ("msg.launcher_unreachable_why_silent", "the engine exited without an answer"),
-    ("msg.launcher_unreachable_why_timed_out", "the engine did not answer in time"),
-    ("msg.launcher_unreachable_why_unfinished", "the engine did not finish"),
-    ("msg.launcher_unreachable_why_not_started", "the engine could not be started"),
+    (
+        "msg.launcher_unreachable_why_missing",
+        "the engine is not installed",
+    ),
+    (
+        "msg.launcher_unreachable_why_down",
+        "the engine is marked down",
+    ),
+    (
+        "msg.launcher_unreachable_why_handed_back",
+        "the engine handed the call back",
+    ),
+    (
+        "msg.launcher_unreachable_why_silent",
+        "the engine exited without an answer",
+    ),
+    (
+        "msg.launcher_unreachable_why_timed_out",
+        "the engine did not answer in time",
+    ),
+    (
+        "msg.launcher_unreachable_why_unfinished",
+        "the engine did not finish",
+    ),
+    (
+        "msg.launcher_unreachable_why_not_started",
+        "the engine could not be started",
+    ),
 ];
 
 /// Per-field number tables (`{ default = .., <Event> = .. }`).

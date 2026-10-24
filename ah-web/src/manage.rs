@@ -36,25 +36,38 @@ impl Cfg {
     /// Read the file beside `web.toml` (every `[web.manage.<name>]` table's `value`).
     pub fn load(web_toml: &std::path::Path, file: &str) -> Result<Cfg, String> {
         let path = web_toml.with_file_name(file);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
-        let m = doc.get("web").and_then(|w| w.get("manage")).and_then(toml::Value::as_table).ok_or("no [web.manage] section")?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let doc: toml::Table = text
+            .parse()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let m = doc
+            .get("web")
+            .and_then(|w| w.get("manage"))
+            .and_then(toml::Value::as_table)
+            .ok_or("no [web.manage] section")?;
         let mut flat = toml::Table::new();
         for (k, e) in m {
             if let Some(v) = e.get("value") {
                 flat.insert(k.clone(), v.clone());
             }
         }
-        toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
+        toml::Value::Table(flat)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// A description as the person should read it: the notes written for maintainers (`[read by ...]`, `(port of ...)`) are cut out.
     pub fn clean(&self, text: &str) -> String {
         let mut out = text.to_string();
         for pair in &self.strip_notes {
-            let [open, close] = pair.as_slice() else { continue };
+            let [open, close] = pair.as_slice() else {
+                continue;
+            };
             while let Some(i) = out.find(open.as_str()) {
-                let end = out[i..].find(close.as_str()).map_or(out.len(), |e| i + e + close.len());
+                let end = out[i..]
+                    .find(close.as_str())
+                    .map_or(out.len(), |e| i + e + close.len());
                 out.replace_range(i..end, "");
             }
         }
@@ -68,9 +81,19 @@ impl Cfg {
 }
 
 /// Run `ah-engine <args>` and parse its JSON answer. The engine prints its refusals as JSON too, so a non-zero exit with JSON is an answer.
-async fn engine(app: &App, c: &Cfg, args: &[String], timeout_ms: u64, actor: bool) -> Result<Value, String> {
+async fn engine(
+    app: &App,
+    c: &Cfg,
+    args: &[String],
+    timeout_ms: u64,
+    actor: bool,
+) -> Result<Value, String> {
     let mut cmd = tokio::process::Command::new(&app.engine);
-    cmd.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
     if actor {
         cmd.env(&c.actor_env, &c.actor);
     }
@@ -82,21 +105,56 @@ async fn engine(app: &App, c: &Cfg, args: &[String], timeout_ms: u64, actor: boo
 }
 
 fn describe_args(part: &str) -> Vec<String> {
-    ["describe", "--part", part, "--json"].iter().map(|s| s.to_string()).collect()
+    ["describe", "--part", part, "--json"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn s(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// `GET /api/manage/data`: the settings registry, the checks (with their events, switch and fire counts), the Jev modes and the
 /// config file list, reduced to what the page shows.
 pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
     let t = c.describe_timeout_ms;
-    let doc = engine(app, c, &describe_args("settings_registry,checks,switches,jev_integrations,files"), t, false).await?;
-    let stats = engine(app, c, &["query".into(), "checks".into(), "--limit".into(), c.stats_limit.to_string(), "--json".into()], t, false).await.unwrap_or(Value::Null);
-    let fires: BTreeMap<String, &Value> = stats.get("rows").and_then(Value::as_array).map(|rows| rows.iter().map(|r| (s(r, "h"), r)).collect()).unwrap_or_default();
-    let mut settings: Vec<Value> = doc.get("settings_registry").and_then(Value::as_array).cloned().unwrap_or_default();
+    let doc = engine(
+        app,
+        c,
+        &describe_args("settings_registry,checks,switches,jev_integrations,files"),
+        t,
+        false,
+    )
+    .await?;
+    let stats = engine(
+        app,
+        c,
+        &[
+            "query".into(),
+            "checks".into(),
+            "--limit".into(),
+            c.stats_limit.to_string(),
+            "--json".into(),
+        ],
+        t,
+        false,
+    )
+    .await
+    .unwrap_or(Value::Null);
+    let fires: BTreeMap<String, &Value> = stats
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(|rows| rows.iter().map(|r| (s(r, "h"), r)).collect())
+        .unwrap_or_default();
+    let mut settings: Vec<Value> = doc
+        .get("settings_registry")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     for st in &mut settings {
         for key in ["description", "summary", "safety_note"] {
             if let Some(v) = st.get(key).and_then(Value::as_str).map(|x| c.clean(x)) {
@@ -105,7 +163,11 @@ pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
         }
     }
     let by_id: BTreeMap<String, &Value> = settings.iter().map(|x| (s(x, "id"), x)).collect();
-    let switches: BTreeMap<String, Value> = doc.get("switches").and_then(Value::as_array).map(|l| l.iter().map(|x| (s(x, "id"), x.clone())).collect()).unwrap_or_default();
+    let switches: BTreeMap<String, Value> = doc
+        .get("switches")
+        .and_then(Value::as_array)
+        .map(|l| l.iter().map(|x| (s(x, "id"), x.clone())).collect())
+        .unwrap_or_default();
     let checks: Vec<Value> = doc
         .get("checks")
         .and_then(Value::as_array)
@@ -138,25 +200,56 @@ pub async fn data(app: &App, c: &Cfg) -> Result<Value, String> {
         .map(|l| {
             l.iter()
                 .map(|f| {
-                    let changed = f.get("keys").and_then(Value::as_array).map_or(0, |k| k.iter().filter(|x| x.get("changed") == Some(&Value::Bool(true))).count());
+                    let changed = f.get("keys").and_then(Value::as_array).map_or(0, |k| {
+                        k.iter()
+                            .filter(|x| x.get("changed") == Some(&Value::Bool(true)))
+                            .count()
+                    });
                     json!({"file": s(f, "file"), "count": f.get("count"), "changed": changed})
                 })
                 .collect()
         })
         .unwrap_or_default();
-    Ok(json!({ "settings": settings, "checks": checks, "jev": doc.get("jev_integrations"), "files": files, "generated_ms": doc.get("generated_ms") }))
+    Ok(
+        json!({ "settings": settings, "checks": checks, "jev": doc.get("jev_integrations"), "files": files, "generated_ms": doc.get("generated_ms") }),
+    )
 }
 
 /// `GET /api/manage/file?name=`: the keys of one config file.
 pub async fn file_keys(app: &App, c: &Cfg, name: &str) -> Result<Value, String> {
-    let doc = engine(app, c, &describe_args("files"), c.describe_timeout_ms, false).await?;
-    let f = doc.get("files").and_then(Value::as_array).and_then(|l| l.iter().find(|f| s(f, "file") == name)).cloned();
-    f.map(|f| json!({"file": name, "keys": f.get("keys")})).ok_or_else(|| c.msg_bad_request.clone())
+    let doc = engine(
+        app,
+        c,
+        &describe_args("files"),
+        c.describe_timeout_ms,
+        false,
+    )
+    .await?;
+    let f = doc
+        .get("files")
+        .and_then(Value::as_array)
+        .and_then(|l| l.iter().find(|f| s(f, "file") == name))
+        .cloned();
+    f.map(|f| json!({"file": name, "keys": f.get("keys")}))
+        .ok_or_else(|| c.msg_bad_request.clone())
 }
 
 /// `GET /api/manage/history`: the newest changes.
 pub async fn history(app: &App, c: &Cfg) -> Result<Value, String> {
-    engine(app, c, &["config".into(), "history".into(), "--limit".into(), c.history_limit.to_string(), "--json".into()], c.describe_timeout_ms, false).await
+    engine(
+        app,
+        c,
+        &[
+            "config".into(),
+            "history".into(),
+            "--limit".into(),
+            c.history_limit.to_string(),
+            "--json".into(),
+        ],
+        c.describe_timeout_ms,
+        false,
+    )
+    .await
 }
 
 /// A write request from the page.
@@ -176,7 +269,10 @@ pub struct Write {
 }
 
 fn key_ok(k: &str, max: usize) -> bool {
-    !k.is_empty() && k.len() <= max && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+    !k.is_empty()
+        && k.len() <= max
+        && k.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
 }
 
 /// `POST /api/manage/write`: one `config set|reset|undo` as the engine runs it (it validates, writes and audits). The engine's own

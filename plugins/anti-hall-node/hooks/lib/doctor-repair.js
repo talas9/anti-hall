@@ -1956,7 +1956,12 @@ function runRepairs(opts) {
     if (typeof dsd.installDivergenceCheck !== 'function' || typeof dsd.monitorsJsonPresenceCheck !== 'function') {
       push('install-divergence', 'none', 'skipped', 'install-integrity checks unavailable (doctor-devswarm.js missing expected exports)');
     } else {
-      const marketplaceRoot = typeof dsd.resolveMarketplaceDir === 'function' ? dsd.resolveMarketplaceDir(env, home) : null;
+      let marketplaceRoot = typeof dsd.resolveMarketplaceDir === 'function' ? dsd.resolveMarketplaceDir(env, home) : null;
+      // PLUGIN_ROOT is the Node tree: compare it with the clone's Node tree (the sibling of the clone's published plugin)
+      if (marketplaceRoot) {
+        const cloneNode = path.join(path.dirname(marketplaceRoot), 'anti-hall-node');
+        try { if (fs.statSync(cloneNode).isDirectory()) marketplaceRoot = cloneNode; } catch (_) { /* no Node tree in the clone: compare as before */ }
+      }
       const divergence = dsd.installDivergenceCheck({ installedRoot: PLUGIN_ROOT, marketplaceRoot, fsi: fs });
       push('install-divergence', 'none', 'skipped', divergence.message);
       const monitorsPresence = dsd.monitorsJsonPresenceCheck({ installedRoot: PLUGIN_ROOT, home, fsi: fs });

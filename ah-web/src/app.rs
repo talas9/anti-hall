@@ -33,8 +33,20 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(settings: Settings, config_path: PathBuf, root: PathBuf, engine: PathBuf, socket: PathBuf, token: String, port: u16) -> App {
-        let model = Model::new(settings.delta_ring, settings.feed_max, settings.live_backfill);
+    pub fn new(
+        settings: Settings,
+        config_path: PathBuf,
+        root: PathBuf,
+        engine: PathBuf,
+        socket: PathBuf,
+        token: String,
+        port: u16,
+    ) -> App {
+        let model = Model::new(
+            settings.delta_ring,
+            settings.feed_max,
+            settings.live_backfill,
+        );
         App {
             settings: RwLock::new(Arc::new(settings)),
             config_path,
@@ -57,7 +69,10 @@ impl App {
 
     /// The current settings (a cheap clone of an `Arc`).
     pub fn settings(&self) -> Arc<Settings> {
-        self.settings.read().map(|g| g.clone()).unwrap_or_else(|p| p.into_inner().clone())
+        self.settings
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|p| p.into_inner().clone())
     }
 
     /// Swap in re-read settings.
@@ -70,12 +85,16 @@ impl App {
 
     /// Note activity now.
     pub fn touch(&self) {
-        self.last_active_s.store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
+        self.last_active_s.store(
+            self.started.elapsed().as_secs(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Streams open now, both tiers.
     pub fn streams(&self) -> usize {
-        self.full_streams.load(std::sync::atomic::Ordering::SeqCst) + self.lite_streams.load(std::sync::atomic::Ordering::SeqCst)
+        self.full_streams.load(std::sync::atomic::Ordering::SeqCst)
+            + self.lite_streams.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The model, even after a panic elsewhere poisoned the lock (the data in it is plain values).

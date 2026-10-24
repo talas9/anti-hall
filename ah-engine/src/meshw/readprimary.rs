@@ -285,11 +285,19 @@ fn js_io_error(e: &std::io::Error, syscall: &str, path: &Path) -> String {
         K::IsADirectory => "is_a_directory",
         K::ReadOnlyFilesystem => "read_only_filesystem",
         K::StorageFull => "storage_full",
-        _ => return fill_once(defaults::text("mesh_write.msg_io_error_other"), &[("error", e.to_string()), ("syscall", syscall.to_string()), ("path", path.display().to_string())]),
+        _ => {
+            return fill_once(
+                defaults::text("mesh_write.msg_io_error_other"),
+                &[("error", e.to_string()), ("syscall", syscall.to_string()), ("path", path.display().to_string())],
+            );
+        }
     };
     let entry = defaults::raw("mesh_write.io_errors").get(name).and_then(|v| v.as_array()).unwrap_or_default();
     let text = |i: usize| entry.get(i).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    fill_once(defaults::text("mesh_write.msg_io_error"), &[("code", text(0)), ("what", text(1)), ("syscall", syscall.to_string()), ("path", path.display().to_string())])
+    fill_once(
+        defaults::text("mesh_write.msg_io_error"),
+        &[("code", text(0)), ("what", text(1)), ("syscall", syscall.to_string()), ("path", path.display().to_string())],
+    )
 }
 
 /// The result of a read whose receipt could not be written: Node reports `receiptError` and files no `ackCommand`.
@@ -513,7 +521,16 @@ pub(crate) fn promote(inv: &Inv, a: &Args, desc: &OVal, desc_sid: Option<&str>, 
 /// [`promote`] with the registry write error. Node's `maybePromoteUnclaimed` is fail-soft in full (every error is "no promotion"),
 /// and so is this: it never defers.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn promote_full(inv: &Inv, a: &Args, id: &str, desc: &OVal, desc_sid: Option<&str>, registry_sid: Option<&str>, marker: &str, repo_key: &str) -> Promotion {
+pub(crate) fn promote_full(
+    inv: &Inv,
+    a: &Args,
+    id: &str,
+    desc: &OVal,
+    desc_sid: Option<&str>,
+    registry_sid: Option<&str>,
+    marker: &str,
+    repo_key: &str,
+) -> Promotion {
     let none = || Promotion { state: None, registry_error: None };
     let reg_real = registry_sid.filter(|r| !r.is_empty() && *r != marker);
     let desc_marked = desc_sid == Some(marker);
@@ -651,9 +668,20 @@ pub(crate) fn window_refusal(inv: &Inv, a: &Args, id: &str, sub: &str) -> R<Opti
         .put("reason", s(reason))
         .put("flags", OVal::Arr(used.iter().map(|f| s(f)).collect()))
         .put("verb", s(verb));
-    let stdout = if sub == defaults::text("mesh_write.verb_read_primary") && text_requested(&a.raw) { format!("{}{msg}", defaults::text("devswarm_cli.window_text_prefix")) } else { o.done().stringify() };
+    let stdout = if sub == defaults::text("mesh_write.verb_read_primary") && text_requested(&a.raw) {
+        format!("{}{msg}", defaults::text("devswarm_cli.window_text_prefix"))
+    } else {
+        o.done().stringify()
+    };
     if logged {
-        crate::meshw::clog::refusal(inv, &format!("{}{sub}", defaults::text("devswarm_cli.window_op_prefix")), repo_key.as_deref(), Some(id), &msg, Some(reason));
+        crate::meshw::clog::refusal(
+            inv,
+            &format!("{}{sub}", defaults::text("devswarm_cli.window_op_prefix")),
+            repo_key.as_deref(),
+            Some(id),
+            &msg,
+            Some(reason),
+        );
     }
     crate::meshw::mark_committed();
     Ok(Some(Answer { code: 2, stdout: format!("{stdout}\n"), effect: Effect::None }))
@@ -679,7 +707,8 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
     }
     let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
     let own_entry = resolve_mesh_target(inv, Some(&reader), &rows, Some(caller.identity.as_str()))?;
-    let owns = caller.identity == id || own_entry.as_ref().is_some_and(|e| e.id == id) || ident::declared_self_id(&inv.env, &inv.cwd, &rows)?.as_deref() == Some(id);
+    let owns =
+        caller.identity == id || own_entry.as_ref().is_some_and(|e| e.id == id) || ident::declared_self_id(&inv.env, &inv.cwd, &rows)?.as_deref() == Some(id);
     if owns {
         return Ok(None); // the caller's own id, not registered yet: an empty partition, read by the plan below
     }
@@ -689,7 +718,16 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
 
 /// Node's ownership refusal of an acking read (`read-primary <id> refused (<cause>)`, exit 2, logged): the cause names the leg that
 /// failed, or `unregistered-workspace` when the id has nothing at all behind it (`unbacked`).
-fn ownership_refusal(inv: &Inv, action: &str, repo_key: &str, id: &str, caller: &ident::Caller, caller_registered: bool, unbacked: bool, _has_messages: bool) -> R<Answer> {
+fn ownership_refusal(
+    inv: &Inv,
+    action: &str,
+    repo_key: &str,
+    id: &str,
+    caller: &ident::Caller,
+    caller_registered: bool,
+    unbacked: bool,
+    _has_messages: bool,
+) -> R<Answer> {
     let cause = if unbacked {
         defaults::text("devswarm_cli.cause_unregistered_workspace")
     } else if caller.kind == defaults::text("mesh_write.kind_unresolvable") {
@@ -700,7 +738,10 @@ fn ownership_refusal(inv: &Inv, action: &str, repo_key: &str, id: &str, caller: 
         defaults::text("devswarm_cli.cause_ownership_mismatch")
     };
     let verb = action;
-    let msg = fill_once(defaults::text("devswarm_cli.msg_read_primary_refused"), &[("verb", verb.to_string()), ("cause", cause.to_string()), ("id", format!("\"{id}\"")), ("rid", id.to_string())]);
+    let msg = fill_once(
+        defaults::text("devswarm_cli.msg_read_primary_refused"),
+        &[("verb", verb.to_string()), ("cause", cause.to_string()), ("id", format!("\"{id}\"")), ("rid", id.to_string())],
+    );
     let store_path = union::store_dir(&inv.home, repo_key);
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(false))
@@ -799,7 +840,16 @@ fn msg_value(m: &Msg) -> Value {
 /// partition whole, with no cap; an unread view that does not ack (`prefix_cap` false: a peek) keeps the newest rows of a partition over
 /// the cap, since nothing it writes could move the read position past a prefix.
 #[allow(clippy::too_many_arguments)]
-fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str, store_base: f64, msgs: &mut Vec<Msg>, unread_only: bool, prefix_cap: bool) -> R<Siblings> {
+fn read_siblings(
+    inv: &Inv,
+    o: &tick::Opened,
+    group: &meshgroup::Group,
+    id: &str,
+    store_base: f64,
+    msgs: &mut Vec<Msg>,
+    unread_only: bool,
+    prefix_cap: bool,
+) -> R<Siblings> {
     let floor_pos = |x: f64| if x.is_finite() && x > 0.0 { x.floor() } else { 0.0 };
     let family = tick::family_of(id, &o.rows);
     let cap = defaults::num("mesh_write.never_read_sibling_cap") as usize;
@@ -864,7 +914,9 @@ fn read_siblings(inv: &Inv, o: &tick::Opened, group: &meshgroup::Group, id: &str
     if !added.is_empty() {
         msgs.extend(added);
         // Array#sort is stable and a non-finite `ts` sorts last
-        msgs.sort_by(|x, y| if x.sort_ts == y.sort_ts { std::cmp::Ordering::Equal } else { x.sort_ts.partial_cmp(&y.sort_ts).unwrap_or(std::cmp::Ordering::Equal) });
+        msgs.sort_by(
+            |x, y| if x.sort_ts == y.sort_ts { std::cmp::Ordering::Equal } else { x.sort_ts.partial_cmp(&y.sort_ts).unwrap_or(std::cmp::Ordering::Equal) },
+        );
     }
     Ok(out)
 }
@@ -883,7 +935,11 @@ fn put_withheld(out: &mut Obj, sibs: &Siblings, truncated_count: usize, limit: u
                 names.push(x.clone());
             }
         }
-        let reads = names.iter().map(|p| fill_once(defaults::text("mesh_write.mesh_never_read_read_cmd"), &[("pid", p.clone())])).collect::<Vec<_>>().join(defaults::text("mesh_write.mesh_never_read_read_sep"));
+        let reads = names
+            .iter()
+            .map(|p| fill_once(defaults::text("mesh_write.mesh_never_read_read_cmd"), &[("pid", p.clone())]))
+            .collect::<Vec<_>>()
+            .join(defaults::text("mesh_write.mesh_never_read_read_sep"));
         let cap = defaults::num("mesh_write.never_read_sibling_cap");
         out.put("meshNeverReadCapped", OVal::Bool(true))
             .put("meshNeverReadWithheldCount", n(sibs.never_read_withheld as f64))
@@ -966,7 +1022,10 @@ fn history_window(a: &Args) -> R<Result<Window, Answer>> {
     if let Some(raw) = a.one(defaults::text("mesh_write.flag_tail")) {
         let x = crate::checks::guardkit::text::js_number_of_str(raw);
         if !x.is_finite() || x < 1.0 {
-            return Ok(Err(refuse(defaults::text("mesh_write.reason_bad_tail"), fill_once(defaults::text("mesh_write.msg_bad_tail"), &[("got", OVal::Str(raw.to_string()).stringify())]))));
+            return Ok(Err(refuse(
+                defaults::text("mesh_write.reason_bad_tail"),
+                fill_once(defaults::text("mesh_write.msg_bad_tail"), &[("got", OVal::Str(raw.to_string()).stringify())]),
+            )));
         }
         w.tail = Some(x.floor().max(1.0) as usize);
     }
@@ -974,7 +1033,10 @@ fn history_window(a: &Args) -> R<Result<Window, Answer>> {
         match parse_since(raw) {
             Some(since) => w.since = Some(since),
             None => {
-                return Ok(Err(refuse(defaults::text("mesh_write.reason_bad_since"), fill_once(defaults::text("mesh_write.msg_bad_since"), &[("got", OVal::Str(raw.to_string()).stringify())]))));
+                return Ok(Err(refuse(
+                    defaults::text("mesh_write.reason_bad_since"),
+                    fill_once(defaults::text("mesh_write.msg_bad_since"), &[("got", OVal::Str(raw.to_string()).stringify())]),
+                )));
             }
         }
     }
@@ -1036,7 +1098,14 @@ fn unavailable_refusal(inv: &Inv, a: &Args, id: &str, peek: bool, why: &tick::Un
     let result = o.done();
     let msg = why.error.clone().unwrap_or_default();
     crate::meshw::clog::ready(inv)?;
-    crate::meshw::clog::refusal(inv, &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), read_sub(a, peek)), repo_key.as_deref(), Some(id), &msg, Some(&why.reason));
+    crate::meshw::clog::refusal(
+        inv,
+        &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), read_sub(a, peek)),
+        repo_key.as_deref(),
+        Some(id),
+        &msg,
+        Some(&why.reason),
+    );
     crate::meshw::mark_committed();
     tick::emit_known_warning(read_sub(a, peek), &result);
     Ok(Answer { code: 2, stdout: format!("{}\n", result.stringify()), effect: Effect::None })
@@ -1202,7 +1271,10 @@ pub fn run_messages(inv: &Inv, a: &Args) -> R<Answer> {
     if a.has(defaults::text("mesh_write.flag_ack_as_owner")) {
         eprintln!(
             "{}",
-            fill_once(defaults::text("mesh_write.msg_messages_ack_as_owner_warning"), &[("idq", OVal::Str(id.to_string()).stringify()), ("id", id.to_string())])
+            fill_once(
+                defaults::text("mesh_write.msg_messages_ack_as_owner_warning"),
+                &[("idq", OVal::Str(id.to_string()).stringify()), ("id", id.to_string())]
+            )
         );
     }
     let answer = run_history(inv, a)?;
@@ -1268,7 +1340,11 @@ fn run_flavor(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
                     let dir = repo_key.as_deref().map(|k| union::store_dir(&inv.home, k).to_string_lossy().into_owned()).unwrap_or_default();
                     let quoted = OVal::Str(eff.to_string()).stringify();
                     // `DatabaseSync` fails to open (wrapped with the store directory) or opens a file whose first statement fails (raw)
-                    let key = if open == defaults::text("mesh_write.store_cantopen_message") { "mesh_write.msg_store_unopened" } else { "mesh_write.msg_store_unreadable" };
+                    let key = if open == defaults::text("mesh_write.store_cantopen_message") {
+                        "mesh_write.msg_store_unopened"
+                    } else {
+                        "mesh_write.msg_store_unreadable"
+                    };
                     let msg = defaults::render(key, &[("id", &quoted), ("dir", &dir), ("error", &open)]);
                     let code = defaults::text("mesh_write.store_unavailable_code");
                     let cause = defaults::text("mesh_write.reason_store_unavailable");
@@ -1357,7 +1433,16 @@ fn run_inner(inv: &Inv, a: &Args, peek: bool, hist: bool) -> R<Answer> {
     let planned = match first.promo.take() {
         None => first,
         Some(pc) => {
-            let promotion = promote_full(inv, a, a.positionals.get(2).map(String::as_str).unwrap_or_default(), &pc.desc, pc.desc_sid.as_deref(), pc.registry_sid.as_deref(), &pc.marker, &pc.repo_key);
+            let promotion = promote_full(
+                inv,
+                a,
+                a.positionals.get(2).map(String::as_str).unwrap_or_default(),
+                &pc.desc,
+                pc.desc_sid.as_deref(),
+                pc.registry_sid.as_deref(),
+                &pc.marker,
+                &pc.repo_key,
+            );
             // the writes are made: from here a deferral is a committed failure
             redirect.registry_error = promotion.registry_error;
             let mut second = plan(inv, a, promotion.state, &redirect, peek, hist)?;
@@ -1478,7 +1563,11 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         marker: marker.clone(),
         repo_key: o.repo_key.clone(),
     });
-    let group = meshgroup::resolve(&o.rows, id, meshgroup::worktree_of(&o.rows, id, union::path_field(&desc, defaults::text("mesh_write.field_worktree_path"))?.as_deref()).as_deref())?;
+    let group = meshgroup::resolve(
+        &o.rows,
+        id,
+        meshgroup::worktree_of(&o.rows, id, union::path_field(&desc, defaults::text("mesh_write.field_worktree_path"))?.as_deref()).as_deref(),
+    )?;
     // the ownership gate of an acking read: the caller is the id, owns it by its registry row, or declared it
     // (a peek acks nothing, so it has no ownership gate: any caller may look; `--ack-as-owner` skips the gate, and turns the
     // existence guard back on)
@@ -1704,7 +1793,8 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         broadcasts_merged = Some(found.len());
         for r in &found {
             let sender = r["sender"].as_str();
-            let from = sender.and_then(|sv| aliases.iter().find(|(k, _)| k == sv).map(|(_, v)| v.clone())).map_or_else(|| common::s_or_null(sender), |to| s(&to));
+            let from =
+                sender.and_then(|sv| aliases.iter().find(|(k, _)| k == sv).map(|(_, v)| v.clone())).map_or_else(|| common::s_or_null(sender), |to| s(&to));
             let body = r["body"].as_str().unwrap_or_default();
             let ts = r["ts"].as_f64().map_or(OVal::Null, n);
             let seq = r["storeSeq"].as_f64().map_or(OVal::Null, n);
@@ -1801,7 +1891,16 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let store_path = union::store_dir(&inv.home, &o.repo_key);
     let mut out = Obj::default();
     out.put("ok", OVal::Bool(true))
-        .put("action", s(if hist { defaults::text("mesh_write.verb_messages") } else if peek { defaults::text("mesh_write.action_peek_primary") } else { acking_action(a) }))
+        .put(
+            "action",
+            s(if hist {
+                defaults::text("mesh_write.verb_messages")
+            } else if peek {
+                defaults::text("mesh_write.action_peek_primary")
+            } else {
+                acking_action(a)
+            }),
+        )
         .put("id", s(id))
         .put("repoKey", s(&o.repo_key))
         .put("storePath", OVal::Str(store_path.to_string_lossy().into_owned()))
@@ -1868,7 +1967,20 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         let step = crate::meshw::inbox::plan_ack(inv, id, "", ack_as_owner, Some(record_val), false)?;
         out.put("ackedFrom", n(store_base));
         let text = (format_text && !json_flag).then(|| text_lines(&rows));
-        return Ok(Planned { result: out.done(), text, record: String::new(), ack: Some(step), repo_key: o.repo_key.clone(), dir, file: PathBuf::new(), rel: String::new(), promo, refusal: None, receipt_error: None, legacy: true });
+        return Ok(Planned {
+            result: out.done(),
+            text,
+            record: String::new(),
+            ack: Some(step),
+            repo_key: o.repo_key.clone(),
+            dir,
+            file: PathBuf::new(),
+            rel: String::new(),
+            promo,
+            refusal: None,
+            receipt_error: None,
+            legacy: true,
+        });
     }
     out.put("acked", OVal::Bool(false))
         .put("readReceiptId", s(&rid))
@@ -1984,7 +2096,10 @@ mod tests {
             let code = src.split("#[cfg(test)]").next().unwrap_or(src);
             let ctor = ["Def", "er("].concat();
             for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
-                assert!(!line.contains(&ctor) || line.contains("Err(ident::Defer(reason))") || line.contains("Err(Defer(reason))") || line.contains("pub struct"), "{file}: `{line}` builds a deferral by hand");
+                assert!(
+                    !line.contains(&ctor) || line.contains("Err(ident::Defer(reason))") || line.contains("Err(Defer(reason))") || line.contains("pub struct"),
+                    "{file}: `{line}` builds a deferral by hand"
+                );
                 let mut rest = line;
                 while let Some(at) = rest.find("store_err(\"") {
                     let after = &rest[at + "store_err(\"".len()..];
@@ -2000,7 +2115,15 @@ mod tests {
         let home = std::env::temp_dir().join(format!("ah-rp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale scratch directory of an earlier run
         std::fs::create_dir_all(&home).unwrap();
-        Inv { home: home.clone(), write_home: home, env: std::collections::HashMap::new(), cwd: "/".into(), now: 1_800_000_000_000, stdin: None, store_override: None }
+        Inv {
+            home: home.clone(),
+            write_home: home,
+            env: std::collections::HashMap::new(),
+            cwd: "/".into(),
+            now: 1_800_000_000_000,
+            stdin: None,
+            store_override: None,
+        }
     }
 
     fn argv(words: &[&str]) -> Args {

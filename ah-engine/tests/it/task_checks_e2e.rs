@@ -216,7 +216,9 @@ fn the_stop_budget_never_overwrites_a_valid_file_it_could_not_read_exactly() {
     let big = format!("{{\"other|child-gate|inbox\":{{\"count\":2,\"lastAt\":1}}}}{}", " ".repeat(4_300_000));
     std::fs::write(dir.join("s1.json"), &big).unwrap();
     std::fs::write(w.path("t.jsonl"), task_lines("pending")).unwrap();
-    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "prompt_id": "p1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let payload =
+        serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "prompt_id": "p1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")})
+            .to_string();
     let (code, out, _) = stop_run_env(&w, "task-guard", &payload, &[("ANTIHALL_STOP_NAG_BUDGET", "1")]);
     assert_eq!(code, 0);
     assert!(!out.contains("\"decision\":\"block\""), "a budget that cannot be updated exactly fails open: {out}");
@@ -248,11 +250,17 @@ fn task_guard_advisories_never_share_stdout_with_the_answer() {
     let line = |v: serde_json::Value| format!("{v}\n");
     let mut t = String::new();
     for n in 1..=3 {
-        t += &line(serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}}));
-        t += &line(serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}}));
+        t += &line(
+            serde_json::json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}}),
+        );
+        t += &line(
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}}),
+        );
     }
     for n in 1..=2 {
-        t += &line(serde_json::json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("u{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "completed"}}]}}));
+        t += &line(
+            serde_json::json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("u{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "completed"}}]}}),
+        );
     }
     std::fs::write(w.path("t.jsonl"), t).unwrap();
     let (code, out, err) = stop_run_env(&w, "task-guard", &payload, &[("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "1")]);
@@ -269,7 +277,9 @@ fn tasklist_guard_advisories_never_share_stdout_with_the_answer() {
     let edit = |n: u32| serde_json::json!({"type": "assistant", "timestamp": "2026-10-06T08:00:00.000Z", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "Edit", "input": {"file_path": format!("/p/f{n}.js")}}]}});
     std::fs::write(w.path("t.jsonl"), format!("{}\n{}\n{}\n", edit(1), edit(2), edit(3))).unwrap();
     // plan mode: the advisory goes to stderr, stdout stays empty
-    let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl"), "permission_mode": "plan"}).to_string();
+    let payload =
+        serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": cwd, "transcript_path": w.path("t.jsonl"), "permission_mode": "plan"})
+            .to_string();
     let (code, out, err) = stop_run_env(&w, "tasklist-guard", &payload, &[]);
     assert_eq!(code, 0, "answered by the engine");
     assert_stdout_is_json_or_empty(&out, "plan mode");
@@ -301,9 +311,12 @@ fn concurrent_cold_calls_on_guard_events_all_block() {
     std::fs::write(w.path("state/config.toml"), "[client]\ncold_guard_wait_ms = 10000\n").unwrap();
     std::fs::write(w.path("t.jsonl"), task_lines("pending")).unwrap();
     // one session per Stop call: task-guard blocks a session's task set once, then stays quiet for the same set
-    let stop = |i: usize| serde_json::json!({"hook_event_name": "Stop", "session_id": format!("s{i}"), "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();
+    let stop = |i: usize| {
+        serde_json::json!({"hook_event_name": "Stop", "session_id": format!("s{i}"), "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string()
+    };
     let push = serde_json::json!({"hook_event_name": "PreToolUse", "session_id": "p1", "cwd": w.path("proj"), "tool_name": "Bash",
-        "tool_input": {"command": "git push --force origin main"}, "transcript_path": w.path("t.jsonl")}).to_string();
+        "tool_input": {"command": "git push --force origin main"}, "transcript_path": w.path("t.jsonl")})
+    .to_string();
     let map = serde_json::json!({
         "Stop": ids_for("Stop", "").into_iter().map(|id| (id, serde_json::Value::from("exit 99"))).collect::<serde_json::Map<_, _>>(),
         "PreToolUse": ids_for("PreToolUse", "Bash").into_iter().map(|id| (id, serde_json::Value::from("exit 99"))).collect::<serde_json::Map<_, _>>(),
@@ -353,7 +366,8 @@ fn a_cold_guard_call_with_spawning_disabled_fails_open_without_waiting_or_runnin
     std::fs::write(w.path("t.jsonl"), task_lines("pending")).unwrap();
     let marker = w.path("hook-ran");
     let run = format!("touch '{}'; exit 99", marker.display());
-    let map = serde_json::json!({ "Stop": ids_for("Stop", "").into_iter().map(|id| (id, serde_json::Value::from(run.clone()))).collect::<serde_json::Map<_, _>>() });
+    let map =
+        serde_json::json!({ "Stop": ids_for("Stop", "").into_iter().map(|id| (id, serde_json::Value::from(run.clone()))).collect::<serde_json::Map<_, _>>() });
     let map_path = w.path("nospawn-map.json");
     std::fs::write(&map_path, map.to_string()).unwrap();
     let payload = serde_json::json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": w.path("proj"), "transcript_path": w.path("t.jsonl")}).to_string();

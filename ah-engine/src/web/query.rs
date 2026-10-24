@@ -155,7 +155,9 @@ pub fn query(topic: &str, rest: &[String]) -> Result<Value, String> {
         rows.reverse();
     }
     if rest.iter().any(|a| a == "--schema") {
-        return Ok(json!({"source": topic, "doc": entry.doc, "filters": spec.get("filters").map(|f| f.strings()), "params": params, "fields": schema_of(rows.first())}));
+        return Ok(
+            json!({"source": topic, "doc": entry.doc, "filters": spec.get("filters").map(|f| f.strings()), "params": params, "fields": schema_of(rows.first())}),
+        );
     }
     // declared filter flags (`--check x`), then `--where field=value,field=value` over any field of the row
     for f in spec.get("filters").map(|f| f.strings()).unwrap_or_default() {

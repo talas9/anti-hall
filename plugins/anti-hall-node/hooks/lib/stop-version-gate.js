@@ -61,7 +61,10 @@ function isStale(pluginRoot, opts) {
     const upd = require(path.join(pluginRoot, 'skills', 'update', 'scripts', 'update.js'));
     const updPaths = upd.resolvePaths(env, home);
     const harnessVersion = upd.versionFromInstalledJson(updPaths.installedJson);
-    const running = require(path.join(pluginRoot, '.claude-plugin', 'plugin.json')).version;
+    // the manifest ships in the published plugin (plugins/anti-hall), a sibling of the Node tree (plugins/anti-hall-node)
+    let manifest = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    if (!require('fs').existsSync(manifest)) manifest = path.join(pluginRoot, '..', 'anti-hall', '.claude-plugin', 'plugin.json');
+    const running = require(manifest).version;
     if (!upd.isSemver(harnessVersion) || !upd.isSemver(running)) return false;
     return upd.compareVersions(running, harnessVersion) < 0;
   } catch (_) {

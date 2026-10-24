@@ -433,12 +433,7 @@ fn a_guard_event_the_engine_hands_back_goes_through_with_the_notice_and_starts_n
     let e = env.script("defer.sh", "exit 75");
     let data = pattern(5 << 20);
     for event in ["PreToolUse", "UserPromptSubmit"] {
-        let o = env.run(
-            event,
-            &data,
-            Some(&e),
-            &[("AH_HOOK_TIMEOUT_MS", "5000")],
-        );
+        let o = env.run(event, &data, Some(&e), &[("AH_HOOK_TIMEOUT_MS", "5000")]);
         assert_eq!(o.code, 0, "{event}: {}", o.err);
         if event == "PreToolUse" {
             // the notice is once per session
@@ -580,13 +575,28 @@ fn a_daemon_that_died_right_after_a_start_request_is_asked_for_again_at_once() {
         ),
     );
     // a start request only a moment old (younger than client.cold_guard_wait_ms) ...
-    std::fs::write(env.state.join("launcher.spawns"), format!("{}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis())).unwrap();
+    std::fs::write(
+        env.state.join("launcher.spawns"),
+        format!(
+            "{}\n",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ),
+    )
+    .unwrap();
     std::thread::sleep(Duration::from_millis(20));
     // ... and the daemon it started has died since: its socket file (newer than the request) is left behind, nobody listens on it
     drop(UnixListener::bind(env.state.join("e.sock")).unwrap());
     let o = env.run("PreToolUse", PAYLOAD, Some(&e), &[]);
     assert_eq!(o.code, 0, "{}", o.err);
-    assert_eq!(env.read("kicks").lines().count(), 1, "a dead daemon is asked for at once, not waited for: {}", o.err);
+    assert_eq!(
+        env.read("kicks").lines().count(),
+        1,
+        "a dead daemon is asked for at once, not waited for: {}",
+        o.err
+    );
 }
 
 #[test]

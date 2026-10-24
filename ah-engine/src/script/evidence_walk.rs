@@ -269,7 +269,8 @@ mod tests {
         json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": text}]}})
     }
     fn assistant(id: &str, text: &str, tools: usize) -> Value {
-        let mut blocks: Vec<Value> = (0..tools).map(|i| json!({"type": "tool_use", "id": format!("u{i}"), "name": "Bash", "input": {"command": format!("echo {i}")}})).collect();
+        let mut blocks: Vec<Value> =
+            (0..tools).map(|i| json!({"type": "tool_use", "id": format!("u{i}"), "name": "Bash", "input": {"command": format!("echo {i}")}})).collect();
         blocks.push(json!({"type": "text", "text": text}));
         json!({"type": "assistant", "message": {"id": id, "role": "assistant", "content": blocks}})
     }
@@ -364,12 +365,8 @@ mod tests {
 
     #[test]
     fn consecutive_text_of_one_message_id_is_one_reply_and_a_new_id_closes_it() {
-        let r = same(
-            "merge",
-            &[user("go"), assistant("m1", "part one", 1), assistant("m1", "part two", 2), result("ok"), assistant("m2", "final", 0)],
-            None,
-        )
-        .unwrap();
+        let r = same("merge", &[user("go"), assistant("m1", "part one", 1), assistant("m1", "part two", 2), result("ok"), assistant("m2", "final", 0)], None)
+            .unwrap();
         assert_eq!(r.0, "final");
         assert!(r.1.contains("part one\npart two"), "the closed reply joins its pieces with a newline: {:?}", r.1);
         assert_eq!(r.2, 3, "tool count of the turn at the last piece");
@@ -386,7 +383,14 @@ mod tests {
         assert_eq!((r.2, r.4), (1, 1));
         let r = same("tools2", &[user("a"), assistant("m1", "y", 1), assistant("m2", "z", 0)], None).unwrap();
         assert_eq!((r.0.as_str(), r.2, r.4), ("z", 1, 1));
-        let p = write("tools3", &[user("a"), assistant("m1", "y", 0), json!({"type": "assistant", "message": {"id": "m2", "role": "assistant", "content": [{"type": "tool_use", "id": "u", "name": "B", "input": {}}]}})]);
+        let p = write(
+            "tools3",
+            &[
+                user("a"),
+                assistant("m1", "y", 0),
+                json!({"type": "assistant", "message": {"id": "m2", "role": "assistant", "content": [{"type": "tool_use", "id": "u", "name": "B", "input": {}}]}}),
+            ],
+        );
         let w: Value = serde_json::from_str(&evidence_walk(&p, 1e9, None)).unwrap();
         std::fs::remove_file(&p).ok();
         assert_eq!((w["toolsThisTurn"].as_u64(), w["toolsAtEnd"].as_u64()), (Some(0), Some(1)), "a tool call after the reply is counted at the end only");
@@ -436,7 +440,10 @@ mod tests {
         assert!(walk_has("withLast", "\n").unwrap());
         // the numbers are what ah.re.numbers gives on the same text
         let text = with_text("withLast", |t| Ok(t.to_string())).unwrap();
-        assert_eq!(walk_numbers("withLast", r"\d[\d,]*(?:\.\d+)?", "", ",").unwrap(), super::super::host_ts::re_numbers(r"\d[\d,]*(?:\.\d+)?", "", &text, ",").unwrap());
+        assert_eq!(
+            walk_numbers("withLast", r"\d[\d,]*(?:\.\d+)?", "", ",").unwrap(),
+            super::super::host_ts::re_numbers(r"\d[\d,]*(?:\.\d+)?", "", &text, ",").unwrap()
+        );
         assert!(walk_has("nope", "x").is_err(), "an unknown text throws");
     }
 

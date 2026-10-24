@@ -4,8 +4,8 @@
 //! writes to the engine.
 use crate::app::App;
 use crate::ctl;
-use ah_web_proto::tel::*;
 use ah_web_proto::NumFmt;
+use ah_web_proto::tel::*;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -110,47 +110,81 @@ impl TelCfg {
     /// Read `path` (`web_tel.toml`: every `[webtel.<name>]` table's `value`).
     pub fn load(path: &Path) -> Result<TelCfg, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
-        let section = doc.get("webtel").and_then(toml::Value::as_table).ok_or("no [webtel] section")?;
+        let doc: toml::Table = text
+            .parse()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let section = doc
+            .get("webtel")
+            .and_then(toml::Value::as_table)
+            .ok_or("no [webtel] section")?;
         let mut flat = toml::Table::new();
         for (name, entry) in section {
             if let Some(v) = entry.get("value") {
                 flat.insert(name.clone(), v.clone());
             }
         }
-        toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
+        toml::Value::Table(flat)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     fn text(&self, key: &str) -> String {
-        self.texts.get(key).cloned().unwrap_or_else(|| key.to_string())
+        self.texts
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key.to_string())
     }
 
     /// The table cell of a Jev integration: its human name, its one-line purpose under it, its id as the hover.
     fn jev_cell(&self, id: &str) -> Cell {
-        let sub = self.jev_integrations.get(id).and_then(|e| e.get("purpose")).and_then(Value::as_str).unwrap_or_default().to_string();
-        Cell::Named { text: self.jev_label(id), sub, tip: id.to_string() }
+        let sub = self
+            .jev_integrations
+            .get(id)
+            .and_then(|e| e.get("purpose"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Cell::Named {
+            text: self.jev_label(id),
+            sub,
+            tip: id.to_string(),
+        }
     }
 
     /// The human name of a Jev integration (its id stays only as the hover text, added by the screen); an id with no entry is split into words.
     fn jev_label(&self, id: &str) -> String {
-        self.jev_integrations.get(id).and_then(|e| e.get("name")).and_then(Value::as_str).map_or_else(
-            || id.chars().fold(String::new(), |mut acc, ch| {
-                if ch.is_uppercase() && !acc.is_empty() {
-                    acc.push(' ');
-                }
-                acc.push(ch.to_ascii_lowercase());
-                acc
-            }),
-            str::to_string,
-        )
+        self.jev_integrations
+            .get(id)
+            .and_then(|e| e.get("name"))
+            .and_then(Value::as_str)
+            .map_or_else(
+                || {
+                    id.chars().fold(String::new(), |mut acc, ch| {
+                        if ch.is_uppercase() && !acc.is_empty() {
+                            acc.push(' ');
+                        }
+                        acc.push(ch.to_ascii_lowercase());
+                        acc
+                    })
+                },
+                str::to_string,
+            )
     }
 
     fn fill(&self, key: &str, pairs: &[(&str, String)]) -> String {
-        pairs.iter().fold(self.text(key), |t, (k, v)| t.replace(&format!("{{{k}}}"), v))
+        pairs.iter().fold(self.text(key), |t, (k, v)| {
+            t.replace(&format!("{{{k}}}"), v)
+        })
     }
 
     fn ui(&self, number: &NumFmt) -> TelUi {
-        let apex = |k: &str| self.apex.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let apex = |k: &str| {
+            self.apex
+                .get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         TelUi {
             apex_file: apex("file"),
             apex_version: apex("version"),
@@ -169,7 +203,9 @@ impl TelCfg {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 // ---- what the engine said -------------------------------------------------------------------------------------------------
@@ -200,7 +236,10 @@ static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 static BUILD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn cache() -> std::sync::MutexGuard<'static, Cache> {
-    CACHE.get_or_init(|| Mutex::new(Cache::default())).lock().unwrap_or_else(|p| p.into_inner())
+    CACHE
+        .get_or_init(|| Mutex::new(Cache::default()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
 }
 
 async fn run_cmd(engine: &Path, args: &[String], limit: Duration) -> Option<Value> {
@@ -218,17 +257,46 @@ async fn run_cmd(engine: &Path, args: &[String], limit: Duration) -> Option<Valu
 async fn read_raw(app: &App, cfg: &TelCfg) -> Raw {
     let s = app.settings();
     let (timeout, max) = (Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes);
-    let mut raw = Raw { at: Instant::now(), now_ms: now_ms(), engine_ok: false, sums: Vec::new(), status: Value::Null, impact: Value::Null, events: Value::Null, usage: None, weekly_resets_ms: None, coverage: None };
+    let mut raw = Raw {
+        at: Instant::now(),
+        now_ms: now_ms(),
+        engine_ok: false,
+        sums: Vec::new(),
+        status: Value::Null,
+        impact: Value::Null,
+        events: Value::Null,
+        usage: None,
+        weekly_resets_ms: None,
+        coverage: None,
+    };
     for n in 1..=cfg.series_days {
-        match ctl::call(&app.socket, &format!("telemetry summary window={n}d"), timeout, max).await {
+        match ctl::call(
+            &app.socket,
+            &format!("telemetry summary window={n}d"),
+            timeout,
+            max,
+        )
+        .await
+        {
             Ok(v) => raw.sums.push(v),
             Err(_) => return raw,
         }
     }
     raw.engine_ok = true;
-    raw.status = ctl::call(&app.socket, "status", timeout, max).await.unwrap_or(Value::Null);
-    raw.impact = ctl::call(&app.socket, "impact", timeout, max).await.unwrap_or(Value::Null);
-    raw.events = ctl::call(&app.socket, &format!("telemetry events window=1d limit={}", cfg.events_rows), timeout, max).await.unwrap_or(Value::Null);
+    raw.status = ctl::call(&app.socket, "status", timeout, max)
+        .await
+        .unwrap_or(Value::Null);
+    raw.impact = ctl::call(&app.socket, "impact", timeout, max)
+        .await
+        .unwrap_or(Value::Null);
+    raw.events = ctl::call(
+        &app.socket,
+        &format!("telemetry events window=1d limit={}", cfg.events_rows),
+        timeout,
+        max,
+    )
+    .await
+    .unwrap_or(Value::Null);
     let limit = Duration::from_millis(cfg.cmd_timeout_ms);
     raw.usage = run_cmd(&app.engine, &cfg.usage_cmd, limit).await;
     raw.weekly_resets_ms = crate::ops::weekly_reset_ms(app).await;
@@ -255,7 +323,11 @@ fn cfg_path(app: &App) -> std::path::PathBuf {
 
 /// The shared read, reused for `cache_s`; one build at a time.
 async fn raw(app: &App, cfg: &TelCfg) -> Arc<Raw> {
-    let fresh = |c: &Cache| c.raw.clone().filter(|r| r.at.elapsed() < Duration::from_secs(cfg.cache_s));
+    let fresh = |c: &Cache| {
+        c.raw
+            .clone()
+            .filter(|r| r.at.elapsed() < Duration::from_secs(cfg.cache_s))
+    };
     if let Some(r) = fresh(&cache()) {
         return r;
     }
@@ -300,7 +372,9 @@ fn num(v: &Value) -> f64 {
 }
 
 fn hooks(sum: &Value) -> &[Value] {
-    sum.get("by_hook").and_then(Value::as_array).map_or(&[], Vec::as_slice)
+    sum.get("by_hook")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
 }
 
 fn eval(src: &Src, sum: &Value) -> f64 {
@@ -308,18 +382,30 @@ fn eval(src: &Src, sum: &Value) -> f64 {
         Src::Invocations => num(&sum["invocations"]),
         Src::Outcome(o) => num(&sum["by_outcome"][o.as_str()]),
         Src::Kind(k) => num(&sum["by_kind"][k.as_str()]),
-        Src::HookN(h) => hooks(sum).iter().filter(|r| r["h"] == h.as_str()).map(|r| num(&r["n"])).sum(),
-        Src::HookOutcome(h, o) => hooks(sum).iter().filter(|r| r["h"] == h.as_str()).map(|r| num(&r["outcomes"][o.as_str()])).sum(),
+        Src::HookN(h) => hooks(sum)
+            .iter()
+            .filter(|r| r["h"] == h.as_str())
+            .map(|r| num(&r["n"]))
+            .sum(),
+        Src::HookOutcome(h, o) => hooks(sum)
+            .iter()
+            .filter(|r| r["h"] == h.as_str())
+            .map(|r| num(&r["outcomes"][o.as_str()]))
+            .sum(),
         Src::JevCalls => jev_calls(sum),
     }
 }
 
 fn jev_calls(sum: &Value) -> f64 {
-    sum["detail"]["jev"]["by_integration"].as_object().map_or(0.0, |m| m.values().map(|i| num(&i["calls"])).sum())
+    sum["detail"]["jev"]["by_integration"]
+        .as_object()
+        .map_or(0.0, |m| m.values().map(|i| num(&i["calls"])).sum())
 }
 
 fn jev_cost_uc(sum: &Value) -> f64 {
-    sum["detail"]["jev"]["by_integration"].as_object().map_or(0.0, |m| m.values().map(|i| num(&i["cost_uc"])).sum())
+    sum["detail"]["jev"]["by_integration"]
+        .as_object()
+        .map_or(0.0, |m| m.values().map(|i| num(&i["cost_uc"])).sum())
 }
 
 impl Raw {
@@ -342,12 +428,18 @@ impl Raw {
 
     /// Index of the first day the engine has records for (leading empty days are before it was recording).
     fn first_active(&self) -> usize {
-        self.daily(&|s| num(&s["invocations"])).iter().position(|v| *v > 0.0).unwrap_or(0)
+        self.daily(&|s| num(&s["invocations"]))
+            .iter()
+            .position(|v| *v > 0.0)
+            .unwrap_or(0)
     }
 
     fn day_starts(&self) -> Vec<u64> {
         let today = self.now_ms - self.now_ms % DAY_MS;
-        (0..self.sums.len()).rev().map(|k| today - k as u64 * DAY_MS).collect()
+        (0..self.sums.len())
+            .rev()
+            .map(|k| today - k as u64 * DAY_MS)
+            .collect()
     }
 }
 
@@ -360,7 +452,11 @@ fn median(v: &[f64]) -> f64 {
     let mut s = v.to_vec();
     s.sort_by(|a, b| a.total_cmp(b));
     let m = s.len() / 2;
-    if s.len() % 2 == 1 { s[m] } else { (s[m - 1] + s[m]) / 2.0 }
+    if s.len() % 2 == 1 {
+        s[m]
+    } else {
+        (s[m - 1] + s[m]) / 2.0
+    }
 }
 
 struct Judged {
@@ -377,7 +473,9 @@ impl Judged {
 
     /// Far enough from the usual, in spread, in events and in share.
     fn unusual(&self, c: &TelCfg) -> bool {
-        self.score.abs() >= c.z_threshold && self.change().abs() >= c.min_abs_change && self.change().abs() >= c.min_rel_change * self.usual
+        self.score.abs() >= c.z_threshold
+            && self.change().abs() >= c.min_abs_change
+            && self.change().abs() >= c.min_rel_change * self.usual
     }
 }
 
@@ -385,16 +483,34 @@ impl Judged {
 fn judge(series: &[f64], first_active: usize, frac: f64, c: &TelCfg) -> Option<Judged> {
     let (today, before) = series.split_last()?;
     // days the engine was not running say nothing about a usual day: only days with activity count
-    let history: Vec<f64> = before.get(first_active..).unwrap_or_default().iter().copied().filter(|v| *v > 0.0).collect();
+    let history: Vec<f64> = before
+        .get(first_active..)
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|v| *v > 0.0)
+        .collect();
     let history = &history[..];
     if history.len() < c.min_history_days || frac < c.min_day_fraction {
         return None;
     }
     let usual = median(history);
-    let mad = median(&history.iter().map(|x| (x - usual).abs()).collect::<Vec<_>>());
-    let spread = (mad * c.mad_scale).max(usual * c.mad_floor_frac).max(c.min_abs_change / c.z_threshold);
+    let mad = median(
+        &history
+            .iter()
+            .map(|x| (x - usual).abs())
+            .collect::<Vec<_>>(),
+    );
+    let spread = (mad * c.mad_scale)
+        .max(usual * c.mad_floor_frac)
+        .max(c.min_abs_change / c.z_threshold);
     let projected = today / frac;
-    Some(Judged { value: *today, projected, usual, score: (projected - usual) / spread })
+    Some(Judged {
+        value: *today,
+        projected,
+        usual,
+        score: (projected - usual) / spread,
+    })
 }
 
 fn tail(v: &[f64], n: usize) -> Vec<f64> {
@@ -404,7 +520,13 @@ fn tail(v: &[f64], n: usize) -> Vec<f64> {
 // ---- the Telemetry document ---------------------------------------------------------------------------------------------
 
 fn fmt_usd(usd: f64, c: &TelCfg) -> String {
-    format!("{}{}{:.*}", if usd < 0.0 { "-" } else { "" }, c.text("unit_usd"), c.usd_decimals, usd.abs())
+    format!(
+        "{}{}{:.*}",
+        if usd < 0.0 { "-" } else { "" },
+        c.text("unit_usd"),
+        c.usd_decimals,
+        usd.abs()
+    )
 }
 
 fn tone_of(good: &str, j: Option<&Judged>, c: &TelCfg) -> &'static str {
@@ -417,7 +539,8 @@ fn tone_of(good: &str, j: Option<&Judged>, c: &TelCfg) -> &'static str {
     };
     if j.unusual(c) {
         if bad_dir { "bad" } else { "ok" }
-    } else if j.change().abs() >= c.min_rel_change * j.usual && j.change().abs() >= c.min_abs_change {
+    } else if j.change().abs() >= c.min_rel_change * j.usual && j.change().abs() >= c.min_abs_change
+    {
         if bad_dir { "warn" } else { "ok" }
     } else {
         "neutral"
@@ -439,25 +562,46 @@ fn cell_num(v: &Value) -> Cell {
 }
 
 fn col(c: &TelCfg, key: &str, label_key: &str, kind: &str) -> Col {
-    Col { key: key.into(), label: c.text(label_key), kind: kind.into(), hint: String::new() }
+    Col {
+        key: key.into(),
+        label: c.text(label_key),
+        kind: kind.into(),
+        hint: String::new(),
+    }
 }
 
 /// A column whose header carries a tooltip text (the text key `hint_key`).
 fn col_hint(c: &TelCfg, key: &str, label_key: &str, kind: &str, hint_key: &str) -> Col {
-    Col { hint: c.text(hint_key), ..col(c, key, label_key, kind) }
+    Col {
+        hint: c.text(hint_key),
+        ..col(c, key, label_key, kind)
+    }
 }
 
 /// What to call a cost-report agent: its own name, else the tracked agent its id belongs to, else plain words (never the raw id).
 fn agent_name(a: &Value, names: &dyn Fn(&str) -> Option<String>, unknown: String) -> String {
     let id = a["agent"].as_str().unwrap_or_default();
-    a["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string).or_else(|| names(id)).unwrap_or(unknown)
+    a["name"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .or_else(|| names(id))
+        .unwrap_or(unknown)
 }
 
-fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str) -> Option<String>) -> Vec<Table> {
+fn tables(
+    raw: &Raw,
+    c: &TelCfg,
+    kpis: &[Kpi],
+    days: &[u64],
+    names: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Table> {
     let cap = c.table_rows_max;
     let mut out = Vec::new();
     // checks over the whole series window, busiest first
-    let mut rows: Vec<&Value> = hooks(raw.sums.last().unwrap_or(&Value::Null)).iter().collect();
+    let mut rows: Vec<&Value> = hooks(raw.sums.last().unwrap_or(&Value::Null))
+        .iter()
+        .collect();
     rows.sort_by(|a, b| num(&b["n"]).total_cmp(&num(&a["n"])));
     out.push(Table {
         id: "checks".into(),
@@ -482,23 +626,61 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
             .take(cap)
             .map(|r| {
                 let o = |k: &str| cell_num(&r["outcomes"][k]);
-                vec![cell_text(&r["h"]), cell_text(&r["k"]), cell_num(&r["n"]), o("allow"), o("advise"), o("block"), o("defer"), o("error"), cell_num(&r["mean_us"]), cell_num(&r["p50_us"]), cell_num(&r["p95_us"]), cell_num(&r["p99_us"]), cell_num(&r["injected_bytes"])]
+                vec![
+                    cell_text(&r["h"]),
+                    cell_text(&r["k"]),
+                    cell_num(&r["n"]),
+                    o("allow"),
+                    o("advise"),
+                    o("block"),
+                    o("defer"),
+                    o("error"),
+                    cell_num(&r["mean_us"]),
+                    cell_num(&r["p50_us"]),
+                    cell_num(&r["p95_us"]),
+                    cell_num(&r["p99_us"]),
+                    cell_num(&r["injected_bytes"]),
+                ]
             })
             .collect(),
         totals: Vec::new(),
     });
     // per day, one column per metric card
     let mut cols = vec![col(c, "day", "col_day", "ts")];
-    cols.extend(kpis.iter().map(|k| Col { key: k.id.clone(), label: k.label.clone(), kind: k.unit.clone(), hint: String::new() }));
+    cols.extend(kpis.iter().map(|k| Col {
+        key: k.id.clone(),
+        label: k.label.clone(),
+        kind: k.unit.clone(),
+        hint: String::new(),
+    }));
     out.push(Table {
         id: "days".into(),
         title: c.text("tab_days"),
         cols,
-        rows: (0..days.len()).rev().map(|i| std::iter::once(Cell::Num(days[i] as f64)).chain(kpis.iter().map(|k| Cell::Num(k.series.get(k.series.len().saturating_sub(days.len()) + i).copied().unwrap_or(0.0)))).collect()).take(cap).collect(),
+        rows: (0..days.len())
+            .rev()
+            .map(|i| {
+                std::iter::once(Cell::Num(days[i] as f64))
+                    .chain(kpis.iter().map(|k| {
+                        Cell::Num(
+                            k.series
+                                .get(k.series.len().saturating_sub(days.len()) + i)
+                                .copied()
+                                .unwrap_or(0.0),
+                        )
+                    }))
+                    .collect()
+            })
+            .take(cap)
+            .collect(),
         totals: Vec::new(),
     });
     // agents: what each tracked agent spent against what it produced
-    let agents = raw.sums.first().map_or(&[][..], |s| s["agent_cost"]["agents"].as_array().map_or(&[][..], Vec::as_slice));
+    let agents = raw.sums.first().map_or(&[][..], |s| {
+        s["agent_cost"]["agents"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice)
+    });
     out.push(Table {
         id: "agents".into(),
         title: c.text("tab_agents"),
@@ -518,29 +700,70 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
             .take(cap)
             .map(|a| {
                 let who = agent_name(a, names, c.text("agent_unknown"));
-                vec![Cell::Text(who), cell_text(&a["kind"]), cell_num(&a["tokens"]), cell_num(&a["outcomes"]), cell_num(&a["tokens_per_outcome"]), cell_num(&a["commits"]), cell_num(&a["guard_fires"]), cell_num(&a["files_edited"]), cell_num(&a["tests_passed"])]
+                vec![
+                    Cell::Text(who),
+                    cell_text(&a["kind"]),
+                    cell_num(&a["tokens"]),
+                    cell_num(&a["outcomes"]),
+                    cell_num(&a["tokens_per_outcome"]),
+                    cell_num(&a["commits"]),
+                    cell_num(&a["guard_fires"]),
+                    cell_num(&a["files_edited"]),
+                    cell_num(&a["tests_passed"]),
+                ]
             })
             .collect(),
         totals: Vec::new(),
     });
     // Jev, per integration, over the window: asked = model calls + cached + skipped
-    let jev = raw.sums.last().and_then(|s| s["detail"]["jev"]["by_integration"].as_object());
-    let reason_label = |tok: &str| c.jev_skip_reasons.get(tok).and_then(Value::as_str).map_or_else(|| tok.replace(['-', '_'], " "), str::to_string);
+    let jev = raw
+        .sums
+        .last()
+        .and_then(|s| s["detail"]["jev"]["by_integration"].as_object());
+    let reason_label = |tok: &str| {
+        c.jev_skip_reasons
+            .get(tok)
+            .and_then(Value::as_str)
+            .map_or_else(|| tok.replace(['-', '_'], " "), str::to_string)
+    };
     let mut jev_rows: Vec<Vec<Cell>> = Vec::new();
     let mut totals = [0.0f64; 4];
     for (id, i) in jev.into_iter().flatten().take(cap) {
         let why = i["skip_reasons"].as_object().map_or_else(String::new, |m| {
             let mut v: Vec<(&String, f64)> = m.iter().map(|(k, n)| (k, num(n))).collect();
             v.sort_by(|a, b| b.1.total_cmp(&a.1));
-            v.iter().map(|(k, n)| format!("{} ({})", reason_label(k), n)).collect::<Vec<_>>().join("; ")
+            v.iter()
+                .map(|(k, n)| format!("{} ({})", reason_label(k), n))
+                .collect::<Vec<_>>()
+                .join("; ")
         });
-        let (calls, model, cached, skipped, usd) = (num(&i["calls"]), num(&i["model_calls"]), num(&i["cached"]), num(&i["skipped"]), num(&i["cost_uc"]) / c.uc_per_usd);
+        let (calls, model, cached, skipped, usd) = (
+            num(&i["calls"]),
+            num(&i["model_calls"]),
+            num(&i["cached"]),
+            num(&i["skipped"]),
+            num(&i["cost_uc"]) / c.uc_per_usd,
+        );
         for (t, v) in totals.iter_mut().zip([calls, model, cached, skipped]) {
             *t += v;
         }
-        jev_rows.push(vec![c.jev_cell(id), Cell::Num(calls), Cell::Num(model), Cell::Num(cached), Cell::Num(skipped), Cell::Text(why), cell_num(&i["mean_ms"]), Cell::Num(usd)]);
+        jev_rows.push(vec![
+            c.jev_cell(id),
+            Cell::Num(calls),
+            Cell::Num(model),
+            Cell::Num(cached),
+            Cell::Num(skipped),
+            Cell::Text(why),
+            cell_num(&i["mean_ms"]),
+            Cell::Num(usd),
+        ]);
     }
-    let jev_cost: f64 = jev.into_iter().flatten().take(cap).map(|(_, i)| num(&i["cost_uc"]) / c.uc_per_usd).sum();
+    let jev_cost: f64 = jev
+        .into_iter()
+        .flatten()
+        .take(cap)
+        .map(|(_, i)| num(&i["cost_uc"]) / c.uc_per_usd)
+        .sum();
     out.push(Table {
         id: "jev".into(),
         title: c.text("tab_jev"),
@@ -557,18 +780,49 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
         totals: if jev_rows.is_empty() {
             Vec::new()
         } else {
-            vec![Cell::Text(c.text("tot_label")), Cell::Num(totals[0]), Cell::Num(totals[1]), Cell::Num(totals[2]), Cell::Num(totals[3]), Cell::Text(String::new()), Cell::Text(String::new()), Cell::Num(jev_cost)]
+            vec![
+                Cell::Text(c.text("tot_label")),
+                Cell::Num(totals[0]),
+                Cell::Num(totals[1]),
+                Cell::Num(totals[2]),
+                Cell::Num(totals[3]),
+                Cell::Text(String::new()),
+                Cell::Text(String::new()),
+                Cell::Num(jev_cost),
+            ]
         },
         rows: jev_rows,
     });
     // the raw events of the last day, newest first
-    let mut events: Vec<&Value> = raw.events["events"].as_array().map_or(Vec::new(), |a| a.iter().collect());
+    let mut events: Vec<&Value> = raw.events["events"]
+        .as_array()
+        .map_or(Vec::new(), |a| a.iter().collect());
     events.sort_by(|a, b| num(&b["ts"]).total_cmp(&num(&a["ts"])));
     out.push(Table {
         id: "events".into(),
         title: c.text("tab_events"),
-        cols: vec![col(c, "ts", "col_time", "ts"), col(c, "k", "col_kind", "text"), col(c, "h", "col_check", "text"), col(c, "e", "col_event", "text"), col(c, "o", "col_outcome", "text"), col(c, "ms", "col_ms", "count")],
-        rows: events.iter().take(cap).map(|e| vec![cell_num(&e["ts"]), cell_text(&e["k"]), cell_text(&e["h"]), cell_text(&e["e"]), cell_text(&e["o"]), cell_num(&e["ms"])]).collect(),
+        cols: vec![
+            col(c, "ts", "col_time", "ts"),
+            col(c, "k", "col_kind", "text"),
+            col(c, "h", "col_check", "text"),
+            col(c, "e", "col_event", "text"),
+            col(c, "o", "col_outcome", "text"),
+            col(c, "ms", "col_ms", "count"),
+        ],
+        rows: events
+            .iter()
+            .take(cap)
+            .map(|e| {
+                vec![
+                    cell_num(&e["ts"]),
+                    cell_text(&e["k"]),
+                    cell_text(&e["h"]),
+                    cell_text(&e["e"]),
+                    cell_text(&e["o"]),
+                    cell_num(&e["ms"]),
+                ]
+            })
+            .collect(),
         totals: Vec::new(),
     });
     out
@@ -576,14 +830,29 @@ fn tables(raw: &Raw, c: &TelCfg, kpis: &[Kpi], days: &[u64], names: &dyn Fn(&str
 
 /// Per-check daily series of one measure (`n` or an outcome), for the checks the engine knows.
 fn hook_series(raw: &Raw, measure: &str) -> Vec<(String, Vec<f64>)> {
-    let mut names: Vec<String> = raw.sums.last().map_or(Vec::new(), |s| hooks(s).iter().filter_map(|r| r["h"].as_str().map(str::to_string)).collect());
+    let mut names: Vec<String> = raw.sums.last().map_or(Vec::new(), |s| {
+        hooks(s)
+            .iter()
+            .filter_map(|r| r["h"].as_str().map(str::to_string))
+            .collect()
+    });
     names.sort();
     names.dedup();
     names
         .into_iter()
         .map(|name| {
             let series = raw.daily(&|s| {
-                hooks(s).iter().filter(|r| r["h"] == name.as_str()).map(|r| if measure == "n" { num(&r["n"]) } else { num(&r["outcomes"][measure]) }).sum()
+                hooks(s)
+                    .iter()
+                    .filter(|r| r["h"] == name.as_str())
+                    .map(|r| {
+                        if measure == "n" {
+                            num(&r["n"])
+                        } else {
+                            num(&r["outcomes"][measure])
+                        }
+                    })
+                    .sum()
             });
             (name, series)
         })
@@ -594,22 +863,63 @@ fn forecast(raw: &Raw, c: &TelCfg) -> Option<Forecast> {
     let usage = raw.usage.as_ref()?;
     let used = usage["weekly"].as_f64()?;
     // the usage cache's weekly reset first (what the Accounts gauge shows), the usage command's own only when the cache has none
-    let own = usage["resetsAt"].as_str().and_then(|t| humantime::parse_rfc3339(t).ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as f64);
+    let own = usage["resetsAt"]
+        .as_str()
+        .and_then(|t| humantime::parse_rfc3339(t).ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as f64);
     let resets = raw.weekly_resets_ms.or(own);
-    let hours_in = resets.map(|r| c.week_hours - ((r - raw.now_ms as f64) / 3_600_000.0).clamp(0.0, c.week_hours));
-    let projected = hours_in.filter(|h| *h > 0.0).map(|h| used * c.week_hours / h);
-    let tone = projected.map_or("info", |p| if p >= c.forecast_bad_pct { "bad" } else if p >= c.forecast_warn_pct { "warn" } else { "ok" });
+    let hours_in = resets
+        .map(|r| c.week_hours - ((r - raw.now_ms as f64) / 3_600_000.0).clamp(0.0, c.week_hours));
+    let projected = hours_in
+        .filter(|h| *h > 0.0)
+        .map(|h| used * c.week_hours / h);
+    let tone = projected.map_or("info", |p| {
+        if p >= c.forecast_bad_pct {
+            "bad"
+        } else if p >= c.forecast_warn_pct {
+            "warn"
+        } else {
+            "ok"
+        }
+    });
     let text = match projected {
-        Some(p) => c.fill("h_forecast", &[("used", format!("{used:.0}")), ("projected", format!("{p:.0}"))]),
+        Some(p) => c.fill(
+            "h_forecast",
+            &[
+                ("used", format!("{used:.0}")),
+                ("projected", format!("{p:.0}")),
+            ],
+        ),
         None => c.fill("h_forecast_unknown", &[("used", format!("{used:.0}"))]),
     };
-    Some(Forecast { used_pct: used, projected_pct: projected, hours_in, tone: tone.into(), text })
+    Some(Forecast {
+        used_pct: used,
+        projected_pct: projected,
+        hours_in,
+        tone: tone.into(),
+        text,
+    })
 }
 
-fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Option<String>) -> TelDoc {
-    let mut doc = TelDoc { generated_ms: raw.now_ms, engine_ok: raw.engine_ok, texts: c.texts.clone(), ui: c.ui(number), ..TelDoc::default() };
+fn build_tel(
+    raw: &Raw,
+    c: &TelCfg,
+    number: &NumFmt,
+    names: &dyn Fn(&str) -> Option<String>,
+) -> TelDoc {
+    let mut doc = TelDoc {
+        generated_ms: raw.now_ms,
+        engine_ok: raw.engine_ok,
+        texts: c.texts.clone(),
+        ui: c.ui(number),
+        ..TelDoc::default()
+    };
     if !raw.engine_ok || raw.sums.is_empty() {
-        doc.headlines.push(Headline { tone: "bad".into(), text: c.text("h_engine_down") });
+        doc.headlines.push(Headline {
+            tone: "bad".into(),
+            text: c.text("h_engine_down"),
+        });
         return doc;
     }
     let (frac, first) = (raw.day_fraction(), raw.first_active());
@@ -618,7 +928,9 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Opt
 
     // metric cards
     for m in &c.metrics {
-        let Some(src) = parse_src(&m.source) else { continue };
+        let Some(src) = parse_src(&m.source) else {
+            continue;
+        };
         let series = raw.daily(&|s| eval(&src, s));
         let j = judge(&series, first, frac, c);
         doc.kpis.push(Kpi {
@@ -639,63 +951,155 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Opt
     // anomalies: the metric cards, then every check's block count, each against its own days
     let mut anomalies: Vec<Anomaly> = Vec::new();
     for (id, j) in &judged {
-        let label = doc.kpis.iter().find(|k| &k.id == id).map(|k| k.label.clone()).unwrap_or_default();
+        let label = doc
+            .kpis
+            .iter()
+            .find(|k| &k.id == id)
+            .map(|k| k.label.clone())
+            .unwrap_or_default();
         anomalies.push(anomaly(c, id, &label, j, number));
     }
     for m in &c.mover_measures {
         let mut rows: Vec<Mover> = Vec::new();
         for (name, series) in hook_series(raw, &m.measure) {
-            let Some(j) = judge(&series, first, frac, c) else { continue };
+            let Some(j) = judge(&series, first, frac, c) else {
+                continue;
+            };
             if m.anomaly && j.unusual(c) {
-                anomalies.push(anomaly(c, &name, &format!("{name} ({})", m.label.to_lowercase()), &j, number));
+                anomalies.push(anomaly(
+                    c,
+                    &name,
+                    &format!("{name} ({})", m.label.to_lowercase()),
+                    &j,
+                    number,
+                ));
             }
             if j.change().abs() >= c.min_abs_change {
-                rows.push(Mover { name, value: j.value, usual: j.usual, change: j.change(), pct: pct(j.change(), j.usual, c), series: tail(&series, c.spark_points) });
+                rows.push(Mover {
+                    name,
+                    value: j.value,
+                    usual: j.usual,
+                    change: j.change(),
+                    pct: pct(j.change(), j.usual, c),
+                    series: tail(&series, c.spark_points),
+                });
             }
         }
         rows.sort_by(|a, b| b.change.abs().total_cmp(&a.change.abs()));
         rows.truncate(c.movers_max);
-        doc.movers.push(MoverList { id: m.id.clone(), label: m.label.clone(), hint: c.text(&m.hint), rows });
+        doc.movers.push(MoverList {
+            id: m.id.clone(),
+            label: m.label.clone(),
+            hint: c.text(&m.hint),
+            rows,
+        });
     }
     anomalies.sort_by(|a, b| b.score.abs().total_cmp(&a.score.abs()));
     anomalies.truncate(c.anomalies_max);
 
     // headlines
-    let k = |id: &str| doc.kpis.iter().find(|k| k.id == id).map_or(0.0, |k| k.value);
+    let k = |id: &str| {
+        doc.kpis
+            .iter()
+            .find(|k| k.id == id)
+            .map_or(0.0, |k| k.value)
+    };
     let n = |v: f64| number.fmt(v.round() as u64);
-    doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_totals", &[("decisions", n(k("decisions"))), ("blocks", n(k("blocks"))), ("advise", n(k("advisories"))), ("errors", n(k("errors")))]) });
-    let mut blockers: Vec<(&str, f64)> = hooks(today).iter().filter_map(|r| Some((r["h"].as_str()?, num(&r["outcomes"]["block"])))).filter(|(_, b)| *b > 0.0).collect();
+    doc.headlines.push(Headline {
+        tone: "info".into(),
+        text: c.fill(
+            "h_totals",
+            &[
+                ("decisions", n(k("decisions"))),
+                ("blocks", n(k("blocks"))),
+                ("advise", n(k("advisories"))),
+                ("errors", n(k("errors"))),
+            ],
+        ),
+    });
+    let mut blockers: Vec<(&str, f64)> = hooks(today)
+        .iter()
+        .filter_map(|r| Some((r["h"].as_str()?, num(&r["outcomes"]["block"]))))
+        .filter(|(_, b)| *b > 0.0)
+        .collect();
     blockers.sort_by(|a, b| b.1.total_cmp(&a.1));
     if blockers.is_empty() {
-        doc.headlines.push(Headline { tone: "ok".into(), text: c.text("h_no_blocks") });
+        doc.headlines.push(Headline {
+            tone: "ok".into(),
+            text: c.text("h_no_blocks"),
+        });
     }
     for (check, blocks) in blockers.iter().take(c.headline_checks) {
-        doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_block_check", &[("check", (*check).into()), ("n", n(*blocks))]) });
+        doc.headlines.push(Headline {
+            tone: "info".into(),
+            text: c.fill(
+                "h_block_check",
+                &[("check", (*check).into()), ("n", n(*blocks))],
+            ),
+        });
     }
     let cost = &today["agent_cost"];
     let list = cost["agents"].as_array().map_or(&[][..], Vec::as_slice);
     if num(&cost["totals"]["tokens"]) > 0.0 {
         let committers = list.iter().filter(|a| num(&a["commits"]) > 0.0).count();
-        doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_agents", &[("agents", n(num(&cost["totals"]["agents"]))), ("tokens", n(num(&cost["totals"]["tokens"]))), ("committers", committers.to_string())]) });
+        doc.headlines.push(Headline {
+            tone: "info".into(),
+            text: c.fill(
+                "h_agents",
+                &[
+                    ("agents", n(num(&cost["totals"]["agents"]))),
+                    ("tokens", n(num(&cost["totals"]["tokens"]))),
+                    ("committers", committers.to_string()),
+                ],
+            ),
+        });
         if let Some(top) = list.first() {
             let who = agent_name(top, names, c.text("agent_unknown"));
-            doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_cost_top", &[("agent", who.chars().take(24).collect()), ("tokens", n(num(&top["tokens"]))), ("outcomes", n(num(&top["outcomes"])))]) });
+            doc.headlines.push(Headline {
+                tone: "info".into(),
+                text: c.fill(
+                    "h_cost_top",
+                    &[
+                        ("agent", who.chars().take(24).collect()),
+                        ("tokens", n(num(&top["tokens"]))),
+                        ("outcomes", n(num(&top["outcomes"]))),
+                    ],
+                ),
+            });
         }
     } else {
-        doc.headlines.push(Headline { tone: "info".into(), text: c.text("h_agents_none") });
+        doc.headlines.push(Headline {
+            tone: "info".into(),
+            text: c.text("h_agents_none"),
+        });
     }
     if jev_calls(today) > 0.0 {
-        doc.headlines.push(Headline { tone: "info".into(), text: c.fill("h_jev", &[("n", n(jev_calls(today))), ("usd", fmt_usd(jev_cost_uc(today) / c.uc_per_usd, c))]) });
+        doc.headlines.push(Headline {
+            tone: "info".into(),
+            text: c.fill(
+                "h_jev",
+                &[
+                    ("n", n(jev_calls(today))),
+                    ("usd", fmt_usd(jev_cost_uc(today) / c.uc_per_usd, c)),
+                ],
+            ),
+        });
     }
     // the unusual figures and the weekly forecast have their own cards; the headlines do not repeat them
     doc.forecast = forecast(raw, c);
     doc.anomalies = anomalies;
 
     // heatmap: the checks that blocked most over the window, day by day
-    let mut by_total: Vec<(String, Vec<f64>)> = hook_series(raw, "block").into_iter().filter(|(_, s)| s.iter().sum::<f64>() > 0.0).collect();
+    let mut by_total: Vec<(String, Vec<f64>)> = hook_series(raw, "block")
+        .into_iter()
+        .filter(|(_, s)| s.iter().sum::<f64>() > 0.0)
+        .collect();
     by_total.sort_by(|a, b| b.1.iter().sum::<f64>().total_cmp(&a.1.iter().sum::<f64>()));
     by_total.truncate(c.heat_rows);
-    doc.heat = Heat { checks: by_total.iter().map(|(n, _)| n.clone()).collect(), cells: by_total.into_iter().map(|(_, s)| s).collect() };
+    doc.heat = Heat {
+        checks: by_total.iter().map(|(n, _)| n.clone()).collect(),
+        cells: by_total.into_iter().map(|(_, s)| s).collect(),
+    };
     doc.day_ms = raw.day_starts();
     doc.tables = tables(raw, c, &doc.kpis, &doc.day_ms, names);
     doc
@@ -704,8 +1108,29 @@ fn build_tel(raw: &Raw, c: &TelCfg, number: &NumFmt, names: &dyn Fn(&str) -> Opt
 fn anomaly(c: &TelCfg, id: &str, label: &str, j: &Judged, number: &NumFmt) -> Anomaly {
     let high = j.change() > 0.0;
     let n = |v: f64| number.fmt(v.round() as u64);
-    let text = c.fill(if high { "h_anomaly_high" } else { "h_anomaly_low" }, &[("label", label.into()), ("value", n(j.value)), ("projected", n(j.projected)), ("median", n(j.usual))]);
-    Anomaly { id: id.into(), label: label.into(), dir: if high { "high" } else { "low" }.into(), value: j.value, projected: j.projected, usual: j.usual, score: j.score, text }
+    let text = c.fill(
+        if high {
+            "h_anomaly_high"
+        } else {
+            "h_anomaly_low"
+        },
+        &[
+            ("label", label.into()),
+            ("value", n(j.value)),
+            ("projected", n(j.projected)),
+            ("median", n(j.usual)),
+        ],
+    );
+    Anomaly {
+        id: id.into(),
+        label: label.into(),
+        dir: if high { "high" } else { "low" }.into(),
+        value: j.value,
+        projected: j.projected,
+        usual: j.usual,
+        score: j.score,
+        text,
+    }
 }
 
 // ---- the Impact document ------------------------------------------------------------------------------------------------
@@ -726,35 +1151,79 @@ fn pair(series: &[f64], p: &PeriodDef, frac: f64, c: &TelCfg) -> Pair {
     let (cur, cur_days) = span(series, p.cur, frac);
     let (prev, prev_days) = span(series, p.prev, frac);
     // a percentage needs a baseline worth measuring against, and is never larger than the configured cap
-    let delta = (prev_days > 0.0 && cur_days > 0.0 && prev / prev_days >= c.pct_min_baseline).then(|| (((cur / cur_days) / (prev / prev_days) - 1.0) * 100.0).clamp(-c.pct_cap, c.pct_cap));
+    let delta =
+        (prev_days > 0.0 && cur_days > 0.0 && prev / prev_days >= c.pct_min_baseline).then(|| {
+            (((cur / cur_days) / (prev / prev_days) - 1.0) * 100.0).clamp(-c.pct_cap, c.pct_cap)
+        });
     let rate = |total: f64, days: f64| if days > 0.0 { total / days } else { 0.0 };
-    Pair { cur, prev, cur_rate: rate(cur, cur_days), prev_rate: rate(prev, prev_days), delta_pct: delta }
+    Pair {
+        cur,
+        prev,
+        cur_rate: rate(cur, cur_days),
+        prev_rate: rate(prev, prev_days),
+        delta_pct: delta,
+    }
 }
 
 fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {
-    let mut doc = ImpactDoc { generated_ms: raw.now_ms, engine_ok: raw.engine_ok, texts: c.texts.clone(), ui: c.ui(number), ..ImpactDoc::default() };
+    let mut doc = ImpactDoc {
+        generated_ms: raw.now_ms,
+        engine_ok: raw.engine_ok,
+        texts: c.texts.clone(),
+        ui: c.ui(number),
+        ..ImpactDoc::default()
+    };
     if !raw.engine_ok || raw.sums.is_empty() {
         return doc;
     }
     let frac = raw.day_fraction();
-    doc.periods = c.periods.iter().map(|p| Period { id: p.id.clone(), label: p.label.clone() }).collect();
-    let row = |id: &str, label: &str, hint: &str, good: &str, series: &[f64]| ImpactRow { id: id.into(), label: label.into(), hint: c.text(hint), good: good.into(), pairs: c.periods.iter().map(|p| pair(series, p, frac, c)).collect() };
+    doc.periods = c
+        .periods
+        .iter()
+        .map(|p| Period {
+            id: p.id.clone(),
+            label: p.label.clone(),
+        })
+        .collect();
+    let row = |id: &str, label: &str, hint: &str, good: &str, series: &[f64]| ImpactRow {
+        id: id.into(),
+        label: label.into(),
+        hint: c.text(hint),
+        good: good.into(),
+        pairs: c.periods.iter().map(|p| pair(series, p, frac, c)).collect(),
+    };
     for p in &c.prevention {
         let series = if p.hooks.iter().any(|h| h == "*") {
             raw.daily(&|s| num(&s["by_outcome"][p.outcome.as_str()]))
         } else {
-            raw.daily(&|s| p.hooks.iter().map(|h| eval(&Src::HookOutcome(h.clone(), p.outcome.clone()), s)).sum())
+            raw.daily(&|s| {
+                p.hooks
+                    .iter()
+                    .map(|h| eval(&Src::HookOutcome(h.clone(), p.outcome.clone()), s))
+                    .sum()
+            })
         };
-        doc.prevention.push(row(&p.id, &p.label, &p.hint, "up", &series));
+        doc.prevention
+            .push(row(&p.id, &p.label, &p.hint, "up", &series));
     }
     for f in &c.failures {
         if let Some(src) = parse_src(&f.source) {
-            doc.failures.push(row(&f.id, &f.label, &f.hint, "down", &raw.daily(&|s| eval(&src, s))));
+            doc.failures.push(row(
+                &f.id,
+                &f.label,
+                &f.hint,
+                "down",
+                &raw.daily(&|s| eval(&src, s)),
+            ));
         }
     }
     doc.savings = savings(raw, c);
     doc.waterfall = waterfall(raw, c);
-    doc.waterfall_kind = doc.savings.iter().find(|s| s.id == "net").map_or_else(|| "estimate".into(), |s| s.kind.clone());
+    doc.waterfall_kind = doc
+        .savings
+        .iter()
+        .find(|s| s.id == "net")
+        .map_or_else(|| "estimate".into(), |s| s.kind.clone());
     doc.gaps = gaps(raw, c, number);
     doc
 }
@@ -765,7 +1234,9 @@ fn savings(raw: &Raw, c: &TelCfg) -> Vec<Saving> {
     let imp = &raw.impact;
     let net = &imp["net"];
     let mut out = Vec::new();
-    let measured = imp["savings"]["measured_benchmarks"].as_array().map_or(&[][..], Vec::as_slice);
+    let measured = imp["savings"]["measured_benchmarks"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
     for b in measured {
         out.push(Saving {
             id: "measured".into(),
@@ -773,12 +1244,22 @@ fn savings(raw: &Raw, c: &TelCfg) -> Vec<Saving> {
             kind: "measured".into(),
             usd: b["usd"].as_f64(),
             formula: b["method"].as_str().unwrap_or_default().to_string(),
-            range: b["range"].as_str().map_or_else(|| c.text("impact_no_range"), str::to_string),
+            range: b["range"]
+                .as_str()
+                .map_or_else(|| c.text("impact_no_range"), str::to_string),
             basis: b["baseline"].as_str().unwrap_or_default().to_string(),
         });
     }
     if measured.is_empty() {
-        out.push(Saving { id: "measured".into(), label: c.text("impact_measured_savings"), kind: "measured".into(), usd: None, formula: String::new(), range: String::new(), basis: c.text("impact_no_measured") });
+        out.push(Saving {
+            id: "measured".into(),
+            label: c.text("impact_measured_savings"),
+            kind: "measured".into(),
+            usd: None,
+            formula: String::new(),
+            range: String::new(),
+            basis: c.text("impact_no_measured"),
+        });
     }
     let routing = &imp["savings"]["model_routing"];
     out.push(Saving {
@@ -809,17 +1290,39 @@ fn waterfall(raw: &Raw, c: &TelCfg) -> Vec<Step> {
         return Vec::new();
     }
     // a spender with no data is shown as not measured, not as a zero
-    let step = |label: &str, kind: &str, usd: f64| Step { label: c.text(label), kind: kind.into(), usd };
+    let step = |label: &str, kind: &str, usd: f64| Step {
+        label: c.text(label),
+        kind: kind.into(),
+        usd,
+    };
     let step_if = |label: &str, kind: &str, v: &Value| {
-        if v.is_null() { Step { label: format!("{} ({})", c.text(label), c.text("impact_not_measured")), kind: kind.into(), usd: 0.0 } } else { step(label, kind, num(v)) }
+        if v.is_null() {
+            Step {
+                label: format!("{} ({})", c.text(label), c.text("impact_not_measured")),
+                kind: kind.into(),
+                usd: 0.0,
+            }
+        } else {
+            step(label, kind, num(v))
+        }
     };
     let sp = &net["spenders"];
-    let measured: f64 = raw.impact["savings"]["measured_benchmarks"].as_array().map_or(0.0, |a| a.iter().map(|b| num(&b["usd"])).sum());
+    let measured: f64 = raw.impact["savings"]["measured_benchmarks"]
+        .as_array()
+        .map_or(0.0, |a| a.iter().map(|b| num(&b["usd"])).sum());
     vec![
         step_if("impact_jev_cost", "spent", &sp["jev_usd"]),
         step_if("impact_injection", "spent", &sp["injection_usd"]),
-        step("impact_routing_up", "spent", num(&net["routing"]["spent_up_usd"])),
-        step("impact_routing_saved", "prevented", num(&net["routing"]["saved_usd"])),
+        step(
+            "impact_routing_up",
+            "spent",
+            num(&net["routing"]["spent_up_usd"]),
+        ),
+        step(
+            "impact_routing_saved",
+            "prevented",
+            num(&net["routing"]["saved_usd"]),
+        ),
         step("impact_measured_savings", "prevented", measured),
         step("impact_net", "net", num(&net["net_usd"])),
     ]
@@ -830,40 +1333,101 @@ fn gaps(raw: &Raw, c: &TelCfg, number: &NumFmt) -> Vec<Gap> {
     let mut out = Vec::new();
     match &raw.coverage {
         Some(cov) => {
-            let (unmatched, unready) = (cov["unmatched"].as_array().map_or(0, Vec::len), cov["unready"].as_array().map_or(0, Vec::len));
+            let (unmatched, unready) = (
+                cov["unmatched"].as_array().map_or(0, Vec::len),
+                cov["unready"].as_array().map_or(0, Vec::len),
+            );
             out.push(Gap {
                 id: "coverage".into(),
                 label: c.text("gap_coverage"),
-                text: c.fill("gap_coverage_text", &[("covered", n(num(&cov["covered"]))), ("features", n(num(&cov["features"]))), ("unmatched", n(unmatched as f64)), ("unready", n(unready as f64))]),
-                tone: if unmatched + unready > 0 { "warn" } else { "ok" }.into(),
+                text: c.fill(
+                    "gap_coverage_text",
+                    &[
+                        ("covered", n(num(&cov["covered"]))),
+                        ("features", n(num(&cov["features"]))),
+                        ("unmatched", n(unmatched as f64)),
+                        ("unready", n(unready as f64)),
+                    ],
+                ),
+                tone: if unmatched + unready > 0 {
+                    "warn"
+                } else {
+                    "ok"
+                }
+                .into(),
             });
         }
-        None => out.push(Gap { id: "coverage".into(), label: c.text("gap_coverage"), text: c.text("gap_unavailable"), tone: "info".into() }),
+        None => out.push(Gap {
+            id: "coverage".into(),
+            label: c.text("gap_coverage"),
+            text: c.text("gap_unavailable"),
+            tone: "info".into(),
+        }),
     }
     let defers = raw.daily(&|s| num(&s["by_outcome"]["defer"]));
     if let Some(p) = c.periods.first() {
         let pr = pair(&defers, p, raw.day_fraction(), c);
         // since this daemon started, by why the check gave no answer ("guard:cpu_budget" and "optional:cpu_budget" count as one reason)
-        let mut by_reason: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
-        for (k, v) in raw.status["answers_dropped"]["this_daemon"]["by_reason"].as_object().into_iter().flatten() {
-            *by_reason.entry(k.rsplit(':').next().unwrap_or(k).to_string()).or_default() += num(v);
+        let mut by_reason: std::collections::BTreeMap<String, f64> =
+            std::collections::BTreeMap::new();
+        for (k, v) in raw.status["answers_dropped"]["this_daemon"]["by_reason"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            *by_reason
+                .entry(k.rsplit(':').next().unwrap_or(k).to_string())
+                .or_default() += num(v);
         }
-        let mut reasons: Vec<(String, f64)> = by_reason.into_iter().filter(|(_, v)| *v > 0.0).collect();
+        let mut reasons: Vec<(String, f64)> =
+            by_reason.into_iter().filter(|(_, v)| *v > 0.0).collect();
         reasons.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let reasons = if reasons.is_empty() { c.text("gap_defers_none") } else { reasons.iter().map(|(k, v)| format!("{k} {}", n(*v))).collect::<Vec<_>>().join(", ") };
+        let reasons = if reasons.is_empty() {
+            c.text("gap_defers_none")
+        } else {
+            reasons
+                .iter()
+                .map(|(k, v)| format!("{k} {}", n(*v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         out.push(Gap {
             id: "defers".into(),
             label: c.text("gap_defers"),
-            text: c.fill("gap_defers_text", &[("cur", n(pr.cur)), ("prev", n(pr.prev)), ("reasons", reasons)]),
+            text: c.fill(
+                "gap_defers_text",
+                &[
+                    ("cur", n(pr.cur)),
+                    ("prev", n(pr.prev)),
+                    ("reasons", reasons),
+                ],
+            ),
             tone: if pr.cur > 0.0 { "warn" } else { "ok" }.into(),
         });
     }
     let budget = &raw.status["budget"];
-    let over: Vec<String> = budget["breached"].as_array().map_or(Vec::new(), |a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
+    let over: Vec<String> = budget["breached"].as_array().map_or(Vec::new(), |a| {
+        a.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    });
     out.push(Gap {
         id: "budgets".into(),
         label: c.text("gap_budgets"),
-        text: c.fill("gap_budgets_text", &[("breaches", n(num(&budget["breaches"]))), ("over", if over.is_empty() { c.text("gap_budgets_none") } else { over.join(", ") })]),
+        text: c.fill(
+            "gap_budgets_text",
+            &[
+                ("breaches", n(num(&budget["breaches"]))),
+                (
+                    "over",
+                    if over.is_empty() {
+                        c.text("gap_budgets_none")
+                    } else {
+                        over.join(", ")
+                    },
+                ),
+            ],
+        ),
         tone: if over.is_empty() { "ok" } else { "bad" }.into(),
     });
     out
@@ -875,11 +1439,19 @@ fn gaps(raw: &Raw, c: &TelCfg, number: &NumFmt) -> Vec<Gap> {
 pub async fn telemetry(app: &App) -> Result<Arc<TelDoc>, String> {
     let cfg = TelCfg::load(&cfg_path(app))?;
     let r = raw(app, &cfg).await;
-    if let Some((_, d)) = cache().tel.clone().filter(|(at, _)| at.elapsed() < Duration::from_secs(cfg.cache_s)) {
+    if let Some((_, d)) = cache()
+        .tel
+        .clone()
+        .filter(|(at, _)| at.elapsed() < Duration::from_secs(cfg.cache_s))
+    {
         return Ok(d);
     }
     let st = app.settings();
-    let resolve = |id: &str| app.model().lookup(id, st.placeholder_id_chars).map(|a| a.label);
+    let resolve = |id: &str| {
+        app.model()
+            .lookup(id, st.placeholder_id_chars)
+            .map(|a| a.label)
+    };
     let doc = Arc::new(build_tel(&r, &cfg, &st.number(), &resolve));
     cache().tel = Some((Instant::now(), doc.clone()));
     Ok(doc)
@@ -889,7 +1461,11 @@ pub async fn telemetry(app: &App) -> Result<Arc<TelDoc>, String> {
 pub async fn impact(app: &App) -> Result<Arc<ImpactDoc>, String> {
     let cfg = TelCfg::load(&cfg_path(app))?;
     let r = raw(app, &cfg).await;
-    if let Some((_, d)) = cache().imp.clone().filter(|(at, _)| at.elapsed() < Duration::from_secs(cfg.cache_s)) {
+    if let Some((_, d)) = cache()
+        .imp
+        .clone()
+        .filter(|(at, _)| at.elapsed() < Duration::from_secs(cfg.cache_s))
+    {
         return Ok(d);
     }
     let doc = Arc::new(build_impact(&r, &cfg, &app.settings().number()));
@@ -898,7 +1474,11 @@ pub async fn impact(app: &App) -> Result<Arc<ImpactDoc>, String> {
 }
 
 fn csv_field(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 fn cell_string(c: &Cell) -> String {
@@ -911,21 +1491,55 @@ fn cell_string(c: &Cell) -> String {
 }
 
 /// One table as a download: the rows whose cells contain `q` (any case), as CSV or JSON.
-pub fn export(doc: &TelDoc, table: &str, format: &str, q: &str) -> Option<(String, &'static str, String)> {
+pub fn export(
+    doc: &TelDoc,
+    table: &str,
+    format: &str,
+    q: &str,
+) -> Option<(String, &'static str, String)> {
     let t = doc.tables.iter().find(|t| t.id == table)?;
     let q = q.to_lowercase();
-    let rows: Vec<&Vec<Cell>> = t.rows.iter().filter(|r| q.is_empty() || r.iter().any(|c| cell_string(c).to_lowercase().contains(&q))).collect();
+    let rows: Vec<&Vec<Cell>> = t
+        .rows
+        .iter()
+        .filter(|r| q.is_empty() || r.iter().any(|c| cell_string(c).to_lowercase().contains(&q)))
+        .collect();
     if format == "json" {
         let items: Vec<serde_json::Map<String, Value>> = rows
             .iter()
-            .map(|r| t.cols.iter().zip(r.iter()).map(|(col, cell)| (col.key.clone(), serde_json::to_value(cell).unwrap_or_default())).collect())
+            .map(|r| {
+                t.cols
+                    .iter()
+                    .zip(r.iter())
+                    .map(|(col, cell)| {
+                        (
+                            col.key.clone(),
+                            serde_json::to_value(cell).unwrap_or_default(),
+                        )
+                    })
+                    .collect()
+            })
             .collect();
-        return Some((format!("{table}.json"), "application/json", serde_json::to_string_pretty(&items).unwrap_or_default()));
+        return Some((
+            format!("{table}.json"),
+            "application/json",
+            serde_json::to_string_pretty(&items).unwrap_or_default(),
+        ));
     }
-    let mut out = t.cols.iter().map(|c| csv_field(&c.key)).collect::<Vec<_>>().join(",");
+    let mut out = t
+        .cols
+        .iter()
+        .map(|c| csv_field(&c.key))
+        .collect::<Vec<_>>()
+        .join(",");
     out.push('\n');
     for r in rows {
-        out.push_str(&r.iter().map(|c| csv_field(&cell_string(c))).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &r.iter()
+                .map(|c| csv_field(&cell_string(c)))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push('\n');
     }
     Some((format!("{table}.csv"), "text/csv; charset=utf-8", out))

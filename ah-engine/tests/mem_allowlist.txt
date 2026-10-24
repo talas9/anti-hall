@@ -91,3 +91,7 @@ metrics.rs | PENDING | telemetry.max_series: bump() adds no new series once that
 threads.rs | EXITED | diagnostics.tally_hard_keys: a new thread name past it is not kept | CPU of ended threads by thread name (status --threads exited_by_name)
 threads.rs | TALLY | diagnostics.tally_hard_keys: a new key past it is dropped and counted in tally_dropped | labelled work counters (site x cause) for status --threads
 nodeback/shadow.rs | CAPTURE | the checks of the call being shadowed, taken at its end | per-request
+devswarm_rt/linefile.rs | LAST | a single entry: the rows text (one short row per workspace, so bounded by the workspace count) and the time of the last write | what the last write of the line copy contained, so an unchanged reconcile does not rewrite the file
+obs/counters.rs | LOGGED | emptied at diagnostics.abandoned_log_keys_max entries; one entry per abandoned site and reason | when an abandoned site last logged and how many were counted since, to throttle the event log
+script/mod.rs | SESSIONS | at most script.notice_max entries (one per serving thread); cleared when full | the session of the request each serving thread is answering, so a guard that is not guarding is told once per session
+script/mod.rs | SEEN | at most script.notice_max (session, check) pairs; cleared when full: at worst one notice repeats | the pairs already told that a guard is not guarding

@@ -209,7 +209,11 @@ pub fn run(args: &[String]) -> i32 {
     if p.command == "version" {
         defaults::use_cache();
         let v = if defaults::init().is_ok() { crate::version() } else { crate::build_version().to_string() };
-        emit(&p, v.clone(), json!({"version": v, "features": crate::FEATURES, "compat": {"plugin_min": crate::compat::PLUGIN_MIN, "hook_min": crate::compat::HOOK_MIN, "web_min": crate::compat::WEB_MIN}}));
+        emit(
+            &p,
+            v.clone(),
+            json!({"version": v, "features": crate::FEATURES, "compat": {"plugin_min": crate::compat::PLUGIN_MIN, "hook_min": crate::compat::HOOK_MIN, "web_min": crate::compat::WEB_MIN}}),
+        );
         return 0;
     }
     // an explicit `--plugin-root <dir>` decides which plugin's files are read, before anything is loaded
@@ -753,7 +757,8 @@ fn cmd_config_explain(p: &Parsed) -> i32 {
         emit(p, msg.to_string(), json!({"error": msg}));
         return 64;
     };
-    let cwd = Some(flag(p, "cwd")).filter(|c| !c.is_empty()).or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned())).unwrap_or_default();
+    let cwd =
+        Some(flag(p, "cwd")).filter(|c| !c.is_empty()).or_else(|| std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned())).unwrap_or_default();
     let found = match key.strip_prefix(defaults::text("layers.explain_rule_prefix")) {
         Some(id) => crate::layers::explain_rule(id, &cwd),
         None => {
@@ -767,10 +772,20 @@ fn cmd_config_explain(p: &Parsed) -> i32 {
         emit(p, msg.clone(), json!({"error": msg}));
         return 1;
     };
-    let mut lines = vec![defaults::render("msg.layer_explain_header", &[("key", key), ("value", &v["value"].as_str().map(str::to_string).unwrap_or_else(|| v["value"].to_string())), ("source", &v["source"].as_str().unwrap_or(""))])];
+    let mut lines = vec![defaults::render(
+        "msg.layer_explain_header",
+        &[
+            ("key", key),
+            ("value", &v["value"].as_str().map(str::to_string).unwrap_or_else(|| v["value"].to_string())),
+            ("source", &v["source"].as_str().unwrap_or("")),
+        ],
+    )];
     for l in v["layers"].as_array().into_iter().flatten() {
         let state = l["state"].as_str().unwrap_or("");
-        lines.push(defaults::render("msg.layer_explain_line", &[("layer", &l["layer"].as_str().unwrap_or("")), ("state", &state), ("value", &l["value"].to_string())]));
+        lines.push(defaults::render(
+            "msg.layer_explain_line",
+            &[("layer", &l["layer"].as_str().unwrap_or("")), ("state", &state), ("value", &l["value"].to_string())],
+        ));
     }
     match &v["refused"] {
         Value::Array(a) => lines.extend(a.iter().filter_map(Value::as_str).map(String::from)),

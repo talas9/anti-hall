@@ -188,9 +188,15 @@ impl Settings {
             .and_then(|v| v.as_table())
             .and_then(|t| t.get(field))
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            });
         from_file
-            .or_else(|| builtin::list_table(key, field).map(|l| l.iter().map(|s| s.to_string()).collect()))
+            .or_else(|| {
+                builtin::list_table(key, field).map(|l| l.iter().map(|s| s.to_string()).collect())
+            })
             .unwrap_or_default()
     }
 

@@ -100,7 +100,13 @@ fn pick_freshest_live(inv: &Inv, reader: Option<&crate::mesh::MeshReader>, list:
         let (exists, value, unread) = cursor_evidence(reader, &d.id);
         let drain_bad = any_drain && exists == Some(false) && value <= 0.0 && unread == Some(true);
         let credit = crate::meshw::rosterrows::session_authored_heartbeat(inv, &d.id) == Some(true);
-        let score = [f64::from(!alias), f64::from(!drain_bad), f64::from(credit), d.updated_at.filter(|u| u.is_finite()).unwrap_or(-1.0), if reader.is_some() { value } else { -1.0 }];
+        let score = [
+            f64::from(!alias),
+            f64::from(!drain_bad),
+            f64::from(credit),
+            d.updated_at.filter(|u| u.is_finite()).unwrap_or(-1.0),
+            if reader.is_some() { value } else { -1.0 },
+        ];
         if best.as_ref().is_none_or(|(_, b)| score.partial_cmp(b) == Some(std::cmp::Ordering::Greater)) {
             best = Some((i, score));
         }
@@ -120,11 +126,13 @@ fn pick_freshest_live(inv: &Inv, reader: Option<&crate::mesh::MeshReader>, list:
 
 /// A worktree label row nobody reads: a `primary-<hash>` id with no session (or a synthetic one) and no reader of its partition. A
 /// spawn pre-registers the child's worktree under such a label and the child later registers under its own id; a message sent to the
-/// label in between waits in a partition no session reads until reconcile folds the label into the child (SkyCrew 2026-10-22: four
+/// label in between waits in a partition no session reads until reconcile folds the label into the child (downstream 2026-10-22: four
 /// minutes of silence behind "verified").
 fn label_without_reader(row: &Row, readers: usize) -> bool {
     let session = row.session_id.as_deref().unwrap_or("");
-    row.id.starts_with(defaults::text("mesh_write.primary_prefix")) && readers == 0 && (session.is_empty() || session.starts_with(defaults::text("mesh_write.synthetic_session_prefix")))
+    row.id.starts_with(defaults::text("mesh_write.primary_prefix"))
+        && readers == 0
+        && (session.is_empty() || session.starts_with(defaults::text("mesh_write.synthetic_session_prefix")))
 }
 
 /// What `resolveReadArgToId` made of a read verb's id argument.
@@ -520,7 +528,10 @@ fn run_multi(inv: &Inv, a: &Args, recipients: &[String]) -> R<Answer> {
             match &inv.stdin {
                 Some(sv) => sv.clone(),
                 None => {
-                    let msg = defaults::render("devswarm_cli.msg_send_multi_stdin_unreadable", &[("why", &defaults::text("devswarm_cli.send_stdin_unavailable_why"))]);
+                    let msg = defaults::render(
+                        "devswarm_cli.msg_send_multi_stdin_unreadable",
+                        &[("why", &defaults::text("devswarm_cli.send_stdin_unavailable_why"))],
+                    );
                     return refused_multi_text(a, &msg);
                 }
             }
@@ -860,8 +871,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         None => None,
     };
     let partition = target.as_ref().map(|t| t.id.clone());
-    let no_reader = !broadcast
-        && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
+    let no_reader = !broadcast && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, partition.as_deref())?;
     if plan {
@@ -1068,14 +1078,11 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
     if let Some((from, why)) = c.reroute {
         out.put("rerouted", OVal::Bool(true)).put("reroutedFrom", s(from)).put("rerouteReason", s(why));
     }
-    out.put("bytes", n(bytes))
-        .put("hash", s(&hash));
+    out.put("bytes", n(bytes)).put("hash", s(&hash));
     if c.rehomed {
         out.put("rehomedFromHashBucket", OVal::Bool(true));
     }
-    out.put("needsReply", OVal::Bool(c.question))
-        .put("answers", OVal::Bool(c.answers))
-        .put("toId", s_or_null(if c.broadcast { None } else { c.partition }));
+    out.put("needsReply", OVal::Bool(c.question)).put("answers", OVal::Bool(c.answers)).put("toId", s_or_null(if c.broadcast { None } else { c.partition }));
     if let Some(k) = c.candidates {
         out.put("candidates", n(k as f64));
     }
@@ -1154,7 +1161,7 @@ mod label_tests {
         Row { id: id.into(), worktree_path: Some("/w".into()), session_id: session.map(str::to_string), updated_at: None }
     }
 
-    /// SkyCrew 2026-10-22: a send to the spawn's worktree label (`primary-da4fa4d6`) was "verified" into a partition no session read.
+    /// downstream 2026-10-22: a send to the spawn's worktree label (`primary-da4fa4d6`) was "verified" into a partition no session read.
     #[test]
     fn a_worktree_label_nobody_reads_is_flagged_and_a_live_reader_is_not() {
         assert!(label_without_reader(&row("primary-da4fa4d6", None), 0), "a pre-registered label with no session and no reader");
@@ -1278,7 +1285,12 @@ mod label_tests {
         let inv = scratch_inv("wtshape");
         let dir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
         std::fs::create_dir_all(&dir).unwrap();
-        for (id, body) in [("d-num", r#"{"worktreePath": 5}"#), ("d-arr", r#"{"worktreePath": ["/a", "/b"]}"#), ("d-obj", r#"{"worktreePath": {"x": 1}}"#), ("d-true", r#"{"worktreePath": true}"#)] {
+        for (id, body) in [
+            ("d-num", r#"{"worktreePath": 5}"#),
+            ("d-arr", r#"{"worktreePath": ["/a", "/b"]}"#),
+            ("d-obj", r#"{"worktreePath": {"x": 1}}"#),
+            ("d-true", r#"{"worktreePath": true}"#),
+        ] {
             std::fs::write(dir.join(format!("{id}{}", defaults::text("mesh_write.json_suffix"))), body).unwrap();
             assert!(descriptor_mesh_id(&inv.home, id).is_ok(), "{id}");
         }

@@ -533,8 +533,12 @@ impl Event {
                 m.insert("spawn_key".into(), json!(r.spawn_key.as_str()));
             }
             Extras::Spawn(s) => {
-                if let Some(start) = s.started_ms { m.insert("started_ms".into(), json!(start)); }
-                if let Some(key) = &s.agent_key { m.insert("agent_key".into(), json!(key.as_str())); }
+                if let Some(start) = s.started_ms {
+                    m.insert("started_ms".into(), json!(start));
+                }
+                if let Some(key) = &s.agent_key {
+                    m.insert("agent_key".into(), json!(key.as_str()));
+                }
                 m.insert("spawn_key".into(), json!(s.spawn_key.as_str()));
                 m.insert("actual_model".into(), json!(s.actual_model.as_str()));
                 m.insert("in".into(), json!(s.usage.input));
@@ -695,7 +699,16 @@ mod tests {
         assert_eq!(Event::from_json(&e.to_json()).unwrap(), e);
         let usage = Usage { input: 1, output: 2, cache_read: 3, cache_write: 4 };
         for (kind, ex) in [
-            (Kind::Spawn, Extras::Spawn(Spawn { started_ms: None, agent_key: None, spawn_key: Token::new("k1").unwrap(), actual_model: Token::new("haiku").unwrap(), usage })),
+            (
+                Kind::Spawn,
+                Extras::Spawn(Spawn {
+                    started_ms: None,
+                    agent_key: None,
+                    spawn_key: Token::new("k1").unwrap(),
+                    actual_model: Token::new("haiku").unwrap(),
+                    usage,
+                }),
+            ),
             (
                 Kind::Jev,
                 Extras::Jev(Jev {

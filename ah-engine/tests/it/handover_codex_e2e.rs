@@ -71,7 +71,10 @@ impl Env {
         for _ in 0..80 {
             last = self.run(event, id, false, payload, extra);
             // a cold daemon passes the call through with a one-line notice on stderr: that is not readiness either
-            if !last.1.contains("NODE-RAN") && !last.2.starts_with("anti-hall: the engine did not answer") && (last.0 != 0 || !last.1.is_empty() || !last.2.is_empty()) {
+            if !last.1.contains("NODE-RAN")
+                && !last.2.starts_with("anti-hall: the engine did not answer")
+                && (last.0 != 0 || !last.1.is_empty() || !last.2.is_empty())
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));

@@ -117,7 +117,12 @@ fn stall_check(env: &Env, a: &mut Agent) {
     };
     // stalled_call: the oldest foreground call that is not exempt
     let exempt = defaults::raw("agent_stall.policy").get("exempt_tools").map(V::strings).unwrap_or_default();
-    let call = a.pending.iter().filter(|(_, p)| !p.bg && !exempt.contains(&p.name.to_lowercase().as_str())).min_by_key(|(_, p)| p.ts).map(|(k, p)| (k.clone(), p.clone()));
+    let call = a
+        .pending
+        .iter()
+        .filter(|(_, p)| !p.bg && !exempt.contains(&p.name.to_lowercase().as_str()))
+        .min_by_key(|(_, p)| p.ts)
+        .map(|(k, p)| (k.clone(), p.clone()));
     let limit = stall_lim("stalled_call_ms");
     let mut seen_call = String::new();
     if let Some((id, p)) = call.filter(|_| limit > 0) {
@@ -131,7 +136,9 @@ fn stall_check(env: &Env, a: &mut Agent) {
                 let cur = super::procs::cpu_of(&kids);
                 if a.waste.cpu_call != id {
                     (a.waste.cpu_call, a.waste.cpu_ms, a.waste.cpu_pm, a.waste.cpu_at) = (id.clone(), cur.0, cur.1, now);
-                } else if let Some(idle) = super::procs::idle_since((a.waste.cpu_ms, a.waste.cpu_at), cur, now, stall_lim("min_cpu_span_ms"), stall_lim("idle_pm")) {
+                } else if let Some(idle) =
+                    super::procs::idle_since((a.waste.cpu_ms, a.waste.cpu_at), cur, now, stall_lim("min_cpu_span_ms"), stall_lim("idle_pm"))
+                {
                     busy = !idle;
                     cpu_word = stall_text("cpu_idle");
                     if busy {
@@ -142,7 +149,12 @@ fn stall_check(env: &Env, a: &mut Agent) {
             }
         }
         if !busy {
-            rank(age, limit, &mut parts, defaults::fill(stall_text("stalled_fmt"), &[("label", &super::cap(&p.label, lim("line_cap"))), ("min", &(age / min_ms)), ("cpu", &cpu_word)]));
+            rank(
+                age,
+                limit,
+                &mut parts,
+                defaults::fill(stall_text("stalled_fmt"), &[("label", &super::cap(&p.label, lim("line_cap"))), ("min", &(age / min_ms)), ("cpu", &cpu_word)]),
+            );
         }
     }
     if seen_call.is_empty() {
@@ -150,7 +162,11 @@ fn stall_check(env: &Env, a: &mut Agent) {
     }
     // no_outcome_time: a read-heavy role is allowed longer; the main session and Primary have their own (longer) limit
     let base = if pol("hard_kinds").contains(&a.kind.as_str()) { stall_lim("no_outcome_ms") } else { stall_lim("no_outcome_other_ms") };
-    let limit = if formula::read_heavy(&a.name) { base * defaults::raw("agent_waste.relief").get("divisor_pct").and_then(V::as_integer).unwrap_or(pct as i64).max(0) as u64 / pct } else { base };
+    let limit = if formula::read_heavy(&a.name) {
+        base * defaults::raw("agent_waste.relief").get("divisor_pct").and_then(V::as_integer).unwrap_or(pct as i64).max(0) as u64 / pct
+    } else {
+        base
+    };
     let quiet = now.saturating_sub(a.waste.outcome_at);
     rank(quiet, limit, &mut parts, defaults::fill(stall_text("quiet_fmt"), &[("min", &(quiet / min_ms))]));
     a.waste.stall = parts.join("; ");
@@ -210,7 +226,15 @@ fn reason_of(i: &Input) -> String {
     let p = |x: f64| (x * 100.0).round() as u64;
     defaults::render(
         "agent_waste.reason_fmt",
-        &[("tokens_k", &(i.tokens / 1000)), ("outcome", &i.outcome), ("reread", &p(i.reread)), ("repeat", &p(i.repeat)), ("poll", &p(i.poll)), ("wait", &p(i.wait)), ("fail", &i.failed)],
+        &[
+            ("tokens_k", &(i.tokens / 1000)),
+            ("outcome", &i.outcome),
+            ("reread", &p(i.reread)),
+            ("repeat", &p(i.repeat)),
+            ("poll", &p(i.poll)),
+            ("wait", &p(i.wait)),
+            ("fail", &i.failed),
+        ],
     )
 }
 
@@ -257,7 +281,12 @@ fn judge(env: &Env, a: &mut Agent, i: &Input, score: f64) -> bool {
         word("class"),
         word("judged"),
         if a.waste.verdict.is_empty() { Outcome::Skip } else { Outcome::Advise },
-        base(a).tok("kind", &a.kind).tok("phase", &o.phase).tok("verdict", &a.waste.verdict).num("ms", o.ms).num("conf_pct", (a.waste.confidence * 100.0) as u64),
+        base(a)
+            .tok("kind", &a.kind)
+            .tok("phase", &o.phase)
+            .tok("verdict", &a.waste.verdict)
+            .num("ms", o.ms)
+            .num("conf_pct", (a.waste.confidence * 100.0) as u64),
     );
     true
 }
@@ -365,7 +394,13 @@ pub(crate) fn update(env: &Env, a: &mut Agent, budget: &mut u64) {
         (true, false) => word("warn").into(),
     };
     if a.waste.action != before && !a.waste.action.is_empty() {
-        rec(env, word("class"), word("fire"), Outcome::Advise, base(a).tok("kind", &a.kind).tok("action", &a.waste.action).tok("source", &a.waste.source).num("score", s as u64));
+        rec(
+            env,
+            word("class"),
+            word("fire"),
+            Outcome::Advise,
+            base(a).tok("kind", &a.kind).tok("action", &a.waste.action).tok("source", &a.waste.source).num("score", s as u64),
+        );
     }
 }
 
@@ -396,7 +431,15 @@ pub(crate) fn text(who: &str, a: &Agent, evidence: u64, stored: &str) -> String 
     let (source, verdict, reason) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
     defaults::render(
         "msg.agent_waste",
-        &[("agent", &who), ("kind", &a.kind), ("score", &evidence), ("source", &source), ("verdict", &verdict), ("window", &super::sinks::age(lim("window_ms"))), ("reason", &reason)],
+        &[
+            ("agent", &who),
+            ("kind", &a.kind),
+            ("score", &evidence),
+            ("source", &source),
+            ("verdict", &verdict),
+            ("window", &super::sinks::age(lim("window_ms"))),
+            ("reason", &reason),
+        ],
     )
 }
 

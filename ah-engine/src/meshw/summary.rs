@@ -1143,7 +1143,15 @@ mod tests {
     }
 
     fn inv_in(dir: &std::path::Path) -> Inv {
-        Inv { home: dir.to_path_buf(), env: HashMap::new(), cwd: dir.to_string_lossy().into_owned(), now: 1, stdin: None, write_home: dir.to_path_buf(), store_override: None }
+        Inv {
+            home: dir.to_path_buf(),
+            env: HashMap::new(),
+            cwd: dir.to_string_lossy().into_owned(),
+            now: 1,
+            stdin: None,
+            write_home: dir.to_path_buf(),
+            store_override: None,
+        }
     }
 
     #[test]
@@ -1160,7 +1168,8 @@ mod tests {
         defaults::init().unwrap();
         let dir = scratch("relcursor");
         let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
-        let row = RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
         st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
         let ws = devswarm_root(&dir).join(defaults::text("mesh_write.dir_workspaces"));
         std::fs::create_dir_all(&ws).unwrap();

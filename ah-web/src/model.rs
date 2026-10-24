@@ -1,6 +1,6 @@
 //! What the server knows, and the changes between its states. Every change gets a sequence number and is kept in a short ring, so a
 //! stream asks "what moved since n" and is answered with one merged [`Delta`]; a stream that fell behind the ring gets a snapshot.
-use ah_web_proto::{JevEvt, ActionEvt, Agent, Decision, Delta, FeedItem, Pulse, Snapshot};
+use ah_web_proto::{ActionEvt, Agent, Decision, Delta, FeedItem, JevEvt, Pulse, Snapshot};
 use std::collections::{BTreeMap, VecDeque};
 
 /// What one poll found (every field is "unchanged" when `None` / empty).
@@ -87,9 +87,19 @@ impl Model {
             self.rev = r;
         }
         if let Some(list) = f.agents {
-            let mut next: BTreeMap<String, Agent> = list.into_iter().map(|a| (a.id.clone(), a)).collect();
-            d.removed = self.agents.keys().filter(|k| !next.contains_key(*k)).cloned().collect();
-            d.upsert = next.values().filter(|a| self.agents.get(&a.id) != Some(*a)).cloned().collect();
+            let mut next: BTreeMap<String, Agent> =
+                list.into_iter().map(|a| (a.id.clone(), a)).collect();
+            d.removed = self
+                .agents
+                .keys()
+                .filter(|k| !next.contains_key(*k))
+                .cloned()
+                .collect();
+            d.upsert = next
+                .values()
+                .filter(|a| self.agents.get(&a.id) != Some(*a))
+                .cloned()
+                .collect();
             std::mem::swap(&mut self.agents, &mut next);
             if let Some(g) = f.generated_ms.filter(|g| *g != self.generated_ms) {
                 self.generated_ms = g;
@@ -102,7 +112,12 @@ impl Model {
         }
         for (ts_ms, tone, text) in f.feed {
             self.feed_n += 1;
-            let item = FeedItem { n: self.feed_n, ts_ms, tone, text };
+            let item = FeedItem {
+                n: self.feed_n,
+                ts_ms,
+                tone,
+                text,
+            };
             self.feed.push_back(item.clone());
             while self.feed.len() > self.feed_cap {
                 self.feed.pop_front();
@@ -118,7 +133,16 @@ impl Model {
         }
         d.actions = f.actions;
         d.jev = f.jev;
-        if d.engine_ok.is_none() && d.generated_ms.is_none() && d.pulse.is_none() && d.upsert.is_empty() && d.removed.is_empty() && d.feed.is_empty() && d.decisions.is_empty() && d.actions.is_empty() && d.jev.is_empty() {
+        if d.engine_ok.is_none()
+            && d.generated_ms.is_none()
+            && d.pulse.is_none()
+            && d.upsert.is_empty()
+            && d.removed.is_empty()
+            && d.feed.is_empty()
+            && d.decisions.is_empty()
+            && d.actions.is_empty()
+            && d.jev.is_empty()
+        {
             return;
         }
         self.seq += 1;
@@ -134,7 +158,16 @@ impl Model {
         if id.is_empty() {
             return None;
         }
-        self.agents.get(id).cloned().or_else(|| (id.len() >= min_chars).then(|| self.agents.values().find(|a| !a.placeholder && (a.id.starts_with(id) || id.starts_with(&a.id))).cloned()).flatten())
+        self.agents.get(id).cloned().or_else(|| {
+            (id.len() >= min_chars)
+                .then(|| {
+                    self.agents
+                        .values()
+                        .find(|a| !a.placeholder && (a.id.starts_with(id) || id.starts_with(&a.id)))
+                        .cloned()
+                })
+                .flatten()
+        })
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -159,7 +192,10 @@ impl Model {
         if last > self.seq || last + 1 < first {
             return Out::Snapshot(self.snapshot());
         }
-        let mut out = Delta { seq: self.seq, ..Delta::default() };
+        let mut out = Delta {
+            seq: self.seq,
+            ..Delta::default()
+        };
         let mut up: BTreeMap<String, Agent> = BTreeMap::new();
         for d in self.ring.iter().filter(|d| d.seq > last) {
             out.engine_ok = d.engine_ok.or(out.engine_ok);

@@ -64,7 +64,8 @@ fn only_real_environment_variables_are_mentioned() {
         .collect();
     let re = regex::Regex::new(r"AH_ENGINE_[A-Z_]+").unwrap();
     // an override that only the plugin's Node side reads (the bootstrap switch) is real too: it is a settings-schema `env`
-    let schema = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
+    let schema =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/settings-schema.js")).unwrap();
     let known: BTreeSet<&str> = known.into_iter().chain(re.find_iter(&schema).map(|m| m.as_str())).collect();
     for m in re.find_iter(&d) {
         assert!(known.contains(m.as_str()), "docs/AH-ENGINE.md mentions {} which is not a shipped environment variable", m.as_str());

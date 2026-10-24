@@ -11,7 +11,7 @@
 ## Checklist
 
 - [ ] Base branch is `dev` (only the maintainer's `dev` → `main` release pull request targets `main`)
-- [ ] `node --test` passes locally (pushes to `dev` run no CI; a pull request runs the full workflow, so check the Actions result too)
+- [ ] the engine's test packs pass locally (pushes to `dev` run no CI; a pull request runs the full workflow, so check the Actions result too)
 - [ ] Both ports considered: Claude plus the Codex mirror under `plugins/anti-hall/codex/`, or N/A with the reason stated here
 - [ ] A fix includes a regression test
 - [ ] A new feature adds a settings key (`plugins/anti-hall-node/hooks/lib/settings-schema.js`) and a row in `docs/GUIDE.md`

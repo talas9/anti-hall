@@ -191,7 +191,10 @@ impl Settings {
 
     /// The number format of the page.
     pub fn number(&self) -> ah_web_proto::NumFmt {
-        ah_web_proto::NumFmt { units: self.number_units.clone(), decimals: self.number_decimals }
+        ah_web_proto::NumFmt {
+            units: self.number_units.clone(),
+            decimals: self.number_decimals,
+        }
     }
 
     /// The Live screen's part of the start-up data.
@@ -229,7 +232,14 @@ impl Settings {
             actions: self
                 .topo_actions
                 .iter()
-                .map(|a| ah_web_proto::TopoActionDef { kind: a.kind.clone(), name: a.name.clone(), label: a.label.clone(), confirm: a.confirm, local: a.local, needs_viewer: a.needs_viewer })
+                .map(|a| ah_web_proto::TopoActionDef {
+                    kind: a.kind.clone(),
+                    name: a.name.clone(),
+                    label: a.label.clone(),
+                    confirm: a.confirm,
+                    local: a.local,
+                    needs_viewer: a.needs_viewer,
+                })
                 .collect(),
             databases: self.topo_databases.clone(),
             warn_fail_pct: self.topo_warn_fail_pct,
@@ -245,34 +255,58 @@ impl Settings {
 
     /// The menu the page shows (the engine arguments stay on the server).
     pub fn menu(&self) -> Vec<ah_web_proto::ActionDef> {
-        self.actions.iter().map(|a| ah_web_proto::ActionDef { name: a.name.clone(), label: a.label.clone(), confirm: a.confirm, local: a.local }).collect()
+        self.actions
+            .iter()
+            .map(|a| ah_web_proto::ActionDef {
+                name: a.name.clone(),
+                label: a.label.clone(),
+                confirm: a.confirm,
+                local: a.local,
+            })
+            .collect()
     }
 
     /// Read `path` (a `web.toml`: every `[web.<name>]` table's `value`).
     pub fn load(path: &Path) -> Result<Settings, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
-        let web = doc.get("web").and_then(toml::Value::as_table).ok_or("no [web] section")?;
+        let doc: toml::Table = text
+            .parse()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let web = doc
+            .get("web")
+            .and_then(toml::Value::as_table)
+            .ok_or("no [web] section")?;
         let mut flat = toml::Table::new();
         for (name, entry) in web {
             if let Some(v) = entry.get("value") {
                 flat.insert(name.clone(), v.clone());
             }
         }
-        toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
+        toml::Value::Table(flat)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 }
 
 /// The graph component's config as the JSON text the page reads: every `[web.graph.<path>]` table's `value` at `<path>`.
 pub fn graph_json(path: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
-    let graph = doc.get("web").and_then(|w| w.get("graph")).and_then(toml::Value::as_table).ok_or("no [web.graph] section")?;
+    let doc: toml::Table = text
+        .parse()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let graph = doc
+        .get("web")
+        .and_then(|w| w.get("graph"))
+        .and_then(toml::Value::as_table)
+        .ok_or("no [web.graph] section")?;
     fn walk(t: &toml::Table, out: &mut serde_json::Map<String, serde_json::Value>) {
         for (k, v) in t {
             match v.as_table() {
                 Some(sub) if sub.contains_key("value") && sub.contains_key("doc") => {
-                    out.insert(k.clone(), serde_json::to_value(&sub["value"]).unwrap_or_default());
+                    out.insert(
+                        k.clone(),
+                        serde_json::to_value(&sub["value"]).unwrap_or_default(),
+                    );
                 }
                 Some(sub) => {
                     let mut child = serde_json::Map::new();

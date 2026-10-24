@@ -537,7 +537,11 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
     let started_ms =
         std::fs::metadata(&m).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
     let breadcrumb = read_json("crash_breadcrumb");
-    let breadcrumb_ms = breadcrumb.as_ref().filter(|b| b.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(pid))).and_then(|b| b.get("ts").and_then(serde_json::Value::as_u64)).unwrap_or(0);
+    let breadcrumb_ms = breadcrumb
+        .as_ref()
+        .filter(|b| b.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(pid)))
+        .and_then(|b| b.get("ts").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
     let last_alive_ms = started_ms.max(breadcrumb_ms);
     let claim = file(&format!("{}{}", defaults::text("files.reaped_prefix"), std::process::id()));
     if std::fs::rename(&m, &claim).is_ok() {
@@ -734,7 +738,9 @@ fn degraded_reasons(ev: &[Event], now: u64, window: Duration, loop_left: Option<
     let started = ev.iter().rev().find(|e| e.kind == defaults::text("health.start_kind")).map_or(0, |e| e.ts);
     let (crashy, kinds, resolved) = (crashy(), defaults::list("health.degraded_kinds"), defaults::list("health.resolved_by_start_kinds"));
     // (group, kind, code) -> (count, first_ts, last_ts, last detail)
-    let mut groups: std::collections::BTreeMap<(&str, String, String), (u64, u64, u64, String)> = std::collections::BTreeMap::new();
+    type Key<'a> = (&'a str, String, String);
+    type Tally = (u64, u64, u64, String);
+    let mut groups: std::collections::BTreeMap<Key, Tally> = std::collections::BTreeMap::new();
     for e in ev.iter().filter(|e| e.ts >= floor) {
         let group = if crashy.contains(&e.kind.as_str()) && e.kind != "crashloop" {
             defaults::text("health.group_restart")
@@ -785,13 +791,18 @@ fn summary_from(ev: &[Event], now: u64, loop_left: Option<Duration>, breaker_lef
     let last = |kind: &str| ev.iter().rev().find(|e| e.kind == kind).map(|e| json!({"ts": e.ts, "code": e.code, "detail": e.detail}));
     let reasons = degraded_reasons(ev, now, window, loop_left, breaker_left);
     let defaults_rows: Vec<&Value> = reasons.iter().filter(|r| r["group"] == defaults::text("health.group_defaults")).collect();
-    let defaults_fb: serde_json::Map<String, Value> = defaults_rows.iter().map(|r| (format!("{}:{}", r["kind"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or("")), r["count"].clone())).collect();
-    let last_defaults = defaults_rows.iter().max_by_key(|r| r["last_ts"].as_u64()).map(|r| json!({"ts": r["last_ts"], "kind": r["kind"], "code": r["code"], "detail": r["detail"]}));
+    let defaults_fb: serde_json::Map<String, Value> =
+        defaults_rows.iter().map(|r| (format!("{}:{}", r["kind"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or("")), r["count"].clone())).collect();
+    let last_defaults = defaults_rows
+        .iter()
+        .max_by_key(|r| r["last_ts"].as_u64())
+        .map(|r| json!({"ts": r["last_ts"], "kind": r["kind"], "code": r["code"], "detail": r["detail"]}));
     let evidence: u64 = reasons.iter().filter_map(|r| r["count"].as_u64()).sum();
     let since = reasons.iter().filter_map(|r| r["first_ts"].as_u64()).min();
     let reason = reasons.first().map(|r| {
         let n = reasons.len();
-        let base = format!("{}:{} x{} ({})", r["kind"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or(""), r["count"], r["detail"].as_str().unwrap_or(""));
+        let base =
+            format!("{}:{} x{} ({})", r["kind"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or(""), r["count"], r["detail"].as_str().unwrap_or(""));
         if n > 1 { format!("{base} +{} more", n - 1) } else { base }
     });
     json!({
@@ -934,7 +945,12 @@ mod tests {
         let log = vec![
             ev(1_000, "watchdog", "stall", "accept loop stalled"),
             ev(5_000, "defaults_fallback", "missing_key", "defaults mesh_write.toml mesh_write.exit_defer rejected (missing_key): using the pristine copy"),
-            ev(5_001, "defaults_fallback", "missing_key", "defaults devswarm_wire.toml devswarm_wire.msg_deferred rejected (missing_key): using the pristine copy"),
+            ev(
+                5_001,
+                "defaults_fallback",
+                "missing_key",
+                "defaults devswarm_wire.toml devswarm_wire.msg_deferred rejected (missing_key): using the pristine copy",
+            ),
             ev(9_000, "start", "-", "v0.1.0 pid 27794"),
         ];
         let s = summary_from(&log, 10_000, None, None);
@@ -958,7 +974,19 @@ mod tests {
     /// and `degraded: false` carries none.
     #[test]
     fn degraded_is_never_true_without_its_reason() {
-        let kinds = ["watchdog", "crash", "panic", "rss", "start_fail", "defaults_fallback", "defaults_heal_skipped", "start", "crashloop", "discard", "system_restart"];
+        let kinds = [
+            "watchdog",
+            "crash",
+            "panic",
+            "rss",
+            "start_fail",
+            "defaults_fallback",
+            "defaults_heal_skipped",
+            "start",
+            "crashloop",
+            "discard",
+            "system_restart",
+        ];
         for mask in 0u32..(1 << kinds.len()) {
             let log: Vec<Event> = kinds.iter().enumerate().filter(|(i, _)| mask >> i & 1 == 1).map(|(i, k)| ev(1_000 + i as u64 * 100, k, "c", "d")).collect();
             for (lp, br) in [(None, None), (Some(Duration::from_secs(5)), None), (None, Some(Duration::from_secs(5)))] {

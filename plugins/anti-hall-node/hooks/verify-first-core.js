@@ -130,7 +130,7 @@ const CHILD_WORKSPACE_MAILBOX_NOTE =
 const path = require('path');
 
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
-const PROTOCOL_PATH = path.join(PLUGIN_ROOT, '..', 'anti-hall', 'PROTOCOL.md'); // PROTOCOL.md stays in the published plugin
+const PROTOCOL_PATH = path.resolve(PLUGIN_ROOT, '..', 'anti-hall', 'PROTOCOL.md'); // PROTOCOL.md stays in the published plugin
 
 // Today's text under the plan's D1 names.
 const CORE_FULL = CORE_LINES;
@@ -227,7 +227,7 @@ const ORCH_DELIVERY_SPAWN = '; sent in full on your first spawn';
 
 const WORKER = 'WORKER: do the task yourself; do not re-delegate unless told to. Your assignment is your authorization: run it to verified done; EXPANDING scope past your assignment still needs confirmation. Return a tight, scannable summary (findings only, no transcript or pasted file bodies). Background/teammate agent: SendMessage the report before finishing - a bare turn-end silently loses it; never end a turn waiting on a background task (its completion notification routes to the main session, not to you): run long commands in the foreground or poll the output file.';
 
-function withRoot(text, root) { return String(text).split('<abs>').join(root || PLUGIN_ROOT); }
+function withRoot(text, root) { return String(text).split('<abs>').join(root || path.dirname(PROTOCOL_PATH)); }
 
 // Compact session core (SessionStart, Claude and Codex): header + body + skills line.
 function coreCompactSession(root) {

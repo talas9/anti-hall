@@ -74,7 +74,9 @@ fn parse_list(text: &str, event: &str, s: &Settings) -> Section {
         if !inside {
             continue;
         }
-        let Some((matcher, rest)) = line.split_once('\t') else { continue };
+        let Some((matcher, rest)) = line.split_once('\t') else {
+            continue;
+        };
         let (timeout, command) = match rest.split_once('\t') {
             Some((t, c)) => (t.parse().ok().filter(|t| *t > 0), c),
             None => (None, rest),
@@ -96,8 +98,13 @@ fn matches(s: &Settings, matcher: &str, tool: &str) -> bool {
     }
     let exact = s.text("dispatch.exact_chars");
     let seps = s.text("dispatch.list_separators");
-    if matcher.chars().all(|c| c.is_ascii_alphanumeric() || exact.contains(c)) {
-        return matcher.split(|c| seps.contains(c)).any(|n| n.trim() == tool);
+    if matcher
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || exact.contains(c))
+    {
+        return matcher
+            .split(|c| seps.contains(c))
+            .any(|n| n.trim() == tool);
     }
     regex::Regex::new(matcher).is_ok_and(|r| r.is_match(tool))
 }
@@ -201,7 +208,11 @@ struct Ran {
 
 impl Ran {
     fn none(end: End) -> Ran {
-        Ran { end, out: Vec::new(), err: Vec::new() }
+        Ran {
+            end,
+            out: Vec::new(),
+            err: Vec::new(),
+        }
     }
 
     /// Killed by a signal, or unrunnable: the hook gave no answer of its own.
@@ -222,15 +233,21 @@ fn json_object(text: &str) -> Option<Map<String, Value>> {
 }
 
 fn blocks_json(s: &Settings, out: &str) -> bool {
-    let Some(o) = json_object(out) else { return false };
+    let Some(o) = json_object(out) else {
+        return false;
+    };
     let says = |field: &str, v: Option<&Value>| {
-        v.and_then(Value::as_str)
-            .is_some_and(|w| s.list_for("dispatch.blocking_decisions", field).iter().any(|b| b == w))
+        v.and_then(Value::as_str).is_some_and(|w| {
+            s.list_for("dispatch.blocking_decisions", field)
+                .iter()
+                .any(|b| b == w)
+        })
     };
     says("decision", o.get("decision"))
         || says(
             "permissionDecision",
-            o.get("hookSpecificOutput").and_then(|h| h.get("permissionDecision")),
+            o.get("hookSpecificOutput")
+                .and_then(|h| h.get("permissionDecision")),
         )
 }
 
@@ -248,7 +265,10 @@ fn merge(s: &Settings, event: &str, outs: &[String]) -> (String, String) {
     if objs.iter().all(Option::is_none) || outs.len() == 1 {
         return (outs.concat(), String::new());
     }
-    let fold = s.list("dispatch.plain_context_events").iter().any(|e| e == event);
+    let fold = s
+        .list("dispatch.plain_context_events")
+        .iter()
+        .any(|e| e == event);
     let (mut ctx, mut msg, mut err) = (Vec::new(), Vec::new(), String::new());
     let mut base: Option<Map<String, Value>> = None;
     let mut name: Option<String> = None;
@@ -280,7 +300,10 @@ fn merge(s: &Settings, event: &str, outs: &[String]) -> (String, String) {
         };
         if let Some(Value::Object(h)) = o.get_mut(HSO) {
             if name.is_none() {
-                name = h.get(EVENT_NAME).and_then(Value::as_str).map(str::to_string);
+                name = h
+                    .get(EVENT_NAME)
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             if let Some(Value::String(c)) = h.remove(CTX)
                 && !c.is_empty()
@@ -308,7 +331,10 @@ fn merge(s: &Settings, event: &str, outs: &[String]) -> (String, String) {
         let h = top.entry(HSO).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(h) = h {
             if !h.contains_key(EVENT_NAME) {
-                h.insert(EVENT_NAME.into(), Value::String(name.unwrap_or_else(|| event.to_string())));
+                h.insert(
+                    EVENT_NAME.into(),
+                    Value::String(name.unwrap_or_else(|| event.to_string())),
+                );
             }
             h.insert(CTX.into(), Value::String(joined));
         }
@@ -319,7 +345,10 @@ fn merge(s: &Settings, event: &str, outs: &[String]) -> (String, String) {
         top.remove(HSO);
     }
     if !msg.is_empty() {
-        top.insert(MSG.into(), Value::String(msg.join(&s.text("dispatch.message_joiner"))));
+        top.insert(
+            MSG.into(),
+            Value::String(msg.join(&s.text("dispatch.message_joiner"))),
+        );
     }
     if top.is_empty() {
         return (String::new(), err);
@@ -338,7 +367,13 @@ fn ident(s: &Settings, raw: &str) -> String {
     let cap = s.num("nodeback.ident_max_len") as usize;
     raw.chars()
         .take(cap)
-        .map(|c| if c.is_ascii_alphanumeric() || "._:@+-".contains(c) { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._:@+-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -346,7 +381,11 @@ impl Call<'_> {
     fn closed(&self, why_key: &str) -> i32 {
         let why = self.s.text(why_key);
         let subs = [("event", self.event), ("why", why.as_str())];
-        let stop = self.s.list("dispatch.guard_events").iter().any(|e| e == self.event)
+        let stop = self
+            .s
+            .list("dispatch.guard_events")
+            .iter()
+            .any(|e| e == self.event)
             && (self.event == "Stop" || self.event == "SubagentStop")
             && json_true_field(self.payload, "stop_hook_active");
         if stop {
@@ -365,12 +404,21 @@ impl Call<'_> {
         }
         serde_json::from_slice::<Value>(self.payload)
             .ok()
-            .and_then(|v| v.get(self.s.text("launcher.nodeback_tool_field"))?.as_str().map(str::to_string))
+            .and_then(|v| {
+                v.get(self.s.text("launcher.nodeback_tool_field"))?
+                    .as_str()
+                    .map(str::to_string)
+            })
             .map_or(Tool::Any, Tool::Name)
     }
 
     fn tool_event(&self) -> bool {
-        self.tool_from_payload || self.s.list("launcher.nodeback_tool_events").iter().any(|e| e == self.event)
+        self.tool_from_payload
+            || self
+                .s
+                .list("launcher.nodeback_tool_events")
+                .iter()
+                .any(|e| e == self.event)
     }
 
     fn vars(&self, root: &Path) -> Vec<(String, String)> {
@@ -391,10 +439,16 @@ impl Call<'_> {
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
             .and_then(|m| {
-                m.get(self.event)?.as_object()?.iter().find(|(_, c)| c.as_str() == Some(command)).map(|(k, _)| k.clone())
+                m.get(self.event)?
+                    .as_object()?
+                    .iter()
+                    .find(|(_, c)| c.as_str() == Some(command))
+                    .map(|(k, _)| k.clone())
             });
         let name = mapped.or_else(|| {
-            script.and_then(|p| Path::new(p).file_stem()).map(|f| f.to_string_lossy().into_owned())
+            script
+                .and_then(|p| Path::new(p).file_stem())
+                .map(|f| f.to_string_lossy().into_owned())
         });
         ident(self.s, &name.unwrap_or_default())
     }
@@ -405,7 +459,10 @@ impl Call<'_> {
         if file.is_empty() || self.state_dir.as_os_str().is_empty() {
             return;
         }
-        let (out, err) = (String::from_utf8_lossy(&ran.out), String::from_utf8_lossy(&ran.err));
+        let (out, err) = (
+            String::from_utf8_lossy(&ran.out),
+            String::from_utf8_lossy(&ran.err),
+        );
         let (v, why) = match ran.end {
             End::TimedOut => ("timeout", "timeout"),
             _ if ran.hard_failure() => ("error", "died"),
@@ -421,12 +478,17 @@ impl Call<'_> {
         });
         let path = self.state_dir.join(file);
         let _ = std::fs::create_dir_all(self.state_dir);
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > self.s.num("nodeback.ledger_max_bytes")) {
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > self.s.num("nodeback.ledger_max_bytes"))
+        {
             let mut old = path.clone().into_os_string();
             old.push(".1");
             let _ = std::fs::rename(&path, old);
         }
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = f.write_all(format!("{row}\n").as_bytes());
         }
     }
@@ -464,10 +526,21 @@ impl Call<'_> {
                 // node exits 1 when it cannot load the script or a module: unrunnable, not the hook's own decision
                 let text = String::from_utf8_lossy(&err);
                 let markers = self.s.list("launcher.nodeback_unrunnable_markers");
-                if code == 1 && !markers.is_empty() && markers.iter().all(|m| text.contains(m.as_str())) {
-                    return Ran { end: End::Unrunnable, out, err };
+                if code == 1
+                    && !markers.is_empty()
+                    && markers.iter().all(|m| text.contains(m.as_str()))
+                {
+                    return Ran {
+                        end: End::Unrunnable,
+                        out,
+                        err,
+                    };
                 }
-                Ran { end: End::Code(code), out, err }
+                Ran {
+                    end: End::Code(code),
+                    out,
+                    err,
+                }
             }
             Run::TimedOut => Ran::none(End::TimedOut),
             Run::GroupAlive | Run::SpawnFailed { .. } => Ran::none(End::Unrunnable),
@@ -481,21 +554,32 @@ impl Call<'_> {
         };
         let node_dir = root.join(self.s.text("nodeback.node_dir"));
         if !node_dir.is_dir() {
-            say(&self.s.msg("nodeback.msg_no_node_dir", &[("dir", &node_dir.display().to_string())]));
+            say(&self.s.msg(
+                "nodeback.msg_no_node_dir",
+                &[("dir", &node_dir.display().to_string())],
+            ));
             return 0;
         }
-        let list = self
-            .list_override
-            .clone()
-            .unwrap_or_else(|| node_dir.join(self.s.text(&format!("launcher.fallback_list_{}", self.host))));
+        let list = self.list_override.clone().unwrap_or_else(|| {
+            node_dir.join(
+                self.s
+                    .text(&format!("launcher.fallback_list_{}", self.host)),
+            )
+        });
         let Ok(text) = std::fs::read_to_string(&list) else {
-            return if self.guard { self.closed("msg.launcher_nodeback_why_no_list") } else { 0 };
+            return if self.guard {
+                self.closed("msg.launcher_nodeback_why_no_list")
+            } else {
+                0
+            };
         };
         if self.guard && text.trim().is_empty() {
             return self.closed("msg.launcher_nodeback_why_no_list");
         }
         let sec = parse_list(&text, self.event, self.s);
-        let default_timeout = sec.timeout.unwrap_or_else(|| self.s.num("client.wrapper_default_timeout_s").max(1));
+        let default_timeout = sec
+            .timeout
+            .unwrap_or_else(|| self.s.num("client.wrapper_default_timeout_s").max(1));
         let tool = self.tool();
         let vars = self.vars(root);
         let inv = format!("fb{:x}{:x}", std::process::id(), now_ms());
@@ -519,17 +603,29 @@ impl Call<'_> {
             };
             let Some(prog) = w.first() else { continue };
             selected += 1;
-            if !self.s.list("launcher.nodeback_runners").iter().any(|r| r == prog) {
+            if !self
+                .s
+                .list("launcher.nodeback_runners")
+                .iter()
+                .any(|r| r == prog)
+            {
                 // a no-op script of the dispatch table (the engine answers that entry in-process): nothing to run
                 ran_any = true;
                 continue;
             }
             let t0 = now_ms();
-            let script = w.iter().zip(&rooted).skip(1).find(|(_, r)| **r).map(|(a, _)| a.clone());
+            let script = w
+                .iter()
+                .zip(&rooted)
+                .skip(1)
+                .find(|(_, r)| **r)
+                .map(|(a, _)| a.clone());
             let ran = match (resolve(prog), &script) {
                 (None, _) => Ran::none(End::Unrunnable),
                 (Some(_), Some(p)) if !Path::new(p).is_file() => {
-                    say(&self.s.msg("msg.launcher_nodeback_script_missing", &[("path", p)]));
+                    say(&self
+                        .s
+                        .msg("msg.launcher_nodeback_script_missing", &[("path", p)]));
                     Ran::none(End::Unrunnable)
                 }
                 (Some(abs), _) => {
@@ -580,7 +676,11 @@ impl Call<'_> {
         }
         // nothing matched: events no Node hook is registered for have no section (the neutral no-op), and a tool that no row
         // names runs nothing on the host either; a list without the event row at all is damaged and stays fail-closed
-        let keyless = self.s.list("launcher.nodeback_keyless_events").iter().any(|e| e == self.event);
+        let keyless = self
+            .s
+            .list("launcher.nodeback_keyless_events")
+            .iter()
+            .any(|e| e == self.event);
         if (!sec.seen && keyless) || (sec.seen && matches!(tool, Tool::Name(_))) {
             return 0;
         }
@@ -598,10 +698,22 @@ mod tests {
 
     #[test]
     fn words_fill_variables_and_refuse_what_needs_a_shell() {
-        let (w, rooted) = words("node --flag \"${CLAUDE_PLUGIN_ROOT}/../x.js\" --post", &vars()).unwrap();
+        let (w, rooted) = words(
+            "node --flag \"${CLAUDE_PLUGIN_ROOT}/../x.js\" --post",
+            &vars(),
+        )
+        .unwrap();
         assert_eq!(w, ["node", "--flag", "/p q/../x.js", "--post"]);
         assert_eq!(rooted, [false, false, true, false]);
-        for bad in ["node x; rm y", "node $(x)", "node `x`", "node \"open", "node ${NOPE}/x", "node a | b", "node a > b"] {
+        for bad in [
+            "node x; rm y",
+            "node $(x)",
+            "node `x`",
+            "node \"open",
+            "node ${NOPE}/x",
+            "node a | b",
+            "node a > b",
+        ] {
             assert!(words(bad, &vars()).is_none(), "{bad}");
         }
     }
@@ -611,8 +723,16 @@ mod tests {
         let s = Settings::default();
         assert!(matches(&s, "Bash", "Bash") && !matches(&s, "Bash", "Bashful"));
         assert!(matches(&s, "Write|Edit,Bash", "Edit") && matches(&s, "Agent | Task", "Task"));
-        assert!(matches(&s, "^(?:collaboration)?spawn_agent$", "collaborationspawn_agent"));
-        assert!(!matches(&s, "^(?:collaboration)?spawn_agent$", "xspawn_agent"));
+        assert!(matches(
+            &s,
+            "^(?:collaboration)?spawn_agent$",
+            "collaborationspawn_agent"
+        ));
+        assert!(!matches(
+            &s,
+            "^(?:collaboration)?spawn_agent$",
+            "xspawn_agent"
+        ));
         assert!(!matches(&s, "(unclosed", "anything"));
     }
 
@@ -628,8 +748,14 @@ mod tests {
         assert!(err.is_empty());
         let empty = r#"{"hookSpecificOutput":{"hookEventName":"X","additionalContext":""}}"#;
         assert_eq!(merge(&s, "X", &[empty.into(), empty.into()]).0, "");
-        assert_eq!(merge(&s, "X", &["plain\n".into(), "more\n".into()]).0, "plain\nmore\n");
+        assert_eq!(
+            merge(&s, "X", &["plain\n".into(), "more\n".into()]).0,
+            "plain\nmore\n"
+        );
         let (_, err) = merge(&s, "Other", &[a.into(), "text\n".into()]);
-        assert_eq!(err, "text\n", "plain text next to JSON goes to stderr off the context events");
+        assert_eq!(
+            err, "text\n",
+            "plain text next to JSON goes to stderr off the context events"
+        );
     }
 }

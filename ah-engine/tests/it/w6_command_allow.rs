@@ -107,9 +107,8 @@ fn single_small_state_changing_commands_are_allowed_and_the_real_cases_still_blo
         let no = |c: &str, why: Option<&str>| {
             let (code, err) = verdict_on(&dir, &home, &main, c, codex);
             assert!(code == 2 && err.contains("command-guard"), "codex={codex} should be blocked: {c} -> {code} {err}");
-            match why {
-                Some(w) => assert!(err.contains(w) && (w == "floods" || !err.contains("floods")), "codex={codex} wrong reason for {c}: {err}"),
-                None => {}
+            if let Some(w) = why {
+                assert!(err.contains(w) && (w == "floods" || !err.contains("floods")), "codex={codex} wrong reason for {c}: {err}");
             }
         };
         for c in [

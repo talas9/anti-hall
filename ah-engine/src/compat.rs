@@ -34,7 +34,10 @@ fn meets(required: &str, actual: &str) -> Option<bool> {
 /// The mismatch line for one requirement, or `None` when it holds or one side is not known.
 pub fn check(needer: &str, needer_version: &str, needs: &str, required: &str, actual: &str) -> Option<String> {
     (meets(required, actual) == Some(false)).then(|| {
-        defaults::render("compat.msg_mismatch", &[("needer", &needer), ("needer_version", &needer_version), ("needs", &needs), ("required", &required), ("actual", &actual)])
+        defaults::render(
+            "compat.msg_mismatch",
+            &[("needer", &needer), ("needer_version", &needer_version), ("needs", &needs), ("required", &required), ("actual", &actual)],
+        )
     })
 }
 
@@ -53,7 +56,8 @@ fn row(p: &Pair) -> Value {
 pub fn report(plugin: &str, hook: &str, hook_needs_engine: &str, web: &str) -> Value {
     let engine = crate::version();
     let (engine_min, hook_min, web_min) = (defaults::text("compat.engine_min"), defaults::text("compat.hook_min"), defaults::text("compat.web_min"));
-    let (p, e, h, w) = (defaults::text("compat.part_plugin"), defaults::text("compat.part_engine"), defaults::text("compat.part_hook"), defaults::text("compat.part_web"));
+    let (p, e, h, w) =
+        (defaults::text("compat.part_plugin"), defaults::text("compat.part_engine"), defaults::text("compat.part_hook"), defaults::text("compat.part_web"));
     let pairs = [
         Pair { needer: e, needer_version: &engine, needs: p, required: PLUGIN_MIN, actual: plugin },
         Pair { needer: p, needer_version: plugin, needs: e, required: engine_min, actual: &engine },
@@ -70,5 +74,8 @@ pub fn report(plugin: &str, hook: &str, hook_needs_engine: &str, web: &str) -> V
 
 /// The messages of the pairs that do not hold, one line each.
 pub fn mismatches(report: &Value) -> Vec<String> {
-    report["pairs"].as_array().map(|a| a.iter().filter(|r| r["ok"] == false).filter_map(|r| r["message"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+    report["pairs"]
+        .as_array()
+        .map(|a| a.iter().filter(|r| r["ok"] == false).filter_map(|r| r["message"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
 }

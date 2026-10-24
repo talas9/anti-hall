@@ -45,11 +45,19 @@ fn spawn(home: &Path) -> (i32, String) {
     let payload = json!({"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"s","cwd":home,
         "transcript_path": home.join("t.jsonl"), "tool_input":{"subagent_type":"Explore","prompt":"x"}});
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-    c.arg("check").arg("swarm-guard").env_clear().env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", home).env("USERPROFILE", home).env("ANTIHALL_TEST_ISOLATION", "1").current_dir(home)
+    c.arg("check")
+        .arg("swarm-guard")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("ANTIHALL_TEST_ISOLATION", "1")
+        .current_dir(home)
         .env("AH_ENGINE_DIR", home.join("engine-state"))
         .env("AH_ENGINE_PLUGIN_ROOT", Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"))
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut ch = c.spawn().unwrap();
     ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
     let o = ch.wait_with_output().unwrap();

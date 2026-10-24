@@ -5,7 +5,6 @@
 //! test if the process is still alive afterwards, so a leak is a test failure, never silent.
 #![allow(dead_code)] // each test binary uses a subset
 
-pub mod goldens;
 pub mod scale;
 
 /// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
@@ -158,23 +157,4 @@ pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
     }
     ah_engine::discard::harmless(child.kill());
     ah_engine::discard::harmless(child.wait());
-}
-
-/// True when a hook answer blocks: the exit status 2, or a stdout JSON that says `decision: block` / `permissionDecision: deny`.
-pub fn answer_blocks(code: i32, out: &str) -> bool {
-    code == 2
-        || serde_json::from_str::<serde_json::Value>(out.trim()).is_ok_and(|v| {
-            v.get("decision").and_then(|d| d.as_str()) == Some("block")
-                || v.pointer("/hookSpecificOutput/permissionDecision").and_then(|d| d.as_str()) == Some("deny")
-        })
-}
-
-/// The native answer to a payload the Node hook once handled itself (a case the old engine "deferred" to Node): the engine may
-/// say less than Node (an advisory text is dropped on purpose) or more, but it may never be WEAKER on a block: where Node blocks,
-/// the engine must block too. `Err` names the weakness.
-pub fn not_weaker_than_node(node: (i32, &str), engine: (i32, &str)) -> Result<(), String> {
-    if answer_blocks(node.0, node.1) && !answer_blocks(engine.0, engine.1) {
-        return Err(format!("node blocks ({node:?}) but the engine allows ({engine:?})"));
-    }
-    Ok(())
 }

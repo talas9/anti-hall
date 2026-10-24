@@ -143,6 +143,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`DEVELOPMENT.md`](./DEVELOPMENT.md) | Developer guide: prerequisites, build, every test suite, local install, debugging, porting workflow, branch and release flow, layout, coding standards | - | Living | 2026-10 | `ah-engine/scripts/doc-check.sh` (runs every command in it) |
 | [`HOOK-LATENCY.md`](./HOOK-LATENCY.md) | Measured hook latency: wall p50/p95 and CPU per hook, and the per-tool-call total for each event (`scripts/hook-latency.js`) | - | Living | 2026-10 | `scripts/hook-latency.js` |
 | [`REPO-PIPELINES.md`](./REPO-PIPELINES.md) | GitHub workflows (trigger, purpose, gating), policy files, repo security settings | - | Living | 2026-10 | `.github/workflows/` |
+| [`specs/2026-08-02-devswarm-parent-decide-gate.md`](./specs/2026-08-02-devswarm-parent-decide-gate.md) | Design spec of the DevSwarm parent decide-and-reply gate | - | Reference | 2026-08 | the DevSwarm parent gate hooks |
 | [`index.md`](./index.md) | Docs site page: Docs site home: what anti-hall is, install, what you'll notice in your first session. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`start/install.md`](./start/install.md) | Docs site page: Install for Claude Code and Codex, keep `.anti-hall/` out of git, check it works. | - | Living | 2026-10 | `mkdocs.yml` |
 | [`start/update.md`](./start/update.md) | Docs site page: Update on Claude Code and Codex. | - | Living | 2026-10 | `mkdocs.yml` |

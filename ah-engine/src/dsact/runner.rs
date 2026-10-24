@@ -141,7 +141,8 @@ impl Runner for System {
         let poll = Duration::from_millis(defaults::num("devswarm_act.poll_ms"));
         // a call that outlives `poll_fast_ms` is a long poll (the ingest monitor waits up to 30 s for a message): checking it every
         // `poll_ms` was a hundred wake-ups a second per running drain for the whole wait, so past that window it is checked every `poll_slow_ms`
-        let (fast, slow) = (Duration::from_millis(defaults::num("devswarm_act.poll_fast_ms")), Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")));
+        let (fast, slow) =
+            (Duration::from_millis(defaults::num("devswarm_act.poll_fast_ms")), Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")));
         let mut timed_out = false;
         let status = loop {
             match child.try_wait() {
@@ -243,7 +244,11 @@ mod tests {
         let started = Instant::now();
         let r = System::configured().run(&sh("sleep 30", 800));
         assert!(r.timed_out && !r.ok, "{r:?}");
-        assert!(started.elapsed() < Duration::from_millis(800) + Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")) + Duration::from_millis(1500), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(800) + Duration::from_millis(defaults::num("devswarm_act.poll_slow_ms")) + Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     /// The wait for a long call costs the waiting thread's CPU in proportion to its wake-ups: checked every 10 ms for the whole wait

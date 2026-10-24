@@ -64,7 +64,10 @@ fn need_num(s: &Settings, key: &str) -> Option<u64> {
 }
 
 fn need_text(s: &Settings, key: &str) -> Option<String> {
-    s.shipped(key)?.as_str().filter(|v| !v.is_empty()).map(str::to_string)
+    s.shipped(key)?
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 fn first_word(p: &Path) -> String {
@@ -112,7 +115,10 @@ impl Integ {
             file("files.rollback_request")?,
             file("files.rollback_last")?,
         );
-        let (fails, log) = (file("files.wrapper_fail_log")?, file("files.integrity_log")?);
+        let (fails, log) = (
+            file("files.wrapper_fail_log")?,
+            file("files.integrity_log")?,
+        );
         let bin = state.join(&bin_dir).join(&bin_name);
         let good = with_suffix(&bin, &good_sfx);
         let exp_f = with_suffix(&bin, &exp_sfx);
@@ -169,8 +175,16 @@ impl Integ {
 
     /// One record of the integrity log: `<UTC time> event=<id> key=value ...`.
     fn rec(&self, event: &str, kv: &[(&str, &str)]) {
-        let line = format!("{} {}", stamp_log(epoch_s()), pairs(&[("event", event)], kv));
-        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.log) {
+        let line = format!(
+            "{} {}",
+            stamp_log(epoch_s()),
+            pairs(&[("event", event)], kv)
+        );
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log)
+        {
             let _ = writeln!(f, "{line}");
         }
     }
@@ -247,7 +261,10 @@ impl Integ {
             if pid.is_some_and(alive) && now.saturating_sub(at) <= self.lock_stale {
                 return false;
             }
-            let aside = with_suffix(&self.lockdir, &format!(".stale.{}.{now}", std::process::id()));
+            let aside = with_suffix(
+                &self.lockdir,
+                &format!(".stale.{}.{now}", std::process::id()),
+            );
             self.park("before_break");
             if fs::rename(&self.owner_f, &aside).is_err() {
                 return false;
@@ -257,7 +274,13 @@ impl Integ {
                 if fs::hard_link(&aside, &self.owner_f).is_ok() {
                     let _ = fs::remove_file(&aside);
                 } else {
-                    self.rec("lock_put_back_failed", &[("owner", &read_trim(&aside)), ("kept", &aside.display().to_string())]);
+                    self.rec(
+                        "lock_put_back_failed",
+                        &[
+                            ("owner", &read_trim(&aside)),
+                            ("kept", &aside.display().to_string()),
+                        ],
+                    );
                 }
                 return false;
             }
@@ -304,7 +327,13 @@ impl Integ {
             }
             if first {
                 first = false;
-                self.rec("lock_waiting", &[("wait_s", &wait.to_string()), ("holder", &read_trim(&self.owner_f))]);
+                self.rec(
+                    "lock_waiting",
+                    &[
+                        ("wait_s", &wait.to_string()),
+                        ("holder", &read_trim(&self.owner_f)),
+                    ],
+                );
             }
             std::thread::sleep(self.lock_poll);
         }
@@ -326,7 +355,13 @@ impl Integ {
         } else if fs::hard_link(&give, &self.owner_f).is_ok() {
             let _ = fs::remove_file(&give);
         } else {
-            self.rec("lock_put_back_failed", &[("owner", &read_trim(&give)), ("kept", &give.display().to_string())]);
+            self.rec(
+                "lock_put_back_failed",
+                &[
+                    ("owner", &read_trim(&give)),
+                    ("kept", &give.display().to_string()),
+                ],
+            );
         }
     }
 
@@ -335,10 +370,16 @@ impl Integ {
     fn hold(&self, wait: u64) -> Option<Hold<'_>> {
         let theirs = std::env::var(&self.token_env).unwrap_or_default();
         if !theirs.is_empty() && read_trim(&self.owner_f) == theirs {
-            return Some(Hold { integ: self, token: None });
+            return Some(Hold {
+                integ: self,
+                token: None,
+            });
         }
         let mine = format!("{} {}", std::process::id(), epoch_s());
-        self.lock_take(&mine, wait).then_some(Hold { integ: self, token: Some(mine) })
+        self.lock_take(&mine, wait).then_some(Hold {
+            integ: self,
+            token: Some(mine),
+        })
     }
 
     // ---- the verbs ---------------------------------------------------------------------------------------------------------
@@ -346,14 +387,23 @@ impl Integ {
     /// Bless the binary now in place as the expected one.
     pub fn record(&self) {
         if !self.bin.is_file() {
-            return self.rec("record_no_binary", &[("path", &self.bin.display().to_string())]);
+            return self.rec(
+                "record_no_binary",
+                &[("path", &self.bin.display().to_string())],
+            );
         }
         let cur = self.sha(&self.bin);
         if cur.is_empty() {
-            return self.rec("record_cannot_hash", &[("path", &self.bin.display().to_string())]);
+            return self.rec(
+                "record_cannot_hash",
+                &[("path", &self.bin.display().to_string())],
+            );
         }
         if !self.write_atomic(&self.exp_f, &cur) {
-            return self.rec("record_cannot_write", &[("path", &self.exp_f.display().to_string())]);
+            return self.rec(
+                "record_cannot_write",
+                &[("path", &self.exp_f.display().to_string())],
+            );
         }
         self.rec("record", &[("sha256", &cur)]);
     }
@@ -367,13 +417,22 @@ impl Integ {
             return;
         }
         let tmp = with_suffix(&self.good, &format!(".tmp.{}", std::process::id()));
-        if fs::copy(&self.bin, &tmp).is_ok() && self.sha(&tmp) == cur && fs::rename(&tmp, &self.good).is_ok() {
+        if fs::copy(&self.bin, &tmp).is_ok()
+            && self.sha(&tmp) == cur
+            && fs::rename(&tmp, &self.good).is_ok()
+        {
             if self.write_atomic(&self.good_sha_f, &cur) {
                 self.rec("promote", &[("sha256", &cur)]);
             }
         } else {
             let _ = fs::remove_file(&tmp);
-            self.rec("promote_cannot_copy", &[("from", &self.bin.display().to_string()), ("to", &self.good.display().to_string())]);
+            self.rec(
+                "promote_cannot_copy",
+                &[
+                    ("from", &self.bin.display().to_string()),
+                    ("to", &self.good.display().to_string()),
+                ],
+            );
         }
     }
 
@@ -382,11 +441,18 @@ impl Integ {
         if first_word(&self.request) == cur {
             return true;
         }
-        let Ok(t) = fs::read_to_string(&self.fails) else { return false };
+        let Ok(t) = fs::read_to_string(&self.fails) else {
+            return false;
+        };
         let floor = epoch_s().saturating_sub(self.fail_win);
         let n = t
             .lines()
-            .filter(|l| l.split_whitespace().next().and_then(|w| w.parse::<u64>().ok()).is_some_and(|v| v >= floor))
+            .filter(|l| {
+                l.split_whitespace()
+                    .next()
+                    .and_then(|w| w.parse::<u64>().ok())
+                    .is_some_and(|v| v >= floor)
+            })
             .count() as u64;
         n >= self.fail_n
     }
@@ -422,17 +488,32 @@ impl Integ {
         }
         self.park("validated");
         let ts = stamp_name(epoch_s());
-        let aside = with_suffix(&self.bin, &format!("{}{ts}-{}", self.aside_mid, &cur[..8.min(cur.len())]));
+        let aside = with_suffix(
+            &self.bin,
+            &format!("{}{ts}-{}", self.aside_mid, &cur[..8.min(cur.len())]),
+        );
         if fs::rename(&self.bin, &aside).is_err() {
-            return self.rec("rollback_cannot_move_aside", &[("path", &self.bin.display().to_string())]);
+            return self.rec(
+                "rollback_cannot_move_aside",
+                &[("path", &self.bin.display().to_string())],
+            );
         }
         if self.sha(&aside) != cur {
             // replaced since it was checked: it is not the binary judged damaged
             if self.bin.exists() {
-                self.rec("rollback_changed_twice", &[("path", &self.bin.display().to_string()), ("kept", &aside.display().to_string())]);
+                self.rec(
+                    "rollback_changed_twice",
+                    &[
+                        ("path", &self.bin.display().to_string()),
+                        ("kept", &aside.display().to_string()),
+                    ],
+                );
             } else {
                 let _ = fs::rename(&aside, &self.bin);
-                self.rec("rollback_changed_after_check", &[("path", &self.bin.display().to_string())]);
+                self.rec(
+                    "rollback_changed_after_check",
+                    &[("path", &self.bin.display().to_string())],
+                );
             }
             return;
         }
@@ -443,14 +524,34 @@ impl Integ {
             && fs::rename(&new, &self.bin).is_ok();
         if restored {
             self.write_atomic(&self.exp_f, &gsha);
-            self.write_atomic(&self.last, &pairs(&[("at", &ts)], &[("rolled_back", &cur), ("aside", &aside.display().to_string()), ("restored", &gsha)]));
+            self.write_atomic(
+                &self.last,
+                &pairs(
+                    &[("at", &ts)],
+                    &[
+                        ("rolled_back", &cur),
+                        ("aside", &aside.display().to_string()),
+                        ("restored", &gsha),
+                    ],
+                ),
+            );
             let _ = fs::remove_file(&self.request);
             let _ = fs::write(&self.fails, "");
-            self.rec("rollback", &[("sha256", &cur), ("aside", &aside.display().to_string()), ("restored", &gsha)]);
+            self.rec(
+                "rollback",
+                &[
+                    ("sha256", &cur),
+                    ("aside", &aside.display().to_string()),
+                    ("restored", &gsha),
+                ],
+            );
         } else {
             let _ = fs::remove_file(&new);
             let _ = fs::rename(&aside, &self.bin);
-            self.rec("rollback_cannot_restore", &[("good", &self.good.display().to_string())]);
+            self.rec(
+                "rollback_cannot_restore",
+                &[("good", &self.good.display().to_string())],
+            );
         }
     }
 
@@ -487,8 +588,11 @@ impl Drop for Hold<'_> {
 pub fn run(s: &Settings, state: &Path, args: &[String]) -> i32 {
     // a maintenance verb, not a hook call: hashing the whole engine binary is not bound by the hook's CPU budget
     crate::limits::restore_cpu_limit();
-    let Some(i) = Integ::new(s, state) else { return 0 };
-    if state.as_os_str().is_empty() || fs::create_dir_all(i.bin.parent().unwrap_or(state)).is_err() {
+    let Some(i) = Integ::new(s, state) else {
+        return 0;
+    };
+    if state.as_os_str().is_empty() || fs::create_dir_all(i.bin.parent().unwrap_or(state)).is_err()
+    {
         return 0;
     }
     i.trim_log();
@@ -497,7 +601,14 @@ pub fn run(s: &Settings, state: &Path, args: &[String]) -> i32 {
         "lock" => {
             let Some(t) = arg(1) else { return 0 };
             if !i.lock_take(t, i.lock_wait) {
-                i.rec("lock_refused", &[("token", t), ("wait_s", &i.lock_wait.to_string()), ("holder", &read_trim(&i.owner_f))]);
+                i.rec(
+                    "lock_refused",
+                    &[
+                        ("token", t),
+                        ("wait_s", &i.lock_wait.to_string()),
+                        ("holder", &read_trim(&i.owner_f)),
+                    ],
+                );
                 return 1;
             }
         }
@@ -508,7 +619,13 @@ pub fn run(s: &Settings, state: &Path, args: &[String]) -> i32 {
         }
         "record" => match i.hold(i.lock_wait) {
             Some(_h) => i.record(),
-            None => i.rec("record_lock_held", &[("wait_s", &i.lock_wait.to_string()), ("holder", &read_trim(&i.owner_f))]),
+            None => i.rec(
+                "record_lock_held",
+                &[
+                    ("wait_s", &i.lock_wait.to_string()),
+                    ("holder", &read_trim(&i.owner_f)),
+                ],
+            ),
         },
         "accept" => match i.hold(i.lock_wait) {
             Some(_h) => {
@@ -517,15 +634,27 @@ pub fn run(s: &Settings, state: &Path, args: &[String]) -> i32 {
                     i.rec("accept", &[]);
                 }
             }
-            None => i.rec("accept_lock_held", &[("wait_s", &i.lock_wait.to_string()), ("holder", &read_trim(&i.owner_f))]),
+            None => i.rec(
+                "accept_lock_held",
+                &[
+                    ("wait_s", &i.lock_wait.to_string()),
+                    ("holder", &read_trim(&i.owner_f)),
+                ],
+            ),
         },
         "fail" => {
-            if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&i.fails) {
+            if let Ok(mut f) = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&i.fails)
+            {
                 let _ = writeln!(f, "{}", epoch_s());
             }
             match i.hold(i.hook_wait) {
                 Some(_h) => {
-                    if fs::read_to_string(&i.fails).is_ok_and(|t| t.lines().count() > i.keep.fails_max) {
+                    if fs::read_to_string(&i.fails)
+                        .is_ok_and(|t| t.lines().count() > i.keep.fails_max)
+                    {
                         i.tail(&i.fails, i.keep.fails_lines);
                     }
                     i.check();

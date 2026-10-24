@@ -8,9 +8,9 @@ use super::Run;
 use crate::checks::jsport::json::J;
 use crate::defaults;
 use crate::meshw::idlock::devswarm_root;
+use crate::wakew::arch::{IdleSkip, idle_skip};
 use crate::wakew::read::{parse_json, read_text};
 use crate::wakew::who::{Proc, resolve_identity};
-use crate::wakew::arch::{IdleSkip, idle_skip};
 use std::path::Path;
 
 fn text(key: &str) -> &'static str {
@@ -54,11 +54,15 @@ impl Run<'_> {
         let p = Proc { home: home.to_path_buf(), cwd: cwd.clone(), env: self.env.to_map().into_iter().collect(), st, root: self.paths.plugin_src.clone() };
         let Some(identity) = resolve_identity(&p).ok()? else {
             let state = if ensured { text("update_post.wake_state_ready") } else { text("update_post.wake_state_missing") };
-            return Some(answer(true, false, Some(ensured), false, defaults::fill(text("update_post.wake_no_identity"), &[("state", &state), ("cwd", &cwd), ("arm", &arm)])));
+            return Some(answer(
+                true,
+                false,
+                Some(ensured),
+                false,
+                defaults::fill(text("update_post.wake_no_identity"), &[("state", &state), ("cwd", &cwd), ("arm", &arm)]),
+            ));
         };
-        let lock = root
-            .join(text("mesh_write.dir_locks"))
-            .join(format!("{}{}{}", text("wake_watch.lock_prefix"), identity.id, text("wake_watch.lock_suffix")));
+        let lock = root.join(text("mesh_write.dir_locks")).join(format!("{}{}{}", text("wake_watch.lock_prefix"), identity.id, text("wake_watch.lock_suffix")));
         let pid = read_text(&lock).and_then(|t| parse_json(&t)).and_then(|h| match h.get("pid") {
             Some(J::Num(n)) if n.is_finite() => Some(*n),
             _ => None,
@@ -66,17 +70,35 @@ impl Run<'_> {
         let role = identity.role();
         if let Some(pid) = pid.filter(|p| probe(*p)) {
             let shown_pid = crate::setup::jsfmt::js_string(&J::Num(pid));
-            return Some(answer(true, true, Some(ensured), false, defaults::fill(text("update_post.wake_live"), &[("role", &role), ("id", &identity.id), ("pid", &shown_pid)])));
+            return Some(answer(
+                true,
+                true,
+                Some(ensured),
+                false,
+                defaults::fill(text("update_post.wake_live"), &[("role", &role), ("id", &identity.id), ("pid", &shown_pid)]),
+            ));
         }
         if identity.primary {
             match idle_skip(&p) {
                 Ok(IdleSkip::Applies) => {
-                    return Some(answer(true, false, Some(ensured), true, defaults::fill(text("update_post.wake_idle"), &[("role", &role), ("id", &identity.id)])));
+                    return Some(answer(
+                        true,
+                        false,
+                        Some(ensured),
+                        true,
+                        defaults::fill(text("update_post.wake_idle"), &[("role", &role), ("id", &identity.id)]),
+                    ));
                 }
                 Ok(IdleSkip::NotApplicable) => {}
                 Err(_) => return None,
             }
         }
-        Some(answer(true, false, Some(ensured), false, defaults::fill(text("update_post.wake_not_live"), &[("role", &role), ("id", &identity.id), ("arm", &arm)])))
+        Some(answer(
+            true,
+            false,
+            Some(ensured),
+            false,
+            defaults::fill(text("update_post.wake_not_live"), &[("role", &role), ("id", &identity.id), ("arm", &arm)]),
+        ))
     }
 }

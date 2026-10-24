@@ -327,7 +327,13 @@ pub fn run_plan(inv: &Inv, a: &Args) -> R<Answer> {
             Err(thrown) => return Ok(threw(&thrown)),
         };
         let mut o = Obj::default();
-        o.put("ok", OVal::Bool(true)).put("action", action).put("sub", sub_word()).put("id", s(id)).put("key", s(&found.key)).put("label", label).put("plan", found.plan);
+        o.put("ok", OVal::Bool(true))
+            .put("action", action)
+            .put("sub", sub_word())
+            .put("id", s(id))
+            .put("key", s(&found.key))
+            .put("label", label)
+            .put("plan", found.plan);
         return Ok(answer(0, o.done()));
     }
     if sub != Some(defaults::text("devswarm_cli.sub_set")) {
@@ -594,7 +600,11 @@ mod tests {
     #[test]
     fn a_full_supervision_log_is_rotated_by_the_event_not_handed_over() {
         let inv = scratch_inv("rotate");
-        let log = inv.home.join(defaults::text("mesh_write.dir_anti_hall")).join(defaults::text("mesh_write.dir_logs")).join(defaults::text("mesh_write.supervision_log"));
+        let log = inv
+            .home
+            .join(defaults::text("mesh_write.dir_anti_hall"))
+            .join(defaults::text("mesh_write.dir_logs"))
+            .join(defaults::text("mesh_write.supervision_log"));
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         let row = "{\"ts\":\"2025-10-09T08:00:00.000Z\",\"type\":\"warn\",\"id\":\"w1\",\"signal\":\"stall\",\"repeat\":false}\n";
         std::fs::write(&log, row.repeat(defaults::num("mesh_write.supervision_max_bytes") as usize / row.len() + 2)).unwrap();
@@ -609,7 +619,9 @@ mod tests {
 
     #[test]
     fn replacing_a_list_keeps_what_did_not_change_and_a_note_cut_inside_an_emoji_keeps_the_half() {
-        let mut p = OVal::parse(r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"todo"}],"extras":[{"glob":"x","note":"n","ts":1}]}"#).unwrap();
+        let mut p =
+            OVal::parse(r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"todo"}],"extras":[{"glob":"x","note":"n","ts":1}]}"#)
+                .unwrap();
         assert_eq!(replace_steps(&mut p, &["a".to_string(), "c".to_string()], None, 7.0), Ok(true));
         assert_eq!(plan::steps_of(&p)[0].get("status"), Some(&s("done")), "an unchanged step keeps its status");
         assert_eq!(plan::steps_of(&p)[1].get("status"), Some(&s("todo")));

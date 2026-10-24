@@ -115,7 +115,11 @@ pub enum Cell {
     Num(f64),
     Text(String),
     /// A name with a one-line explanation under it and a hover text (the raw id); sorts and exports as `text`.
-    Named { text: String, sub: String, tip: String },
+    Named {
+        text: String,
+        sub: String,
+        tip: String,
+    },
 }
 
 impl Default for Cell {

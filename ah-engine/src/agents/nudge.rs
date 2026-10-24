@@ -159,11 +159,7 @@ pub(crate) fn owns(env: &Env, a: &Agent, sig: &str) -> bool {
 fn tokens(n: u64) -> String {
     let u = defaults::raw("agent_nudge.units");
     let (m, k) = (u.get("m").and_then(V::as_integer).unwrap_or(1).max(1) as u64, u.get("k").and_then(V::as_integer).unwrap_or(1).max(1) as u64);
-    if n >= m {
-        format!("{:.1}{}", n as f64 / m as f64, u.str_field("m_word"))
-    } else {
-        format!("{}{}", n / k, u.str_field("k_word"))
-    }
+    if n >= m { format!("{:.1}{}", n as f64 / m as f64, u.str_field("m_word")) } else { format!("{}{}", n / k, u.str_field("k_word")) }
 }
 
 fn live(st: &State, id: &str) -> bool {
@@ -396,8 +392,17 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                 agree = Some(!busy);
                 health.clone_from(&l);
                 tier.clone_from(&o.tier);
-                why = defaults::fill(defaults::raw("agent_nudge.evidence_fmt").str_field("judge"), &[("label", &l), ("ref", &o.evidence_ref.clone().unwrap_or_default())]);
-                rec(env, word("class"), word("ev_health"), Outcome::Advise, base(&a).tok("health", &l).tok("tier", &o.tier).num("agree", if busy { 2 } else { 1 }).num("escalated", u64::from(o.escalated)));
+                why = defaults::fill(
+                    defaults::raw("agent_nudge.evidence_fmt").str_field("judge"),
+                    &[("label", &l), ("ref", &o.evidence_ref.clone().unwrap_or_default())],
+                );
+                rec(
+                    env,
+                    word("class"),
+                    word("ev_health"),
+                    Outcome::Advise,
+                    base(&a).tok("health", &l).tok("tier", &o.tier).num("agree", if busy { 2 } else { 1 }).num("escalated", u64::from(o.escalated)),
+                );
                 if busy {
                     st.nudge_hold.insert(id.clone(), now + lim("health_recheck_ms"));
                     continue;
@@ -434,10 +439,25 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             out_mark: a.last_output_ms,
             ..Nudge::default()
         };
-        let note = if walked { defaults::render("msg.agent_nudge_walked", &[("direct", &if direct.is_empty() { defaults::text("agent_nudge.unknown_parent").to_string() } else { direct.clone() })]) } else { String::new() };
+        let note = if walked {
+            defaults::render(
+                "msg.agent_nudge_walked",
+                &[("direct", &if direct.is_empty() { defaults::text("agent_nudge.unknown_parent").to_string() } else { direct.clone() })],
+            )
+        } else {
+            String::new()
+        };
         let text = defaults::render(
             "msg.agent_nudge",
-            &[("kind", &n.child_kind), ("name", &n.child_name), ("dur", &age(n.ev_dur_ms)), ("tokens", &tokens(n.ev_tokens)), ("evidence", &n.ev_text), ("walked", &note), ("answer", &answer_line(&n))],
+            &[
+                ("kind", &n.child_kind),
+                ("name", &n.child_name),
+                ("dur", &age(n.ev_dur_ms)),
+                ("tokens", &tokens(n.ev_tokens)),
+                ("evidence", &n.ev_text),
+                ("walked", &note),
+                ("answer", &answer_line(&n)),
+            ],
         );
         match to {
             Some(p) => n.path = send_to(env, &p, &n, text),
@@ -536,11 +556,7 @@ fn follow(env: &Env, st: &mut State) {
             }
             emit(env, word("ev_reminded"), &n);
         }
-        if n.escalated_at > 0
-            && n.acted_at == 0
-            && env.switch("agent_tracker.act_setting")
-            && now.saturating_sub(n.sent_at) >= escalate::num("act_after_ms")
-        {
+        if n.escalated_at > 0 && n.acted_at == 0 && env.switch("agent_tracker.act_setting") && now.saturating_sub(n.sent_at) >= escalate::num("act_after_ms") {
             let (done, act_word) = escalate::act(st, &a, &n.parent);
             n.acted_at = now;
             let text = defaults::render("msg.agent_nudge_acted", &[("kind", &n.child_kind), ("name", &n.child_name), ("action", &done)]);
@@ -568,7 +584,11 @@ fn dead_notices(env: &Env, st: &mut State) {
         let Some(a) = st.agents.get(&id).cloned() else { continue };
         let (direct, to, walked) = target(env, st, &a);
         let to = to.filter(|p| st.agents.get(p).is_none_or(|t| !walked || project_key(st, t).is_none() || project_key(st, t) == project_key(st, &a)));
-        let why = if a.path.is_empty() || std::path::Path::new(&a.path).exists() { defaults::text("agent_nudge.dead_silent") } else { defaults::text("agent_nudge.dead_gone") };
+        let why = if a.path.is_empty() || std::path::Path::new(&a.path).exists() {
+            defaults::text("agent_nudge.dead_silent")
+        } else {
+            defaults::text("agent_nudge.dead_gone")
+        };
         let n = Nudge {
             id: format!("{:x}", crate::health::fnv(&format!("{id}{now}dead"))),
             child: id.clone(),
@@ -601,7 +621,15 @@ fn dead_notices(env: &Env, st: &mut State) {
         let batch = group.len() > cap;
         let summary = batch.then(|| {
             let a = st.agents.get(&group[0].0.child);
-            let project = a.map(|a| if a.cwd.is_empty() { a.id.clone() } else { std::path::Path::new(&a.cwd).file_name().map_or(a.cwd.clone(), |f| f.to_string_lossy().into_owned()) }).unwrap_or_default();
+            let project = a
+                .map(|a| {
+                    if a.cwd.is_empty() {
+                        a.id.clone()
+                    } else {
+                        std::path::Path::new(&a.cwd).file_name().map_or(a.cwd.clone(), |f| f.to_string_lossy().into_owned())
+                    }
+                })
+                .unwrap_or_default();
             defaults::render("msg.agent_nudge_dead_batch", &[("n", &group.len()), ("project", &project)])
         });
         let mut path = String::new();
@@ -628,7 +656,13 @@ fn take_answers(env: &Env, st: &mut State) {
         st.nudge_answer_lines += 1;
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         let child = v["child"].as_str().unwrap_or("");
-        let key = st.nudges.keys().find(|k| *k == child).cloned().or_else(|| st.nudges.iter().find(|(_, n)| !n.ref_id.is_empty() && n.ref_id.eq_ignore_ascii_case(child)).map(|(k, _)| k.clone())).or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
+        let key = st
+            .nudges
+            .keys()
+            .find(|k| *k == child)
+            .cloned()
+            .or_else(|| st.nudges.iter().find(|(_, n)| !n.ref_id.is_empty() && n.ref_id.eq_ignore_ascii_case(child)).map(|(k, _)| k.clone()))
+            .or_else(|| st.nudges.iter().find(|(_, n)| n.child_name == child).map(|(k, _)| k.clone()));
         let Some(key) = key else { continue };
         let (class, text) = (v["answer"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string());
         record(env, st, &key, class, text, v["min"].as_u64().unwrap_or(0), src("verb"));
@@ -719,11 +753,13 @@ fn new_ref(st: &State, child: &str, now: u64) -> String {
     }
     for salt in 0..lim("ref_tries") {
         let mut h = crate::health::fnv(&format!("{child}{now}{salt}"));
-        let r: String = (0..lim("ref_len")).map(|_| {
-            let c = alpha[(h % alpha.len() as u64) as usize];
-            h /= alpha.len() as u64;
-            c
-        }).collect();
+        let r: String = (0..lim("ref_len"))
+            .map(|_| {
+                let c = alpha[(h % alpha.len() as u64) as usize];
+                h /= alpha.len() as u64;
+                c
+            })
+            .collect();
         if !st.nudges.values().any(|o| o.ref_id == r) {
             return r;
         }
@@ -865,7 +901,10 @@ fn take_turns(env: &Env, st: &mut State) {
                 continue;
             }
         }
-        let tool = new.iter().filter(|t| t.1 == defaults::text("agent_nudge.match_tool_kind")).find_map(|t| tool_answer(&n, &t.2).map(|c| (c, t.2.replace('\t', " "))));
+        let tool = new
+            .iter()
+            .filter(|t| t.1 == defaults::text("agent_nudge.match_tool_kind"))
+            .find_map(|t| tool_answer(&n, &t.2).map(|c| (c, t.2.replace('\t', " "))));
         if let Some((class, text)) = tool {
             record(env, st, &id, class.into(), super::cap(&text, lim("reason_cap")), 0, src("tool"));
             continue;

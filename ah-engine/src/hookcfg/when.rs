@@ -518,9 +518,11 @@ impl When {
                     Source::Tool => cx.tool.or_else(|| cx.payload.get("tool_name").and_then(Json::as_str)).map(|t| Val::Str(t.to_string())),
                     Source::Field(p) => cx.payload.pointer(p).and_then(Val::from_json),
                     Source::Env(n) => {
-                        if cx.env.is_incomplete() { return None; }
+                        if cx.env.is_incomplete() {
+                            return None;
+                        }
                         cx.env.get(n).map(|v| Val::Str(v.to_string()))
-                    },
+                    }
                     Source::Setting(r) => cx.facts.setting(r, cx.env)?,
                     Source::Transcript(f) => cx.facts.transcript(cx.payload, *f)?,
                 };
@@ -736,9 +738,14 @@ mod tests {
                 let request = RequestEnv::from_pairs(pairs);
                 assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(true), "{host}: real Primary");
             }
-            let request = RequestEnv::from_pairs([("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
+            let request =
+                RequestEnv::from_pairs([("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
             assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(false), "{host}: a child does not run the parent gate");
-            assert_ne!(eval_with(predicate, &payload, &RequestEnv::incomplete(), &facts, None), Some(false), "{host}: incomplete requests are never proved inert");
+            assert_ne!(
+                eval_with(predicate, &payload, &RequestEnv::incomplete(), &facts, None),
+                Some(false),
+                "{host}: incomplete requests are never proved inert"
+            );
         }
     }
 

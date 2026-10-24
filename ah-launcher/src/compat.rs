@@ -6,7 +6,16 @@ pub const ENGINE_MIN: &str = "0.2.0";
 
 /// Numbers of a dotted version without the `v`, build metadata (`+branch.sha`) or pre-release tail; stops at the first non-number.
 pub fn nums(v: &str) -> Vec<u64> {
-    v.split(char::is_whitespace).next().unwrap_or("").trim_start_matches('v').split(['+', '-']).next().unwrap_or("").split('.').map_while(|p| p.parse().ok()).collect()
+    v.split(char::is_whitespace)
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .split(['+', '-'])
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map_while(|p| p.parse().ok())
+        .collect()
 }
 
 /// Compare two COMPONENT versions (engine, hook client, web server) by their numbers, except that a version at or above `floor`
@@ -26,7 +35,11 @@ pub fn component_cmp(floor: &str, a: &str, b: &str) -> Option<std::cmp::Ordering
     };
     let (lx, ly) = (legacy(&mut x), legacy(&mut y));
     if lx != ly {
-        return Some(if lx { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
+        return Some(if lx {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        });
     }
     let n = x.len().max(y.len());
     x.resize(n, 0);
@@ -40,9 +53,15 @@ mod tests {
     use std::cmp::Ordering::*;
     #[test]
     fn old_numbering_is_older_than_component_versions() {
-        assert_eq!(component_cmp("0.300.0", "0.301.1+b.abc", "0.2.0"), Some(Less));
+        assert_eq!(
+            component_cmp("0.300.0", "0.301.1+b.abc", "0.2.0"),
+            Some(Less)
+        );
         assert_eq!(component_cmp("0.300.0", "0.2.0", "0.1.0"), Some(Greater));
-        assert_eq!(component_cmp("0.300.0", "0.301.2", "0.301.1"), Some(Greater));
+        assert_eq!(
+            component_cmp("0.300.0", "0.301.2", "0.301.1"),
+            Some(Greater)
+        );
         assert_eq!(component_cmp("", "0.301.1", "0.2.0"), Some(Greater));
         assert_eq!(component_cmp("0.300.0", "x", "0.2.0"), None);
     }

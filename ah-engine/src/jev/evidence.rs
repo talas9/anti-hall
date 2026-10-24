@@ -119,7 +119,12 @@ impl Cfg {
             choices: t
                 .get("choices")
                 .and_then(defaults::V::as_array)
-                .map(|a| a.iter().filter_map(|c| c.as_array().map(|p| (p.first().and_then(defaults::V::as_str), p.get(1).and_then(defaults::V::as_str)))).filter_map(|(l, m)| Some((l?.to_string(), m?.to_string()))).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|c| c.as_array().map(|p| (p.first().and_then(defaults::V::as_str), p.get(1).and_then(defaults::V::as_str))))
+                        .filter_map(|(l, m)| Some((l?.to_string(), m?.to_string())))
+                        .collect()
+                })
                 .unwrap_or_default(),
             step_text_cap: int_of(&t, "step_text_cap") as usize,
             sections: strings_of(&t, "sections"),

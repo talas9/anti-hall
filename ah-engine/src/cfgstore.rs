@@ -508,7 +508,12 @@ fn resolve_one(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<
 /// allowed (`layers::tighten_check`: stricter than the value below, or the user layer allowed the key). The second element is
 /// the reason a project value was refused. The environment and locked keys are never overridden. Used per request: the daemon-wide
 /// `defaults::*` overlay is never given a project value, so one project cannot change another's settings.
-pub fn resolve_for_project(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<String>, project: &BTreeMap<String, Json>) -> (Resolved, Option<String>) {
+pub fn resolve_for_project(
+    e: &'static Entry,
+    layers: &Layers,
+    env: &dyn Fn(&str) -> Option<String>,
+    project: &BTreeMap<String, Json>,
+) -> (Resolved, Option<String>) {
     let below = resolve_one(e, layers, env);
     if below.source == Source::Env || locked(e.key) {
         return (below, None);
@@ -530,7 +535,12 @@ pub fn explain_setting_here(key: &str, layers: &Layers, project: &BTreeMap<Strin
 pub fn explain_setting(key: &str, layers: &Layers, project: &BTreeMap<String, Json>, env: &dyn Fn(&str) -> Option<String>) -> Option<Json> {
     let e = defaults::get(key)?;
     let (eff, refusal) = resolve_for_project(e, layers, env, project);
-    let from_env = e.env.and_then(env).and_then(|s| s.trim().parse::<u64>().ok()).filter(|_| matches!(e.value, V::Int(_))).map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
+    let from_env = e
+        .env
+        .and_then(env)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|_| matches!(e.value, V::Int(_)))
+        .map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
     let from_settings = e.key.split_once('.').and_then(|(section, k)| coerce(e, lookup(layers.settings.get(section)?, k)?));
     let from_user = layers.user.get(e.key).map(|v| merge(e.value.to_json(), v));
     let held = [from_env, project.get(e.key).cloned(), from_settings, from_user, Some(e.value.to_json())];
@@ -617,7 +627,13 @@ pub fn restart_only(key: &str) -> bool {
 
 fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
     let read = std::fs::read_to_string(path);
-    crate::web::io::path_op(path, read.as_ref().map_or(0, |t| t.len() as u64), read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound), false, None);
+    crate::web::io::path_op(
+        path,
+        read.as_ref().map_or(0, |t| t.len() as u64),
+        read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+        false,
+        None,
+    );
     match read {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

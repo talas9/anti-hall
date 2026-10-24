@@ -139,7 +139,9 @@ fn refresh_anchor_session(inv: &Inv) {
     if stale {
         let mut reg = Args { positionals: vec![defaults::text("devswarm_cli.verb_register_primary").to_string()], ..Args::default() };
         reg.flags.insert(defaults::text("devswarm_cli.flag_worktree").to_string(), vec![crate::meshw::args::FlagVal::S(wt.clone())]);
-        if let Some(OVal::Str(cp)) = again.as_ref().and_then(|d| d.get(defaults::text("mesh_write.field_cursor_path"))).filter(|v| !matches!(v, OVal::Str(x) if x.is_empty())) {
+        if let Some(OVal::Str(cp)) =
+            again.as_ref().and_then(|d| d.get(defaults::text("mesh_write.field_cursor_path"))).filter(|v| !matches!(v, OVal::Str(x) if x.is_empty()))
+        {
             reg.flags.insert(defaults::text("devswarm_cli.flag_reg_cursor").to_string(), vec![crate::meshw::args::FlagVal::S(cp.clone())]);
         }
         let reg_inv = Inv { cwd: wt, ..inv.clone() };
@@ -205,8 +207,17 @@ pub(crate) fn open_reader(inv: &Inv, desc: &OVal) -> R<Option<MeshReader>> {
             }
         };
         if journal {
-            crate::metrics::bump("mesh_store_backend_skipped", &[("site", defaults::text("mesh_write.hb_site_store")), ("backend", defaults::text("mesh_write.backend_journal"))]);
-            crate::debug::violated("meshw", &defaults::render("mesh_write.msg_store_backend_skipped", &[("dir", &dir.display()), ("backend", &defaults::text("mesh_write.backend_journal"))]));
+            crate::metrics::bump(
+                "mesh_store_backend_skipped",
+                &[("site", defaults::text("mesh_write.hb_site_store")), ("backend", defaults::text("mesh_write.backend_journal"))],
+            );
+            crate::debug::violated(
+                "meshw",
+                &defaults::render(
+                    "mesh_write.msg_store_backend_skipped",
+                    &[("dir", &dir.display()), ("backend", &defaults::text("mesh_write.backend_journal"))],
+                ),
+            );
             return Ok(None);
         }
     }
@@ -259,7 +270,11 @@ fn pending_for(inv: &Inv, desc: &OVal) -> Pending {
     // convert is read from the NDJSON inbox alone, as for a partition without a store
     let failed = |reason: &str| {
         degraded(site, reason);
-        if defaults::list("mesh_write.hb_store_error_prefixes").iter().any(|p| reason.starts_with(p)) { Pending { pending: true, not_draining: false, oldest: None } } else { fallback() }
+        if defaults::list("mesh_write.hb_store_error_prefixes").iter().any(|p| reason.starts_with(p)) {
+            Pending { pending: true, not_draining: false, oldest: None }
+        } else {
+            fallback()
+        }
     };
     let (store_base, nd_base) = match union::floor_bases(&reader, &inv.home, &id, cursor_file.as_deref()) {
         Ok(b) => b,
@@ -370,7 +385,8 @@ fn session_from_process_tree(inv: &Inv) -> Option<String> {
                 OVal::Str(x) if !x.is_empty() => Some(x.clone()),
                 _ => None,
             })
-            && let Some(sid) = rec.get(defaults::text("mesh_write.field_session_id")).filter(|v| !matches!(v, OVal::Null)).map(crate::dssup::ingest::import::js_string)
+            && let Some(sid) =
+                rec.get(defaults::text("mesh_write.field_session_id")).filter(|v| !matches!(v, OVal::Null)).map(crate::dssup::ingest::import::js_string)
         {
             let sid = js_trim(&sid).to_string();
             if !sid.is_empty() && !sid.starts_with(defaults::text("mesh_write.synthetic_session_prefix")) {
@@ -460,13 +476,31 @@ fn first_claim(inv: &Inv, id: &str, caller_kind: &str, cwd: &str) -> R<bool> {
 /// `broadcastFamilyOwns`: `id` belongs to the same workspace identity as the caller, never on raw-id equality alone and
 /// never on anything a caller can forge. Fail-closed: a failure of any read is "not owned".
 #[allow(clippy::too_many_arguments)]
-fn family_owns(inv: &Inv, rows: &[ident::Row], own_entry: Option<&ident::Row>, id: &str, cwd: &str, caller_kind: &str, session_flag: Option<&str>, had_prior: bool) -> bool {
+fn family_owns(
+    inv: &Inv,
+    rows: &[ident::Row],
+    own_entry: Option<&ident::Row>,
+    id: &str,
+    cwd: &str,
+    caller_kind: &str,
+    session_flag: Option<&str>,
+    had_prior: bool,
+) -> bool {
     let site = defaults::text("mesh_write.hb_site_owns");
     soft(site, family_owns_inner(inv, rows, own_entry, id, cwd, caller_kind, session_flag, had_prior).map(Some)).unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn family_owns_inner(inv: &Inv, rows: &[ident::Row], own_entry: Option<&ident::Row>, id: &str, cwd: &str, caller_kind: &str, session_flag: Option<&str>, had_prior: bool) -> R<bool> {
+fn family_owns_inner(
+    inv: &Inv,
+    rows: &[ident::Row],
+    own_entry: Option<&ident::Row>,
+    id: &str,
+    cwd: &str,
+    caller_kind: &str,
+    session_flag: Option<&str>,
+    had_prior: bool,
+) -> R<bool> {
     let target = rows.iter().find(|r| r.id == id);
     let Some(target) = target.filter(|t| t.worktree_path.as_deref().is_some_and(|p| !p.is_empty())) else {
         return first_claim(inv, id, caller_kind, cwd);
@@ -632,7 +666,10 @@ fn broadcast(inv: &Inv, b: &Broadcast, id: &str, text: &str) -> Result<OVal, Str
                 crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_heartbeat"), &why);
             }
             let mut o = Obj::default();
-            o.put("ok", OVal::Bool(true)).put("sent", OVal::Bool(r.inserted)).put("seq", r.seq.map_or(OVal::Null, |x| n(x as f64))).put("repoKey", s(&b.repo_key));
+            o.put("ok", OVal::Bool(true))
+                .put("sent", OVal::Bool(r.inserted))
+                .put("seq", r.seq.map_or(OVal::Null, |x| n(x as f64)))
+                .put("repoKey", s(&b.repo_key));
             Ok(o.done())
         }
         // the store write threw: Node's dispatcher reports the exception as the verb's own error
@@ -723,11 +760,7 @@ fn child_label_inner(inv: &Inv, a: &Args, id: &str) -> R<Option<Vec<(String, OVa
         }
     }
     let app = soft(defaults::text("mesh_write.hb_site_label"), ident::builder_for_worktree(home, env, &wt));
-    let child_id: Option<String> = app
-        .filter(|b| kids.contains(&b.id))
-        .map(|b| b.id)
-        .or_else(|| (kids.len() == 1).then(|| kids[0].clone()))
-        .or(retired_to);
+    let child_id: Option<String> = app.filter(|b| kids.contains(&b.id)).map(|b| b.id).or_else(|| (kids.len() == 1).then(|| kids[0].clone())).or(retired_to);
     if child_id.is_none() {
         // no registered child id: the label is the only identity that worktree has, except from the Primary checkout
         let caller_ic = ident::resolve_context(cwd, true)?;
@@ -1036,7 +1069,10 @@ mod tests {
         std::fs::write(dir.join("primary-0123abcd.json"), r#"{"retiredTo":"real-id"}"#).unwrap();
         let (code, v) = run_args(&inv, &["heartbeat", "primary-0123abcd"]);
         assert_eq!(code, 2);
-        assert_eq!(v.stringify(), r#"{"action":"heartbeat","ok":false,"reason":"child-label-id","id":"primary-0123abcd","resolvedTo":"real-id","worktree":null,"error":"\"primary-0123abcd\" is a retired worktree label (folded into \"real-id\"), not an identity. Nothing was written."}"#);
+        assert_eq!(
+            v.stringify(),
+            r#"{"action":"heartbeat","ok":false,"reason":"child-label-id","id":"primary-0123abcd","resolvedTo":"real-id","worktree":null,"error":"\"primary-0123abcd\" is a retired worktree label (folded into \"real-id\"), not an identity. Nothing was written."}"#
+        );
         assert!(!crate::meshw::idlock::devswarm_root(&inv.home).join("heartbeats").join("primary-0123abcd.json").exists(), "nothing was written");
     }
 
@@ -1127,7 +1163,13 @@ mod tests {
         let anchor = ident::mesh_id_for_real_path(&wt);
         let dir = crate::meshw::idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces"));
         std::fs::create_dir_all(&dir).unwrap();
-        for (body, want) in [(r#"{"sessionId":123}"#, true), (r#"{"sessionId":0}"#, false), (r#"{"sessionId":"abc"}"#, false), (r#"{"sessionId":"old"}"#, true), (r#"{"sessionId":["old"]}"#, true)] {
+        for (body, want) in [
+            (r#"{"sessionId":123}"#, true),
+            (r#"{"sessionId":0}"#, false),
+            (r#"{"sessionId":"abc"}"#, false),
+            (r#"{"sessionId":"old"}"#, true),
+            (r#"{"sessionId":["old"]}"#, true),
+        ] {
             std::fs::write(dir.join(format!("{anchor}.json")), body).unwrap();
             assert_eq!(anchor_refresh_possible(&inv).unwrap(), want, "{body}");
         }

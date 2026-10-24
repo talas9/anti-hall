@@ -233,6 +233,13 @@ fn session_payload_len(len: usize) -> String {
     p
 }
 
+/// What a guard that could not answer says, read from the configured text (script.msg_fail_closed with the reason at `why_key`),
+/// for the first check every Bash/Edit/Agent PreToolUse row starts with.
+fn closed_text(why_key: &str) -> String {
+    let why = ah_engine::defaults::text(why_key);
+    ah_engine::defaults::render("script.msg_fail_closed", &[("check", &"compact-declaration-guard"), ("why", &why)])
+}
+
 fn pretool_payload_len(len: usize) -> String {
     let prefix = r#"{"session_id":"e2e","cwd":".","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":""#;
     let suffix = r#""}}"#;
@@ -297,7 +304,7 @@ const CTX_MERGE_GATE: &str = r#"printf '{"hookSpecificOutput":{"hookEventName":"
 fn wait_for_daemon_native_block(e: &Env, args: &[&str], payload: &str, extra: &[(&str, &str)]) {
     for _ in 0..50 {
         let (code, _, err) = e.run_with(args, false, payload, true, extra);
-        if code == 2 && !err.contains("could not run the guards") {
+        if code == 2 && !err.contains(&closed_text("script.msg_unanswered")) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -424,7 +431,7 @@ fn unparsable_spawn_payload_blocks_only_when_node_cannot_run_model_routing() {
         let args = ["hook", "--event", "PreToolUse", "--tool", tool, "--fallback-map", map.to_str().unwrap()];
         let (code, out, err) = e.run(&args, true, "{bad", false);
         assert_eq!((code, out.as_str()), (2, ""), "{tool}: {out:?} {err:?}");
-        assert!(err.contains("model-routing") && err.contains("blocked rather than allowed unguarded"), "{tool}: {err}");
+        assert!(err.contains(&closed_text("script.msg_unanswered")), "{tool}: {err}");
     }
 }
 
@@ -640,7 +647,9 @@ fn killed_dispatcher_leaves_no_spool_file(signal: i32, tag: &str) {
         sent
     });
     let spooled = Instant::now();
-    while spooled.elapsed() < Duration::from_secs(10) && !std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).is_ok_and(|l| l.contains("dispatch_stdin_spooled")) {
+    while spooled.elapsed() < Duration::from_secs(10)
+        && !std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).is_ok_and(|l| l.contains("dispatch_stdin_spooled"))
+    {
         // the spool exists once the dispatcher has read past the cap; the log line is written after the read ends, so the wait is bounded
         if writer.is_finished() {
             break;
@@ -699,7 +708,8 @@ fn startup_sweep_removes_only_stale_dispatch_stdin_files() {
 fn dispatcher_stdin_cap_boundaries_are_exact() {
     let e = Env::new("stdin-boundaries");
     let max = ah_engine::defaults::num("client.max_stdin") as usize;
-    let spooled = |e: &Env| std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap_or_default().matches("dispatch_stdin_spooled").count();
+    let spooled =
+        |e: &Env| std::fs::read_to_string(e.state().join(ah_engine::health::log_name())).unwrap_or_default().matches("dispatch_stdin_spooled").count();
     // a SessionStart cannot block: at the cap it is read whole in memory, one byte more goes to the spool and is said so
     let args = ["hook", "--event", "SessionStart"];
     let (code, _, err) = e.run(&args, true, &session_payload_len(max), true);
@@ -813,17 +823,20 @@ fn assert_env_incomplete_defers(name: &str, in_process: bool) {
     let broken = |env: &Env| env.run_with(&args, in_process, &p, true, &[("ANTIHALL_SHIPIT_GATE", "1"), ("ANTIHALL_PAD", pad.as_str())]);
     if in_process {
         let (code, _, err) = e.run_with(&args, true, &p, true, &gate);
-        assert!(code == 2 && !err.contains("could not run the guards"), "control: with a whole environment the engine answers itself: {code} {err:?}");
+        assert!(
+            code == 2 && !err.contains(&closed_text("script.msg_env_incomplete")),
+            "control: with a whole environment the engine answers itself: {code} {err:?}"
+        );
         let (code, _, err) = broken(&e);
         e.stop();
-        assert_eq!((code, err.contains("could not run the guards")), (2, true), "an incomplete environment cannot be checked: closed: {err:?}");
+        assert_eq!((code, err.contains(&closed_text("script.msg_env_incomplete"))), (2, true), "an incomplete environment cannot be checked: closed: {err:?}");
         return;
     }
     // warm the daemon: the first call goes through Node, later ones are answered by the daemon
     let mut native = false;
     for _ in 0..50 {
         let (code, _, err) = e.run_with(&args, false, &p, true, &gate);
-        if code == 2 && !err.contains("could not run the guards") {
+        if code == 2 && !err.contains(&closed_text("script.msg_unanswered")) {
             native = true;
             break;
         }
@@ -832,7 +845,11 @@ fn assert_env_incomplete_defers(name: &str, in_process: bool) {
     assert!(native, "control: the warm daemon answers the gated Edit natively");
     let (code, _, err) = broken(&e);
     e.stop();
-    assert_eq!((code, err.contains("could not run the guards")), (2, true), "daemon: an incomplete environment cannot be checked: closed: {err:?}");
+    assert_eq!(
+        (code, err.contains(&closed_text("script.msg_env_incomplete"))),
+        (2, true),
+        "daemon: an incomplete environment cannot be checked: closed: {err:?}"
+    );
 }
 
 #[test]
@@ -855,65 +872,23 @@ fn an_empty_home_defers_the_env_reading_checks_in_process_and_through_the_daemon
         if in_process {
             let extra = [("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "")];
             let (code, _, err) = e.run_with(&args, true, &p, true, &extra);
-            assert_eq!((code, err.contains("could not run the guards")), (2, true), "an empty HOME cannot be checked in-process: closed: {err:?}");
+            assert_eq!(
+                (code, err.contains(&closed_text("script.msg_env_incomplete"))),
+                (2, true),
+                "an empty HOME cannot be checked in-process: closed: {err:?}"
+            );
         } else {
             let gate = [("ANTIHALL_SHIPIT_GATE", "1")];
             wait_for_daemon_native_block(&e, &args, &p, &gate);
             let extra = [("ANTIHALL_SHIPIT_GATE", "1"), ("HOME", "")];
             let (code, _, err) = e.run_with(&args, false, &p, true, &extra);
-            assert_eq!((code, err.contains("could not run the guards")), (2, true), "an empty HOME with a healthy daemon cannot be checked: closed: {err:?}");
+            assert_eq!(
+                (code, err.contains(&closed_text("script.msg_env_incomplete"))),
+                (2, true),
+                "an empty HOME with a healthy daemon cannot be checked: closed: {err:?}"
+            );
         }
         e.stop();
-    }
-}
-
-/// Review P1: a check that records a spawn and then answers "nothing to say" must answer `Allow`, never `None` (which the
-/// dispatcher hands to the Node hook, and the Node hook records the same spawn a second time: the rate cap was effectively
-/// halved). One Agent call through the real dispatcher, with the real Node hooks behind every entry that defers, writes exactly
-/// one line to the swarm spawn log and one to the phase tracker's agent log.
-#[test]
-fn one_agent_call_records_exactly_one_spawn_per_log() {
-    if Command::new("node").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) {
-        eprintln!("skipped: no node on PATH (the real Node hooks are the oracle for a double record)");
-        return;
-    }
-    let e = Env::new("spawn-once");
-    let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
-    let home = e.dir.join("home");
-    let payload = serde_json::json!({
-        "session_id": "once", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Agent",
-        "tool_input": {"description": "read a file", "prompt": "read README.md and report its first line", "subagent_type": "Explore", "model": "haiku"}
-    })
-    .to_string();
-    for in_process in [true, false] {
-        ah_engine::discard::harmless(std::fs::remove_dir_all(home.join(".anti-hall")));
-        let calls = 3;
-        for _ in 0..calls {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
-            c.args(["hook", "--event", "PreToolUse"])
-                .env_clear()
-                .env("PATH", std::env::var("PATH").unwrap_or_default())
-                .env("HOME", &home)
-                .env("AH_ENGINE_DIR", e.state())
-                .env("AH_ENGINE_VERSION", "dispatch-e2e")
-                .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
-                .env("AH_ENGINE_NOSPAWN", if in_process { "0" } else { "1" })
-                .env("CLAUDE_PLUGIN_ROOT", &plugin)
-                .env("ANTIHALL_INGEST_DRY_RUN", "1")
-                .current_dir(&e.dir)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let mut ch = c.spawn().unwrap();
-            ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
-            let o = ch.wait_with_output().unwrap();
-            assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-        }
-        let lines = |rel: &str| std::fs::read_to_string(home.join(rel)).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
-        let expected = if in_process { calls } else { 0 };
-        let mode = if in_process { "checks answer in the client" } else { "daemon absent (no Node hand-over)" };
-        assert_eq!(lines(".anti-hall/swarm-spawns.log"), expected, "swarm-spawns.log, {mode}");
-        assert_eq!(lines(".anti-hall/agent-spawns.log"), expected, "agent-spawns.log, {mode}");
     }
 }
 
@@ -1297,26 +1272,44 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
 // ---- the wait marker outlives the answer: it is released only after stdout and the done mark ----------------------------------
 
 /// Launcher RCA (wait-marker race): the marker was dropped when `run_core` returned, so the window between that and the
-/// stdout write + done mark had neither marker, and a launcher checking at that instant killed a finished answer. The done
-/// file is a FIFO here: the engine's `mark_done` blocks opening it until this test opens the read end, so the check runs
-/// exactly while the engine sits at the done mark, after the stdout write.
+/// stdout write + done mark had neither marker, and a launcher checking at that instant killed a finished answer. The invariant
+/// the wrapper relies on: at every instant after the marker first appears, the wait marker OR the done mark exists. A sampler
+/// thread checks it in a tight loop, reading the wait marker BEFORE the done mark (the engine writes the done mark before it
+/// releases the marker, so that order has no false alarm: a missing marker is always followed by an existing done mark). An
+/// earlier version made the done file a FIFO and read the marker once the engine opened it, but the engine does not wait after the
+/// open, so on a loaded runner the reader woke after the marker was already released (macOS CI, 1 in 2 under CPU load).
 #[test]
 fn the_wait_marker_is_still_there_when_the_done_mark_is_written() {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let e = Env::new("wait-until-done");
     let map = event_map(&e, "PreToolUse", "echo ANSWER", "true");
-    let _d = scripted_daemon(&e, vec![FAST_OK]);
-    let (wait, done) = (e.dir.join("wait"), e.dir.join("done.fifo"));
-    let c = std::ffi::CString::new(done.to_str().unwrap()).unwrap();
-    // SAFETY: `c` is a valid NUL-terminated path that outlives the call.
-    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
-    let (w, d) = (wait.clone(), done.clone());
-    let reader = std::thread::spawn(move || {
-        let _fifo = std::fs::File::open(d).unwrap(); // returns once the engine opens it for writing = it is at mark_done
-        w.exists()
+    let daemon = scripted_daemon(&e, vec![FAST_OK]);
+    let (wait, done) = (e.dir.join("wait"), e.dir.join("done"));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (w, d, s) = (wait.clone(), done.clone(), Arc::clone(&stop));
+    // (the marker was seen, a sample found neither marker after it was seen)
+    let sampler = std::thread::spawn(move || {
+        let (mut seen, mut gap) = (false, false);
+        while !s.load(Ordering::Acquire) {
+            let has_wait = w.exists();
+            let has_done = d.exists();
+            seen |= has_wait;
+            if seen && !has_wait && !has_done {
+                gap = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        (seen, gap)
     });
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
     let env = [("AH_ENGINE_WAIT_FILE", wait.to_str().unwrap()), ("AH_ENGINE_DONE_FILE", done.to_str().unwrap()), ("AH_ENGINE_NOSPAWN", "1")];
     let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &env);
-    assert!(reader.join().unwrap(), "the wait marker was gone before the done mark: out={out:?} err={err:?} code={code}");
-    assert!(!wait.exists(), "the marker is released at the end of the call");
+    stop.store(true, Ordering::Release);
+    let (seen, gap) = sampler.join().unwrap();
+    let why = format!("scripted daemon contacted {} time(s), out={out:?} err={err:?} code={code}, engine log:\n{}", daemon.seen(), engine_log(&e));
+    assert!(seen, "the wait marker never appeared (the daemon was not asked, or the marker was released before the sampler saw it): {why}");
+    assert!(!gap, "a sample found neither the wait marker nor the done mark: {why}");
+    assert!(done.exists(), "the done mark is written: {why}");
+    assert!(!wait.exists(), "the marker is released at the end of the call: {why}");
 }

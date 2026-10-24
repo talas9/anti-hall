@@ -127,7 +127,10 @@ pub fn acquire(
         .filter_map(|l| l.trim().parse().ok())
         .filter(|t: &u64| now.saturating_sub(*t) < window_s.saturating_mul(1000))
         .collect();
-    if recent.iter().any(|t| now.saturating_sub(*t) < fresh_ms && sock_ms.is_none_or(|m| *t >= m)) {
+    if recent
+        .iter()
+        .any(|t| now.saturating_sub(*t) < fresh_ms && sock_ms.is_none_or(|m| *t >= m))
+    {
         return Right::WaitOnly;
     }
     if recent.len() as u64 >= max {
@@ -164,11 +167,20 @@ mod tests {
         let now = now_ms();
         std::fs::write(d.join("l.spawns"), format!("{}\n", now - 100)).unwrap();
         // no stale socket: the ask is fresh, wait only
-        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 5), Right::WaitOnly));
+        assert!(matches!(
+            acquire(&d, "l.lock", "l.spawns", 10_000, None, 60, 5),
+            Right::WaitOnly
+        ));
         // the socket file is newer than the ask: that daemon died, ask again
-        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5), Right::Kick(_)));
+        assert!(matches!(
+            acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5),
+            Right::Kick(_)
+        ));
         // the socket file is older than the newest ask: its daemon has not bound yet, wait only
-        assert!(matches!(acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5), Right::WaitOnly));
+        assert!(matches!(
+            acquire(&d, "l.lock", "l.spawns", 10_000, Some(now - 50), 60, 5),
+            Right::WaitOnly
+        ));
     }
 
     #[test]

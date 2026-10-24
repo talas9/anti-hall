@@ -647,7 +647,6 @@ pub fn exists(p: &Path) -> bool {
     p.exists()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,7 +773,11 @@ mod tests {
         assert_eq!(cooling[1], ("daemonHealCooldown".to_string(), OVal::Bool(true)));
         assert_eq!(cooling[2], ("retryAfterMs".to_string(), OVal::Num(50_000.0)));
         // an engine that owns ingest ends it quietly
-        std::fs::write(devswarm_root(&home).join("ingest-owner.json"), serde_json::json!({"owner": "engine", "ts": inv.now - 1000, "validForMs": 3_600_000}).to_string()).unwrap();
+        std::fs::write(
+            devswarm_root(&home).join("ingest-owner.json"),
+            serde_json::json!({"owner": "engine", "ts": inv.now - 1000, "validForMs": 3_600_000}).to_string(),
+        )
+        .unwrap();
         assert_eq!(self_heal(&inv).unwrap(), stale);
         crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
     }
@@ -800,7 +803,8 @@ mod tests {
             serde_json::json!({"ts": now, "pid": pid, "consecutiveMonitorFailures": 0, "lastMonitorOkMs": now - 5.0 * 60_000.0}).to_string(),
         )
         .unwrap();
-        std::fs::write(locks.join(format!("{}{rk}.lock", defaults::text("mesh_write.ingest_lock_prefix"))), serde_json::json!({"pid": pid}).to_string()).unwrap();
+        std::fs::write(locks.join(format!("{}{rk}.lock", defaults::text("mesh_write.ingest_lock_prefix"))), serde_json::json!({"pid": pid}).to_string())
+            .unwrap();
         assert!(daemon_healthy(&inv, Some(rk)).unwrap(), "5 minutes since the last good poll is inside the 10 minute default");
         crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
     }

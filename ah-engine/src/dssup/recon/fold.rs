@@ -209,7 +209,14 @@ pub fn ghost_age_ms(env: &HashMap<String, String>) -> f64 {
 
 /// Plan `foldGroupIntoSurvivor(s, home, survivor, candidates, {lockCandidates})` for one group: the units (one per candidate with
 /// something to write, in Node's order) and the value Node returns. A candidate the engine cannot decide defers the group.
-pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow], lock_candidates: bool, allow_archived_dest: bool) -> R<(Vec<Unit>, FoldOut)> {
+pub(super) fn plan_group(
+    cx: &Cx,
+    sim: &mut Sim,
+    survivor: &str,
+    cands: &[RegRow],
+    lock_candidates: bool,
+    allow_archived_dest: bool,
+) -> R<(Vec<Unit>, FoldOut)> {
     let mut group_ids: HashSet<String> = cands.iter().map(|c| c.row.id.clone()).collect();
     group_ids.insert(survivor.to_string());
     let mut out = FoldOut::default();
@@ -277,7 +284,9 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
         let mut ops: Vec<Op> = Vec::new();
         if !batch.is_empty() {
             // an archived-only destination is accepted for archived-origin rows (`allowArchivedDest`), as Node's door does
-            if !cx.rows.iter().any(|r| r.row.id == survivor) && !(allow_archived_dest && crate::meshw::summary::archive_complete_ids(cx.home).contains(survivor)) {
+            if !cx.rows.iter().any(|r| r.row.id == survivor)
+                && !(allow_archived_dest && crate::meshw::summary::archive_complete_ids(cx.home).contains(survivor))
+            {
                 out.skipped.push((id, defaults::text("devswarm_recon.reason_survivor_gone").to_string()));
                 continue;
             }
@@ -359,7 +368,11 @@ pub(super) fn plan_group(cx: &Cx, sim: &mut Sim, survivor: &str, cands: &[RegRow
             };
             let mut all = vec![guard];
             all.extend(ops);
-            units.push(Unit { label: format!("{}{id}", defaults::text("devswarm_recon.fold_unit_prefix")), lock: lock_candidates.then(|| id.clone()), ops: all });
+            units.push(Unit {
+                label: format!("{}{id}", defaults::text("devswarm_recon.fold_unit_prefix")),
+                lock: lock_candidates.then(|| id.clone()),
+                ops: all,
+            });
         }
     }
     Ok((units, out))

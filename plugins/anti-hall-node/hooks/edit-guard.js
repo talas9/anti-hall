@@ -933,7 +933,7 @@ function main() {
   if (!isCoordinator(payload)) process.exit(0);
 
   // A DevSwarm CHILD workspace is a worker on its own branch, not the orchestrator:
-  // its edits are its job (peer report, SkyCrew child, 2026-10-09). The launcher
+  // its edits are its job (peer report, downstream child, 2026-10-09). The launcher
   // deny above already ran for it.
   try { if (require('./lib/devswarm-role.js').isChildWorker(process.env, undefined, cwd)) process.exit(0); } catch (_) { /* gated as before */ }
 

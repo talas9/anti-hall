@@ -13,13 +13,7 @@ fn broke(why: impl std::fmt::Display) -> Defer {
 
 /// Run `bin args` with `input` on stdin; stdout when it exits 0.
 fn pipe(bin: &str, args: &[&str], input: &[u8]) -> R<Vec<u8>> {
-    let mut child = Command::new(bin)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(broke)?;
+    let mut child = Command::new(bin).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(broke)?;
     let mut stdin = child.stdin.take().ok_or_else(|| broke(defaults::text("devswarm_sup.rt_err_gzip_stdin")))?;
     let data = input.to_vec();
     // feed on a thread: the output may be larger than a pipe buffer while the input is still being written

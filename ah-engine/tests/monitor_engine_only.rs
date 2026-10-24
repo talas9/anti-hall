@@ -54,7 +54,9 @@ fn run(tag: &str, engine_body: Option<&str>) -> Run {
 
 #[test]
 fn every_engine_exit_is_the_watchers_own_and_no_launcher_or_node_runs() {
-    for (tag, body, code) in [("e75", "exit 75", 75), ("e70", "exit 70", 70), ("e127", "exit 127", 127), ("e0", "echo WATCH; exit 0", 0), ("e3", "echo WATCH; exit 3", 3)] {
+    for (tag, body, code) in
+        [("e75", "exit 75", 75), ("e70", "exit 70", 70), ("e127", "exit 127", 127), ("e0", "echo WATCH; exit 0", 0), ("e3", "echo WATCH; exit 3", 3)]
+    {
         let r = run(tag, Some(body));
         assert_eq!(r.code, Some(code), "{tag}: {}", r.out);
         assert!(!r.out.contains("LAUNCHER") && !r.out.contains("NODE-WATCHER"), "{tag}: nothing else runs: {}", r.out);

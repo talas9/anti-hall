@@ -18,11 +18,11 @@ use crate::meshw::actverbs::{Resolved, resolve_archive_id};
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, s};
 use crate::meshw::cursors;
-use crate::migrate::readercur::{Cx, Handle, raise_all_loss_free};
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{self, is_safe_id};
 use crate::meshw::send::{Answer, Effect};
 use crate::meshw::wsverbs;
+use crate::migrate::readercur::{Cx, Handle, raise_all_loss_free};
 
 fn answer(code: i32, v: OVal) -> Answer {
     Answer { code, stdout: format!("{}\n", v.stringify()), effect: Effect::None }
@@ -619,7 +619,14 @@ fn register_core(inv: &Inv, a: &Args, require_new: bool, primary: Option<&str>, 
             Some(l) => Some(l),
             None => {
                 let busy = lock_busy(id);
-                crate::meshw::clog::refusal(inv, op, repo_key_for_cwd(inv).as_deref(), Some(id), &defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(id))]), None);
+                crate::meshw::clog::refusal(
+                    inv,
+                    op,
+                    repo_key_for_cwd(inv).as_deref(),
+                    Some(id),
+                    &defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(id))]),
+                    None,
+                );
                 return Ok(busy);
             }
         },
@@ -646,23 +653,19 @@ fn register_locked(inv: &Inv, id: &str, op: &str, f: &RegFlags, require_new: boo
     let (verdict, cache) = crate::meshw::appdb::archived_verdict(&inv.home, &inv.env, inv.now, id, guard_wt.as_deref(), true).unwrap_or((None, None));
     if verdict == Some(true) {
         let reason = defaults::render("devswarm_cli.msg_reg_app_archived", &[("id", &id)]);
-        return Ok(refuse(
-            vec![
-                ("action", s(defaults::text("devswarm_cli.action_app_archived_skip"))),
-                ("id", s(id)),
-                ("archived", OVal::Bool(true)),
-                ("appArchived", OVal::Bool(true)),
-                ("reason", s(&reason)),
-            ],
-        ));
+        return Ok(refuse(vec![
+            ("action", s(defaults::text("devswarm_cli.action_app_archived_skip"))),
+            ("id", s(id)),
+            ("archived", OVal::Bool(true)),
+            ("appArchived", OVal::Bool(true)),
+            ("reason", s(&reason)),
+        ]));
     }
     if existing.is_none()
         && let Some(token) = reserved_token(id)
     {
         let msg = defaults::render("devswarm_cli.msg_reg_reserved", &[("id", &quote(id)), ("token", &quote(&token))]);
-        return Ok(refuse(
-            vec![("id", s(id)), ("reason", s(defaults::text("devswarm_cli.reason_reserved_id"))), ("error", s(&msg))],
-        ));
+        return Ok(refuse(vec![("id", s(id)), ("reason", s(defaults::text("devswarm_cli.reason_reserved_id"))), ("error", s(&msg))]));
     }
     // an archived marker: a routine auto-ensure does not revive the workspace it names
     let mut archived_note: Option<OVal> = None;
@@ -671,14 +674,12 @@ fn register_locked(inv: &Inv, id: &str, op: &str, f: &RegFlags, require_new: boo
         let info = archived_counterpart(inv, id, f.worktree.as_deref());
         if matches!(info, Counterpart::Read { same: Some(true), .. }) {
             let msg = defaults::render("devswarm_cli.msg_reg_archived_skip", &[("id", &id)]);
-            return Ok(refuse(
-                vec![
-                    ("action", s(defaults::text("devswarm_cli.action_archived_skip"))),
-                    ("id", s(id)),
-                    ("archived", OVal::Bool(true)),
-                    ("reason", s(&msg)),
-                ],
-            ));
+            return Ok(refuse(vec![
+                ("action", s(defaults::text("devswarm_cli.action_archived_skip"))),
+                ("id", s(id)),
+                ("archived", OVal::Bool(true)),
+                ("reason", s(&msg)),
+            ]));
         }
         // a new workspace reusing the id, or a case that cannot be told: the registration goes on, loudly
         let (same, worktree, known) = match &info {
@@ -719,15 +720,13 @@ fn register_locked(inv: &Inv, id: &str, op: &str, f: &RegFlags, require_new: boo
                 defaults::text("devswarm_cli.msg_ctx_join"),
                 defaults::text("devswarm_cli.msg_ensure_tail")
             );
-            return Ok(refuse(
-                vec![
-                    ("id", s(id)),
-                    ("reason", s(defaults::text("devswarm_cli.reason_ctx_mismatch"))),
-                    ("registeredRepoKey", s(&reg)),
-                    ("callerRepoKey", current.as_deref().map_or(OVal::Null, s)),
-                    ("error", s(&msg)),
-                ],
-            ));
+            return Ok(refuse(vec![
+                ("id", s(id)),
+                ("reason", s(defaults::text("devswarm_cli.reason_ctx_mismatch"))),
+                ("registeredRepoKey", s(&reg)),
+                ("callerRepoKey", current.as_deref().map_or(OVal::Null, s)),
+                ("error", s(&msg)),
+            ]));
         }
         // the descriptor is stranded in the legacy hash bucket and this project now resolves: re-home it first
         let hash = crate::meshw::send::hash_from_workspace_id(id);
@@ -911,7 +910,8 @@ fn retire_duplicates(inv: &Inv, id: &str, worktree: Option<&str>) -> Option<serd
     let mut result = run.result?;
     // a unit the applier handed back (a busy lock, a drifted precondition) was not done: its row is pending, not retired
     let prefix = defaults::text("devswarm_recon.fold_unit_prefix");
-    let pending: Vec<(String, String)> = run.deferred.iter().filter_map(|(label, why)| label.strip_prefix(prefix).map(|i| (i.to_string(), why.clone()))).collect();
+    let pending: Vec<(String, String)> =
+        run.deferred.iter().filter_map(|(label, why)| label.strip_prefix(prefix).map(|i| (i.to_string(), why.clone()))).collect();
     if !pending.is_empty() {
         if let Some(serde_json::Value::Array(r)) = result.get_mut("retired") {
             r.retain(|v| !pending.iter().any(|(i, _)| v.as_str() == Some(i.as_str())));
@@ -1027,9 +1027,8 @@ pub fn register_primary(inv: &Inv, a: &Args) -> R<Answer> {
         .or_else(|| inv.env.get(name("mesh_write.env_session_id")).filter(|v| !v.is_empty()).cloned())
         .or_else(|| inv.env.get(name("devswarm_cli.regprim_builder_env")).filter(|v| !v.is_empty()).cloned())
         .unwrap_or_else(|| id.clone());
-    let cursor = filled(&f.cursor)
-        .map(str::to_string)
-        .unwrap_or_else(|| crate::meshw::cursors::primary_cursor_path(&inv.home, &id).to_string_lossy().into_owned());
+    let cursor =
+        filled(&f.cursor).map(str::to_string).unwrap_or_else(|| crate::meshw::cursors::primary_cursor_path(&inv.home, &id).to_string_lossy().into_owned());
     // the live-holder check and the write run under the Primary id's lock, so two sessions adopting at once serialize
     let Some(lock) = idlock::acquire(&inv.home, &id) else { return Ok(lock_busy(&id)) };
     if !force {
@@ -1516,13 +1515,7 @@ fn row_oval(m: &serde_json::Value) -> OVal {
 }
 
 /// Archive, verify, then retire one partition (`cmdReapOrphans`' loop body). The inner `Err` is the `failed[]` entry.
-fn retire(
-    store: &crate::meshw::store::MeshStore,
-    inv: &Inv,
-    repo_key: &str,
-    reaped_dir: &std::path::Path,
-    c: &Candidate,
-) -> R<Result<OVal, OVal>> {
+fn retire(store: &crate::meshw::store::MeshStore, inv: &Inv, repo_key: &str, reaped_dir: &std::path::Path, c: &Candidate) -> R<Result<OVal, OVal>> {
     let n_ = crate::meshw::common::n;
     let fail = |reason: &str, extra: Vec<(&str, OVal)>| -> OVal {
         let mut o = Obj::default();
@@ -1608,10 +1601,7 @@ fn retire(
         },
     );
     let mut o = Obj::default();
-    o.put("partitionId", s(pid))
-        .put("unread", n_(unread.len() as f64))
-        .put("archivePath", s(&archive.to_string_lossy()))
-        .put("cursorAdvancedTo", n_(total));
+    o.put("partitionId", s(pid)).put("unread", n_(unread.len() as f64)).put("archivePath", s(&archive.to_string_lossy())).put("cursorAdvancedTo", n_(total));
     Ok(Ok(o.done()))
 }
 
@@ -1762,7 +1752,8 @@ mod tests {
 
     #[test]
     fn the_correction_text_reads_odd_plan_and_stray_shapes_the_way_javascript_does() {
-        let plan = OVal::parse(r#"{"steps":[{"n":"2","text":"x","status":"doing","ts":"9"},{"text":"y","status":"doing","ts":10}],"created_at":"1000"}"#).unwrap();
+        let plan =
+            OVal::parse(r#"{"steps":[{"n":"2","text":"x","status":"doing","ts":"9"},{"text":"y","status":"doing","ts":10}],"created_at":"1000"}"#).unwrap();
         // the newer step (ts 10 >= "9" as numbers) has no `n`: JavaScript prints `undefined`
         let stray = OVal::parse(r#"{"active":[{"reason":"idle"},{"reason":0},{"reason":"off scope"}]}"#).unwrap();
         let t = correction_text("w1", &plan, Some(&stray), 5000.0).unwrap();

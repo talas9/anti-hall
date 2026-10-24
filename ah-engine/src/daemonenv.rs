@@ -59,7 +59,20 @@ mod tests {
         ] {
             assert!(!kept(gone), "{gone} must not survive into the daemon");
         }
-        for stay in ["HOME", "PATH", "TMPDIR", "LC_ALL", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK", "GH_TOKEN", "AH_ENGINE_DIR", "AH_ENGINE_ALLOCATOR", "MALLOC_CONF", "CLAUDE_PLUGIN_ROOT", "ANTIHALL_JEV"] {
+        for stay in [
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "LC_ALL",
+            "XDG_CONFIG_HOME",
+            "SSH_AUTH_SOCK",
+            "GH_TOKEN",
+            "AH_ENGINE_DIR",
+            "AH_ENGINE_ALLOCATOR",
+            "MALLOC_CONF",
+            "CLAUDE_PLUGIN_ROOT",
+            "ANTIHALL_JEV",
+        ] {
             assert!(kept(stay), "{stay} is needed by the daemon");
         }
     }

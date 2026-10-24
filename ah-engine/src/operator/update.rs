@@ -75,14 +75,17 @@ pub(super) struct Paths {
 
 fn resolve_paths(env: &Env, home: &str) -> Paths {
     let (mut marketplace, override_ignored) = marketplace_dir(env.get(defaults::text("env.update_marketplace_dir")).filter(|o| !o.is_empty()), home);
-    let root = env.get_nonempty(t("update.plugin_root_env"))
-        .or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
+    let root = env.get_nonempty(t("update.plugin_root_env")).or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
     let owner = crate::install::owning(home, &root);
     if env.get_nonempty(defaults::text("env.update_marketplace_dir")).is_none()
-        && let Some(m) = owner.as_ref().and_then(|o| o.marketplace.as_ref()) {
+        && let Some(m) = owner.as_ref().and_then(|o| o.marketplace.as_ref())
+    {
         marketplace = m.to_string_lossy().into_owned();
     }
-    let plugins_root = owner.as_ref().and_then(|o| o.registry.parent()).map(|p| p.to_string_lossy().into_owned())
+    let plugins_root = owner
+        .as_ref()
+        .and_then(|o| o.registry.parent())
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| resolve_abs(&format!("{marketplace}/../..")));
     let plugin_src = join(&marketplace, t("update.plugin_src_rel"));
     Paths {
@@ -421,21 +424,32 @@ fn resolve_chan(paths: &Paths, env: &Env) -> Chan {
         _ => d.clone(),
     });
     let settings = read_json(&paths.settings_json);
-    let (keys, _) = reg.as_ref().map_or_else(|| (vec![t("wake_watch.install_fallback_key").to_string()], false), |r| crate::install::select_keys(r, settings.as_ref()));
-    let install_path = |k: &str| reg.as_ref().and_then(|r| match r.get(k) {
-        Some(J::Arr(e)) => e.iter().find_map(|x| str_of(x.get("installPath")).map(str::to_string)),
-        _ => None,
-    });
+    let (keys, _) =
+        reg.as_ref().map_or_else(|| (vec![t("wake_watch.install_fallback_key").to_string()], false), |r| crate::install::select_keys(r, settings.as_ref()));
+    let install_path = |k: &str| {
+        reg.as_ref().and_then(|r| match r.get(k) {
+            Some(J::Arr(e)) => e.iter().find_map(|x| str_of(x.get("installPath")).map(str::to_string)),
+            _ => None,
+        })
+    };
     let root = env.get_nonempty(t("update.plugin_root_env")).or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
     let owner = paths.installed_json.strip_suffix(t("update.installed_json")).and_then(|_| {
         let home = Path::new(&paths.settings_json).parent()?.parent()?.to_str()?;
         crate::install::owning(home, &root)
     });
-    let key = owner.as_ref().map(|o| o.key.clone()).or_else(|| keys.iter().find(|k| !root.is_empty() && install_path(k).is_some_and(|p| root.starts_with(&p))).or_else(|| keys.first()).cloned()).unwrap_or_default();
+    let key = owner
+        .as_ref()
+        .map(|o| o.key.clone())
+        .or_else(|| keys.iter().find(|k| !root.is_empty() && install_path(k).is_some_and(|p| root.starts_with(&p))).or_else(|| keys.first()).cloned())
+        .unwrap_or_default();
     let (plugin, name) = key.split_once('@').map_or((key.as_str(), ""), |(p, n)| (p, n));
     let plugins_root = Path::new(&paths.installed_json).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let fallback = key == t("wake_watch.install_fallback_key");
-    let cache_root = match owner.as_ref().map(|o| o.cache.to_string_lossy().into_owned()).or_else(|| install_path(&key).and_then(|p| Path::new(&p).parent().map(|d| d.to_string_lossy().into_owned()))) {
+    let cache_root = match owner
+        .as_ref()
+        .map(|o| o.cache.to_string_lossy().into_owned())
+        .or_else(|| install_path(&key).and_then(|p| Path::new(&p).parent().map(|d| d.to_string_lossy().into_owned())))
+    {
         Some(c) => c,
         None if fallback => paths.cache_root.clone(),
         None => join(&join(&join(&plugins_root, t("update.cache_dir")), name), plugin),
@@ -469,7 +483,10 @@ fn run_check(rx: &Rx, paths: &Paths, env: &Env) -> J {
     let latest = match latest {
         Ok(l) => l,
         Err(reason) => {
-            return with_chan(with_action(status4(&installed, &None, false, false), defaults::render("update_msg.check_failed", &[("reason", &reason)])), t("update.state_failed"));
+            return with_chan(
+                with_action(status4(&installed, &None, false, false), defaults::render("update_msg.check_failed", &[("reason", &reason)])),
+                t("update.state_failed"),
+            );
         }
     };
     if !semver_opt(rx, installed.as_deref()) {
@@ -483,7 +500,9 @@ fn run_check(rx: &Rx, paths: &Paths, env: &Env) -> J {
     });
     let (head, state) = match latest.as_deref().filter(|v| !v.is_empty()) {
         None => (defaults::render("update_msg.latest_unknown", &[("channel", &chan.name)]), t("update.state_unknown")),
-        Some(l) if compare(rx, &inst, l) < 0 => (defaults::render("update_msg.available", &[("installed", &inst), ("latest", &l)]), t("update.state_available")),
+        Some(l) if compare(rx, &inst, l) < 0 => {
+            (defaults::render("update_msg.available", &[("installed", &inst), ("latest", &l)]), t("update.state_available"))
+        }
         // a lagging registry is never reported as "up to date"
         Some(_) if lag.is_some() => (t("update_msg.lag_head").to_string(), t("update.state_lagging")),
         Some(_) => (t("update_msg.up_to_date").to_string(), t("update.state_current")),
@@ -605,7 +624,15 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     }
     let latest = version_from_marketplace(rx, &paths.plugin_json).or_else(|| installed.clone().filter(|v| is_semver(rx, v)));
     let (synced, _) = sync_cache(paths, latest.as_deref());
-    let stages = super::postpull::run(&super::postpull::Run { env, home, paths, latest: latest.as_deref(), synced, budget_ms: postpull_budget_ms(env), outcome: Default::default() });
+    let stages = super::postpull::run(&super::postpull::Run {
+        env,
+        home,
+        paths,
+        latest: latest.as_deref(),
+        synced,
+        budget_ms: postpull_budget_ms(env),
+        outcome: Default::default(),
+    });
     units_heal(env, home);
     if !semver_opt(rx, installed.as_deref()) {
         return Core {
@@ -867,7 +894,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// SkyCrew 2026-10-22: ~70 reconcile rows printed AFTER the summary and the changelog, so `| tail` lost the outcome and the action.
+    /// downstream 2026-10-22: ~70 reconcile rows printed AFTER the summary and the changelog, so `| tail` lost the outcome and the action.
     /// The tail is the outcome: details, changelog, then the head and action, then the JSON status line last.
     #[test]
     fn the_outcome_and_the_action_print_after_the_stage_rows_and_the_json_is_last() {
@@ -888,4 +915,3 @@ mod tests {
         assert!(lines.len() - 1 - at("reload now") <= 1, "nothing but the JSON line follows the action");
     }
 }
-

@@ -33,17 +33,23 @@ fn op_of(s: &str) -> rquickjs::Result<Op> {
 
 /// Install the functions on `h`.
 pub fn install<'a>(c: &rquickjs::Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
-    h.set("pluginRoot", Function::new(c.clone(), || -> rquickjs::Result<String> {
-        with_settings(|st| crate::install::running_root(&st.env))
-    })?)?;
-    h.set("pluginInstall", Function::new(c.clone(), |root: String| -> rquickjs::Result<String> {
-        with_settings(|st| {
-            let root = if root.is_empty() { crate::install::running_root(&st.env) } else { root };
-            crate::install::owning(&st.home, &root).map(|o| serde_json::json!({
-                "key": o.key, "cache": o.cache, "registry": o.registry, "marketplace": o.marketplace
-            }).to_string()).unwrap_or_else(|| "null".into())
-        })
-    })?)?;
+    h.set("pluginRoot", Function::new(c.clone(), || -> rquickjs::Result<String> { with_settings(|st| crate::install::running_root(&st.env)) })?)?;
+    h.set(
+        "pluginInstall",
+        Function::new(c.clone(), |root: String| -> rquickjs::Result<String> {
+            with_settings(|st| {
+                let root = if root.is_empty() { crate::install::running_root(&st.env) } else { root };
+                crate::install::owning(&st.home, &root)
+                    .map(|o| {
+                        serde_json::json!({
+                            "key": o.key, "cache": o.cache, "registry": o.registry, "marketplace": o.marketplace
+                        })
+                        .to_string()
+                    })
+                    .unwrap_or_else(|| "null".into())
+            })
+        })?,
+    )?;
     h.set("home", Function::new(c.clone(), || -> rquickjs::Result<String> { with_settings(|st| st.home.clone()) })?)?;
     h.set("pid", Function::new(c.clone(), || f64::from(std::process::id()))?)?;
     h.set(

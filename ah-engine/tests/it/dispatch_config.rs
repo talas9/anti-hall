@@ -127,7 +127,11 @@ fn order_and_max_rules_decide_which_entries_run() {
     e.config("[events.PostToolUse]\norder = [\"coordinator-work-guard:post\", \"output-verify-guard\"]\nmax_rules = 3\n");
     let (code, _, err) = e.run("PostToolUse", &post("ls", &e.dir), &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(e.plan("ran"), ["coordinator-work-guard:post", "output-verify-guard", "merge-side-pick:post"], "listed ids first, then the table's order, cut at 3");
+    assert_eq!(
+        e.plan("ran"),
+        ["coordinator-work-guard:post", "output-verify-guard", "merge-side-pick:post"],
+        "listed ids first, then the table's order, cut at 3"
+    );
     assert_eq!(e.plan("skipped_max_rules"), ["git-guard:audit", "devswarm-parent-reply-tracker", "devswarm-child-drain", "agent-reminders"], "{}", e.log());
 }
 
@@ -264,6 +268,8 @@ fn a_guard_events_spent_budget_follows_the_budget_failure_mode() {
                 Ok((mut stream, _)) => {
                     let mut body = Vec::new();
                     ah_engine::discard::harmless(stream.read_to_end(&mut body));
+                    // the 1 ms budget must have passed before the refusal arrives: an instant ERR on a fast machine leaves it unspent
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                     ah_engine::discard::harmless(stream.write_all(&ah_engine::frame::encode(ah_engine::frame::Kind::Err, "no answer")));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(10)),

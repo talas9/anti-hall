@@ -349,15 +349,16 @@ fn restore_locked(ctx: &Ctx, hash: &str, month: &str, lines: u64, by_id: &[(i64,
         let now = ctx.now as f64;
         let mut st = read_state(ctx.home);
         let mut list: Vec<OVal> = match st.get("holds").and_then(|h| h.get(hash)) {
-            Some(OVal::Arr(a)) => a
-                .iter()
-                .filter(|h| matches!(h, OVal::Obj(_)) && matches!(h.get("until"), Some(OVal::Num(u)) if *u > now))
-                .cloned()
-                .collect(),
+            Some(OVal::Arr(a)) => a.iter().filter(|h| matches!(h, OVal::Obj(_)) && matches!(h.get("until"), Some(OVal::Num(u)) if *u > now)).cloned().collect(),
             _ => Vec::new(),
         };
         let until = now + defaults::num("devswarm_cli.ret_restore_hold_days") as f64 * defaults::num("devswarm_sup.rt_day_ms") as f64;
-        list.push(OVal::Obj(vec![("minId".into(), n(min_id as f64)), ("maxId".into(), n(max_id as f64)), ("until".into(), n(until)), ("month".into(), s(month))]));
+        list.push(OVal::Obj(vec![
+            ("minId".into(), n(min_id as f64)),
+            ("maxId".into(), n(max_id as f64)),
+            ("until".into(), n(until)),
+            ("month".into(), s(month)),
+        ]));
         if let Some(holds) = super::apply::obj_mut(&mut st, "holds") {
             holds.set(hash, OVal::Arr(list));
         }
@@ -420,7 +421,8 @@ mod tests {
         std::fs::create_dir_all(&adir).unwrap();
         let lines = "{\"id\":1,\"hash\":\"h1\",\"body\":\"one\"}\n{\"id\":2,\"hash\":\"h2\",\"body\":\"two\"}\n{\"id\":3,\"hash\":\"WRONG\",\"body\":\"three\"}\n{\"id\":4,\"hash\":\"h4\",\"body\":\"four\"}\ntorn{\n";
         std::fs::write(adir.join("2026-09.ndjson.gz"), super::super::gz::compress(lines.as_bytes()).unwrap()).unwrap();
-        let inv = Inv { home: home.clone(), write_home: home.clone(), env: Default::default(), cwd: "/".into(), now: 1_000_000, stdin: None, store_override: None };
+        let inv =
+            Inv { home: home.clone(), write_home: home.clone(), env: Default::default(), cwd: "/".into(), now: 1_000_000, stdin: None, store_override: None };
         let st = inv.settings();
         let root = std::path::PathBuf::from("/");
         let ctx = Ctx { home: &home, root: &root, st: &st, now: 1_000_000, engine_pokes: false };

@@ -69,8 +69,8 @@ round. Exact commands, field ids and option ids: the `gh-work` skill.
   `status:triage|accepted|in-progress|blocked`.
 - `triage.yml`: maps form fields to `priority:*`/`size:*`/`area:*`, adds `status:triage` on open,
   labels PRs by path (`labeler.yml`), and adds new issues to the board when its token secret is
-  set (else the board's own auto-add). `issue-triage.yml`: one model first-pass comment + labels
-  (`triaged`). The moderation workflows (when present) add `moderation:review`, `needs-issue`,
+  set (else the board's own auto-add). `community.yml`: rules triage + one model
+  brief comment. The moderation workflows (when present) add `moderation:review`, `needs-issue`,
   `risk:*` and triage suggestions: a session acts on them (see `gh-work`).
 - Milestones: **v0.300.0** (engine decides hooks, Node is the fallback), **v0.301 engine-only**
   (Node removed), **v1.0** (no Node; everything goes through the engine; contract frozen).

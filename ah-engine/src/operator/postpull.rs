@@ -73,7 +73,6 @@ fn fill(mut v: J, args: &[(&str, &str)]) -> J {
     v
 }
 
-
 /// The `{name}` placeholders of a template, in order of first appearance.
 fn placeholders(template: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();

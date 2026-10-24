@@ -267,8 +267,10 @@ fn hooks_section(doc: &mut Doc, root: &Path) {
         }
     }
     doc.ok(defaults::render("doctor_msg.hooks_valid", &[("n", &scripts.len())]));
+    // the registry's commands run the scripts from the Node tree beside the plugin (`nodeback.node_dir`), so a script counts as present there too
+    let node_hooks = root.join(defaults::text("nodeback.node_dir")).join(defaults::text("doctor.hooks_dir"));
     for f in scripts {
-        if hooks.join(&f).exists() {
+        if hooks.join(&f).exists() || node_hooks.join(&f).exists() {
             doc.ok(defaults::render("doctor_msg.hook_present", &[("file", &f)]));
         } else {
             doc.bad(defaults::render("doctor_msg.hook_missing", &[("file", &f)]));
@@ -598,7 +600,14 @@ fn no_context(p: &Parsed, why: &str) -> i32 {
 /// `doctor` when the engine's defaults cannot be loaded at all: nothing the engine can say comes from settings, so the thin client's
 /// built-in diagnosis (`ah-hook doctor --builtin`, its own texts) gives the diagnosis. `err` is why the load failed.
 pub fn degraded(p: &Parsed, err: &str) -> i32 {
-    let root = p.rest.iter().position(|a| a == "--plugin-root").and_then(|i| p.rest.get(i + 1)).map(PathBuf::from).or_else(crate::bootstrap::env_root).filter(|r| r.is_dir());
+    let root = p
+        .rest
+        .iter()
+        .position(|a| a == "--plugin-root")
+        .and_then(|i| p.rest.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(crate::bootstrap::env_root)
+        .filter(|r| r.is_dir());
     let client = std::env::var_os(crate::bootstrap::HOME_ENV).map(|h| PathBuf::from(h).join(crate::bootstrap::CLIENT_REL)).filter(|c| c.is_file());
     eprintln!("ah-engine: defaults unavailable: {err}");
     let (Some(c), Some(root)) = (client, root) else { return 70 };

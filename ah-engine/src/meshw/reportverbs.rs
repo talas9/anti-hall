@@ -1255,7 +1255,10 @@ fn write_ui_marker(home: &Path, id: &str, body: &OVal, now: i64) -> Result<bool,
     let file = dir.join(format!("{id}{}", defaults::text("devswarm_sup.as_json_ext")));
     use std::io::Write;
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&file) {
-        Ok(mut f) => f.write_all(marker.stringify().as_bytes()).map(|()| true).map_err(|e| crate::migrate::node_err(&e, defaults::text("devswarm_cli.sui_syscall_write"), &file)),
+        Ok(mut f) => f
+            .write_all(marker.stringify().as_bytes())
+            .map(|()| true)
+            .map_err(|e| crate::migrate::node_err(&e, defaults::text("devswarm_cli.sui_syscall_write"), &file)),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(crate::migrate::node_err(&e, defaults::text("mesh_write.hb_syscall_open"), &file)),
     }
@@ -1295,7 +1298,11 @@ pub fn retention(inv: &Inv, a: &Args) -> R<Answer> {
         return Ok(answer(if ok { 0 } else { 2 }, v));
     }
     if sub == Some(t("devswarm_cli.ret_sub_restore")) {
-        let (ok, v) = crate::dssup::retention::cli::restore(&ctx, a.one(t("devswarm_cli.ret_flag_store")).unwrap_or_default(), a.one(t("devswarm_cli.ret_flag_month")).unwrap_or_default())?;
+        let (ok, v) = crate::dssup::retention::cli::restore(
+            &ctx,
+            a.one(t("devswarm_cli.ret_flag_store")).unwrap_or_default(),
+            a.one(t("devswarm_cli.ret_flag_month")).unwrap_or_default(),
+        )?;
         return Ok(answer(if ok { 0 } else { 2 }, v));
     }
     let mut o = Obj::default();
@@ -1406,11 +1413,7 @@ mod tests {
         init();
         let err = build_daily(&[row(r#"{"ts":"2026-10-01T10:00:00.000Z","type":"correction","jev":[null]}"#)]).unwrap_err();
         assert_eq!(err.0, "Cannot read properties of null (reading 'integration')");
-        let days = build_daily(&[
-            row(r#"{"ts":"Oct 1 2026","type":"plan"}"#),
-            row(r#"{"ts":"2026-10-01T10:00:00.000Z","type":"plan"}"#),
-        ])
-        .unwrap();
+        let days = build_daily(&[row(r#"{"ts":"Oct 1 2026","type":"plan"}"#), row(r#"{"ts":"2026-10-01T10:00:00.000Z","type":"plan"}"#)]).unwrap();
         assert_eq!(days[0].1.plans, 1.0, "the legacy-format row is skipped, the ISO one counted");
     }
 
@@ -1438,7 +1441,11 @@ mod tests {
         std::fs::write(dir.join("log.2"), "x").unwrap();
         let files = log_files(&dir, "log").unwrap();
         let names: Vec<String> = files.iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, ["log.1e+30", "log.2"], "a generation JavaScript prints in exponent form names a file that does not exist; it is listed as Node lists it");
+        assert_eq!(
+            names,
+            ["log.1e+30", "log.2"],
+            "a generation JavaScript prints in exponent form names a file that does not exist; it is listed as Node lists it"
+        );
     }
 
     fn scratch_inv(tag: &str) -> Inv {
@@ -1448,7 +1455,15 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let mut env = std::collections::HashMap::new();
         env.insert(defaults::text("mesh_write.env_app_db").to_string(), defaults::text("mesh_write.app_db_off").to_string());
-        Inv { home: home.clone(), write_home: home.clone(), env, cwd: home.to_string_lossy().into_owned(), now: 1_700_000_000_000, stdin: None, store_override: None }
+        Inv {
+            home: home.clone(),
+            write_home: home.clone(),
+            env,
+            cwd: home.to_string_lossy().into_owned(),
+            now: 1_700_000_000_000,
+            stdin: None,
+            store_override: None,
+        }
     }
 
     fn sync(inv: &Inv, words: &[&str]) -> (i32, OVal) {
@@ -1468,7 +1483,11 @@ mod tests {
         let missing = inv.home.join("nope.json");
         let (code, v) = sync(&inv, &["sync-ui", "--titles-json", &missing.to_string_lossy()]);
         assert_eq!(code, 2);
-        assert!(matches!(v.get("error"), Some(OVal::Str(e)) if e.starts_with("cannot read titles: ENOENT: no such file or directory, open")), "{}", v.stringify());
+        assert!(
+            matches!(v.get("error"), Some(OVal::Str(e)) if e.starts_with("cannot read titles: ENOENT: no such file or directory, open")),
+            "{}",
+            v.stringify()
+        );
         // titles on stdin
         let mut piped = inv.clone();
         piped.stdin = Some(r#"["One","Two"]"#.to_string());

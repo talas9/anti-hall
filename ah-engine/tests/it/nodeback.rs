@@ -78,7 +78,8 @@ impl Env {
     }
 
     fn payload(&self, command: &str) -> String {
-        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": self.dir, "session_id": "nb-e2e"}).to_string()
+        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": self.dir, "session_id": "nb-e2e"})
+            .to_string()
     }
 
     fn ledger(&self) -> Vec<serde_json::Value> {
@@ -220,7 +221,12 @@ fn the_fallback_switch_makes_the_thin_client_run_the_node_hooks_and_off_returns_
     let p = e.payload(FORCE);
     let run = |e: &Env| {
         let mut c = e.cmd(&launcher);
-        c.arg("PreToolUse").arg("--plugin-root").arg(plugin()).env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine")).env("AH_HOOK_TIMEOUT_S", "30");
+        c.arg("PreToolUse")
+            .arg("--plugin-root")
+            .arg(plugin())
+            .env("AH_WRAPPER_TEST", "1")
+            .env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine"))
+            .env("AH_HOOK_TIMEOUT_S", "30");
         e.run(&mut c, &p)
     };
     // switch on: the Node git-guard answers, and its verdict is in the ledger as source node (no engine row)
@@ -256,7 +262,12 @@ fn without_the_node_directory_the_fallback_switch_is_a_logged_no_op_and_the_engi
     assert_eq!(code, 0);
     assert!(err.contains("missing") || e.engine(&["fallback", "status"], "").1.contains("marker: yes"));
     let mut c = e.cmd(&crate::common::launcher_bin());
-    c.arg("PreToolUse").arg("--plugin-root").arg(&e.plugin).env("AH_WRAPPER_TEST", "1").env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine")).env("AH_HOOK_TIMEOUT_S", "30");
+    c.arg("PreToolUse")
+        .arg("--plugin-root")
+        .arg(&e.plugin)
+        .env("AH_WRAPPER_TEST", "1")
+        .env("AH_ENGINE_BIN", env!("CARGO_BIN_EXE_ah-engine"))
+        .env("AH_HOOK_TIMEOUT_S", "30");
     let (code, out, err, _) = e.run(&mut c, &e.payload(FORCE));
     assert_eq!(code, 2, "the engine blocks the force push: {out} {err}");
     assert!(err.contains("Node backup directory"), "the no-op is logged: {err}");

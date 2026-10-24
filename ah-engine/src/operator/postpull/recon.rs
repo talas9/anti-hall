@@ -45,7 +45,9 @@ fn truthy(v: Option<&Value>) -> bool {
 fn js_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e15 { format!("{}", f as i64) } else { f.to_string() }),
+        Value::Number(n) => {
+            n.as_f64().map_or_else(|| n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e15 { format!("{}", f as i64) } else { f.to_string() })
+        }
         other => other.to_string(),
     }
 }
@@ -156,12 +158,8 @@ impl Run<'_> {
         } else {
             let stage_name = row.str_field("name");
             let version = self.latest.filter(|v| !v.is_empty());
-            let up = stage::UpdateRun {
-                version,
-                hashes: self.ordered_hashes(),
-                budget_ms: sweep_budget_ms(self.env),
-                deadline_cap: deadline.map(|d| d as i64),
-            };
+            let up =
+                stage::UpdateRun { version, hashes: self.ordered_hashes(), budget_ms: sweep_budget_ms(self.env), deadline_cap: deadline.map(|d| d as i64) };
             let out = stage::run_update(&ctx, &runner, stage_name, &hooks, &up)?;
             for rec in out.items.iter().filter(|r| r["by"] == defaults::text("devswarm_recon.by_held")) {
                 crate::discard::note("update_post_note", &format!("{stage_name}: {rec}"));
@@ -188,7 +186,10 @@ impl Run<'_> {
         m.insert("attempted".into(), json!(true));
         if !truthy(result.get("ok")) {
             let detail = if truthy(result.get("lost")) {
-                defaults::render("update_post.recon_lost", &[("lost", &js_text(&result["lost"])), ("count", &if truthy(result.get("count")) { js_text(&result["count"]) } else { "0".into() })])
+                defaults::render(
+                    "update_post.recon_lost",
+                    &[("lost", &js_text(&result["lost"])), ("count", &if truthy(result.get("count")) { js_text(&result["count"]) } else { "0".into() })],
+                )
             } else {
                 let mut why = result.get("reason").filter(|r| truthy(Some(r))).map(js_text);
                 if why.is_none() && result.get("results").is_some_and(Value::is_array) {
@@ -203,7 +204,10 @@ impl Run<'_> {
                             .take(cap)
                             .map(|x| {
                                 let err = x.get("error").filter(|e| truthy(Some(e))).map_or_else(|| text("update_post.recon_unknown").to_string(), js_text);
-                                defaults::render("update_post.recon_row", &[("id", &x.get("id").map_or_else(|| text("update_post.recon_undefined").to_string(), js_text)), ("error", &err)])
+                                defaults::render(
+                                    "update_post.recon_row",
+                                    &[("id", &x.get("id").map_or_else(|| text("update_post.recon_undefined").to_string(), js_text)), ("error", &err)],
+                                )
                             })
                             .collect();
                         let more = if real.len() > cap { defaults::render("update_post.recon_more", &[("n", &(real.len() - cap))]) } else { String::new() };
@@ -230,7 +234,12 @@ impl Run<'_> {
         let nt = if timeouts > 0.0 { defaults::render("update_post.recon_timeouts", &[("n", &count_text(timeouts))]) } else { String::new() };
         let detail = defaults::render(
             "update_post.recon_done",
-            &[("n", &count_text(count - skipped - timeouts)), ("skipped", &sk), ("timeouts", &nt), ("imported", &js_text(result.get("imported").unwrap_or(&Value::Null)))],
+            &[
+                ("n", &count_text(count - skipped - timeouts)),
+                ("skipped", &sk),
+                ("timeouts", &nt),
+                ("imported", &js_text(result.get("imported").unwrap_or(&Value::Null))),
+            ],
         );
         for k in ["count", "imported"] {
             if let Some(v) = result.get(k) {
@@ -259,7 +268,10 @@ impl Run<'_> {
         };
         let end = crate::dssup::recon::fold::run(ctx, runner, &repo_key, hooks).ok()?;
         if end.verdict != crate::dssup::recon::gate::Verdict::Agreed || !end.deferred.is_empty() {
-            crate::discard::note("update_post_note", &defaults::render("update_post.recon_note_fold", &[("verdict", &format!("{:?}", end.verdict)), ("deferred", &format!("{:?}", end.deferred))]));
+            crate::discard::note(
+                "update_post_note",
+                &defaults::render("update_post.recon_note_fold", &[("verdict", &format!("{:?}", end.verdict)), ("deferred", &format!("{:?}", end.deferred))]),
+            );
             return None;
         }
         let r = &end.result;

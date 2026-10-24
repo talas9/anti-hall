@@ -83,7 +83,7 @@ fn settings_text(h: &Home) -> String {
 }
 
 fn dispatcher() -> String {
-    plugin().join("statusline/statusline.js").display().to_string()
+    plugin().join("../anti-hall-node/statusline/statusline.js").display().to_string()
 }
 
 fn launcher() -> String {
@@ -201,7 +201,11 @@ fn the_migration_rewrites_a_statusline_that_runs_the_retired_wrapper_to_the_thin
     assert_eq!(rows[0]["status"], "fixed", "{}", o.stdout);
     let after = settings_text(&h);
     assert_eq!(command_in(&after), format!("\"{client}\" statusline"));
-    assert_eq!(after, old.replace(&serde_json::to_string(&launcher_command()).unwrap(), &serde_json::to_string(&format!("\"{client}\" statusline")).unwrap()), "only the command string changed");
+    assert_eq!(
+        after,
+        old.replace(&serde_json::to_string(&launcher_command()).unwrap(), &serde_json::to_string(&format!("\"{client}\" statusline")).unwrap()),
+        "only the command string changed"
+    );
     assert_eq!(fs::read_to_string(h.home.join(".claude/settings.json.bak-antihall")).unwrap(), old, "the backup is the original");
     // idempotent: the new form is not an old one
     let o = migrate(&h, &[]);

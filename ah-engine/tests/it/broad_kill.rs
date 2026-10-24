@@ -223,7 +223,12 @@ fn the_guard_is_wired_for_both_hosts_and_both_orchestration_ports() {
         let e = t::entries(host, "PreToolUse").into_iter().find(|e| e.id == "broad-kill-guard").unwrap();
         assert!(e.check.is_some() && e.command.is_empty(), "{host}: engine-only entry");
     }
-    for rel in ["hooks/hooks.registry.json", "codex/hooks/hooks.registry.json", "../anti-hall-node/hooks/ah-fallback.list", "../anti-hall-node/hooks/ah-fallback.codex.list"] {
+    for rel in [
+        "hooks/hooks.registry.json",
+        "codex/hooks/hooks.registry.json",
+        "../anti-hall-node/hooks/ah-fallback.list",
+        "../anti-hall-node/hooks/ah-fallback.codex.list",
+    ] {
         let text = std::fs::read_to_string(plugin().join(rel)).unwrap();
         assert!(!text.contains("broad-kill-guard"), "{rel} names no command for the engine-only guard");
     }

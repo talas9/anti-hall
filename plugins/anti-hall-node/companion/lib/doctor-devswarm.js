@@ -378,10 +378,14 @@ function collectShippedFiles(root, F) {
 
 // readPluginVersion(pluginRoot, F) -> semver-ish string | null. Fail-open.
 function readPluginVersion(pluginRoot, F) {
-  try {
-    const data = JSON.parse(F.readFileSync(path.join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
-    return (data && typeof data.version === 'string') ? data.version : null;
-  } catch (_) { return null; }
+  // The manifest ships in the published plugin (plugins/anti-hall); the Node tree (plugins/anti-hall-node) is its sibling and has none.
+  for (const manifest of [path.join(pluginRoot, '.claude-plugin', 'plugin.json'), path.join(pluginRoot, '..', 'anti-hall', '.claude-plugin', 'plugin.json')]) {
+    try {
+      const data = JSON.parse(F.readFileSync(manifest, 'utf8'));
+      if (data && typeof data.version === 'string') return data.version;
+    } catch (_) { /* try the next location */ }
+  }
+  return null;
 }
 
 /**

@@ -167,7 +167,11 @@ fn a_worker_thread_tears_its_runtime_down_cleanly() {
                 assert!(run_forced(name, &json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}), &e).is_some());
             }
             put_override(&h2, "zz-cycle", "var keep2 = [{}]; function decide() { return 'defer'; }");
-            assert_eq!(run_forced("zz-cycle", &json!({}), &e), Some(Some(Verdict::Defer)), "an explicit defer is the script's own answer (the dispatcher resolves it)");
+            assert_eq!(
+                run_forced("zz-cycle", &json!({}), &e),
+                Some(Some(Verdict::Defer)),
+                "an explicit defer is the script's own answer (the dispatcher resolves it)"
+            );
         })
         .join()
         .expect("the worker thread exits without a teardown abort");
@@ -570,7 +574,8 @@ pub(super) fn golden_report(check: &str, limit: usize) {
         let got = golden::verdict_json(&got, &l);
         // a frozen "defer" (the script could not answer; Node was to decide) is now decided by the check's failure policy: an allow, or a block for a fail-closed guard
         let policy = c["expect"] == json!({"v": "defer"}) && (got == json!({"v": "allow"}) || got["v"] == "block");
-        let mut ok = got == c["expect"] || policy;
+        let expect = golden::intended(&c["expect"]);
+        let mut ok = golden::intended(&got) == expect || policy;
         if ok && c.get("watch").is_some() {
             let w = golden::watched_all_pub(c, &l);
             ok = w == c["writes"];
@@ -1320,12 +1325,6 @@ fn devswarm_parent_inbox_script_matches_the_compiled_port() {
     assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
 }
 
-#[test]
-fn devswarm_child_turn_script_matches_the_compiled_port() {
-    let kinds = golden::assert_script_matches("devswarm-child-turn");
-    assert!(kinds.get("allow").copied().unwrap_or(0) > 100 && !kinds.contains_key("defer"), "both answers: {kinds:?}");
-}
-
 // ---- task-lifecycle-log, the session gates, merge-side-pick, scan-throttle and merge-gate (D88 batch 6) ----
 
 #[test]
@@ -1925,7 +1924,8 @@ fn the_speculation_judge_is_handed_to_the_dispatcher_and_blocks_there() {
     assert_eq!(in_daemon, json!({"v": "defer"}), "the daemon hands the check to the dispatcher");
     assert!(crate::discard::captured().iter().all(|(code, _)| code != "script_error"), "{:?}", crate::discard::captured());
     crate::judge::allow_blocking_calls();
-    *TEST_MODEL.lock().unwrap() = Some(Box::new(|_| crate::judge::cli::CliOutcome { result: Ok(r#"{"decision":"block","claim":"the cause is stated, not shown"}"#.into()), ms: 5 }));
+    *TEST_MODEL.lock().unwrap() =
+        Some(Box::new(|_| crate::judge::cli::CliOutcome { result: Ok(r#"{"decision":"block","claim":"the cause is stated, not shown"}"#.into()), ms: 5 }));
     let l = golden::lay(&case);
     let in_dispatcher = golden::verdict_json(&golden::run_case("speculation-judge", &l, 1).expect("a shipped script"), &l);
     *TEST_MODEL.lock().unwrap() = None;
@@ -2046,7 +2046,8 @@ fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it(
     let repo = format!("{h}/repo");
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
-        let ok = std::process::Command::new("git").args(["-C", &repo, "-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success();
+        let ok =
+            std::process::Command::new("git").args(["-C", &repo, "-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success();
         assert!(ok, "git {args:?}");
     };
     git(&["init", "-q"]);

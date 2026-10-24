@@ -17,10 +17,10 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
-use crate::meshw::readprimary::store_err;
 use crate::mesh::MeshReader;
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::devswarm_root;
+use crate::meshw::readprimary::store_err;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -363,11 +363,8 @@ pub fn unread_at(
     let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now })?;
     // wake rows are already out of `union.unread`; a row counts once, so the family's own wake-free sends are what is taken off here
     let own_nd = union.nd_unread_lines.iter().filter(|l| !is_wake_line(l) && line_sender(l).is_some_and(|s| family.contains(&s))).count();
-    let own_store = union
-        .store_only_unread
-        .iter()
-        .filter(|r| !is_wake_row(r) && r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s)))
-        .count();
+    let own_store =
+        union.store_only_unread.iter().filter(|r| !is_wake_row(r) && r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s))).count();
     let own_excluded = own_nd + own_store;
     Ok(Unread { unread: union.unread - own_excluded, own_excluded, union, store_base, nd_base })
 }

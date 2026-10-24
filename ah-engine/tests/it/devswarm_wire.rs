@@ -984,7 +984,12 @@ fn a_subagent_calling_an_owner_action_is_refused_before_anything_is_read() {
         raw: rest.iter().map(|s| s.to_string()).collect(),
     };
     let sub = env_of(&[("ANTIHALL_CALLER", "agent")]);
-    for rest in [&["archive", "--id", "ws-1", "--request", "r1"][..], &["plan-prune", "--older-than", "7"], &["prune", "--confirm-ids", "a", "--plan", "n"], &["create", "b1"]] {
+    for rest in [
+        &["archive", "--id", "ws-1", "--request", "r1"][..],
+        &["plan-prune", "--older-than", "7"],
+        &["prune", "--confirm-ids", "a", "--plan", "n"],
+        &["create", "b1"],
+    ] {
         assert_eq!(cli::run_with(&p(rest), &sub), 64, "{rest:?}");
     }
     assert_eq!(cli::run_with(&p(&["bogus"]), &sub), 64);
@@ -1554,11 +1559,18 @@ fn the_transcript_gate_acts_on_growth_once_per_interval_and_never_loses_held_bac
     assert!(!g.observe("ws-1", std::slice::from_ref(&f), t0 + Duration::from_millis(500)), "inside the interval that began at the deadline");
     std::fs::write(&f, "").unwrap();
     assert!(g.tick(t0 + Duration::from_secs(5)).is_empty());
-    // a rotated file (a new inode) is growth, and a second workspace has its own interval
+    // a rotated file (a new inode) is growth, and a second workspace has its own interval. The old file stays open while the new one
+    // is created: Linux filesystems hand a freed inode number to the next file at once, and a "new" file with the old number and a
+    // size at or under the baseline is indistinguishable from a truncation (macOS does not reuse numbers, so only CI saw it)
+    let old = std::fs::File::open(&f).unwrap();
+    let ino = |p: &Path| std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(p).unwrap());
+    let before = ino(&f);
     std::fs::remove_file(&f).unwrap();
     std::fs::write(&f, "{}\n").unwrap();
-    assert!(g.observe("ws-1", std::slice::from_ref(&f), t0 + Duration::from_secs(10)));
-    assert!(g.observe("ws-2", std::slice::from_ref(&f), t0 + Duration::from_secs(10)));
+    let why = format!("inode {before} -> {} (an equal pair means the filesystem reused the number)", ino(&f));
+    assert!(g.observe("ws-1", std::slice::from_ref(&f), t0 + Duration::from_secs(10)), "a rotated file is growth: {why}");
+    assert!(g.observe("ws-2", std::slice::from_ref(&f), t0 + Duration::from_secs(10)), "a second workspace has its own interval: {why}");
+    drop(old);
 }
 
 // ---- the scale test: the budget -------------------------------------------------------------------------------------------

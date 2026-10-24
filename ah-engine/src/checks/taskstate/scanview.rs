@@ -6,7 +6,7 @@
 use super::backfill::backfill;
 use super::parse::{Facts, Line, NON_STRING_ID, collect_tool_uses, is_not_found, parse_line};
 use super::tail::{lines_of, read_tail};
-use super::{Since, Task, TaskMap, Unknown, norm_priority, number_of_digits, priority_field, is_non_string_status, kept_status};
+use super::{Since, Task, TaskMap, Unknown, is_non_string_status, kept_status, norm_priority, number_of_digits, priority_field};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::taskkit::jsval::{R, Unsure, first_truthy, get, scalar_string, truthy};
@@ -199,7 +199,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             Line::Unsure => {
                 s.unsure = true;
                 continue;
-            },
+            }
             Line::Skip => continue,
         };
         if entry.is_null() {
@@ -256,7 +256,8 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
                                 let id = scalar_string(first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v))?;
                                 let id_v = Value::String(id.clone());
                                 let content = scalar_string(first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_v)]).unwrap_or(&id_v))?;
-                                replacement.set(&id, task(&id, content, Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
+                                replacement
+                                    .set(&id, task(&id, content, Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
                             }
                             tasks = replacement;
                             prov.clear();
@@ -274,7 +275,8 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
                         };
                         let tid = &tid;
                         let content = scalar_string(
-                            first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v),
+                            first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)])
+                                .unwrap_or(&tid_v),
                         )?;
                         let status = kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".into());
                         let rec = (content, status, norm_priority(priority_field(inp))?);
@@ -324,7 +326,8 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
     }
     // end of scan: every TaskCreate gets the number its result named
     for (tid, (content, status, priority)) in &prov {
-        let key = result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
+        let key =
+            result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
         let mut ex = tasks.get(&key).cloned();
         if let Some(e) = &ex
             && e.unknown.is_some()
@@ -397,7 +400,8 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             s.open_task_ids.push(t.id.clone());
         }
     }
-    if !s.saw_task_activity && truncated
+    if !s.saw_task_activity
+        && truncated
         && let Some(found) = has_task_activity_in_file(path, wide)
     {
         match found {

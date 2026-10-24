@@ -7,10 +7,10 @@
 //! A consuming read refreshes the summary after the cursor moves, as Node does (`meshw::summary`).
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::readprimary::store_err;
 use crate::meshw::args::{Args, FlagVal};
 use crate::meshw::common::{self, Inv, Obj, n, s, s_or_null};
 use crate::meshw::ident::{self, Defer, R};
+use crate::meshw::readprimary::store_err;
 use crate::meshw::send::{Answer, Effect, resolve_mesh_target};
 
 /// `Number(x)` for a flag value.

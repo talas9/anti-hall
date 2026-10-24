@@ -66,7 +66,10 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     let Some(branch) = branch else {
         return Some(json!({"workspace": desc.id, "woken": false, "step": "info", "error": why(&info)}));
     };
-    let prompt = defaults::render("msg.native_wake_prompt", &[("prefix", &defaults::text("agent_tracker.wake_prefix")), ("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))]);
+    let prompt = defaults::render(
+        "msg.native_wake_prompt",
+        &[("prefix", &defaults::text("agent_tracker.wake_prefix")), ("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))],
+    );
     let done = call(&["workspace", "reactivate-child", &branch, &prompt]);
     let woken = done.call.ok;
     if woken {

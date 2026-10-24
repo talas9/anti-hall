@@ -284,7 +284,11 @@ pub fn plan_retire_identity_family(home: &Path, archived_id: &str, desc: &OVal, 
     let mut plan = RetirePlan::empty();
     match archived_dir(home) {
         ArchDir::Dir(_) => {}
-        ArchDir::Absent => plan.units.push(Unit { label: "mkdir:archived".into(), lock: None, ops: vec![Op::Mkdir { rel: view::ds(defaults::text("mesh_write.dir_archived")) }] }),
+        ArchDir::Absent => plan.units.push(Unit {
+            label: "mkdir:archived".into(),
+            lock: None,
+            ops: vec![Op::Mkdir { rel: view::ds(defaults::text("mesh_write.dir_archived")) }],
+        }),
         ArchDir::Bad => return Ok(RetirePlan::empty()),
     }
     let Some(names) = sorted_names(&workspaces_dir(home)) else { return Ok(plan) };

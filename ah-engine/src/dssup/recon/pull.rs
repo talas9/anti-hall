@@ -145,7 +145,10 @@ pub fn stage(ctx: &Ctx, id: &str, cwd: &str, at: &dyn Fn(&str)) -> Stage {
     }
     let worktree = field("mesh_write.field_worktree_path").unwrap_or_else(|| cwd.to_string());
     let result = |native: f64, imported: usize, duplicate: usize| json!({"ok": true, "imported": imported, "duplicate": duplicate, "nativeCount": native as i64, "locked": true, "lost": 0});
-    let (outcome, files) = (pull::capture_fresh(&inv, &plan, &worktree, at), [descriptor_rel(id), wal_rel].into_iter().chain([&inbox, &cursor].into_iter().filter_map(|p| rel_of(ctx.home, Path::new(p)))).collect::<Vec<_>>());
+    let (outcome, files) = (
+        pull::capture_fresh(&inv, &plan, &worktree, at),
+        [descriptor_rel(id), wal_rel].into_iter().chain([&inbox, &cursor].into_iter().filter_map(|p| rel_of(ctx.home, Path::new(p)))).collect::<Vec<_>>(),
+    );
     let ready = |held: Option<nodelock::Held>, result: Value| Stage::Ready(Box::new(Staged { id: id.to_string(), cwd: cwd.to_string(), result, held, files }));
     match outcome {
         pull::Fresh::Blocked => {

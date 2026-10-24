@@ -131,10 +131,12 @@ impl Sc {
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
         copy_dir(&real.join("statusline"), &p.join("statusline"));
         // the libraries the DevSwarm hook self-tests run through: read-only links to the real ones (a test that edits one copies it first)
-        for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+        for dir in ["scripts", "skills", "agents", "assets", "monitors", "docs"] {
             symlink(real.join(dir), p.join(dir)).unwrap();
         }
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
+        // the Node tree sits beside the plugin (`nodeback.node_dir`); a copy, because tests remove and rewrite files in it
+        copy_dir(&real.join("../anti-hall-node"), &self.root.join("anti-hall-node"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());
         // the real `claude doctor` is not run from a test: the PATH has only the tools the doctor needs
@@ -1514,35 +1516,6 @@ fn json_output_carries_the_new_sections() {
     }
 }
 
-// ---- the Node doctor as the shadow: the checks both make give the same answer ---------------------------------------------------
-
-#[test]
-fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
-    let mut sc = Sc::new();
-    sc.own_plugin();
-    fs::remove_file(sc.plugin.join("hooks/git-guard.js")).unwrap();
-    let mut n = Command::new("node");
-    // the Node doctor runs read-only (--dry-run previews the repairs) from the scratch copy, in the scratch home
-    n.arg(sc.plugin.join("hooks/doctor.js")).arg("--dry-run");
-    n.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", &sc.home)
-        .env("USERPROFILE", &sc.home)
-        .env("ANTIHALL_INGEST_DRY_RUN", "1")
-        .current_dir(&sc.cwd);
-    let node = sc.finish(n);
-    let engine = sc.doctor(&[]);
-    // both call the missing script a failure, in the same words, and both exit non-zero
-    let bad = |o: &Out| o.text.lines().any(|l| l.contains("git-guard.js") && l.contains("REGISTERED BUT MISSING"));
-    assert!(bad(&node), "node: {}", node.text);
-    assert!(bad(&engine), "engine: {}", engine.text);
-    assert_ne!(node.code, 0);
-    assert_ne!(engine.code, 0);
-    // the Node doctor sees this Node; the engine doctor never probes it
-    node.has("ok", &["Node v", "hooks can run"]);
-    engine.lacks("Node v");
-}
-
 // ---- the optional `claude doctor` sub-check ---------------------------------------------------------------------------------------
 
 #[test]
@@ -1620,11 +1593,9 @@ fn ds_the_hook_tests_must_pass_and_no_syntax_check_starts_node() {
     sc.own_plugin();
     sc.stub_engine("0.1.0");
     sc.programs(&[], &[]);
-    // the hooks the self-tests run need the companion libraries and the scripts beside them
-    fs::remove_file(sc.plugin.join("companion")).unwrap();
-    copy_dir(&real_plugin().join("companion"), &sc.plugin.join("companion"));
+    // the hooks the self-tests run need the companion libraries and the scripts beside them: the staged Node tree has them
     // the engine doctor starts no Node, so it does not syntax-check the supervisor scripts
-    let live = sc.plugin.join("companion/lib/liveness.js");
+    let live = sc.plugin.join("../anti-hall-node/companion/lib/liveness.js");
     fs::write(&live, "function (((\n").unwrap();
     let d = sc.doctor(&[]);
     d.lacks("DevSwarm liveness supervisor");

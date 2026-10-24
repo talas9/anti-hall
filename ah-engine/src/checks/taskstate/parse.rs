@@ -6,8 +6,8 @@
 //! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
-    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by,
-    norm_owner, norm_priority, number_of_digits, priority_field, is_non_string_status, kept_status, status_text,
+    Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, is_non_string_status,
+    kept_status, norm_blocked_by, norm_owner, norm_priority, number_of_digits, priority_field, status_text,
 };
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
@@ -201,7 +201,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             Line::Unsure => {
                 unsure = true;
                 continue;
-            },
+            }
             Line::Skip => continue,
         };
         // `entry.type` on a JSON `null` throws in JavaScript.
@@ -338,8 +338,8 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             _ => return Err(Unsure),
                         };
                         let tid = &tid;
-                        let content_v =
-                            first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v);
+                        let content_v = first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)])
+                            .unwrap_or(&tid_v);
                         let rec = Prov {
                             content: scalar_string(content_v)?,
                             description: match get(inp, "description") {
@@ -428,7 +428,12 @@ pub(super) const NON_STRING_ID: char = '\u{1}';
 /// The end-of-scan step: every TaskCreate gets the number its result named (or stays under its tool-use id).
 fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids: &[(String, String)], variant: Variant) {
     for (tid, rec) in prov {
-        let numeric = result_ids.iter().find(|(k, _)| k == tid).map(|(_, n)| n.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
+        let numeric = result_ids
+            .iter()
+            .find(|(k, _)| k == tid)
+            .map(|(_, n)| n.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| tid.strip_prefix(NON_STRING_ID).unwrap_or(tid).to_string());
         let key = numeric;
         let mut ex = tasks.get(&key).cloned();
         if let Some(e) = &ex

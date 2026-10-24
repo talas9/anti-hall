@@ -99,7 +99,13 @@ pub fn check(p: &Proc, own: Option<&str>) -> Option<Stale> {
     // The marketplace clone counts only when it is the one `update` pulls from and installs out of: a directory-source marketplace
     // (a development deploy) can carry a newer build that `/anti-hall:update` will never install, and advertising it sends the user
     // to an update that cannot deliver it.
-    let updater = canon(Path::new(&crate::operator::update::marketplace_dir(p.env.get(defaults::text("env.update_marketplace_dir")).map(String::as_str).filter(|o| !o.is_empty()), &p.home.to_string_lossy()).0));
+    let updater = canon(Path::new(
+        &crate::operator::update::marketplace_dir(
+            p.env.get(defaults::text("env.update_marketplace_dir")).map(String::as_str).filter(|o| !o.is_empty()),
+            &p.home.to_string_lossy(),
+        )
+        .0,
+    ));
     let marketplace = install.marketplace.as_ref().filter(|m| **m == updater).and_then(|m| {
         let j = json_at(&m.join(t("wake_watch.marketplace_plugin_rel")).join(t("wake_watch.manifest_rel")))?;
         string_of(j.get("version")).filter(|v| semver_ok(v))
@@ -184,11 +190,7 @@ mod tests {
         let running = live.join(t("wake_watch.marketplace_plugin_rel"));
         write(
             &plugins.join(t("wake_watch.known_marketplaces_file")),
-            &format!(
-                r#"{{"anti-hall":{{"installLocation":"{}"}},"engine-live":{{"installLocation":"{}"}}}}"#,
-                clone.display(),
-                live.display()
-            ),
+            &format!(r#"{{"anti-hall":{{"installLocation":"{}"}},"engine-live":{{"installLocation":"{}"}}}}"#, clone.display(), live.display()),
         );
         write(&plugins.join(t("wake_watch.installed_file")), r#"{"version":2,"plugins":{"anti-hall@engine-live":[{"version":"0.300.1"}]}}"#);
         manifest(&plugins.join("cache/engine-live/anti-hall/0.300.1"), "0.300.1");
@@ -197,7 +199,7 @@ mod tests {
         Proc { home, cwd: "/".into(), env: Default::default(), st, root: running.to_string_lossy().into_owned() }
     }
 
-    /// SkyCrew 2026-10-22: the watcher advertised 0.301.0 from the development deploy's marketplace while `update` installs from the
+    /// downstream 2026-10-22: the watcher advertised 0.301.0 from the development deploy's marketplace while `update` installs from the
     /// `anti-hall` clone (0.300.2), so the advertised update could never be installed.
     #[test]
     fn a_directory_marketplace_the_updater_does_not_use_advertises_nothing() {

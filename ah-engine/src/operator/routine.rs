@@ -78,7 +78,10 @@ fn parse(p: &Parsed) -> Result<Opts, String> {
             x if x == flag("source") => {
                 o.source = val(a)?;
                 if !defaults::list("routine.sources").contains(&o.source.as_str()) {
-                    return Err(defaults::render("routine.msg_bad_source", &[("source", &o.source), ("allowed", &defaults::list("routine.sources").join(", "))]));
+                    return Err(defaults::render(
+                        "routine.msg_bad_source",
+                        &[("source", &o.source), ("allowed", &defaults::list("routine.sources").join(", "))],
+                    ));
                 }
             }
             x if x == flag("check") => o.check = true,
@@ -176,14 +179,21 @@ fn first_file(dir: &Path, rels: &[&str]) -> Option<PathBuf> {
 fn resolve_source(o: &Opts) -> Result<Source, String> {
     let dir = o.from.clone();
     let under = |key: &str| dir.as_deref().and_then(|d| first_file(d, &defaults::list(key)));
-    let engine = o.engine.clone().or_else(|| under("routine.engine_candidates")).ok_or_else(|| defaults::render("routine.msg_no_engine", &[("dir", &dir.as_deref().map_or(String::new(), |d| d.display().to_string()))]))?;
+    let engine = o
+        .engine
+        .clone()
+        .or_else(|| under("routine.engine_candidates"))
+        .ok_or_else(|| defaults::render("routine.msg_no_engine", &[("dir", &dir.as_deref().map_or(String::new(), |d| d.display().to_string()))]))?;
     if !engine.is_file() {
         return Err(defaults::render("routine.msg_not_file", &[("path", &engine.display())]));
     }
     let hook = o.hook.clone().or_else(|| under("routine.hook_candidates")).filter(|h| h.is_file());
     let web = o.web.clone().or_else(|| under("routine.web_candidates")).filter(|w| w.is_file());
     let marker = t("routine.tree_marker");
-    let tree = o.tree.clone().or_else(|| dir.as_deref().and_then(|d| defaults::list("routine.tree_candidates").iter().map(|r| d.join(r)).find(|p| p.join(marker).is_file())));
+    let tree = o
+        .tree
+        .clone()
+        .or_else(|| dir.as_deref().and_then(|d| defaults::list("routine.tree_candidates").iter().map(|r| d.join(r)).find(|p| p.join(marker).is_file())));
     if let Some(tr) = tree.as_ref().filter(|tr| !tr.join(marker).is_file()) {
         return Err(defaults::render("routine.msg_bad_tree", &[("path", &tr.display()), ("marker", &marker)]));
     }
@@ -206,7 +216,13 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
     let file = PathBuf::from(fill_home(t("routine.installed_json"), home));
     let Some(v) = std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return Vec::new() };
     let reg = v.get("plugins").unwrap_or(&v);
-    reg.get(t("routine.plugin_key")).and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("installPath").and_then(Value::as_str)).map(PathBuf::from).collect()
+    reg.get(t("routine.plugin_key"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("installPath").and_then(Value::as_str))
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// The plugin roots the install routine keeps in step (the engine's own, the registered installs, `routine.default_roots`).
@@ -218,11 +234,17 @@ fn resolve_target() -> Target {
     let state = paths::dir();
     let bin_dir = state.join(t("rollback.bin_dir"));
     let home = defaults::env_var("home").unwrap_or_default();
-    let mut roots: Vec<PathBuf> = std::env::var(t("routine.env_roots")).ok().filter(|s| !s.is_empty()).map(|s| s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect()).unwrap_or_default();
+    let mut roots: Vec<PathBuf> = std::env::var(t("routine.env_roots"))
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default();
     if roots.is_empty() {
         roots.extend(defaults::root());
         roots.extend(roots_of_installed(&home));
-        roots.extend(defaults::list("routine.default_roots").iter().map(|r| PathBuf::from(fill_home(r, &home))).filter(|r| r.join(t("routine.tree_marker")).is_file()));
+        roots.extend(
+            defaults::list("routine.default_roots").iter().map(|r| PathBuf::from(fill_home(r, &home))).filter(|r| r.join(t("routine.tree_marker")).is_file()),
+        );
     }
     let mut seen = Vec::new();
     roots.retain(|r| {
@@ -265,10 +287,15 @@ fn running(tg: &Target, scratch: &Path) -> Running {
     let sha = sha_of(&tg.engine);
     let same_as_record = sha.is_some() && rec["sha"].as_str() == sha.as_deref();
     let status = client::status_value();
-    let version = status["version"].as_str().map(str::to_string).filter(|_| status["running"] == json!(true)).or_else(|| rec["version"].as_str().map(str::to_string).filter(|_| same_as_record)).unwrap_or_else(|| {
-        let envs = scratch_env(scratch, tg.roots.first().map(PathBuf::as_path));
-        first_line(&run(&tg.engine, &["version"], &envs, defaults::secs("routine.call_timeout_s"), scratch, None).out)
-    });
+    let version = status["version"]
+        .as_str()
+        .map(str::to_string)
+        .filter(|_| status["running"] == json!(true))
+        .or_else(|| rec["version"].as_str().map(str::to_string).filter(|_| same_as_record))
+        .unwrap_or_else(|| {
+            let envs = scratch_env(scratch, tg.roots.first().map(PathBuf::as_path));
+            first_line(&run(&tg.engine, &["version"], &envs, defaults::secs("routine.call_timeout_s"), scratch, None).out)
+        });
     let built = if same_as_record { rec["built_at"].as_u64().unwrap_or_else(|| mtime_s(&tg.engine)) } else { mtime_s(&tg.engine) };
     let source = if same_as_record { rec["source"].as_str().unwrap_or(t("routine.source_manual")).to_string() } else { t("routine.source_manual").to_string() };
     Running { version, sha, built, source }
@@ -276,7 +303,10 @@ fn running(tg: &Target, scratch: &Path) -> Running {
 
 fn scratch_env(scratch: &Path, root: Option<&Path>) -> Vec<(String, String)> {
     let home = scratch.join("home");
-    let mut v = vec![(defaults::env_name("home").to_string(), home.display().to_string()), (defaults::env_name("dir").to_string(), home.join("st").display().to_string())];
+    let mut v = vec![
+        (defaults::env_name("home").to_string(), home.display().to_string()),
+        (defaults::env_name("dir").to_string(), home.join("st").display().to_string()),
+    ];
     if let Some(r) = root {
         v.push((defaults::env_name("plugin_root").to_string(), r.display().to_string()));
     }
@@ -320,7 +350,10 @@ fn tree_files(src: &Path) -> Vec<PathBuf> {
     let mut all = Vec::new();
     walk(src, src, &mut all, &skip_dirs);
     let skip = defaults::list("routine.tree_skip_substrings");
-    let (mut first, mut rest): (Vec<_>, Vec<_>) = all.into_iter().filter(|r| !skip.iter().any(|s| r.to_string_lossy().contains(s))).partition(|r| defaults::list("routine.defaults_dirs").iter().any(|d| r.starts_with(d)));
+    let (mut first, mut rest): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .filter(|r| !skip.iter().any(|s| r.to_string_lossy().contains(s)))
+        .partition(|r| defaults::list("routine.defaults_dirs").iter().any(|d| r.starts_with(d)));
     first.append(&mut rest);
     first
 }
@@ -331,7 +364,11 @@ fn defaults_files(src: &Path) -> Vec<PathBuf> {
     for d in defaults::list("routine.defaults_dirs") {
         let mut ents: Vec<_> = std::fs::read_dir(src.join(d)).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file())).collect();
         ents.sort_by_key(std::fs::DirEntry::file_name);
-        out.extend(ents.into_iter().filter(|e| !defaults::list("routine.tree_skip_substrings").iter().any(|s| e.file_name().to_string_lossy().contains(s))).map(|e| Path::new(d).join(e.file_name())));
+        out.extend(
+            ents.into_iter()
+                .filter(|e| !defaults::list("routine.tree_skip_substrings").iter().any(|s| e.file_name().to_string_lossy().contains(s)))
+                .map(|e| Path::new(d).join(e.file_name())),
+        );
     }
     out
 }
@@ -485,7 +522,17 @@ fn start_daemon(tg: &Target) -> bool {
 
 fn integrity_accept(tg: &Target, scratch: &Path) {
     if tg.hook.is_file() {
-        let envs = tg.roots.first().map(|r| vec![(defaults::env_name("plugin_root").to_string(), r.display().to_string()), (defaults::env_name("dir").to_string(), tg.state.display().to_string()), (defaults::env_name("home").to_string(), defaults::env_var("home").unwrap_or_default())]).unwrap_or_default();
+        let envs = tg
+            .roots
+            .first()
+            .map(|r| {
+                vec![
+                    (defaults::env_name("plugin_root").to_string(), r.display().to_string()),
+                    (defaults::env_name("dir").to_string(), tg.state.display().to_string()),
+                    (defaults::env_name("home").to_string(), defaults::env_var("home").unwrap_or_default()),
+                ]
+            })
+            .unwrap_or_default();
         let args: Vec<&str> = defaults::list("routine.integrity_accept_args");
         let _ = run(&tg.hook, &args, &envs, defaults::secs("routine.call_timeout_s"), scratch, None); // keep: the next integrity check records it if this one could not
     }
@@ -506,7 +553,15 @@ struct Pre {
 }
 
 fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) -> Pre {
-    let mut pre = Pre { problems: Vec::new(), version: String::new(), hook_version: String::new(), web_version: String::new(), hook_min: String::new(), web_min: String::new(), sha: sha_of(&src.engine).unwrap_or_default() };
+    let mut pre = Pre {
+        problems: Vec::new(),
+        version: String::new(),
+        hook_version: String::new(),
+        web_version: String::new(),
+        hook_min: String::new(),
+        web_min: String::new(),
+        sha: sha_of(&src.engine).unwrap_or_default(),
+    };
     let limit = defaults::secs("routine.call_timeout_s");
     let envs = scratch_env(scratch, src.tree.as_deref().or(tg.roots.first().map(PathBuf::as_path)));
     let v = run(&src.engine, &["version"], &envs, limit, scratch, None);
@@ -554,7 +609,10 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
                 log.say(a.out.trim_end().to_string());
                 pre.problems.push(defaults::render("routine.problem_audit", &[("root", &root)]));
             }
-            other => pre.problems.push(defaults::render("routine.problem_audit_run", &[("code", &other.map_or_else(|| t("routine.no_code").to_string(), |c| c.to_string())), ("out", &first_line(&a.out))])),
+            other => pre.problems.push(defaults::render(
+                "routine.problem_audit_run",
+                &[("code", &other.map_or_else(|| t("routine.no_code").to_string(), |c| c.to_string())), ("out", &first_line(&a.out))],
+            )),
         }
     }
     let empty = scratch.join(t("routine.empty_toml"));
@@ -580,7 +638,14 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
         if r.code == Some(0) {
             log.say(defaults::render("routine.line_root_ok", &[("root", &root.display())]));
         } else {
-            pre.problems.push(defaults::render("routine.problem_root", &[("root", &root.display()), ("code", &r.code.map_or_else(|| t("routine.no_code").to_string(), |c| c.to_string())), ("out", &first_line(&r.out))]));
+            pre.problems.push(defaults::render(
+                "routine.problem_root",
+                &[
+                    ("root", &root.display()),
+                    ("code", &r.code.map_or_else(|| t("routine.no_code").to_string(), |c| c.to_string())),
+                    ("out", &first_line(&r.out)),
+                ],
+            ));
         }
     }
     if tg.roots.is_empty() && src.tree.is_none() {
@@ -609,7 +674,9 @@ fn downgrade(cur: &Running, target_version: &str, target_built: u64, target_sour
     match crate::component_cmp(target_version, &cur.version) {
         std::cmp::Ordering::Less => Some(t("routine.why_plugin_lower").to_string()),
         // a release (or a file) of the SAME engine version is not newer than a local or hand-installed build of it
-        std::cmp::Ordering::Equal if target_source != t("routine.source_local") && (cur.source != t("routine.source_release") || cur.version.contains('+')) => Some(t("routine.why_local_running").to_string()),
+        std::cmp::Ordering::Equal if target_source != t("routine.source_local") && (cur.source != t("routine.source_release") || cur.version.contains('+')) => {
+            Some(t("routine.why_local_running").to_string())
+        }
         std::cmp::Ordering::Equal if cur.built > 0 && target_built > 0 && target_built < cur.built => Some(t("routine.why_build_older").to_string()),
         _ => None,
     }
@@ -659,7 +726,10 @@ fn validate(tg: &Target, expect_sha: &str, started_ms: u64, scratch: &Path) -> V
     for e in health::events().into_iter().filter(|e| e.ts >= started_ms) {
         let job_failed = e.kind == job_kind && failed_codes.contains(&e.code.as_str());
         if bad.contains(&e.kind.as_str()) || job_failed {
-            problems.push(defaults::render("routine.problem_event", &[("kind", &e.kind), ("code", &e.code), ("detail", &e.detail.chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>())]));
+            problems.push(defaults::render(
+                "routine.problem_event",
+                &[("kind", &e.kind), ("code", &e.code), ("detail", &e.detail.chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>())],
+            ));
         }
     }
     let derr = tg.state.join(crate::bootstrap::ERROR_FILE);
@@ -668,10 +738,10 @@ fn validate(tg: &Target, expect_sha: &str, started_ms: u64, scratch: &Path) -> V
         if stamp * 1000 >= started_ms || stamp == 0 && !text.trim().is_empty() {
             // Keep the writer context even when the error itself exceeds the detail limit. Old lines have no suffix.
             let (detail, writer) = text.trim().rsplit_once("\tpid=").map(|(d, w)| (d, format!("pid={w}"))).unwrap_or((text.trim(), String::new()));
-            problems.push(defaults::render("routine.problem_defaults_error", &[
-                ("text", &detail.chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>()),
-                ("writer", &writer),
-            ]));
+            problems.push(defaults::render(
+                "routine.problem_defaults_error",
+                &[("text", &detail.chars().take(defaults::num("routine.detail_chars") as usize).collect::<String>()), ("writer", &writer)],
+            ));
         }
     }
     problems
@@ -680,14 +750,22 @@ fn validate(tg: &Target, expect_sha: &str, started_ms: u64, scratch: &Path) -> V
 // ---- rollback ---------------------------------------------------------------------------------------------------------------
 
 fn latest_deploy(tg: &Target) -> Option<PathBuf> {
-    let mut d: Vec<PathBuf> = std::fs::read_dir(tg.state.join(t("routine.deploys_dir"))).ok()?.flatten().map(|e| e.path()).filter(|p| p.join(t("routine.manifest_file")).is_file()).collect();
+    let mut d: Vec<PathBuf> = std::fs::read_dir(tg.state.join(t("routine.deploys_dir")))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join(t("routine.manifest_file")).is_file())
+        .collect();
     d.sort();
     d.pop()
 }
 
 /// Put the saved copies of one install back: files, then binaries (a file the install added is moved aside, never deleted).
 fn restore(dir: &Path, tg: &Target, scratch: &Path, log: &mut Log) -> Result<usize, String> {
-    let m: Value = std::fs::read_to_string(dir.join(t("routine.manifest_file"))).ok().and_then(|s| serde_json::from_str(&s).ok()).ok_or_else(|| defaults::render("routine.msg_no_manifest", &[("dir", &dir.display())]))?;
+    let m: Value = std::fs::read_to_string(dir.join(t("routine.manifest_file")))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .ok_or_else(|| defaults::render("routine.msg_no_manifest", &[("dir", &dir.display())]))?;
     if !stop_daemon() {
         return Err(t("routine.msg_stop_failed").to_string());
     }
@@ -794,7 +872,11 @@ fn manual_rollback(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
             }
             if problems.is_empty() {
                 // the record says what is installed now: what the restored install had been before (its manifest's `from`)
-                let from = std::fs::read_to_string(dir.join(t("routine.manifest_file"))).ok().and_then(|m| serde_json::from_str::<Value>(&m).ok()).map(|m| m["from"].clone()).unwrap_or(Value::Null);
+                let from = std::fs::read_to_string(dir.join(t("routine.manifest_file")))
+                    .ok()
+                    .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+                    .map(|m| m["from"].clone())
+                    .unwrap_or(Value::Null);
                 let record = json!({
                     "version": from["version"], "sha": sha, "source": from["source"].as_str().unwrap_or(t("routine.source_manual")),
                     "time": now_s(), "built_at": mtime_s(&tg.engine), "rolled_back_from": dir.display().to_string(),
@@ -806,7 +888,10 @@ fn manual_rollback(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
                 }
                 log.say(defaults::render("routine.line_rollback_ok", &[("sha", &short(&sha))]));
             }
-            (if problems.is_empty() { Done::Ok } else { Done::Failed }, json!({"action": "rollback", "deploy": dir.display().to_string(), "problems": problems, "sha": sha}))
+            (
+                if problems.is_empty() { Done::Ok } else { Done::Failed },
+                json!({"action": "rollback", "deploy": dir.display().to_string(), "problems": problems, "sha": sha}),
+            )
         }
         Err(e) => {
             log.say(defaults::render("routine.line_rollback_failed", &[("why", &e)]));
@@ -833,7 +918,10 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
     // only a build directory keeps the time its binary was built; an unpacked release or a staged copy carries the time it was written
     let new_built = if o.source == t("routine.source_local") { mtime_s(&src.engine) } else { 0 };
     let head = json!({"action": "install", "source": o.source, "from": {"version": cur.version, "sha": cur.sha, "source": cur.source}, "to": {"version": pre.version, "sha": pre.sha}});
-    log.say(defaults::render("routine.line_running", &[("version", &cur.version), ("sha", &cur.sha.as_deref().map_or_else(String::new, short)), ("source", &cur.source)]));
+    log.say(defaults::render(
+        "routine.line_running",
+        &[("version", &cur.version), ("sha", &cur.sha.as_deref().map_or_else(String::new, short)), ("source", &cur.source)],
+    ));
     if !pre.problems.is_empty() {
         for pr in &pre.problems {
             log.say(defaults::render("routine.line_problem", &[("text", pr)]));
@@ -842,10 +930,14 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
         return (Done::Failed, json!({"action": "install", "problems": pre.problems}));
     }
     // a set to install is one build: no uncommitted changes in it, and one version stamp across engine, client and dashboard
-    let set: Vec<(&str, &str)> = [(t("routine.word_engine"), pre.version.as_str()), (t("routine.word_hook"), pre.hook_version.as_str()), (t("routine.word_web"), pre.web_version.as_str())]
-        .into_iter()
-        .filter(|(_, v)| !v.is_empty())
-        .collect();
+    let set: Vec<(&str, &str)> = [
+        (t("routine.word_engine"), pre.version.as_str()),
+        (t("routine.word_hook"), pre.hook_version.as_str()),
+        (t("routine.word_web"), pre.web_version.as_str()),
+    ]
+    .into_iter()
+    .filter(|(_, v)| !v.is_empty())
+    .collect();
     let dirty = set.iter().filter(|(_, v)| v.ends_with(t("routine.dirty_suffix"))).map(|(n, v)| format!("{n} {v}")).collect::<Vec<_>>();
     if !dirty.is_empty() {
         let msg = defaults::render("routine.msg_dirty", &[("which", &dirty.join(", ")), ("flag", &flag("force"))]);
@@ -886,15 +978,32 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
     }
     let same = cur.sha.as_deref() == Some(pre.sha.as_str());
     if o.check || !o.yes {
-        log.say(defaults::render(if o.check { "routine.line_check_ok" } else { "routine.line_dry_plan" }, &[("roots", &tg.roots.len()), ("same", &if same { t("routine.word_same") } else { "" })]));
+        log.say(defaults::render(
+            if o.check { "routine.line_check_ok" } else { "routine.line_dry_plan" },
+            &[("roots", &tg.roots.len()), ("same", &if same { t("routine.word_same") } else { "" })],
+        ));
         sweep::run(src.tree.as_deref(), &tg.roots, true, true, &mut |l| log.say(l));
-        return (Done::Ok, json!({"action": "install", "dry_run": true, "plan": {"roots": tg.roots.len(), "same_binary": same}, "from": head["from"], "to": head["to"]}));
+        return (
+            Done::Ok,
+            json!({"action": "install", "dry_run": true, "plan": {"roots": tg.roots.len(), "same_binary": same}, "from": head["from"], "to": head["to"]}),
+        );
     }
     do_install(o, &src, &tg, &pre, &cur, same, new_built, scratch, log, head)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, same: bool, new_built: u64, scratch: &Path, log: &mut Log, head: Value) -> (Done, Value) {
+fn do_install(
+    o: &Opts,
+    src: &Source,
+    tg: &Target,
+    pre: &Pre,
+    cur: &Running,
+    same: bool,
+    new_built: u64,
+    scratch: &Path,
+    log: &mut Log,
+    head: Value,
+) -> (Done, Value) {
     let ts = now_s();
     let jdir = tg.state.join(t("routine.deploys_dir")).join(format!("{ts:012}-{}", short(&pre.sha)));
     if let Err(e) = std::fs::create_dir_all(&jdir) {
@@ -980,7 +1089,10 @@ fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, sam
     let started_ms = health::now_ms();
     let up = start_daemon(tg);
     drop(hold);
-    log.say(defaults::render("routine.line_installed", &[("sha", &short(&pre.sha)), ("started", &if up { t("routine.word_up") } else { t("routine.word_down") })]));
+    log.say(defaults::render(
+        "routine.line_installed",
+        &[("sha", &short(&pre.sha)), ("started", &if up { t("routine.word_up") } else { t("routine.word_down") })],
+    ));
     let problems = validate(tg, &pre.sha, started_ms, scratch);
     if !problems.is_empty() {
         for pr in &problems {
@@ -1010,7 +1122,10 @@ fn do_install(o: &Opts, src: &Source, tg: &Target, pre: &Pre, cur: &Running, sam
     if let Err(e) = write_atomic(&record_path(tg), &serde_json::to_string_pretty(&record).unwrap_or_default()) {
         log.say(defaults::render("routine.msg_record_failed", &[("why", &e)]));
     }
-    log.say(defaults::render("routine.line_summary", &[("version", &pre.version), ("sha", &short(&pre.sha)), ("source", &o.source), ("files", &changed), ("kept", &kept), ("deploy", &jdir.display())]));
+    log.say(defaults::render(
+        "routine.line_summary",
+        &[("version", &pre.version), ("sha", &short(&pre.sha)), ("source", &o.source), ("files", &changed), ("kept", &kept), ("deploy", &jdir.display())],
+    ));
     (Done::Ok, json!({"action": "install", "installed": record, "cleanup": clean.value, "files": changed, "retired": swept.to_json()}))
 }
 
@@ -1031,7 +1146,10 @@ fn fail_and_restore(jdir: &Path, tg: &Target, pre: &Pre, cur: &Running, scratch:
                 log.say(defaults::render("routine.line_problem", &[("text", pr)]));
             }
             out["restored"] = json!({"daemon_up": up, "problems": again, "sha": want});
-            log.say(defaults::render(if again.is_empty() && up { "routine.line_rolled_back_ok" } else { "routine.line_rolled_back_bad" }, &[("sha", &short(&want)), ("version", &cur.version)]));
+            log.say(defaults::render(
+                if again.is_empty() && up { "routine.line_rolled_back_ok" } else { "routine.line_rolled_back_bad" },
+                &[("sha", &short(&want)), ("version", &cur.version)],
+            ));
         }
         Err(e) => {
             drop(hold);
@@ -1045,7 +1163,8 @@ fn fail_and_restore(jdir: &Path, tg: &Target, pre: &Pre, cur: &Running, scratch:
 /// Remove the saved copies of older installs beyond the kept count (the newest stay). Returns how many remain.
 fn prune_deploys(tg: &Target) -> usize {
     let dir = tg.state.join(t("routine.deploys_dir"));
-    let mut d: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.join(t("routine.manifest_file")).is_file()).collect();
+    let mut d: Vec<PathBuf> =
+        std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.join(t("routine.manifest_file")).is_file()).collect();
     d.sort();
     let keep = defaults::num("routine.keep_deploys").max(1) as usize;
     while d.len() > keep {
@@ -1067,16 +1186,27 @@ pub fn engine_facts() -> Value {
     let latest = if tg.hook.is_file() && made {
         let args: Vec<&str> = defaults::list("routine.release_check_args");
         let root = tg.roots.first().cloned().or_else(defaults::root);
-        let mut envs = vec![(defaults::env_name("dir").to_string(), tg.state.display().to_string()), (defaults::env_name("home").to_string(), defaults::env_var("home").unwrap_or_default())];
+        let mut envs = vec![
+            (defaults::env_name("dir").to_string(), tg.state.display().to_string()),
+            (defaults::env_name("home").to_string(), defaults::env_var("home").unwrap_or_default()),
+        ];
         envs.extend(root.map(|r| (defaults::env_name("plugin_root").to_string(), r.display().to_string())));
         let r = run(&tg.hook, &args, &envs, defaults::secs("routine.release_check_timeout_s"), &scratch, None);
-        r.out.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str::<Value>(l).ok()).unwrap_or_else(|| json!({"error": first_line(&r.out)}))
+        r.out
+            .lines()
+            .rev()
+            .find(|l| l.trim_start().starts_with('{'))
+            .and_then(|l| serde_json::from_str::<Value>(l).ok())
+            .unwrap_or_else(|| json!({"error": first_line(&r.out)}))
     } else {
         json!({"error": t("routine.word_no_client")})
     };
     let _ = std::fs::remove_dir_all(&scratch); // keep: our own scratch directory
     // the one place the Updates page's "newer release" is decided: it must not repeat the comparison with its own rules
-    let release_newer = latest.get("version").and_then(Value::as_str).is_some_and(|v| !v.is_empty() && !cur.version.is_empty() && crate::component_cmp(v, &cur.version) == std::cmp::Ordering::Greater);
+    let release_newer = latest
+        .get("version")
+        .and_then(Value::as_str)
+        .is_some_and(|v| !v.is_empty() && !cur.version.is_empty() && crate::component_cmp(v, &cur.version) == std::cmp::Ordering::Greater);
     json!({
         "build_version": cur.version, "sha": cur.sha, "source": cur.source, "release_newer": release_newer,
         "installed_at": rec["time"], "previous": rec["previous"], "latest_release": latest,

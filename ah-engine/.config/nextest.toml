@@ -25,7 +25,7 @@ default-filter = 'not (test(/^memory_soak::/) | binary(script_latency) | binary(
 # DEV    `cargo nextest run -j 2 --profile dev` (run before each live deploy; target 5 min at -j 2): the policy gates, one or two recorded-golden
 #        cases of every guard that BLOCKS (no live Node), the dispatcher's block / fail-closed path, the launcher / wrapper fail-open drills,
 #        the crash-loop breaker and rollback, config load, ack protocol basics and the memory / CPU budget reporting.
-# RELEASE `cargo nextest run --profile release` (AH_LIVE_NODE=1): everything, the goldens, replay, the live-Node parity lanes, soak and benches.
+# RELEASE `cargo nextest run --profile release`: everything, the goldens, replay, soak and benches.
 
 # The policy gates: no hardcoded tunables, compiled config / logic, process environment reads, temp-dir leaks, defaults keys, docs
 # coverage and reference, the generated hook files, the Node-free `no_node` gate, the cut knob, the error-audit ratchet and the memory guard.

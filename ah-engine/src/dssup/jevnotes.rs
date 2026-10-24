@@ -161,7 +161,9 @@ fn recent_prompts(ctx: &Ctx, wt: &str, session: &str) -> Vec<String> {
 
 /// What a plan's Jev state remembers per question.
 fn state_path(ctx: &Ctx, key: &str) -> PathBuf {
-    crate::meshw::idlock::devswarm_root(ctx.home).join(defaults::text("devswarm_sup.jv_state_dir")).join(format!("{key}{}", defaults::text("mesh_write.json_suffix")))
+    crate::meshw::idlock::devswarm_root(ctx.home)
+        .join(defaults::text("devswarm_sup.jv_state_dir"))
+        .join(format!("{key}{}", defaults::text("mesh_write.json_suffix")))
 }
 
 /// What a plan's Jev state remembers about one question.
@@ -348,7 +350,11 @@ pub(super) fn specs(ctx: &Ctx, runner: &dyn Runner, plan: &Value, wt: &str, sess
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|s| s.get(text_key).and_then(Value::as_str)).filter(|t| !t.is_empty()).map(str::to_string).collect())
         .unwrap_or_default();
-    let scope: Vec<&str> = plan.get(defaults::text("devswarm_sup.jv_scope_key")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let scope: Vec<&str> = plan
+        .get(defaults::text("devswarm_sup.jv_scope_key"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
     let shown: Vec<&str> = files.iter().take(defaults::num("devswarm_sup.jv_files_shown") as usize).map(String::as_str).collect();
     let files_text = shown.join(list_sep);
     let commits = recent_subjects(runner, wt).join(item_sep);
@@ -358,7 +364,10 @@ pub(super) fn specs(ctx: &Ctx, runner: &dyn Runner, plan: &Value, wt: &str, sess
     Some([
         Spec {
             table: brief,
-            state: fill(brief.str_field("state"), &[("step", &step), ("scope", &scope.join(list_sep)), ("summaries", &summaries.join(item_sep)), ("commits", &commits), ("files", &files_text)]),
+            state: fill(
+                brief.str_field("state"),
+                &[("step", &step), ("scope", &scope.join(list_sep)), ("summaries", &summaries.join(item_sep)), ("commits", &commits), ("files", &files_text)],
+            ),
         },
         Spec { table: extra, state: fill(extra.str_field("state"), &[("prompts", &prompts), ("files", &files_text)]) },
     ])
@@ -391,7 +400,8 @@ pub fn adjust(ctx: &Ctx, runner: &dyn Runner, settings: &JevSettings, off: &Off)
     let [brief_id, extra_id] = [defaults::raw("devswarm_sup.jv_on_brief").str_field("id"), defaults::raw("devswarm_sup.jv_extra").str_field("id")];
     let Some(specs) = specs(ctx, runner, plan, wt, session, files) else { return Vec::new() };
     let stored = read_obj(&state_path(ctx, key));
-    let state: Vec<(String, IState)> = [brief_id, extra_id].iter().map(|id| ((*id).to_string(), IState::from_oval(stored.as_ref().and_then(|o| o.get(id))))).collect();
+    let state: Vec<(String, IState)> =
+        [brief_id, extra_id].iter().map(|id| ((*id).to_string(), IState::from_oval(stored.as_ref().and_then(|o| o.get(id))))).collect();
     let env = JevEnv::from_pairs(ctx.st.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut c = Cx { ctx, settings, env, d_id, key, state, dirty: false };
     let tkey = if trigger_key.is_empty() { defaults::text("devswarm_sup.jv_default_trigger") } else { trigger_key };
@@ -470,7 +480,12 @@ mod tests {
         fn run(&self, now: i64) -> Vec<Note> {
             let ctx = self.ctx(now);
             let files = ["src/a.rs".to_string(), "docs/b.md".to_string()];
-            adjust(&ctx, &Nothing, &self.settings(), &Off { id: "w1", key: "plan1", plan: &self.plan, wt: "", session: "", files: &files, signal_key: "off-scope:1:abc" })
+            adjust(
+                &ctx,
+                &Nothing,
+                &self.settings(),
+                &Off { id: "w1", key: "plan1", plan: &self.plan, wt: "", session: "", files: &files, signal_key: "off-scope:1:abc" },
+            )
         }
         fn answer(&self, which: usize, answer: bool, confidence: f64) {
             let ctx = self.ctx(NOW);
@@ -482,7 +497,11 @@ mod tests {
             std::fs::write(p, cache.to_string()).unwrap();
         }
         fn log(&self) -> Vec<Value> {
-            std::fs::read_to_string(self.home.join(".anti-hall/logs/devswarm-supervision.ndjson")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+            std::fs::read_to_string(self.home.join(".anti-hall/logs/devswarm-supervision.ndjson"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()
         }
     }
 

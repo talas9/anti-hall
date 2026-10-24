@@ -362,7 +362,10 @@ fn exchange_for(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
 /// file as the launcher's, so a call that went through both is told once. The call itself passes through. Empty when this session
 /// already heard it, or when the notice cannot be written (never a second notice for a failed write).
 pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
-    let sid = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned))).unwrap_or_else(|| "none".into());
+    let sid = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
+        .unwrap_or_else(|| "none".into());
     let file = state_file("unreachable_notice");
     if std::fs::read_to_string(&file).is_ok_and(|t| t.trim_end() == sid) {
         return String::new();
@@ -577,7 +580,9 @@ pub fn spawn_daemon_from_reason(exe: std::io::Result<PathBuf>, plugin_root: Opti
     // A daemon serves every later session, so it starts from the allowlisted part of this environment and from the home
     // directory, never the starting hook's own (the daemon drops the rest itself too, see `daemonenv`; doing it here as well
     // keeps the process image, as `ps` shows it, free of the session's values).
-    cmd.env_clear().envs(std::env::vars().filter(|(k, _)| crate::daemonenv::kept(k))).current_dir(crate::daemonenv::cwd(defaults::env_var("home").map(PathBuf::from)));
+    cmd.env_clear()
+        .envs(std::env::vars().filter(|(k, _)| crate::daemonenv::kept(k)))
+        .current_dir(crate::daemonenv::cwd(defaults::env_var("home").map(PathBuf::from)));
     if let Some(root) = plugin_root {
         cmd.env(defaults::env_name("plugin_root"), root);
     }
@@ -601,7 +606,16 @@ pub fn spawn_daemon_from_reason(exe: std::io::Result<PathBuf>, plugin_root: Opti
             }
         }
     }
-    match cmd.arg(defaults::text("health.serve_arg")).arg(defaults::text("health.start_reason_flag")).arg(reason).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn() {
+    match cmd
+        .arg(defaults::text("health.serve_arg"))
+        .arg(defaults::text("health.start_reason_flag"))
+        .arg(reason)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+    {
         Ok(child) => Some(child),
         Err(e) => {
             spawn_failed(e);

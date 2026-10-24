@@ -395,7 +395,10 @@ fn plan_or_held(p: Prepared) -> Result<Plan, Held> {
     match p {
         Prepared::Plan(p) => Ok(*p),
         Prepared::Refused(o) => {
-            let why = defaults::list("mesh_write.refusal_fields").iter().find_map(|k| field_str(&o, k)).unwrap_or_else(|| defaults::text("mesh_write.action_pull").to_string());
+            let why = defaults::list("mesh_write.refusal_fields")
+                .iter()
+                .find_map(|k| field_str(&o, k))
+                .unwrap_or_else(|| defaults::text("mesh_write.action_pull").to_string());
             Err(Held(why))
         }
     }

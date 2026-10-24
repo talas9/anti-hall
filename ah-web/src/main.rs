@@ -26,7 +26,10 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 fn arg(args: &[String], flag: &str) -> Option<PathBuf> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(PathBuf::from)
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
 }
 
 fn random_bytes(n: usize) -> std::io::Result<Vec<u8>> {
@@ -42,8 +45,14 @@ fn log(path: &std::path::Path, max: u64, msg: &str) {
         old.push(".1");
         let _ = std::fs::rename(path, old); // keep: a failed rotation only lets the file grow a little
     }
-    let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    let ts = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(f, "{ts} pid={} {msg}", std::process::id()); // keep: see above
     }
 }
@@ -51,7 +60,12 @@ fn log(path: &std::path::Path, max: u64, msg: &str) {
 /// Write the state file atomically with mode 0600.
 fn write_state(path: &std::path::Path, body: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
     f.write_all(body.as_bytes())?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)
@@ -86,12 +100,18 @@ async fn main() {
         return;
     }
     if args.first().map(String::as_str) != Some("serve") {
-        eprintln!("usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket> [--idle-exit-s <n>]");
+        eprintln!(
+            "usage: ah-web serve --config <web.toml> --root <plugin root> --state <dir> --engine <ah-engine> --socket <engine socket> [--idle-exit-s <n>]"
+        );
         std::process::exit(64);
     }
-    let (Some(config), Some(root), Some(state), Some(engine), Some(socket)) =
-        (arg(&args, "--config"), arg(&args, "--root"), arg(&args, "--state"), arg(&args, "--engine"), arg(&args, "--socket"))
-    else {
+    let (Some(config), Some(root), Some(state), Some(engine), Some(socket)) = (
+        arg(&args, "--config"),
+        arg(&args, "--root"),
+        arg(&args, "--state"),
+        arg(&args, "--engine"),
+        arg(&args, "--socket"),
+    ) else {
         eprintln!("ah-web: --config, --root, --state, --engine and --socket are required");
         std::process::exit(64);
     };
@@ -103,16 +123,26 @@ async fn main() {
         return;
     }
     // `--idle-exit-s <n>` overrides web.idle_exit_s for this run (0 = never exit when idle: a dashboard kept as a service)
-    let idle_override: Option<u64> = args.iter().position(|a| a == "--idle-exit-s").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok());
+    let idle_override: Option<u64> = args
+        .iter()
+        .position(|a| a == "--idle-exit-s")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok());
     let listener = bind(&settings).await.unwrap_or_else(|e| {
         eprintln!("ah-web: {e}");
         std::process::exit(75);
     });
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let token: String = random_bytes(settings.token_bytes).unwrap_or_default().iter().map(|b| format!("{b:02x}")).collect();
+    let token: String = random_bytes(settings.token_bytes)
+        .unwrap_or_default()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let url = format!("http://{}:{port}/?t={token}", settings.bind_host);
     let state_path = state.join(&settings.state_file);
-    let body = serde_json::json!({ "pid": std::process::id(), "port": port, "token": token, "url": url }).to_string();
+    let body =
+        serde_json::json!({ "pid": std::process::id(), "port": port, "token": token, "url": url })
+            .to_string();
     if let Err(e) = write_state(&state_path, &body) {
         eprintln!("ah-web: state file: {e}");
         std::process::exit(73);
@@ -121,8 +151,25 @@ async fn main() {
     println!("ah-web: {url}"); // for a run by hand; under `ah-engine web` stdout is closed
     let log_path = state.join(&settings.log_file);
     let log_max = settings.log_max_bytes;
-    log(&log_path, log_max, &format!("start version={} url_port={port} ppid={} args={}", env!("AH_BUILD_VERSION"), unsafe { libc::getppid() }, args.join(" ")));
-    let app = Arc::new(App::new(settings, config.clone(), root, engine, socket, token, port));
+    log(
+        &log_path,
+        log_max,
+        &format!(
+            "start version={} url_port={port} ppid={} args={}",
+            env!("AH_BUILD_VERSION"),
+            unsafe { libc::getppid() },
+            args.join(" ")
+        ),
+    );
+    let app = Arc::new(App::new(
+        settings,
+        config.clone(),
+        root,
+        engine,
+        socket,
+        token,
+        port,
+    ));
 
     // idle exit and settings reload share one timer
     let watcher = {
@@ -140,10 +187,20 @@ async fn main() {
                         app.replace_settings(s); // a broken edit keeps the settings in force
                     }
                 }
-                let idle = app.started.elapsed().as_secs().saturating_sub(app.last_active_s.load(Ordering::Relaxed));
+                let idle = app
+                    .started
+                    .elapsed()
+                    .as_secs()
+                    .saturating_sub(app.last_active_s.load(Ordering::Relaxed));
                 let limit = idle_override.unwrap_or(app.settings().idle_exit_s);
                 if limit > 0 && app.streams() == 0 && idle >= limit {
-                    log(&log_path, log_max, &format!("exit: idle {idle}s with no request and no open stream (web.idle_exit_s={limit})"));
+                    log(
+                        &log_path,
+                        log_max,
+                        &format!(
+                            "exit: idle {idle}s with no request and no open stream (web.idle_exit_s={limit})"
+                        ),
+                    );
                     break;
                 }
             }

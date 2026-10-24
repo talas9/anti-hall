@@ -229,7 +229,14 @@ fn normalize_records(v: &OVal) -> Option<Vec<(String, Option<String>)>> {
 
 /// `resolveArchivedCacheMaxAgeMs(env)`: the variable when it is a positive integer, else twice the reconcile sweep interval.
 fn active_max_age_ms(e: &Eng) -> f64 {
-    let from_env = e.inv.env.get(key("devswarm_cli.rr_env_active_max_age")).map(|v| v.trim()).filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())).and_then(|v| v.parse::<f64>().ok()).filter(|n| *n > 0.0);
+    let from_env = e
+        .inv
+        .env
+        .get(key("devswarm_cli.rr_env_active_max_age"))
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|n| *n > 0.0);
     if let Some(n) = from_env {
         return n;
     }
@@ -936,7 +943,8 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
     // `Object.values(sum.workspaces || {})`: the integer-like keys first, ascending, then the others in their order
     let workspaces: Vec<&OVal> = match sum.get("workspaces") {
         Some(OVal::Obj(ws)) => {
-            let mut indexed: Vec<(u64, &OVal)> = ws.iter().filter(|(k, _)| is_array_index_key(k)).filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v))).collect();
+            let mut indexed: Vec<(u64, &OVal)> =
+                ws.iter().filter(|(k, _)| is_array_index_key(k)).filter_map(|(k, v)| Some((k.parse::<u64>().ok()?, v))).collect();
             indexed.sort_by_key(|(n, _)| *n);
             indexed.into_iter().map(|(_, v)| v).chain(ws.iter().filter(|(k, _)| !is_array_index_key(k)).map(|(_, v)| v)).collect()
         }
@@ -1061,7 +1069,8 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
         let already = known.contains(&primary) || rows.iter().any(|r| str_field(r, "id") == Some(primary.as_str()));
         if !fallback.is_empty() && fallback != repo_key && !already {
             let file = devswarm_root(&inv.home).join(key("mesh_write.dir_summaries")).join(format!("{fallback}{}", key("mesh_write.json_suffix")));
-            let sum2 = std::fs::read(&file).ok().map(|b| String::from_utf8_lossy(&b).into_owned()).filter(|t| !t.trim().is_empty()).and_then(|t| OVal::parse(&t));
+            let sum2 =
+                std::fs::read(&file).ok().map(|b| String::from_utf8_lossy(&b).into_owned()).filter(|t| !t.trim().is_empty()).and_then(|t| OVal::parse(&t));
             if let Some(pw) = sum2.as_ref().and_then(|s2| s2.get("workspaces")).and_then(|w| w.get(&primary)).filter(|pw| pw.truthy()) {
                 let fe = Eng { inv, now: e.now, repo_key: &fallback, dormant: std::cell::OnceCell::new(), active: std::cell::OnceCell::new() };
                 let pid = match pw.get("id") {
@@ -1083,12 +1092,18 @@ pub fn build(inv: &Inv, repo_key: &str, st: &MeshStore, sum: &OVal, main_worktre
                 }
                 o.put("worktreePath", pwt.as_deref().map_or(OVal::Null, s))
                     .put("source", s(key("devswarm_cli.rr_source_fallback")))
-                    .put("meshId", match pwt.as_deref() {
-                        Some(p) => ident::primary_workspace_id(p).map_or(OVal::Null, |m| s(&m)),
-                        None => OVal::Null,
-                    })
+                    .put(
+                        "meshId",
+                        match pwt.as_deref() {
+                            Some(p) => ident::primary_workspace_id(p).map_or(OVal::Null, |m| s(&m)),
+                            None => OVal::Null,
+                        },
+                    )
                     .put("hints", strings(&h))
-                    .put("wsName", if is_safe_id(&pid) { crate::dssup::appsync::state::read_name(&inv.home, &pid).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null });
+                    .put(
+                        "wsName",
+                        if is_safe_id(&pid) { crate::dssup::appsync::state::read_name(&inv.home, &pid).map_or(OVal::Null, |n| s(&n)) } else { OVal::Null },
+                    );
                 rows.push(o);
             }
         }
@@ -1215,7 +1230,8 @@ fn current_step(plan_doc: &OVal) -> Option<&OVal> {
     let mut first_open: Option<&OVal> = None;
     for st in steps.iter().filter(|x| !plan::status_is(x, defaults::text("mesh_write.plan_status_done"))) {
         first_open.get_or_insert(st);
-        let working = plan::status_is(st, defaults::text("mesh_write.plan_status_doing")) || plan::status_is(st, defaults::text("mesh_write.plan_status_blocked"));
+        let working =
+            plan::status_is(st, defaults::text("mesh_write.plan_status_doing")) || plan::status_is(st, defaults::text("mesh_write.plan_status_blocked"));
         if !working {
             continue;
         }
@@ -1240,7 +1256,8 @@ fn live_work(inv: &Inv, plan_doc: &OVal, now: f64) -> Option<(String, OVal)> {
     if !is_safe_id(&id) {
         return None;
     }
-    let file = inv.home.join(paths.str_field("base")).join(paths.str_field("dir")).join(cfg.str_field("dir")).join(format!("{id}{}", paths.str_field("json_ext")));
+    let file =
+        inv.home.join(paths.str_field("base")).join(paths.str_field("dir")).join(cfg.str_field("dir")).join(format!("{id}{}", paths.str_field("json_ext")));
     let facts = read_obj(&file)?;
     let facts = facts.get("facts")?.clone();
     let get = |k: &str| {
@@ -1346,7 +1363,8 @@ fn plan_fields(inv: &Inv, found: &plan::Found, now: f64) -> Result<OVal, ()> {
             t.put("total", OVal::Num(js_round(total))).put("sinceStep", if since.is_finite() { OVal::Num(js_round(since)) } else { OVal::Null });
             o.put("tokens", t.done());
             if label.truthy() {
-                let text = format!("{}{}{}{}", ident::js_to_string(&label), key("devswarm_cli.rr_tok_sep"), fmt_tokens(total), key("devswarm_cli.rr_tok_suffix"));
+                let text =
+                    format!("{}{}{}{}", ident::js_to_string(&label), key("devswarm_cli.rr_tok_sep"), fmt_tokens(total), key("devswarm_cli.rr_tok_suffix"));
                 label = s(&text);
                 put_label(&mut o, &label);
             }
@@ -1354,7 +1372,8 @@ fn plan_fields(inv: &Inv, found: &plan::Found, now: f64) -> Result<OVal, ()> {
     }
     // straying warnings with any Jev recommendation (the Primary decides)
     let stray = if is_safe_id(&found.key) {
-        read_obj(&devswarm_root(&inv.home).join(key("devswarm_cli.dir_stray")).join(format!("{}{}", found.key, key("mesh_write.json_suffix")))).filter(|v| matches!(v, OVal::Obj(_)))
+        read_obj(&devswarm_root(&inv.home).join(key("devswarm_cli.dir_stray")).join(format!("{}{}", found.key, key("mesh_write.json_suffix"))))
+            .filter(|v| matches!(v, OVal::Obj(_)))
     } else {
         None
     };
@@ -1650,7 +1669,11 @@ mod tests {
         std::fs::create_dir_all(root.join("token-usage")).unwrap();
         std::fs::write(root.join("token-usage").join("k1.json"), r#"{"total": 1234567, "sinceStep": 4200}"#).unwrap();
         std::fs::create_dir_all(root.join("stray")).unwrap();
-        std::fs::write(root.join("stray").join("k1.json"), r#"{"active":[{"signal":"off-scope","step":2,"reason":"r","jev":[{"integration":"j","verdict":"v","confidence":0.5}]}]}"#).unwrap();
+        std::fs::write(
+            root.join("stray").join("k1.json"),
+            r#"{"active":[{"signal":"off-scope","step":2,"reason":"r","jev":[{"integration":"j","verdict":"v","confidence":0.5}]}]}"#,
+        )
+        .unwrap();
         let found = plan::Found { key: "k1".into(), plan: plan_doc };
         let f = plan_fields(&fx.inv, &found, 20.0).unwrap();
         assert_eq!(f.get("step"), Some(&OVal::Num(2.0)));
@@ -1661,7 +1684,15 @@ mod tests {
         assert_eq!(f.get("tokens").and_then(|t| t.get("sinceStep")), Some(&OVal::Num(4200.0)));
         let label = ident::js_to_string(f.get("label").unwrap());
         assert!(label.ends_with(" \u{b7} 1.2M tok"), "{label}");
-        assert_eq!(f.get("straying").and_then(|s| match s { OVal::Arr(a) => a.first(), _ => None }).and_then(|x| x.get("signal")), Some(&OVal::Str("off-scope".into())));
+        assert_eq!(
+            f.get("straying")
+                .and_then(|s| match s {
+                    OVal::Arr(a) => a.first(),
+                    _ => None,
+                })
+                .and_then(|x| x.get("signal")),
+            Some(&OVal::Str("off-scope".into()))
+        );
         assert_eq!(fmt_tokens(950.0), "950");
         assert_eq!(fmt_tokens(15_500.0), "16k");
     }

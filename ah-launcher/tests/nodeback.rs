@@ -25,7 +25,8 @@ impl Fb {
         std::fs::create_dir_all(&bin).unwrap();
         let node = bin.join("node");
         std::fs::write(&node, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
-        std::fs::set_permissions(&node, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&node, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
         std::fs::create_dir_all(&env.state).unwrap();
         std::fs::write(env.state.join("fallback.node"), "").unwrap();
         Fb { env, node_dir, bin }
@@ -38,8 +39,15 @@ impl Fb {
     fn run(&self, event: &str, payload: &str) -> Out {
         let path = format!("{}:/usr/bin:/bin", self.bin.display());
         // an engine that would record a start: the fallback must not ask it
-        let engine = self.env.script("engine.sh", &format!("echo ran >>{}\nexit 0", self.env.path("engine-ran").display()));
-        self.env.run(event, payload.as_bytes(), Some(&engine), &[("PATH", &path)])
+        let engine = self.env.script(
+            "engine.sh",
+            &format!(
+                "echo ran >>{}\nexit 0",
+                self.env.path("engine-ran").display()
+            ),
+        );
+        self.env
+            .run(event, payload.as_bytes(), Some(&engine), &[("PATH", &path)])
     }
 
     fn ledger(&self) -> Vec<serde_json::Value> {
@@ -59,11 +67,17 @@ fn a_force_push_through_the_node_guard_blocks_and_writes_a_ledger_row() {
         "nb-block",
         &format!("@PreToolUse\t10\nBash\t10\tnode \"{CP}/git-guard.js\"\n"),
     );
-    fb.hook("git-guard.js", "cat >/dev/null\necho 'force push refused' >&2\nexit 2");
+    fb.hook(
+        "git-guard.js",
+        "cat >/dev/null\necho 'force push refused' >&2\nexit 2",
+    );
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("force push refused"), "{}", o.err);
-    assert!(!fb.env.path("engine-ran").exists(), "the engine is bypassed");
+    assert!(
+        !fb.env.path("engine-ran").exists(),
+        "the engine is bypassed"
+    );
     let rows = fb.ledger();
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["src"], "node");
@@ -80,8 +94,20 @@ fn a_missing_node_directory_is_one_notice_and_the_switch_does_nothing() {
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 0, "{}", o.err);
     // the Node notice comes first; the call then takes the normal path (no engine here, so its own single notice follows)
-    assert!(o.err.lines().next().is_some_and(|l| l.contains("Node backup directory") && l.contains("anti-hall-node")), "{}", o.err);
-    assert_eq!(o.err.matches("Node backup directory").count(), 1, "{}", o.err);
+    assert!(
+        o.err
+            .lines()
+            .next()
+            .is_some_and(|l| l.contains("Node backup directory") && l.contains("anti-hall-node")),
+        "{}",
+        o.err
+    );
+    assert_eq!(
+        o.err.matches("Node backup directory").count(),
+        1,
+        "{}",
+        o.err
+    );
     assert!(fb.ledger().is_empty());
 }
 
@@ -116,24 +142,47 @@ echo '{"systemMessage":"two","hookSpecificOutput":{"hookEventName":"UserPromptSu
 fn a_hook_past_its_row_timeout_is_skipped_logged_and_the_next_one_still_runs() {
     let fb = Fb::new(
         "nb-timeout",
-        &format!("@PreToolUse\t10\nBash\t1\tnode \"{CP}/slow.js\"\nBash\t10\tnode \"{CP}/ok.js\"\n"),
+        &format!(
+            "@PreToolUse\t10\nBash\t1\tnode \"{CP}/slow.js\"\nBash\t10\tnode \"{CP}/ok.js\"\n"
+        ),
     );
     fb.hook("slow.js", "cat >/dev/null\nsleep 30");
     fb.hook("ok.js", "cat >/dev/null\nexit 0");
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 0, "{}", o.err);
-    assert!(o.ms < 12_000, "the slow hook was cut at its row timeout, took {} ms", o.ms);
+    assert!(
+        o.ms < 12_000,
+        "the slow hook was cut at its row timeout, took {} ms",
+        o.ms
+    );
     let rows = fb.ledger();
     assert_eq!(rows.len(), 2, "{rows:?}");
-    assert_eq!((rows[0]["chk"].as_str(), rows[0]["v"].as_str(), rows[0]["err"].as_str()), (Some("slow"), Some("timeout"), Some("timeout")));
-    assert_eq!((rows[1]["chk"].as_str(), rows[1]["v"].as_str()), (Some("ok"), Some("allow")));
+    assert_eq!(
+        (
+            rows[0]["chk"].as_str(),
+            rows[0]["v"].as_str(),
+            rows[0]["err"].as_str()
+        ),
+        (Some("slow"), Some("timeout"), Some("timeout"))
+    );
+    assert_eq!(
+        (rows[1]["chk"].as_str(), rows[1]["v"].as_str()),
+        (Some("ok"), Some("allow"))
+    );
 }
 
 #[test]
 fn a_shell_row_is_never_started_and_counts_as_a_no_op() {
-    let fb = Fb::new("nb-nosh", "@PreToolUse\t10\n*\t10\tsh \"${CLAUDE_PLUGIN_ROOT}/hooks/noop\"\n");
+    let fb = Fb::new(
+        "nb-nosh",
+        "@PreToolUse\t10\n*\t10\tsh \"${CLAUDE_PLUGIN_ROOT}/hooks/noop\"\n",
+    );
     let marker = fb.env.path("noop-ran");
-    std::fs::write(fb.env.root.join("hooks/noop"), format!("touch {}\nexit 0\n", marker.display())).unwrap();
+    std::fs::write(
+        fb.env.root.join("hooks/noop"),
+        format!("touch {}\nexit 0\n", marker.display()),
+    )
+    .unwrap();
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 0, "{}", o.err);
     assert!(!marker.exists(), "the launcher starts no shell");
@@ -142,7 +191,10 @@ fn a_shell_row_is_never_started_and_counts_as_a_no_op() {
 
 #[test]
 fn a_guard_event_fails_closed_when_a_hook_dies_and_nothing_blocked() {
-    let fb = Fb::new("nb-died", &format!("@PreToolUse\t10\nBash\t10\tnode \"{CP}/crash.js\"\n"));
+    let fb = Fb::new(
+        "nb-died",
+        &format!("@PreToolUse\t10\nBash\t10\tnode \"{CP}/crash.js\"\n"),
+    );
     fb.hook("crash.js", "cat >/dev/null\nkill -9 $$");
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 2, "{}", o.err);
@@ -168,6 +220,10 @@ echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"
     let o = fb.run("PreToolUse", PUSH);
     assert_eq!(o.code, 0, "{}", o.err);
     assert!(!marker.exists(), "the Read row does not match a Bash call");
-    assert!(String::from_utf8_lossy(&o.out).contains("permissionDecision"), "{}", String::from_utf8_lossy(&o.out));
+    assert!(
+        String::from_utf8_lossy(&o.out).contains("permissionDecision"),
+        "{}",
+        String::from_utf8_lossy(&o.out)
+    );
     assert_eq!(fb.ledger()[0]["v"], "block");
 }

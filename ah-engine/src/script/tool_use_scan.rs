@@ -89,10 +89,7 @@ pub fn tool_use_scan(path: &str, window: f64, needles: &[String], keys: &[String
 
 /// Add the scan to `ahHost`.
 pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
-    h.set(
-        "toolUseScan",
-        Function::new(c.clone(), |p: String, w: f64, needles: Vec<String>, keys: Vec<String>| tool_use_scan(&p, w, &needles, &keys))?,
-    )?;
+    h.set("toolUseScan", Function::new(c.clone(), |p: String, w: f64, needles: Vec<String>, keys: Vec<String>| tool_use_scan(&p, w, &needles, &keys))?)?;
     Ok(())
 }
 
@@ -126,10 +123,7 @@ mod tests {
             r#"{"timestamp":"2026-01-01T00:00:01Z","type":"null"}"#,
             "\n",
         );
-        assert_eq!(
-            scan(t, 1e6),
-            json!([["2026-01-01T00:00:00Z", [["Edit", "/a", null], ["Bash", null, "ls"]]], ["2026-01-01T00:00:01Z", []]])
-        );
+        assert_eq!(scan(t, 1e6), json!([["2026-01-01T00:00:00Z", [["Edit", "/a", null], ["Bash", null, "ls"]]], ["2026-01-01T00:00:01Z", []]]));
     }
 
     #[test]

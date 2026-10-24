@@ -55,7 +55,12 @@ fn headless_head(path: &Path) -> bool {
 }
 
 /// Discover the transcripts in the active window. Headless runs are left out and returned by id.
-fn discover(env: &Env, sessions: &[Session], tracked: &std::collections::BTreeMap<String, Agent>, known: &std::collections::BTreeSet<String>) -> (Vec<Found>, std::collections::BTreeSet<String>) {
+fn discover(
+    env: &Env,
+    sessions: &[Session],
+    tracked: &std::collections::BTreeMap<String, Agent>,
+    known: &std::collections::BTreeSet<String>,
+) -> (Vec<Found>, std::collections::BTreeSet<String>) {
     let cutoff = env.now_ms.saturating_sub(lim("active_window_ms"));
     let ext = pth("transcript_ext");
     let dirs = defaults::raw("agent_tracker.headless").get("dir_contains").map(V::strings).unwrap_or_default();
@@ -67,7 +72,10 @@ fn discover(env: &Env, sessions: &[Session], tracked: &std::collections::BTreeMa
             let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             if let Some(stem) = name.strip_suffix(ext) {
                 if let Some(m) = mtime_ms(&f).map(|m| m as u64).filter(|m| *m >= cutoff) {
-                    if dir_headless || known.contains(stem) || (!tracked.get(stem).is_some_and(|a| a.interactive) && !sessions.iter().any(|s| s.id == stem) && headless_head(&f)) {
+                    if dir_headless
+                        || known.contains(stem)
+                        || (!tracked.get(stem).is_some_and(|a| a.interactive) && !sessions.iter().any(|s| s.id == stem) && headless_head(&f))
+                    {
                         headless.insert(stem.to_string());
                         continue;
                     }
@@ -205,8 +213,9 @@ fn devswarm(env: &Env, st: &mut State) {
         }
         // The app may register the Primary checkout under a non-primary id. Judge its
         // checkout, then use the watcher's live-child decision rather than its id spelling.
-        let primary = crate::meshw::ident::resolve_context(&wt, true).ok().is_some_and(|c|
-            crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
+        let primary = crate::meshw::ident::resolve_context(&wt, true)
+            .ok()
+            .is_some_and(|c| crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
         let idle = primary && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
         let armed = Some(idle || watcher_armed(env, &id));
         a.ws = Some(Ws { id: id.clone(), armed, step, done });
@@ -322,15 +331,18 @@ fn stopped_subagents(env: &Env, st: &mut State) {
     let opts = crate::checks::agent_scan::Opts { now_ms: env.now_ms as f64, ignore_unanswered_stops: true };
     let tail = defaults::num("agent_scan.tail_bytes");
     let mut ended: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
-    let live: Vec<(String, String)> =
-        st.agents.values().filter(|a| super::is_child(a) && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
+    let live: Vec<(String, String)> = st.agents.values().filter(|a| super::is_child(a) && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
     for (id, path) in live {
         // <projects>/<dir>/<parent session>/subagents/agent-<id>.jsonl: the launching session's transcript is <dir>/<parent session>.jsonl
         let Some(session_dir) = Path::new(&path).parent().and_then(Path::parent) else { continue };
         let parent = format!("{}{}", session_dir.to_string_lossy(), pth("transcript_ext"));
-        let set = ended
-            .entry(parent.clone())
-            .or_insert_with(|| crate::checks::agent_scan::scan_transcript(&parent, tail, &opts).ok().flatten().map(|s| s.terminal.into_iter().chain(s.stopped_agents).collect()).unwrap_or_default());
+        let set = ended.entry(parent.clone()).or_insert_with(|| {
+            crate::checks::agent_scan::scan_transcript(&parent, tail, &opts)
+                .ok()
+                .flatten()
+                .map(|s| s.terminal.into_iter().chain(s.stopped_agents).collect())
+                .unwrap_or_default()
+        });
         if set.contains(&id)
             && let Some(a) = st.agents.get_mut(&id)
         {
@@ -358,10 +370,14 @@ fn teammate_stops(parent: &str) -> std::collections::HashMap<String, u64> {
         }
         let res = &v[field("result")];
         let answers_stop = blocks.iter().any(|b| b["tool_use_id"].as_str().is_some_and(|i| stop_calls.contains(i)));
-        if answers_stop && res[field("kind")] == field("teammate")
+        if answers_stop
+            && res[field("kind")] == field("teammate")
             && let Some(desc) = res[field("command")].as_str()
         {
-            let ts = crate::checks::agent_scan::date_parse(v[super::tr("ts")].as_str().unwrap_or_default()).ok().filter(|t| t.is_finite()).map_or(u64::MAX, |t| t as u64);
+            let ts = crate::checks::agent_scan::date_parse(v[super::tr("ts")].as_str().unwrap_or_default())
+                .ok()
+                .filter(|t| t.is_finite())
+                .map_or(u64::MAX, |t| t as u64);
             let e = stopped.entry(desc.to_string()).or_insert(0);
             *e = (*e).max(ts);
         }
@@ -388,7 +404,8 @@ fn stopped_teammates(st: &mut State) {
     for a in st.agents.values_mut().filter(|a| a.kind == kind_name("teammate") && !a.finished) {
         let Some(dir) = Path::new(&a.path).parent().and_then(Path::parent) else { continue };
         let meta_file = facts::meta_path(&a.path);
-        let desc = json_of(Path::new(&meta_file)).and_then(|m| m.get(mf.str_field("description")).and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
+        let desc =
+            json_of(Path::new(&meta_file)).and_then(|m| m.get(mf.str_field("description")).and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
         if desc.is_empty() {
             continue;
         }
@@ -418,7 +435,14 @@ fn off_roster(env: &Env, st: &mut State) {
         let roster = rosters.entry(a.team.clone()).or_insert_with(|| {
             let v = json_of(&env.home.join(r.str_field("dir")).join(&a.team).join(r.str_field("file")))?;
             let members = v.get(r.str_field("members"))?.as_array()?;
-            Some(members.iter().filter_map(|m| Some((m.get(r.str_field("name"))?.as_str()?.to_string(), m.get(r.str_field("joined")).and_then(Value::as_u64).unwrap_or(0)))).collect())
+            Some(
+                members
+                    .iter()
+                    .filter_map(|m| {
+                        Some((m.get(r.str_field("name"))?.as_str()?.to_string(), m.get(r.str_field("joined")).and_then(Value::as_u64).unwrap_or(0)))
+                    })
+                    .collect(),
+            )
         });
         let Some(roster) = roster else { continue };
         let started = mtime_ms(Path::new(&facts::meta_path(&a.path))).map_or(0, |m| m as u64);
@@ -454,7 +478,13 @@ fn mark_dead(env: &Env, st: &mut State) {
         let completed = !session && (a.finished || (!a.running && a.pending.is_empty()));
         a.dead = !completed && !owner_live && (!session || a.gone) && (missing(&a.path) || missing(&a.cwd) || silent);
         if a.dead && !was {
-            super::signals::rec(env, "state", super::state_name("dead"), crate::telemetry::event::Outcome::Allow, super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")));
+            super::signals::rec(
+                env,
+                "state",
+                super::state_name("dead"),
+                crate::telemetry::event::Outcome::Allow,
+                super::signals::base(a).num("idle_s", env.now_ms.saturating_sub(a.last_output_ms) / super::fmtn("ms_per_s")),
+            );
         }
     }
 }
@@ -500,7 +530,12 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
         // Host metadata can identify a rescue before its transcript has any tool uses.
         let nw = defaults::raw("agent_tracker.no_work");
         if let Some(meta) = json_of(Path::new(&facts::meta_path(&a.path))) {
-            a.codex_rescue |= nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().any(|k| meta.get(*k).and_then(Value::as_str) == Some(nw.str_field("rescue_type")));
+            a.codex_rescue |= nw
+                .get("agent_type_fields")
+                .map(V::strings)
+                .unwrap_or_default()
+                .iter()
+                .any(|k| meta.get(*k).and_then(Value::as_str) == Some(nw.str_field("rescue_type")));
         }
         if !super::is_child(a) && a.kind != kind_name("workspace") {
             a.kind = kind_name("main").into();
@@ -509,7 +544,9 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     // Rescue type belongs to the parent's launch input on hosts that omit it from child metadata.
     let rescue_children: std::collections::BTreeSet<String> = st.agents.values().flat_map(|a| a.rescue_children.iter().cloned()).collect();
     for id in rescue_children {
-        if let Some(child) = st.agents.get_mut(&id) { child.codex_rescue = true; }
+        if let Some(child) = st.agents.get_mut(&id) {
+            child.codex_rescue = true;
+        }
     }
     // a rollout that aged out of the scan is no longer found, so its row is judged again from its last write
     for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {

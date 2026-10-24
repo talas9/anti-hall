@@ -201,7 +201,10 @@ fn session_start_marks_the_context_loss_through_the_dispatcher() {
             // the other SessionStart checks (verify-first-full, verify-first-orch, ...) answer with their own context: only the exit
             // and stderr are asserted here, the reset is proven by the state file below
             // through the daemon the first call can reach no daemon yet: the engine says so on stderr and lets the call through
-            assert!(code == 0 && (err.is_empty() || (!in_process && err.starts_with("anti-hall: the engine did not answer this SessionStart call"))), "{code} {err} {out}");
+            assert!(
+                code == 0 && (err.is_empty() || (!in_process && err.starts_with("anti-hall: the engine did not answer this SessionStart call"))),
+                "{code} {err} {out}"
+            );
             if file.exists() {
                 break;
             }

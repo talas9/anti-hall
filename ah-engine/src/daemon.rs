@@ -340,7 +340,9 @@ impl Shared {
             }),
             "mem" => self.memory_with_ledger(),
             "threads" => crate::threads::snapshot_json(),
-            "hooks" => serde_json::json!({"summary": self.telemetry.headline(), "phases": phases_json(&self.telemetry), "handback": crate::obs::counters::snapshot()}),
+            "hooks" => {
+                serde_json::json!({"summary": self.telemetry.headline(), "phases": phases_json(&self.telemetry), "handback": crate::obs::counters::snapshot()})
+            }
             "mesh" => {
                 let reply = crate::dswire::cli::ctl("");
                 serde_json::from_str(&reply).unwrap_or_else(|_| serde_json::json!({"status": reply}))
@@ -348,12 +350,19 @@ impl Shared {
             "jev" => self.telemetry.with_metrics(|m| {
                 let snap = m.snapshot("");
                 let keep = |k: &str| {
-                    snap.get(k).and_then(serde_json::Value::as_array).into_iter().flatten().filter(|r| r.get("name").and_then(serde_json::Value::as_str).is_some_and(|n| n.starts_with("jev"))).cloned().collect::<Vec<_>>()
+                    snap.get(k)
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|r| r.get("name").and_then(serde_json::Value::as_str).is_some_and(|n| n.starts_with("jev")))
+                        .cloned()
+                        .collect::<Vec<_>>()
                 };
                 serde_json::json!({"counters": keep("counters"), "histograms": keep("histograms")})
             }),
             "trace" => serde_json::json!({"running": true, "entries": crate::obs::trace::snapshot()}),
-            other => crate::obs::diagverbs::local(other, "").unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
+            other => crate::obs::diagverbs::local(other, "")
+                .unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
         }
     }
 
@@ -511,7 +520,9 @@ impl Shared {
         let mut c = lk(&self.plugin_version);
         if c.0 != at || c.1.is_empty() {
             let text = defaults::root().and_then(|r| std::fs::read_to_string(r.join(defaults::text("migrate.plugin_manifest"))).ok());
-            let v = text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|j| j.get("version").and_then(serde_json::Value::as_str).map(str::to_string));
+            let v = text
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|j| j.get("version").and_then(serde_json::Value::as_str).map(str::to_string));
             *c = (at, v.unwrap_or_default());
         }
         c.1.clone()
@@ -555,7 +566,7 @@ impl Shared {
         let mut health_summary = health::summary();
         let (fo_n, fo_top) = crate::failopen::window();
         let fo_unhealthy = crate::failopen::state(fo_n) != defaults::text("fail_open.state_ok");
-        health::add_fail_open_reason(&mut health_summary, fo_unhealthy.then(|| (fo_n, fo_top)));
+        health::add_fail_open_reason(&mut health_summary, fo_unhealthy.then_some((fo_n, fo_top)));
         let degraded = health::overall_degraded(&health_summary, fo_unhealthy);
         health_summary["degraded"] = serde_json::Value::Bool(degraded);
         let mut v = serde_json::json!({
@@ -684,7 +695,8 @@ pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
     }
     // CPU per call = total / calls (the latency histogram's count is the number of calls)
     for row in checks.values_mut().filter_map(serde_json::Value::as_object_mut) {
-        if let (Some(total), Some(calls)) = (row.get("cpu_us_total").and_then(serde_json::Value::as_u64), row.get("count").and_then(serde_json::Value::as_u64)) {
+        if let (Some(total), Some(calls)) = (row.get("cpu_us_total").and_then(serde_json::Value::as_u64), row.get("count").and_then(serde_json::Value::as_u64))
+        {
             row.insert("cpu_us_per_call".to_string(), serde_json::json!(total.checked_div(calls).unwrap_or(0)));
         }
     }
@@ -1092,7 +1104,15 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         // an entry whose id is its check name names no rule of its own: record none, so the dashboard has no duplicate rule hop
         let rule = if e.id == check { "" } else { e.id.as_str() };
         crate::web::decisions::push(&meta.event, check, rule, session, &v, micros);
-        sh.telemetry.observe_check_who(defaults::text("telemetry.no_event_label"), check, &e.id, &v, micros, &phash, &telemetry::Who { event: meta.event.clone(), ..telemetry::Who::of(&p) });
+        sh.telemetry.observe_check_who(
+            defaults::text("telemetry.no_event_label"),
+            check,
+            &e.id,
+            &v,
+            micros,
+            &phash,
+            &telemetry::Who { event: meta.event.clone(), ..telemetry::Who::of(&p) },
+        );
     };
     // the HARD CPU budget is per check (the CPU one check used): a runaway loses its own answer, never the later checks' answers
     let (start_cpu, budget) = cpu_budget(cfg);
@@ -1760,7 +1780,11 @@ fn watchdog(sh: Arc<Shared>) {
             if let Some(began) = hard_edge {
                 let state = defaults::text(if began { "msg.state_shed_on" } else { "msg.state_shed_off" });
                 let (limit, soft) = (cfg.effective.num("diagnostics.budget_cpu_hard_pct"), cfg.effective.num("diagnostics.budget_cpu_pct"));
-                health::log_event("budget", "cpu_hard", &defaults::render("msg.log_budget_cpu_hard", &[("state", &state), ("value", &format!("{pct:.1}")), ("limit", &limit), ("soft", &soft)]));
+                health::log_event(
+                    "budget",
+                    "cpu_hard",
+                    &defaults::render("msg.log_budget_cpu_hard", &[("state", &state), ("value", &format!("{pct:.1}")), ("limit", &limit), ("soft", &soft)]),
+                );
             }
             if crate::budget::shedding() {
                 // background duties wait: the same backoff the sustained-CPU warning uses, renewed every window while shedding

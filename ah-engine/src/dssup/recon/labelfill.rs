@@ -50,7 +50,14 @@ pub fn fill(ctx: &Ctx, repo_key: &str) -> usize {
         let done = write_row(&inv, repo_key, &b.id, wt);
         if done {
             filled += 1;
-            log_line(ctx, defaults::text("devswarm_recon.log_component_reconcile"), defaults::text("devswarm_recon.lf_op"), defaults::text("devswarm_recon.log_level_info"), &filled_msg(&b.id, &label.id, wt), &filled_ctx(&b.id, &label.id, wt));
+            log_line(
+                ctx,
+                defaults::text("devswarm_recon.log_component_reconcile"),
+                defaults::text("devswarm_recon.lf_op"),
+                defaults::text("devswarm_recon.log_level_info"),
+                &filled_msg(&b.id, &label.id, wt),
+                &filled_ctx(&b.id, &label.id, wt),
+            );
         }
     }
     filled

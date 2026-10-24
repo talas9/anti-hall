@@ -80,7 +80,10 @@ struct Cfg {
 }
 
 fn text(s: &Settings, k: &str) -> Option<String> {
-    s.shipped(k)?.as_str().filter(|v| !v.is_empty()).map(str::to_string)
+    s.shipped(k)?
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 fn num(s: &Settings, k: &str) -> Option<u64> {
@@ -165,8 +168,17 @@ pub enum Ran {
 
 /// Run `argv` (stdin null; stdout and stderr to `out` when given) in its own process group with a hard limit: TERM at `limit`, KILL
 /// `grace` later. Nothing downloaded is trusted to terminate.
-pub fn run_limited(argv: &[String], envs: &[(&str, &Path)], out: Option<&Path>, limit: Duration, grace: Duration, poll: Duration) -> Ran {
-    let Some((prog, rest)) = argv.split_first() else { return Ran::CannotStart };
+pub fn run_limited(
+    argv: &[String],
+    envs: &[(&str, &Path)],
+    out: Option<&Path>,
+    limit: Duration,
+    grace: Duration,
+    poll: Duration,
+) -> Ran {
+    let Some((prog, rest)) = argv.split_first() else {
+        return Ran::CannotStart;
+    };
     let mut cmd = Command::new(prog);
     cmd.args(rest).stdin(Stdio::null()).process_group(0);
     for (k, v) in envs {
@@ -174,7 +186,9 @@ pub fn run_limited(argv: &[String], envs: &[(&str, &Path)], out: Option<&Path>, 
     }
     match out.map(fs::File::create) {
         Some(Ok(f)) => {
-            let Ok(g) = f.try_clone() else { return Ran::CannotStart };
+            let Ok(g) = f.try_clone() else {
+                return Ran::CannotStart;
+            };
             cmd.stdout(f).stderr(g);
         }
         Some(Err(_)) => return Ran::CannotStart,
@@ -182,12 +196,18 @@ pub fn run_limited(argv: &[String], envs: &[(&str, &Path)], out: Option<&Path>, 
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
         }
     }
-    let Ok(mut child) = cmd.spawn() else { return Ran::CannotStart };
+    let Ok(mut child) = cmd.spawn() else {
+        return Ran::CannotStart;
+    };
     let pgid = child.id() as libc::pid_t;
     let t0 = Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(st)) => return Ran::Done(st.code().unwrap_or_else(|| 128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0))),
+            Ok(Some(st)) => {
+                return Ran::Done(st.code().unwrap_or_else(|| {
+                    128 + std::os::unix::process::ExitStatusExt::signal(&st).unwrap_or(0)
+                }));
+            }
             Ok(None) => {}
             Err(_) => return Ran::CannotStart,
         }
@@ -242,7 +262,11 @@ struct Platform {
 }
 
 fn field(c: &[libc::c_char]) -> String {
-    let bytes: Vec<u8> = c.iter().take_while(|b| **b != 0).map(|b| *b as u8).collect();
+    let bytes: Vec<u8> = c
+        .iter()
+        .take_while(|b| **b != 0)
+        .map(|b| *b as u8)
+        .collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
@@ -258,19 +282,33 @@ pub fn host_uname() -> (String, String, String) {
 }
 
 pub fn is_apple_silicon(name: &str) -> bool {
-    let Ok(c) = std::ffi::CString::new(name) else { return false };
+    let Ok(c) = std::ffi::CString::new(name) else {
+        return false;
+    };
     let mut val: libc::c_int = 0;
     let mut len = std::mem::size_of::<libc::c_int>();
     // SAFETY: sysctlbyname writes at most `len` bytes into `val`.
-    let rc = unsafe { libc::sysctlbyname(c.as_ptr(), (&mut val as *mut libc::c_int).cast(), &mut len, std::ptr::null_mut(), 0) };
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c.as_ptr(),
+            (&mut val as *mut libc::c_int).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
     rc == 0 && val == 1
 }
 
 fn is_musl(c: &Cfg, probe: &dyn Fn(&[String]) -> Option<String>) -> bool {
     for g in &c.musl_globs {
         let p = Path::new(g);
-        let (Some(dir), Some(prefix)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) else { continue };
-        if fs::read_dir(dir).is_ok_and(|mut rd| rd.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with(prefix)))) {
+        let (Some(dir), Some(prefix)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) else {
+            continue;
+        };
+        if fs::read_dir(dir).is_ok_and(|mut rd| {
+            rd.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with(prefix)))
+        }) {
             return true;
         }
     }
@@ -278,7 +316,11 @@ fn is_musl(c: &Cfg, probe: &dyn Fn(&[String]) -> Option<String>) -> bool {
 }
 
 /// The release triple of this machine, or the reason there is none. `knob(k)` is a test-only override (None outside tests).
-fn detect(c: &Cfg, knob: &dyn Fn(&str) -> Option<String>, probe: &dyn Fn(&[String]) -> Option<String>) -> Result<Platform, String> {
+fn detect(
+    c: &Cfg,
+    knob: &dyn Fn(&str) -> Option<String>,
+    probe: &dyn Fn(&[String]) -> Option<String>,
+) -> Result<Platform, String> {
     let (hs, hm, hr) = host_uname();
     let os = knob("uname_s").unwrap_or(hs);
     let arch = knob("uname_m").unwrap_or(hm);
@@ -296,18 +338,32 @@ fn detect(c: &Cfg, knob: &dyn Fn(&str) -> Option<String>, probe: &dyn Fn(&[Strin
         if cpu_x86 && knob("uname_m").is_none() && is_apple_silicon(&c.rosetta_sysctl) {
             cpu = c.cpu_arm_name.clone();
         }
-        return Ok(Platform { triple: fill(&c.triple_macos, &[("cpu", &cpu)]), note: "macos".into() });
+        return Ok(Platform {
+            triple: fill(&c.triple_macos, &[("cpu", &cpu)]),
+            note: "macos".into(),
+        });
     }
     if os == c.os_linux {
-        let note = if rel.to_lowercase().contains(&c.wsl_word.to_lowercase()) { "wsl" } else { "linux" };
+        let note = if rel.to_lowercase().contains(&c.wsl_word.to_lowercase()) {
+            "wsl"
+        } else {
+            "linux"
+        };
         let libc_name = match knob("libc") {
             Some(l) if l == c.libc_default || l == c.libc_musl => l,
             Some(_) => c.libc_default.clone(),
             None => {
-                if is_musl(c, probe) { c.libc_musl.clone() } else { c.libc_default.clone() }
+                if is_musl(c, probe) {
+                    c.libc_musl.clone()
+                } else {
+                    c.libc_default.clone()
+                }
             }
         };
-        return Ok(Platform { triple: fill(&c.triple_linux, &[("cpu", &cpu), ("libc", &libc_name)]), note: note.into() });
+        return Ok(Platform {
+            triple: fill(&c.triple_linux, &[("cpu", &cpu), ("libc", &libc_name)]),
+            note: note.into(),
+        });
     }
     Err(format!("os {os}"))
 }
@@ -321,16 +377,32 @@ struct Lock {
 
 fn read_lock(c: &Cfg, path: &Path) -> Result<Lock, String> {
     let t = fs::read_to_string(path).map_err(|_| "no_lock".to_string())?;
-    let v: serde_json::Value = serde_json::from_str(&t).map_err(|_| "bad_lock_schema".to_string())?;
+    let v: serde_json::Value =
+        serde_json::from_str(&t).map_err(|_| "bad_lock_schema".to_string())?;
     if v.get("schema").and_then(|s| s.as_u64()) != Some(c.lock_schema) {
         return Err("bad_lock_schema".into());
     }
-    let version = v.get("version").and_then(|s| s.as_str()).unwrap_or("").to_string();
-    let dotted = version.split('.').count() == 3 && version.split('.').all(|p| p.starts_with(|ch: char| ch.is_ascii_digit()));
-    if !dotted || !version.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-') {
+    let version = v
+        .get("version")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let dotted = version.split('.').count() == 3
+        && version
+            .split('.')
+            .all(|p| p.starts_with(|ch: char| ch.is_ascii_digit()));
+    if !dotted
+        || !version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+    {
         return Err("bad_lock_version".into());
     }
-    let assets = v.get("assets").and_then(|a| a.as_object()).cloned().unwrap_or_default();
+    let assets = v
+        .get("assets")
+        .and_then(|a| a.as_object())
+        .cloned()
+        .unwrap_or_default();
     Ok(Lock { version, assets })
 }
 
@@ -341,9 +413,18 @@ fn auto_allowed(s: &Settings, c: &Cfg, base: &Path) -> bool {
         Some("1") => return true,
         _ => {}
     }
-    let Ok(t) = fs::read_to_string(base.join(&c.settings_file)) else { return false };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else { return false };
-    let Some(x) = v.get(&c.setting_section).and_then(|s| s.get(&c.setting_key)) else { return false };
+    let Ok(t) = fs::read_to_string(base.join(&c.settings_file)) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&t) else {
+        return false;
+    };
+    let Some(x) = v
+        .get(&c.setting_section)
+        .and_then(|s| s.get(&c.setting_key))
+    else {
+        return false;
+    };
     let word = match x {
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
@@ -365,13 +446,19 @@ impl Run<'_> {
     fn rec(&self, event: &str, kv: &[(&str, &str)]) {
         rec::append(&self.log, self.c.log_max, self.c.log_keep, event, kv);
         if self.verbose {
-            crate::util::say(&format!("{} {}", rec::stamp_log(epoch_s()), rec::pairs(&[("event", event)], kv)));
+            crate::util::say(&format!(
+                "{} {}",
+                rec::stamp_log(epoch_s()),
+                rec::pairs(&[("event", event)], kv)
+            ));
         }
     }
 }
 
 fn first_fields(p: &Path) -> Vec<String> {
-    fs::read_to_string(p).map(|t| t.split_whitespace().map(str::to_string).collect()).unwrap_or_default()
+    fs::read_to_string(p)
+        .map(|t| t.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 pub fn make_exec(p: &Path) {
@@ -387,7 +474,12 @@ struct Args {
 }
 
 fn parse(args: &[String]) -> Args {
-    let mut a = Args { lock: None, print_target: false, auto: false, verbose: false };
+    let mut a = Args {
+        lock: None,
+        print_target: false,
+        auto: false,
+        verbose: false,
+    };
     let mut it = args.iter();
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -402,16 +494,33 @@ fn parse(args: &[String]) -> Args {
 }
 
 /// `ah-hook install ...`. Exit code 0 always.
-pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, args: &[String]) -> i32 {
+pub fn run(
+    s: &Settings,
+    state: &Path,
+    base: &Path,
+    plugin_root: Option<&Path>,
+    args: &[String],
+) -> i32 {
     crate::limits::restore_cpu_limit(); // a maintenance verb, not a hook call
     let Some(c) = Cfg::load(s) else { return 0 };
     let a = parse(args);
     let test = env_nonempty(&s.text("launcher.test_flag_env")).is_some_and(|v| v == "1");
     let knob = |k: &str| -> Option<String> {
-        if test { env_nonempty(&s.text(&format!("launcher.knob_{k}"))) } else { None }
+        if test {
+            env_nonempty(&s.text(&format!("launcher.knob_{k}")))
+        } else {
+            None
+        }
     };
-    let limit = Duration::from_secs(knob("install_run_s").and_then(|v| v.parse().ok()).filter(|n: &u64| *n > 0).unwrap_or(c.run_s));
-    let retry_s: u64 = knob("install_retry_s").and_then(|v| v.parse().ok()).unwrap_or(c.retry_s);
+    let limit = Duration::from_secs(
+        knob("install_run_s")
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &u64| *n > 0)
+            .unwrap_or(c.run_s),
+    );
+    let retry_s: u64 = knob("install_retry_s")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(c.retry_s);
     let probe = |argv: &[String]| -> Option<String> {
         let tmp = std::env::temp_dir().join(format!("ah-probe-{}", std::process::id()));
         let r = run_limited(argv, &[], Some(&tmp), limit, c.kill_grace, c.poll);
@@ -431,7 +540,11 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
     if state.as_os_str().is_empty() || fs::create_dir_all(state.join("bin")).is_err() {
         return 0;
     }
-    let r = Run { c: &c, log: state.join(&c.file_log), verbose: a.verbose };
+    let r = Run {
+        c: &c,
+        log: state.join(&c.file_log),
+        verbose: a.verbose,
+    };
     let lock_path = a
         .lock
         .clone()
@@ -445,9 +558,17 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         Ok(p) => p,
         Err(why) => return skip(&r, "unsupported_platform", &[("why", &why)]),
     };
-    let subs = [("version", lock.version.as_str()), ("triple", plat.triple.as_str())];
+    let subs = [
+        ("version", lock.version.as_str()),
+        ("triple", plat.triple.as_str()),
+    ];
     let asset = fill(&c.asset_name, &subs);
-    let sha = lock.assets.get(&asset).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let sha = lock
+        .assets
+        .get(&asset)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if sha.len() != 64 || !sha.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f')) {
         return skip(&r, "lock_has_no_sha", &[("asset", &asset)]);
     }
@@ -461,10 +582,16 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
     // may each binary be replaced? absent, or exactly what this installer put there
     let engine_free = if engine_bin.exists() {
         if m.is_empty() {
-            r.rec("skip_unmanaged", &[("path", &engine_bin.display().to_string())]);
+            r.rec(
+                "skip_unmanaged",
+                &[("path", &engine_bin.display().to_string())],
+            );
             false
         } else if !mark(2).is_empty() && sha256_file(&engine_bin).unwrap_or_default() != mark(2) {
-            r.rec("skip_local_build", &[("path", &engine_bin.display().to_string())]);
+            r.rec(
+                "skip_local_build",
+                &[("path", &engine_bin.display().to_string())],
+            );
             false
         } else {
             true
@@ -472,7 +599,8 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
     } else {
         true
     };
-    let hook_free = !hook_bin.exists() || (mark(3).len() == 64 && sha256_file(&hook_bin).unwrap_or_default() == mark(3));
+    let hook_free = !hook_bin.exists()
+        || (mark(3).len() == 64 && sha256_file(&hook_bin).unwrap_or_default() == mark(3));
     if !engine_free && !hook_free {
         return 0;
     }
@@ -482,10 +610,20 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
     let attempt = state.join(&c.file_attempt);
     let now = epoch_s();
     let att = first_fields(&attempt);
-    if att.len() >= 3 && att[1] == lock.version && att[2] == sha && att[0].parse::<u64>().is_ok_and(|t| now.saturating_sub(t) < retry_s) {
+    if att.len() >= 3
+        && att[1] == lock.version
+        && att[2] == sha
+        && att[0]
+            .parse::<u64>()
+            .is_ok_and(|t| now.saturating_sub(t) < retry_s)
+    {
         return 0;
     }
-    let seen = if engine_bin.exists() { sha256_file(&engine_bin).unwrap_or_default() } else { String::new() };
+    let seen = if engine_bin.exists() {
+        sha256_file(&engine_bin).unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // one installer at a time; a lock older than install.stale_lock_s is stale
     let lockdir = state.join(&c.dir_lock);
@@ -500,7 +638,9 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         }
     }
     let tmp = state.join(format!("{}{}", c.tmp_prefix, std::process::id()));
-    let _guard = Cleanup { dirs: vec![lockdir, tmp.clone()] };
+    let _guard = Cleanup {
+        dirs: vec![lockdir, tmp.clone()],
+    };
     let fail = |why: &str, detail: &str| -> i32 {
         r.rec("fail", &[("why", why), ("detail", detail)]);
         let _ = fs::write(&attempt, format!("{now} {} {sha}\n", lock.version));
@@ -512,13 +652,30 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
     }
     let release_base = knob_release_base(s, test).unwrap_or_else(|| c.release_base.clone());
     let url = format!("{release_base}/{}/{asset}", fill(&c.release_dir, &subs));
-    r.rec("start", &[("asset", &asset), ("platform", &plat.note), ("sha256", &sha[..8])]);
+    r.rec(
+        "start",
+        &[
+            ("asset", &asset),
+            ("platform", &plat.note),
+            ("sha256", &sha[..8]),
+        ],
+    );
 
     // download
     let archive = tmp.join("asset");
-    let (connect, max_time, max_size) = (c.connect_s.to_string(), c.max_time_s.to_string(), c.max_filesize.to_string());
+    let (connect, max_time, max_size) = (
+        c.connect_s.to_string(),
+        c.max_time_s.to_string(),
+        c.max_filesize.to_string(),
+    );
     let out_s = archive.display().to_string();
-    let dl_subs = [("connect", connect.as_str()), ("max_time", max_time.as_str()), ("max_size", max_size.as_str()), ("out", out_s.as_str()), ("url", url.as_str())];
+    let dl_subs = [
+        ("connect", connect.as_str()),
+        ("max_time", max_time.as_str()),
+        ("max_size", max_size.as_str()),
+        ("out", out_s.as_str()),
+        ("url", url.as_str()),
+    ];
     let dl = if test { &c.curl_cmd_test } else { &c.curl_cmd };
     let have = on_path;
     let argv = if dl.first().is_some_and(|p| have(p)) {
@@ -529,7 +686,10 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         return fail("no_downloader", "");
     };
     let total = Duration::from_secs(c.max_time_s + c.connect_s).max(limit);
-    if !matches!(run_limited(&argv, &[], None, total, c.kill_grace, c.poll), Ran::Done(0)) {
+    if !matches!(
+        run_limited(&argv, &[], None, total, c.kill_grace, c.poll),
+        Ran::Done(0)
+    ) {
         return fail("download_failed", &url);
     }
     let got = sha256_file(&archive).unwrap_or_default();
@@ -542,7 +702,10 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         let member = format!("{}/{name}", fill(&c.member_dir, &subs));
         let arch_s = archive.display().to_string();
         let argv = subst(&c.tar_cmd, &[("archive", &arch_s), ("member", &member)]);
-        matches!(run_limited(&argv, &[], Some(dest), limit, c.kill_grace, c.poll), Ran::Done(0)) && fs::metadata(dest).is_ok_and(|md| md.len() > 0)
+        matches!(
+            run_limited(&argv, &[], Some(dest), limit, c.kill_grace, c.poll),
+            Ran::Done(0)
+        ) && fs::metadata(dest).is_ok_and(|md| md.len() > 0)
     };
     let new_engine = tmp.join(&c.member_engine);
     let new_hook = tmp.join(&c.member_hook);
@@ -572,7 +735,10 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         Ran::CannotStart => return fail("version_check_cannot_start", ""),
         Ran::Done(_) => {}
     }
-    let reported = fs::read_to_string(&vout).ok().and_then(|t| t.lines().next().map(str::to_string)).unwrap_or_default();
+    let reported = fs::read_to_string(&vout)
+        .ok()
+        .and_then(|t| t.lines().next().map(str::to_string))
+        .unwrap_or_default();
     if !reported.contains(&lock.version) {
         return fail("version_mismatch", &reported);
     }
@@ -588,10 +754,20 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         }
         held = true;
     }
-    let _unlock = Unlock { integ: integ.as_ref(), token: held.then_some(token) };
-    let now_sha = if engine_bin.exists() { sha256_file(&engine_bin).unwrap_or_default() } else { String::new() };
+    let _unlock = Unlock {
+        integ: integ.as_ref(),
+        token: held.then_some(token),
+    };
+    let now_sha = if engine_bin.exists() {
+        sha256_file(&engine_bin).unwrap_or_default()
+    } else {
+        String::new()
+    };
     if engine_free && now_sha != seen {
-        r.rec("skip_changed_meanwhile", &[("path", &engine_bin.display().to_string())]);
+        r.rec(
+            "skip_changed_meanwhile",
+            &[("path", &engine_bin.display().to_string())],
+        );
         return 0;
     }
     let mut hook_sha = String::new();
@@ -605,24 +781,50 @@ pub fn run(s: &Settings, state: &Path, base: &Path, plugin_root: Option<&Path>, 
         keep_prev(&hook_bin, &c.prev_suffix);
         hook_sha = sha256_file(&new_hook).unwrap_or_default();
         if fs::rename(&new_hook, &hook_bin).is_err() {
-            r.rec("hook_cannot_install", &[("path", &hook_bin.display().to_string())]);
+            r.rec(
+                "hook_cannot_install",
+                &[("path", &hook_bin.display().to_string())],
+            );
             hook_sha.clear();
         }
     }
     let engine_sha = sha256_file(&engine_bin).unwrap_or_default();
-    let hook_field = if hook_sha.is_empty() { mark(3).to_string() } else { hook_sha };
+    let hook_field = if hook_sha.is_empty() {
+        mark(3).to_string()
+    } else {
+        hook_sha
+    };
     let fields = [want.as_str(), engine_sha.as_str(), hook_field.as_str()];
-    let _ = fs::write(&marker, format!("{}\n", fields.iter().filter(|f| !f.is_empty()).copied().collect::<Vec<_>>().join(" ")));
+    let _ = fs::write(
+        &marker,
+        format!(
+            "{}\n",
+            fields
+                .iter()
+                .filter(|f| !f.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    );
     if let Some(i) = &integ {
         i.record(); // under this install's hold: no check runs between the swap and the record
     }
     let _ = fs::remove_file(&attempt);
-    r.rec("installed", &[("version", &lock.version), ("triple", &plat.triple), ("path", &engine_bin.display().to_string())]);
+    r.rec(
+        "installed",
+        &[
+            ("version", &lock.version),
+            ("triple", &plat.triple),
+            ("path", &engine_bin.display().to_string()),
+        ],
+    );
     0
 }
 
 fn knob_release_base(s: &Settings, test: bool) -> Option<String> {
-    test.then(|| env_nonempty(&s.text("env.release_base"))).flatten()
+    test.then(|| env_nonempty(&s.text("env.release_base")))
+        .flatten()
 }
 
 fn skip(r: &Run, why: &str, kv: &[(&str, &str)]) -> i32 {
@@ -678,7 +880,13 @@ mod tests {
 
     #[test]
     fn arguments() {
-        let a = parse(&["--lock".into(), "/x".into(), "--auto".into(), "-v".into(), "--print-target".into()]);
+        let a = parse(&[
+            "--lock".into(),
+            "/x".into(),
+            "--auto".into(),
+            "-v".into(),
+            "--print-target".into(),
+        ]);
         assert_eq!(a.lock.as_deref(), Some(Path::new("/x")));
         assert!(a.auto && a.verbose && a.print_target);
         assert!(parse(&[]).lock.is_none());
@@ -692,21 +900,42 @@ pub fn on_path(prog: &str) -> bool {
 
 /// The first executable file `prog` in the search path.
 pub fn find_on_path(prog: &str) -> Option<std::path::PathBuf> {
-    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(prog)).find(|f| f.is_file()))
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join(prog))
+            .find(|f| f.is_file())
+    })
 }
 
 /// The search path as the doctor reports on it.
 pub fn path_env() -> String {
-    std::env::var_os("PATH").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    std::env::var_os("PATH")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// The release triple of this machine for the updater: the triple, or the "unsupported" word.
 pub fn platform_triple(s: &Settings, test: bool) -> String {
-    let Some(c) = Cfg::load(s) else { return s.text("msg.install_unsupported") };
-    let knob = |k: &str| -> Option<String> { if test { env_nonempty(&s.text(&format!("launcher.knob_{k}"))) } else { None } };
+    let Some(c) = Cfg::load(s) else {
+        return s.text("msg.install_unsupported");
+    };
+    let knob = |k: &str| -> Option<String> {
+        if test {
+            env_nonempty(&s.text(&format!("launcher.knob_{k}")))
+        } else {
+            None
+        }
+    };
     let probe = |argv: &[String]| -> Option<String> {
         let tmp = std::env::temp_dir().join(format!("ah-probe-{}", std::process::id()));
-        let r = run_limited(argv, &[], Some(&tmp), Duration::from_secs(c.run_s), c.kill_grace, c.poll);
+        let r = run_limited(
+            argv,
+            &[],
+            Some(&tmp),
+            Duration::from_secs(c.run_s),
+            c.kill_grace,
+            c.poll,
+        );
         let out = fs::read_to_string(&tmp).ok();
         let _ = fs::remove_file(&tmp);
         matches!(r, Ran::Done(_)).then_some(out).flatten()

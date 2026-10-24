@@ -10,7 +10,8 @@ use serde_json::json;
 
 /// Whether the fallback is on: the marker exists, or the shipped default says `node`.
 pub fn effective() -> bool {
-    super::state_file("files.fallback_switch").exists() || defaults::text("nodeback.fallback") == defaults::list("nodeback.fallback_choices").first().copied().unwrap_or_default()
+    super::state_file("files.fallback_switch").exists()
+        || defaults::text("nodeback.fallback") == defaults::list("nodeback.fallback_choices").first().copied().unwrap_or_default()
 }
 
 /// `fallback <node|off|status>`
@@ -26,7 +27,9 @@ pub fn run(p: &Parsed) -> i32 {
         1
     };
     if word == w(0) {
-        let made = crate::limits::ensure_private_dir(&crate::paths::dir()).map_err(std::io::Error::other).and_then(|()| std::fs::write(&marker, format!("{word}\n")));
+        let made = crate::limits::ensure_private_dir(&crate::paths::dir())
+            .map_err(std::io::Error::other)
+            .and_then(|()| crate::atomic::write(&marker, format!("{word}\n")));
         if let Err(e) = made {
             return fail(e);
         }
@@ -44,14 +47,18 @@ pub fn run(p: &Parsed) -> i32 {
             Err(e) => return fail(e),
         }
         crate::health::log_event(defaults::text("nodeback.log_kind"), word, defaults::text("nodeback.msg_fallback_off"));
-        say(defaults::text(if defaults::text("nodeback.fallback") == w(0) { "nodeback.msg_fallback_still_node" } else { "nodeback.msg_fallback_off" }).to_string());
+        say(defaults::text(if defaults::text("nodeback.fallback") == w(0) { "nodeback.msg_fallback_still_node" } else { "nodeback.msg_fallback_off" })
+            .to_string());
         0
     } else if word == w(2) {
         let (state, has) = (if effective() { w(0) } else { w(1) }, marker.exists());
         if p.json {
             say(json!({"state": state, "marker": has, "default": defaults::text("nodeback.fallback"), "file": shown}).to_string());
         } else {
-            say(defaults::render("nodeback.msg_fallback_status", &[("state", &state), ("marker", &if has { "yes" } else { "no" }), ("default", &defaults::text("nodeback.fallback"))]));
+            say(defaults::render(
+                "nodeback.msg_fallback_status",
+                &[("state", &state), ("marker", &if has { "yes" } else { "no" }), ("default", &defaults::text("nodeback.fallback"))],
+            ));
         }
         0
     } else {

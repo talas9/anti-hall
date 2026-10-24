@@ -61,7 +61,8 @@ pub(crate) fn harness_version(env: &RequestEnv, home: &str, root: &str) -> Resul
     }
     let plugins_root = resolve_abs(&format!("{marketplace}/../.."));
     let owner = crate::install::owning(home, root);
-    let file = owner.as_ref().map(|o| o.registry.to_string_lossy().into_owned()).unwrap_or_else(|| join(&plugins_root, defaults::text("session.registry_file")));
+    let file =
+        owner.as_ref().map(|o| o.registry.to_string_lossy().into_owned()).unwrap_or_else(|| join(&plugins_root, defaults::text("session.registry_file")));
     let key = owner.as_ref().map(|o| o.key.as_str()).unwrap_or(defaults::text("session.registry_key"));
     let Ok(meta) = std::fs::metadata(&file) else { return Ok(None) };
     if meta.len() > defaults::num("session.registry_max_bytes") {

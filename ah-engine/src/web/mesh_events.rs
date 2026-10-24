@@ -37,16 +37,14 @@ pub fn events(args: &str) -> Value {
     // `latest=<n>`: the newest n rows instead of the oldest after `after` (a first look at a store with a long history)
     let latest = arg(args, "latest=").and_then(|v| v.parse::<i64>().ok()).map(|n| n.clamp(1, defaults::num("mesh_events.limit") as i64));
     let (order, limit) = if latest.is_some() { ("DESC", latest.unwrap_or(limit)) } else { ("ASC", limit) };
-    let rows = conn
-        .prepare(&defaults::render("mesh_events.sql_messages", &[("order", &order)]))
-        .and_then(|mut s| {
-            s.query_map(params![after, limit], |r| {
-                Ok(json!({"id": r.get::<_, i64>(0)?, "partition": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?, "sender": r.get::<_, Option<String>>(3)?,
+    let rows = conn.prepare(&defaults::render("mesh_events.sql_messages", &[("order", &order)])).and_then(|mut s| {
+        s.query_map(params![after, limit], |r| {
+            Ok(json!({"id": r.get::<_, i64>(0)?, "partition": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?, "sender": r.get::<_, Option<String>>(3)?,
                     "recipient": r.get::<_, Option<String>>(4)?, "type": r.get::<_, Option<String>>(5)?, "urgency": r.get::<_, Option<String>>(6)?,
                     "needs_reply": r.get::<_, Option<i64>>(7)?, "seq": r.get::<_, Option<i64>>(8)?, "body_bytes": r.get::<_, Option<i64>>(9)?}))
-            })
-            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-        });
+        })
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+    });
     let reads = conn
         .prepare(defaults::text("mesh_events.sql_reads"))
         .and_then(|mut s| {

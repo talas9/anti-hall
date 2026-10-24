@@ -115,12 +115,17 @@ fn stored_options_at(st: &Settings, root: &str) -> Option<serde_json::Map<String
     let map = host.get("pluginConfigs")?.as_object()?;
     let mut out: Option<serde_json::Map<String, Value>> = None;
     let owner = crate::install::owning(&st.home, root);
-    let keys = owner.map(|o| {
-        let mut keys: Vec<String> = defaults::list("guardkit.plugin_config_keys").into_iter()
-            .filter(|k| !k.contains(defaults::text("wake_watch.key_sep"))).map(str::to_string).collect();
-        keys.push(o.key);
-        keys
-    }).unwrap_or_else(|| defaults::list("guardkit.plugin_config_keys").into_iter().map(str::to_string).collect());
+    let keys = owner
+        .map(|o| {
+            let mut keys: Vec<String> = defaults::list("guardkit.plugin_config_keys")
+                .into_iter()
+                .filter(|k| !k.contains(defaults::text("wake_watch.key_sep")))
+                .map(str::to_string)
+                .collect();
+            keys.push(o.key);
+            keys
+        })
+        .unwrap_or_else(|| defaults::list("guardkit.plugin_config_keys").into_iter().map(str::to_string).collect());
     for k in &keys {
         let Some(e) = map.get(k).and_then(Value::as_object) else { continue };
         let o = out.get_or_insert_with(serde_json::Map::new);
@@ -306,10 +311,10 @@ pub fn is_skipped(st: &Settings, guard: &str) -> bool {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
     let live = |k: &str| o.get(k).and_then(Value::as_f64).is_some_and(|t| t > now);
     let payload_session = crate::script::session();
-    let session = (!payload_session.is_empty()).then_some(payload_session.as_str()).or_else(||
-        defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| st.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
-    let applies = |guard: &str| live(guard) || session.is_some_and(|sid|
-        live(&format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))));
+    let session = (!payload_session.is_empty())
+        .then_some(payload_session.as_str())
+        .or_else(|| defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| st.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
+    let applies = |guard: &str| live(guard) || session.is_some_and(|sid| live(&format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))));
     applies(guard) || (!defaults::list("guardkit.destructive_guards").contains(&guard) && applies(defaults::text("guardkit.skip_all_key")))
 }
 

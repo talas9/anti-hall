@@ -5,11 +5,11 @@
 //! A build that lacks `workspace list` gets its dormant line recorded in the file, which is what makes the gate refuse the call.
 // Discard triage (E3): every `.ok()` in this file is a deliberate keep, for these reasons:
 // - an unreadable or unparsable cache or session record is the absent one (Node: `try { JSON.parse(...) } catch (_) { return null }`)
-use crate::dssup::tick::Ctx;
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::dsact::runner::{RunSpec, Runner};
+use crate::dssup::tick::Ctx;
 use crate::meshw::hivecontrol::{cache_keys, resolve_bin};
 use crate::meshw::ident::Env;
 use std::path::Path;
@@ -62,7 +62,8 @@ fn parse_verb_help(help: &str) -> (String, Vec<(String, bool)>, Vec<String>) {
     let bare = usage.replace(defaults::text("devswarm_recon.cp_options_word"), "");
     let open = defaults::text("devswarm_recon.cp_required_open");
     let args: Vec<(String, bool)> = re("devswarm_recon.cp_re_arg").captures_iter(&bare).map(|c| (c[2].to_string(), &c[1] == open)).collect();
-    let (header, section, columns, flag) = (re("devswarm_recon.cp_re_options_header"), re("devswarm_recon.cp_re_section"), re("devswarm_recon.cp_re_columns"), re("devswarm_recon.cp_re_flag"));
+    let (header, section, columns, flag) =
+        (re("devswarm_recon.cp_re_options_header"), re("devswarm_recon.cp_re_section"), re("devswarm_recon.cp_re_columns"), re("devswarm_recon.cp_re_flag"));
     let mut flags = Vec::new();
     let mut in_opts = false;
     for line in help.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)) {
@@ -110,10 +111,8 @@ fn probe(runner: &dyn Runner, home: &Path, bin: &Path) -> OVal {
         source = version.as_ref().map(|_| defaults::text("devswarm_recon.cp_src_app"));
     }
     let cmds = parse_commands(&ask(runner, bin, strs("devswarm_recon.cp_help_args")).unwrap_or_default());
-    let mut verbs: Vec<(String, OVal)> = cmds
-        .iter()
-        .map(|(name, usage, desc)| (name.clone(), OVal::Obj(vec![("usage".into(), s(usage)), ("desc".into(), s(desc))])))
-        .collect();
+    let mut verbs: Vec<(String, OVal)> =
+        cmds.iter().map(|(name, usage, desc)| (name.clone(), OVal::Obj(vec![("usage".into(), s(usage)), ("desc".into(), s(desc))]))).collect();
     for name in defaults::list("devswarm_recon.cp_verb_help_verbs") {
         let Some(slot) = verbs.iter_mut().find(|(k, _)| k == name) else { continue };
         let args: Vec<String> = strs("devswarm_recon.cp_verb_help_args").iter().map(|a| a.replace("{verb}", name)).collect();
@@ -121,7 +120,10 @@ fn probe(runner: &dyn Runner, home: &Path, bin: &Path) -> OVal {
         let (usage, args, flags) = parse_verb_help(&out);
         if let OVal::Obj(fields) = &mut slot.1 {
             fields[0].1 = s(&usage);
-            fields.push(("args".into(), OVal::Arr(args.into_iter().map(|(n, r)| OVal::Obj(vec![("name".into(), s(&n)), ("required".into(), OVal::Bool(r))])).collect())));
+            fields.push((
+                "args".into(),
+                OVal::Arr(args.into_iter().map(|(n, r)| OVal::Obj(vec![("name".into(), s(&n)), ("required".into(), OVal::Bool(r))])).collect()),
+            ));
             fields.push(("flags".into(), OVal::Arr(flags.iter().map(|f| s(f)).collect())));
         }
     }

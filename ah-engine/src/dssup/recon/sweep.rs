@@ -337,7 +337,9 @@ fn stranded_ids(home: &Path, repo_key: &str) -> R<Vec<String>> {
 
 /// `isNativeTimeoutRun(r, parsed)`: the pull's own native-timeout marker with no loss and no import.
 fn is_native_timeout(parsed: Option<&Value>) -> bool {
-    parsed.is_some_and(|p| p.get("ok") == Some(&json!(false)) && p.get("nativeTimeout") == Some(&json!(true)) && !truthy(p.get("lost")) && !truthy(p.get("imported")))
+    parsed.is_some_and(|p| {
+        p.get("ok") == Some(&json!(false)) && p.get("nativeTimeout") == Some(&json!(true)) && !truthy(p.get("lost")) && !truthy(p.get("imported"))
+    })
 }
 
 // ---- cmdReconcile -------------------------------------------------------------------------------------------------------------
@@ -608,9 +610,7 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         // repository-unknown bookkeeping
         let scope = scope_of(&t);
         // a success, or a different error, ends the streak of the repository-unknown error
-        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok")))
-            || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str)])
-        {
+        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok"))) || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str)]) {
             apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), side::plan_repo_unknown_clear(home, &repo_key, &scope), &[]);
         } else if row_terminal(&inv, &t, &held)? {
             let reason = match pv("error").filter(|v| truthy(Some(v))).or_else(|| pv("reason").filter(|v| truthy(Some(v)))) {
@@ -779,7 +779,12 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks) -> Value {
         return json!({"duty": "reconcile", "outcome": "held", "detail": crate::dssup::tick::held("dssup:reconcile:state", defaults::text("devswarm_recon.why_state_held"))});
     }
     let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).ok();
-    let clean = |t: &str| -> String { crate::checks::jsport::text::slice16_lossy(&ansi.as_ref().map_or_else(|| t.to_string(), |r| r.replace_all(t, "").into_owned()), defaults::num("devswarm_recon.failure_text_max") as usize) };
+    let clean = |t: &str| -> String {
+        crate::checks::jsport::text::slice16_lossy(
+            &ansi.as_ref().map_or_else(|| t.to_string(), |r| r.replace_all(t, "").into_owned()),
+            defaults::num("devswarm_recon.failure_text_max") as usize,
+        )
+    };
     let mut acc = probe::Acc::default();
     let mut results: Vec<Value> = Vec::new();
     let mut failures: Vec<Value> = Vec::new();
@@ -794,7 +799,9 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks) -> Value {
                 engine_projects += 1;
                 // Node folds each project's duplicate mesh rows right after its reconcile (the store is then current)
                 let fold = match super::fold::run(ctx, runner, &p.repo_key, hooks) {
-                    Ok(f) => json!({"ok": true, "folded": f.result.folded, "retired": f.result.retired.len(), "forwarded": f.result.forwarded, "pending": f.result.pending.len(), "held": f.deferred.len()}),
+                    Ok(f) => {
+                        json!({"ok": true, "folded": f.result.folded, "retired": f.result.retired.len(), "forwarded": f.result.forwarded, "pending": f.result.pending.len(), "held": f.deferred.len()})
+                    }
                     Err(Defer(why)) => {
                         crate::dssup::tick::held("dssup:reconcile:fold", &why);
                         json!({"ok": false, "error": why})
@@ -807,12 +814,17 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks) -> Value {
                     if flag(x, "skipped") {
                         skipped += 1;
                     } else if x.get("ok") == Some(&json!(false)) && !flag(x, "locked") && !flag(x, "hivecontrolMissing") && !flag(x, "nativeTimeout") {
-                        let err = x.get("error").filter(|e| truthy(Some(e))).map_or_else(|| defaults::text("devswarm_recon.word_unknown_error").to_string(), js_str);
+                        let err =
+                            x.get("error").filter(|e| truthy(Some(e))).map_or_else(|| defaults::text("devswarm_recon.word_unknown_error").to_string(), js_str);
                         failures.push(json!({"repoKey": p.repo_key, "id": x.get("id"), "error": clean(&err)}));
                     }
                 }
                 if v.get("ok") == Some(&json!(false)) && rows.is_empty() {
-                    let err = v.get("error").filter(|e| truthy(Some(e))).or_else(|| v.get("reason").filter(|e| truthy(Some(e)))).map_or_else(|| defaults::text("devswarm_recon.word_reconcile_failed").to_string(), js_str);
+                    let err = v
+                        .get("error")
+                        .filter(|e| truthy(Some(e)))
+                        .or_else(|| v.get("reason").filter(|e| truthy(Some(e))))
+                        .map_or_else(|| defaults::text("devswarm_recon.word_reconcile_failed").to_string(), js_str);
                     failures.push(json!({"repoKey": p.repo_key, "error": clean(&err)}));
                 }
                 if fold.get("ok") == Some(&json!(false)) {
@@ -874,10 +886,20 @@ pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks) -> Value {
     );
     // failures are listed in full once; an identical list on the next pass is only counted (Node: reconcile-log-sig.json)
     let sig_file = devswarm_root(ctx.home).join(defaults::text("devswarm_recon.file_log_sig"));
-    let prev_sig = std::fs::read(&sig_file).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.get("sig").and_then(Value::as_str).map(str::to_string));
+    let prev_sig = std::fs::read(&sig_file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("sig").and_then(Value::as_str).map(str::to_string));
     let mut lines: Vec<String> = failures
         .iter()
-        .map(|f| [f.get("repoKey").map_or_else(String::new, |v| if v.is_null() { String::new() } else { js_str(v) }), f.get("id").filter(|v| truthy(Some(v))).map_or_else(String::new, js_str), js_str(&f["error"])].join("|"))
+        .map(|f| {
+            [
+                f.get("repoKey").map_or_else(String::new, |v| if v.is_null() { String::new() } else { js_str(v) }),
+                f.get("id").filter(|v| truthy(Some(v))).map_or_else(String::new, js_str),
+                js_str(&f["error"]),
+            ]
+            .join("|")
+        })
         .collect();
     lines.sort();
     let sig = lines.join("\n");

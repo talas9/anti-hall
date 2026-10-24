@@ -25,7 +25,23 @@ pub fn emit() {
         let sha = git(r, &["rev-parse", "--short=8", "HEAD"])?;
         let branch = git(r, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| sanitize(&b)).filter(|b| !b.is_empty() && b != "HEAD");
         // tracked source changes only: the compiled UI bundle and cargo's target dirs are tracked here and change on every build
-        let dirty = git(r, &["status", "--porcelain", "--untracked-files=no", "--", "ah-engine", "ah-launcher", "ah-web", "plugins/anti-hall", ":(exclude)*/target", ":(exclude)ah-web/ui-dist", ":(exclude)ah-web/ui/target"]).is_some();
+        let dirty = git(
+            r,
+            &[
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+                "--",
+                "ah-engine",
+                "ah-launcher",
+                "ah-web",
+                "plugins/anti-hall",
+                ":(exclude)*/target",
+                ":(exclude)ah-web/ui-dist",
+                ":(exclude)ah-web/ui/target",
+            ],
+        )
+        .is_some();
         // a commit moves the branch's ref file, a checkout moves HEAD: either changes the version
         let mut watch = vec!["HEAD".to_string()];
         watch.extend(git(r, &["symbolic-ref", "-q", "HEAD"]));

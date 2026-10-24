@@ -158,8 +158,21 @@ fn audit(kind: &str, action: &str, target: &str, confirmed: bool, done: &Done, m
         Err((false, why)) => (Outcome::Error, "failed", why.clone()),
     };
     let (feature, act) = (defaults::text("act.feature"), actlog::token(&format!("{kind}-{action}")));
-    emit::act(&emit::ActRec { feature, action: &act, outcome, latency_ms: ms, target: &actlog::token(target), inputs: "", reason: &actlog::token(&reason), action_id: "" });
-    actlog::record(&paths::dir(), &actlog::Action { feature, action: &act, target, inputs: json!({"confirmed": confirmed}), outcome: label, reason: &reason, latency_ms: ms }, health::now_ms());
+    emit::act(&emit::ActRec {
+        feature,
+        action: &act,
+        outcome,
+        latency_ms: ms,
+        target: &actlog::token(target),
+        inputs: "",
+        reason: &actlog::token(&reason),
+        action_id: "",
+    });
+    actlog::record(
+        &paths::dir(),
+        &actlog::Action { feature, action: &act, target, inputs: json!({"confirmed": confirmed}), outcome: label, reason: &reason, latency_ms: ms },
+        health::now_ms(),
+    );
 }
 
 /// `ah-engine proc <list|status|stop|restart> [<pid>] [--confirmed] [--json]`.

@@ -302,7 +302,7 @@ function resolveContext(cwd, opts) {
             // the main checkout's `.git/modules/<name>`, so the common dir's core.worktree names the
             // MAIN checkout's submodule dir). P is its superproject: without this the hop below
             // follows core.worktree to the main checkout and a child's submodule cwd resolves as the
-            // PRIMARY (peer report, SkyCrew child, 2026-10-09). Any other linked worktree nested in
+            // PRIMARY (peer report, downstream child, 2026-10-09). Any other linked worktree nested in
             // another checkout stays key-bearing.
             if (coreWorktreeOf(F, ri.common) && isGitlinkPath(F, P, root)) return P;
             return null;

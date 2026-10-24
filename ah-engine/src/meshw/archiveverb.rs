@@ -20,13 +20,13 @@
 use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_trim, slice_utf16};
 use crate::defaults;
+use crate::dsact::runner::System;
 use crate::dssup::recon::{Op, Pre, Unit, UnitEnd};
 use crate::meshw::actverbs::has_fresh_heartbeat;
 use crate::meshw::appdb::{self, State};
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::extverbs::tpl;
-use crate::dsact::runner::System;
 use crate::meshw::hivecontrol::{self, Cap, Full};
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{self, is_safe_id};
@@ -244,11 +244,7 @@ fn capability(inv: &Inv) -> Cap {
 
 /// The verdict of `can` over the probe the cache holds (what `ask` would answer once the dormant line is recorded).
 fn cap_from_cache(inv: &Inv, verb: &str, min: &str, note: &str) -> Cap {
-    let file = inv
-        .home
-        .join(text("mesh_write.dir_anti_hall"))
-        .join(text("mesh_write.dir_devswarm"))
-        .join(text("mesh_write.hivecontrol_cache_file"));
+    let file = inv.home.join(text("mesh_write.dir_anti_hall")).join(text("mesh_write.dir_devswarm")).join(text("mesh_write.hivecontrol_cache_file"));
     let cached = std::fs::read(file).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
     let Some(probe) = cached.as_ref().and_then(|c| c.get("probe")).filter(|p| p.get("present").is_some_and(OVal::truthy)) else { return Cap::Absent };
     let version = match probe.get("version") {
@@ -461,7 +457,11 @@ fn local_archived_app_live(inv: &Inv, repo_key: Option<&str>) -> R<(bool, Vec<Ap
         // the exact id only: a worktree fallback could name a re-spawned LIVE builder
         let Some(w) = found.states.iter().find(|x| x.id == id) else { continue };
         let bt = w.builder_type.as_deref().unwrap_or_default();
-        if w.archived == Some(true) || bt.to_lowercase() == text("devswarm_cli.app_builder_type_primary") || bt.is_empty() || rows.iter().any(|r| r.app_id == w.id) {
+        if w.archived == Some(true)
+            || bt.to_lowercase() == text("devswarm_cli.app_builder_type_primary")
+            || bt.is_empty()
+            || rows.iter().any(|r| r.app_id == w.id)
+        {
             continue;
         }
         let branch = w.branch.clone().filter(|b| !b.is_empty()).or_else(|| str_of(d.get("branch")).map(str::to_string));
@@ -517,14 +517,15 @@ fn app_only_archive(inv: &Inv, raw: &str) -> R<Option<Answer>> {
             .filter_map(|d| d.get("id").filter(|v| !matches!(v, OVal::Null)).map(crate::meshw::simple::js_text))
             .collect();
         let Some(w) = found.states.iter().find(|x| {
-            x.archived == Some(true)
-                && archived_ids.contains(&x.id)
-                && (x.id == raw || x.branch.as_deref() == Some(raw) || (long && x.id.starts_with(raw)))
+            x.archived == Some(true) && archived_ids.contains(&x.id) && (x.id == raw || x.branch.as_deref() == Some(raw) || (long && x.id.starts_with(raw)))
         }) else {
             return Ok(None);
         };
         let mut app = Obj::default();
-        app.put("attempted", OVal::Bool(false)).put("ok", OVal::Bool(true)).put("verified", OVal::Bool(true)).put("reason", s(text("devswarm_cli.act_reason_already_archived_app")));
+        app.put("attempted", OVal::Bool(false))
+            .put("ok", OVal::Bool(true))
+            .put("verified", OVal::Bool(true))
+            .put("reason", s(text("devswarm_cli.act_reason_already_archived_app")));
         let mut o = Obj::default();
         o.put("ok", OVal::Bool(true))
             .put("action", action())
@@ -541,7 +542,13 @@ fn app_only_archive(inv: &Inv, raw: &str) -> R<Option<Answer>> {
             .put("action", action())
             .put("id", s(raw))
             .put("descriptorArchived", OVal::Bool(false))
-            .put("error", s(&tpl("devswarm_cli.act_msg_app_ambiguous", &[("raw", &crate::meshw::actverbs::quote(raw)), ("n", &hit.len().to_string()), ("ids", &ids.join(text("devswarm_cli.msg_ids_join")))])))
+            .put(
+                "error",
+                s(&tpl(
+                    "devswarm_cli.act_msg_app_ambiguous",
+                    &[("raw", &crate::meshw::actverbs::quote(raw)), ("n", &hit.len().to_string()), ("ids", &ids.join(text("devswarm_cli.msg_ids_join")))],
+                )),
+            )
             .put("candidates", OVal::Arr(ids.iter().map(|x| s(x)).collect()));
         return Ok(Some(answer(2, o.done())));
     }
@@ -608,7 +615,11 @@ fn nonempty(v: Option<&OVal>) -> Option<&str> {
 /// `{ ok: false, action: 'archive', id, descriptorArchived: false, error }`, exit 2.
 fn arch_error(id: &str, error: &str) -> Answer {
     let mut o = Obj::default();
-    o.put("ok", OVal::Bool(false)).put("action", s(text("devswarm_cli.action_archive"))).put("id", s(id)).put("descriptorArchived", OVal::Bool(false)).put("error", s(error));
+    o.put("ok", OVal::Bool(false))
+        .put("action", s(text("devswarm_cli.action_archive")))
+        .put("id", s(id))
+        .put("descriptorArchived", OVal::Bool(false))
+        .put("error", s(error));
     answer(2, o.done())
 }
 
@@ -710,10 +721,12 @@ fn app_only(inv: &Inv, raw: &str, id: &str) -> R<Option<Answer>> {
             msg: crate::dssup::recon::labelfill::filled_msg(id, raw, &wt),
             ctx: crate::dssup::recon::labelfill::filled_ctx(id, raw, &wt).to_string(),
         };
-        crate::discard::harmless(match crate::dssup::recon::apply::unit(&env, &Unit { label: "log".into(), lock: None, ops: vec![op] }, &crate::dssup::recon::Hooks::none()) {
-            UnitEnd::Failed(w) => Err(w),
-            _ => Ok(()),
-        }); // keep: a log line that cannot be written never fails the archive
+        crate::discard::harmless(
+            match crate::dssup::recon::apply::unit(&env, &Unit { label: "log".into(), lock: None, ops: vec![op] }, &crate::dssup::recon::Hooks::none()) {
+                UnitEnd::Failed(w) => Err(w),
+                _ => Ok(()),
+            },
+        ); // keep: a log line that cannot be written never fails the archive
     }
     let mut o = Obj::default();
     o.put("ok", OVal::Bool(leg.ok)).put("action", s(text("devswarm_cli.action_archive"))).put("id", s(raw)).put("descriptorArchived", OVal::Bool(false));
@@ -792,12 +805,20 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
     let mut adir_md = std::fs::symlink_metadata(&adir);
     if adir_md.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
         if let Err(e) = std::fs::create_dir_all(&adir) {
-            return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_archived_dir", &[("error", &crate::migrate::node_err(&e, text("devswarm_cli.act_sys_mkdir"), &adir))])));
+            return Ok(arch_error(
+                id,
+                &tpl("devswarm_cli.act_msg_archived_dir", &[("error", &crate::migrate::node_err(&e, text("devswarm_cli.act_sys_mkdir"), &adir))]),
+            ));
         }
         adir_md = std::fs::symlink_metadata(&adir);
     }
     match &adir_md {
-        Err(e) => return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_archived_dir", &[("error", &crate::migrate::node_err(e, text("devswarm_cli.act_sys_lstat"), &adir))]))),
+        Err(e) => {
+            return Ok(arch_error(
+                id,
+                &tpl("devswarm_cli.act_msg_archived_dir", &[("error", &crate::migrate::node_err(e, text("devswarm_cli.act_sys_lstat"), &adir))]),
+            ));
+        }
         Ok(m) if !m.is_dir() || m.file_type().is_symlink() => {
             return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_archived_dir", &[("error", text("devswarm_cli.act_msg_archived_not_dir"))])));
         }
@@ -861,7 +882,10 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
         }
         let stored_owner = nonempty(d.get(text("mesh_write.field_owner_key"))).map(str::to_string);
         let structural = structural_repo_key(&d);
-        let fresh = d.get(text("mesh_write.field_worktree_path")).filter(|w| w.truthy()).and_then(|w| ident::repo_key_for_worktree(&crate::meshw::simple::js_text(w)).ok().flatten());
+        let fresh = d
+            .get(text("mesh_write.field_worktree_path"))
+            .filter(|w| w.truthy())
+            .and_then(|w| ident::repo_key_for_worktree(&crate::meshw::simple::js_text(w)).ok().flatten());
         let legacy_per_id = active.exists && stored_owner.is_none() && structural.is_none() && current_repo_key.is_none();
         owner_key = stored_owner.clone().or(structural).or_else(|| legacy_per_id.then(|| current_owner.clone()));
         if owner_key.as_deref() != Some(current_owner.as_str()) && !cross_override {
@@ -881,7 +905,10 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
                 d.set(text("mesh_write.field_repo_key"), s(cur));
             }
             if let Err(e) = crate::atomic::write(&active_path, d.stringify()) {
-                return Ok(arch_error(id, &tpl("devswarm_cli.act_msg_desc_persist", &[("error", &crate::migrate::node_err(&e, text("devswarm_cli.act_sys_open"), &active_path))])));
+                return Ok(arch_error(
+                    id,
+                    &tpl("devswarm_cli.act_msg_desc_persist", &[("error", &crate::migrate::node_err(&e, text("devswarm_cli.act_sys_open"), &active_path))]),
+                ));
             }
         }
         desc = Some(d);
@@ -1045,10 +1072,7 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
         o.put("retiredFamilyDescriptors", OVal::Arr(family.0.iter().map(|x| s(x)).collect()));
     }
     if !family.1.is_empty() {
-        o.put(
-            "leftFamilyDescriptors",
-            OVal::Arr(family.1.iter().map(|(i, r)| OVal::Obj(vec![("id".into(), s(i)), ("reason".into(), s(r))])).collect()),
-        );
+        o.put("leftFamilyDescriptors", OVal::Arr(family.1.iter().map(|(i, r)| OVal::Obj(vec![("id".into(), s(i)), ("reason".into(), s(r))])).collect()));
     }
     if cross_override {
         o.put("forceCrossProject", OVal::Bool(true)).put("warning", s(text("devswarm_cli.act_force_cross_warning")));

@@ -2,7 +2,7 @@
 //! registry, the shipped defaults, the check registry, the dispatch table, the Jev integrations); none is written by hand.
 use crate::defaults::{self, V};
 use crate::dispatch::table;
-use crate::{checks, cfgstore, docs};
+use crate::{cfgstore, checks, docs};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -102,7 +102,12 @@ fn bindings() -> Value {
     for (h, ev, e) in &entries {
         by_host.entry(h).or_default().entry(ev).or_default().push(entry_json(h, ev, e));
     }
-    Value::Array(by_host.into_iter().flat_map(|(host, events)| events.into_iter().map(move |(event, entries)| json!({"host": host, "event": event, "entries": entries}))).collect())
+    Value::Array(
+        by_host
+            .into_iter()
+            .flat_map(|(host, events)| events.into_iter().map(move |(event, entries)| json!({"host": host, "event": event, "entries": entries})))
+            .collect(),
+    )
 }
 
 /// The hook entries no built-in check answers: scripts (and shell hooks) the dispatcher runs as they are.
@@ -222,7 +227,8 @@ pub fn coverage() -> Value {
         Err(e) => return json!({"error": e}),
     };
     let feats = features(&doc);
-    let screens: Vec<(&str, Vec<&str>)> = defaults::get("web.coverage").and_then(|e| e.value.as_table()).map(|t| t.iter().map(|(k, v)| (*k, v.strings())).collect()).unwrap_or_default();
+    let screens: Vec<(&str, Vec<&str>)> =
+        defaults::get("web.coverage").and_then(|e| e.value.as_table()).map(|t| t.iter().map(|(k, v)| (*k, v.strings())).collect()).unwrap_or_default();
     let selectors: Vec<(&str, &str)> = screens.iter().flat_map(|(s, sels)| sels.iter().map(move |x| (*s, *x))).collect();
     let (mut unmatched, mut unready, mut covered) = (Vec::new(), Vec::new(), 0usize);
     for (id, missing) in &feats {
@@ -236,7 +242,8 @@ pub fn coverage() -> Value {
             unready.push(json!({"id": id, "screens": hit, "missing": missing}));
         }
     }
-    let stale: Vec<Value> = selectors.iter().filter(|(_, sel)| !feats.iter().any(|(id, _)| glob(sel, id))).map(|(s, sel)| json!({"screen": s, "selector": sel})).collect();
+    let stale: Vec<Value> =
+        selectors.iter().filter(|(_, sel)| !feats.iter().any(|(id, _)| glob(sel, id))).map(|(s, sel)| json!({"screen": s, "selector": sel})).collect();
     json!({"features": feats.len(), "covered": covered, "selectors_defined": !selectors.is_empty(), "unmatched": unmatched, "unready": unready, "stale_selectors": stale})
 }
 

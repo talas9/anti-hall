@@ -102,7 +102,8 @@ fn a_non_string_truthy_status_is_not_understood() {
 #[test]
 fn a_non_string_status_a_later_create_replaces_is_read() {
     let tu = |m: &str, id: &str, input: Value| json!({"type": "assistant", "message": {"id": m, "content": [{"type": "tool_use", "id": id, "name": "TaskCreate", "input": input}]}});
-    let res = |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "Task #1 created successfully: x"}]}});
+    let res =
+        |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "Task #1 created successfully: x"}]}});
     let lines = [tu("m1", "t1", json!({"subject": "x", "status": 7})), res("t1"), tu("m2", "t2", json!({"subject": "x"})), res("t2")];
     check("nonStringStatusReplaced", &lines, &[("1", Some("pending"), "x", false, "", "", "<undef>")]);
     // the same record left in the map is still not understood: Node's `.toLowerCase()` on it throws
@@ -157,7 +158,10 @@ fn a_line_only_javascript_can_parse_is_read_not_skipped() {
 /// keep both, never answer "unsure" (which the Stop guards read as no task) or drop them.
 #[test]
 fn a_task_create_with_a_numeric_id_or_an_object_subject_is_still_a_task() {
-    let create = |id: Value, subject: Value| json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": id, "name": "TaskCreate", "input": {"subject": subject}}]}}).to_string();
+    let create = |id: Value, subject: Value| {
+        json!({"type": "assistant", "message": {"id": "m", "content": [{"type": "tool_use", "id": id, "name": "TaskCreate", "input": {"subject": subject}}]}})
+            .to_string()
+    };
     for (name, id, subject, want_id, want_content) in [
         ("numeric id", json!(5), json!("x"), "5", "x"),
         ("fractional id", json!(1.5), json!("x"), "1.5", "x"),
@@ -168,7 +172,8 @@ fn a_task_create_with_a_numeric_id_or_an_object_subject_is_still_a_task() {
         let line = create(id, subject);
         for variant in [Variant::Guard, Variant::State] {
             let facts = reconstruct(&[line.as_str()], variant).unwrap_or_else(|_| panic!("{name}: {variant:?} left unsure"));
-            let t = facts.tasks.get(want_id).unwrap_or_else(|| panic!("{name}: {variant:?} has no task {want_id}: {:?}", facts.tasks.values().collect::<Vec<_>>()));
+            let t =
+                facts.tasks.get(want_id).unwrap_or_else(|| panic!("{name}: {variant:?} has no task {want_id}: {:?}", facts.tasks.values().collect::<Vec<_>>()));
             assert_eq!((t.content.as_str(), t.status.as_deref()), (want_content, Some("pending")), "{name}: {variant:?}");
         }
     }

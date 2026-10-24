@@ -415,7 +415,7 @@ function provablyNotWork(command) {
 // anti-hall DevSwarm mailbox/bookkeeping call: `[node] <...>/devswarm.js <verb> ...` or
 // `ah-engine (mesh|devswarm) <verb> ...` with <verb> in BOOKKEEPING_VERBS, optionally followed by
 // a `| tail|head|wc` output filter. They only talk to the mesh store (heartbeat, pull, ack, read,
-// send), never to repo state, so they must not fill the main-thread WORK window (SkyCrew child
+// send), never to repo state, so they must not fill the main-thread WORK window (downstream child
 // report, 2026-10-09). Closed vocabulary: any `$(`, backtick, redirect other than `2>&1`, heredoc or
 // unknown segment returns false and goes to the classifier unchanged. Mirrors the engine's
 // coordinator_work.bookkeeping_* keys (engine/defaults/small_guards.toml).

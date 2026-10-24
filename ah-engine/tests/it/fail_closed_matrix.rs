@@ -769,7 +769,12 @@ fn a_truly_absent_daemon_fails_open_without_running_hooks() {
                 assert_eq!(r.code, 0, "[{host}/{event}] absent daemon must fail open: {:?}", r.err);
                 assert!(r.out.is_empty() && !r.marked, "[{host}/{event}] run {n}: no hook, no output on an unavailable daemon: {:?}", r.out);
                 if let Some(t0) = t0 {
-                    assert!(t0.elapsed() < crate::common::scaled(Duration::from_secs(1)), "[{host}/{event}] warm absent daemon took {:?}: err {:?}", t0.elapsed(), r.err);
+                    assert!(
+                        t0.elapsed() < crate::common::scaled(Duration::from_secs(1)),
+                        "[{host}/{event}] warm absent daemon took {:?}: err {:?}",
+                        t0.elapsed(),
+                        r.err
+                    );
                 }
             }
         }

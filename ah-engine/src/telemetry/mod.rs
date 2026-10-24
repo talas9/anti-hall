@@ -19,8 +19,8 @@ pub mod persist;
 pub mod recorder;
 pub mod report;
 pub mod rollup;
-pub mod spawn_result;
 pub mod route;
+pub mod spawn_result;
 
 use crate::checks::Verdict;
 use crate::defaults;
@@ -227,7 +227,9 @@ impl Telemetry {
     /// Observe launch identities and finished outcomes without guessing models or usage.
     pub fn observe_spawn(&self, event: &str, payload: &Value, now: u64) {
         let launch = spawn_result::event_of(event, payload, now);
-        if launch.is_none() && event != defaults::text("telemetry.spawn_stop_event") { return; }
+        if launch.is_none() && event != defaults::text("telemetry.spawn_stop_event") {
+            return;
+        }
         let since = now.saturating_sub(defaults::num("telemetry.spawn_link_retention_ms"));
         let mut events = self.tel.as_ref().map(|t| t.impact_events(since)).unwrap_or_default();
         events.extend(self.rec.pending_events());
@@ -236,7 +238,10 @@ impl Telemetry {
             self.event(complete.unwrap_or(ev));
         }
         if event == defaults::text("telemetry.spawn_stop_event")
-            && let Some(ev) = spawn_result::completion(payload, now, &events) { self.event(ev); }
+            && let Some(ev) = spawn_result::completion(payload, now, &events)
+        {
+            self.event(ev);
+        }
     }
 
     /// Record a model-routing decision (D77): the event, plus an impact event of kind `route` whose reason is what the
@@ -485,7 +490,9 @@ impl Telemetry {
             r["estimated_usd"] = net["routing"]["net_usd"].clone();
             r["status"] = if net["routing"]["net_usd"].is_null() {
                 json!(defaults::text("impact.routing_unknown_status"))
-            } else { json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])])) };
+            } else {
+                json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])]))
+            };
         }
         v["savings"]["avoided_waste"] = report::avoided_waste_json(self.tel.as_ref(), Some(&self.rec), days, now_ms());
         v["net"] = net;

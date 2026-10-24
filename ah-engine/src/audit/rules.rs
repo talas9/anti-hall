@@ -51,9 +51,7 @@ pub fn rx(id: &str, pattern: &str) -> Option<Regex> {
     if pattern.is_empty() {
         return None;
     }
-    Regex::new(pattern)
-        .map_err(|e| eprintln!("{}", defaults::render("entry_audit_msg.bad_regex", &[("id", &id), ("error", &e)])))
-        .ok()
+    Regex::new(pattern).map_err(|e| eprintln!("{}", defaults::render("entry_audit_msg.bad_regex", &[("id", &id), ("error", &e)]))).ok()
 }
 
 fn opt(v: &V, id: &str, key: &str) -> Option<Regex> {
@@ -88,7 +86,12 @@ impl Cfg {
             .as_array()
             .unwrap_or_default()
             .iter()
-            .map(|a| Allow { section: a.str_field("section").to_string(), path: opt(a, "allow", "path"), text: opt(a, "allow", "text"), rule: a.str_field("rule").to_string() })
+            .map(|a| Allow {
+                section: a.str_field("section").to_string(),
+                path: opt(a, "allow", "path"),
+                text: opt(a, "allow", "text"),
+                rule: a.str_field("rule").to_string(),
+            })
             .collect();
         Cfg {
             rules,

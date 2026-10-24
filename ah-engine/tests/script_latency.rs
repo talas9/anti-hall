@@ -181,7 +181,12 @@ fn scripted_checks_stay_inside_the_latency_budget() {
             mean.sort_unstable_by_key(|a| std::cmp::Reverse(a.1));
             for (i, t) in mean.iter().take(n) {
                 let v: Value = serde_json::from_str(lines[*i]).unwrap_or(Value::Null);
-                println!("  SLOW {:<24} case {i:>4} mean={t:>6}us n={} payload={}", c.name(), v.get("n").unwrap_or(&Value::Null), v.get("payload").map(|p| p.to_string().chars().take(160).collect::<String>()).unwrap_or_default());
+                println!(
+                    "  SLOW {:<24} case {i:>4} mean={t:>6}us n={} payload={}",
+                    c.name(),
+                    v.get("n").unwrap_or(&Value::Null),
+                    v.get("payload").map(|p| p.to_string().chars().take(160).collect::<String>()).unwrap_or_default()
+                );
             }
         }
         us.sort_unstable();

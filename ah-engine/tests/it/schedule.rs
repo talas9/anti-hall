@@ -172,7 +172,8 @@ fn failed_refresh_subprocess_records_failure_and_scheduler_backoff() {
 fn a_daemon_started_from_a_workspace_child_or_subagent_still_runs_main_only_jobs() {
     // live 2026-10-16: a daemon whose spawning hook ran in a DevSwarm workspace child inherited DEVSWARM_SOURCE_BRANCH, so
     // every `ah-engine <job> --json` it started was refused by the role gate (exit 77, reason on stdout, empty stderr)
-    let jobs = r#"{"jobs": {"jev_sweep": {"kind": "engine", "action": "jev_sweep", "every_ms": 60000, "timeout_ms": 20000, "persist": true, "catch_up": "once"}}}"#;
+    let jobs =
+        r#"{"jobs": {"jev_sweep": {"kind": "engine", "action": "jev_sweep", "every_ms": 60000, "timeout_ms": 20000, "persist": true, "catch_up": "once"}}}"#;
     let mut e = Env::new("role-env", jobs);
     e.extra.push(("DEVSWARM_SOURCE_BRANCH".into(), "feat/child".into()));
     e.extra.push(("ANTIHALL_ROLE".into(), "subagent".into()));
@@ -224,7 +225,15 @@ fn a_daemon_started_from_a_workspace_child_keeps_nothing_of_the_session_that_sta
     let pid = e.pid();
     let env = process_env_words(pid);
     assert!(env.contains("AH_ENGINE_DIR="), "the probe must see the daemon's environment at all");
-    for gone in ["DEVSWARM_SOURCE_BRANCH=", "DEVSWARM_BUILDER_ID=", "ANTIHALL_ROLE=", "ANTIHALL_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CLAUDE_PROJECT_DIR=", "GIT_DIR="] {
+    for gone in [
+        "DEVSWARM_SOURCE_BRANCH=",
+        "DEVSWARM_BUILDER_ID=",
+        "ANTIHALL_ROLE=",
+        "ANTIHALL_SESSION_ID=",
+        "CLAUDE_CODE_SESSION_ID=",
+        "CLAUDE_PROJECT_DIR=",
+        "GIT_DIR=",
+    ] {
         assert!(!env.contains(gone), "the daemon kept {gone} of the session that started it");
     }
     let home = std::fs::canonicalize(e.dir.join("home")).unwrap();

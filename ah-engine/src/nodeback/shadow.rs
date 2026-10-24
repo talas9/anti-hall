@@ -89,7 +89,7 @@ fn ended() -> bool {
     if !marker.exists() {
         let msg = defaults::render("nodeback.msg_shadow_ended", &[("date", &end)]);
         crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create here
-        crate::discard::harmless(std::fs::write(&marker, end)); // keep: without the marker the notice repeats, nothing else
+        crate::discard::harmless(crate::atomic::write(&marker, end)); // keep: without the marker the notice repeats, nothing else
         crate::health::log_event(defaults::text("nodeback.log_kind"), "ended", &msg);
         crate::discard::harmless(std::io::Write::write_all(&mut std::io::stderr(), format!("{msg}\n").as_bytes())); // keep: a closed pipe leaves nobody to tell
     }
@@ -211,12 +211,7 @@ pub fn finish(armed: Option<Armed>, raw: &str, o: &Outcome) {
     });
     let wrote = {
         use std::io::Write;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode_600()
-            .open(&job)
-            .and_then(|mut f| f.write_all(body.to_string().as_bytes()))
+        std::fs::OpenOptions::new().write(true).create_new(true).mode_600().open(&job).and_then(|mut f| f.write_all(body.to_string().as_bytes()))
     };
     if wrote.is_err() {
         count("skip_job", Acct::Error, 0);
@@ -307,7 +302,7 @@ fn run_one(command: &str, payload: &[u8], env: &[(String, String)], cwd: &Path, 
                 }
                 crate::discard::harmless(child.kill()); // keep: best effort, the group kill above did the work
                 crate::discard::harmless(child.wait()); // keep: reaping only
-                break (None, true)
+                break (None, true);
             }
         }
     };
@@ -416,7 +411,7 @@ pub fn hold(breached: bool) {
     }
     let marker = super::state_file("files.shadow_hold");
     if breached {
-        crate::discard::logged("nodeback_hold_set", std::fs::write(&marker, b""));
+        crate::discard::logged("nodeback_hold_set", crate::atomic::write(&marker, b""));
     } else if let Err(e) = std::fs::remove_file(&marker)
         && e.kind() != std::io::ErrorKind::NotFound
     {

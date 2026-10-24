@@ -76,7 +76,8 @@ fn ask_state_path(home: &Path, id: &str) -> PathBuf {
 /// `resolveBlockerLabelReaskMs(env)`.
 pub(super) fn reask_ms(ctx: &Ctx) -> f64 {
     let sec = gset::get_number(ctx.st, defaults::raw("devswarm_sup.tl_set_reask_sec"));
-    (if sec.is_finite() && sec > 0.0 { sec } else { defaults::num("devswarm_sup.tl_reask_default_sec") as f64 }) * defaults::num("devswarm_sup.lv_ms_per_sec") as f64
+    (if sec.is_finite() && sec > 0.0 { sec } else { defaults::num("devswarm_sup.tl_reask_default_sec") as f64 })
+        * defaults::num("devswarm_sup.lv_ms_per_sec") as f64
 }
 
 /// The unit of the Jev decision log: its settings once per pass.
@@ -119,7 +120,13 @@ impl JevLane {
         row.put("mode", json!(mode.as_str()));
         row.put(
             "project",
-            json!(std::env::current_dir().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).filter(|s| !s.is_empty()).unwrap_or_else(|| defaults::text("devswarm_sup.tl_project_unknown").to_string())),
+            json!(
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| defaults::text("devswarm_sup.tl_project_unknown").to_string())
+            ),
         );
         row.put("derivedFrom", json!(defaults::text("devswarm_sup.tl_derived_from")));
         row.put("costUsd", json!(0));
@@ -142,7 +149,8 @@ fn blocker_label(ctx: &Ctx, lane: &JevLane, id: &str) -> Option<&'static str> {
     if kind != blocker_kind && kind != question_kind {
         return None;
     }
-    let label: &'static str = if kind == blocker_kind { defaults::text("devswarm_sup.tl_label_wedged") } else { defaults::text("devswarm_sup.tl_label_waiting") };
+    let label: &'static str =
+        if kind == blocker_kind { defaults::text("devswarm_sup.tl_label_wedged") } else { defaults::text("devswarm_sup.tl_label_waiting") };
     let ts = hit.get("ts").map_or_else(|| "undefined".to_string(), crate::dssup::ingest::import::js_string);
     let sep = defaults::text("devswarm_sup.lv_jev_key_sep");
     let input_hash = format!("{id}{sep}{kind}{sep}{ts}");
@@ -168,11 +176,7 @@ fn blocker_label(ctx: &Ctx, lane: &JevLane, id: &str) -> Option<&'static str> {
     let remember = |mode: &str| {
         write_json(
             &state_path,
-            &OVal::Obj(vec![
-                ("hash".into(), OVal::Str(input_hash.clone())),
-                ("askedAt".into(), OVal::Num(now)),
-                ("mode".into(), OVal::Str(mode.to_string())),
-            ]),
+            &OVal::Obj(vec![("hash".into(), OVal::Str(input_hash.clone())), ("askedAt".into(), OVal::Num(now)), ("mode".into(), OVal::Str(mode.to_string()))]),
         )
     };
     let id_name = defaults::text("devswarm_sup.tl_integration");
@@ -389,7 +393,9 @@ fn off_scope_files(ctx: &Ctx, runner: &dyn Runner, plan: &Value, wt: &str) -> Op
     let args = crate::meshw::args::parse(&argv);
     let answer = crate::meshw::gitverbs::ready_check_with(&inv_of(ctx, wt), &args, runner).ok()?;
     let r: Value = serde_json::from_str(answer.stdout.trim()).ok()?;
-    if r.get("ok") == Some(&json!(false)) || r.get("reasons").and_then(Value::as_array).is_some_and(|rs| rs.iter().any(|x| x.as_str() == Some(defaults::text("devswarm_sup.tl_diff_unknown")))) {
+    if r.get("ok") == Some(&json!(false))
+        || r.get("reasons").and_then(Value::as_array).is_some_and(|rs| rs.iter().any(|x| x.as_str() == Some(defaults::text("devswarm_sup.tl_diff_unknown"))))
+    {
         return None;
     }
     Some(r.get("outside_allowed").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default())
@@ -539,7 +545,8 @@ impl Pass<'_> {
             let v = gset::get_number(self.ctx.st, defaults::raw("devswarm_sup.tl_set_dormant_ms"));
             if v.is_finite() && v > 0.0 { v } else { defaults::num("devswarm_sup.tl_dormant_default_ms") as f64 }
         } else {
-            let raw = self.ctx.st.env.get(defaults::text("devswarm_sup.tl_env_idle_ms")).map(|v| crate::checks::guardkit::text::js_number_of_str(v)).unwrap_or(0.0);
+            let raw =
+                self.ctx.st.env.get(defaults::text("devswarm_sup.tl_env_idle_ms")).map(|v| crate::checks::guardkit::text::js_number_of_str(v)).unwrap_or(0.0);
             if raw.is_finite() && raw > 0.0 { raw } else { defaults::num("devswarm_sup.tl_idle_default_ms") as f64 }
         };
         if now - best < threshold {
@@ -584,7 +591,9 @@ impl Pass<'_> {
         let mark = finite(plan.get("step_ts")).or_else(|| finite(plan.get("created_at")));
         let usage = usage_update(ctx.home, key, wt, session, mark, self.weight, ctx.now);
         if let Some((tokens, _, _)) = usage.as_ref().and_then(|u| u.closed).filter(|(t, _, _)| *t > 0.0) {
-            let done = plan["steps"].as_array().map_or(0, |s| s.iter().filter(|x| x.get("status").and_then(Value::as_str) == Some(defaults::text("devswarm_sup.tl_step_done"))).count());
+            let done = plan["steps"]
+                .as_array()
+                .map_or(0, |s| s.iter().filter(|x| x.get("status").and_then(Value::as_str) == Some(defaults::text("devswarm_sup.tl_step_done"))).count());
             log_event(
                 ctx,
                 defaults::text("devswarm_sup.tl_ev_tokens"),
@@ -601,7 +610,12 @@ impl Pass<'_> {
         let mut signals = signals_of(ctx, self.runner, &plan, &child, usage.as_ref(), self.stall_ms, self.burn_warn);
         if let Some(off) = signals.iter_mut().find(|s| s.signal == "off-scope") {
             let files = off.files.clone().unwrap_or_default();
-            off.jev = super::jevnotes::adjust(ctx, self.runner, self.jev, &super::jevnotes::Off { id: &d.id, key, plan: &plan, wt, session, files: &files, signal_key: &off.key });
+            off.jev = super::jevnotes::adjust(
+                ctx,
+                self.runner,
+                self.jev,
+                &super::jevnotes::Off { id: &d.id, key, plan: &plan, wt, session, files: &files, signal_key: &off.key },
+            );
         }
         // the state: what was warned before, bounded, and what is active now
         let prev = read_obj(&stray_path(ctx.home, key));
@@ -668,7 +682,11 @@ impl Pass<'_> {
                 entries.retain(|(k, _)| !drop.contains(k));
             }
         }
-        let wt_field = if !wt.is_empty() { OVal::Str(wt.to_string()) } else { plan.get("worktreePath").and_then(Value::as_str).map_or(OVal::Null, |w| OVal::Str(w.to_string())) };
+        let wt_field = if !wt.is_empty() {
+            OVal::Str(wt.to_string())
+        } else {
+            plan.get("worktreePath").and_then(Value::as_str).map_or(OVal::Null, |w| OVal::Str(w.to_string()))
+        };
         let state = OVal::Obj(vec![
             ("v".into(), OVal::Num(1.0)),
             ("key".into(), OVal::Str(key.to_string())),
@@ -725,7 +743,8 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, items: &[(Desc, OVal)]) -> Value {
         runner,
         plan_tracking: gset::get_bool(ctx.st, defaults::raw("devswarm_sup.tl_set_plan_tracking")),
         warn_max: gset::get_number(ctx.st, defaults::raw("sweep.setting_warn_max")) as i64,
-        stall_ms: gset::get_number(ctx.st, defaults::raw("sweep.setting_step_stall")).max(defaults::raw("sweep.setting_step_stall").get("floor_min").and_then(defaults::V::as_integer).unwrap_or(1) as f64)
+        stall_ms: gset::get_number(ctx.st, defaults::raw("sweep.setting_step_stall"))
+            .max(defaults::raw("sweep.setting_step_stall").get("floor_min").and_then(defaults::V::as_integer).unwrap_or(1) as f64)
             * defaults::num("devswarm_sup.tl_ms_per_minute") as f64,
         burn_warn: gset::get_number(ctx.st, defaults::raw("devswarm_sup.tl_set_burn_warn")),
         weight: gset::get_number(ctx.st, defaults::raw("devswarm_sup.tl_set_burn_cache_pct")) / 100.0,

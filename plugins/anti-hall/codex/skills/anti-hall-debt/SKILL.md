@@ -24,7 +24,7 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Run the existing pure-Node debt harvester:
+Run the engine's debt harvester:
 
 ```bash
 "$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest

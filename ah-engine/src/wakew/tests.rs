@@ -201,7 +201,10 @@ fn a_summary_with_a_lone_surrogate_escape_still_reads() {
     let hashes = Hashes { repo_key: Some("k".into()), fallback: None };
     assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, Some(3.0));
     // a valid pair is left alone
-    write(&read::summary_path(&h, "p"), "{\"recent\":[{\"body\":\"\\ud83d\\ude00 \\\\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":4,\"directTotalFromOthers\":4}}}");
+    write(
+        &read::summary_path(&h, "p"),
+        "{\"recent\":[{\"body\":\"\\ud83d\\ude00 \\\\ud83d\"}],\"workspaces\":{\"w1\":{\"total\":4,\"directTotalFromOthers\":4}}}",
+    );
     let hashes = Hashes { repo_key: Some("p".into()), fallback: None };
     assert_eq!(read::read_direct(&h, Some(&hashes), "w1").total, Some(4.0));
 }

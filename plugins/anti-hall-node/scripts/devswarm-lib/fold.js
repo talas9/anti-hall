@@ -682,7 +682,7 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
 }
 
 // repairRootMappedChildRows(home, repoKey, ctx) — forward-migration step of the
-// heal-registry-rows sweep (SkyCrew child report, 2026-10-09). Before the
+// heal-registry-rows sweep (downstream child report, 2026-10-09). Before the
 // identity fix (companion/lib/identity.js: a linked worktree of a SUBMODULE under
 // a child worktree climbed to the MAIN checkout), a child that ran a verb from
 // inside its submodule registered its id against the PRIMARY checkout's path, and

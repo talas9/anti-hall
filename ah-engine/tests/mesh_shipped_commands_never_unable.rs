@@ -12,10 +12,44 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 const UNABLE: i32 = 69;
 /// The verbs of `scripts/devswarm.js` (its dispatch table); a prose word after `devswarm.js` that is not one is skipped.
 const VERBS: &[&str] = &[
-    "primary", "register", "ensure", "heartbeat", "inbox", "workspaces", "gate", "done", "nudge", "archive", "reap-orphans", "reconcile-registry",
-    "unarchive", "archive-ignore", "archive-unignore", "archive-request", "register-primary", "migrate", "logs", "migrate-owner-keys", "send", "relay",
-    "healthcheck", "ready-check", "mesh", "reconcile", "reap-stale", "reconcile-active", "spawn", "merge", "skip", "auto-archive", "prune-archived",
-    "gate-intent", "retention", "notice", "help", "self-heal",
+    "primary",
+    "register",
+    "ensure",
+    "heartbeat",
+    "inbox",
+    "workspaces",
+    "gate",
+    "done",
+    "nudge",
+    "archive",
+    "reap-orphans",
+    "reconcile-registry",
+    "unarchive",
+    "archive-ignore",
+    "archive-unignore",
+    "archive-request",
+    "register-primary",
+    "migrate",
+    "logs",
+    "migrate-owner-keys",
+    "send",
+    "relay",
+    "healthcheck",
+    "ready-check",
+    "mesh",
+    "reconcile",
+    "reap-stale",
+    "reconcile-active",
+    "spawn",
+    "merge",
+    "skip",
+    "auto-archive",
+    "prune-archived",
+    "gate-intent",
+    "retention",
+    "notice",
+    "help",
+    "self-heal",
 ];
 /// The subcommands of `inbox`.
 const INBOX_SUBS: &[&str] = &["tick", "pull", "ack", "ack-primary", "count", "read", "read-primary", "peek-primary", "messages"];
@@ -53,7 +87,9 @@ fn shipped_commands() -> BTreeSet<(String, Option<String>)> {
     for p in paths {
         let text = fs::read_to_string(&p).unwrap_or_default();
         for (i, _) in text.match_indices("devswarm.js ") {
-            let mut it = text[i + "devswarm.js ".len()..].split(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == ')' || c == ',' || c == ';' || c == '.').filter(|w| !w.is_empty());
+            let mut it = text[i + "devswarm.js ".len()..]
+                .split(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == ')' || c == ',' || c == ';' || c == '.')
+                .filter(|w| !w.is_empty());
             let Some(verb) = it.next().and_then(word) else { continue };
             if !VERBS.contains(&verb.as_str()) {
                 continue;
@@ -69,7 +105,12 @@ fn shipped_commands() -> BTreeSet<(String, Option<String>)> {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let o = Command::new("git").current_dir(dir).args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+    let o = Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
 }
 

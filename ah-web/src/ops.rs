@@ -5,11 +5,14 @@
 use crate::app::App;
 use crate::ctl;
 use crate::server::{cookie_ok, refuse};
-use ah_web_proto::ops::{AccountField, Accounts, Bucket, ClaudeAccount, CodexAccount, CostRow, LogLine, LogTail, OpsCfg, UpdateCheck};
+use ah_web_proto::ops::{
+    AccountField, Accounts, Bucket, ClaudeAccount, CodexAccount, CostRow, LogLine, LogTail, OpsCfg,
+    UpdateCheck,
+};
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use axum::http::HeaderMap;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
@@ -121,15 +124,23 @@ pub struct Ops {
 impl Ops {
     fn load(path: &Path) -> Result<Ops, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let doc: toml::Table = text.parse().map_err(|e| format!("{}: {e}", path.display()))?;
-        let ops = doc.get("web").and_then(|w| w.get("ops")).and_then(toml::Value::as_table).ok_or("no [web.ops] section")?;
+        let doc: toml::Table = text
+            .parse()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let ops = doc
+            .get("web")
+            .and_then(|w| w.get("ops"))
+            .and_then(toml::Value::as_table)
+            .ok_or("no [web.ops] section")?;
         let mut flat = toml::Table::new();
         for (name, entry) in ops {
             if let Some(v) = entry.get("value") {
                 flat.insert(name.clone(), v.clone());
             }
         }
-        toml::Value::Table(flat).try_into().map_err(|e| format!("{}: {e}", path.display()))
+        toml::Value::Table(flat)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// The numbers the page needs.
@@ -143,7 +154,11 @@ impl Ops {
             logs_poll_ms: self.logs_poll_ms,
             logs_view_max: self.logs_view_max,
             levels: self.log_levels.clone(),
-            sources: self.logs_sources.iter().map(|s| (s.id.clone(), s.label_key.clone())).collect(),
+            sources: self
+                .logs_sources
+                .iter()
+                .map(|s| (s.id.clone(), s.label_key.clone()))
+                .collect(),
         }
     }
 }
@@ -152,7 +167,9 @@ impl Ops {
 fn ops(app: &App) -> Result<Arc<Ops>, String> {
     static CACHE: Mutex<Option<(std::path::PathBuf, SystemTime, Arc<Ops>)>> = Mutex::new(None);
     let path = app.root.join(&app.settings().ops_cfg_rel);
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mtime = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let mut g = CACHE.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((p, t, o)) = g.as_ref()
         && *p == path
@@ -176,11 +193,15 @@ pub fn merged_ui(app: &App, base: &BTreeMap<String, String>) -> BTreeMap<String,
 
 /// The registry status word that means "a shell command is running" (empty when the config is unreadable, so nothing matches).
 pub fn idle_shell_state(app: &App) -> String {
-    ops(app).map(|o| o.idle_shell_state.clone()).unwrap_or_default()
+    ops(app)
+        .map(|o| o.idle_shell_state.clone())
+        .unwrap_or_default()
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A gate every handler starts with: the session cookie, then the config.
@@ -213,7 +234,10 @@ async fn read_json(path: &Path, max: u64) -> Option<Value> {
 }
 
 fn s(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn u(v: &Value, k: &str) -> u64 {
@@ -230,24 +254,48 @@ async fn usage(o: &Ops, home: &Path) -> (Vec<Bucket>, u64, bool) {
     if tokio::fs::metadata(&path).await.is_err() {
         return (Vec::new(), 0, false);
     }
-    let Some(doc) = read_json(&path, o.usage_cache_max_bytes).await else { return (Vec::new(), 0, true) };
+    let Some(doc) = read_json(&path, o.usage_cache_max_bytes).await else {
+        return (Vec::new(), 0, true);
+    };
     let data = doc.get(&o.usage_data_field).cloned().unwrap_or(Value::Null);
     let mut out = Vec::new();
     for d in &o.usage_buckets {
         if let Some(p) = data.get(&d.pct).and_then(Value::as_f64) {
-            out.push(Bucket { id: d.id.clone(), label: text_of(o, &d.label_key), percent: p, resets_at: s(&data, &d.resets) });
+            out.push(Bucket {
+                id: d.id.clone(),
+                label: text_of(o, &d.label_key),
+                percent: p,
+                resets_at: s(&data, &d.resets),
+            });
         }
     }
     let k = &o.usage_scoped_keys;
-    for b in data.get(&o.usage_scoped_field).and_then(Value::as_array).into_iter().flatten() {
-        let Some(p) = b.get(&k.pct).and_then(Value::as_f64) else { continue };
+    for b in data
+        .get(&o.usage_scoped_field)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(p) = b.get(&k.pct).and_then(Value::as_f64) else {
+            continue;
+        };
         // a model-specific limit that is not in use and has nothing used is not shown
-        let active = b.get(&o.usage_scoped_active_field).and_then(Value::as_bool).unwrap_or(true);
+        let active = b
+            .get(&o.usage_scoped_active_field)
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         if o.usage_scoped_hide_idle && !active && p <= 0.0 {
             continue;
         }
-        let label = o.usage_scoped_label_text.replace("{label}", &s(b, &k.label));
-        out.push(Bucket { id: s(b, "id"), label, percent: p, resets_at: s(b, &k.resets) });
+        let label = o
+            .usage_scoped_label_text
+            .replace("{label}", &s(b, &k.label));
+        out.push(Bucket {
+            id: s(b, "id"),
+            label,
+            percent: p,
+            resets_at: s(b, &k.resets),
+        });
     }
     (out, u(&doc, &o.usage_timestamp_field), false)
 }
@@ -255,7 +303,9 @@ async fn usage(o: &Ops, home: &Path) -> (Vec<Bucket>, u64, bool) {
 /// The logged-in Claude account from the host file: who it is (e-mail, display name), the plan fields on the allow-list as human labels
 /// and a fingerprint of the user id. No token or key is read.
 async fn claude(o: &Ops, home: &Path) -> ClaudeAccount {
-    let Some(doc) = read_json(&home.join(&o.claude_json_rel), o.claude_json_max_bytes).await else { return ClaudeAccount::default() };
+    let Some(doc) = read_json(&home.join(&o.claude_json_rel), o.claude_json_max_bytes).await else {
+        return ClaudeAccount::default();
+    };
     let account = doc.get(&o.claude_account_key).filter(|a| a.is_object());
     let fields = account
         .map(|a| {
@@ -264,23 +314,52 @@ async fn claude(o: &Ops, home: &Path) -> ClaudeAccount {
                 .filter_map(|f| {
                     let v = a.get(&f.field)?;
                     let raw = match v {
-                        Value::Bool(true) => return Some(AccountField { label_key: f.label_key.clone(), text: text_of(o, "ops_yes"), raw: String::new() }),
-                        Value::Bool(false) => return Some(AccountField { label_key: f.label_key.clone(), text: text_of(o, "ops_no"), raw: String::new() }),
+                        Value::Bool(true) => {
+                            return Some(AccountField {
+                                label_key: f.label_key.clone(),
+                                text: text_of(o, "ops_yes"),
+                                raw: String::new(),
+                            });
+                        }
+                        Value::Bool(false) => {
+                            return Some(AccountField {
+                                label_key: f.label_key.clone(),
+                                text: text_of(o, "ops_no"),
+                                raw: String::new(),
+                            });
+                        }
                         Value::String(t) => t.clone(),
                         Value::Null => return None,
                         other => other.to_string(),
                     };
                     // a known raw value shows its label; the raw value is kept for the tooltip only
                     Some(match o.claude_value_labels.get(&raw) {
-                        Some(label) => AccountField { label_key: f.label_key.clone(), text: label.clone(), raw },
-                        None => AccountField { label_key: f.label_key.clone(), text: raw, raw: String::new() },
+                        Some(label) => AccountField {
+                            label_key: f.label_key.clone(),
+                            text: label.clone(),
+                            raw,
+                        },
+                        None => AccountField {
+                            label_key: f.label_key.clone(),
+                            text: raw,
+                            raw: String::new(),
+                        },
                     })
                 })
                 .collect()
         })
         .unwrap_or_default();
     let pick = |k: &str| account.map(|a| s(a, k)).unwrap_or_default();
-    ClaudeAccount { signed_in: account.is_some(), fingerprint: s(&doc, &o.claude_user_key).chars().take(o.fingerprint_chars).collect(), email: pick(&o.claude_email_field), name: pick(&o.claude_name_field), fields }
+    ClaudeAccount {
+        signed_in: account.is_some(),
+        fingerprint: s(&doc, &o.claude_user_key)
+            .chars()
+            .take(o.fingerprint_chars)
+            .collect(),
+        email: pick(&o.claude_email_field),
+        name: pick(&o.claude_name_field),
+        fields,
+    }
 }
 
 /// When the weekly window resets (ms since the epoch), read from the same usage cache the Accounts gauges use; `None` when unknown.
@@ -288,14 +367,28 @@ pub async fn weekly_reset_ms(app: &App) -> Option<f64> {
     let o = ops(app).ok()?;
     let home = home()?;
     let (buckets, _, _) = usage(&o, &home).await;
-    let at = buckets.into_iter().find(|b| b.id == o.usage_weekly_bucket)?.resets_at;
-    humantime::parse_rfc3339(&at).ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_millis() as f64)
+    let at = buckets
+        .into_iter()
+        .find(|b| b.id == o.usage_weekly_bucket)?
+        .resets_at;
+    humantime::parse_rfc3339(&at)
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as f64)
 }
 
 /// Codex's login: only the file's existence and modified time.
 async fn codex(o: &Ops, home: &Path) -> CodexAccount {
     match tokio::fs::metadata(home.join(&o.codex_auth_rel)).await {
-        Ok(m) => CodexAccount { signed_in: true, changed_ms: m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64) },
+        Ok(m) => CodexAccount {
+            signed_in: true,
+            changed_ms: m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64),
+        },
         Err(_) => CodexAccount::default(),
     }
 }
@@ -304,23 +397,56 @@ async fn codex(o: &Ops, home: &Path) -> CodexAccount {
 /// parent -> child. `None` when the engine does not answer.
 async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
     let st = app.settings();
-    let doc = ctl::call(&app.socket, &o.cost_ctl, Duration::from_millis(st.ctl_timeout_ms), st.ctl_max_bytes).await.ok()?;
+    let doc = ctl::call(
+        &app.socket,
+        &o.cost_ctl,
+        Duration::from_millis(st.ctl_timeout_ms),
+        st.ctl_max_bytes,
+    )
+    .await
+    .ok()?;
     let report = doc.get(&o.cost_key)?;
     let totals = report.get("totals").cloned().unwrap_or(Value::Null);
-    let list = report.get("agents").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let list = report
+        .get("agents")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
     let mut rows: Vec<CostRow> = Vec::new();
     let mut agents: Vec<ah_web_proto::Agent> = Vec::new();
     for a in list.iter().take(o.cost_rows) {
-        let mut row = CostRow { agent: s(a, "agent"), name: s(a, "name"), kind: s(a, "kind"), tokens: u(a, "tokens"), outcomes: u(a, "outcomes"), tokens_per_outcome: u(a, "tokens_per_outcome"), ..CostRow::default() };
+        let mut row = CostRow {
+            agent: s(a, "agent"),
+            name: s(a, "name"),
+            kind: s(a, "kind"),
+            tokens: u(a, "tokens"),
+            outcomes: u(a, "outcomes"),
+            tokens_per_outcome: u(a, "tokens_per_outcome"),
+            ..CostRow::default()
+        };
         let (parent, project) = (s(a, "parent"), s(a, "project"));
-        let mut node = ah_web_proto::Agent { id: row.agent.clone(), kind: row.kind.clone(), parent: if parent == row.agent { String::new() } else { parent }, project, state: "running".into(), ..Default::default() };
+        let mut node = ah_web_proto::Agent {
+            id: row.agent.clone(),
+            kind: row.kind.clone(),
+            parent: if parent == row.agent {
+                String::new()
+            } else {
+                parent
+            },
+            project,
+            state: "running".into(),
+            ..Default::default()
+        };
         // a session id is named by the agent list (and a project's Primary is a Primary, whatever the report calls its kind)
         if let Some(live) = app.model().lookup(&row.agent, st.placeholder_id_chars) {
             node.role = live.role.clone();
             if node.project.is_empty() {
                 node.project = live.project.clone();
             }
-            row.kind = if live.role == st.project_primary_role { "main".to_string() } else { live.kind.clone() };
+            row.kind = if live.role == st.project_primary_role {
+                "main".to_string()
+            } else {
+                live.kind.clone()
+            };
             node.kind = row.kind.clone();
         }
         rows.push(row);
@@ -330,11 +456,23 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
     // children are orphans of their project
     crate::hier::link(&st, &mut agents);
     agents.retain(|a| !a.placeholder);
-    let by_id: HashMap<&str, usize> = agents.iter().enumerate().map(|(i, a)| (a.id.as_str(), i)).collect();
+    let by_id: HashMap<&str, usize> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.id.as_str(), i))
+        .collect();
     for (row, a) in rows.iter_mut().zip(&agents) {
         if row.name.is_empty() {
-            let dir = a.project.rsplit('/').find(|p| !p.is_empty()).unwrap_or_default();
-            row.name = if dir.is_empty() { o.cost_name_unknown.clone() } else { o.cost_name_fallback.replace("{dir}", dir) };
+            let dir = a
+                .project
+                .rsplit('/')
+                .find(|p| !p.is_empty())
+                .unwrap_or_default();
+            row.name = if dir.is_empty() {
+                o.cost_name_unknown.clone()
+            } else {
+                o.cost_name_fallback.replace("{dir}", dir)
+            };
         }
     }
     // projects, biggest spender first; inside each, the tree
@@ -342,14 +480,29 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
     for (i, a) in agents.iter().enumerate() {
         groups.entry(a.project_root.as_str()).or_default().push(i);
     }
-    let mut groups: Vec<(u64, Vec<usize>)> = groups.into_values().map(|g| (g.iter().map(|&i| rows[i].tokens).sum::<u64>(), g)).collect();
+    let mut groups: Vec<(u64, Vec<usize>)> = groups
+        .into_values()
+        .map(|g| (g.iter().map(|&i| rows[i].tokens).sum::<u64>(), g))
+        .collect();
     groups.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
     let mut out = Vec::new();
     for (tokens, members) in groups {
         let outcomes: u64 = members.iter().map(|&i| rows[i].outcomes).sum();
-        out.push(CostRow { name: agents[members[0]].project_name.clone(), tokens, outcomes, tokens_per_outcome: tokens.checked_div(outcomes).unwrap_or(0), header: true, ..CostRow::default() });
+        out.push(CostRow {
+            name: agents[members[0]].project_name.clone(),
+            tokens,
+            outcomes,
+            tokens_per_outcome: tokens.checked_div(outcomes).unwrap_or(0),
+            header: true,
+            ..CostRow::default()
+        });
         let in_group: std::collections::HashSet<usize> = members.iter().copied().collect();
-        let parent_of = |i: usize| by_id.get(agents[i].parent.as_str()).copied().filter(|p| *p != i && in_group.contains(p));
+        let parent_of = |i: usize| {
+            by_id
+                .get(agents[i].parent.as_str())
+                .copied()
+                .filter(|p| *p != i && in_group.contains(p))
+        };
         let mut kids: HashMap<usize, Vec<usize>> = HashMap::new();
         let (mut roots, mut orphans) = (Vec::new(), Vec::new());
         for &i in &members {
@@ -365,7 +518,12 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
         kids.values_mut().for_each(by_tokens);
         let mut seen = std::collections::HashSet::new();
         // depth-first; `lead` is what every descendant's line starts with
-        let mut stack: Vec<(usize, Vec<u8>, Vec<u8>)> = roots.iter().chain(&orphans).rev().map(|&i| (i, Vec::new(), Vec::new())).collect();
+        let mut stack: Vec<(usize, Vec<u8>, Vec<u8>)> = roots
+            .iter()
+            .chain(&orphans)
+            .rev()
+            .map(|&i| (i, Vec::new(), Vec::new()))
+            .collect();
         while let Some((i, prefix, lead)) = stack.pop() {
             if !seen.insert(i) {
                 continue;
@@ -378,7 +536,11 @@ async fn cost(app: &App, o: &Ops) -> Option<(u64, u64, Vec<CostRow>)> {
             for (n, &c) in children.iter().enumerate().rev() {
                 let last = n + 1 == children.len();
                 let (glyph, carry) = if last { (3u8, 0u8) } else { (2u8, 1u8) };
-                stack.push((c, [lead.clone(), vec![glyph]].concat(), [lead.clone(), vec![carry]].concat()));
+                stack.push((
+                    c,
+                    [lead.clone(), vec![glyph]].concat(),
+                    [lead.clone(), vec![carry]].concat(),
+                ));
             }
         }
     }
@@ -391,28 +553,58 @@ pub async fn accounts(State(app): State<Shared>, headers: HeaderMap) -> Response
         Ok(o) => o,
         Err(r) => return r,
     };
-    let Some(home) = home() else { return (StatusCode::INTERNAL_SERVER_ERROR, text_of(&o, "ops_failed")).into_response() };
-    let ((buckets, usage_read_ms, usage_error), claude, codex, cost) = tokio::join!(usage(&o, &home), claude(&o, &home), codex(&o, &home), cost(&app, &o));
+    let Some(home) = home() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, text_of(&o, "ops_failed")).into_response();
+    };
+    let ((buckets, usage_read_ms, usage_error), claude, codex, cost) = tokio::join!(
+        usage(&o, &home),
+        claude(&o, &home),
+        codex(&o, &home),
+        cost(&app, &o)
+    );
     let (cost_ok, (cost_total_tokens, cost_total_outcomes, cost_rows)) = match cost {
         Some(c) => (true, c),
         None => (false, (0, 0, Vec::new())),
     };
-    Json(Accounts { claude, codex, buckets, usage_read_ms, usage_error, cost_total_tokens, cost_total_outcomes, cost_rows, cost_ok }).into_response()
+    Json(Accounts {
+        claude,
+        codex,
+        buckets,
+        usage_read_ms,
+        usage_error,
+        cost_total_tokens,
+        cost_total_outcomes,
+        cost_rows,
+        cost_ok,
+    })
+    .into_response()
 }
 
 /// Dotted version text as comparable numbers (`0.301.0` -> [0, 301, 0]); anything non-numeric ends the list.
 pub(crate) fn version_nums(v: &str) -> Vec<u64> {
-    v.trim_start_matches('v').split(['.', '-', '+']).map_while(|p| p.parse().ok()).collect()
+    v.trim_start_matches('v')
+        .split(['.', '-', '+'])
+        .map_while(|p| p.parse().ok())
+        .collect()
 }
 
 /// `POST /api/ops/update-check`: run the engine's `update --check` (read only), at most once per `update_min_gap_ms`.
 pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    static LAST: tokio::sync::Mutex<Option<(Instant, UpdateCheck)>> = tokio::sync::Mutex::const_new(None);
+    static LAST: tokio::sync::Mutex<Option<(Instant, UpdateCheck)>> =
+        tokio::sync::Mutex::const_new(None);
     let o = match gate(&app, &headers) {
         Ok(o) => o,
         Err(r) => return r,
     };
-    let failed = |message: String| Json(UpdateCheck { ok: false, message, checked_ms: now_ms(), ..UpdateCheck::default() }).into_response();
+    let failed = |message: String| {
+        Json(UpdateCheck {
+            ok: false,
+            message,
+            checked_ms: now_ms(),
+            ..UpdateCheck::default()
+        })
+        .into_response()
+    };
     // the one safety rule of this button: the arguments must say --check, or nothing runs
     if !o.update_args.iter().any(|a| *a == o.update_guard_flag) {
         return failed(text_of(&o, "ops_check_failed"));
@@ -422,7 +614,11 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     if let Some((at, c)) = last.as_ref()
         && at.elapsed() < Duration::from_millis(o.update_min_gap_ms)
     {
-        return Json(UpdateCheck { reused: true, ..c.clone() }).into_response();
+        return Json(UpdateCheck {
+            reused: true,
+            ..c.clone()
+        })
+        .into_response();
     }
     let run = tokio::process::Command::new(&app.engine)
         .args(&o.update_args)
@@ -431,29 +627,52 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
-    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(o.update_timeout_ms), run).await else { return failed(text_of(&o, "ops_check_failed")) };
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(o.update_timeout_ms), run).await
+    else {
+        return failed(text_of(&o, "ops_check_failed"));
+    };
     // the human text ends with the JSON status line
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let status: Value = stdout.lines().rev().find(|l| l.trim_start().starts_with('{')).and_then(|l| serde_json::from_str(l).ok()).unwrap_or(Value::Null);
+    let status: Value = stdout
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .unwrap_or(Value::Null);
     if !status.is_object() {
         return failed(text_of(&o, "ops_check_failed"));
     }
     let (installed, latest) = (s(&status, "installed"), s(&status, "latest"));
-    let available = !installed.is_empty() && !latest.is_empty() && version_nums(&latest) > version_nums(&installed);
+    let available = !installed.is_empty()
+        && !latest.is_empty()
+        && version_nums(&latest) > version_nums(&installed);
     // what the engine itself runs: the build version (not just the plugin manifest), where it came from, the latest release
     let eng = status.get("engine").cloned().unwrap_or(Value::Null);
     let build_version = s(&eng, "build_version");
     let rel = eng.get("latest_release").cloned().unwrap_or(Value::Null);
-    let latest_release = [s(&rel, "version"), s(&rel, "tag")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
+    let latest_release = [s(&rel, "version"), s(&rel, "tag")]
+        .into_iter()
+        .find(|v| !v.is_empty())
+        .unwrap_or_default();
     // newer-or-not is the engine's call (`release_newer`): it knows the old-numbering floor, so 0.301.1 -> 0.2.0 reads as an upgrade
-    let release_newer = eng.get("release_newer").and_then(Value::as_bool).unwrap_or(false);
-    let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && release_newer;
-    let local_ahead = !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && !release_newer;
+    let release_newer = eng
+        .get("release_newer")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let engine_available =
+        !build_version.is_empty() && !s(&rel, "version").is_empty() && release_newer;
+    let local_ahead = !s(&rel, "version").is_empty()
+        && !build_version.is_empty()
+        && (s(&eng, "source") != "release" || build_version.contains('+'))
+        && !release_newer;
     let c = UpdateCheck {
         ok: out.status.success(),
         installed,
         latest,
-        message: s(&status, "action").chars().take(o.update_text_max).collect(),
+        message: s(&status, "action")
+            .chars()
+            .take(o.update_text_max)
+            .collect(),
         available,
         channel: s(&status, "channel"),
         state: s(&status, "state"),
@@ -482,7 +701,10 @@ fn level_of(o: &Ops, mode: &str, field: &str) -> String {
         return field.to_string();
     }
     let low = field.to_lowercase();
-    o.log_level_rules.iter().find(|r| r.words.iter().any(|w| low.contains(w.as_str()))).map_or_else(|| o.log_default_level.clone(), |r| r.level.clone())
+    o.log_level_rules
+        .iter()
+        .find(|r| r.words.iter().any(|w| low.contains(w.as_str())))
+        .map_or_else(|| o.log_default_level.clone(), |r| r.level.clone())
 }
 
 /// Every "<number> <small unit>" in `text` as the unit a person reads: the big unit (one decimal below ten) from `logs_unit_step` up, the
@@ -498,13 +720,20 @@ fn units(o: &Ops, text: &str) -> String {
         let start = head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
         let number = &head[start..];
         let word_end = !after.starts_with(|c: char| c.is_alphanumeric() || c == '_');
-        let token_start = head[..start].chars().next_back().is_none_or(|c| !c.is_alphanumeric() && c != '.' && c != '_');
+        let token_start = head[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '.' && c != '_');
         match number.parse::<u64>() {
             Ok(n) if before.ends_with(' ') && word_end && token_start => {
                 out.push_str(&head[..start]);
                 if n >= step {
                     let big = n as f64 / step as f64;
-                    let shown = if big < 10.0 { format!("{big:.1}") } else { format!("{big:.0}") };
+                    let shown = if big < 10.0 {
+                        format!("{big:.1}")
+                    } else {
+                        format!("{big:.0}")
+                    };
                     out.push_str(&format!("{shown} {}", o.logs_unit_big));
                 } else {
                     out.push_str(&format!("{n} {}", o.logs_unit_small));
@@ -526,9 +755,21 @@ fn parse_line(o: &Ops, src: &SourceDef, raw: &str) -> Option<LogLine> {
     let cut = |t: String| -> String { units(o, &t).chars().take(o.logs_text_max).collect() };
     let (ts, comp, level_field, text) = match src.format.as_str() {
         "tsv" => {
-            let cols: Vec<&str> = raw.splitn(src.text.parse::<usize>().ok()? + 1, '\t').collect();
-            let at = |k: &str| k.parse::<usize>().ok().and_then(|i| cols.get(i).copied()).unwrap_or_default();
-            (at(&src.ts).parse::<u64>().ok()?, at(&src.comp).to_string(), at(&src.level).to_string(), at(&src.text).to_string())
+            let cols: Vec<&str> = raw
+                .splitn(src.text.parse::<usize>().ok()? + 1, '\t')
+                .collect();
+            let at = |k: &str| {
+                k.parse::<usize>()
+                    .ok()
+                    .and_then(|i| cols.get(i).copied())
+                    .unwrap_or_default()
+            };
+            (
+                at(&src.ts).parse::<u64>().ok()?,
+                at(&src.comp).to_string(),
+                at(&src.level).to_string(),
+                at(&src.text).to_string(),
+            )
         }
         _ => {
             let v: Value = serde_json::from_str(raw).ok()?;
@@ -537,12 +778,32 @@ fn parse_line(o: &Ops, src: &SourceDef, raw: &str) -> Option<LogLine> {
                 Some(Value::Null) | None => String::new(),
                 Some(other) => other.to_string(),
             };
-            let text = src.text.split(',').map(|k| member(k.trim())).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
-            (v.get(&src.ts).and_then(Value::as_u64)?, member(&src.comp), if src.level_mode == "fixed" { src.level.clone() } else { member(&src.level) }, text)
+            let text = src
+                .text
+                .split(',')
+                .map(|k| member(k.trim()))
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (
+                v.get(&src.ts).and_then(Value::as_u64)?,
+                member(&src.comp),
+                if src.level_mode == "fixed" {
+                    src.level.clone()
+                } else {
+                    member(&src.level)
+                },
+                text,
+            )
         }
     };
     let level = level_of(o, &src.level_mode, &level_field);
-    Some(LogLine { ts_ms: ts, level, comp, text: cut(text) })
+    Some(LogLine {
+        ts_ms: ts,
+        level,
+        comp,
+        text: cut(text),
+    })
 }
 
 /// The parsed tail of one source, reused for `logs_cache_ms`.
@@ -555,32 +816,77 @@ async fn tail(app: &App, o: &Ops, src: &SourceDef) -> Result<(Vec<LogLine>, bool
     {
         return Ok((lines.clone(), *cut));
     }
-    let args: Vec<String> = o.logs_diag_args.iter().map(|a| a.replace("{file}", &src.file)).collect();
-    let run = tokio::process::Command::new(&app.engine).args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).output();
-    let out = tokio::time::timeout(Duration::from_millis(o.logs_timeout_ms), run).await.map_err(|_| "timeout".to_string())?.map_err(|e| e.to_string())?;
+    let args: Vec<String> = o
+        .logs_diag_args
+        .iter()
+        .map(|a| a.replace("{file}", &src.file))
+        .collect();
+    let run = tokio::process::Command::new(&app.engine)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(Duration::from_millis(o.logs_timeout_ms), run)
+        .await
+        .map_err(|_| "timeout".to_string())?
+        .map_err(|e| e.to_string())?;
     let doc: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
     if let Some(e) = doc.get("error").and_then(Value::as_str) {
         return Err(e.to_string());
     }
-    let mut lines: Vec<LogLine> = doc.get("lines").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter_map(|l| parse_line(o, src, l)).collect();
+    let mut lines: Vec<LogLine> = doc
+        .get("lines")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|l| parse_line(o, src, l))
+        .collect();
     let skip = lines.len().saturating_sub(o.logs_max_lines);
     lines.drain(..skip);
-    let cut = doc.get("truncated").and_then(Value::as_bool).unwrap_or(false) || skip > 0;
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(src.id.clone(), (Instant::now(), lines.clone(), cut));
+    let cut = doc
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || skip > 0;
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(src.id.clone(), (Instant::now(), lines.clone(), cut));
     Ok((lines, cut))
 }
 
 /// `GET /api/ops/logs?src=<id>&since=<ts_ms>`: the lines of one log newer than `since`.
-pub async fn logs(State(app): State<Shared>, headers: HeaderMap, Query(q): Query<LogQuery>) -> Response {
+pub async fn logs(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<LogQuery>,
+) -> Response {
     let o = match gate(&app, &headers) {
         Ok(o) => o,
         Err(r) => return r,
     };
     // only a source named in the config is ever read: the id picks the file, the request never names one
-    let Some(src) = o.logs_sources.iter().find(|x| x.id == q.src).cloned() else { return (StatusCode::NOT_FOUND, text_of(&o, "ops_failed")).into_response() };
+    let Some(src) = o.logs_sources.iter().find(|x| x.id == q.src).cloned() else {
+        return (StatusCode::NOT_FOUND, text_of(&o, "ops_failed")).into_response();
+    };
     let since = q.since.unwrap_or(0);
     match tail(&app, &o, &src).await {
-        Ok((lines, truncated)) => Json(LogTail { ok: true, lines: lines.into_iter().filter(|l| l.ts_ms > since).collect(), truncated, error: String::new() }).into_response(),
-        Err(error) => Json(LogTail { ok: false, lines: Vec::new(), truncated: false, error }).into_response(),
+        Ok((lines, truncated)) => Json(LogTail {
+            ok: true,
+            lines: lines.into_iter().filter(|l| l.ts_ms > since).collect(),
+            truncated,
+            error: String::new(),
+        })
+        .into_response(),
+        Err(error) => Json(LogTail {
+            ok: false,
+            lines: Vec::new(),
+            truncated: false,
+            error,
+        })
+        .into_response(),
     }
 }

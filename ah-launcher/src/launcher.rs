@@ -150,7 +150,9 @@ impl L {
     /// This very binary, in the background, running the maintenance verb named by `verb_key` with `rest`.
     fn self_spawn(&self, rest: &[&str], verb_key: &str) {
         // this very binary, in the background: `fail` and `check` may wait for the install lock, and the hook must not
-        let Ok(me) = std::env::current_exe() else { return };
+        let Ok(me) = std::env::current_exe() else {
+            return;
+        };
         let mut cmd = Command::new(me);
         if let Some(r) = &self.plugin_root {
             cmd.arg("--plugin-root").arg(r);
@@ -224,7 +226,11 @@ impl L {
     }
 
     fn cold_notice(&self) {
-        self.session_notice("msg.cold_guard_notice", "files.cold_guard_notice", &[("event", self.event.as_str())]);
+        self.session_notice(
+            "msg.cold_guard_notice",
+            "files.cold_guard_notice",
+            &[("event", self.event.as_str())],
+        );
     }
 
     /// The engine is unreachable (not installed, crashed, timed out, marked down, handed the call back): the call passes
@@ -235,7 +241,11 @@ impl L {
     }
 
     fn unreachable_notice(&self, why: &str) {
-        self.session_notice("msg.engine_unreachable_notice", "files.unreachable_notice", &[("event", self.event.as_str()), ("why", why)]);
+        self.session_notice(
+            "msg.engine_unreachable_notice",
+            "files.unreachable_notice",
+            &[("event", self.event.as_str()), ("why", why)],
+        );
     }
 
     /// One stderr notice per session: the state dir remembers the session id that already got the notice named by `file_key`.
@@ -335,7 +345,15 @@ impl L {
         // a socket file nobody listens on that is NEWER than a start request is a daemon that request started and that then died: the
         // request is no reason to keep waiting (a daemon still starting has not bound its socket yet, so the file is older than its request)
         let sock_ms = (probed == Sock::Stale)
-            .then(|| std::fs::metadata(&sock).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64))
+            .then(|| {
+                std::fs::metadata(&sock)
+                    .ok()?
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            })
             .flatten();
         let total_ms = self
             .event_timeout_s()
@@ -709,7 +727,11 @@ impl L {
     }
 }
 
-pub fn find_engine(home: Option<&PathBuf>, s: &Settings, knob_bin: Option<String>) -> Option<String> {
+pub fn find_engine(
+    home: Option<&PathBuf>,
+    s: &Settings,
+    knob_bin: Option<String>,
+) -> Option<String> {
     if let Some(b) = knob_bin {
         return is_exec(Path::new(&b)).then_some(b);
     }
@@ -865,7 +887,11 @@ pub fn run() -> i32 {
     // #160: `--help` / `-h` on one of the launcher's own verbs prints its usage and stops before anything runs (an engine verb gets
     // the engine's own answer; an event name is never a help request)
     if let Some(first) = args.first()
-        && args.iter().skip(1).take_while(|a| *a != "--").any(|a| s.list("cli.help_flags").contains(a))
+        && args
+            .iter()
+            .skip(1)
+            .take_while(|a| *a != "--")
+            .any(|a| s.list("cli.help_flags").contains(a))
     {
         let key = if *first == s.text("launcher.cli_install_verb") {
             Some("launcher.help_install")
@@ -897,26 +923,57 @@ pub fn run() -> i32 {
             // the old wrapper form: the built-in diagnosis, whatever the engine says
             let mut rest = vec![s.text("launcher.arg_builtin")];
             rest.extend(cli::forwarded(&args)[1..].iter().cloned());
-            let shown = raw_plugin_root(&args, boot_plugin_env).or_else(|| cfg_root.clone().or(root.clone()));
+            let shown = raw_plugin_root(&args, boot_plugin_env)
+                .or_else(|| cfg_root.clone().or(root.clone()));
             return crate::doctor::run(s, &cfg_dir, &state_dir, shown.as_deref(), &rest);
         }
         Some(first) if first == s.text("launcher.cli_doctor_verb") => {
-            let shown = raw_plugin_root(&args, boot_plugin_env).or_else(|| cfg_root.clone().or(root.clone()));
-            return crate::doctor::run(s, &cfg_dir, &state_dir, shown.as_deref(), &cli::forwarded(&args)[1..]);
+            let shown = raw_plugin_root(&args, boot_plugin_env)
+                .or_else(|| cfg_root.clone().or(root.clone()));
+            return crate::doctor::run(
+                s,
+                &cfg_dir,
+                &state_dir,
+                shown.as_deref(),
+                &cli::forwarded(&args)[1..],
+            );
         }
         Some(first) if first == s.text("launcher.cli_integrity_verb") => {
             return crate::integrity::run(&s, &state_dir, &cli::forwarded(&args)[1..]);
         }
         Some(first) if first == s.text("launcher.cli_install_verb") => {
-            let base = home.as_ref().map(|h| h.join(s.text("paths.base_dir"))).unwrap_or_default();
-            return crate::install::run(&s, &state_dir, &base, cfg_root.as_deref().or(root.as_deref()), &cli::forwarded(&args)[1..]);
+            let base = home
+                .as_ref()
+                .map(|h| h.join(s.text("paths.base_dir")))
+                .unwrap_or_default();
+            return crate::install::run(
+                &s,
+                &state_dir,
+                &base,
+                cfg_root.as_deref().or(root.as_deref()),
+                &cli::forwarded(&args)[1..],
+            );
         }
         Some(first) if first == s.text("launcher.cli_update_verb") => {
-            let base = home.as_ref().map(|h| h.join(s.text("paths.base_dir"))).unwrap_or_default();
-            return crate::update::run(&s, &state_dir, &base, cfg_root.as_deref().or(root.as_deref()), &cli::forwarded(&args)[1..]);
+            let base = home
+                .as_ref()
+                .map(|h| h.join(s.text("paths.base_dir")))
+                .unwrap_or_default();
+            return crate::update::run(
+                &s,
+                &state_dir,
+                &base,
+                cfg_root.as_deref().or(root.as_deref()),
+                &cli::forwarded(&args)[1..],
+            );
         }
         Some(first) if cli::is_verb(&s, first) => {
-            return cli::exec_engine(&s, &args, home.as_ref(), cfg_root.as_deref().or(root.as_deref()));
+            return cli::exec_engine(
+                &s,
+                &args,
+                home.as_ref(),
+                cfg_root.as_deref().or(root.as_deref()),
+            );
         }
         _ => {}
     }
@@ -973,12 +1030,23 @@ pub fn run() -> i32 {
 
     // the Node fallback switch is on (`ah-engine fallback node`): the launcher runs the original Node hooks itself, no engine. While the
     // Node backup directory is missing the switch does nothing: one notice line, and the engine decides as it would with the switch off.
-    let switch_on = !state_dir.as_os_str().is_empty() && state_dir.join(s.text("files.fallback_switch")).exists();
-    let s = if switch_on { s.with_nodeback(&cfg_dir) } else { s };
+    let switch_on = !state_dir.as_os_str().is_empty()
+        && state_dir.join(s.text("files.fallback_switch")).exists();
+    let s = if switch_on {
+        s.with_nodeback(&cfg_dir)
+    } else {
+        s
+    };
     if switch_on {
-        let node_dir = cfg_root.as_deref().or(root.as_deref()).map(|r| r.join(s.text("nodeback.node_dir")));
+        let node_dir = cfg_root
+            .as_deref()
+            .or(root.as_deref())
+            .map(|r| r.join(s.text("nodeback.node_dir")));
         if let Some(d) = node_dir.as_ref().filter(|d| !d.is_dir()) {
-            say(&s.msg("nodeback.msg_no_node_dir", &[("dir", &d.display().to_string())]));
+            say(&s.msg(
+                "nodeback.msg_no_node_dir",
+                &[("dir", &d.display().to_string())],
+            ));
         } else {
             let guard = s.list("dispatch.guard_events").contains(&event);
             let tool_flag = s.text("launcher.arg_tool_from_payload");

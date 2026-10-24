@@ -158,19 +158,16 @@ pub(crate) fn child_label_refusal(inv: &Inv, id: &str, rows: &[Row], worktree_fl
         }
     }
     let app = ident::builder_for_worktree(&inv.home, &inv.env, &wt).ok().flatten();
-    let child = app
-        .as_ref()
-        .filter(|a| kids.contains(&a.id.as_str()))
-        .map(|a| a.id.clone())
-        .or_else(|| (kids.len() == 1).then(|| kids[0].to_string()))
-        .or(retired_to);
+    let child =
+        app.as_ref().filter(|a| kids.contains(&a.id.as_str())).map(|a| a.id.clone()).or_else(|| (kids.len() == 1).then(|| kids[0].to_string())).or(retired_to);
     if child.is_none() {
         // no registered child id: the label is still the only identity that worktree has (legacy children) - allowed, except from
         // the Primary checkout, which never registers a child's label
         let caller = ident::resolve_context(cwd, true).ok()?;
-        let from_primary = caller.worktree_root.as_deref().is_some_and(|root| {
-            root != wt && ident::is_primary_checkout(root, caller.main_worktree.as_deref(), &inv.home, &inv.env).unwrap_or(false)
-        });
+        let from_primary = caller
+            .worktree_root
+            .as_deref()
+            .is_some_and(|root| root != wt && ident::is_primary_checkout(root, caller.main_worktree.as_deref(), &inv.home, &inv.env).unwrap_or(false));
         if !from_primary {
             return None;
         }
@@ -263,10 +260,7 @@ pub fn done_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
             OVal::Obj(fields) => fields,
             _ => Vec::new(),
         });
-        o.put("ok", OVal::Bool(false))
-            .put("action", s(defaults::text("devswarm_cli.action_done")))
-            .put("id", s(&id))
-            .put("gateSet", OVal::Bool(false));
+        o.put("ok", OVal::Bool(false)).put("action", s(defaults::text("devswarm_cli.action_done"))).put("id", s(&id)).put("gateSet", OVal::Bool(false));
         if !o.0.iter().any(|(k, v)| k == "error" && v.truthy()) {
             o.put("error", s(&defaults::render("devswarm_cli.act_msg_done_unregistered", &[("id", &quote(&id))])));
         }
@@ -475,9 +469,8 @@ fn primary_seat(inv: &Inv, sub: Option<&str>, sid: Option<&str>) -> R<Answer> {
     }
     let wt = field("worktree");
     let desc_file = idlock::devswarm_root(&inv.home).join(t("mesh_write.dir_workspaces")).join(format!("{id}{}", t("mesh_write.json_suffix")));
-    let cursor = ident::read_bounded(&desc_file)?
-        .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
-        .and_then(|d| match d.get(t("mesh_write.field_cursor_path")) {
+    let cursor =
+        ident::read_bounded(&desc_file)?.and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))).and_then(|d| match d.get(t("mesh_write.field_cursor_path")) {
             Some(OVal::Str(c)) if !c.is_empty() => Some(c.clone()),
             _ => None,
         });
@@ -618,7 +611,10 @@ pub fn relay(inv: &Inv, a: &Args) -> R<Answer> {
                 ("reason", s(defaults::text("devswarm_cli.act_reason_unknown_receipt"))),
                 (
                     "error",
-                    s(&defaults::render("devswarm_cli.act_msg_relay_unknown_receipt", &[("rid", &quote(seq_arg)), ("id", &quote(&caller)), ("caller", &caller)])),
+                    s(&defaults::render(
+                        "devswarm_cli.act_msg_relay_unknown_receipt",
+                        &[("rid", &quote(seq_arg)), ("id", &quote(&caller)), ("caller", &caller)],
+                    )),
                 ),
             ]);
         };
@@ -744,20 +740,16 @@ pub fn relay(inv: &Inv, a: &Args) -> R<Answer> {
             Some(e) if e.truthy() => js_text(&e),
             _ => defaults::text("devswarm_cli.act_msg_relay_send_unknown").to_string(),
         };
-        out.put("ok", OVal::Bool(false)).put("reason", s(&why)).put("error", s(&defaults::render("devswarm_cli.act_msg_relay_send_failed", &[("why", &detail)])));
+        out.put("ok", OVal::Bool(false))
+            .put("reason", s(&why))
+            .put("error", s(&defaults::render("devswarm_cli.act_msg_relay_send_failed", &[("why", &detail)])));
         return relay_fail(inv, to_raw, out, &heal, effect);
     }
     if bytes != Some(expected as f64) {
         let got = bytes.map_or_else(|| defaults::text("devswarm_cli.act_js_undefined").to_string(), crate::checks::jsport::num::to_js_string);
         out.put("ok", OVal::Bool(false))
             .put("reason", s(defaults::text("devswarm_cli.act_reason_byte_mismatch")))
-            .put(
-                "error",
-                s(&defaults::render(
-                    "devswarm_cli.act_msg_relay_mismatch",
-                    &[("got", &got), ("expected", &expected), ("source", &source_bytes)],
-                )),
-            );
+            .put("error", s(&defaults::render("devswarm_cli.act_msg_relay_mismatch", &[("got", &got), ("expected", &expected), ("source", &source_bytes)])));
         return relay_fail(inv, to_raw, out, &heal, effect);
     }
     for (k, v) in heal {
@@ -1073,7 +1065,8 @@ fn plain_refusal(fields: &[(&str, OVal)], heal: &[(String, OVal)]) -> Answer {
 
 /// The summary file of a project (`readSummaryForHash`): `workspaces[id].archive_ready === true`.
 fn archive_ready(inv: &Inv, repo_key: &str, id: &str) -> bool {
-    let file = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{repo_key}{}", defaults::text("mesh_write.json_suffix")));
+    let file =
+        devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{repo_key}{}", defaults::text("mesh_write.json_suffix")));
     std::fs::read(file)
         .ok()
         .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
@@ -1110,7 +1103,12 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
         if !live && archive_ready(inv, &repo_key, &id) {
             let revalidate = |desc: Option<&OVal>| -> Option<String> {
                 // re-checked inside the archive's lock: a target that heartbeats or commits in between is skipped, not archived
-                let pick = |k: &str| desc.and_then(|x| x.get(k)).filter(|v| v.truthy()).and_then(|v| if let OVal::Str(t) = v { Some(t.clone()) } else { None }).or_else(|| text_of(k));
+                let pick = |k: &str| {
+                    desc.and_then(|x| x.get(k))
+                        .filter(|v| v.truthy())
+                        .and_then(|v| if let OVal::Str(t) = v { Some(t.clone()) } else { None })
+                        .or_else(|| text_of(k))
+                };
                 let (w, sid) = (pick("worktreePath"), pick("sessionId"));
                 let live_now = crate::meshw::rosterrows::Verdicts::new(inv, &repo_key).live(&id, w.as_deref(), sid.as_deref()).unwrap_or(true);
                 live_now.then(|| defaults::text("devswarm_cli.act_reason_became_live").to_string())
@@ -1149,11 +1147,7 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
         // `withIdLock`: a lock that stayed busy is a failed result, nothing posted
         let keys = defaults::list("devswarm_cli.key_lock_busy");
         return Ok(plain_refusal(
-            &[
-                (keys[0], OVal::Bool(true)),
-                (keys[1], s(&id)),
-                ("error", s(&defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(&id))]))),
-            ],
+            &[(keys[0], OVal::Bool(true)), (keys[1], s(&id)), ("error", s(&defaults::render("devswarm_cli.msg_lock_busy", &[("id", &quote(&id))])))],
             &heal,
         ));
     };
@@ -1242,8 +1236,10 @@ fn poke_or_escalate(inv: &Inv, id: &str, desc: &OVal) -> OVal {
     if let Some(intent) = verdict::read_undelivered(&inv.home, id) {
         verdict::deliver(&inv.home, &inv.env, &intent, now);
     }
-    let prev: Option<serde_json::Value> =
-        verdict::path(&inv.home, id).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).filter(serde_json::Value::is_object);
+    let prev: Option<serde_json::Value> = verdict::path(&inv.home, id)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object);
     let finite = |k: &str| prev.as_ref().and_then(|p| p.get(k)).and_then(serde_json::Value::as_f64).filter(|x| x.is_finite());
     let attempts = finite("nudgeAttempts").unwrap_or(0.0);
     let cooldown_elapsed = finite("nudgedAt").is_none_or(|t| now as f64 - t >= defaults::num("devswarm_cli.act_nudge_cooldown_ms") as f64);
@@ -1251,19 +1247,16 @@ fn poke_or_escalate(inv: &Inv, id: &str, desc: &OVal) -> OVal {
     if desc.get("nudgeCommand").is_some_and(OVal::truthy) && attempts < defaults::num("devswarm_cli.act_nudge_max_attempts") as f64 && cooldown_elapsed {
         fire_command(inv, desc.get("nudgeCommand"));
         verdict::mirror_poke(&inv.home, id, attempts as u64 + 1, now);
-        out.put("action", s(defaults::text("devswarm_cli.act_nudge_word_nudged")))
-            .put("attempt", n(attempts + 1.0))
-            .put("nudgeError", OVal::Null);
+        out.put("action", s(defaults::text("devswarm_cli.act_nudge_word_nudged"))).put("attempt", n(attempts + 1.0)).put("nudgeError", OVal::Null);
         return out.done();
     }
     // the budget is spent (or there is no command): escalate, never kill
-    let was_escalated = prev.as_ref().and_then(|p| p.get("status")).and_then(serde_json::Value::as_str) == Some(defaults::text("devswarm_sup.status_escalated"));
+    let was_escalated =
+        prev.as_ref().and_then(|p| p.get("status")).and_then(serde_json::Value::as_str) == Some(defaults::text("devswarm_sup.status_escalated"));
     let last_error = prev.as_ref().and_then(|p| p.get("lastNudgeError")).and_then(|v| v.as_str().filter(|t| !t.is_empty())).map(str::to_string);
     verdict::mirror_escalate(&inv.home, id, now);
     fire_command(inv, desc.get("escalateCommand"));
-    if !was_escalated
-        && let Some(OVal::Str(wt)) = desc.get("worktreePath").filter(|w| w.truthy())
-    {
+    if !was_escalated && let Some(OVal::Str(wt)) = desc.get("worktreePath").filter(|w| w.truthy()) {
         // only on the transition into escalated; a notice that cannot be built (the parent is the child itself) is simply none
         crate::discard::harmless(verdict::notify_parent(&inv.home, &inv.env, wt, id, finite("staleSince"), now)); // keep: Node's notify is fail-open
     }
@@ -1286,15 +1279,17 @@ pub fn nudge(inv: &Inv, a: &Args) -> R<Answer> {
         Err(refused) => return Ok(refused),
     };
     let mut desc = ident::read_descriptor(&inv.home, &id);
-    if desc.is_none() && let Some(repo_key) = ident::repo_key_for_worktree(&inv.cwd)? {
+    if desc.is_none()
+        && let Some(repo_key) = ident::repo_key_for_worktree(&inv.cwd)?
+    {
         // `id` may be a mesh label or a registry id without a descriptor of its own: resolve it exactly as `send` does
         let st = common::open_store(inv, &repo_key)?;
         let rows = rows_of(&st);
         let target = match crate::meshw::send::resolve_send_target(inv, Some(st.reader()), &rows, &id)? {
             crate::meshw::send::Resolved::Row(t) | crate::meshw::send::Resolved::Rerouted(t, ..) | crate::meshw::send::Resolved::Redirected(t, _) => Some(t.id),
-            crate::meshw::send::Resolved::Unregistered
-            | crate::meshw::send::Resolved::AmbiguousPrefix(_)
-            | crate::meshw::send::Resolved::AmbiguousRows(_) => None,
+            crate::meshw::send::Resolved::Unregistered | crate::meshw::send::Resolved::AmbiguousPrefix(_) | crate::meshw::send::Resolved::AmbiguousRows(_) => {
+                None
+            }
         };
         desc = target.and_then(|t| ident::read_descriptor(&inv.home, &t));
     }

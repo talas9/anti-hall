@@ -141,7 +141,13 @@ fn check(env: &Env, st: &mut State, table: &[procs::Proc], lock: &str) {
     if !w.termed && idle_for >= lim("term_after_ms") && env.switch("lock_watch.term_setting") && terminate(lock, top, &cmd) {
         w.termed = true;
         note = defaults::render("msg.lock_stall_term", &[("pid", &top)]);
-        super::signals::rec(env, word("class"), word("term"), Outcome::Advise, crate::telemetry::event::Fields::new().num("pid", top as u64).num("idle_s", idle_for / fmtn("ms_per_s")));
+        super::signals::rec(
+            env,
+            word("class"),
+            word("term"),
+            Outcome::Advise,
+            crate::telemetry::event::Fields::new().num("pid", top as u64).num("idle_s", idle_for / fmtn("ms_per_s")),
+        );
     }
     if w.alerted_at != 0 && now.saturating_sub(w.alerted_at) < lim("renotify_ms") && note.is_empty() {
         return;
@@ -154,7 +160,13 @@ fn check(env: &Env, st: &mut State, table: &[procs::Proc], lock: &str) {
     );
     let target = coordinator(st);
     let delivered = target.as_ref().map(|k| {
-        let r = Reminder { id: format!("{:x}", crate::health::fnv(&format!("{lock}{top}{now}"))), ts: now, signal: word("signal").into(), agent: top.to_string(), text: text.clone() };
+        let r = Reminder {
+            id: format!("{:x}", crate::health::fnv(&format!("{lock}{top}{now}"))),
+            ts: now,
+            signal: word("signal").into(),
+            agent: top.to_string(),
+            text: text.clone(),
+        };
         WakeFeed.deliver(env, k, &r).is_ok()
     });
     super::signals::rec(

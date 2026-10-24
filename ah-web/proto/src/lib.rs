@@ -565,7 +565,11 @@ impl NumFmt {
             return n.to_string();
         };
         let text = format!("{:.*}", self.decimals, n as f64 / u.div as f64);
-        let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text };
+        let text = if text.contains('.') {
+            text.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            text
+        };
         format!("{text}{}", u.suffix)
     }
 }

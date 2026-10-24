@@ -270,7 +270,7 @@ pub fn handback_why(kind: Handback, site: &str, why: &str) {
     if kind != Handback::Abandoned {
         return;
     }
-    let (now, every) = (health::now_ms(), defaults::num("diagnostics.abandoned_log_interval_ms") as u64);
+    let (now, every) = (health::now_ms(), defaults::num("diagnostics.abandoned_log_interval_ms"));
     let n = {
         let mut g = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
         let m = g.get_or_insert_with(BTreeMap::new);

@@ -209,7 +209,7 @@ function resolveMeshTarget(storeHandle, meshId, home, opts) {
   // opts.exclude(row): rows that must never receive this route. `--to-primary` excludes a
   // proven CHILD builder registered against the Primary's path (the pre-fix submodule
   // identity bug): its live session would win the freshest-live pick and the mail would
-  // land in a child instead of the Primary (SkyCrew report, 2026-10-09).
+  // land in a child instead of the Primary (downstream report, 2026-10-09).
   let candidates = meshCandidateRows(storeHandle, meshId);
   if (opts && typeof opts.exclude === 'function') candidates = candidates.filter((r) => !opts.exclude(r));
   return livenessSelect.pickFreshestLive(candidates, {

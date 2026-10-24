@@ -216,6 +216,7 @@ Inside the session, `/reload-plugins` picks up edits. To use the marketplace bui
 
 **Codex.** The installer writes hook files; preview first, then install into a project or globally:
 
+<!-- doc-check: skip (needs an installed engine under the real home) -->
 ```sh
 ~/.anti-hall/ah-engine/bin/ah-engine install-codex --dry-run
 ```
@@ -366,7 +367,7 @@ The plugin and the engine have separate versions and separate release procedures
 | `ah-engine/src/`, `parity/`, `tests/`, `scripts/` | engine source, parity harnesses, tests, build and release scripts |
 | `plugins/anti-hall/engine/` | the engine's configuration, which ships with the plugin: `defaults/*.toml` (every setting, table, message and the dispatch table, listed by `defaults/index.toml`) and `rules.json`. **Tune in these files; the engine only runs them.** It reads them at run time (start-up, plugin update, file change), never from `ah-engine/` and never from the binary |
 | `tests/` | the plugin suite: `hooks/`, `hygiene/`, `codex/`, `scripts/`, `skills/`, `e2e/`, `helpers/`, `fixtures/` |
-| `evals/anti-hall/`, `eval/` | the benchmark suite (`claude plugin eval`) and the older fabrication A/B harness |
+| `evals/anti-hall/`, `tools/eval/` | the benchmark suite (`claude plugin eval`) and the older fabrication A/B harness |
 | `tools/` | generators and the docs-site builder (`gen-protocol.js`, `gen-agents-catalog.js`, `gen-kb-counts.js`, `build-site.js`) |
 | `docs/` | the guide, the engine overview and the knowledge-base files |
 

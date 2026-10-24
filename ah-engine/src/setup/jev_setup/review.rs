@@ -236,8 +236,13 @@ fn stats_cache() -> &'static crate::mem::BoundedCache<(u64, u64), FileStats> {
     CACHE.get_or_init(|| {
         crate::mem::BoundedCache::new(
             crate::mem::global(),
-            crate::mem::Spec::new("jev_review_stats", "mem.jev_review_stats_soft_bytes", "mem.jev_review_stats_hard_bytes", "mem.jev_review_stats_low_water_pct")
-                .with_entries("opcli.review_stats_max_files"),
+            crate::mem::Spec::new(
+                "jev_review_stats",
+                "mem.jev_review_stats_soft_bytes",
+                "mem.jev_review_stats_hard_bytes",
+                "mem.jev_review_stats_low_water_pct",
+            )
+            .with_entries("opcli.review_stats_max_files"),
         )
     })
 }

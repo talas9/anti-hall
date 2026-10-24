@@ -36,9 +36,14 @@ pub fn lock_live(home: &Path, id: &str, now: i64) -> R<bool> {
 pub fn idle_for_workspace(home: &Path, id: &str, st: &crate::checks::git::util::Settings) -> bool {
     let Some(d) = crate::meshw::ident::read_descriptor(home, id) else { return false };
     let Some(OVal::Str(scope)) = d.get(defaults::text("mesh_write.field_worktree_path")) else { return false };
-    if scope.is_empty() { return false; }
+    if scope.is_empty() {
+        return false;
+    }
     let p = crate::wakew::who::Proc {
-        home: home.to_path_buf(), cwd: scope.clone(), env: st.env.clone(), st: st.clone(),
+        home: home.to_path_buf(),
+        cwd: scope.clone(),
+        env: st.env.clone(),
+        st: st.clone(),
         root: defaults::root().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
     };
     matches!(crate::wakew::arch::idle_skip(&p), Ok(crate::wakew::arch::IdleSkip::Applies))
@@ -119,7 +124,7 @@ mod tests {
 
     #[test]
     fn the_app_row_without_a_session_is_covered_by_the_primarys_lock_on_its_checkout() {
-        // SkyCrew 2026-10-22: the DevSwarm app's own row for a Primary's checkout has `sessionId: null`; the Primary's row (with the
+        // downstream 2026-10-22: the DevSwarm app's own row for a Primary's checkout has `sessionId: null`; the Primary's row (with the
         // session) holds the live lock. The tracker asks about the app row and said "no Monitor wake-watch covers this workspace".
         let home = scratch("sessionless");
         let wt = home.join("wt").to_string_lossy().into_owned();

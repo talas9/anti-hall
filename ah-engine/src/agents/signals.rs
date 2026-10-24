@@ -20,7 +20,9 @@ pub(crate) type Raised = (u64, String);
 /// The state of an agent as the tracker reads it.
 pub(crate) fn state_of(a: &Agent) -> &'static str {
     let host = |k: &str| {
-        ["agent_tracker.claude_cli", "agent_tracker.registry"].iter().any(|t| defaults::raw(t).get(k).map(V::strings).unwrap_or_default().contains(&a.host.as_str()))
+        ["agent_tracker.claude_cli", "agent_tracker.registry"]
+            .iter()
+            .any(|t| defaults::raw(t).get(k).map(V::strings).unwrap_or_default().contains(&a.host.as_str()))
     };
     if a.kind == kind_name("heartbeat") {
         return if a.flags.contains_key("heartbeat_stale") { state_name("stale") } else { state_name("running") };
@@ -141,7 +143,13 @@ pub(crate) fn total_spent(a: &Agent) -> u64 {
 
 /// Whether the agent's latest calls wait on CI (a `ci_wait` command among the last `ci_wait_calls`).
 pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
-    let Some(re) = defaults::raw("agent_tracker.patterns").get("ci_wait").and_then(V::as_str).and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok()) else { return false };
+    let Some(re) = defaults::raw("agent_tracker.patterns")
+        .get("ci_wait")
+        .and_then(V::as_str)
+        .and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok())
+    else {
+        return false;
+    };
     a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
 }
 
@@ -176,7 +184,9 @@ fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
     let file = dir.join(format!("{}{}", sinks::key_of(&a.id), defaults::text("burn.marker_ext")));
     // the hard condition that holds now: the token line first, else the waste sensor's hard mark (its score is NOT a token count)
     let body = match (burn, super::waste::is_hard(a)) {
-        (Some((tokens, _)), _) => Some(serde_json::json!({ "ts": env.now_ms, "agent": a.id, "source": "burn", "tokens": tokens, "tokens_text": sinks::count(*tokens) })),
+        (Some((tokens, _)), _) => {
+            Some(serde_json::json!({ "ts": env.now_ms, "agent": a.id, "source": "burn", "tokens": tokens, "tokens_text": sinks::count(*tokens) }))
+        }
         (None, true) => {
             let tokens = super::waste::window_tokens(a, env.now_ms);
             Some(serde_json::json!({
@@ -249,9 +259,15 @@ fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
 /// A subagent that is known to have finished (it said so, or its task ended) and spoke at all, without making a single tool call: it did nothing, whatever its last message says ("Done"). Raised once,
 /// so the parent is told not to take the report for a result. `agent_tracker.no_work.max_tools` is the most tool calls that still count.
 fn no_work(a: &Agent) -> Option<Raised> {
-    if !super::is_child(a) || !(a.finished || a.gone) || a.dead || a.tout == 0
-        || !a.transcript_complete || a.partial || a.codex_rescue
-        || a.tools > defaults::num("agent_tracker.no_work.max_tools") {
+    if !super::is_child(a)
+        || !(a.finished || a.gone)
+        || a.dead
+        || a.tout == 0
+        || !a.transcript_complete
+        || a.partial
+        || a.codex_rescue
+        || a.tools > defaults::num("agent_tracker.no_work.max_tools")
+    {
         return None;
     }
     Some((a.tools, String::new()))
@@ -259,10 +275,15 @@ fn no_work(a: &Agent) -> Option<Raised> {
 
 /// The no-work evidence state, including unknown for any incomplete scan.
 pub(crate) fn no_work_state(a: &Agent) -> &'static str {
-    let key = if a.codex_rescue { "excluded" }
-        else if a.partial || !a.transcript_complete { "unknown" }
-        else if no_work(a).is_some() { "no_work" }
-        else { "clear" };
+    let key = if a.codex_rescue {
+        "excluded"
+    } else if a.partial || !a.transcript_complete {
+        "unknown"
+    } else if no_work(a).is_some() {
+        "no_work"
+    } else {
+        "clear"
+    };
     defaults::raw("agent_tracker.no_work_states").str_field(key)
 }
 
@@ -390,22 +411,24 @@ fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
     let t = match sig {
         "hung" => defaults::render("msg.agent_hung", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("tool", &f.text)]),
         "looping" => defaults::render("msg.agent_looping", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("what", &f.text)]),
-        "token_waste" => {
-            defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
-        }
-        "burn_soft" => {
-            defaults::render("burn.msg_soft", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
-        }
-        "burn_hard" => {
-            defaults::render("burn.msg_hard", &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))])
-        }
+        "token_waste" => defaults::render(
+            "msg.agent_token_waste",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
+        "burn_soft" => defaults::render(
+            "burn.msg_soft",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
+        "burn_hard" => defaults::render(
+            "burn.msg_hard",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
         "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
         "heartbeat_stale" => defaults::render("msg.agent_heartbeat_stale", &[("agent", &who), ("age", &age(f.evidence * fmtn("ms_per_s"))), ("step", &f.text)]),
-        "idle_open_task" => defaults::render(
-            "msg.agent_idle_open_task",
-            &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("task", &f.text)],
-        ),
+        "idle_open_task" => {
+            defaults::render("msg.agent_idle_open_task", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("task", &f.text)])
+        }
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
         "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {

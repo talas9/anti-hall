@@ -89,6 +89,10 @@ const ALLOW: &[(&str, &str)] = &[
         "`ah-engine devswarm wake-watch`, the idle-wake Monitor's own command-line process (run by `dswire/cli.rs`): the settings chain reads the Monitor's environment, as the Node watcher reads `process.env`; the daemon is not involved (D76)",
     ),
     (
+        "src/wakew/stale.rs",
+        "`stale_line`, run by the `ah-engine devswarm wake-watch` Monitor process (see `wakew/mod.rs`): the home variable of that process locates the version-independent watcher shim named in the stale-version line; the daemon is not involved",
+    ),
+    (
         "src/script/tests.rs",
         "the scripted-check unit tests (`#[cfg(test)] mod tests` in script/mod.rs, a file of its own so the scan's `#[cfg(test)]` cut does not apply): the test process's wall-clock headroom `AH_TEST_TIME_SCALE`, which CI sets",
     ),

@@ -43,8 +43,8 @@ pub mod idlock;
 pub mod inbox;
 pub mod inboxcmd;
 pub mod lifeverbs;
-pub mod meshgroup;
 pub mod mboxtool;
+pub mod meshgroup;
 pub mod orphan;
 pub mod plan;
 pub mod planverbs;
@@ -420,11 +420,12 @@ fn unsupported(json: bool, a: &args::Args) -> i32 {
     let word = a.positionals.first().map_or("", String::as_str);
     let retired = defaults::raw("mesh_write.retired_verbs").get(word).and_then(|v| v.as_str());
     let (reason, msg) = match retired {
-        Some(replacement) => (
-            defaults::text("mesh_write.reason_retired_verb"),
-            defaults::render("mesh_write.msg_retired_verb", &[("verb", &word), ("use", &replacement)]),
-        ),
-        None => (defaults::text("mesh_write.reason_unsupported_verb"), defaults::render("mesh_write.msg_unsupported_verb", &[("argv", &a.positionals.join(" "))])),
+        Some(replacement) => {
+            (defaults::text("mesh_write.reason_retired_verb"), defaults::render("mesh_write.msg_retired_verb", &[("verb", &word), ("use", &replacement)]))
+        }
+        None => {
+            (defaults::text("mesh_write.reason_unsupported_verb"), defaults::render("mesh_write.msg_unsupported_verb", &[("argv", &a.positionals.join(" "))]))
+        }
     };
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "meshw:unsupported_verb", &call_detail(a, reason));
     eprintln!("{msg}");
@@ -459,7 +460,9 @@ fn with_self_id(inv: &Inv, a: args::Args) -> Result<args::Args, send::Answer> {
     let own = ident::env_nonempty(&inv.env, defaults::text("mesh_write.env_builder_id"))
         .filter(|i| idlock::is_safe_id(i))
         .map(str::to_string)
-        .or_else(|| ident::caller_identity_detailed(&inv.env, &inv.cwd).ok().filter(|c| c.kind != defaults::text("mesh_write.kind_unresolvable")).map(|c| c.identity))
+        .or_else(|| {
+            ident::caller_identity_detailed(&inv.env, &inv.cwd).ok().filter(|c| c.kind != defaults::text("mesh_write.kind_unresolvable")).map(|c| c.identity)
+        })
         .filter(|i| idlock::is_safe_id(i));
     match own {
         Some(id) => {
@@ -542,7 +545,9 @@ pub fn run_front(raw: &[std::ffi::OsString]) -> i32 {
     let verb = verb_label(&a);
     let w = |k: &str| defaults::text(k).to_string();
     let Some(inv) = inv_from_process(stdin) else {
-        shadow_log(&serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}));
+        shadow_log(
+            &serde_json::json!({"ts": t0, "verb": verb, "mode": w("mesh_write.mode_on"), "result": w("mesh_write.shadow_defer"), "reason": "no-context"}),
+        );
         return unable(json, "meshw:no_context", &call_detail(&a, "no-context"));
     };
     let a = match with_self_id(&inv, a) {

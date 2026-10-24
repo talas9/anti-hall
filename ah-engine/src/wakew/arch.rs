@@ -273,7 +273,13 @@ mod tests {
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let home_s = home.to_string_lossy().into_owned();
-        Proc { home, cwd: home_s.clone(), env: Default::default(), st: crate::checks::git::util::Settings { home: home_s, env: Default::default() }, root: String::new() }
+        Proc {
+            home,
+            cwd: home_s.clone(),
+            env: Default::default(),
+            st: crate::checks::git::util::Settings { home: home_s, env: Default::default() },
+            root: String::new(),
+        }
     }
 
     /// The active-list snapshot and the child's descriptor, `age` old.

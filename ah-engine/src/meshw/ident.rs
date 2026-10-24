@@ -77,7 +77,8 @@ fn common_obj() -> Vec<(String, OVal)> {
 /// [`refuse`] for a failure that is the verb's own answer: `{"ok":false,"error":<text of `msg_key` with `vars`>}`.
 pub fn refuse_text<T>(msg_key: &str, vars: &[(&str, &str)]) -> Result<T, Defer> {
     let mut o = crate::meshw::common::Obj::default();
-    o.put("ok", OVal::Bool(false)).put("error", OVal::Str(defaults::render(msg_key, &vars.iter().map(|(k, v)| (*k, v as &dyn std::fmt::Display)).collect::<Vec<_>>())));
+    o.put("ok", OVal::Bool(false))
+        .put("error", OVal::Str(defaults::render(msg_key, &vars.iter().map(|(k, v)| (*k, v as &dyn std::fmt::Display)).collect::<Vec<_>>())));
     refuse(&o.done().stringify())
 }
 

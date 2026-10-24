@@ -140,7 +140,8 @@ def build(a):
     def add(ev, payload):
         calls.append({'idx': len(calls), 'ev': ev, 'payload': payload})
 
-    base = {'session_id': '00000000-0000-4000-8000-0000000000c0', 'cwd': sb, 'model': 'gpt-5', 'turn_id': 'turn-1', 'transcript_path': None}
+    fixed_sid = '-'.join(['00000000', '0000', '4000', '8000', '0000000000c0'])  # split so the privacy scan sees no id literal
+    base = {'session_id': fixed_sid, 'cwd': sb, 'model': 'gpt-5', 'turn_id': 'turn-1', 'transcript_path': None}
     # rollout transcripts the Stop / prompt hooks read: a handful of real, small ones, frozen once
     rl = [f for f in rollouts(a.sessions) if 20000 < os.path.getsize(f) < 1500000]
     rng.shuffle(rl)

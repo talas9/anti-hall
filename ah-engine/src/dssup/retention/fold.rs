@@ -75,12 +75,14 @@ pub fn files_json(items: &[Item]) -> Vec<Value> {
 /// journal side holds that sqlite lacks. A check that cannot run holds the fold.
 pub fn ineligible(home: &Path, hash: &str) -> Option<&'static str> {
     let dir = super::plan::store_dir(home, hash);
-    let sqlite = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker"))).is_ok_and(|m| m.trim().to_lowercase() == defaults::text("mesh.backend_sqlite"));
+    let sqlite = std::fs::read_to_string(dir.join(defaults::text("mesh.backend_marker")))
+        .is_ok_and(|m| m.trim().to_lowercase() == defaults::text("mesh.backend_sqlite"));
     let db_bytes = std::fs::metadata(dir.join(defaults::text("mesh_write.store_file"))).map_or(0, |m| m.len());
     if !sqlite || db_bytes == 0 {
         return Some(defaults::text("devswarm_sup.rt_fold_not_sqlite"));
     }
-    let recorded = std::fs::read_to_string(dir.join(defaults::text("update_post.merge_marker"))).is_ok_and(|t| serde_json::from_str::<Value>(&t).is_ok_and(|v| !v.is_null() && v != json!(false) && v != json!(0) && v != json!("")));
+    let recorded = std::fs::read_to_string(dir.join(defaults::text("update_post.merge_marker")))
+        .is_ok_and(|t| serde_json::from_str::<Value>(&t).is_ok_and(|v| !v.is_null() && v != json!(false) && v != json!(0) && v != json!("")));
     if !recorded {
         return Some(defaults::text("devswarm_sup.rt_fold_merge_not_recorded"));
     }

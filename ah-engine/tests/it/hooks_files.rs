@@ -59,7 +59,10 @@ fn the_shipped_hooks_json_is_one_matcherless_wrapper_call_per_event() {
             assert_eq!(hs.len(), 1, "{host} {ev}");
             let cmd = hs[0]["command"].as_str().unwrap();
             assert_eq!(cmd, hooksgen::thin_command(host, ev), "{host} {ev}: the command is hooks_form.template filled in");
-            assert!(!cmd.contains("ah-hook.sh") && cmd.contains("exec sh ") && cmd.contains("/hooks/install.sh\" "), "{host} {ev}: direct form, install.sh fallback: {cmd}");
+            assert!(
+                !cmd.contains("ah-hook.sh") && cmd.contains("exec sh ") && cmd.contains("/hooks/install.sh\" "),
+                "{host} {ev}: direct form, install.sh fallback: {cmd}"
+            );
         }
         // D87 exception: no thin trigger for events whose hook replaces the operation
         assert!(!evs.iter().any(|(k, _)| k.starts_with("Worktree")), "{host}: Worktree* events get no trigger");
@@ -103,7 +106,15 @@ fn the_plugin_ships_exactly_one_shell_file() {
 #[test]
 fn every_table_row_has_a_check_or_a_command_in_the_map_and_the_table_holds_no_node_text() {
     for host in table::hosts() {
-        let map: Value = serde_json::from_str(&std::fs::read_to_string(repo().join("plugins/anti-hall-node/hooks").join(if host == "codex" { "ah-fallback.codex.map.json" } else { "ah-fallback.map.json" })).unwrap()).unwrap();
+        let map: Value = serde_json::from_str(
+            &std::fs::read_to_string(repo().join("plugins/anti-hall-node/hooks").join(if host == "codex" {
+                "ah-fallback.codex.map.json"
+            } else {
+                "ah-fallback.map.json"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         for ev in table::events(host) {
             for e in table::entries(host, ev) {
                 let in_map = map[ev][&e.id].as_str().is_some_and(|c| !c.is_empty());

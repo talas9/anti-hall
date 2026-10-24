@@ -100,11 +100,7 @@ pub(crate) fn adopt_legacy_marker(home: &Path, hash: &str, read_only: bool) -> b
 /// `openStore({ home, hash, readOnly })`.
 pub(crate) fn open(home: &Path, hash: &str, read_only: bool) -> Result<Handle, String> {
     let db = store_dir(home, hash).join(defaults::text("mesh_write.store_file"));
-    if read_only {
-        MeshReader::open(&db).map(Handle::Ro).map_err(|e| e.to_string())
-    } else {
-        MeshStore::open(&db).map(Handle::Rw).map_err(|e| e.to_string())
-    }
+    if read_only { MeshReader::open(&db).map(Handle::Ro).map_err(|e| e.to_string()) } else { MeshStore::open(&db).map(Handle::Rw).map_err(|e| e.to_string()) }
 }
 
 fn floor_name() -> &'static str {
@@ -164,7 +160,9 @@ pub(crate) fn list_legacy(home: &Path, id: &str, sep: &str) -> Vec<(String, f64)
             continue;
         }
         let Some(short) = n.get(prefix.len()..n.len() - suffix.len()) else { continue };
-        if short.len() != defaults::num("mesh_write.legacy_cursor_short_len") as usize || !short.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        if short.len() != defaults::num("mesh_write.legacy_cursor_short_len") as usize
+            || !short.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
             continue;
         }
         out.push((short.to_string(), cursors::read_cursor(&dir.join(&n))));
@@ -289,7 +287,8 @@ fn live_sessions(cx: &mut Cx) -> Vec<Session> {
             Some(OVal::Num(x)) if x.is_finite() => *x,
             _ => mtime_ms(&fp).unwrap_or(0.0),
         };
-        let reader = format!("{}{}:{}", defaults::text("mesh_write.nonce_prefix"), to_js_string(*pid), to_js_string(if start.is_finite() { start } else { 0.0 }));
+        let reader =
+            format!("{}{}:{}", defaults::text("mesh_write.nonce_prefix"), to_js_string(*pid), to_js_string(if start.is_finite() { start } else { 0.0 }));
         let t = table.get_or_insert_with(|| cx.table());
         if !provably_ended(&reader, t.as_ref()) {
             out.push(Session { reader, cwd: rec.get("cwd").filter(|c| !matches!(c, OVal::Null)).map(js_str) });
@@ -446,13 +445,27 @@ fn apply_import(tx: &CursorTx<'_>, partition: &str, rows: &[CursorRow], plan: &P
         if row_of(rows, ns, floor_name()).is_some() {
             continue;
         }
-        tx.put(&CursorPut { partition: partition.into(), ns: ns.into(), reader: floor_name().into(), value: plan.floors.at(ns) as i64, retired_line: None, updated_at: now })?;
+        tx.put(&CursorPut {
+            partition: partition.into(),
+            ns: ns.into(),
+            reader: floor_name().into(),
+            value: plan.floors.at(ns) as i64,
+            retired_line: None,
+            updated_at: now,
+        })?;
         wrote = true;
         for (reader, rns, value) in &plan.readers {
             if *rns != ns || row_of(rows, ns, reader).is_some() {
                 continue;
             }
-            tx.put(&CursorPut { partition: partition.into(), ns: ns.into(), reader: reader.clone(), value: *value as i64, retired_line: None, updated_at: now })?;
+            tx.put(&CursorPut {
+                partition: partition.into(),
+                ns: ns.into(),
+                reader: reader.clone(),
+                value: *value as i64,
+                retired_line: None,
+                updated_at: now,
+            })?;
         }
     }
     Ok(wrote)
@@ -790,15 +803,36 @@ pub(crate) fn repair_pinned_floors(cx: &mut Cx, h: &Handle, partition: &str, dry
             }
             let p = plan_for(cx, &rows);
             for r in &p.retire {
-                tx.put(&CursorPut { partition: partition.into(), ns: r.ns.clone(), reader: r.reader.clone(), value: r.value, retired_line: Some(Some(r.value)), updated_at: if r.updated_at != 0 { r.updated_at } else { now } })?;
+                tx.put(&CursorPut {
+                    partition: partition.into(),
+                    ns: r.ns.clone(),
+                    reader: r.reader.clone(),
+                    value: r.value,
+                    retired_line: Some(Some(r.value)),
+                    updated_at: if r.updated_at != 0 { r.updated_at } else { now },
+                })?;
             }
             for (r, to) in &p.raise {
-                tx.put(&CursorPut { partition: partition.into(), ns: nd_ns.into(), reader: r.reader.clone(), value: *to, retired_line: None, updated_at: now })?;
+                tx.put(&CursorPut {
+                    partition: partition.into(),
+                    ns: nd_ns.into(),
+                    reader: r.reader.clone(),
+                    value: *to,
+                    retired_line: None,
+                    updated_at: now,
+                })?;
             }
             for ns in ns_array() {
                 let (from, to) = p.floors.at(ns);
                 if to > from {
-                    tx.put(&CursorPut { partition: partition.into(), ns: ns.into(), reader: floor_name().into(), value: to, retired_line: None, updated_at: now })?;
+                    tx.put(&CursorPut {
+                        partition: partition.into(),
+                        ns: ns.into(),
+                        reader: floor_name().into(),
+                        value: to,
+                        retired_line: None,
+                        updated_at: now,
+                    })?;
                 }
             }
             Ok(p)

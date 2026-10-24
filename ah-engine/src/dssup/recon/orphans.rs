@@ -281,8 +281,10 @@ impl Planner<'_> {
         }
         if wrong_store {
             self.acc.unhealable += 1;
-            self.acc.detail.push(json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_wrong_store"),
-                "freshRepoKey": fresh}));
+            self.acc.detail.push(
+                json!({"id": id, "action": defaults::text("devswarm_recon.action_unhealable"), "reason": defaults::text("devswarm_recon.reason_wrong_store"),
+                "freshRepoKey": fresh}),
+            );
             return Ok(());
         }
         // adopt: `upsertRegistry({ id, worktreePath, sessionId, inboxPath, cursorPath })`, each field `String(v)` unless null
@@ -335,7 +337,9 @@ impl Planner<'_> {
                         self.rows.retain(|r| r.row.id != id);
                     }
                 }
-                None => entry = json!({"id": id, "action": defaults::text("devswarm_recon.action_adopted"), "reason": defaults::text("devswarm_recon.reason_no_live_survivor")}),
+                None => {
+                    entry = json!({"id": id, "action": defaults::text("devswarm_recon.action_adopted"), "reason": defaults::text("devswarm_recon.reason_no_live_survivor")})
+                }
             }
         }
         let detail_at = self.acc.detail.len();

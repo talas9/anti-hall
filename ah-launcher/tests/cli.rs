@@ -17,12 +17,27 @@ fn engine(e: &Env) -> std::path::PathBuf {
 fn a_verb_is_the_engines_command_with_its_exit_and_stdin() {
     let e = Env::new("cli-verb");
     let eng = engine(&e);
-    let o = e.run_args("settings", &["show", "--json"], b"{\"a\":1}\n", Some(&eng), &[]);
+    let o = e.run_args(
+        "settings",
+        &["show", "--json"],
+        b"{\"a\":1}\n",
+        Some(&eng),
+        &[],
+    );
     let out = String::from_utf8_lossy(&o.out);
     assert_eq!(o.code, 3, "{}", o.err);
-    assert!(out.starts_with("ENGINE[settings show --json] root="), "{out}");
-    assert!(out.ends_with("{\"a\":1}\n"), "stdin reaches the engine unchanged: {out}");
-    assert!(!out.contains("--plugin-root"), "the shim's root pair is not forwarded: {out}");
+    assert!(
+        out.starts_with("ENGINE[settings show --json] root="),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("{\"a\":1}\n"),
+        "stdin reaches the engine unchanged: {out}"
+    );
+    assert!(
+        !out.contains("--plugin-root"),
+        "the shim's root pair is not forwarded: {out}"
+    );
     let root = std::fs::canonicalize(&e.root).unwrap();
     assert!(out.contains(&format!("root={}", root.display())), "{out}");
 }
@@ -31,8 +46,19 @@ fn a_verb_is_the_engines_command_with_its_exit_and_stdin() {
 fn an_explicit_plugin_root_override_is_kept() {
     let e = Env::new("cli-root");
     let eng = engine(&e);
-    let o = e.run_args("defect", &["list"], b"", Some(&eng), &[("AH_ENGINE_PLUGIN_ROOT", "/elsewhere")]);
-    assert!(String::from_utf8_lossy(&o.out).contains("root=/elsewhere\n"), "{} {}", String::from_utf8_lossy(&o.out), o.err);
+    let o = e.run_args(
+        "defect",
+        &["list"],
+        b"",
+        Some(&eng),
+        &[("AH_ENGINE_PLUGIN_ROOT", "/elsewhere")],
+    );
+    assert!(
+        String::from_utf8_lossy(&o.out).contains("root=/elsewhere\n"),
+        "{} {}",
+        String::from_utf8_lossy(&o.out),
+        o.err
+    );
 }
 
 #[test]
@@ -82,11 +108,25 @@ fn the_engine_gets_signals_and_no_launcher_cpu_limit() {
     let eng = e.script("eng", "ulimit -t\nkill -TERM $$\nsleep 1\necho survived");
     let o = e.run_args("status", &[], b"", Some(&eng), &[]);
     let out = String::from_utf8_lossy(&o.out);
-    assert!(!out.contains("survived"), "SIGTERM was blocked in the engine: {out}");
+    assert!(
+        !out.contains("survived"),
+        "SIGTERM was blocked in the engine: {out}"
+    );
     assert_eq!(o.code, -1, "the engine died by SIGTERM: {out} {}", o.err);
     let limit = out.lines().next().unwrap_or_default();
-    let mine = String::from_utf8_lossy(&Command::new("sh").args(["-c", "ulimit -t"]).output().unwrap().stdout).trim().to_string();
-    assert_eq!(limit, mine, "the engine runs with the CPU limit the launcher was started with");
+    let mine = String::from_utf8_lossy(
+        &Command::new("sh")
+            .args(["-c", "ulimit -t"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert_eq!(
+        limit, mine,
+        "the engine runs with the CPU limit the launcher was started with"
+    );
 }
 
 #[test]
@@ -94,17 +134,34 @@ fn events_still_go_to_the_hook_path() {
     let e = Env::new("cli-event");
     let eng = e.script("eng", "printf '%s' \"$*\"");
     let o = e.run("UserPromptSubmit", b"{}", Some(&eng), &[]);
-    assert_eq!(String::from_utf8_lossy(&o.out), "hook --event UserPromptSubmit --host claude");
+    assert_eq!(
+        String::from_utf8_lossy(&o.out),
+        "hook --event UserPromptSubmit --host claude"
+    );
     e.set("launcher.cli_lowercase_verbs", "0");
     let o = e.run("settings", b"{}", Some(&eng), &[]);
-    assert_eq!(String::from_utf8_lossy(&o.out), "hook --event settings --host claude", "with the switch off every word is an event");
+    assert_eq!(
+        String::from_utf8_lossy(&o.out),
+        "hook --event settings --host claude",
+        "with the switch off every word is an event"
+    );
 }
 
 #[test]
 fn the_test_only_engine_override_is_ignored_without_the_test_flag() {
     let e = Env::new("cli-knob");
     let eng = engine(&e);
-    let o = e.run_args("statusline", &[], b"z", Some(&eng), &[("AH_WRAPPER_TEST", "0")]);
-    assert_eq!(o.code, 127, "a stray AH_ENGINE_BIN must not replace the engine: {}", o.err);
+    let o = e.run_args(
+        "statusline",
+        &[],
+        b"z",
+        Some(&eng),
+        &[("AH_WRAPPER_TEST", "0")],
+    );
+    assert_eq!(
+        o.code, 127,
+        "a stray AH_ENGINE_BIN must not replace the engine: {}",
+        o.err
+    );
     assert!(o.out.is_empty());
 }

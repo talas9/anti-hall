@@ -176,13 +176,20 @@ pub fn legacy(home: &Path, state: &Path, ts: u64, dry: bool, guarded: bool, out:
                 out.legacy += 1;
                 out.moved.push(json!({"from": from.display().to_string(), "to": to.display().to_string()}));
             }
-            Err(e) => notes.push(defaults::render("routine.line_sweep_failed", &[("step", &t("routine.sweep_step_legacy")), ("why", &format!("{}: {e}", from.display()))])),
+            Err(e) => notes.push(defaults::render(
+                "routine.line_sweep_failed",
+                &[("step", &t("routine.sweep_step_legacy")), ("why", &format!("{}: {e}", from.display()))],
+            )),
         }
     }
     if guarded {
         return;
     }
-    let Some(listing) = command("routine.sweep_cron_list").and_then(|mut c| c.stdin(Stdio::null()).stderr(Stdio::null()).output().ok()).filter(|o| o.status.success()) else { return };
+    let Some(listing) =
+        command("routine.sweep_cron_list").and_then(|mut c| c.stdin(Stdio::null()).stderr(Stdio::null()).output().ok()).filter(|o| o.status.success())
+    else {
+        return;
+    };
     let (next, n) = strip_cron(&String::from_utf8_lossy(&listing.stdout));
     if n == 0 {
         return;
@@ -233,7 +240,10 @@ pub fn run(tree: Option<&Path>, roots: &[PathBuf], dry: bool, units: bool, say: 
     legacy(&home, &state, ts, dry, crate::setup::units::Sys::guarded(&sys), &mut out, &mut notes);
     if out.legacy > before {
         let dir = retired_root(&state, ts, t("routine.sweep_legacy_label"));
-        say(defaults::render(if dry { "routine.line_retired_legacy_would" } else { "routine.line_retired_legacy" }, &[("n", &(out.legacy - before)), ("dir", &dir.display())]));
+        say(defaults::render(
+            if dry { "routine.line_retired_legacy_would" } else { "routine.line_retired_legacy" },
+            &[("n", &(out.legacy - before)), ("dir", &dir.display())],
+        ));
     }
     // the launchd / systemd units of the old installers: unloaded first, then their files move (the engine's own `units heal`)
     if let Some(report) = units.then(|| crate::setup::units::heal_changes(dry)).flatten() {
@@ -278,7 +288,12 @@ mod tests {
 /// copy of this one).
 pub fn for_doctor(dry: bool, say: &mut dyn FnMut(String)) -> Outcome {
     let tree = defaults::root();
-    let version_of = |r: &Path| std::fs::read_to_string(r.join(t("migrate.plugin_manifest"))).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v.get("version").and_then(Value::as_str).map(str::to_string));
+    let version_of = |r: &Path| {
+        std::fs::read_to_string(r.join(t("migrate.plugin_manifest")))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.get("version").and_then(Value::as_str).map(str::to_string))
+    };
     let mine = tree.as_deref().and_then(version_of);
     let roots: Vec<PathBuf> = super::routine::plugin_roots().into_iter().filter(|r| mine.is_some() && version_of(r) == mine).collect();
     run(tree.as_deref(), &roots, dry, false, say)

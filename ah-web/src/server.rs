@@ -1,17 +1,17 @@
 //! The HTTP side: loopback only, a Host check against DNS rebinding, a session cookie minted from the one-time token in the
 //! printed address, the page, its files and the event stream.
+use crate::app::App;
 use crate::data;
 use crate::model::Out;
-use crate::app::App;
-use ah_web_proto::{ActionReq, ActionRes, Boot, Detail, DELTA_EVENT, SNAPSHOT_EVENT};
+use ah_web_proto::{ActionReq, ActionRes, Boot, DELTA_EVENT, Detail, SNAPSHOT_EVENT};
+use axum::Json;
+use axum::Router;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::Json;
-use axum::Router;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -40,8 +40,14 @@ pub fn router(app: Shared) -> Router {
         .route("/api/manage/history", get(manage_history))
         .route("/api/manage/write", post(manage_write))
         .route(ah_web_proto::ops::OPS_CFG_PATH, get(crate::ops::config))
-        .route(ah_web_proto::ops::OPS_ACCOUNTS_PATH, get(crate::ops::accounts))
-        .route(ah_web_proto::ops::OPS_UPDATE_PATH, post(crate::ops::update_check))
+        .route(
+            ah_web_proto::ops::OPS_ACCOUNTS_PATH,
+            get(crate::ops::accounts),
+        )
+        .route(
+            ah_web_proto::ops::OPS_UPDATE_PATH,
+            post(crate::ops::update_check),
+        )
         .route(ah_web_proto::ops::OPS_LOGS_PATH, get(crate::ops::logs))
         .route("/api/telemetry", get(tel_doc))
         .route("/api/impact", get(impact_doc))
@@ -52,7 +58,11 @@ pub fn router(app: Shared) -> Router {
 
 /// Constant-time equality for the token.
 fn ct_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
@@ -70,25 +80,41 @@ pub(crate) fn cookie_ok(app: &App, headers: &HeaderMap) -> bool {
 async fn guard(State(app): State<Shared>, req: Request, next: Next) -> Response {
     app.touch();
     let s = app.settings();
-    let host_ok = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).is_some_and(|h| {
-        let (name, port) = h.rsplit_once(':').unwrap_or((h, ""));
-        port == app.port.to_string() && (name == s.bind_host || name == "localhost")
-    });
+    let host_ok = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| {
+            let (name, port) = h.rsplit_once(':').unwrap_or((h, ""));
+            port == app.port.to_string() && (name == s.bind_host || name == "localhost")
+        });
     if !host_ok {
         return StatusCode::MISDIRECTED_REQUEST.into_response();
     }
     let mut resp = next.run(req).await;
     if let Ok(v) = HeaderValue::from_str(&s.csp) {
-        resp.headers_mut().insert(header::CONTENT_SECURITY_POLICY, v);
+        resp.headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, v);
     }
-    resp.headers_mut().insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    resp.headers_mut().insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    resp.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     resp
 }
 
 pub(crate) fn refuse(app: &App) -> Response {
-    (StatusCode::UNAUTHORIZED, app.settings().msg_unauthorized.clone()).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        app.settings().msg_unauthorized.clone(),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -97,12 +123,19 @@ struct TokenQuery {
 }
 
 /// `/`: with the token in the address, set the session cookie and go to the clean address; with the cookie, the page.
-async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: HeaderMap) -> Response {
+async fn index(
+    State(app): State<Shared>,
+    Query(q): Query<TokenQuery>,
+    headers: HeaderMap,
+) -> Response {
     let s = app.settings();
     if let Some(t) = q.t.as_deref()
         && ct_eq(t, &app.token)
     {
-        let cookie = format!("{}={}; HttpOnly; SameSite=Strict; Path=/", s.cookie_name, app.token);
+        let cookie = format!(
+            "{}={}; HttpOnly; SameSite=Strict; Path=/",
+            s.cookie_name, app.token
+        );
         let mut r = Redirect::to("/").into_response();
         if let Ok(v) = HeaderValue::from_str(&cookie) {
             r.headers_mut().insert(header::SET_COOKIE, v);
@@ -117,7 +150,11 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
     };
     let boot = Boot {
-        ui: { let mut u = crate::ops::merged_ui(&app, &s.ui); u.extend(crate::tel::boot_texts(&app)); u },
+        ui: {
+            let mut u = crate::ops::merged_ui(&app, &s.ui);
+            u.extend(crate::tel::boot_texts(&app));
+            u
+        },
         heartbeat_warn_s: s.heartbeat_warn_s,
         heartbeat_stale_s: s.heartbeat_stale_s,
         kind_order: s.kind_order.clone(),
@@ -127,15 +164,28 @@ async fn index(State(app): State<Shared>, Query(q): Query<TokenQuery>, headers: 
         feed_max: s.feed_max,
         graph: crate::cfg::graph_json(&app.root.join(&s.live_graph_rel)).unwrap_or_default(),
         live: s.live(),
-        plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel)).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.get("version").and_then(serde_json::Value::as_str).map(str::to_string)).unwrap_or_default(),
+        plugin_version: std::fs::read_to_string(app.root.join(&s.plugin_manifest_rel))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| {
+                v.get("version")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default(),
         web_version: env!("AH_BUILD_VERSION").to_string(),
         number: s.number(),
         topo: s.topo(),
     };
     // the JSON sits inside a <script> element: keep a "</" in a text from closing it
-    let json = serde_json::to_string(&boot).unwrap_or_default().replace("</", "<\\/");
+    let json = serde_json::to_string(&boot)
+        .unwrap_or_default()
+        .replace("</", "<\\/");
     let mut r = html.replace(&s.boot_marker, &json).into_response();
-    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
     r
 }
 
@@ -145,7 +195,10 @@ async fn serve_from(app: &App, headers: &HeaderMap, dir: &str, rel: &str) -> Res
     }
     let s = app.settings();
     // plain relative names only: no "..", no absolute path, no hidden file
-    if rel.split('/').any(|p| p.is_empty() || p == ".." || p.starts_with('.')) {
+    if rel
+        .split('/')
+        .any(|p| p.is_empty() || p == ".." || p.starts_with('.'))
+    {
         return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
     }
     let ext = rel.rsplit('.').next().unwrap_or_default();
@@ -158,12 +211,20 @@ async fn serve_from(app: &App, headers: &HeaderMap, dir: &str, rel: &str) -> Res
     }
 }
 
-async fn static_file(State(app): State<Shared>, headers: HeaderMap, Path(p): Path<String>) -> Response {
+async fn static_file(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Path(p): Path<String>,
+) -> Response {
     let dir = app.settings().static_dir.clone();
     serve_from(&app, &headers, &dir, &p).await
 }
 
-async fn pkg_file(State(app): State<Shared>, headers: HeaderMap, Path(p): Path<String>) -> Response {
+async fn pkg_file(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Path(p): Path<String>,
+) -> Response {
     let dir = app.settings().pkg_dir.clone();
     serve_from(&app, &headers, &dir, &p).await
 }
@@ -173,7 +234,11 @@ struct StreamGuard(Shared, bool);
 
 impl Drop for StreamGuard {
     fn drop(&mut self) {
-        let counter = if self.1 { &self.0.lite_streams } else { &self.0.full_streams };
+        let counter = if self.1 {
+            &self.0.lite_streams
+        } else {
+            &self.0.full_streams
+        };
         counter.fetch_sub(1, Ordering::SeqCst);
         self.0.touch();
     }
@@ -186,7 +251,11 @@ struct StreamQuery {
 }
 
 /// `/api/stream?mode=`: the current snapshot at once, then only what changed, at the tier's rate.
-async fn stream(State(app): State<Shared>, Query(q): Query<StreamQuery>, headers: HeaderMap) -> Response {
+async fn stream(
+    State(app): State<Shared>,
+    Query(q): Query<StreamQuery>,
+    headers: HeaderMap,
+) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
@@ -198,10 +267,18 @@ async fn stream(State(app): State<Shared>, Query(q): Query<StreamQuery>, headers
         "lite" => true,
         _ => false,
     };
-    let counter = if lite { &app.lite_streams } else { &app.full_streams };
+    let counter = if lite {
+        &app.lite_streams
+    } else {
+        &app.full_streams
+    };
     counter.fetch_add(1, Ordering::SeqCst);
     let guard = StreamGuard(app.clone(), lite);
-    if app.polling.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+    if app
+        .polling
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
         tokio::spawn(data::poll(app.clone()));
     }
     let ms = if lite { s.lite_push_ms } else { s.full_push_ms }.max(s.push_min_ms);
@@ -224,29 +301,52 @@ async fn stream(State(app): State<Shared>, Query(q): Query<StreamQuery>, headers
             Out::Nothing => None,
             Out::Delta(d) => {
                 last = Some(d.seq);
-                Event::default().event(DELTA_EVENT).json_data(&d).ok().map(Ok::<Event, Infallible>)
+                Event::default()
+                    .event(DELTA_EVENT)
+                    .json_data(&d)
+                    .ok()
+                    .map(Ok::<Event, Infallible>)
             }
             Out::Snapshot(snap) => {
                 last = Some(snap.seq);
-                Event::default().event(SNAPSHOT_EVENT).json_data(&snap).ok().map(Ok::<Event, Infallible>)
+                Event::default()
+                    .event(SNAPSHOT_EVENT)
+                    .json_data(&snap)
+                    .ok()
+                    .map(Ok::<Event, Infallible>)
             }
         }
     });
-    Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(s.sse_keepalive_s))).into_response()
+    Sse::new(events)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(s.sse_keepalive_s)))
+        .into_response()
 }
 
 /// An agent id is a tracker id: letters, digits and `-_.:` only, so it can be put in an engine argument or a control request.
 fn id_ok(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b))
 }
 
 fn res(ok: bool, outcome: &str, message: String) -> Response {
-    Json(ActionRes { ok, outcome: outcome.into(), message }).into_response()
+    Json(ActionRes {
+        ok,
+        outcome: outcome.into(),
+        message,
+    })
+    .into_response()
 }
 
 /// `POST /api/action`: run one menu action on one agent as an engine verb (the engine audits it). Actions that ask first are refused
 /// until the request says the person confirmed.
-async fn action(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+async fn action(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
@@ -266,7 +366,11 @@ async fn action(State(app): State<Shared>, headers: HeaderMap, body: axum::body:
     if def.local {
         return res(true, "done", String::new());
     }
-    let args: Vec<String> = def.args.iter().map(|a| a.replace("{id}", &req.id)).collect();
+    let args: Vec<String> = def
+        .args
+        .iter()
+        .map(|a| a.replace("{id}", &req.id))
+        .collect();
     let run = tokio::process::Command::new(&app.engine)
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -274,12 +378,20 @@ async fn action(State(app): State<Shared>, headers: HeaderMap, body: axum::body:
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
-    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await else {
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await
+    else {
         return res(false, "failed", s.msg_action_timeout.clone());
     };
     let body: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    let ok = body.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-    let text = |k: &str| body.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
+    let ok = body
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let text = |k: &str| {
+        body.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
     if ok {
         // the sentence from the menu entry, with the verb's own numbers filled in ({backlog}, {live}, ...)
         let result = body.get("result").and_then(serde_json::Value::as_object);
@@ -287,15 +399,25 @@ async fn action(State(app): State<Shared>, headers: HeaderMap, body: axum::body:
             r.iter().fold(def.done.clone(), |t, (k, v)| {
                 let text = match v {
                     serde_json::Value::String(x) => x.clone(),
-                    serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => String::new(),
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => String::new(),
                     other => other.to_string(),
                 };
                 t.replace(&format!("{{{k}}}"), &text)
             })
         });
-        res(true, "done", note.chars().take(s.action_note_max_chars).collect())
+        res(
+            true,
+            "done",
+            note.chars().take(s.action_note_max_chars).collect(),
+        )
     } else {
-        res(false, &text("outcome").unwrap_or_else(|| "failed".into()), text("error").unwrap_or_else(|| s.msg_action_failed.clone()))
+        res(
+            false,
+            &text("outcome").unwrap_or_else(|| "failed".into()),
+            text("error").unwrap_or_else(|| s.msg_action_failed.clone()),
+        )
     }
 }
 
@@ -308,18 +430,32 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
     if !id_ok(&id) {
         return (StatusCode::BAD_REQUEST, s.msg_action_bad_id.clone()).into_response();
     }
-    let Ok(doc) = crate::ctl::call(&app.socket, &format!("agents agent={id}"), Duration::from_millis(s.ctl_timeout_ms), s.ctl_max_bytes).await else {
+    let Ok(doc) = crate::ctl::call(
+        &app.socket,
+        &format!("agents agent={id}"),
+        Duration::from_millis(s.ctl_timeout_ms),
+        s.ctl_max_bytes,
+    )
+    .await
+    else {
         return (StatusCode::BAD_GATEWAY, s.msg_action_timeout.clone()).into_response();
     };
     let mut rows = Vec::new();
-    if let Some(a) = doc.get("agents").and_then(serde_json::Value::as_array).and_then(|l| l.first()).and_then(serde_json::Value::as_object) {
+    if let Some(a) = doc
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|l| l.first())
+        .and_then(serde_json::Value::as_object)
+    {
         for (k, v) in a {
             if s.detail_skip_keys.contains(k) || v.is_null() {
                 continue;
             }
             let text = match v {
                 serde_json::Value::String(t) => t.clone(),
-                serde_json::Value::Number(n) if n.is_u64() && !s.number_raw_keys.contains(k) => s.number().fmt(n.as_u64().unwrap_or_default()),
+                serde_json::Value::Number(n) if n.is_u64() && !s.number_raw_keys.contains(k) => {
+                    s.number().fmt(n.as_u64().unwrap_or_default())
+                }
                 other => other.to_string(),
             };
             rows.push((k.clone(), text.chars().take(s.step_max_chars).collect()));
@@ -332,9 +468,22 @@ async fn detail(State(app): State<Shared>, headers: HeaderMap, Path(id): Path<St
         .and_then(|a| a.get("tasks"))
         .and_then(serde_json::Value::as_array)
         .map(|l| {
-            let t = |v: &serde_json::Value, k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+            let t = |v: &serde_json::Value, k: &str| {
+                v.get(k)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
             l.iter()
-                .map(|v| ah_web_proto::TaskRow { subject: t(v, "subject"), status: t(v, "status"), priority: t(v, "priority"), changed_ms: v.get("updated_ms").and_then(serde_json::Value::as_u64).unwrap_or(0) })
+                .map(|v| ah_web_proto::TaskRow {
+                    subject: t(v, "subject"),
+                    status: t(v, "status"),
+                    priority: t(v, "priority"),
+                    changed_ms: v
+                        .get("updated_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -360,7 +509,11 @@ async fn health(State(app): State<Shared>, headers: HeaderMap) -> Response {
 
 /// `POST /api/topo/action`: run one topology node action as an engine command. The engine arguments come from the settings; the page
 /// names only the node and the action, and a viewer file is looked up here, never taken from the request.
-async fn topo_action(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+async fn topo_action(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
@@ -368,7 +521,11 @@ async fn topo_action(State(app): State<Shared>, headers: HeaderMap, body: axum::
     let Ok(req) = serde_json::from_slice::<ah_web_proto::TopoReq>(&body) else {
         return res(false, "refused", s.msg_topo_unknown.clone());
     };
-    let Some(def) = s.topo_actions.iter().find(|a| a.kind == req.kind && a.name == req.action) else {
+    let Some(def) = s
+        .topo_actions
+        .iter()
+        .find(|a| a.kind == req.kind && a.name == req.action)
+    else {
         return res(false, "refused", s.msg_topo_unknown.clone());
     };
     if !id_ok(&req.id) {
@@ -380,12 +537,24 @@ async fn topo_action(State(app): State<Shared>, headers: HeaderMap, body: axum::
     if def.local {
         return res(true, "done", String::new());
     }
-    let viewer = s.topo_viewers.iter().find(|v| req.kind == "store" && v.store == req.id).map(|v| v.file.clone());
+    let viewer = s
+        .topo_viewers
+        .iter()
+        .find(|v| req.kind == "store" && v.store == req.id)
+        .map(|v| v.file.clone());
     if def.needs_viewer && viewer.is_none() {
         return res(false, "refused", s.msg_topo_no_viewer.clone());
     }
     let pid = crate::health::read(&app).await.pid.to_string();
-    let args: Vec<String> = def.args.iter().map(|a| a.replace("{id}", &req.id).replace("{pid}", &pid).replace("{viewer}", viewer.as_deref().unwrap_or_default())).collect();
+    let args: Vec<String> = def
+        .args
+        .iter()
+        .map(|a| {
+            a.replace("{id}", &req.id)
+                .replace("{pid}", &pid)
+                .replace("{viewer}", viewer.as_deref().unwrap_or_default())
+        })
+        .collect();
     let run = tokio::process::Command::new(&app.engine)
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -393,14 +562,22 @@ async fn topo_action(State(app): State<Shared>, headers: HeaderMap, body: axum::
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .output();
-    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await else {
+    let Ok(Ok(out)) = tokio::time::timeout(Duration::from_millis(s.action_timeout_ms), run).await
+    else {
         return res(false, "failed", s.msg_action_timeout.clone());
     };
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    let refused = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool)) == Some(false);
+    let refused = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("ok").and_then(serde_json::Value::as_bool))
+        == Some(false);
     let ok = out.status.success() && !refused;
-    res(ok, if ok { "done" } else { "failed" }, text.trim().chars().take(s.topo_action_max_chars).collect())
+    res(
+        ok,
+        if ok { "done" } else { "failed" },
+        text.trim().chars().take(s.topo_action_max_chars).collect(),
+    )
 }
 
 /// The Settings screens: each handler reads `web_manage.toml`, asks the engine and answers JSON (`{"error": text}` with 502 on a failure).
@@ -414,11 +591,21 @@ where
     }
     let cfg = match crate::manage::Cfg::load(&app.config_path, &app.settings().manage_file) {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response();
+        }
     };
     match f(cfg).await {
         Ok(v) => Json(v).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
     }
 }
 
@@ -428,7 +615,10 @@ async fn manage_cfg(State(app): State<Shared>, headers: HeaderMap) -> Response {
 
 async fn manage_data(State(app): State<Shared>, headers: HeaderMap) -> Response {
     let a = app.clone();
-    manage_run(&app, &headers, |c| async move { crate::manage::data(&a, &c).await }).await
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::data(&a, &c).await
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -436,20 +626,35 @@ struct FileQuery {
     name: String,
 }
 
-async fn manage_file(State(app): State<Shared>, Query(q): Query<FileQuery>, headers: HeaderMap) -> Response {
+async fn manage_file(
+    State(app): State<Shared>,
+    Query(q): Query<FileQuery>,
+    headers: HeaderMap,
+) -> Response {
     let a = app.clone();
-    manage_run(&app, &headers, |c| async move { crate::manage::file_keys(&a, &c, &q.name).await }).await
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::file_keys(&a, &c, &q.name).await
+    })
+    .await
 }
 
 async fn manage_history(State(app): State<Shared>, headers: HeaderMap) -> Response {
     let a = app.clone();
-    manage_run(&app, &headers, |c| async move { crate::manage::history(&a, &c).await }).await
+    manage_run(&app, &headers, |c| async move {
+        crate::manage::history(&a, &c).await
+    })
+    .await
 }
 
-async fn manage_write(State(app): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+async fn manage_write(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
     let a = app.clone();
     manage_run(&app, &headers, |c| async move {
-        let w = serde_json::from_slice::<crate::manage::Write>(&body).map_err(|_| c.msg_bad_request.clone())?;
+        let w = serde_json::from_slice::<crate::manage::Write>(&body)
+            .map_err(|_| c.msg_bad_request.clone())?;
         crate::manage::write(&a, &c, w).await
     })
     .await
@@ -487,15 +692,33 @@ struct ExportQuery {
 }
 
 /// `GET /api/telemetry/export?table=&format=csv|json&q=`: one table as a download.
-async fn tel_export(State(app): State<Shared>, headers: HeaderMap, Query(q): Query<ExportQuery>) -> Response {
+async fn tel_export(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<ExportQuery>,
+) -> Response {
     if !cookie_ok(&app, &headers) {
         return refuse(&app);
     }
     let Ok(doc) = crate::tel::telemetry(&app).await else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, app.settings().msg_busy.clone()).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            app.settings().msg_busy.clone(),
+        )
+            .into_response();
     };
     match crate::tel::export(&doc, &q.table, &q.format, &q.q) {
-        Some((name, mime, body)) => ([(header::CONTENT_TYPE, mime.to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\""))], body).into_response(),
+        Some((name, mime, body)) => (
+            [
+                (header::CONTENT_TYPE, mime.to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{name}\""),
+                ),
+            ],
+            body,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, app.settings().msg_not_found.clone()).into_response(),
     }
 }

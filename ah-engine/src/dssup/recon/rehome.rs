@@ -228,7 +228,10 @@ pub fn across_stores_locked(ctx: &Ctx, id: &str, from: &str, to: &str) -> Moved 
     }
     // 5) the copy is verified: tombstone ONLY the source registry row (message rows stay), only when it came from the source store
     if from_source {
-        crate::discard::logged("dssup_rehome_remove", crate::meshw::store::retry_busy(|| from_st.reader().conn().prepare_cached(crate::sql::RECON_REGISTRY_DELETE)?.execute(rusqlite::params![id])));
+        crate::discard::logged(
+            "dssup_rehome_remove",
+            crate::meshw::store::retry_busy(|| from_st.reader().conn().prepare_cached(crate::sql::RECON_REGISTRY_DELETE)?.execute(rusqlite::params![id])),
+        );
     }
     derive(ctx, from_st, from);
     derive(ctx, to_st, to);
@@ -280,7 +283,10 @@ pub fn mis_keyed(ctx: &Ctx, id: &str, store: &str, fresh: &str, worktree: &str) 
         && let Ok(Some(srow)) = st.registry_row(id)
         && srow.worktree_path.as_deref() != Some(worktree)
     {
-        crate::discard::logged("dssup_rehome_normalise", st.upsert_registry(&RegistryRow { worktree_path: Some(worktree.to_string()), ..srow }, ctx.now, |_, _| true));
+        crate::discard::logged(
+            "dssup_rehome_normalise",
+            st.upsert_registry(&RegistryRow { worktree_path: Some(worktree.to_string()), ..srow }, ctx.now, |_, _| true),
+        );
     }
     let r = across_stores_locked(ctx, id, store, fresh);
     held.release();
@@ -358,10 +364,14 @@ pub fn repair_root_mapped(ctx: &Ctx, repo_key: &str) -> usize {
             let swap = |v: &Option<String>| v.as_deref().map(|s| prefix_swap(s, &pr.old_path, &pr.new_path));
             let mut nudge = cur.nudge_command.clone();
             if let Some(OVal::Arr(a)) = nudge.as_deref().and_then(OVal::parse) {
-                let mut moved: Vec<String> = a.iter().map(|x| if let OVal::Str(s) = x { prefix_swap(s, &pr.old_path, &pr.new_path) } else { String::new() }).collect();
+                let mut moved: Vec<String> =
+                    a.iter().map(|x| if let OVal::Str(s) = x { prefix_swap(s, &pr.old_path, &pr.new_path) } else { String::new() }).collect();
                 let same = a.iter().zip(&moved).all(|(x, m)| matches!(x, OVal::Str(s) if s == m));
                 // the poke script's last argument is the branch it pokes: the child's, not the Primary's
-                if !same && let Some(b) = &pr.branch && moved.len() > 1 {
+                if !same
+                    && let Some(b) = &pr.branch
+                    && moved.len() > 1
+                {
                     *moved.last_mut()? = b.clone();
                 }
                 nudge = Some(OVal::Arr(moved.into_iter().map(OVal::Str).collect()).stringify());
@@ -406,7 +416,6 @@ pub fn is_rehomed(row: &Value) -> bool {
     row["rehomed"] == json!(true)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,7 +454,12 @@ mod tests {
             std::fs::write(dir.join(format!("{id}.json")), d.to_string()).unwrap();
         }
         fn row(st: &MeshStore, id: &str, wt: &str, session: &str) {
-            st.upsert_registry(&RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(session.into()), ..RegistryRow::default() }, 5, |_, _| true).unwrap();
+            st.upsert_registry(
+                &RegistryRow { id: id.into(), worktree_path: Some(wt.into()), session_id: Some(session.into()), ..RegistryRow::default() },
+                5,
+                |_, _| true,
+            )
+            .unwrap();
         }
         fn msg(st: &MeshStore, id: &str, hash: &str, ts: i64) {
             let m = MeshRow { workspace_id: id.into(), ts, hash: Some(hash.into()), body: format!("body {hash}"), ..MeshRow::default() };
@@ -551,7 +565,8 @@ mod tests {
         git(&primary, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
         let child = f._dir.0.join("child");
         git(&primary, &["worktree", "add", "-q", &child.to_string_lossy()]);
-        let (primary, child) = (std::fs::canonicalize(&primary).unwrap().to_string_lossy().into_owned(), std::fs::canonicalize(&child).unwrap().to_string_lossy().into_owned());
+        let (primary, child) =
+            (std::fs::canonicalize(&primary).unwrap().to_string_lossy().into_owned(), std::fs::canonicalize(&child).unwrap().to_string_lossy().into_owned());
         let key = ident::repo_key_for_worktree(&primary).unwrap().unwrap();
         // the app's own record: the child is a standard builder in the child worktree
         let db = f._dir.0.join("app.db");
@@ -568,7 +583,14 @@ mod tests {
             let st = f.store(&key);
             let nudge = json!(["poke.sh", format!("{primary}/x"), "main"]).to_string();
             st.upsert_registry(
-                &RegistryRow { id: "kid".into(), worktree_path: Some(primary.clone()), session_id: Some("s1".into()), inbox_path: Some(format!("{primary}/inbox")), nudge_command: Some(nudge), ..RegistryRow::default() },
+                &RegistryRow {
+                    id: "kid".into(),
+                    worktree_path: Some(primary.clone()),
+                    session_id: Some("s1".into()),
+                    inbox_path: Some(format!("{primary}/inbox")),
+                    nudge_command: Some(nudge),
+                    ..RegistryRow::default()
+                },
                 5,
                 |_, _| true,
             )

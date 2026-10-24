@@ -209,7 +209,13 @@ exec "$REAL_AH_ENGINE_BIN" "$@"
         let read = |f: &str| std::fs::read_to_string(self.eng().join(f)).unwrap_or_default();
         format!(
             "\n--- files ---\n{}\n--- ah-engine.log ---\n{}\n--- launcher.log ---\n{}\n--- launcher.spawns ---\n{}\n--- status ---\n{}",
-            std::fs::read_dir(self.eng()).map(|rd| rd.flatten().map(|e| format!("{} {:?}", e.file_name().to_string_lossy(), e.metadata().map(|m| m.len()).unwrap_or(0))).collect::<Vec<_>>().join("\n")).unwrap_or_default(),
+            std::fs::read_dir(self.eng())
+                .map(|rd| rd
+                    .flatten()
+                    .map(|e| format!("{} {:?}", e.file_name().to_string_lossy(), e.metadata().map(|m| m.len()).unwrap_or(0)))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+                .unwrap_or_default(),
             self.health_log(),
             read("launcher.log"),
             read("launcher.spawns"),
@@ -464,7 +470,10 @@ fn ah_hook_wrapper_failfast_no_daemon_hung_daemon_and_restart_loop() {
     println!("TIMING wrapper hung-daemon wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     // no reply in the whole wait window: the call fails open and runs no Node hook (the daemon may have processed it already)
     assert_eq!((code, out.as_str()), (0, ""), "{code} {out}");
-    assert!(dt < common::scaled(Duration::from_millis(clamped_num("client.slow_fallback_max_ms", 3000)) + Duration::from_secs(1)), "hung-daemon wrapper took {dt:?}");
+    assert!(
+        dt < common::scaled(Duration::from_millis(clamped_num("client.slow_fallback_max_ms", 3000)) + Duration::from_secs(1)),
+        "hung-daemon wrapper took {dt:?}"
+    );
     settle_after_cold_slow(&hung);
     assert!(hung.fresh_down_marker(), "a slow reply (slow_down_n = 1) did not leave a fresh daemon-down marker");
     assert_eq!(hung.spawn_attempt_count(), 0, "a slow daemon is alive: it is never restarted");
@@ -1501,7 +1510,7 @@ fn non_socket_at_socket_path_is_never_deleted() {
 // ---- 6. cpu / memory protection ---------------------------------------------------------------
 
 #[test]
-fn queue_overflow_answers_busy_and_clients_fail_open() {
+fn queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode() {
     let e = Env::new("busy", &[("AH_ENGINE_WORKERS", "1"), ("AH_ENGINE_QUEUE", "1"), ("AH_ENGINE_STUCK_MS", "60000")]);
     e.warm();
     let sleepers: Vec<_> = (0..3)
@@ -1513,18 +1522,20 @@ fn queue_overflow_answers_busy_and_clients_fail_open() {
         })
         .collect();
     // 1 running, 1 queued, 1 refused: poll until a hook is refused (the sleepers may take a while to connect on a loaded
-    // machine; until they have, the engine simply answers the hook), instead of guessing how long that takes
+    // machine; until they have, the engine simply answers the hook with its verdict), instead of guessing how long that takes.
+    // A refused hook is a healthy BUSY: a guard event follows its configured infra failure mode (closed: exit 2 with the engine's
+    // own line), at once. A merely queued hook waits out its window and fails open (exit 0), which is not a refusal.
     let t = Instant::now();
-    let (mut out, mut code, mut dt) = (String::new(), 0, Duration::ZERO);
+    let (mut out, mut err, mut code, mut dt) = (String::new(), String::new(), 0, Duration::ZERO);
     while t.elapsed() < common::scaled(Duration::from_secs(6)) {
-        (out, _, code, dt) = e.hook(DENY_IN, true);
-        // a hook that was merely queued waits out its window and also fails open; only a refused one is answered at once
-        if out.is_empty() && dt < common::scaled(Duration::from_secs(1)) {
+        (out, err, code, dt) = e.hook(DENY_IN, true);
+        if code == 2 && out.is_empty() && err.contains("could not run the guards") && dt < common::scaled(Duration::from_secs(1)) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!((out.as_str(), code), ("", 0), "overflow must fail open, not block");
+    assert_eq!((out.as_str(), code), ("", 2), "overflow must be refused at once and follow the failure mode: {err:?}");
+    assert!(err.contains("could not run the guards"), "the engine's own line: {err:?}");
     // a refused hook is answered at once: far below the sleepers' 8 s, with an allowance for a loaded machine
     assert!(dt < common::scaled(Duration::from_secs(3)), "took {dt:?}");
     for s in sleepers {

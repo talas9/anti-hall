@@ -149,7 +149,9 @@ fn validate_engine(entry: &defaults::Entry, raw: &str) -> Result<J, String> {
             }
         }
         V::Str(_) => Ok(J::Str(raw.to_string())),
-        V::List(_) => serde_json::from_str::<Vec<String>>(raw).map(|l| J::Arr(l.into_iter().map(J::Str).collect())).map_err(|_| defaults::render("webapi.msg_bad_list", &[("key", &key)])),
+        V::List(_) => serde_json::from_str::<Vec<String>>(raw)
+            .map(|l| J::Arr(l.into_iter().map(J::Str).collect()))
+            .map_err(|_| defaults::render("webapi.msg_bad_list", &[("key", &key)])),
         V::Table(_) => Err(defaults::render("webapi.msg_not_scalar", &[("key", &key)])),
     }
 }
@@ -176,7 +178,15 @@ fn cfgstore_locked(key: &str) -> bool {
 }
 
 /// Record the write and build the result. An audit row that cannot be written is reported in the note: the write already happened.
-fn finish(ctx: &crate::migrate::Ctx, op: &'static str, kind: &'static str, key: &str, prev: Option<Value>, undoes: Option<&str>, error: Option<String>) -> Written {
+fn finish(
+    ctx: &crate::migrate::Ctx,
+    op: &'static str,
+    kind: &'static str,
+    key: &str,
+    prev: Option<Value>,
+    undoes: Option<&str>,
+    error: Option<String>,
+) -> Written {
     let (section, name) = split(key).unwrap_or(("", ""));
     let value = store::file_value(ctx, section, name).as_ref().map(j_to_value);
     let ok = error.is_none();
@@ -184,7 +194,9 @@ fn finish(ctx: &crate::migrate::Ctx, op: &'static str, kind: &'static str, key: 
     let row = json!({"id": id, "ts": now_ms(), "verb": op, "key": key, "kind": kind, "who": actor(), "old": prev, "new": value, "result": if ok { "ok" } else { "error" }, "error": error, "undoes": undoes});
     let mut note = error;
     if let Err(e) = append(&row) {
-        note = Some(note.map_or(defaults::render("webapi.msg_audit_not_written", &[("err", &e)]), |n| defaults::render("webapi.msg_audit_not_written_after", &[("note", &n), ("err", &e)])));
+        note = Some(note.map_or(defaults::render("webapi.msg_audit_not_written", &[("err", &e)]), |n| {
+            defaults::render("webapi.msg_audit_not_written_after", &[("note", &n), ("err", &e)])
+        }));
     } else if ok && kind == "engine" && crate::cfgstore::restart_only(key) {
         note = Some(defaults::text("webapi.msg_restart_only").to_string());
     }

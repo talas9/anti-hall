@@ -13,7 +13,7 @@
     ".anti-hall/": "755",
     ".anti-hall/devswarm/": "755",
     ".anti-hall/devswarm/workspaces/": "755",
-    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/home/nd-p2.cursor\"}",
+    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/nd-p2.cursor\"}",
     ".anti-hall/update-sweep-state.json": "644 {\"repairReaderFloors\":{\"completedVersion\":\"0.1.0\"}}"
   },
   "stores": {

@@ -166,7 +166,11 @@ pub(crate) fn js_string(v: &OVal) -> String {
         OVal::Bool(b) => b.to_string(),
         OVal::Num(x) => to_js_string(*x),
         OVal::Str(t) => t.clone(),
-        OVal::Arr(a) => a.iter().map(|e| if matches!(e, OVal::Null) { String::new() } else { js_string(e) }).collect::<Vec<_>>().join(defaults::text("mesh_write.js_array_sep")),
+        OVal::Arr(a) => a
+            .iter()
+            .map(|e| if matches!(e, OVal::Null) { String::new() } else { js_string(e) })
+            .collect::<Vec<_>>()
+            .join(defaults::text("mesh_write.js_array_sep")),
         OVal::Obj(_) => defaults::text("mesh_write.js_object_string").to_string(),
     }
 }
@@ -662,10 +666,8 @@ pub fn compute(inv: &Inv, key: &str, id: &str, call: &Call<'_>, cur: Option<OVal
                     // the respawn measure: the first step progress of a respawned workspace, counted once
                     match plan.get("respawn") {
                         // an array is an object to `typeof`; it has no `first_step_at`, `from` or `at`, and the property set on it is no JSON
-                        Some(OVal::Arr(_)) => events.push((
-                            defaults::text("mesh_write.ev_respawn_progress").to_string(),
-                            base(vec![("from", OVal::Null), ("latencyMs", OVal::Null)]),
-                        )),
+                        Some(OVal::Arr(_)) => events
+                            .push((defaults::text("mesh_write.ev_respawn_progress").to_string(), base(vec![("from", OVal::Null), ("latencyMs", OVal::Null)]))),
                         Some(OVal::Obj(_)) if finite(plan.get("respawn").and_then(|r| r.get("first_step_at"))).is_none() => {
                             let (from, at) = {
                                 let r = plan.get("respawn");
@@ -898,7 +900,8 @@ mod tests {
     #[test]
     fn values_javascript_converts_are_converted_as_it_does() {
         // Number([5]) is 5, Number([]) is 0, Number({}) is NaN, String({}) is "[object Object]"
-        let plan = parse(r#"{"steps":[{"n":[1,[2,null]],"status":"doing"},{"n":{},"status":"blocked"},{"status":"todo"}],"created_at":[5],"regressed_from":{}}"#);
+        let plan =
+            parse(r#"{"steps":[{"n":[1,[2,null]],"status":"doing"},{"n":{},"status":"blocked"},{"status":"todo"}],"created_at":[5],"regressed_from":{}}"#);
         assert_eq!(num_of(plan.get("created_at")), 5.0);
         assert!(num_of(plan.get("regressed_from")).is_nan());
         assert_eq!(num_of(Some(&parse("[]"))), 0.0);

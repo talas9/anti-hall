@@ -405,6 +405,17 @@ pub fn regen_defers_local(check: &str) {
     std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
 }
 
+/// Both sides of a golden comparison with the one declared intended difference neutralised (a1cc0db2, and the skip hint): Node tells
+/// agents to run `node <plugin>/scripts/devswarm.js ...`, the engine names the executable shim under the home, which needs no Node.
+/// Applied to the frozen answer and to the script's, so the home a case runs in does not matter.
+pub fn intended(v: &serde_json::Value) -> serde_json::Value {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"node '[^']*/devswarm\.js'|'\{HOMEREAL\}[^']*/\.anti-hall/bin/devswarm\.js'").unwrap());
+    let t = v.to_string();
+    let t = re.replace_all(&t, "'{SHIM}'").replace("node scripts/devswarm.js", "~/.anti-hall/bin/devswarm.js");
+    serde_json::from_str(&t).unwrap_or_else(|_| v.clone())
+}
+
 pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
     regen_defers_local(check);
     let mut kinds = BTreeMap::new();
@@ -415,8 +426,8 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
         let got = run_case(check, &l, repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
         assert_eq!(
-            got,
-            c["expect"],
+            intended(&got),
+            intended(&c["expect"]),
             "{check}: script differs from the compiled port on case {}: {} (script errors: {:?})",
             c["n"],
             c["payload"],

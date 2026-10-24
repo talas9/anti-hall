@@ -121,9 +121,13 @@ pub fn chains(events: &[Event], window_ms: u64) -> (Vec<Chain>, usize) {
     spawns.retain(|(e, s)| {
         if let Some(key) = &s.agent_key {
             let old = identities.entry(key.as_str()).or_insert((*e, *s));
-            if e.ts_ms >= old.0.ts_ms { *old = (*e, *s); }
+            if e.ts_ms >= old.0.ts_ms {
+                *old = (*e, *s);
+            }
             false
-        } else { true }
+        } else {
+            true
+        }
     });
     spawns.extend(identities.into_values());
     spawns.sort_by_key(|(e, s)| s.started_ms.unwrap_or(e.ts_ms));

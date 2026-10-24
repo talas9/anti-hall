@@ -226,7 +226,13 @@ pub fn engine_files(m: Manager, home: &Path, exe: &str) -> Vec<(PathBuf, String)
     let mut args = vec![exe.to_string()];
     args.extend(defaults::list("units.serve_args").into_iter().map(str::to_string));
     args.push(defaults::text("health.start_reason_flag").to_string());
-    args.push(crate::health::starts::reason(match m { Manager::Launchd => "launchd", Manager::Systemd => "systemd" }).to_string());
+    args.push(
+        crate::health::starts::reason(match m {
+            Manager::Launchd => "launchd",
+            Manager::Systemd => "systemd",
+        })
+        .to_string(),
+    );
     let interval = defaults::num("units.watch_interval_s").to_string();
     match m {
         Manager::Launchd => {

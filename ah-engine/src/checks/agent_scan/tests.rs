@@ -75,7 +75,11 @@ fn json_that_only_javascript_reads_is_unsupported_and_real_garbage_is_not() {
         assert_eq!(parse_json(s), Err(Unsupported), "{s:.40}");
     }
     // a lone surrogate escape is read as JavaScript reads it, the surrogate held as U+FFFD (#248)
-    for (s, want) in [(r#"{"a":"\ud800"}"#, serde_json::json!({"a": "\u{fffd}"})), (r#""\udc00""#, serde_json::json!("\u{fffd}")), (r#"{"a":"\ud800\u0041"}"#, serde_json::json!({"a": "\u{fffd}A"}))] {
+    for (s, want) in [
+        (r#"{"a":"\ud800"}"#, serde_json::json!({"a": "\u{fffd}"})),
+        (r#""\udc00""#, serde_json::json!("\u{fffd}")),
+        (r#"{"a":"\ud800\u0041"}"#, serde_json::json!({"a": "\u{fffd}A"})),
+    ] {
         assert_eq!(parse_json(s), Ok(Some(want)), "{s:.40}");
     }
     // JSON.parse throws on these too.

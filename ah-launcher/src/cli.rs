@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn is_verb(s: &Settings, first: &str) -> bool {
-    s.num("launcher.cli_lowercase_verbs") == 1 && first.starts_with(|c: char| c.is_ascii_lowercase())
+    s.num("launcher.cli_lowercase_verbs") == 1
+        && first.starts_with(|c: char| c.is_ascii_lowercase())
 }
 
 /// The arguments to forward: everything but a leading or trailing `--plugin-root <dir>` pair.
@@ -31,11 +32,18 @@ pub fn forwarded(args: &[String]) -> Vec<String> {
 }
 
 /// Replace this process with the engine running `args`. Returns only when that is impossible: the exit code to use.
-pub fn exec_engine(s: &Settings, args: &[String], home: Option<&PathBuf>, plugin_root: Option<&Path>) -> i32 {
+pub fn exec_engine(
+    s: &Settings,
+    args: &[String],
+    home: Option<&PathBuf>,
+    plugin_root: Option<&Path>,
+) -> i32 {
     let fwd = forwarded(args);
     let what = fwd.first().cloned().unwrap_or_default();
     let test = env_nonempty(&s.text("launcher.test_flag_env")).is_some_and(|v| v == "1");
-    let knob = test.then(|| env_nonempty(&s.text("launcher.knob_engine_bin"))).flatten();
+    let knob = test
+        .then(|| env_nonempty(&s.text("launcher.knob_engine_bin")))
+        .flatten();
     let no_engine = |why: &str| {
         if let Some(l) = LOG.get() {
             l.append(&format!("cli_no_engine verb={what} why={why}"));
@@ -72,9 +80,18 @@ mod tests {
 
     #[test]
     fn the_shim_root_pair_is_not_forwarded() {
-        assert_eq!(forwarded(&v(&["settings", "show", "--plugin-root", "/p"])), v(&["settings", "show"]));
-        assert_eq!(forwarded(&v(&["--plugin-root", "/p", "settings"])), v(&["settings"]));
-        assert_eq!(forwarded(&v(&["settings", "--plugin-root"])), v(&["settings", "--plugin-root"]));
+        assert_eq!(
+            forwarded(&v(&["settings", "show", "--plugin-root", "/p"])),
+            v(&["settings", "show"])
+        );
+        assert_eq!(
+            forwarded(&v(&["--plugin-root", "/p", "settings"])),
+            v(&["settings"])
+        );
+        assert_eq!(
+            forwarded(&v(&["settings", "--plugin-root"])),
+            v(&["settings", "--plugin-root"])
+        );
         assert_eq!(forwarded(&v(&["doctor"])), v(&["doctor"]));
     }
 

@@ -132,7 +132,12 @@ fn promote_session(inv: &Inv, id: &str, session_id: &str) -> Result<bool, String
     }
     up.apply(inv);
     let msg = defaults::render("update_post.promote_event_msg", &[("id", &id), ("marker", &marker)]);
-    crate::meshw::clog::event(inv, defaults::text("update_post.promote_event_op"), &msg, vec![("id", OVal::Str(id.to_string())), ("to", OVal::Str(session_id.to_string()))]);
+    crate::meshw::clog::event(
+        inv,
+        defaults::text("update_post.promote_event_op"),
+        &msg,
+        vec![("id", OVal::Str(id.to_string())), ("to", OVal::Str(session_id.to_string()))],
+    );
     Ok(true)
 }
 
@@ -197,7 +202,11 @@ mod tests {
         let id = "w-one";
         std::fs::create_dir_all(root.join("workspaces")).unwrap();
         std::fs::create_dir_all(root.join("heartbeats")).unwrap();
-        std::fs::write(root.join("workspaces").join(format!("{id}.json")), format!(r#"{{"id":"{id}","worktreePath":"/w/x","sessionId":"unclaimed:{id}","ownerKey":"proj-bbbbbbbb"}}"#)).unwrap();
+        std::fs::write(
+            root.join("workspaces").join(format!("{id}.json")),
+            format!(r#"{{"id":"{id}","worktreePath":"/w/x","sessionId":"unclaimed:{id}","ownerKey":"proj-bbbbbbbb"}}"#),
+        )
+        .unwrap();
         std::fs::write(root.join("heartbeats").join(format!("{id}.json")), r#"{"sessionId":"real-session"}"#).unwrap();
         let store = crate::meshw::union::store_dir(&home, "proj-bbbbbbbb");
         std::fs::create_dir_all(&store).unwrap();

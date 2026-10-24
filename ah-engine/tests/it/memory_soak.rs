@@ -186,7 +186,12 @@ fn a_long_mixed_run_stays_under_the_default_cap_and_flat_with_zero_restarts() {
             // the RSS series of the run, one line per sample (`--no-capture` shows it)
             eprintln!("soak sample: calls={} rss_kb={} heap_live_kb={} pid={}", i + 1, st["memory"]["rss_kb"], st["memory"]["heap_live_kb"], st["pid"]);
             if samples.last().is_some_and(|p: &serde_json::Value| p["pid"] != st["pid"]) {
-                eprintln!("soak: the daemon changed (pid {} -> {}); start log: {:?}", samples.last().map_or(serde_json::Value::Null, |p| p["pid"].clone()), st["pid"], std::fs::read_to_string(s.dir.join("state/starts")).ok());
+                eprintln!(
+                    "soak: the daemon changed (pid {} -> {}); start log: {:?}",
+                    samples.last().map_or(serde_json::Value::Null, |p| p["pid"].clone()),
+                    st["pid"],
+                    std::fs::read_to_string(s.dir.join("state/starts")).ok()
+                );
             }
             samples.push(st);
         }

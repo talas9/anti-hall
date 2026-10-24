@@ -196,7 +196,9 @@ fn drive(host: &str) {
         .collect();
     let daemon: Vec<String> = w.hits_of(harness::DAEMON_TAG).iter().map(|h| w.script_key(&h.argv)).collect();
     // every recorded launch list is empty: no case and no daemon start launched Node
-    problems.extend(rows.iter().filter(|r| r["node"].as_array().is_some_and(|a| !a.is_empty())).map(|r| format!("case `{}` launched Node: {}", r["case"], r["node"])));
+    problems.extend(
+        rows.iter().filter(|r| r["node"].as_array().is_some_and(|a| !a.is_empty())).map(|r| format!("case `{}` launched Node: {}", r["case"], r["node"])),
+    );
     if !daemon.is_empty() {
         problems.push(format!("the daemon launched Node: {daemon:?}"));
     }

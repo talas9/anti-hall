@@ -22,6 +22,9 @@ fn the_task_speculation_and_tasklist_guards_look_up_the_passwd_home_when_home_is
     // `ah.unable(site)` is counted and noted in the trace ring under `script:<site>`
     let seen = crate::obs::trace::snapshot().iter().map(Value::to_string).collect::<Vec<_>>().join("\n");
     for guard in ["speculation-guard", "task-guard", "tasklist-guard"] {
-        assert!(seen.contains(&format!("{guard}:home_test_guard")), "{guard} must refuse the passwd home it looked up (the old scripts counted no_home):\n{seen}");
+        assert!(
+            seen.contains(&format!("{guard}:home_test_guard")),
+            "{guard} must refuse the passwd home it looked up (the old scripts counted no_home):\n{seen}"
+        );
     }
 }

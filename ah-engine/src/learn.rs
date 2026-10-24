@@ -75,7 +75,9 @@ pub fn annotate(meta: &Meta, p: &Value, check: &str, a: Answer) -> Answer {
     }
     let guard = defaults::raw("repeat.guard_names").get(check).and_then(V::as_str).unwrap_or(check);
     let overrides = defaults::raw("repeat.overrides").get(guard).or_else(|| defaults::raw("repeat.overrides").get(check));
-    let per_guard = |key: &str, fallback: &str| overrides.and_then(|v| v.get(key)).and_then(V::as_integer).filter(|n| *n > 0).map(|n| n as u64).unwrap_or_else(|| defaults::num(fallback));
+    let per_guard = |key: &str, fallback: &str| {
+        overrides.and_then(|v| v.get(key)).and_then(V::as_integer).filter(|n| *n > 0).map(|n| n as u64).unwrap_or_else(|| defaults::num(fallback))
+    };
     let minutes = per_guard("window_min", "repeat.window_min").max(1);
     let (window_ms, min) = (minutes.saturating_mul(60_000), per_guard("min_blocks", "repeat.min_blocks").max(2));
     let now = crate::health::now_ms();
@@ -133,7 +135,11 @@ pub fn upfront_notice(meta: &Meta, p: &Value, out: &mut [(String, Answer)]) {
         return;
     }
     let name = defaults::text("upfront.check");
-    let Some(slot) = out.iter().position(|(id, a)| id == name && matches!(a, Answer::Decided(r, _) if r.code == Some(0) && r.out.is_empty() && r.err.is_empty())) else { return };
+    let Some(slot) =
+        out.iter().position(|(id, a)| id == name && matches!(a, Answer::Decided(r, _) if r.code == Some(0) && r.out.is_empty() && r.err.is_empty()))
+    else {
+        return;
+    };
     if !get_bool(&Settings::from_env(&meta.env), defaults::raw("upfront.setting")) {
         return;
     }

@@ -4,8 +4,8 @@
 //! result (`{ok, ...}` as one JSON line, exit 0 when `ok`, else 2).
 use crate::checks::git::util::Settings;
 use crate::checks::guardkit::ojson::OVal;
-use crate::defaults;
 use crate::checks::jsport::json::J;
+use crate::defaults;
 use crate::dsact::runner::System;
 use crate::dssup::recon::Hooks;
 use crate::dssup::recon::sweep::{self, ProjectEnd};

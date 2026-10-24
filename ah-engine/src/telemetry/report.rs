@@ -347,16 +347,19 @@ pub fn avoided_waste_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64
         let n = |k| spec.get(k).and_then(defaults::V::as_integer).unwrap_or(0).max(0) as u64;
         let tokens = n("tokens_per_event");
         let seconds = n("seconds_per_event");
-        figures.insert(name.to_string(), json!({
-            "label": defaults::text("impact.estimate_label"), "events_label": defaults::text("impact.measured_label"),
-            "events": if check.is_empty() { None } else { Some(count) }, "check": check,
-            "tokens_per_event": tokens, "seconds_per_event": seconds, "priced_as": cfg.str_field("model"),
-            "estimated_tokens": if check.is_empty() { None } else { count.checked_mul(tokens) },
-            "estimated_seconds": if check.is_empty() { None } else { count.checked_mul(seconds) },
-            "estimated_usd": if check.is_empty() { None } else { price.map(|p| count as f64 * tokens as f64 * p.input as f64 / 1e12) },
-            "formula": cfg.str_field("formula"), "how_counted": cfg.str_field("how_counted"),
-            "unavailable": if check.is_empty() { Some(cfg.str_field("unavailable")) } else { None },
-        }));
+        figures.insert(
+            name.to_string(),
+            json!({
+                "label": defaults::text("impact.estimate_label"), "events_label": defaults::text("impact.measured_label"),
+                "events": if check.is_empty() { None } else { Some(count) }, "check": check,
+                "tokens_per_event": tokens, "seconds_per_event": seconds, "priced_as": cfg.str_field("model"),
+                "estimated_tokens": if check.is_empty() { None } else { count.checked_mul(tokens) },
+                "estimated_seconds": if check.is_empty() { None } else { count.checked_mul(seconds) },
+                "estimated_usd": if check.is_empty() { None } else { price.map(|p| count as f64 * tokens as f64 * p.input as f64 / 1e12) },
+                "formula": cfg.str_field("formula"), "how_counted": cfg.str_field("how_counted"),
+                "unavailable": if check.is_empty() { Some(cfg.str_field("unavailable")) } else { None },
+            }),
+        );
     }
     json!({"label": defaults::text("impact.estimate_label"), "included_in_net": false, "window": {"days": days}, "figures": figures})
 }

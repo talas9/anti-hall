@@ -201,7 +201,10 @@ pub(super) fn one_store(ctx: &Ctx, _runner: &dyn Runner, st: &mut OVal, s: &Sett
         Err(Defer(why)) => return plan_failed(ctx, hash, bytes_before, why, dry),
     };
     let (chosen, choice) = choose(&first, s, bytes_before);
-    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "native": true, "candidates": first.cands.len(), "chosen": choice.age + choice.size}));
+    witness_log(
+        ctx,
+        &json!({"ts": ctx.now, "duty": "retention", "store": hash, "native": true, "candidates": first.cands.len(), "chosen": choice.age + choice.size}),
+    );
     // the store must not have moved under the comparison
     let second = match plan::plan_store(ctx.home, hash, s.rules(), now, &holds) {
         Ok(p) => p,
@@ -452,7 +455,15 @@ mod tests {
 
     fn with_ctx<T>(home: &Path, f: impl FnOnce(&Ctx) -> T) -> T {
         crate::defaults::init().unwrap();
-        let inv = Inv { home: home.to_path_buf(), write_home: home.to_path_buf(), env: Default::default(), cwd: "/".into(), now: 10_000_000_000, stdin: None, store_override: None };
+        let inv = Inv {
+            home: home.to_path_buf(),
+            write_home: home.to_path_buf(),
+            env: Default::default(),
+            cwd: "/".into(),
+            now: 10_000_000_000,
+            stdin: None,
+            store_override: None,
+        };
         let st = inv.settings();
         let root = PathBuf::from("/");
         let ctx = Ctx { home, root: &root, st: &st, now: 10_000_000_000, engine_pokes: false };

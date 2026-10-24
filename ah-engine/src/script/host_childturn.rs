@@ -112,7 +112,8 @@ fn is_full_uuid(id: &str) -> bool {
 /// an escape, a Rust string cannot hold it.
 pub(super) fn without_lone_surrogates(text: &str) -> Option<String> {
     let b = text.as_bytes();
-    let hex4 = |i: usize| b.get(i..i + 4).filter(|h| h.iter().all(u8::is_ascii_hexdigit)).and_then(|h| u32::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+    let hex4 =
+        |i: usize| b.get(i..i + 4).filter(|h| h.iter().all(u8::is_ascii_hexdigit)).and_then(|h| u32::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
     let (mut out, mut i, mut hit) = (String::with_capacity(text.len()), 0, false);
     while i < b.len() {
         if b[i] != b'\\' {
@@ -165,7 +166,9 @@ fn read_base(target: &Path) -> Result<(OVal, Option<OVal>), String> {
         }
         Some(OVal::Arr(items)) => Ok((OVal::Obj(items.into_iter().enumerate().map(|(i, v)| (i.to_string(), v)).collect()), None)),
         Some(_) => Ok(empty()),
-        None if without_lone_surrogates(&text).is_some_and(|t| OVal::parse(&t).is_some()) => Err(defaults::text("devswarm_prompt.skip_descriptor_surrogate").to_string()),
+        None if without_lone_surrogates(&text).is_some_and(|t| OVal::parse(&t).is_some()) => {
+            Err(defaults::text("devswarm_prompt.skip_descriptor_surrogate").to_string())
+        }
         None => Ok(empty()),
     }
 }
@@ -227,7 +230,8 @@ fn settle_backend(inv: &Inv, key: &str) -> Backend {
 fn write_marker(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let marker = dir.join(defaults::text("mesh.backend_marker"));
-    let tmp = dir.join(format!("{}.{}.{}{}", defaults::text("mesh.backend_marker"), std::process::id(), common::now_ms(), defaults::text("mesh_write.tmp_suffix")));
+    let tmp =
+        dir.join(format!("{}.{}.{}{}", defaults::text("mesh.backend_marker"), std::process::id(), common::now_ms(), defaults::text("mesh_write.tmp_suffix")));
     let style = crate::atomic::Style { leave_temp_on_rename_failure: true, ..crate::atomic::Style::default() }; // Node leaves the temp file after a failed rename
     crate::atomic::stage(&tmp, defaults::text("mesh.backend_sqlite"), style)?;
     crate::atomic::replace(&tmp, marker, style)
@@ -332,12 +336,17 @@ fn perform(inv: &Inv, p: Plan) {
     if written && lock.is_none() {
         crate::discard::note("childturn.lock_busy", &p.id);
     }
-    if written && lock.is_some() && let (Some((key, sel)), Some(row)) = (&p.store, &p.row) {
+    if written
+        && lock.is_some()
+        && let (Some((key, sel)), Some(row)) = (&p.store, &p.row)
+    {
         let created: Option<MeshStore> = match sel {
             Store::Open(_) => None,
             Store::New => {
                 let dir = crate::meshw::union::store_dir(&inv.home, key);
-                let made = write_marker(&dir).map_err(|e| e.to_string()).and_then(|()| MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).map_err(|e| e.to_string()));
+                let made = write_marker(&dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).map_err(|e| e.to_string()));
                 // Node's registerStoreDescriptor swallows a store it cannot create; the next turn retries
                 made.map_err(|e| crate::discard::note("childturn.store_create", &e)).ok()
             }
@@ -492,22 +501,34 @@ fn text_of(v: Option<&OVal>) -> Value {
 fn ingest_detail(inv: &Inv, key: &str) -> R<Value> {
     let root = idlock::devswarm_root(&inv.home);
     let json_suffix = json_suffix();
-    let beat = json_of(&root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{}{key}{json_suffix}", defaults::text("mesh_write.ingest_beat_prefix"))));
+    let beat =
+        json_of(&root.join(defaults::text("mesh_write.dir_heartbeats")).join(format!("{}{key}{json_suffix}", defaults::text("mesh_write.ingest_beat_prefix"))));
     let beat_ts = beat.as_ref().and_then(|b| finite(b.get("ts")));
     let beat_pid = beat.as_ref().and_then(|b| finite(b.get("pid")));
     let now = inv.now as f64;
     let fresh = beat_ts.is_some_and(|t| now - t <= defaults::num("mesh_write.ingest_beat_stale_ms") as f64);
-    let lock = json_of(&root.join(defaults::text("mesh_write.dir_locks")).join(format!("{}{key}{}", defaults::text("mesh_write.ingest_lock_prefix"), defaults::text("mesh_write.lock_suffix"))));
+    let lock = json_of(&root.join(defaults::text("mesh_write.dir_locks")).join(format!(
+        "{}{key}{}",
+        defaults::text("mesh_write.ingest_lock_prefix"),
+        defaults::text("mesh_write.lock_suffix")
+    )));
     let lock_pid = lock.as_ref().and_then(|l| finite(l.get("pid")));
     let live_lock = lock_pid.is_some_and(alive);
     let healthy = fresh && live_lock && beat_pid.is_some() && beat_pid == lock_pid;
     let mut fault = Value::Null;
-    if healthy && let Some(b) = &beat && let Some(consecutive) = finite(b.get("consecutiveMonitorFailures")) {
+    if healthy
+        && let Some(b) = &beat
+        && let Some(consecutive) = finite(b.get("consecutiveMonitorFailures"))
+    {
         let last_ok = finite(b.get("lastMonitorOkMs"));
         let started = finite(b.get("startedAtMs"));
         let min = crate::checks::guardkit::settings::get_number(&inv.settings(), defaults::raw("mesh_write.setting_monitor_no_ok_fail_min"));
         // a setting that is no positive number reads as the shipped default (`monitorNoOkWindowMs`)
-        let min = if min.is_finite() && min > 0.0 { min } else { defaults::raw("mesh_write.setting_monitor_no_ok_fail_min").get("default").and_then(|d| d.as_integer()).unwrap_or(0) as f64 };
+        let min = if min.is_finite() && min > 0.0 {
+            min
+        } else {
+            defaults::raw("mesh_write.setting_monitor_no_ok_fail_min").get("default").and_then(|d| d.as_integer()).unwrap_or(0) as f64
+        };
         let window = min * defaults::num("mesh_write.ms_per_minute") as f64;
         let ok_stale = last_ok.is_some_and(|l| now - l > window);
         let no_ok_since_start = last_ok.is_none() && started.is_some_and(|s| now - s > window);
@@ -518,7 +539,13 @@ fn ingest_detail(inv: &Inv, key: &str) -> R<Value> {
             });
         }
     }
-    let status = if !fault.is_null() { "failed" } else if healthy { "healthy" } else { "stale" };
+    let status = if !fault.is_null() {
+        "failed"
+    } else if healthy {
+        "healthy"
+    } else {
+        "stale"
+    };
     Ok(json!({"status": status, "liveLock": live_lock, "beatTs": beat_ts, "fault": fault}))
 }
 
@@ -635,7 +662,8 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         assert!(std::process::Command::new("git").current_dir(&repo).args(["init", "-q", "-b", "main"]).status().unwrap().success());
         let repo = repo.canonicalize().unwrap().to_string_lossy().into_owned();
-        let inv = Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: repo.clone(), now: 1_700_000_000_000, stdin: None, store_override: None };
+        let inv =
+            Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: repo.clone(), now: 1_700_000_000_000, stdin: None, store_override: None };
         Fx { inv, repo }
     }
 
@@ -680,7 +708,14 @@ mod tests {
         let dir = crate::meshw::union::store_dir(&fx.inv.home, &key);
         write_marker(&dir).unwrap();
         let store = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
-        let other = RegistryRow { id: ID.into(), worktree_path: Some("/elsewhere".into()), session_id: Some("s0".into()), inbox_path: None, cursor_path: None, nudge_command: None };
+        let other = RegistryRow {
+            id: ID.into(),
+            worktree_path: Some("/elsewhere".into()),
+            session_id: Some("s0".into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         assert!(store.upsert_registry(&other, 1, |_, _| true).unwrap());
         drop(store);
         perform(&fx.inv, go(plan(&fx.inv, ID, "s1").unwrap()));
@@ -753,7 +788,9 @@ mod tests {
         let f = descriptor_file(&fx, ID);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         crate::meshw::ident::fifo_kit::fifo(&f);
-        let Planned::Skip(why) = crate::meshw::ident::fifo_kit::within("plan over a FIFO", move || plan(&fx.inv, ID, "s1").unwrap()) else { panic!("a FIFO is no descriptor to merge") };
+        let Planned::Skip(why) = crate::meshw::ident::fifo_kit::within("plan over a FIFO", move || plan(&fx.inv, ID, "s1").unwrap()) else {
+            panic!("a FIFO is no descriptor to merge")
+        };
         assert!(why.starts_with(defaults::text("devswarm_prompt.skip_descriptor_unreadable")), "{why}");
         let fx = self::fx("surrogate");
         seed_descriptor(&fx, ID, r#"{"note":"\ud800"}"#);

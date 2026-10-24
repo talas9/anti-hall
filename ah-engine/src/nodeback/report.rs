@@ -110,7 +110,16 @@ fn fmt_tally(key: &str, label: &str, t: &Tally) -> String {
     let (check, day) = (label, label);
     defaults::render(
         key,
-        &[("check", &check), ("day", &day), ("n", &t.n), ("agree", &t.agree), ("weaker", &t.weaker), ("stricter", &t.stricter), ("node_err", &t.node_err), ("engine_err", &t.engine_err)],
+        &[
+            ("check", &check),
+            ("day", &day),
+            ("n", &t.n),
+            ("agree", &t.agree),
+            ("weaker", &t.weaker),
+            ("stricter", &t.stricter),
+            ("node_err", &t.node_err),
+            ("engine_err", &t.engine_err),
+        ],
     )
 }
 
@@ -127,7 +136,8 @@ pub fn render(rep: &Report, days: u64, daily: bool, json_out: bool) -> String {
     if rep.total.n == 0 {
         return defaults::render("nodeback.msg_report_none", &[("days", &days), ("mode", &mode), ("end", &end)]);
     }
-    let mut lines = vec![defaults::render("nodeback.msg_report_head", &[("days", &days), ("runs", &rep.runs), ("rows", &rep.total.n), ("mode", &mode), ("end", &end)])];
+    let mut lines =
+        vec![defaults::render("nodeback.msg_report_head", &[("days", &days), ("runs", &rep.runs), ("rows", &rep.total.n), ("mode", &mode), ("end", &end)])];
     let mut worst: Vec<(&String, &Tally)> = rep.checks.iter().collect();
     worst.sort_by_key(|(_, t)| std::cmp::Reverse(t.weaker * 1000 + t.stricter * 100 + t.node_err + t.engine_err));
     lines.extend(worst.into_iter().take(defaults::num("nodeback.report_max_checks") as usize).map(|(k, t)| fmt_tally("nodeback.msg_report_check", k, t)));
@@ -149,7 +159,11 @@ fn flag_value<'a>(rest: &'a [String], name: &str) -> Option<&'a str> {
 /// `shadow-compare [--days N] [--check ID] [--event NAME] [--daily] [--json]`
 pub fn run(p: &Parsed) -> i32 {
     let known = defaults::list("nodeback.compare_flags");
-    let bad = p.rest.iter().enumerate().any(|(i, a)| a.starts_with("--") && !known.contains(&a.as_str()) || (!a.starts_with("--") && !(i > 0 && known.contains(&p.rest[i - 1].as_str()))));
+    let bad = p
+        .rest
+        .iter()
+        .enumerate()
+        .any(|(i, a)| a.starts_with("--") && !known.contains(&a.as_str()) || (!a.starts_with("--") && !(i > 0 && known.contains(&p.rest[i - 1].as_str()))));
     if bad {
         crate::ops::err(&format!("{}\n", defaults::text("nodeback.msg_usage_compare")));
         return 64;

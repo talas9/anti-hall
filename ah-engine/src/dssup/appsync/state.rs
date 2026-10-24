@@ -311,16 +311,11 @@ pub fn gap_total(g: &OVal) -> Result<OVal, ident::Defer> {
 fn collate(x: &str, y: &str) -> std::cmp::Ordering {
     let order = defaults::text("devswarm_sup.as_collate_order");
     let primary = |s: &str| -> Vec<u32> {
-        s.chars()
-            .filter(|c| !c.is_ascii_control())
-            .map(|c| order.find(c.to_ascii_lowercase()).map_or(1000 + c as u32, |i| i as u32))
-            .collect()
+        s.chars().filter(|c| !c.is_ascii_control()).map(|c| order.find(c.to_ascii_lowercase()).map_or(1000 + c as u32, |i| i as u32)).collect()
     };
     primary(x).cmp(&primary(y)).then_with(|| {
         let (cx, cy) = (x.chars().filter(|c| !c.is_ascii_control()), y.chars().filter(|c| !c.is_ascii_control()));
-        cx.zip(cy)
-            .find(|(a, b)| a != b)
-            .map_or(std::cmp::Ordering::Equal, |(a, b)| b.is_ascii_lowercase().cmp(&a.is_ascii_lowercase()))
+        cx.zip(cy).find(|(a, b)| a != b).map_or(std::cmp::Ordering::Equal, |(a, b)| b.is_ascii_lowercase().cmp(&a.is_ascii_lowercase()))
     })
 }
 

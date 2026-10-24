@@ -4633,7 +4633,7 @@ function main(payload, env) {
   }
 
   // A DevSwarm CHILD workspace is a worker on its own branch (peer report,
-  // SkyCrew child, 2026-10-09): its Bash writes are its job (edit parity does
+  // downstream child, 2026-10-09): its Bash writes are its job (edit parity does
   // not apply) and its own git commit/push/fetch of the branch or a submodule
   // runs inline. Builds/tests stay delegated. Fail-closed to the gate.
   let childWorker = false;

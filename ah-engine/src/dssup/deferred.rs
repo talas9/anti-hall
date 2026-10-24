@@ -88,7 +88,9 @@ pub fn duty_with(ctx: &Ctx, runner: &dyn Runner, hooks: &super::recon::Hooks) ->
     // the engine walks the stage's pending items itself (see `recon::stage`); a stage it does not take (an unusable marker, an unknown
     // stage) is held: its marker stays, so the stage comes round again
     match super::recon::stage::run(ctx, runner, stage, hooks) {
-        Some(out) => json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}}),
+        Some(out) => {
+            json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}})
+        }
         None => held_record("dssup:deferred:stage", &defaults::render("devswarm_sup.ds_why_stage", &[("stage", &stage)])),
     }
 }

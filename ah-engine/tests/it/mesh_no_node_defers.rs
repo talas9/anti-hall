@@ -17,11 +17,7 @@ fn production_part(text: &str) -> &str {
 }
 
 fn call_sites(text: &str) -> usize {
-    production_part(text)
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-        .filter(|l| l.contains("defer(") && !l.contains("fn defer"))
-        .count()
+    production_part(text).lines().filter(|l| !l.trim_start().starts_with("//")).filter(|l| l.contains("defer(") && !l.contains("fn defer")).count()
 }
 
 #[test]

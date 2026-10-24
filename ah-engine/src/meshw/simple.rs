@@ -374,11 +374,17 @@ fn skip(inv: &Inv, a: &Args) -> R<Answer> {
         return Ok(fail(defaults::text("devswarm_cli.msg_skip_usage")));
     }
     let global = a.has(defaults::text("devswarm_cli.flag_skip_global"));
-    let session = a.one(defaults::text("devswarm_cli.flag_session")).filter(|s| !s.is_empty()).or_else(||
-        defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| inv.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
-    let key = if global { guard.to_string() } else if let Some(sid) = session {
+    let session = a
+        .one(defaults::text("devswarm_cli.flag_session"))
+        .filter(|s| !s.is_empty())
+        .or_else(|| defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| inv.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
+    let key = if global {
+        guard.to_string()
+    } else if let Some(sid) = session {
         format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))
-    } else { return Ok(fail(defaults::text("devswarm_cli.msg_skip_no_session"))); };
+    } else {
+        return Ok(fail(defaults::text("devswarm_cli.msg_skip_no_session")));
+    };
     let ttl_flag = defaults::text("devswarm_cli.flag_ttl");
     let mut ttl = defaults::num("devswarm_cli.skip_default_ttl_min") as f64;
     let raw = a.one(ttl_flag);
@@ -720,11 +726,21 @@ fn notice_post(inv: &Inv, a: &Args) -> Answer {
     let kind = defaults::text("devswarm_cli.act_notice_kind_post");
     let now = inv.now as f64;
     if !crate::checks::guardkit::settings::get_bool(&inv.settings(), defaults::raw("devswarm_cli.act_set_notice_post")) {
-        notice_event(inv, kind, defaults::text("devswarm_cli.act_notice_log_setting_off"), vec![("reason", s(defaults::text("devswarm_cli.act_notice_reason_setting_off")))]);
+        notice_event(
+            inv,
+            kind,
+            defaults::text("devswarm_cli.act_notice_log_setting_off"),
+            vec![("reason", s(defaults::text("devswarm_cli.act_notice_reason_setting_off")))],
+        );
         return notice_refusal("devswarm_cli.act_notice_reason_setting_off", defaults::text("devswarm_cli.act_notice_msg_setting_off"));
     }
     if !checkout_is_anti_hall(&inv.cwd) {
-        notice_event(inv, kind, defaults::text("devswarm_cli.act_notice_log_wrong_checkout"), vec![("reason", s(defaults::text("devswarm_cli.act_notice_reason_wrong_checkout")))]);
+        notice_event(
+            inv,
+            kind,
+            defaults::text("devswarm_cli.act_notice_log_wrong_checkout"),
+            vec![("reason", s(defaults::text("devswarm_cli.act_notice_reason_wrong_checkout")))],
+        );
         return notice_refusal("devswarm_cli.act_notice_reason_wrong_checkout", defaults::text("devswarm_cli.act_notice_msg_wrong_checkout"));
     }
     let text = a.one(defaults::text("devswarm_cli.flag_post")).unwrap_or("");
@@ -751,10 +767,7 @@ fn notice_post(inv: &Inv, a: &Args) -> Answer {
     };
     let home = home_str(inv);
     let day = defaults::num("devswarm_cli.notice_day_ms") as f64;
-    let recent = notice_rows(&home)
-        .iter()
-        .filter(|r| matches!(r.get("ts"), Some(OVal::Num(t)) if t.is_finite() && *t > now - day && *t <= now))
-        .count();
+    let recent = notice_rows(&home).iter().filter(|r| matches!(r.get("ts"), Some(OVal::Num(t)) if t.is_finite() && *t > now - day && *t <= now)).count();
     let per_day = defaults::num("devswarm_cli.notice_max_posts_per_day");
     if recent as u64 >= per_day {
         notice_event(
@@ -763,7 +776,10 @@ fn notice_post(inv: &Inv, a: &Args) -> Answer {
             defaults::text("devswarm_cli.act_notice_log_rate"),
             vec![("reason", s(defaults::text("devswarm_cli.act_notice_reason_rate"))), ("recentCount", n(recent as f64))],
         );
-        return notice_refusal("devswarm_cli.act_notice_reason_rate", &defaults::render("devswarm_cli.act_notice_msg_rate", &[("max", &per_day), ("count", &recent)]));
+        return notice_refusal(
+            "devswarm_cli.act_notice_reason_rate",
+            &defaults::render("devswarm_cli.act_notice_msg_rate", &[("max", &per_day), ("count", &recent)]),
+        );
     }
     let mut raw_id = vec![0u8; defaults::num("devswarm_cli.notice_id_bytes") as usize];
     let id = {
@@ -780,9 +796,8 @@ fn notice_post(inv: &Inv, a: &Args) -> Answer {
     let root = devswarm_root(Path::new(&home));
     let file = root.join(defaults::text("devswarm_cli.notice_file"));
     let line = format!("{}\n", row.done().stringify());
-    let wrote_line = std::fs::create_dir_all(&root)
-        .map_err(|e| fs_message(&e, defaults::text("devswarm_cli.act_sys_mkdir"), &root.to_string_lossy()))
-        .and_then(|()| {
+    let wrote_line =
+        std::fs::create_dir_all(&root).map_err(|e| fs_message(&e, defaults::text("devswarm_cli.act_sys_mkdir"), &root.to_string_lossy())).and_then(|()| {
             use std::io::Write;
             std::fs::OpenOptions::new()
                 .create(true)

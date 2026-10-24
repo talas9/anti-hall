@@ -34,7 +34,7 @@
 //   One model call per Stop event (only when enabled). api: ~$0.0001-0.001 per
 //   turn at haiku rates, ~1-3 s (estimate). cli: no API bill (it uses
 //   the Claude login's own usage), ~5-6 s per turn end (measured, claude 2.1.288).
-//   Measured precision on eval/inference-bench.js: 0.78-0.81, recall 1.0 (three
+//   Measured precision on tools/eval/inference-bench.js: 0.78-0.81, recall 1.0 (three
 //   runs) — why the judge stays opt-in.
 //   Enable only if the cost/latency tradeoff is acceptable to you.
 //
@@ -90,7 +90,7 @@ if (!judgeEnabled) {
 
 // ---------------------------------------------------------------------------
 // Judge prompt + input + CLI backend: lib/judge-core.js (shared with
-// eval/inference-bench.js, so the eval measures exactly what ships).
+// tools/eval/inference-bench.js, so the eval measures exactly what ships).
 // ---------------------------------------------------------------------------
 const judgeCore = require('./lib/judge-core.js');
 const JUDGE_SYSTEM = judgeCore.JUDGE_SYSTEM;

@@ -166,7 +166,8 @@ pub(crate) fn seat_verdict(inv: &Inv, session: &str, now: f64) -> R<Value> {
         return Ok(na());
     }
     let id = ident::primary_workspace_id(&wt)?;
-    let desc_file = idlock::devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let desc_file =
+        idlock::devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let desc = match ident::read_bounded(&desc_file)? {
         Some(b) => OVal::parse(&String::from_utf8_lossy(&b)),
         None => None,
@@ -205,11 +206,14 @@ pub(crate) fn seat_verdict(inv: &Inv, session: &str, now: f64) -> R<Value> {
         return Ok(v);
     }
     let (live, evidence) = holder_liveness(home, &holder, &id, now)?;
-    state(&mut v, match live {
-        Some(true) => "conflict",
-        Some(false) => "adopt",
-        None => "unknown",
-    });
+    state(
+        &mut v,
+        match live {
+            Some(true) => "conflict",
+            Some(false) => "adopt",
+            None => "unknown",
+        },
+    );
     set(&mut v, "evidence", evidence);
     Ok(v)
 }
@@ -229,7 +233,8 @@ fn adopt_seat(inv: &Inv, session: &str, now: f64, real: bool) -> R<Value> {
     }
     let id = field(&v, "id").to_string();
     let wt = field(&v, "worktree").to_string();
-    let desc_file = idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
+    let desc_file =
+        idlock::devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_workspaces")).join(format!("{id}{}", defaults::text("mesh_write.json_suffix")));
     let cursor = ident::read_bounded(&desc_file)?
         .and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)))
         .and_then(|d| js_text(d.get(defaults::text("mesh_write.field_cursor_path"))));

@@ -77,7 +77,9 @@ impl Drop for Fix {
 }
 
 fn marker(wt: &str, by: &str) -> String {
-    format!("{{\"id\":\"W\",\"worktreePath\":\"{wt}\",\"sessionId\":\"sw\",\"archivedBy\":\"{by}\",\"archivedAt\":5,\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}}")
+    format!(
+        "{{\"id\":\"W\",\"worktreePath\":\"{wt}\",\"sessionId\":\"sw\",\"archivedBy\":\"{by}\",\"archivedAt\":5,\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}}"
+    )
 }
 
 #[test]

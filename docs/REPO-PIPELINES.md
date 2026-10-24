@@ -49,5 +49,6 @@ anything.
 
 !!! note "Model chain"
     When a model is used, the order is Claude (primary token), Claude (secondary token),
-    GitHub Copilot, then rules only. Each job picks its model from
+    then rules only. GitHub Copilot is off by default (`copilot_fallback` is `false` in
+    `.github/moderation/config.json`); set it to `true` to add Copilot as the last slot. Each job picks its model from
     `.github/moderation/config.json`; no model version is pinned in a workflow.

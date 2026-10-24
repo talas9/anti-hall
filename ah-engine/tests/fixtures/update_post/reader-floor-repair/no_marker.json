@@ -14,7 +14,7 @@
     ".anti-hall/devswarm/cursors/": "755",
     ".anti-hall/devswarm/cursors/p1.json": "644 5",
     ".anti-hall/devswarm/workspaces/": "755",
-    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/home/nd-p2.cursor\"}",
+    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/nd-p2.cursor\"}",
     ".anti-hall/update-sweep-state.json": "644 {\"repairReaderFloors\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
   },
   "stores": {

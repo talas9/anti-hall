@@ -72,7 +72,9 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
             ..Agent::default()
         };
     }
-    if a.offset == 0 { a.transcript_from_start = true; }
+    if a.offset == 0 {
+        a.transcript_from_start = true;
+    }
     let mut start = a.offset;
     let mut skip_first = false;
     if start == 0 && len > lim("first_read_bytes") {
@@ -96,7 +98,10 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
     a.offset = start + end as u64;
     let text = match std::str::from_utf8(&buf[..end]) {
         Ok(text) => text,
-        Err(_) => { a.partial = true; return; }
+        Err(_) => {
+            a.partial = true;
+            return;
+        }
     };
     let mut lines = text.lines();
     if skip_first {
@@ -108,8 +113,7 @@ pub(crate) fn ingest(a: &mut Agent, now: u64) {
             Err(_) => a.partial = true,
         }
     }
-    a.transcript_complete = a.transcript_from_start && !a.partial && a.offset == len
-        && std::fs::metadata(&a.path).is_ok_and(|m| m.len() == len);
+    a.transcript_complete = a.transcript_from_start && !a.partial && a.offset == len && std::fs::metadata(&a.path).is_ok_and(|m| m.len() == len);
 }
 
 fn line(a: &mut Agent, v: &Value, now: u64) {
@@ -135,7 +139,9 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         }
         // Rescue wrappers can return a background Codex task id without making local tool calls.
         let returned = msg.and_then(|m| m.get(tr("content"))).map(result_text).unwrap_or_default();
-        if pat("codex_job").is_some_and(|r| r.is_match(&returned)) { a.codex_rescue = true; }
+        if pat("codex_job").is_some_and(|r| r.is_match(&returned)) {
+            a.codex_rescue = true;
+        }
         for b in blocks {
             if a.watch {
                 turn(a, b, ts);
@@ -156,9 +162,19 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
                 let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
                 let rescue = a.rescue_calls.remove(str_of(b, tr("tool_use_id"))) || pat("codex_job").is_some_and(|r| r.is_match(&text));
                 if rescue {
-                    let id = v.get(nw.str_field("result_field")).and_then(|r| r.get(nw.str_field("result_agent_field"))).and_then(Value::as_str).map(str::to_string)
-                        .or_else(|| Regex::new(defaults::text("agent_scan.re_agent_id")).ok().and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()))));
-                    if let Some(id) = id.filter(|id| !id.is_empty()) { a.rescue_children.insert(id); }
+                    let id = v
+                        .get(nw.str_field("result_field"))
+                        .and_then(|r| r.get(nw.str_field("result_agent_field")))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| {
+                            Regex::new(defaults::text("agent_scan.re_agent_id"))
+                                .ok()
+                                .and_then(|r| r.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())))
+                        });
+                    if let Some(id) = id.filter(|id| !id.is_empty()) {
+                        a.rescue_children.insert(id);
+                    }
                 }
                 tool_result(a, b, ts);
             }
@@ -440,7 +456,9 @@ fn wake(a: &mut Agent, name: &str, input: &Value, ts: u64) {
 
 fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     let text = result_text(b.get(tr("content_key")).unwrap_or(&Value::Null));
-    if pat("codex_job").is_some_and(|r| r.is_match(&text)) { a.codex_rescue = true; }
+    if pat("codex_job").is_some_and(|r| r.is_match(&text)) {
+        a.codex_rescue = true;
+    }
     let Some(p) = a.pending.remove(str_of(b, tr("tool_use_id"))) else { return };
     let failed = b.get(tr("is_error")).and_then(Value::as_bool) == Some(true);
     if !failed

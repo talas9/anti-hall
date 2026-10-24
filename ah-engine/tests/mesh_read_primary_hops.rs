@@ -24,7 +24,12 @@ impl Fx {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
-            let o = Command::new("git").current_dir(&repo).args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+            let o = Command::new("git")
+                .current_dir(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
             assert!(o.status.success());
         };
         git(&["init", "-q", "-b", "main"]);

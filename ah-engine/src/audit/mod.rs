@@ -72,7 +72,11 @@ impl Report {
     fn table(&self) -> String {
         let max = defaults::num("entry_audit.text_max") as usize;
         let cut = |s: &str| -> String {
-            if s.chars().count() > max { format!("{}{}", s.chars().take(max).collect::<String>(), defaults::text("entry_audit_msg.ellipsis")) } else { s.to_string() }
+            if s.chars().count() > max {
+                format!("{}{}", s.chars().take(max).collect::<String>(), defaults::text("entry_audit_msg.ellipsis"))
+            } else {
+                s.to_string()
+            }
         };
         let place = |f: &Finding| if f.line > 0 { format!("{}:{}", f.path, f.line) } else { f.path.clone() };
         let mut rows: Vec<Vec<String>> = vec![defaults::list("entry_audit_msg.head").into_iter().map(str::to_string).collect()];
@@ -80,7 +84,13 @@ impl Report {
         let widths: Vec<usize> = (0..4).map(|c| rows.iter().map(|r| r.get(c).map_or(0, |s| s.chars().count())).max().unwrap_or(0)).collect();
         let sep = defaults::text("entry_audit_msg.col_sep");
         rows.iter()
-            .map(|r| r.iter().enumerate().map(|(c, s)| format!("{s:<w$}", w = if c == 3 { 0 } else { widths.get(c).copied().unwrap_or(0) })).collect::<Vec<_>>().join(sep))
+            .map(|r| {
+                r.iter()
+                    .enumerate()
+                    .map(|(c, s)| format!("{s:<w$}", w = if c == 3 { 0 } else { widths.get(c).copied().unwrap_or(0) }))
+                    .collect::<Vec<_>>()
+                    .join(sep)
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }

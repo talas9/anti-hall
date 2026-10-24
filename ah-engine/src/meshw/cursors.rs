@@ -424,7 +424,10 @@ pub(crate) fn append_older(older: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(out.as_bytes())?;
     let size = len + out.len() as u64;
     if size > defaults::num("mesh_write.cursor_log_older_soft_bytes") {
-        crate::discard::note("cursor_log_older_soft", &defaults::render("mesh_write.msg_cursor_log_older_soft", &[("path", &older.display()), ("bytes", &size)]));
+        crate::discard::note(
+            "cursor_log_older_soft",
+            &defaults::render("mesh_write.msg_cursor_log_older_soft", &[("path", &older.display()), ("bytes", &size)]),
+        );
     }
     Ok(())
 }

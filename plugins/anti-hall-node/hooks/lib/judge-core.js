@@ -1,7 +1,7 @@
 'use strict';
 // anti-hall :: judge-core — the semantic speculation judge's prompt, input and
 // the local-CLI backend, shared by hooks/speculation-judge.js and
-// eval/inference-bench.js.
+// tools/eval/inference-bench.js.
 //
 // Backends (jev.judgeBackend, env ANTIHALL_JUDGE_BACKEND):
 //   api  — Anthropic Messages API with the anthropic_api_key plugin option (the

@@ -617,7 +617,9 @@ fn project_store(p: &Parsed, verb: &str, id: Option<&str>) -> Result<String, i32
     let Some(inv) = crate::meshw::inv_from_process(None) else { return Err(fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &"")]))) };
     let key = crate::meshw::ident::resolve_context(&inv.cwd, true).ok().and_then(|c| c.repo_key);
     let local = key.as_deref().map(|k| crate::meshw::union::store_dir(&inv.home, k).join(file));
-    let holds = |path: &Path| MeshReader::open(path).ok().is_some_and(|r| id.is_some_and(|i| r.message_count(i).unwrap_or(0) > 0 || r.workspace_ids().iter().any(|w| w == i)));
+    let holds = |path: &Path| {
+        MeshReader::open(path).ok().is_some_and(|r| id.is_some_and(|i| r.message_count(i).unwrap_or(0) > 0 || r.workspace_ids().iter().any(|w| w == i)))
+    };
     if verb == "read"
         && let Some(id) = id
         && !local.as_deref().is_some_and(holds)
@@ -631,11 +633,16 @@ fn project_store(p: &Parsed, verb: &str, id: Option<&str>) -> Result<String, i32
             }
         }
         return match found.len() {
-            0 => local.map(|l| l.to_string_lossy().into_owned()).ok_or_else(|| fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &inv.cwd)]))),
+            0 => {
+                local.map(|l| l.to_string_lossy().into_owned()).ok_or_else(|| fail_text(p, &defaults::render("msg.err_mesh_no_project", &[("cwd", &inv.cwd)])))
+            }
             1 => Ok(found.remove(0).1.to_string_lossy().into_owned()),
             _ => Err(fail_text(
                 p,
-                &defaults::render("msg.err_mesh_ambiguous_store", &[("id", &id), ("stores", &found.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "))]),
+                &defaults::render(
+                    "msg.err_mesh_ambiguous_store",
+                    &[("id", &id), ("stores", &found.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "))],
+                ),
             )),
         };
     }

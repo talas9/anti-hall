@@ -24,7 +24,15 @@ fn rows() -> Vec<Value> {
     if f.take(cap.saturating_add(1)).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > cap {
         return Vec::new();
     }
-    serde_json::from_slice::<Vec<Value>>(&bytes).unwrap_or_default().into_iter().rev().take(defaults::num("health.start_ring_rows") as usize).collect::<Vec<_>>().into_iter().rev().collect()
+    serde_json::from_slice::<Vec<Value>>(&bytes)
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .take(defaults::num("health.start_ring_rows") as usize)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
 }
 
 /// The explicit launcher's reason, or manual for an unlabelled `serve`. Unknown labels cannot grow the reason cardinality.
@@ -42,7 +50,8 @@ pub fn record(trigger: &str) {
     let last_start = ring.last().and_then(|r| r.get(field("timestamp"))).and_then(Value::as_u64).unwrap_or(0);
     let lifecycle = defaults::list("health.start_lifecycle_kinds");
     let crashes = defaults::list("health.start_crash_kinds");
-    let recovered = health::events().iter().rev().find(|e| e.ts >= last_start && lifecycle.contains(&e.kind.as_str())).is_some_and(|e| crashes.contains(&e.kind.as_str()));
+    let recovered =
+        health::events().iter().rev().find(|e| e.ts >= last_start && lifecycle.contains(&e.kind.as_str())).is_some_and(|e| crashes.contains(&e.kind.as_str()));
     let mut row = Map::new();
     row.insert(field("timestamp").into(), Value::from(health::now_ms()));
     row.insert(field("pid").into(), Value::from(std::process::id()));
@@ -50,7 +59,9 @@ pub fn record(trigger: &str) {
     row.insert(field("reason").into(), Value::from(if recovered { reason("crash") } else { trigger }));
     ring.push(Value::Object(row));
     let keep = defaults::num("health.start_ring_rows") as usize;
-    if ring.len() > keep { ring.drain(..ring.len() - keep); }
+    if ring.len() > keep {
+        ring.drain(..ring.len() - keep);
+    }
     let cap = defaults::num("health.start_ring_bytes") as usize;
     let mut bytes = serde_json::to_vec(&ring).unwrap_or_default();
     while bytes.len() > cap && !ring.is_empty() {

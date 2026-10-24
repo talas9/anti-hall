@@ -12,21 +12,31 @@
 //! fails the verb: a later failure is reported in the result (`cursorWriteFailures`) exactly as Node reports it.
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::readprimary::store_err;
 use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, n, s};
 use crate::meshw::cursors::{self, LogRec, Procs};
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
+use crate::meshw::readprimary::store_err;
 use crate::meshw::send::{Answer, Effect, mesh_candidates, rehome_is_noop, resolve_mesh_target};
 use crate::meshw::union;
 use std::path::{Path, PathBuf};
 
 /// A receipt op the engine applies: a move of the caller's own partition cursor, or of a sibling partition of its mesh group.
 enum AckOp {
-    Own { partition: String, target: f64, delivered: Option<f64> },
+    Own {
+        partition: String,
+        target: f64,
+        delivered: Option<f64>,
+    },
     /// `not_ackable` is decided again at ack time (`revalidate`): a sibling that is live must not have its cursor moved by this caller.
-    Sibling { partition: String, ack_target: f64, seen_target: f64, delivered: Option<f64>, not_ackable: bool },
+    Sibling {
+        partition: String,
+        ack_target: f64,
+        seen_target: f64,
+        delivered: Option<f64>,
+        not_ackable: bool,
+    },
     /// A move of the caller's NDJSON position (`commitNdAck`).
     Nd(NdOp),
 }
@@ -147,7 +157,13 @@ fn own_ops(rec: &OVal, id: &str) -> Result<Vec<AckOp>, CorruptReceipt> {
                     Some(OVal::Num(t)) if t.is_finite() => *t,
                     _ => 0.0,
                 };
-                out.push(AckOp::Sibling { partition, ack_target: finite("ackTarget")?, seen_target, delivered, not_ackable: op.get("notAckable").is_some_and(OVal::truthy) });
+                out.push(AckOp::Sibling {
+                    partition,
+                    ack_target: finite("ackTarget")?,
+                    seen_target,
+                    delivered,
+                    not_ackable: op.get("notAckable").is_some_and(OVal::truthy),
+                });
             }
             Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_nd") => {
                 let path = |key: &str| -> Result<Option<String>, CorruptReceipt> {
@@ -164,7 +180,12 @@ fn own_ops(rec: &OVal, id: &str) -> Result<Vec<AckOp>, CorruptReceipt> {
                     Some(OVal::Num(t)) if t.is_finite() => *t,
                     _ => return Err(corrupt("target", "target")),
                 };
-                out.push(AckOp::Nd(NdOp { partition: partition_or_id("partition")?, target, cursor_path: path("cursorPath")?, inbox_path: path("inboxPath")? }));
+                out.push(AckOp::Nd(NdOp {
+                    partition: partition_or_id("partition")?,
+                    target,
+                    cursor_path: path("cursorPath")?,
+                    inbox_path: path("inboxPath")?,
+                }));
             }
             _ => {}
         }
@@ -226,14 +247,22 @@ pub(crate) enum AckStep {
 /// `refuse(reason, error)` of `cmdInboxAckPrimary`: `{ok:false, reason, error, action, id}`.
 fn refuse(id: &str, reason: &str, error: &str) -> AckStep {
     let mut o = Obj::default();
-    o.put("ok", OVal::Bool(false)).put("reason", s(reason)).put("error", s(error)).put("action", s(defaults::text("mesh_write.action_ack_primary"))).put("id", s(id));
+    o.put("ok", OVal::Bool(false))
+        .put("reason", s(reason))
+        .put("error", s(error))
+        .put("action", s(defaults::text("mesh_write.action_ack_primary")))
+        .put("id", s(id));
     AckStep::Refuse(o.done())
 }
 
 /// The refusal for a store that could not be settled (`Object.assign({}, base, { ok: false, reason, error })`).
 fn refuse_store(id: &str, reason: &str, error: &str) -> AckStep {
     let mut o = Obj::default();
-    o.put("action", s(defaults::text("mesh_write.action_ack_primary"))).put("id", s(id)).put("ok", OVal::Bool(false)).put("reason", s(reason)).put("error", s(error));
+    o.put("action", s(defaults::text("mesh_write.action_ack_primary")))
+        .put("id", s(id))
+        .put("ok", OVal::Bool(false))
+        .put("reason", s(reason))
+        .put("error", s(error));
     AckStep::Refuse(o.done())
 }
 
@@ -342,7 +371,14 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
             let msg = text("error").or_else(|| text("reason")).unwrap_or_else(|| defaults::text("mesh_write.msg_verb_not_ok").to_string());
             let repo_key = ident::resolve_context(&inv.cwd, true).ok().and_then(|c| c.repo_key);
             crate::meshw::clog::ready(inv)?;
-            crate::meshw::clog::refusal(inv, &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), defaults::text("mesh_write.verb_ack_primary")), repo_key.as_deref(), Some(id), &msg, text("reason").as_deref());
+            crate::meshw::clog::refusal(
+                inv,
+                &format!("{}{}", defaults::text("devswarm_cli.window_op_prefix"), defaults::text("mesh_write.verb_ack_primary")),
+                repo_key.as_deref(),
+                Some(id),
+                &msg,
+                text("reason").as_deref(),
+            );
             crate::meshw::mark_committed();
             Ok(Answer { code: 2, stdout: format!("{}\n", o.stringify()), effect: Effect::None })
         }
@@ -382,7 +418,10 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
         Some(rec) => Some((rec, id.to_string())),
         None => read_receipt(home, id, rid, &dir_id),
     }) else {
-        let msg = defaults::render("mesh_write.msg_unknown_receipt", &[("rid", &OVal::Str(rid.to_string()).stringify()), ("id", &OVal::Str(id.to_string()).stringify()), ("bare", &id)]);
+        let msg = defaults::render(
+            "mesh_write.msg_unknown_receipt",
+            &[("rid", &OVal::Str(rid.to_string()).stringify()), ("id", &OVal::Str(id.to_string()).stringify()), ("bare", &id)],
+        );
         return Ok(refuse(id, defaults::text("mesh_write.reason_unknown_receipt"), &msg));
     };
     let rec_id = rec.get("id").map_or_else(|| defaults::text("mesh_write.js_undefined").to_string(), crate::dssup::ingest::import::js_string);
@@ -397,7 +436,11 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
         .unwrap_or(false);
         if !same_family {
             let shown = rec.get("id").map_or_else(|| defaults::text("mesh_write.js_undefined").to_string(), OVal::stringify);
-            return Ok(refuse(id, defaults::text("mesh_write.reason_receipt_owner"), &defaults::render("mesh_write.msg_receipt_belongs", &[("owner", &shown)])));
+            return Ok(refuse(
+                id,
+                defaults::text("mesh_write.reason_receipt_owner"),
+                &defaults::render("mesh_write.msg_receipt_belongs", &[("owner", &shown)]),
+            ));
         }
     }
     let reader = cursors::reader_key(ident::reader_nonce(home).as_deref());
@@ -416,7 +459,11 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
         Some(OVal::Num(c)) if c.is_finite() && (inv.now as f64) - c <= defaults::num("mesh_write.receipt_ttl_ms") as f64 => {}
         _ => {
             let hours = (defaults::num("mesh_write.receipt_ttl_ms") as f64 / 3_600_000.0).round();
-            return Ok(refuse(id, defaults::text("mesh_write.reason_receipt_expired"), &defaults::render("mesh_write.msg_receipt_expired", &[("hours", &hours), ("id", &id)])));
+            return Ok(refuse(
+                id,
+                defaults::text("mesh_write.reason_receipt_expired"),
+                &defaults::render("mesh_write.msg_receipt_expired", &[("hours", &hours), ("id", &id)]),
+            ));
         }
     }
     if !ack_as_owner {
@@ -450,7 +497,8 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
             // `ackFor` imports the partition's legacy cursor files the first time it moves it. The dry run only has to be possible;
             // a case it cannot settle is carried out by the real import below, whose failure is reported in the result
             let h = crate::migrate::readercur::Handle::Ro(
-                crate::mesh::MeshReader::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file"))).map_err(|e| store_err("store-open", e))?,
+                crate::mesh::MeshReader::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file")))
+                    .map_err(|e| store_err("store-open", e))?,
             );
             let mut cx = crate::migrate::readercur::Cx::new(&home.to_string_lossy());
             crate::migrate::readercur::import_legacy(&mut cx, &h, op.partition(), None, true).map_err(|e| store_err("cursor-import", e))?;
@@ -467,7 +515,18 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
 /// `commitNdAck` for one `nd` op of a receipt: the NDJSON position moves to the target (never past the inbox's line count), the
 /// descriptor's cursor file follows the floor, and a failure is reported in the result.
 #[allow(clippy::too_many_arguments)]
-fn apply_nd(inv: &Inv, st: &crate::meshw::store::MeshStore, id: &str, reader: Option<&str>, nonce: Option<String>, repo_key: &str, op: &NdOp, verb: &str, procs: &mut Procs, failures: &mut Vec<OVal>) {
+fn apply_nd(
+    inv: &Inv,
+    st: &crate::meshw::store::MeshStore,
+    id: &str,
+    reader: Option<&str>,
+    nonce: Option<String>,
+    repo_key: &str,
+    op: &NdOp,
+    verb: &str,
+    procs: &mut Procs,
+    failures: &mut Vec<OVal>,
+) {
     let mut to = op.target.max(0.0).floor();
     if let Some(inbox) = &op.inbox_path {
         let lines = crate::meshw::union::non_empty_lines(inbox).ok().flatten().map_or(0, |l| l.len());
@@ -528,7 +587,8 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
     for partition in &imports {
         let done = (|| -> Result<(), String> {
             let h = crate::migrate::readercur::Handle::Rw(
-                crate::meshw::store::MeshStore::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file"))).map_err(|e| e.to_string())?,
+                crate::meshw::store::MeshStore::open(&union::store_dir(home, &repo_key).join(defaults::text("mesh_write.store_file")))
+                    .map_err(|e| e.to_string())?,
             );
             let mut cx = crate::migrate::readercur::Cx::new(&home.to_string_lossy());
             crate::migrate::readercur::import_legacy(&mut cx, &h, partition, None, false).map(|_| ())
@@ -561,8 +621,14 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
             AckOp::Sibling { partition, ack_target, seen_target, delivered, not_ackable } => {
                 if *not_ackable {
                     // a live sibling is not this caller's to ack: only the caller-scoped watermark moves, so the next read starts after it
-                    if *seen_target > 0.0 && !with_watermark_lock(inv, id, partition, || crate::meshw::meshgroup::write_seen_cursor(inv, id, partition, *seen_target)) {
-                        failures.push(failure(partition, defaults::text("mesh_write.channel_sibling_seen"), defaults::text("mesh_write.msg_seen_watermark_failed")));
+                    if *seen_target > 0.0
+                        && !with_watermark_lock(inv, id, partition, || crate::meshw::meshgroup::write_seen_cursor(inv, id, partition, *seen_target))
+                    {
+                        failures.push(failure(
+                            partition,
+                            defaults::text("mesh_write.channel_sibling_seen"),
+                            defaults::text("mesh_write.msg_seen_watermark_failed"),
+                        ));
                     }
                     continue;
                 }
@@ -631,7 +697,18 @@ fn failure(partition: &str, channel: &str, error: &str) -> OVal {
 
 /// The cursor-write journal line of one move.
 #[allow(clippy::too_many_arguments)]
-fn log_move(home: &Path, caller: &str, partition: &str, r: &cursors::Acked, target: f64, delivered: Option<f64>, nonce: Option<String>, gate: &str, repo_key: &str, verb: &str) {
+fn log_move(
+    home: &Path,
+    caller: &str,
+    partition: &str,
+    r: &cursors::Acked,
+    target: f64,
+    delivered: Option<f64>,
+    nonce: Option<String>,
+    gate: &str,
+    repo_key: &str,
+    verb: &str,
+) {
     cursors::log_cursor_write(
         home,
         &LogRec {

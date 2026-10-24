@@ -45,6 +45,10 @@ fn run_hog_and_observe(t: &telemetry::Telemetry) {
 
 #[test]
 fn a_check_that_allocates_two_mib_is_recorded_per_check_and_only_while_the_knob_is_on() {
+    // one unmeasured call first: the first call of a process allocates what its lazily built tables and caches keep for the rest of
+    // its life (a few hundred bytes), and that is retained by the process, not by the check
+    memstat::configure_measure(false, 1);
+    run_hog_and_observe(&telemetry::Telemetry::new());
     let t = telemetry::Telemetry::new();
     memstat::configure_measure(true, 1);
     run_hog_and_observe(&t);

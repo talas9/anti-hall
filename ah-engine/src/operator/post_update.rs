@@ -321,8 +321,11 @@ fn sweep(o: &Opts, live: u32, bin: &Path, home: &str, rep: &mut Report) {
     }
     // watchers on a replaced binary: a settle window for their own re-exec, then report with the re-arm command
     let dup_pids: HashSet<u32> = rep.stopped.iter().filter_map(|s| s["pid"].as_u64().and_then(|p| u32::try_from(p).ok())).collect();
-    let mut pending: Vec<&Proc> =
-        all.iter().filter(|p| p.kind == Kind::Watcher && !dup_pids.contains(&p.row.pid) && !own.contains(&p.row.pid)).filter(|p| old_image(&mut table, p).is_some()).collect();
+    let mut pending: Vec<&Proc> = all
+        .iter()
+        .filter(|p| p.kind == Kind::Watcher && !dup_pids.contains(&p.row.pid) && !own.contains(&p.row.pid))
+        .filter(|p| old_image(&mut table, p).is_some())
+        .collect();
     if !o.dry && !pending.is_empty() {
         let until = Instant::now() + defaults::secs("post_update.watcher_settle_s");
         while Instant::now() < until && !pending.is_empty() {
@@ -451,7 +454,13 @@ fn human(rep: &Report, verified: bool, dry: bool) -> String {
     out.push(if verified {
         defaults::render(
             "post_update.line_verified",
-            &[("pid", &d["pid"]), ("sha", &d["sha"].as_str().map_or(String::new(), short)), ("uptime", &d["uptime_s"]), ("kb", &d["footprint_kb"]), ("ms", &d["ping_ms"])],
+            &[
+                ("pid", &d["pid"]),
+                ("sha", &d["sha"].as_str().map_or(String::new(), short)),
+                ("uptime", &d["uptime_s"]),
+                ("kb", &d["footprint_kb"]),
+                ("ms", &d["ping_ms"]),
+            ],
         )
     } else {
         t("post_update.line_failed").to_string()

@@ -30,9 +30,9 @@ mod sources;
 mod status;
 mod wake;
 pub use status::cost_report;
-pub mod waste;
 #[cfg(test)]
 mod tests;
+pub mod waste;
 
 use crate::checks::git::util::Settings;
 use crate::defaults::{self, V};
@@ -42,14 +42,15 @@ use std::path::PathBuf;
 
 pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, transcript_path};
 pub use nudge::document as nudge_document;
-pub use status::run_cmd;
 pub(crate) use status::document as status_document;
+pub use status::run_cmd;
 
 /// Hand a notice from outside the tracker (the leak sentinel) to the owner notices file and, when a wake-watch covers it, to the
 /// wake feed of the most recently active main session. The caller rate-limits.
 pub(crate) fn notify_coordinator(signal: &str, text: &str) {
     let Some(env) = Env::current() else { return };
-    let r = sinks::Reminder { id: format!("{signal}-{}", env.now_ms), ts: env.now_ms, signal: signal.to_string(), agent: String::new(), text: text.to_string() };
+    let r =
+        sinks::Reminder { id: format!("{signal}-{}", env.now_ms), ts: env.now_ms, signal: signal.to_string(), agent: String::new(), text: text.to_string() };
     use sinks::Sink;
     crate::discard::harmless(sinks::OwnerNotices.deliver(&env, "", &r)); // keep: the wake feed below is the second route
     let st = load_state(&env);
@@ -67,7 +68,11 @@ pub(crate) fn lim(k: &str) -> u64 {
 /// When the agent started: the creation time of its transcript (the tracker's `first_seen` is only the first tick that saw it, which
 /// is later for an agent that ran before the engine looked), else `first_seen`.
 pub(crate) fn started_ms(a: &Agent) -> u64 {
-    let born = std::fs::metadata(&a.path).ok().and_then(|m| m.created().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    let born = std::fs::metadata(&a.path)
+        .ok()
+        .and_then(|m| m.created().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
     match (born, a.first_seen) {
         (0, f) => f,
         (b, 0) => b,

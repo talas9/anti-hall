@@ -115,7 +115,8 @@ impl<'a> Classifier<'a> {
     pub(crate) fn new(home: &Path, worktrees: Vec<String>) -> Classifier<'a> {
         let env: ident::Env = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
         let cwd = std::env::current_dir().ok().and_then(|c| c.to_str().map(str::to_string)).unwrap_or_default();
-        let inv = Inv { home: home.to_path_buf(), write_home: home.to_path_buf(), env, cwd, now: crate::meshw::common::now_ms(), stdin: None, store_override: None };
+        let inv =
+            Inv { home: home.to_path_buf(), write_home: home.to_path_buf(), env, cwd, now: crate::meshw::common::now_ms(), stdin: None, store_override: None };
         Classifier { home: home.to_path_buf(), inv, worktrees, store: None, index: None, families: None, registry: None, survivors: HashMap::new() }
     }
 
@@ -183,7 +184,8 @@ impl<'a> Classifier<'a> {
     /// `resolveOrphanDescriptor`: the live descriptor, else the archive marker of the id.
     fn descriptor(&self, id: &str) -> Option<OVal> {
         let file = format!("{id}{}", json_suffix());
-        read_object(&devswarm_root(&self.home).join(defaults::text("mesh_write.dir_workspaces")).join(&file)).or_else(|| read_object(&archived_dir(&self.home).join(&file)))
+        read_object(&devswarm_root(&self.home).join(defaults::text("mesh_write.dir_workspaces")).join(&file))
+            .or_else(|| read_object(&archived_dir(&self.home).join(&file)))
     }
 
     /// `resolveArchiveGate(...)`: `archived && !migrateAsLive`.
@@ -214,7 +216,8 @@ impl<'a> Classifier<'a> {
             && let Some(dwt) = &desc_wt
         {
             let real = self.real_or_raw(dwt);
-            let hits: Vec<(String, Option<String>)> = self.index().get(&real).map(|h| h.iter().map(|x| (x.id.clone(), x.sid.clone())).collect()).unwrap_or_default();
+            let hits: Vec<(String, Option<String>)> =
+                self.index().get(&real).map(|h| h.iter().map(|x| (x.id.clone(), x.sid.clone())).collect()).unwrap_or_default();
             // the hit Node takes follows the listing order of the directory; the engine lists by name
             if let Some((_, sid)) = hits.iter().find(|(h, _)| h != id).or(hits.first()) {
                 group = true;
@@ -294,7 +297,8 @@ impl<'a> Classifier<'a> {
         if group.is_empty() {
             return Ok(false);
         }
-        let survivor = crate::meshw::diagverbs::pick_freshest(&self.inv, st.reader(), &group, &|r| Ok(live_session_id(r.session_id.as_deref())))?.map(|r| r.id.clone());
+        let survivor =
+            crate::meshw::diagverbs::pick_freshest(&self.inv, st.reader(), &group, &|r| Ok(live_session_id(r.session_id.as_deref())))?.map(|r| r.id.clone());
         let Some(survivor) = survivor.filter(|s| !s.is_empty() && s != id) else { return Ok(false) };
         let floor = crate::meshw::summary::store_floor(st, &self.home, id);
         let mut unread: Vec<serde_json::Value> = Vec::new();
@@ -446,7 +450,14 @@ mod tests {
         put(&h, AR, "O", &format!(r#"{{"worktreePath":"{wt_s}","sessionId":"so"}}"#));
         put(&h, WS, "S", &format!(r#"{{"worktreePath":"{wt_s}","sessionId":"live-s"}}"#));
         let st = MeshStore::open(&h.join(defaults::text("mesh_write.store_file"))).unwrap();
-        let row = RegistryRow { id: "S".into(), worktree_path: Some(wt_s), session_id: Some("live-s".into()), inbox_path: None, cursor_path: None, nudge_command: None };
+        let row = RegistryRow {
+            id: "S".into(),
+            worktree_path: Some(wt_s),
+            session_id: Some("live-s".into()),
+            inbox_path: None,
+            cursor_path: None,
+            nudge_command: None,
+        };
         st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
         let m = mesh_message_row(Some("peer"), Some("O"), false, "hello", 1_000, "normal", "mesh:orig", false, None);
         st.append_mesh_row(&m).unwrap();

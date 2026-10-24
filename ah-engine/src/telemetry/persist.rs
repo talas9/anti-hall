@@ -114,9 +114,16 @@ fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
             if let Some(Event { extras: super::event::Extras::Spawn(old), .. }) = old
                 && old.agent_key.as_ref() == Some(key)
             {
-                if incoming.usage == super::event::Usage::default() && old.usage != super::event::Usage::default() { return Ok(0); }
-                if incoming.usage == old.usage && incoming.actual_model == old.actual_model && incoming.started_ms == old.started_ms { return Ok(0); }
-                return Ok(c.execute("UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4", params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id])?);
+                if incoming.usage == super::event::Usage::default() && old.usage != super::event::Usage::default() {
+                    return Ok(0);
+                }
+                if incoming.usage == old.usage && incoming.actual_model == old.actual_model && incoming.started_ms == old.started_ms {
+                    return Ok(0);
+                }
+                return Ok(c.execute(
+                    "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4",
+                    params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id],
+                )?);
             }
         }
     }

@@ -12,9 +12,9 @@ use super::readercur::{self as rc, Cx, Handle};
 use super::{Ctx, list_store_hashes};
 use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
-use crate::meshw::cursors::{self, LogRec};
 use crate::meshw::args::Args;
 use crate::meshw::common::Inv;
+use crate::meshw::cursors::{self, LogRec};
 use crate::meshw::ident;
 use crate::meshw::idlock::is_safe_id;
 use crate::meshw::store::mesh_message_hash;
@@ -237,7 +237,9 @@ fn archive_index(home: &Path) -> Option<HashMap<String, Vec<String>>> {
         if !crate::meshw::idlock::is_safe_id(id) {
             continue;
         }
-        let Some(marker) = std::fs::read(e.path()).ok().and_then(|b| crate::checks::guardkit::ojson::OVal::parse(&String::from_utf8_lossy(&b))) else { continue };
+        let Some(marker) = std::fs::read(e.path()).ok().and_then(|b| crate::checks::guardkit::ojson::OVal::parse(&String::from_utf8_lossy(&b))) else {
+            continue;
+        };
         let wt = match marker.get("worktreePath") {
             Some(crate::checks::guardkit::ojson::OVal::Str(s)) if !s.is_empty() => s.clone(),
             _ => continue,
@@ -268,7 +270,8 @@ fn stores(ctx: &Ctx, dry: bool) -> (Vec<String>, usize) {
         return (Vec::new(), skipped);
     }
     let total = all.len();
-    let open: Vec<String> = all.into_iter().filter(|h| rc::sqlite_store(Path::new(&ctx.home), h) || rc::adopt_legacy_marker(Path::new(&ctx.home), h, dry)).collect();
+    let open: Vec<String> =
+        all.into_iter().filter(|h| rc::sqlite_store(Path::new(&ctx.home), h) || rc::adopt_legacy_marker(Path::new(&ctx.home), h, dry)).collect();
     let skipped = total - open.len();
     (open, skipped)
 }
@@ -512,7 +515,8 @@ fn reconcile(cx: &mut Cx, h: &Handle, dry: bool, probe: bool, t: &mut Tally) -> 
     if cx.deferred {
         return Ok(()); // a worktree only git can place: nothing is raised for this store
     }
-    let sid_of: HashMap<String, String> = registry.iter().filter_map(|d| row_id(d).map(|i| (i, jv(d, "sessionId").as_str().unwrap_or("").to_string()))).collect();
+    let sid_of: HashMap<String, String> =
+        registry.iter().filter_map(|d| row_id(d).map(|i| (i, jv(d, "sessionId").as_str().unwrap_or("").to_string()))).collect();
     for mesh_id in order {
         let Some(ids) = groups.get(&mesh_id) else { continue };
         if ids.len() < 2 || !ids.contains(&mesh_id) {

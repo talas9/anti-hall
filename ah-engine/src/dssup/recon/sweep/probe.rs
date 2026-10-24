@@ -85,7 +85,10 @@ pub(super) fn list_all(ctx: &Ctx, runner: &dyn Runner, cwd: &str) -> Listing {
         cap = crate::meshw::hivecontrol::cap_verb(&env, ctx.home, verb, None, None);
     }
     if let crate::meshw::hivecontrol::Cap::Dormant(reason) = cap {
-        return Listing::Refused(defaults::render("devswarm_recon.msg_capability_dormant", &[("name", &format!("{}{verb}", defaults::text("devswarm_cli.hc_cap_prefix"))), ("reason", &reason)]));
+        return Listing::Refused(defaults::render(
+            "devswarm_recon.msg_capability_dormant",
+            &[("name", &format!("{}{verb}", defaults::text("devswarm_cli.hc_cap_prefix"))), ("reason", &reason)],
+        ));
     }
     let spec = RunSpec {
         bin: None,
@@ -156,7 +159,9 @@ fn fetch(ctx: &Ctx, runner: &dyn Runner, cwd: &str) -> Active {
 
 /// `isRepoUnknownText(...texts)`: some line of some text is the `Repository not found` line.
 fn is_repo_unknown(texts: &[Option<&str>]) -> bool {
-    let (Some(line_re), Ok(ansi)) = (re("devswarm_recon.re_repo_unknown_line"), regex::Regex::new(defaults::text("devswarm_recon.ansi_re"))) else { return false };
+    let (Some(line_re), Ok(ansi)) = (re("devswarm_recon.re_repo_unknown_line"), regex::Regex::new(defaults::text("devswarm_recon.ansi_re"))) else {
+        return false;
+    };
     texts.iter().flatten().any(|t| ansi.replace_all(t, "").split('\n').any(|l| line_re.is_match(js_trim(l.trim_end_matches('\r')))))
 }
 
@@ -338,7 +343,8 @@ pub(super) fn sampling(ctx: &Ctx, runner: &dyn Runner, descs: &[Descriptor]) -> 
     }
     let max = crate::dssup::setting(ctx.st, "devswarm_recon.set_paused_probe_max").as_f64().unwrap_or(0.0).max(1.0) as usize;
     let ids: Vec<String> = descs.iter().map(|d| d.id.clone()).collect();
-    let probes: Vec<(String, side::Probe)> = side::sampling_candidates(ctx.home, &ids, max).into_iter().map(|id| (id.clone(), side::probe(runner, &id))).collect();
+    let probes: Vec<(String, side::Probe)> =
+        side::sampling_candidates(ctx.home, &ids, max).into_iter().map(|id| (id.clone(), side::probe(runner, &id))).collect();
     match side::plan_sampling(ctx.home, &ids, max, &probes, ctx.now) {
         Ok(planned) => {
             let expect = planned.expect.clone();
@@ -380,7 +386,10 @@ mod tests {
     }
 
     fn failing(stderr: &str) -> Listing {
-        Listing { answer: RunResult { ok: false, status: Some(1), stderr: stderr.into(), error: Some(stderr.into()), ..RunResult::default() }, calls: RefCell::new(0) }
+        Listing {
+            answer: RunResult { ok: false, status: Some(1), stderr: stderr.into(), error: Some(stderr.into()), ..RunResult::default() },
+            calls: RefCell::new(0),
+        }
     }
 
     struct Fix {

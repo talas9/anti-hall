@@ -547,7 +547,8 @@ mod tests {
         let dir = store_dir(&inv, &cwd);
         let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
         for id in ["w1", "5"] {
-            let row = RegistryRow { id: id.into(), worktree_path: Some(cwd.clone()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+            let row =
+                RegistryRow { id: id.into(), worktree_path: Some(cwd.clone()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
             st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
         }
         drop(st);

@@ -70,7 +70,11 @@ pub fn dump(reason: &str) {
     let head = json!({"dump": reason, "ts_ms": health::now_ms(), "entries": rows.len()});
     let body: String = std::iter::once(head).chain(rows.iter().cloned()).map(|v| format!("{v}\n")).collect();
     match atomic::write(&path, body) {
-        Ok(()) => health::log_event("obs", "trace", &defaults::render("msg.obs_trace_dumped", &[("reason", &reason), ("entries", &rows.len()), ("path", &path.display())])),
+        Ok(()) => health::log_event(
+            "obs",
+            "trace",
+            &defaults::render("msg.obs_trace_dumped", &[("reason", &reason), ("entries", &rows.len()), ("path", &path.display())]),
+        ),
         Err(e) => health::log_event("obs", "trace", &defaults::render("msg.obs_trace_dump_failed", &[("reason", &reason), ("err", &e)])),
     }
 }

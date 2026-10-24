@@ -289,7 +289,15 @@ mod tests {
 
     #[test]
     fn every_recorded_reason_has_a_class_and_an_effect() {
-        for k in ["fail_open.reason_internal", "fail_open.reason_busy", "fail_open.reason_deadline", "fail_open.reason_script_timeout", "fail_open.reason_jev_breaker", "fail_open.reason_missing_key", "wire.reason_undelivered"] {
+        for k in [
+            "fail_open.reason_internal",
+            "fail_open.reason_busy",
+            "fail_open.reason_deadline",
+            "fail_open.reason_script_timeout",
+            "fail_open.reason_jev_breaker",
+            "fail_open.reason_missing_key",
+            "wire.reason_undelivered",
+        ] {
             let r = defaults::text(k);
             assert_ne!(effect(r), defaults::text("fail_open.effect_default"), "{r} has no effect text");
         }

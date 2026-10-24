@@ -19,9 +19,7 @@ if cargo nextest --version >/dev/null 2>&1; then
   # AH_TEST_PROFILE names another profile (the nightly run: `nightly`, the whole suite)
   profile="${AH_TEST_PROFILE:-$profile}"
   # Which profile when (docs/DEVELOPMENT.md, "Test packs"): lane / policy / dev are run with `cargo nextest` directly (scripts/lane-tests.sh);
-  # this script is the full gate: release and nightly (everything, with Node live so the goldens are checked for drift), ci, soak, record.
-  # The nightly and release runs check every Node golden against the real hooks: AH_LIVE_NODE=1 unless the caller set it.
-  case "$profile" in nightly|release) export AH_LIVE_NODE="${AH_LIVE_NODE:-1}" ;; esac
+  # this script is the full gate: release and nightly (everything), ci, soak, record.
   # The wall-clock budget tests (a p95 in microseconds) measure the machine when the suite's own Node sweeps load every
   # core, so they run after the suite, one at a time, and nothing of the suite runs beside them. The memory soak is one of
   # them: its daemon's watchdog (daemon.stuck_ms) restarts it when a single request takes 8 s, which a 4-core runner shared

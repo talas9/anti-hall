@@ -398,7 +398,14 @@ mod api_tests {
         let envm: HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let st = Settings { home: home.to_string_lossy().into_owned(), env: envm };
         let jev = JevSettings::resolve(&home, Sources::load(&home, Env::from_pairs(Vec::<(String, String)>::new())));
-        let c = Ctx { home: home.clone(), st: Settings { home: st.home.clone(), env: st.env.clone() }, jev, haiku_only, urgent_threshold: 0.9, deadline: Instant::now() + Duration::from_secs(2) };
+        let c = Ctx {
+            home: home.clone(),
+            st: Settings { home: st.home.clone(), env: st.env.clone() },
+            jev,
+            haiku_only,
+            urgent_threshold: 0.9,
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
         (c, st)
     }
 

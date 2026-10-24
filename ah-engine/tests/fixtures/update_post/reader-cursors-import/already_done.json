@@ -16,7 +16,7 @@
     ".anti-hall/devswarm/cursors/w1#nd-{SHORT}.json": "644 0",
     ".anti-hall/devswarm/cursors/w1.json": "644 2",
     ".anti-hall/devswarm/workspaces/": "755",
-    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\",\"cursorPath\":\"{ROOT}/home/nd-w1.cursor\"}",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\",\"cursorPath\":\"{ROOT}/nd-w1.cursor\"}",
     ".anti-hall/update-sweep-state.json": "644 {\"readerCursorsImport\":{\"completedVersion\":\"0.1.0\"}}"
   },
   "stores": {

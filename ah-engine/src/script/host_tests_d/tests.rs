@@ -127,7 +127,11 @@ fn a_routed_verdict_carries_its_route_telemetry_and_a_malformed_one_defers() {
         other => panic!("{other:?}"),
     }
     put_override(&h, "zz-routed2", "function decide(p){ return {routed: {verdict: {exact: {code: 2, out: 'o', err: ''}}, meta: [{outcome: 'deny'}]}}; }");
-    assert_eq!(run("zz-routed2", &json!({}), &env(&h)), Some(Some(Verdict::Allow)), "a meta missing fields is a script failure: the failure policy decides (open)");
+    assert_eq!(
+        run("zz-routed2", &json!({}), &env(&h)),
+        Some(Some(Verdict::Allow)),
+        "a meta missing fields is a script failure: the failure policy decides (open)"
+    );
 }
 
 #[test]

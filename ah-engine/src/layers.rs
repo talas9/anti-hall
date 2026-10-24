@@ -35,13 +35,14 @@ fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The name of a layer in a notice (`layers.origin_names`: shipped, user, project).
 fn origin_name(o: Origin) -> &'static str {
     let names = defaults::list("layers.origin_names");
-    names.get(match o {
-        Origin::Shipped => 0,
-        Origin::User => 1,
-        Origin::Project => 2,
-    })
-    .copied()
-    .unwrap_or("")
+    names
+        .get(match o {
+            Origin::Shipped => 0,
+            Origin::User => 1,
+            Origin::Project => 2,
+        })
+        .copied()
+        .unwrap_or("")
 }
 
 fn r(key: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
@@ -469,7 +470,8 @@ fn load_project(root: &Path, fp: u64) -> Project {
 /// The settings and hook sections of a project file; the first problem rejects the whole file.
 fn parse_project_file(path: &Path, text: &str) -> Result<(BTreeMap<String, Json>, hookcfg::Layer), String> {
     let mut table: toml::Table = text.parse().map_err(|e: toml::de::Error| r("msg.layer_why_toml", &[("err", &e)]))?;
-    let mut section = |name: &str| -> Result<Option<Json>, ConfigError> { table.remove(name).map(|v| crate::cfgstore::toml_to_json(path, name, &v)).transpose() };
+    let mut section =
+        |name: &str| -> Result<Option<Json>, ConfigError> { table.remove(name).map(|v| crate::cfgstore::toml_to_json(path, name, &v)).transpose() };
     let (events, entries) = (section("events").map_err(|e| e.to_string())?, section("entries").map_err(|e| e.to_string())?);
     let mut settings = BTreeMap::new();
     crate::cfgstore::flatten(path, "", &table, &mut settings).map_err(|e| e.to_string())?;

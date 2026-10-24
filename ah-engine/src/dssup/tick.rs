@@ -110,7 +110,11 @@ pub fn run_duty(name: &str, ctx: &Ctx, runner: &dyn Runner) -> Value {
     }
     if let Some(why) = not_due(ctx, d) {
         // a mode of `off` is a switched-off duty; a cool-down that has not passed is a duty that is simply not due
-        return if why == defaults::text("devswarm_sup.msg_disabled") { off(name, &why) } else { json!({"duty": name, "outcome": "skipped", "gate": "cooldown", "reason": why}) };
+        return if why == defaults::text("devswarm_sup.msg_disabled") {
+            off(name, &why)
+        } else {
+            json!({"duty": name, "outcome": "skipped", "gate": "cooldown", "reason": why})
+        };
     }
     if !super::supervisor_enabled(ctx.st) {
         return off(name, defaults::text("devswarm_sup.msg_disabled"));

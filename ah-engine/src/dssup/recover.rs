@@ -53,13 +53,25 @@ pub fn run(at: &Place, st: &Settings, _runner: &dyn Runner, id: &str, request: &
         Err(r) => {
             let reason = defaults::raw("devswarm_sup.act_recover_reasons").str_field(r.code);
             super::tick::emit_act(at.home, defaults::text("devswarm_sup.recover_duty"), id, "refused", reason, t0.elapsed().as_millis() as u64, request);
-            crate::obs::counters::account("duty", defaults::text("devswarm_sup.recover_duty"), crate::obs::counters::Outcome::Refused, 0, t0.elapsed().as_micros() as u64);
+            crate::obs::counters::account(
+                "duty",
+                defaults::text("devswarm_sup.recover_duty"),
+                crate::obs::counters::Outcome::Refused,
+                0,
+                t0.elapsed().as_micros() as u64,
+            );
             (json!({"outcome": "refused", "why": r.why}), defaults::num("devswarm_wire.usage_exit") as i32)
         }
     };
     if report["outcome"] == "handled" {
         super::tick::emit_act(at.home, defaults::text("devswarm_sup.recover_duty"), id, "ran", "", t0.elapsed().as_millis() as u64, request);
-        crate::obs::counters::account("duty", defaults::text("devswarm_sup.recover_duty"), crate::obs::counters::Outcome::Ok, 0, t0.elapsed().as_micros() as u64);
+        crate::obs::counters::account(
+            "duty",
+            defaults::text("devswarm_sup.recover_duty"),
+            crate::obs::counters::Outcome::Ok,
+            0,
+            t0.elapsed().as_micros() as u64,
+        );
     }
     (report, code)
 }

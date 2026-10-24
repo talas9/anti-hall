@@ -100,7 +100,9 @@ fn context_of(cwd: &str, ancestor: bool) -> Result<ident::Ctx, ident::Defer> {
 }
 
 fn repo_key_of(cwd: &str) -> Result<Option<String>, ident::Defer> {
-    if cwd.is_empty() { return Ok(None); }
+    if cwd.is_empty() {
+        return Ok(None);
+    }
     Ok(context_of(cwd, false)?.repo_key)
 }
 
@@ -404,10 +406,7 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
             Ok(answer(with_settings(|st| count_for(st, key.as_deref(), &id, inbox.as_deref(), cursor.as_deref(), now))?))
         })?,
     )?;
-    h.set(
-        "meshContextKey",
-        Function::new(c.clone(), |cwd: String| answer(context_of(&cwd, true).map(|c| json!({"key": c.repo_key})).map_err(|_| No)))?,
-    )?;
+    h.set("meshContextKey", Function::new(c.clone(), |cwd: String| answer(context_of(&cwd, true).map(|c| json!({"key": c.repo_key})).map_err(|_| No)))?)?;
     h.set(
         "meshAppArchived",
         Function::new(c.clone(), |id: String, wt: String, cache: bool| -> rquickjs::Result<String> {

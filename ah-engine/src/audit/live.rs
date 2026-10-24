@@ -11,7 +11,15 @@ use std::process::{Command, Stdio};
 fn run_list(key: &str) -> String {
     let words = defaults::list(key);
     let Some((prog, args)) = words.split_first() else { return String::new() };
-    Command::new(prog).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    Command::new(prog)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
 }
 
 fn processes(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
@@ -24,7 +32,13 @@ fn processes(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
         let head = command.split_whitespace().take(words).collect::<Vec<_>>().join(" ");
         let rule = defaults::text("entry_audit_msg.live_proc");
         if pid != own && re.is_match(&head) && !cfg.allowed(section, pid, command, rule) {
-            out.push(Finding { section: section.to_string(), path: defaults::render("entry_audit_msg.live_proc_path", &[("pid", &pid)]), line: 0, text: command.trim().to_string(), rule: rule.to_string() });
+            out.push(Finding {
+                section: section.to_string(),
+                path: defaults::render("entry_audit_msg.live_proc_path", &[("pid", &pid)]),
+                line: 0,
+                text: command.trim().to_string(),
+                rule: rule.to_string(),
+            });
         }
     }
 }
@@ -46,7 +60,8 @@ fn units(cfg: &Cfg, home: &Path, section: &str, out: &mut Vec<Finding>) {
 
 fn crontab(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
     let Some(mine) = rx("live_cron_re", defaults::text("entry_audit.live_cron_re")) else { return };
-    let text: String = run_list("entry_audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#') && mine.is_match(l)).collect::<Vec<_>>().join("\n");
+    let text: String =
+        run_list("entry_audit.live_crontab").lines().filter(|l| !l.trim_start().starts_with('#') && mine.is_match(l)).collect::<Vec<_>>().join("\n");
     out.extend(cfg.scan_text(section, defaults::text("entry_audit_msg.live_cron_path"), &text));
 }
 
@@ -54,9 +69,15 @@ fn crontab(cfg: &Cfg, section: &str, out: &mut Vec<Finding>) {
 fn plugin_roots(home: &Path) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let key_re = rx("live_plugin_key_re", defaults::text("entry_audit.live_plugin_key_re"));
-    let json: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_installed_json"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let json: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_installed_json")))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
     // only installs the host has ENABLED run hooks: a disabled cache is not live
-    let host: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_enabled_file"))).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let host: Value = std::fs::read_to_string(home.join(defaults::text("entry_audit.live_enabled_file")))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
     let enabled = |k: &str| host.pointer(defaults::text("entry_audit.live_enabled_pointer")).and_then(|m| m.get(k)).and_then(Value::as_bool).unwrap_or(false);
     let mut any_enabled = false;
     let mut stack = vec![&json];

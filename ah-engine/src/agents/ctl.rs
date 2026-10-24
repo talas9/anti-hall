@@ -35,7 +35,13 @@ pub fn send(session: &str, what: Send<'_>) -> Result<Value, String> {
         Send::Stop => (defaults::text("act.stop_signal"), defaults::text("agent_tracker.stop_request_text")),
         Send::Message(t) => (defaults::text("act.message_signal"), t),
     };
-    let r = Reminder { id: format!("{}-{signal}-{}", key_of(session), env.now_ms), ts: env.now_ms, signal: signal.to_string(), agent: session.to_string(), text: text.to_string() };
+    let r = Reminder {
+        id: format!("{}-{signal}-{}", key_of(session), env.now_ms),
+        ts: env.now_ms,
+        signal: signal.to_string(),
+        agent: session.to_string(),
+        text: text.to_string(),
+    };
     SessionQueue.deliver(&env, session, &r)?;
     let woken = wake_armed(&env, session);
     if woken {
@@ -101,7 +107,12 @@ pub fn document(since: Option<&str>, agent: Option<&str>) -> Value {
                     let (w, wide) = (defaults::num("tasklist_guard.window_bytes"), defaults::num("tasklist_guard.wide_window_bytes"));
                     if let Ok(Some(scan)) = crate::checks::taskstate::scanview::scan_tasks(&path, w, wide) {
                         if !scan.all.is_empty() {
-                            r["tasks"] = json!(scan.all.iter().map(|t| json!({"subject": t.subject, "status": t.status, "priority": t.priority, "updated_ms": t.updated_ms})).collect::<Vec<_>>());
+                            r["tasks"] = json!(
+                                scan.all
+                                    .iter()
+                                    .map(|t| json!({"subject": t.subject, "status": t.status, "priority": t.priority, "updated_ms": t.updated_ms}))
+                                    .collect::<Vec<_>>()
+                            );
                         }
                     }
                 }
@@ -118,7 +129,8 @@ pub fn document(since: Option<&str>, agent: Option<&str>) -> Value {
 
 /// `ah-engine agents send <id> [--progress-request|--ping|--stop-request|--text <message>]`.
 pub fn run_send(p: &Parsed) -> i32 {
-    let (progress, ping, stop, text_flag) = (defaults::text("act.flag_progress"), defaults::text("act.flag_ping"), defaults::text("act.flag_stop"), defaults::text("act.flag_text"));
+    let (progress, ping, stop, text_flag) =
+        (defaults::text("act.flag_progress"), defaults::text("act.flag_ping"), defaults::text("act.flag_stop"), defaults::text("act.flag_text"));
     let (mut id, mut text, mut it) = (None, None, p.rest.iter().skip(1));
     while let Some(a) = it.next() {
         if a == text_flag {

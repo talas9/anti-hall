@@ -12,27 +12,65 @@ fn num(v: &Value, k: &str) -> u64 {
 }
 
 fn text(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The reading from the three documents; `status` and `io` are `None` when that call failed.
-pub fn reduce(s: &Settings, pulse: &Value, status: Option<&Value>, io: Option<&Value>, now_ms: u64) -> Health {
+pub fn reduce(
+    s: &Settings,
+    pulse: &Value,
+    status: Option<&Value>,
+    io: Option<&Value>,
+    now_ms: u64,
+) -> Health {
     let none = Value::Null;
     let st = status.unwrap_or(&none);
     let budgets = &st["memory"]["budgets"]["global"];
-    let footprint_kb = st.get("footprint_kb").and_then(Value::as_u64).or_else(|| pulse.get("footprint_kb").and_then(Value::as_u64)).unwrap_or(0);
+    let footprint_kb = st
+        .get("footprint_kb")
+        .and_then(Value::as_u64)
+        .or_else(|| pulse.get("footprint_kb").and_then(Value::as_u64))
+        .unwrap_or(0);
     let mut holders: Vec<Holder> = st["memory"]["ledger"]["heap"]["holders"]
         .as_array()
-        .map(|l| l.iter().map(|h| Holder { name: text(h, "name"), bytes: num(h, "bytes"), soft: num(h, "soft"), hard: num(h, "hard"), level: text(h, "level") }).collect())
+        .map(|l| {
+            l.iter()
+                .map(|h| Holder {
+                    name: text(h, "name"),
+                    bytes: num(h, "bytes"),
+                    soft: num(h, "soft"),
+                    hard: num(h, "hard"),
+                    level: text(h, "level"),
+                })
+                .collect()
+        })
         .unwrap_or_default();
     holders.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
     holders.truncate(s.health_holders_max);
-    let reason = st["health"]["degraded_reason"].as_str().unwrap_or_default().to_string();
+    let reason = st["health"]["degraded_reason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let clients = io
         .and_then(|d| d["clients"].as_array())
         .map(|l| {
             l.iter()
-                .map(|c| ClientRow { id: text(c, "id"), label: String::new(), calls: num(c, "calls"), timeouts: num(c, "timeouts"), fail_open: num(c, "fail_open"), cold_starts: num(c, "cold_starts"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us"), p50_over: c["p50_over"].as_bool().unwrap_or(false), p95_over: c["p95_over"].as_bool().unwrap_or(false) })
+                .map(|c| ClientRow {
+                    id: text(c, "id"),
+                    label: String::new(),
+                    calls: num(c, "calls"),
+                    timeouts: num(c, "timeouts"),
+                    fail_open: num(c, "fail_open"),
+                    cold_starts: num(c, "cold_starts"),
+                    last_ms: num(c, "last_ms"),
+                    p50_us: num(c, "p50_us"),
+                    p95_us: num(c, "p95_us"),
+                    p50_over: c["p50_over"].as_bool().unwrap_or(false),
+                    p95_over: c["p95_over"].as_bool().unwrap_or(false),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -40,7 +78,19 @@ pub fn reduce(s: &Settings, pulse: &Value, status: Option<&Value>, io: Option<&V
         .and_then(|d| d["stores"].as_array())
         .map(|l| {
             l.iter()
-                .map(|c| StoreRow { id: text(c, "id"), reads: num(c, "reads"), writes: num(c, "writes"), bytes_in: num(c, "bytes_in"), bytes_out: num(c, "bytes_out"), errors: num(c, "errors"), last_ms: num(c, "last_ms"), p50_us: num(c, "p50_us"), p95_us: num(c, "p95_us"), p50_over: c["p50_over"].as_bool().unwrap_or(false), p95_over: c["p95_over"].as_bool().unwrap_or(false) })
+                .map(|c| StoreRow {
+                    id: text(c, "id"),
+                    reads: num(c, "reads"),
+                    writes: num(c, "writes"),
+                    bytes_in: num(c, "bytes_in"),
+                    bytes_out: num(c, "bytes_out"),
+                    errors: num(c, "errors"),
+                    last_ms: num(c, "last_ms"),
+                    p50_us: num(c, "p50_us"),
+                    p95_us: num(c, "p95_us"),
+                    p50_over: c["p50_over"].as_bool().unwrap_or(false),
+                    p95_over: c["p95_over"].as_bool().unwrap_or(false),
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -77,13 +127,19 @@ pub fn reduce(s: &Settings, pulse: &Value, status: Option<&Value>, io: Option<&V
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The current reading, shared between tabs for `web.health_cache_ms`. An engine that does not answer gives `engine_ok: false`.
 pub async fn read(app: &App) -> Health {
     let s = app.settings();
-    if let Some((at, h)) = app.health.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+    if let Some((at, h)) = app
+        .health
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
         && at.elapsed() < Duration::from_millis(s.health_cache_ms)
     {
         return h.clone();
@@ -93,12 +149,21 @@ pub async fn read(app: &App) -> Health {
     let (pulse, status, io) = tokio::join!(call("pulse"), call("status"), call("io"));
     let mut h = match pulse {
         Ok(p) => reduce(&s, &p, status.as_ref().ok(), io.as_ref().ok(), now_ms()),
-        Err(_) => Health { at_ms: now_ms(), ..Health::default() },
+        Err(_) => Health {
+            at_ms: now_ms(),
+            ..Health::default()
+        },
     };
     // a client is a session id: name it by the project and the title the tracker knows it by (the id stays the hover detail)
     for c in &mut h.clients {
         if let Some(a) = app.model().lookup(&c.id, s.placeholder_id_chars) {
-            c.label = if a.project_name.is_empty() || a.project_name == a.label { a.label } else { s.client_label.replace("{project}", &a.project_name).replace("{name}", &a.label) };
+            c.label = if a.project_name.is_empty() || a.project_name == a.label {
+                a.label
+            } else {
+                s.client_label
+                    .replace("{project}", &a.project_name)
+                    .replace("{name}", &a.label)
+            };
         }
     }
     *app.health.lock().unwrap_or_else(|p| p.into_inner()) = Some((Instant::now(), h.clone()));

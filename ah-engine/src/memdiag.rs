@@ -694,10 +694,11 @@ fn summary_of(text: &str) -> Value {
         all.add(rss, alloc, res);
     }
     let n = defaults::num("diagnostics.summary_top") as usize;
+    let (first, last) = (lines.first().unwrap_or(&Value::Null), lines.last().unwrap_or(&Value::Null));
     json!({
-        "requests": lines.len(), "first_ts": lines[0]["ts"], "last_ts": lines[lines.len() - 1]["ts"],
+        "requests": lines.len(), "first_ts": first.get("ts"), "last_ts": last.get("ts"),
         "allocator": crate::memstat::active_allocator().as_str(),
-        "rss_kb_first": lines[0]["rss_kb_before"], "rss_kb_last": lines[lines.len() - 1]["rss_kb_after"],
+        "rss_kb_first": first.get("rss_kb_before"), "rss_kb_last": last.get("rss_kb_after"),
         "rss_delta_kb_total": all.rss, "alloc_delta_bytes_total": all.alloc,
         "top_events": top(events, n), "top_checks": top(checks, n),
     })

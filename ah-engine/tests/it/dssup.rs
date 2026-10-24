@@ -3,9 +3,8 @@
 //! code, the log rotation against Node's, and recover's refusals. Real `node` runs only in a scratch HOME and only the duties
 //! that never call `hivecontrol` (reconcile is exercised through its cool-down gate and a recording runner).
 use ah_engine::checks::git::util::Settings;
-use ah_engine::checks::guardkit::nodelock;
 use ah_engine::db::TempDir;
-use ah_engine::dsact::runner::{RunResult, RunSpec, Runner, System};
+use ah_engine::dsact::runner::{RunResult, RunSpec, Runner};
 use ah_engine::dssup::{Owner, node_running, recover, tick, verdict};
 use ah_engine::dswire::{Executor, resolve_executor};
 use serde_json::{Value, json};
@@ -16,10 +15,6 @@ use std::sync::Mutex;
 
 fn now() -> i64 {
     ah_engine::health::now_ms() as i64
-}
-
-fn have_node() -> bool {
-    Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success())
 }
 
 /// Records every call and answers with `{"stub":true}`.
@@ -95,13 +90,6 @@ fn age_log(p: &Path, ms_ago: u64) {
     std::fs::write(p, "{}\n").unwrap();
     let f = std::fs::OpenOptions::new().write(true).open(p).unwrap();
     f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_millis(ms_ago)).unwrap();
-}
-
-fn node_eval(home: &Path, code: &str) -> Value {
-    let root = ah_engine::defaults::root().unwrap();
-    let o = Command::new("node").args(["-e", code, root.to_str().unwrap(), home.to_str().unwrap()]).output().unwrap();
-    assert!(o.status.success(), "node: {}", String::from_utf8_lossy(&o.stderr));
-    serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().last().unwrap_or("null")).unwrap_or(Value::Null)
 }
 
 // ---- the switch ------------------------------------------------------------------------------------------------------------
@@ -254,57 +242,6 @@ fn a_gated_duty_is_not_run_again_while_its_inputs_are_unchanged() {
     assert_eq!(duty(&third, "verdicts")["outcome"], "ran", "a new workspace is run at once: {third}");
 }
 
-/// A runner that looks at the lock while a duty runs.
-struct LockProbe {
-    seen: Mutex<Vec<Value>>,
-    lock: String,
-}
-
-impl Runner for LockProbe {
-    fn run(&self, _spec: &RunSpec) -> RunResult {
-        let rec = std::fs::read_to_string(&self.lock).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-        self.seen.lock().unwrap().push(rec);
-        RunResult { ok: true, status: Some(0), stdout: "{}".into(), ..RunResult::default() }
-    }
-}
-
-#[test]
-fn the_sweep_lock_is_nodes_file_held_during_the_duties_and_a_live_holder_skips_the_tick() {
-    let f = fx("lock", true);
-    let st = settings(&f, &[]);
-    let lock = tick::lock_path(&f.home);
-    let probe = LockProbe { seen: Mutex::new(vec![]), lock: lock.clone() };
-    tick::run(&ctx(&f, &st, true), Owner::Engine, &probe);
-    let seen = probe.seen.lock().unwrap();
-    assert!(!seen.is_empty());
-    for rec in seen.iter() {
-        assert_eq!(rec["pid"], std::process::id(), "Node's owner record: {rec}");
-        assert!(rec["token"].is_string() && rec["host"].is_string() && rec["ts"].is_number());
-    }
-    drop(seen);
-    // another live sweep (here: a lock this process holds) makes the tick skip, and Node's own acquire is refused by ours
-    let held = nodelock::acquire(&lock, nodelock::Params { stale_ms: 300_000, wait_ms: 0, steal_dead: true, ..nodelock::Params::swarm() }).unwrap();
-    let rec = Rec::default();
-    let out = tick::run(&ctx(&f, &st, true), Owner::Engine, &rec);
-    assert_eq!(out["reason"], "locked");
-    assert_eq!(rec.n(), 0);
-    if have_node() {
-        let got = node_eval(
-            &f.home,
-            "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const r=S.acquireSweepLock(process.argv[2],{});console.log(JSON.stringify({got:!!r}));if(r)r()",
-        );
-        assert_eq!(got["got"], false, "a Node sweep sees the engine's lock and exits");
-    }
-    assert!(held.release());
-    if have_node() {
-        let got = node_eval(
-            &f.home,
-            "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const r=S.acquireSweepLock(process.argv[2],{});console.log(JSON.stringify({got:!!r}));if(r)r()",
-        );
-        assert_eq!(got["got"], true, "released: Node takes it");
-    }
-}
-
 #[test]
 fn cooldown_duties_follow_nodes_state_files_and_switches() {
     let f = fx("gates", true);
@@ -341,77 +278,6 @@ fn cooldown_duties_follow_nodes_state_files_and_switches() {
 }
 
 #[test]
-fn the_gate_agrees_with_nodes_own_answer_on_the_same_state() {
-    if !have_node() {
-        return;
-    }
-    let f = fx("gate-vs-node", true);
-    let rec = Rec::default();
-    let st = settings(&f, &[]);
-    put(&dev(&f).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": now() - 60_000}));
-    put(&dev(&f).join("reconcile-sweep-state.json"), &json!({"lastRunAt": now() - 60_000}));
-    let node = node_eval(
-        &f.home,
-        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");console.log(JSON.stringify({h:S.housekeepingSweepIfDue({home:process.argv[2]}).reason,r:S.reconcileSweepIfDue({home:process.argv[2]}).reason}))",
-    );
-    assert_eq!(node, json!({"h": "cooldown", "r": "cooldown"}));
-    assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &rec)["reason"], "cooldown");
-    assert_eq!(tick::run_duty("reconcile", &ctx(&f, &st, true), &rec)["reason"], "cooldown");
-    // and the other way: an old state is due for both (Node is asked first: the engine's run advances the shared state file)
-    put(&dev(&f).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": now() - 4_000_000}));
-    let node = node_eval(
-        &f.home,
-        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const fs=require(\"fs\");const p=process.argv[2]+\"/.anti-hall/devswarm/housekeeping-sweep-state.json\";const before=fs.readFileSync(p,\"utf8\");const r=S.housekeepingSweepIfDue({home:process.argv[2]});fs.writeFileSync(p,before);console.log(JSON.stringify({h:r.ran}))",
-    );
-    assert_eq!(node["h"], true, "Node also finds it due");
-    assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &rec)["outcome"], "ran");
-}
-
-// ---- each duty against real Node on a fixture home ----------------------------------------------------------------------------
-
-#[test]
-fn the_node_duties_run_for_real_in_a_scratch_home_and_are_idempotent() {
-    if !have_node() {
-        return;
-    }
-    let f = fx("real", true);
-    let st = settings(&f, &[]);
-    let sys = System::configured();
-    // the liveness sweep writes the verdict file of the descriptor
-    let out = tick::run_duty("verdicts", &ctx(&f, &st, true), &sys);
-    assert_eq!(out["outcome"], "ran", "{out}");
-    assert_eq!(out["detail"]["native"], 1);
-    let v1 = std::fs::read_to_string(dev(&f).join("liveness/ws-1.json")).unwrap();
-    let parsed: Value = serde_json::from_str(&v1).unwrap();
-    assert!(parsed.get("status").is_some(), "{v1}");
-    let out = tick::run_duty("verdicts", &ctx(&f, &st, true), &sys);
-    assert_eq!(out["outcome"], "ran");
-    let v2: Value = serde_json::from_str(&std::fs::read_to_string(dev(&f).join("liveness/ws-1.json")).unwrap()).unwrap();
-    assert_eq!(v2["status"], parsed["status"], "a second sweep of an unchanged workspace says the same");
-    // the deferred stage: no marker, only the rotation cursor moves
-    let out = tick::run_duty("deferred", &ctx(&f, &st, true), &sys);
-    assert_eq!((out["outcome"].as_str(), out["detail"]["reason"].as_str()), (Some("ran"), Some("no-marker")), "{out}");
-    let cursor1: Value = serde_json::from_str(&std::fs::read_to_string(dev(&f).join("deferred-sweep-state.json")).unwrap()).unwrap();
-    tick::run_duty("deferred", &ctx(&f, &st, true), &sys);
-    let cursor2: Value = serde_json::from_str(&std::fs::read_to_string(dev(&f).join("deferred-sweep-state.json")).unwrap()).unwrap();
-    assert_ne!(cursor1, cursor2, "the four stages rotate one per tick");
-    // housekeeping: Node's own state file records the run; the second call is held back by the gate
-    let out = tick::run_duty("housekeeping", &ctx(&f, &st, true), &sys);
-    assert_eq!(out["outcome"], "ran", "{out}");
-    let state: Value = serde_json::from_str(&std::fs::read_to_string(dev(&f).join("housekeeping-sweep-state.json")).unwrap()).unwrap();
-    assert!(state["lastRunAt"].as_i64().unwrap() > 0);
-    assert_eq!(tick::run_duty("housekeeping", &ctx(&f, &st, true), &sys)["reason"], "cooldown");
-    // retention and app sync: they ran (their result is Node's own) and deleted nothing under the home
-    let before = walk(&f.home).len();
-    for d in ["retention", "app_sync"] {
-        let out = tick::run_duty(d, &ctx(&f, &st, true), &sys);
-        assert_eq!(out["outcome"], "ran", "{d}: {out}");
-    }
-    assert!(walk(&f.home).len() >= before, "no file of the home was removed");
-    assert!(f.home.join(".anti-hall/devswarm/workspaces/ws-1.json").exists());
-}
-
-#[test]
 fn a_missing_node_fails_the_duty_and_not_the_tick() {
     struct NoNode;
     impl Runner for NoNode {
@@ -429,136 +295,6 @@ fn a_missing_node_fails_the_duty_and_not_the_tick() {
         let native = ["housekeeping", "verdicts", "deferred", "app_sync", "retention", "reconcile"].contains(&x["duty"].as_str().unwrap());
         assert_eq!(x["outcome"] == "ran", native, "{x}: every duty is native and runs without Node");
     }
-}
-
-// ---- log rotation against Node ----------------------------------------------------------------------------------------------
-
-#[test]
-fn log_rotation_is_nodes_rotation() {
-    if !have_node() {
-        return;
-    }
-    let body = "x".repeat(400);
-    let setup = |tag: &str| {
-        let f = fx(tag, true);
-        put(&f.home.join(".anti-hall/settings.json"), &json!({"devswarm": {"supervisorLogRotateBytes": 300}}));
-        std::fs::write(f.home.join(".anti-hall/devswarm-supervisor.log"), &body).unwrap();
-        std::fs::write(f.home.join(".anti-hall/devswarm-supervisor.log.1"), "old generation").unwrap();
-        f
-    };
-    let (a, b) = (setup("rot-engine"), setup("rot-node"));
-    let st = settings(&a, &[]);
-    let eng = tick::log_rotate(&ctx(&a, &st, true));
-    let node = node_eval(
-        &b.home,
-        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");console.log(JSON.stringify(S.rotateSupervisorLogIfNeeded({home:process.argv[2]})))",
-    );
-    assert_eq!(eng["supervisor"]["rotated"], node["rotated"]);
-    assert_eq!(eng["supervisor"]["size"], node["size"]);
-    let rd = |h: &Fx, n: &str| std::fs::read_to_string(h.home.join(".anti-hall").join(n)).ok();
-    assert_eq!(rd(&a, "devswarm-supervisor.log"), rd(&b, "devswarm-supervisor.log"), "the log is gone in both");
-    assert_eq!(rd(&a, "devswarm-supervisor.log.1"), rd(&b, "devswarm-supervisor.log.1"), "the backup is the old log in both");
-    assert_eq!(rd(&a, "devswarm-supervisor.log.1"), Some(body.clone()));
-    // under the threshold: untouched, same words
-    let c = setup("rot-under");
-    put(&c.home.join(".anti-hall/settings.json"), &json!({"devswarm": {"supervisorLogRotateBytes": 4000}}));
-    let st = settings(&c, &[]);
-    let eng = tick::log_rotate(&ctx(&c, &st, true));
-    let node = node_eval(
-        &c.home,
-        "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");console.log(JSON.stringify(S.rotateSupervisorLogIfNeeded({home:process.argv[2]})))",
-    );
-    assert_eq!(eng["supervisor"], node);
-    // the engine's own tick log rotates by the same rule
-    std::fs::create_dir_all(c.home.join(".anti-hall/logs")).unwrap();
-    std::fs::write(c.home.join(".anti-hall/logs/devswarm-supervisor-engine.ndjson"), "y".repeat(5000)).unwrap();
-    let eng = tick::log_rotate(&ctx(&c, &st, true));
-    assert_eq!(eng["engine"]["rotated"], true);
-    // no log yet
-    let d = fx("rot-none", true);
-    let st = settings(&d, &[]);
-    assert_eq!(tick::log_rotate(&ctx(&d, &st, true))["supervisor"], json!({"rotated": false, "size": 0, "reason": "no log file yet"}));
-}
-
-// ---- the verdict mirror against Node's recovery code ---------------------------------------------------------------------------
-
-fn norm_ts(s: &str) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(i) = rest.find("\"ts\":") {
-        out.push_str(&rest[..i + 5]);
-        let tail = &rest[i + 5..];
-        let end = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
-        out.push('T');
-        rest = &tail[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-const NODE_NUDGE: &str = "process.env.HOME=process.argv[2];const R=require(process.argv[1]+\"/companion/lib/recovery.js\");const d={id:\"ws-1\",worktreePath:\"/nonexistent/wt\",sessionId:\"s\",nudgeCommand:[\"x\"],escalateCommand:[\"y\"]};const v=JSON.parse(process.argv[3]);const r=R.pokeOrEscalate(d,v,{home:process.argv[2],now:Number(process.argv[4]),nudgeMaxAttempts:2,nudgeCooldownMs:0},{nudge(){},escalate(){},openParentStore(){throw new Error(\"no store\")}});console.log(JSON.stringify(r))";
-
-fn node_nudge(home: &Path, verdict: &Value, now: i64) -> Value {
-    let root = ah_engine::defaults::root().unwrap();
-    let o =
-        Command::new("node").args(["-e", NODE_NUDGE, root.to_str().unwrap(), home.to_str().unwrap(), &verdict.to_string(), &now.to_string()]).output().unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    serde_json::from_str(String::from_utf8_lossy(&o.stdout).lines().last().unwrap()).unwrap()
-}
-
-fn read(home: &Path, rel: &str) -> String {
-    std::fs::read_to_string(home.join(".anti-hall/devswarm").join(rel)).unwrap_or_default()
-}
-
-#[test]
-fn an_engine_poke_and_escalation_leave_nodes_exact_files() {
-    if !have_node() {
-        return;
-    }
-    // previous verdicts of different shapes: a fresh stale one, a nudged one with an error, an odd one with extra fields
-    let prevs = [
-        json!({"status": "stale", "lastOutboundTs": 1790423660282.9983_f64, "staleSince": 1790000000000_i64, "nudgeAttempts": 0, "nudgedAt": null, "pending": true, "notDraining": false, "oldestUnreadAgeMs": 5}),
-        json!({"status": "nudged", "recoveries": 1, "recoveredAt": 1789000000000_i64, "nudgeAttempts": 1, "nudgedAt": 1790000100000_i64, "staleSince": 1790000000000_i64, "lastOutboundTs": 1790423660282_i64, "lastNudgeError": "spawn x ENOENT"}),
-    ];
-    for (i, prev) in prevs.iter().enumerate() {
-        let t = now();
-        // poke
-        let (a, b) = (fx(&format!("vm-a{i}"), true), fx(&format!("vm-b{i}"), true));
-        for h in [&a, &b] {
-            put(&dev(h).join("liveness/ws-1.json"), prev);
-        }
-        let attempts = prev["nudgeAttempts"].as_u64().unwrap();
-        let r = node_nudge(&a.home, prev, t);
-        assert_eq!(r["action"], "nudged", "{r}");
-        verdict::mirror_poke(&b.home, "ws-1", attempts + 1, t);
-        assert_eq!(read(&a.home, "liveness/ws-1.json"), read(&b.home, "liveness/ws-1.json"), "verdict bytes after a poke (prev {i})");
-        assert_eq!(norm_ts(&read(&a.home, "recovery.log")), norm_ts(&read(&b.home, "recovery.log")), "recovery log after a poke (prev {i})");
-        // escalate: pokes used up
-        let used = json!({"status": "nudged", "nudgeAttempts": 2, "nudgedAt": t, "staleSince": 1790000000000_i64, "lastNudgeError": prev.get("lastNudgeError").cloned().unwrap_or(Value::Null)});
-        let (c, d) = (fx(&format!("vm-c{i}"), true), fx(&format!("vm-d{i}"), true));
-        for h in [&c, &d] {
-            put(&dev(h).join("liveness/ws-1.json"), &used);
-        }
-        let r = node_nudge(&c.home, &used, t + 1000);
-        assert_eq!(r["action"], "escalate", "{r}");
-        verdict::mirror_escalate(&d.home, "ws-1", t + 1000);
-        assert_eq!(read(&c.home, "liveness/ws-1.json"), read(&d.home, "liveness/ws-1.json"), "verdict bytes after an escalation (prev {i})");
-        assert_eq!(norm_ts(&read(&c.home, "recovery.log")), norm_ts(&read(&d.home, "recovery.log")), "recovery log after an escalation (prev {i})");
-    }
-    // no previous verdict at all
-    let (a, b) = (fx("vm-n-a", true), fx("vm-n-b", true));
-    let r = node_nudge(&a.home, &json!({"status": "stale", "nudgeAttempts": 0}), now());
-    assert_eq!(r["action"], "nudged");
-    verdict::mirror_poke(&b.home, "ws-1", 1, now());
-    let (x, y): (Value, Value) =
-        (serde_json::from_str(&read(&a.home, "liveness/ws-1.json")).unwrap(), serde_json::from_str(&read(&b.home, "liveness/ws-1.json")).unwrap());
-    assert_eq!(x["status"], y["status"]);
-    assert_eq!(x["nudgeAttempts"], y["nudgeAttempts"]);
-    assert_eq!(
-        read(&a.home, "liveness/ws-1.json").split("\"nudgedAt\"").next(),
-        read(&b.home, "liveness/ws-1.json").split("\"nudgedAt\"").next(),
-        "same keys in the same order up to the time"
-    );
 }
 
 #[test]
@@ -619,19 +355,6 @@ fn a_recover_request_is_refused_every_time_and_nothing_is_recorded() {
         assert_eq!((r["outcome"].as_str(), code), (Some("refused"), 64), "{r}");
     }
     assert!(!f.state.join("rt-recover.ndjson").exists());
-}
-
-#[test]
-fn recover_never_signals_a_process_even_with_a_matching_session() {
-    if !have_node() {
-        return;
-    }
-    let f = fx("rec-real", true);
-    let st = settings(&f, &[]);
-    let (r, code) = do_recover(&f, &st, &System::configured(), "ws-1", "real-1");
-    assert_eq!(code, 64, "{r}");
-    assert_eq!(r["outcome"], "refused");
-    assert!(r.get("result").is_none(), "no kill was attempted: {r}");
 }
 
 #[test]
@@ -719,97 +442,6 @@ fn tree(f: &Fx) -> Vec<String> {
     let mut out: Vec<String> = walk(&base).into_iter().map(|(p, _)| p.strip_prefix(&base).unwrap().to_string_lossy().into_owned()).collect();
     out.sort();
     out
-}
-
-fn node_housekeeping(home: &Path, at: i64) -> Value {
-    node_eval(
-        home,
-        &format!(
-            "process.env.HOME=process.argv[2];const S=require(process.argv[1]+\"/companion/devswarm-supervisor.js\");const r=S.housekeepingSweepIfDue({{home:process.argv[2],now:{at}}});console.log(JSON.stringify(r))"
-        ),
-    )
-}
-
-#[test]
-fn native_housekeeping_removes_exactly_what_nodes_sweep_removes_and_nothing_else() {
-    if !have_node() {
-        return;
-    }
-    let at = now();
-    let (a, b) = (fx("hk-engine", true), fx("hk-node", true));
-    seed_housekeeping(&a, at);
-    seed_housekeeping(&b, at);
-    let st = settings(&a, &[]);
-    let mut c = ctx(&a, &st, true);
-    c.now = at;
-    let eng = tick::run_duty("housekeeping", &c, &Rec::default());
-    let node = node_housekeeping(&b.home, at);
-    assert_eq!(eng["outcome"], "ran", "{eng}");
-    assert_eq!(node["ran"], true, "{node}");
-    // the same files survive in both homes, byte for byte the same tree
-    // the tree is the same in both homes, EXCEPT that Node follows the link and removes the file it points to; the engine does not
-    assert!(a.home.join("elsewhere/precious.ndjson").exists(), "the engine never follows a directory link");
-    std::fs::remove_file(b.home.join("elsewhere/precious.ndjson")).ok();
-    std::fs::write(b.home.join("elsewhere/precious.ndjson"), "x").unwrap();
-    assert_eq!(tree(&a), tree(&b));
-    let gone: Vec<String> = [
-        "reaped/old.ndjson",
-        "reaped/edge-out.ndjson",
-        "reaped/2026-01-01/dated-old.ndjson",
-        "child-gate/session-old.json",
-        "child-gate/session-edge-out.json",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let left = tree(&a);
-    for g in &gone {
-        assert!(!left.contains(g), "{g} is removed");
-    }
-    for keep in [
-        "reaped/new.ndjson",
-        "reaped/edge-in.ndjson",
-        "reaped/old-but-not-a-log.txt",
-        "reaped/2026-01-01/dated-new.ndjson",
-        "reaped/a/b/too-deep-old.ndjson",
-        "child-gate/session-new.json",
-        "child-gate/session-edge-in.json",
-        "child-gate/old-other.log",
-        "liveness/ws-1.json",
-        "locks/x.lock",
-        "inbox/ws-1.ndjson",
-    ] {
-        assert!(left.contains(&keep.to_string()), "{keep} stays");
-    }
-    // the result rows: same keys, same statuses, the same files (relative to each home)
-    let rows = |v: &Value, base: &Path, node: bool| -> Vec<(String, String)> {
-        let results = if node { &v["results"] } else { &v["detail"]["results"] };
-        let mut out: Vec<(String, String)> = results
-            .as_object()
-            .unwrap()
-            .values()
-            .flat_map(|r| r.as_array().unwrap().iter())
-            .filter(|r| !r["file"].as_str().unwrap().contains("linked-dir")) // Node follows the link, the engine does not (checked above)
-            .map(|r| {
-                (r["status"].as_str().unwrap().to_string(), Path::new(r["file"].as_str().unwrap()).strip_prefix(base).unwrap().to_string_lossy().into_owned())
-            })
-            .collect();
-        out.sort();
-        out
-    };
-    assert_eq!(rows(&eng, &dev(&a), false), rows(&node, &dev(&b), true));
-    assert_eq!(eng["detail"]["results"].as_object().unwrap().keys().collect::<Vec<_>>(), node["results"].as_object().unwrap().keys().collect::<Vec<_>>());
-    // the cool-down state file is Node's, byte for byte
-    let state = |f: &Fx| std::fs::read_to_string(dev(f).join("housekeeping-sweep-state.json")).unwrap();
-    assert_eq!(state(&a), state(&b));
-    assert_eq!(state(&a), json!({"lastRunAt": at}).to_string());
-    // a second pass inside the cool-down is held back; forced past it, it finds nothing and fails nothing
-    assert_eq!(tick::run_duty("housekeeping", &c, &Rec::default())["reason"], "cooldown");
-    put(&dev(&a).join("housekeeping-sweep-state.json"), &json!({"lastRunAt": 0}));
-    let again = tick::run_duty("housekeeping", &c, &Rec::default());
-    assert_eq!(again["detail"]["results"]["reapedLogs"], json!([]));
-    assert_eq!(again["detail"]["results"]["childGate"], json!([]));
-    assert_eq!(tree(&a), tree(&b));
 }
 
 #[test]

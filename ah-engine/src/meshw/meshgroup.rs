@@ -52,7 +52,11 @@ pub fn resolve(rows: &[Row], id: &str, wt: Option<&str>) -> R<Group> {
 
 /// The worktree a read of `id` groups by: its registry row's, else its descriptor's.
 pub fn worktree_of(rows: &[Row], id: &str, desc_wt: Option<&str>) -> Option<String> {
-    rows.iter().find(|r| r.id == id).and_then(|r| r.worktree_path.clone()).filter(|w| !w.is_empty()).or_else(|| desc_wt.filter(|w| !w.is_empty()).map(str::to_string))
+    rows.iter()
+        .find(|r| r.id == id)
+        .and_then(|r| r.worktree_path.clone())
+        .filter(|w| !w.is_empty())
+        .or_else(|| desc_wt.filter(|w| !w.is_empty()).map(str::to_string))
 }
 
 /// `siblingBaseCursor(store, home, pid, reader)`: the store position this reader starts from in a sibling partition.
@@ -117,7 +121,10 @@ pub fn ack_gate(inv: &Inv, rows: &[Row], caller_id: &str, part_id: &str) -> R<bo
         let anchor_sid = anchor_row.and_then(|r| r.session_id.clone()).unwrap_or_default();
         let caller_sid = inv.env.get(defaults::text("mesh_write.env_session_id")).cloned().unwrap_or_default();
         let mut ours = anchor_sid.is_empty() || (!caller_sid.is_empty() && anchor_sid == caller_sid);
-        if !ours && !caller_sid.is_empty() && let Some(anchor_row) = anchor_row {
+        if !ours
+            && !caller_sid.is_empty()
+            && let Some(anchor_row) = anchor_row
+        {
             // the app's own record of which worktree the session runs in decides when it is corroborated by the transcript;
             // else the anchor is ours when the caller's session is provably alive and the anchor's recorded one is not
             let wt = anchor_row.worktree_path.as_deref().filter(|w| !w.is_empty()).unwrap_or(&inv.cwd);
@@ -252,23 +259,22 @@ impl Dedup {
         let end = c.min(total);
         let start = end.saturating_sub(defaults::num("mesh_write.consumed_hash_seed_cap") as u64);
         let mut seen = start;
-        let read = reader
-            .for_each_message(id, start, |row| {
-                if seen >= end {
-                    return false;
-                }
-                seen += 1;
-                if let Some(h) = row["hash"].as_str().filter(|h| !h.is_empty()) {
-                    d.hashes.insert(h.to_string());
-                }
-                if let Some(oh) = forwarded_orig_hash_of(&row) {
-                    d.hashes.insert(oh);
-                }
-                if let Some(k) = logical_key(&row) {
-                    d.logical.insert(k);
-                }
-                true
-            });
+        let read = reader.for_each_message(id, start, |row| {
+            if seen >= end {
+                return false;
+            }
+            seen += 1;
+            if let Some(h) = row["hash"].as_str().filter(|h| !h.is_empty()) {
+                d.hashes.insert(h.to_string());
+            }
+            if let Some(oh) = forwarded_orig_hash_of(&row) {
+                d.hashes.insert(oh);
+            }
+            if let Some(k) = logical_key(&row) {
+                d.logical.insert(k);
+            }
+            true
+        });
         if read.is_err() {
             d = Dedup { hashes: HashSet::new(), logical: HashSet::new() }; // Node returns the empty seed, not a partial one
         }
@@ -314,7 +320,12 @@ impl Dedup {
                     defaults::text("mesh_write.msg_sibling_dup"),
                     vec![
                         ("reason", crate::checks::guardkit::ojson::OVal::Str(defaults::text("mesh_write.reason_logical_dup").to_string())),
-                        ("from", row["sender"].as_str().map_or(crate::checks::guardkit::ojson::OVal::Null, |s| crate::checks::guardkit::ojson::OVal::Str(s.to_string()))),
+                        (
+                            "from",
+                            row["sender"]
+                                .as_str()
+                                .map_or(crate::checks::guardkit::ojson::OVal::Null, |s| crate::checks::guardkit::ojson::OVal::Str(s.to_string())),
+                        ),
                         ("ts", row["ts"].as_f64().map_or(crate::checks::guardkit::ojson::OVal::Null, crate::checks::guardkit::ojson::OVal::Num)),
                     ],
                 );

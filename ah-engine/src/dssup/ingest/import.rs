@@ -87,7 +87,7 @@ fn field(m: &OVal, k: &str) -> Option<String> {
 /// The id a message's dedupe hash is taken under: the mesh label of the partition's checkout. One checkout can be registered as
 /// several partitions (the app's own row, the worktree label a spawn pre-registers, a Primary's label), and the app's native
 /// queue is one stream: with the hash taken under the partition id, the same message ingested through two of them was stored twice
-/// (SkyCrew 2026-10-22: one `DONE:` notice read twice, empty sender, no seq). Under the checkout's label the store's UNIQUE(hash)
+/// (downstream 2026-10-22: one `DONE:` notice read twice, empty sender, no seq). Under the checkout's label the store's UNIQUE(hash)
 /// keeps one. A partition with no registry row, or a path that has no label, keeps its own id.
 pub fn hash_scope(reader: &crate::mesh::MeshReader, workspace_id: &str) -> String {
     registry_pairs(reader)
@@ -289,12 +289,15 @@ pub fn ingest_payload_seen(
             // rows an earlier version stored under the partition-id hash are already here
             let mut old: std::collections::HashSet<String> = std::collections::HashSet::new();
             if scope != workspace_id {
-                store.reader().for_each_message(workspace_id, 0, |m| {
-                    if let Some(h) = m["hash"].as_str() {
-                        old.insert(h.to_string());
-                    }
-                    true
-                }).map_err(|e| Refused::Store(e.to_string()))?;
+                store
+                    .reader()
+                    .for_each_message(workspace_id, 0, |m| {
+                        if let Some(h) = m["hash"].as_str() {
+                            old.insert(h.to_string());
+                        }
+                        true
+                    })
+                    .map_err(|e| Refused::Store(e.to_string()))?;
             }
             for (r, m) in rows.iter().zip(&batch.messages) {
                 let legacy = legacy_hash(&scope, workspace_id, m);
@@ -398,7 +401,7 @@ mod tests {
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 
-    /// SkyCrew 2026-10-22: one native `DONE:` notice sat in the app row's partition AND the Primary label's partition (the same
+    /// downstream 2026-10-22: one native `DONE:` notice sat in the app row's partition AND the Primary label's partition (the same
     /// checkout), so a union read returned it twice with an empty sender and no seq.
     #[test]
     fn the_same_native_message_through_two_partitions_of_one_checkout_is_stored_once() {
@@ -417,4 +420,3 @@ mod tests {
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 }
-

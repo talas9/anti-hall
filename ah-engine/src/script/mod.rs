@@ -45,22 +45,22 @@ pub mod evidence_cache;
 pub mod evidence_walk;
 pub mod host;
 pub mod host_b3;
-pub mod host_shell;
+pub mod host_childturn;
 pub mod host_d;
 mod host_io;
-pub mod host_childturn;
 pub mod host_mesh;
 pub mod host_parentinbox;
-pub(crate) mod host_seat;
 pub mod host_port;
 pub mod host_proc;
+pub(crate) mod host_seat;
+pub mod host_shell;
 pub mod host_spawn;
 pub mod host_transcript;
 pub mod host_ts;
 pub mod recache;
 pub mod sysmem;
-pub mod tool_use_scan;
 pub mod tasks_cache;
+pub mod tool_use_scan;
 
 use crate::checks::git::util::Settings;
 use crate::checks::{Exact, RouteMeta, Verdict};
@@ -846,8 +846,8 @@ fn script_options(opts: &Value, st: &Settings) -> Value {
     if opts.get("plugin_root").and_then(Value::as_str).is_some_and(|r| !r.is_empty()) {
         return opts.clone();
     }
-    let root = st.env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned()
-        .or_else(|| defaults::root().map(|r| r.to_string_lossy().into_owned()));
+    let root =
+        st.env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned().or_else(|| defaults::root().map(|r| r.to_string_lossy().into_owned()));
     let Some(root) = root else { return opts.clone() };
     let mut resolved = match opts {
         Value::Null => serde_json::Map::new(),
@@ -973,6 +973,9 @@ mod tests_golden_e;
 #[path = "golden_f/tests.rs"]
 mod tests_golden_f;
 #[cfg(test)]
+#[path = "home_unset_tests/tests.rs"]
+mod tests_home_unset;
+#[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
 #[cfg(test)]
@@ -984,6 +987,3 @@ mod tests_host_e;
 #[cfg(test)]
 #[path = "host_tests_f/tests.rs"]
 mod tests_host_f;
-#[cfg(test)]
-#[path = "home_unset_tests/tests.rs"]
-mod tests_home_unset;

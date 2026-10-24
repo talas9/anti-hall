@@ -175,12 +175,14 @@ fn rules_and_settings_layer_shipped_user_project() {
     let (user_layers, errs): (Layers, _) = load_layers_cold(&Paths { user: cfg_toml.clone(), settings: Some(settings_json.clone()) });
     assert!(errs.is_empty());
     let env = |_: &str| None;
-    put(
-        &repo1.join(".anti-hall/engine.toml"),
-        "[speculation_guard]\nmax_blocks = 7\n[task_guard]\nmax_blocks = 2\n[telemetry]\nhealth_snapshot_ms = 100000\n",
-    );
+    put(&repo1.join(".anti-hall/engine.toml"), "[speculation_guard]\nmax_blocks = 7\n[task_guard]\nmax_blocks = 2\n[telemetry]\nhealth_snapshot_ms = 100000\n");
     let p = layers::project(&cwd1).unwrap();
-    assert!(p.settings.contains_key("speculation_guard.max_blocks") && !p.settings.contains_key("telemetry.health_snapshot_ms"), "an unlisted setting is refused: {:?} {:?}", p.settings, p.notes);
+    assert!(
+        p.settings.contains_key("speculation_guard.max_blocks") && !p.settings.contains_key("telemetry.health_snapshot_ms"),
+        "an unlisted setting is refused: {:?} {:?}",
+        p.settings,
+        p.notes
+    );
     assert!(p.notes.iter().any(|n| n.subject == "telemetry.health_snapshot_ms"));
     let up = explain_setting("speculation_guard.max_blocks", &user_layers, &p.settings, &env).unwrap();
     assert_eq!((up["value"].as_i64(), up["source"].as_str()), (Some(7), Some("project")), "project over the user's config.toml (4) when stricter");
