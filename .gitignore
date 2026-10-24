@@ -73,3 +73,6 @@ ah-web/ui-dist/
 # personal launchers (local only)
 cc.sh
 cx.sh
+
+# build output
+target/
