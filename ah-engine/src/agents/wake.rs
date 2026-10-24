@@ -58,6 +58,16 @@ fn stamp(path: &Path, now: u64) {
     crate::discard::harmless(crate::atomic::write(path, body)); // keep: a missed stamp only makes the next tick re-stamp
 }
 
+/// Atomic per-session ownership; a crashed watcher releases the flock automatically.
+fn acquire(stamp: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = stamp.parent()?;
+    std::fs::create_dir_all(parent).ok()?;
+    let lock = crate::paths::lock_for(stamp);
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(lock).ok()?;
+    crate::health::flock(&file, libc::LOCK_EX | libc::LOCK_NB).then_some(file)
+}
+
 /// Another live watcher already holds a fresh stamp for this session.
 fn held_elsewhere(env: &Env, path: &Path) -> bool {
     let fresh = crate::checks::agent_scan::mtime_ms(path).is_some_and(|m| env.now_ms.saturating_sub(m as u64) <= lim("stale_lock_ms"));
@@ -113,6 +123,9 @@ pub(crate) fn run(p: &Parsed) -> i32 {
     }
     let Some(sid) = session(&env) else { return refuse(defaults::text("msg.agent_wake_reason_no_session")) };
     let armed = WakeFeed::stamp(&env, &sid);
+    // Hold a kernel lock for the whole watcher lifetime: the old check-then-stamp race let two starters both enter pump.
+    // The separate stable inode stays locked while the JSON stamp is atomically replaced by each renewal.
+    let Some(_lease) = acquire(&armed) else { return refuse(defaults::text("msg.agent_wake_reason_held")) };
     if held_elsewhere(&env, &armed) {
         return refuse(defaults::text("msg.agent_wake_reason_held"));
     }
