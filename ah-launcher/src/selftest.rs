@@ -38,7 +38,7 @@ fn check_config(s: &Settings) -> Result<(), String> {
     if !s.bad_files.is_empty() {
         return Err(s.msg(
             "msg.launcher_st_unusable",
-            &[("files", &s.bad_files.join(","))],
+            &[("files", &s.bad_why.join("; "))],
         ));
     }
     let mut missing = Vec::new();

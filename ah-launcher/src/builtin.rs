@@ -385,6 +385,9 @@ pub const CFG_DISPATCH_FILE: &str = "dispatch.toml";
 pub const CFG_MESSAGES_FILE: &str = "messages.toml";
 pub const CFG_DOCTOR_FILE: &str = "doctor.toml";
 pub const CFG_NODEBACK_FILE: &str = "nodeback.toml";
+/// The install record in the state directory and its plugin-root field (read before any settings exist, like the file names above).
+pub const INSTALL_RECORD_FILE: &str = "install.json";
+pub const INSTALL_RECORD_ROOT_FIELD: &str = "plugin_root";
 /// The one key of `files.*` that `nodeback.toml` (not `engine.toml`) holds.
 pub const NODEBACK_LEDGER_KEY: &str = "files.shadow_ledger";
 /// The plugin's hooks directory below the plugin root.

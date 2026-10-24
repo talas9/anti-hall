@@ -13,11 +13,13 @@ pub struct Cfg {
 }
 
 impl Cfg {
-    /// None when the file is missing, unreadable (including non-UTF-8) or not valid TOML.
-    pub fn load(path: &Path) -> Option<Cfg> {
-        let text = std::fs::read_to_string(path).ok()?;
-        Some(Cfg {
-            doc: text.parse().ok()?,
+    /// Err(path and the read or parse error) when the file is missing, unreadable (including non-UTF-8) or not valid TOML.
+    pub fn load_why(path: &Path) -> Result<Cfg, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Cfg {
+            doc: text.parse::<toml::Table>().map_err(|e| {
+                format!("{}: {}", path.display(), e.to_string().replace('\n', " "))
+            })?,
         })
     }
 
@@ -44,6 +46,8 @@ pub struct Settings {
     /// `nodeback.toml`, loaded only by the Node fallback (`with_nodeback`).
     nodeback: Cfg,
     pub bad_files: Vec<String>,
+    /// One reason per unusable file of `bad_files` (path plus the read or parse error), for the log.
+    pub bad_why: Vec<String>,
 }
 
 fn nonneg(v: &toml::Value) -> Option<u64> {
@@ -54,9 +58,11 @@ impl Settings {
     /// Reads the three files of `dir`. An empty `dir` (no plugin root found) is all built-in.
     pub fn load(dir: &Path) -> Settings {
         let mut bad = Vec::new();
+        let mut why = Vec::new();
         let mut one = |name: &str| {
-            Cfg::load(&dir.join(name)).unwrap_or_else(|| {
+            Cfg::load_why(&dir.join(name)).unwrap_or_else(|e| {
                 bad.push(name.to_string());
+                why.push(e);
                 Cfg::default()
             })
         };
@@ -70,25 +76,30 @@ impl Settings {
             doctor: Cfg::default(),
             nodeback: Cfg::default(),
             bad_files: bad,
+            bad_why: why,
         }
     }
 
     /// Add the doctor's own file (`doctor.*` and `doctor_msg.*` keys) from `dir`.
     pub fn with_doctor(mut self, dir: &Path) -> Settings {
-        if let Some(c) = Cfg::load(&dir.join(builtin::CFG_DOCTOR_FILE)) {
-            self.doctor = c;
-        } else {
-            self.bad_files.push(builtin::CFG_DOCTOR_FILE.to_string());
+        match Cfg::load_why(&dir.join(builtin::CFG_DOCTOR_FILE)) {
+            Ok(c) => self.doctor = c,
+            Err(e) => {
+                self.bad_files.push(builtin::CFG_DOCTOR_FILE.to_string());
+                self.bad_why.push(e);
+            }
         }
         self
     }
 
     /// Add the Node backup's own file (`nodeback.*` keys and `files.shadow_ledger`) from `dir`.
     pub fn with_nodeback(mut self, dir: &Path) -> Settings {
-        if let Some(c) = Cfg::load(&dir.join(builtin::CFG_NODEBACK_FILE)) {
-            self.nodeback = c;
-        } else {
-            self.bad_files.push(builtin::CFG_NODEBACK_FILE.to_string());
+        match Cfg::load_why(&dir.join(builtin::CFG_NODEBACK_FILE)) {
+            Ok(c) => self.nodeback = c,
+            Err(e) => {
+                self.bad_files.push(builtin::CFG_NODEBACK_FILE.to_string());
+                self.bad_why.push(e);
+            }
         }
         self
     }

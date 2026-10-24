@@ -266,7 +266,7 @@ fn no_work(a: &Agent) -> Option<Raised> {
         || !a.transcript_complete
         || a.partial
         || a.codex_rescue
-        || a.tools > defaults::num("agent_tracker.no_work.max_tools")
+        || a.tools > defaults::raw("agent_tracker.no_work").get("max_tools").and_then(V::as_integer).unwrap_or(0).max(0) as u64
     {
         return None;
     }

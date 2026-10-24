@@ -780,6 +780,28 @@ fn plugin_root(args: &[String], env_names: &[String]) -> Option<PathBuf> {
         .map(canonical)
 }
 
+fn has_defaults_index(root: &Path) -> bool {
+    root.join(builtin::CFG_REL_DIR)
+        .join(builtin::CFG_MARKER_FILE)
+        .is_file()
+}
+
+/// The plugin root the install record names, for a hook run with no plugin root of its own (no flag, no host variable, and the
+/// binary not inside a plugin): the same fallback the engine uses, so the shipped settings are read instead of the built-in copy.
+fn installed_plugin_root() -> Option<PathBuf> {
+    let home = env_nonempty(builtin::text("env.home")?)?;
+    let dir = match env_nonempty(builtin::text("env.dir")?) {
+        Some(d) => PathBuf::from(d),
+        None => Path::new(&home)
+            .join(builtin::text("paths.base_dir")?)
+            .join(builtin::text("paths.state_dir")?),
+    };
+    let text = std::fs::read_to_string(dir.join(builtin::INSTALL_RECORD_FILE)).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = PathBuf::from(record.get(builtin::INSTALL_RECORD_ROOT_FIELD)?.as_str()?);
+    has_defaults_index(&root).then(|| canonical(root))
+}
+
 /// The plugin root exactly as the caller wrote it (the `--plugin-root` pair, else the environment): the doctor shows paths the way
 /// the engine's doctor does, without resolving symbolic links.
 fn raw_plugin_root(args: &[String], env_name: &str) -> Option<PathBuf> {
@@ -825,11 +847,10 @@ pub fn run() -> i32 {
     let boot_plugin_env = builtin::text("env.plugin_root").unwrap_or_default();
     let cfg_root = match env_nonempty(boot_plugin_env) {
         Some(r) => Some(canonical(PathBuf::from(r))),
-        None => root.clone().filter(|r| {
-            r.join(builtin::CFG_REL_DIR)
-                .join(builtin::CFG_MARKER_FILE)
-                .is_file()
-        }),
+        None => root
+            .clone()
+            .filter(|r| has_defaults_index(r))
+            .or_else(installed_plugin_root),
     };
     let cfg_dir = cfg_root
         .as_ref()
@@ -879,7 +900,7 @@ pub fn run() -> i32 {
         if let Some(l) = LOG.get() {
             l.append(&s.msg(
                 "msg.launcher_config_invalid",
-                &[("file", &s.bad_files.join(","))],
+                &[("file", &s.bad_why.join("; "))],
             ));
         }
     }
