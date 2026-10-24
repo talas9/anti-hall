@@ -459,7 +459,7 @@ value = ["message", "message-file"]
 
 [mesh_write.boolean_only_flags]
 doc = "Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS)."
-value = ["force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
+value = ["global", "force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
 
 [mesh_write.verb_send]
 doc = "The send verb."

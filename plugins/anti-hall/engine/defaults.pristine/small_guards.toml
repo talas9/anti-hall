@@ -23,6 +23,14 @@ value = ".anti-hall/settings.json"
 doc = "Skip file, relative to the home directory (a skipped guard is allowed until its expiry time)."
 value = ".anti-hall/skip.json"
 
+[guardkit.skip_session_separator]
+doc = "Separator between a guard name and its session id in skip.json; bare names remain global."
+value = "@"
+
+[guardkit.skip_session_env]
+doc = "Session identity fallbacks for skip writers and readers; hook payload session_id takes precedence."
+value = ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "ANTIHALL_SESSION_ID", "CODEX_THREAD_ID"]
+
 [guardkit.claude_settings_file]
 doc = "The host's own settings file, relative to the home directory, where plugin options are stored."
 value = ".claude/settings.json"

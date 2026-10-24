@@ -6,7 +6,7 @@
 'use strict';
 
 // The guard skips {live: [names], expired: [names]} of the skip file; an entry that expired longer ago than upfront.expired_window_ms is history.
-function snSkips(home) {
+function snSkips(home, sid) {
   var out = { live: [], expired: [] };
   var rel = home + '/' + ah.cfg('guardkit.skip_file'), size = ah.fs.size(rel);
   if (size === null || size > ah.cfgNum('script.read_max_bytes')) return out;
@@ -15,7 +15,11 @@ function snSkips(home) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
   var now = ah.clock.now(), win = ah.cfgNum('upfront.expired_window_ms');
   Object.keys(o).sort().forEach(function (k) {
-    var t = o[k];
+    var t = o[k], sep = ah.cfg('guardkit.skip_session_separator'), at = k.indexOf(sep);
+    if (at >= 0) {
+      if (k.slice(at + sep.length) !== sid) return;
+      k = k.slice(0, at);
+    }
     if (typeof t !== 'number' || !isFinite(t)) return;
     if (t > now) out.live.push(k);
     else if (now - t <= win) out.expired.push(k);
@@ -30,7 +34,7 @@ function decide(p, opts, event) {
   if (sid === '') return 'allow';
   var home = hookProc.home(p);
   if (home === null) return 'allow';
-  var lines = [], availability = sd.can_spawn(p), stop = availability.stop, conserve = lcSessionConserving(p, { w: null }), skips = snSkips(home), join = ah.cfg('upfront.guards_join');
+  var lines = [], availability = sd.can_spawn(p), stop = availability.stop, conserve = lcSessionConserving(p, { w: null }), skips = snSkips(home, sid), join = ah.cfg('upfront.guards_join');
   if (stop !== null) lines.push(text.render(ah.cfg('upfront.msg_spawn_stop'), { reason: sd.reason(stop) }));
   if (conserve !== null) lines.push(text.render(ah.cfg('upfront.msg_conserve'), { reason: conserve.reason }));
   if (skips.live.length) lines.push(text.render(ah.cfg('upfront.msg_skip_set'), { guards: skips.live.join(join) }));

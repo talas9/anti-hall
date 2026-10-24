@@ -373,6 +373,12 @@ fn skip(inv: &Inv, a: &Args) -> R<Answer> {
     if guard.is_empty() {
         return Ok(fail(defaults::text("devswarm_cli.msg_skip_usage")));
     }
+    let global = a.has(defaults::text("devswarm_cli.flag_skip_global"));
+    let session = a.one(defaults::text("devswarm_cli.flag_session")).filter(|s| !s.is_empty()).or_else(||
+        defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| inv.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
+    let key = if global { guard.to_string() } else if let Some(sid) = session {
+        format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))
+    } else { return Ok(fail(defaults::text("devswarm_cli.msg_skip_no_session"))); };
     let ttl_flag = defaults::text("devswarm_cli.flag_ttl");
     let mut ttl = defaults::num("devswarm_cli.skip_default_ttl_min") as f64;
     let raw = a.one(ttl_flag);
@@ -405,7 +411,7 @@ fn skip(inv: &Inv, a: &Args) -> R<Answer> {
     }
     // `data['__proto__'] = x` with a number is a no-op in JavaScript (the setter ignores a non-object), not a key
     if guard != defaults::text("devswarm_cli.act_proto_key") {
-        data.set(guard, n(expires));
+        data.set(&key, n(expires));
     }
     let body = unshield(&data.stringify_pretty());
     if let Err(msg) = stage_and_rename(&file, &format!("{file}.{}.tmp", std::process::id()), &body) {

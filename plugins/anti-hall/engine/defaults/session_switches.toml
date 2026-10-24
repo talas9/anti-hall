@@ -72,11 +72,11 @@ value = "Limit conserve is on ({reason}): use cheaper models, fewer agents and t
 
 [upfront.msg_skip_set]
 doc = "Line for guard skips being active; {guards} the names."
-value = "Guards skipped on the owner's say-so: {guards}."
+value = "Guards skipped for this session on the owner's say-so: {guards}."
 
 [upfront.msg_skip_expired]
 doc = "Line for guard skips that just expired; {guards} the names."
-value = "Guard skips expired, the guards are back on: {guards}."
+value = "Guard skips for this session expired, the guards are back on: {guards}."
 
 [upfront.msg_clear]
 doc = "Line when every switch told earlier is back to normal."

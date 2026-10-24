@@ -600,7 +600,7 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
 // FOLLOWING positional as its own value via the generic heuristic below,
 // same failure class BOOLEAN_ONLY_FLAGS already exists to close.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary', 'short', 'with-broadcasts']);
+const BOOLEAN_ONLY_FLAGS = new Set(['global', 'force', 'peek', 'answers', 'help', 'ack-after-print', 'quiet', 'cc-primary', 'short', 'with-broadcasts']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can

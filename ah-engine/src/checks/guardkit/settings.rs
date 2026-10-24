@@ -305,10 +305,12 @@ pub fn is_skipped(st: &Settings, guard: &str) -> bool {
     let Some(o) = read_object(st, defaults::text("guardkit.skip_file")) else { return false };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
     let live = |k: &str| o.get(k).and_then(Value::as_f64).is_some_and(|t| t > now);
-    if live(guard) {
-        return true;
-    }
-    !defaults::list("guardkit.destructive_guards").contains(&guard) && live(defaults::text("guardkit.skip_all_key"))
+    let payload_session = crate::script::session();
+    let session = (!payload_session.is_empty()).then_some(payload_session.as_str()).or_else(||
+        defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| st.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
+    let applies = |guard: &str| live(guard) || session.is_some_and(|sid|
+        live(&format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))));
+    applies(guard) || (!defaults::list("guardkit.destructive_guards").contains(&guard) && applies(defaults::text("guardkit.skip_all_key")))
 }
 
 /// `coerceValue` for a number entry on a JSON value or string: `None` when the value does not count (so the next source is

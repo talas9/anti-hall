@@ -4490,7 +4490,7 @@ function main(payload, env) {
   if (payload === undefined) return io.decision(0);
 
   const skipGuard = require('./skip-guard.js');
-  const isSkipped = (name) => skipGuard.isSkipped(name, env);
+  const isSkipped = (name) => skipGuard.isSkipped(name, env, payload.session_id);
 
   const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 

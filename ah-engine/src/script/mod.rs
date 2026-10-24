@@ -558,7 +558,7 @@ pub fn set_session(id: &str) {
     m.insert(thread_key(), id.to_string());
 }
 
-fn session() -> String {
+pub(crate) fn session() -> String {
     SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&thread_key()).cloned().unwrap_or_default()
 }
 
