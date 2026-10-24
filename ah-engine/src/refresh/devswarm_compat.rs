@@ -24,7 +24,7 @@ fn manifest() -> Value {
 pub fn cached(home: &Path) -> Value {
     let path = home.join(defaults::text("devswarm_compat.cache"));
     let Some(cache) = super::read_object(&path) else {
-        return json!({"status": "unverified", "reason": "no compatibility probe cached"});
+        return json!({"status": "unverified", "reason": defaults::text("devswarm_compat.reason_no_probe")});
     };
     let mut report = Value::Object(cache);
     let version =
@@ -32,7 +32,7 @@ pub fn cached(home: &Path) -> Value {
     let stale = report.get("manifest") != Some(&manifest()) || version.as_deref().is_none_or(|v| report.get("version").and_then(Value::as_str) != Some(v));
     if stale {
         report["status"] = json!("unverified");
-        report["reason"] = json!("cached probe differs from current version or dependency manifest");
+        report["reason"] = json!(defaults::text("devswarm_compat.reason_stale"));
     }
     report
 }
@@ -107,9 +107,9 @@ pub(super) fn refresh(home: &Path, bin: &str, version: &str) {
         checks.iter().flat_map(|c| c.get("semanticConflicts").and_then(Value::as_array).into_iter().flatten()).filter_map(Value::as_str).collect();
     let reason = if incompatible {
         let names: Vec<&str> = checks.iter().filter(|c| c["status"] == "incompatible").filter_map(|c| c.get("dependency").and_then(Value::as_str)).collect();
-        format!("Dependency conflicts ({}): {}. Help and schema do not certify runtime compatibility.", names.join(", "), issues.join("; "))
+        defaults::render("devswarm_compat.reason_conflict", &[("names", &names.join(", ")), ("issues", &issues.join("; "))])
     } else {
-        "Help and schema only; output fields, environment semantics and descriptor producers remain unverified".to_string()
+        defaults::text("devswarm_compat.reason_partial").to_string()
     };
     let report = json!({
         "version": version, "checkedAt": crate::health::now_ms(), "source": bin,

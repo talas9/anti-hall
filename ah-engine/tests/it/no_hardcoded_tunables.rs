@@ -32,6 +32,28 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
+    (
+        "src/budget.rs",
+        "static LAST_DROP",
+        "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",
+    ),
+    ("src/learn.rs", "static LAST_REPEAT", "a thread-local counter slot that starts at zero and is set per block: an initial value, not a tunable"),
+    (
+        "src/lib.rs",
+        "pub const FEATURES",
+        "the capability names of this build that an updater reads from `version --json`: a build fact versioned with the binary, not a setting",
+    ),
+    (
+        "src/mesh.rs",
+        "vec![\"?\"; senders.len()]",
+        "SQL bind placeholders sized to the sender list (the query syntax, not a tunable); the empty list yields an empty quoted literal",
+    ),
+    (
+        "src/operator/routine.rs",
+        "std::env::var_os(\"PATH\")",
+        "the name of the standard PATH environment variable that a cleared-environment child inherits: an OS interface name, not a setting",
+    ),
+    ("src/operator/sweep.rs", "take(2)", "the label of a plugin root is its last two path components: the shape of the label, not a limit anyone tunes"),
     // ---- wire and host protocols: part of the interface, versioned with it, not tunables --------------------
     (
         "src/checks/taskstate/mod.rs",
@@ -162,6 +184,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable",
     ),
     ("src/script/host_mesh.rs", "static OWED", "a thread-local list of the app-cache writes the call's lookups owe, initialised empty: state, not a tunable"),
+    ("src/script/host_mesh.rs", "static IDENT", "a thread-local cache of the resolved mesh identity of this call, initialised empty: state, not a tunable"),
     ("src/script/host_mesh.rs", "static APP", "a thread-local slot initialised empty (the app database read this call made): state, not a tunable"),
     ("src/script/host_childturn.rs", "static PLANNED", "a thread-local slot for the registration the call planned, initialised empty: state, not a tunable"),
     (

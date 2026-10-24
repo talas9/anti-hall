@@ -99,6 +99,14 @@ doc = "How many blocks by one guard of one session inside the window make a repe
 value = 2
 min = 2
 
+[repeat.ms_per_minute]
+doc = "Milliseconds in a minute: converts `repeat.window_min` to the window the repeat learner counts blocks in."
+value = 60000
+
+[repeat.min_blocks_floor]
+doc = "The least value `repeat.min_blocks` (also a per-guard override) may take: one block is never a repeat."
+value = 2
+
 [repeat.window_min]
 doc = "The repeat window in minutes."
 value = 10

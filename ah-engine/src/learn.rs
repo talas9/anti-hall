@@ -79,7 +79,10 @@ pub fn annotate(meta: &Meta, p: &Value, check: &str, a: Answer) -> Answer {
         overrides.and_then(|v| v.get(key)).and_then(V::as_integer).filter(|n| *n > 0).map(|n| n as u64).unwrap_or_else(|| defaults::num(fallback))
     };
     let minutes = per_guard("window_min", "repeat.window_min").max(1);
-    let (window_ms, min) = (minutes.saturating_mul(60_000), per_guard("min_blocks", "repeat.min_blocks").max(2));
+    let (window_ms, min) = (
+        minutes.saturating_mul(defaults::num("repeat.ms_per_minute")),
+        per_guard("min_blocks", "repeat.min_blocks").max(defaults::num("repeat.min_blocks_floor")),
+    );
     let now = crate::health::now_ms();
     let key = (session, check.to_string());
     let (n, first) = {

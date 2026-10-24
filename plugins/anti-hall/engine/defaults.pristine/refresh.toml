@@ -263,6 +263,22 @@ value = ["workspace monitor|Without a pane ID|Plain-shell monitor excludes messa
 doc = "Doctor compatibility cache summary; {version}, {status}, {reason}. Doctor never runs probes."
 value = "DevSwarm compatibility: {status} (version {version}); {reason}"
 
+[devswarm_compat.reason_no_probe]
+doc = "The reason of a compatibility report when no probe result is cached."
+value = "no compatibility probe cached"
+
+[devswarm_compat.reason_stale]
+doc = "The reason of a cached compatibility report whose version or dependency manifest no longer matches."
+value = "cached probe differs from current version or dependency manifest"
+
+[devswarm_compat.reason_conflict]
+doc = "The reason of an incompatible compatibility report; {names} are the conflicting dependencies, {issues} their conflicts."
+value = "Dependency conflicts ({names}): {issues}. Help and schema do not certify runtime compatibility."
+
+[devswarm_compat.reason_partial]
+doc = "The reason of a compatibility report that only checked help and schema."
+value = "Help and schema only; output fields, environment semantics and descriptor producers remain unverified"
+
 [devswarm_compat.total_budget_ms]
 doc = "Total wall-clock budget for version-change compatibility help probes; skipped dependencies stay unverified. SessionStart only queues this native background refresh."
 value = 20000

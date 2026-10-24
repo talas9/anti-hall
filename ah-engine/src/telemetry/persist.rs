@@ -12,6 +12,7 @@
 use super::event::Event;
 use super::recorder::Delta;
 use crate::db::{Db, Op};
+use crate::defaults;
 use crate::discard::Logged;
 use crate::error::DbError;
 use crate::sql;
@@ -106,7 +107,7 @@ fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
     if let super::event::Extras::Spawn(incoming) = &e.extras
         && let Some(key) = &incoming.agent_key
     {
-        let mut stmt = c.prepare_cached("SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1")?;
+        let mut stmt = c.prepare_cached(defaults::text("telemetry.sql_spawn_by_key"))?;
         let rows = stmt.query_map(params![incoming.spawn_key.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
             let (id, data) = row?;
@@ -120,10 +121,7 @@ fn insert_event(c: &Connection, e: &Event) -> Result<usize, DbError> {
                 if incoming.usage == old.usage && incoming.actual_model == old.actual_model && incoming.started_ms == old.started_ms {
                     return Ok(0);
                 }
-                return Ok(c.execute(
-                    "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4",
-                    params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id],
-                )?);
+                return Ok(c.execute(defaults::text("telemetry.sql_update_event"), params![e.ts_ms as i64, e.e.as_str(), e.to_json().to_string(), id])?);
             }
         }
     }
