@@ -1233,3 +1233,7 @@ value = "descriptor is not a JSON object"
 [devswarm_recon.reason_retire_failed]
 doc = "The reason a twin descriptor is left when retiring it failed inside its lock. Placeholder: {why}."
 value = "retire-failed: {why}"
+
+[devswarm_recon.pull_primary_reason]
+doc = "The pull skip reason for a Primary mesh partition: it has no hivecontrol workspace queue. Must be in pull_skip_reasons."
+value = "primary-label"
