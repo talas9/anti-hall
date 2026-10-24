@@ -265,6 +265,9 @@ pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "que
 /// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
 
+/// `wide-search-guard` (PreToolUse on Bash, every agent; engine-only; GH #174): blocks a whole-disk search rooted at /, ~, /Users or /Volumes.
+pub static WIDE_SEARCH_GUARD: Scripted = Scripted::new("wide-search-guard", "wide_search.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 

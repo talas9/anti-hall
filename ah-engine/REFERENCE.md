@@ -377,6 +377,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `broad-kill-guard` | PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed. |
 | `queued-wait-guard` | PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds. |
 | `lane-test-guard` | PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on). |
+| `wide-search-guard` | PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed. |
 | `engine-role-note` | SessionStart and SubagentStart context: tells the session its role, the engine verbs it may use and where the full guide is (the anti-hall:engine skill). |
 | `gh-rt-advisory` | Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull request was merged, changes were requested (plugin script gh-rt-advisory.js). |
 | `devswarm-comms-guard` | Blocks SendMessage to a peer session whose cwd is a DevSwarm workspace while DevSwarm is active, and labels other known targets. |
@@ -2689,7 +2690,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_PostToolUse` | `9 items` |  |  | The claude PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PostToolUseFailure` | `4 entries` |  |  | The claude PostToolUseFailure hook entries, in dispatch order. |
 | `dispatch.hooks_claude_PreCompact` | `4 entries` |  |  | The claude PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_claude_PreToolUse` | `28 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_claude_PreToolUse` | `29 items` |  |  | The claude PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionEnd` | `4 entries` |  |  | The claude SessionEnd hook entries, in dispatch order. |
 | `dispatch.hooks_claude_SessionStart` | `19 items` |  |  | The claude SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_claude_Stop` | `12 items` |  |  | The claude Stop hook entries, in dispatch order. |
@@ -2700,7 +2701,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.hooks_claude_UserPromptSubmit` | `12 items` |  |  | The claude UserPromptSubmit hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PostToolUse` | `4 entries, 4 entries, 4 entries, 4 entries, 4 entries` |  |  | The codex PostToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_PreCompact` | `4 entries` |  |  | The codex PreCompact hook entries, in dispatch order. |
-| `dispatch.hooks_codex_PreToolUse` | `16 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
+| `dispatch.hooks_codex_PreToolUse` | `17 items` |  |  | The codex PreToolUse hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SessionStart` | `18 items` |  |  | The codex SessionStart hook entries, in dispatch order. |
 | `dispatch.hooks_codex_Stop` | `11 items` |  |  | The codex Stop hook entries, in dispatch order. |
 | `dispatch.hooks_codex_SubagentStop` | `4 entries` |  |  | The codex SubagentStop hook entries, in dispatch order. |
@@ -4799,6 +4800,27 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `queued_wait.summary` | `PreToolUse on Bash, subagents only: blocks a build or test command started wi...` |  |  | One-line description of the queued-wait-guard check in the generated reference. |
 | `queued_wait.sw` | `6 entries` |  |  | Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops. |
 
+### lane_waste.toml / wide_search
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `wide_search.allow_paths` | `` |  |  | Per-path allow list: a search rooted exactly at one of these paths is allowed even though it is a forbidden root (`~` and `$HOME` expand to the home directory). Empty by default. |
+| `wide_search.cd_commands` | `cd, pushd` |  |  | Commands that change the working directory for the commands after them (a bare one goes home). |
+| `wide_search.commands` | `13 entries` |  |  | The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk). |
+| `wide_search.expr_start` | `!, (, ), ,` |  |  | Words that end the path list of a find-style command (the start of its expression). |
+| `wide_search.forbidden_roots` | `7 items` |  |  | Search roots that are blocked when a search starts exactly there (a subdirectory of one is fine). `~`, `$HOME` and `${HOME}` stand for the home directory. |
+| `wide_search.guard_name` | `wide-search-guard` |  |  | The guard id the wide-search guard answers to in skip.json and in its messages. |
+| `wide_search.home_aliases` | `~, $HOME, ${HOME}` |  |  | Words that stand for the home directory at the start of a search path. |
+| `wide_search.msg_instead` | `search the project: give the command a path, e.g. `rg <pattern> {repo}` or `f...` |  |  | What to do instead. Placeholders: {repo} the session's working directory. |
+| `wide_search.msg_instead_no_repo` | `search one project directory: give the command that directory's absolute path...` |  |  | What to do instead when the session's working directory is itself a forbidden root. |
+| `wide_search.msg_override` | `the user sets guards.allowWideSearch, adds the path to the wide_search.allow_...` |  |  | How the user can lift the block (shown on the last line). |
+| `wide_search.msg_what` | ``{cmd}` is blocked: it searches the whole of `{root}`.` |  |  | Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches. |
+| `wide_search.msg_why` | `A search rooted at the disk, the home directory or the user and volume folder...` |  |  | Why whole-disk searches are blocked. |
+| `wide_search.summary` | `PreToolUse on Bash, every agent (subagents and the main thread): blocks a who...` |  |  | One-line description of the wide-search-guard check in the generated reference. |
+| `wide_search.sw_allow` | `6 entries` |  |  | Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside). |
+| `wide_search.unresolvable_re` | `[*?\[\]{}$`]` |  |  | A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax). |
+| `wide_search.whole_disk` | `/` |  |  | The root a Spotlight search (mdfind) without a scope flag covers. |
+
 ### broad_kill.toml / broad_kill
 
 | Key | Default | Env override | Unit | What it is |
@@ -5130,7 +5152,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `346 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `347 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7169,7 +7191,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.check_scope` | `(function () {\n{source}\n;return typeof {entry} === 'function' ? {entry} : u...` |  |  | How a check's own files (its includes, then its script, joined by newlines) are evaluated in the one context a worker thread shares between all checks: as the body of a function, so the check's top-level declarations (its entry and helpers) stay private to it while the lib files are evaluated once per thread. The value it evaluates to must be the check's entry function. Placeholders: {entry} (script.entry), {source}. Measured 2026-10-09 (DECISIONS.md 1.111, one thread, the 16 shipped scripts): a context per check held 3.3 MB of interpreter heap (about 150 KB per check for the intrinsics, host bindings and lib files again), one shared context 1.0 MB. |
 | `script.cut_at_request_deadline` | `1` | `AH_ENGINE_SCRIPT_CUT_AT_DEADLINE` |  | 1 = a scripted check still running when its request's client stops waiting (client.deadline_ms minus daemon.reply_slack_ms) is interrupted there, and a check not yet started by then is not started: each such entry takes its check's failure policy while the entries answered in time keep the engine's answer, so a loaded machine costs single checks instead of the whole event (before, the reply came after the client had given up). Not counted as a script error. A check whose failure mode is closed (script.failure_mode_by_check) keeps only its own limit on a guard event. 0 = the checks run to their own limits whatever the client's deadline (the Node parity harness sets AH_ENGINE_SCRIPT_CUT_AT_DEADLINE=0 so its daemon answers every case, however loaded the machine). |
 | `script.enabled` | `1` | `AH_ENGINE_SCRIPT` |  | 1: a check whose script exists runs the script instead of its compiled port; 0: the compiled port always runs (the parity baseline). |
-| `script.engine_only_checks` | `77 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
+| `script.engine_only_checks` | `78 items` |  |  | Every registered check: none has a Node twin that is launched (the dispatcher starts no hook command), so a check that cannot answer is resolved by its failure mode (script.failure_mode_by_check): `open` allows (logged, counted, and told to the user once per session), `closed` blocks on a guard event (dispatch.guard_events). A test fails when a registered check is missing here, so a new check is classified on purpose. |
 | `script.entry` | `decide` |  |  | Global function a check script defines; it is called with the hook payload and returns the verdict. |
 | `script.exec_max_calls` | `64` |  |  | Most `ah.exec` runs one script call may start; past it the call answers null. |
 | `script.exec_output_max_bytes` | `4194304` |  | bytes | Largest stdout (and, separately, stderr) `ah.exec` hands back; the rest is cut and `truncated` is set. |
@@ -7178,7 +7200,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `script.exec_timeout_max_ms` | `5000` |  | ms | Longest wall-clock time one `ah.exec` run may take whatever the script asks for; the run's process group is killed at the limit. |
 | `script.exec_timeout_scale` | `1` | `AH_ENGINE_SCRIPT_EXEC_SCALE` |  | Multiplier on the time every `ah.exec` run and every process listing a script asks for may take (the limit a script asks for, and the longest one, are both multiplied). 1 in production; a test build on a loaded machine raises it so a slow child process is not read as a failure. |
 | `script.ext` | `.js` |  |  | File extension of a check script and of a lib file. |
-| `script.failure_mode_by_check` | `24 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
+| `script.failure_mode_by_check` | `25 entries` |  |  | Failure mode of a check whose script cannot answer (an exception, the CPU-time limit, out of memory, a verdict of the wrong shape, no script file): `open` ALLOWS (the failure is logged as script_error and counted as a telemetry check event with outcome error), `closed` BLOCKS on a guard event with script.msg_fail_closed. A check's own failure must never block the user's agent, so only a security guard whose silent allow would let through what it exists to stop is `closed`. The PreToolUse guards that block an unsafe tool call (git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) ship `closed`, as they did while their Node twins were the fallback; a Stop, SubagentStop, SessionStart or prompt check never does (a test holds that). sibling-sweep, agent-reminders, gh-rt-advisory, handover-hygiene and procwatch-advisory are advisories, broad-kill-guard is a stricter-than-Node block whose own failure must not stop the agent, and engine-role-guard is a second line (the ah-engine command line refuses a verb the caller's role may not run by itself). A check not listed takes script.failure_mode_default. On 2026-10-09 sibling-sweep was fail-closed and blocked a SubagentStop when its script hit the CPU limit on a long transcript. |
 | `script.failure_mode_closed` | `closed` |  |  | The failure-mode value that blocks on a guard event (any other value allows). |
 | `script.failure_mode_default` | `open` |  |  | Failure mode of a check not listed in script.failure_mode_by_check. |
 | `script.fingerprint_ttl_ms` | `1000` |  | ms | How long the listing of the shared lib files (names, sizes, modification times) of the logic directories is reused by all checks before it is read again. A check call checks whether its scripts changed by comparing this fingerprint, and listing the library directory and stating every lib file on every call cost about 40 file operations per check (live: the workers' file work was most of the daemon's CPU). An edited, added or removed lib file takes effect within this interval; the check's own script file is still stat-ed on every call. 0 = list on every call. |
@@ -7529,7 +7551,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `346 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `347 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 

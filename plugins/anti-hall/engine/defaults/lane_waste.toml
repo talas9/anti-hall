@@ -260,3 +260,71 @@ value = "run the command in the foreground, or end your turn and let the complet
 [queued_wait.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
 value = "the user turns the guard off with guards.queuedWaitGuard, or skips it for a session in skip.json as queued-wait-guard."
+
+# ---- wide-search-guard (whole-disk searches, every agent; GH #174) ----------------------------------------
+# Decision logic: engine/logic/wide-search-guard.js over the shared command parser. Unlike the two guards above it judges the main
+# thread as well as subagents: a find or rg rooted at / or ~ wakes Spotlight and the network volumes and pushed the load to 170 once.
+
+[wide_search.sw_allow]
+doc = "Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside)."
+value = { section = "guards", key = "allowWideSearch", type = "boolean", env = "ANTIHALL_ALLOW_WIDE_SEARCH", option = "", default = false }
+
+[wide_search.guard_name]
+doc = "The guard id the wide-search guard answers to in skip.json and in its messages."
+value = "wide-search-guard"
+
+[wide_search.summary]
+doc = "One-line description of the wide-search-guard check in the generated reference."
+value = "PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed."
+
+[wide_search.forbidden_roots]
+doc = "Search roots that are blocked when a search starts exactly there (a subdirectory of one is fine). `~`, `$HOME` and `${HOME}` stand for the home directory."
+value = ["/", "~", "/Users", "/Volumes", "/home", "/System/Volumes/Data", "/private"]
+
+[wide_search.allow_paths]
+doc = "Per-path allow list: a search rooted exactly at one of these paths is allowed even though it is a forbidden root (`~` and `$HOME` expand to the home directory). Empty by default."
+value = []
+
+[wide_search.home_aliases]
+doc = "Words that stand for the home directory at the start of a search path."
+value = ["~", "$HOME", "${HOME}"]
+
+[wide_search.cd_commands]
+doc = "Commands that change the working directory for the commands after them (a bare one goes home)."
+value = ["cd", "pushd"]
+
+[wide_search.whole_disk]
+doc = "The root a Spotlight search (mdfind) without a scope flag covers."
+value = "/"
+
+[wide_search.expr_start]
+doc = "Words that end the path list of a find-style command (the start of its expression)."
+value = ["!", "(", ")", ","]
+
+[wide_search.unresolvable_re]
+doc = "A path word the guard cannot resolve (a glob or a variable): it is not judged. Regular expression (Rust syntax)."
+value = '[*?\[\]{}$`]'
+
+[wide_search.commands]
+doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
+value = { find = { style = "paths-first", skip_flags = ["-H", "-L", "-P"] }, bfs = { style = "paths-first", skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"] }, rg = { style = "pattern-first", value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+
+[wide_search.msg_what]
+doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches."
+value = "`{cmd}` is blocked: it searches the whole of `{root}`."
+
+[wide_search.msg_why]
+doc = "Why whole-disk searches are blocked."
+value = "A search rooted at the disk, the home directory or the user and volume folders wakes Spotlight and the network volumes, takes minutes and once pushed this Mac's load to 170."
+
+[wide_search.msg_instead]
+doc = "What to do instead. Placeholders: {repo} the session's working directory."
+value = "search the project: give the command a path, e.g. `rg <pattern> {repo}` or `find {repo} -name <name>`, or narrow it to the directory that holds the code (git grep and git ls-files cover tracked files)."
+
+[wide_search.msg_instead_no_repo]
+doc = "What to do instead when the session's working directory is itself a forbidden root."
+value = "search one project directory: give the command that directory's absolute path (git grep and git ls-files cover tracked files)."
+
+[wide_search.msg_override]
+doc = "How the user can lift the block (shown on the last line)."
+value = "the user sets guards.allowWideSearch, adds the path to the wide_search.allow_paths list, or skips the guard for a session in skip.json as wide-search-guard."
