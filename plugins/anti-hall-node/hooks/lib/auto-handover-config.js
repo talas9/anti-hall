@@ -34,7 +34,7 @@
 const settings = require('./settings.js');
 
 const SECTION = 'autoHandover';
-const DEFAULT_PCT = 85;
+const DEFAULT_PCT = 93;
 const DEFAULT_NAG = true;
 const DEFAULT_NAG_STEP_PCT = 5;
 const DEFAULT_NAG_QUIET_MIN = 15;
@@ -42,7 +42,7 @@ const DEFAULT_NAG_QUIET_MIN = 15;
 const DEFAULT_GATE_NEW_WORK = true;
 const DEFAULT_GATE_BUDGET_PCT = 5;
 // Absolute token ceiling, fired on whichever of pct / maxTokens comes first.
-// DEFAULT IS OFF (0): the `pct` trigger (default 85, see DEFAULT_PCT above)
+// DEFAULT 500000 (only bites on 1M windows): the `pct` trigger (default 93, see DEFAULT_PCT above)
 // is measured against this session's ACTUAL context window (see
 // hooks/lib/context-pct.js), so it already fires at 85% of a 200K window, a
 // 1M window, or whatever size a future model ships with — a fixed absolute
@@ -56,7 +56,7 @@ const DEFAULT_GATE_BUDGET_PCT = 5;
 // ANTIHALL_AUTO_HANDOVER_MAX_TOKENS or `scripts/auto-handover-config.js set
 // maxTokens <n>`. See docs/KB-handover-research.md for the underlying
 // research this feature was built from.
-const DEFAULT_MAX_TOKENS = 0;
+const DEFAULT_MAX_TOKENS = 500000;
 // Decisive Stop/pause-nag prompt (v0.109.5): once this session's handover
 // file exists and is fresh, the Stop-time directive
 // (hooks/auto-handover-pause-nag.js) tells the agent to END its reply with

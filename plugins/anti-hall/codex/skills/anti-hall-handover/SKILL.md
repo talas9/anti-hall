@@ -13,15 +13,17 @@ Codex-native mirror of the Claude `handover` skill — same artifact contract
 and templates; only platform phrasing differs (no `/compact` references,
 `AGENTS.md` instead of `CLAUDE.md`).
 
-**Triggered automatically, too.** `hooks/auto-handover.js` (UserPromptSubmit, shared
+**Triggered automatically, too.** `auto-handover` (UserPromptSubmit, shared
 verbatim with the Claude plugin) watches the main agent's estimated context usage and, at
-85% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
+93% by default (`autoHandover` section of `~/.anti-hall/settings.json`, or
 `ANTIHALL_AUTO_HANDOVER_PCT`; `anti-hall-settings` skill to change it), injects
 a directive to run THIS skill's contract yourself, right now, without asking the user
 first — same self-write mandate as below. A long autonomous turn that never passes a
-user prompt gets the same directive once at a `Stop` (`hooks/auto-handover-pause-nag.js`,
+user prompt gets the same directive once at a `Stop` (`auto-handover-pause-nag`,
 shared latch, never while `stop_hook_active`). If you're reading this skill because that
 directive fired, follow it exactly as written; nothing else changes.
+
+**Recommended threshold.** Set the handover to fire 5% of the window before that model's auto-compact: `autoHandover.pct` = 93 for 200k models (Claude auto-compact at 98%), and for 1M models `autoHandover.maxTokens` = 500000 with `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. These are the shipped defaults (93% and 500000 tokens); see the `anti-hall-settings` skill, "Recommended setup". Codex: leave `model_auto_compact_token_limit` alone; if you set it, hand over 5% of the window before it.
 
 Prepares a session handover: perishable job state (goal, current position,
 next executable step, decisions, dead ends, verification status) written to
@@ -123,7 +125,7 @@ consolidated schema):
    written, one of `auto-threshold` / `user-request` / `restart-pending` /
    `task-boundary`, plus the current context % if known. Source the % from a
    statusline if shown, or from `~/.anti-hall/auto-handover/<tag>.json`
-   (`hooks/lib/auto-handover-state.js`'s per-session latch, shared verbatim
+   (`auto-handover-state`'s per-session latch, shared verbatim
    with the Claude plugin — `firedPct` is the % it crossed the threshold at;
    `<tag>` is the session id from "Session id" below). Use `auto-threshold`
    ONLY when that file's `fired` is `true` for this session, or the
@@ -323,7 +325,7 @@ continuation (official Codex hooks reference, learn.chatgpt.com/docs/hooks).
 `handover-resume.js` is registered on `SessionStart` with no matcher, so it
 fires there too.
 
-**PreCompact safety net.** `hooks/precompact-snapshot.js` (registered on Codex's
+**PreCompact safety net.** `precompact-snapshot` (registered on Codex's
 own `PreCompact` event) writes `PRECOMPACT-<n>.md` into this session's handover
 dir right before every compaction: `pwd`, git branch/HEAD/dirty files, a
 task-list snapshot when the transcript has one, the last 10 user messages
@@ -331,6 +333,8 @@ verbatim (Codex rollout `user_message` events), and a pointer to the newest
 `HANDOVER*.md`. Mechanical, never a substitute for this skill, and it never
 stops compaction (no stdout, exit 0). The resume hook names it on the next
 `SessionStart`.
+
+Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 **Write proactively** — at task boundaries or when a reset is likely, not only
 when asked and not at the absolute context-window limit (reset mechanisms can
@@ -376,7 +380,7 @@ final message depends on the `Trigger:` line you recorded above:
 - Never say "safe for a reset" (the 🟢 line) unless the threshold fired or
   context is genuinely high — that line reads as a stop-now signal, and
   a proactive save below threshold is not one (field incident: a session below
-  the 85% auto threshold invoked this skill because a restart was mentioned,
+  the auto threshold invoked this skill because a restart was mentioned,
   and the old unconditional "✅ HANDOVER COMPLETE — SAFE FOR CONTEXT
   COMPACTION/RESET NOW" wording was read as a premature signal to stop).
 

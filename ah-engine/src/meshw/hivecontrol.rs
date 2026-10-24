@@ -106,6 +106,20 @@ pub fn gate(env: &Env, home: &Path) -> Gate {
 /// Node records when the build lacks the verb; a caller that has none (every verb but `list`) gets [`Gate::Probe`] for a missing
 /// verb, which is a deferral: the engine reproduces neither the refusal text nor the cache line.
 pub fn gate_verb(env: &Env, home: &Path, verb: &str, dormant: Option<(&str, &str)>) -> Gate {
+    let cached = gate_cached(env, home, verb, dormant);
+    if !matches!(cached, Gate::Probe) {
+        return cached;
+    }
+    // the cache holds no entry for this build of hivecontrol: probe it (read-only `--version` / `--help`) and answer again; the
+    // daemon's recon fills the same file, and there is no Node to do it for a verb that runs first
+    if let Ok(Some(bin)) = resolve_bin(env, home) {
+        let runner = crate::dsact::runner::System { hc: bin.to_string_lossy().into_owned() };
+        crate::dssup::recon::capprobe::ensure(home, crate::meshw::common::now_ms(), env, &runner, verb);
+    }
+    gate_cached(env, home, verb, dormant)
+}
+
+fn gate_cached(env: &Env, home: &Path, verb: &str, dormant: Option<(&str, &str)>) -> Gate {
     let Ok(found) = resolve_bin(env, home) else { return Gate::Probe };
     let Some(bin) = found else { return Gate::Spawn };
     let cache = home

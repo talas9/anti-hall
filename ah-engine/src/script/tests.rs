@@ -1712,6 +1712,19 @@ fn the_shared_regex_cache_is_bounded_by_bytes_and_shared_across_threads() {
     assert!(super::recache::get("(", "").is_err(), "an invalid pattern is an error, not a cache entry");
 }
 
+/// A cached pattern weighs its program plus the per-thread search scratch the regex crate keeps inside it (and cannot report):
+/// `daemon.workers` times `script.regex_scratch_bytes`, so the registry sees the memory the lazy DFAs really hold.
+#[test]
+fn a_cached_pattern_weighs_its_per_thread_search_scratch_too() {
+    let scratch = super::recache::scratch_estimate();
+    assert_eq!(scratch, (defaults::num("daemon.workers") * defaults::num("script.regex_scratch_bytes")) as usize);
+    assert!(scratch > 0, "the shipped defaults estimate a scratch per pattern");
+    let (_, before) = super::recache::usage();
+    super::recache::get("zzscratchweight\\d{3}", "").expect("valid pattern");
+    let (_, after) = super::recache::usage();
+    assert!(after - before >= scratch, "the entry weighs at least its scratch estimate: {} < {scratch}", after - before);
+}
+
 #[test]
 fn the_limit_that_interrupted_a_call_is_named_in_its_failure() {
     use super::{Deadline, Trip};
@@ -1942,8 +1955,7 @@ fn a_primary_session_registers_adopts_and_keeps_its_seat_and_the_launchers_are_i
     let desc: Vec<_> = std::fs::read_dir(home.join(".anti-hall/devswarm/workspaces")).expect("workspaces dir").flatten().collect();
     assert_eq!(desc.len(), 1, "the Primary's descriptor is written");
     for launcher in ["devswarm.js", "wake-watch.js"] {
-        let m = std::fs::metadata(home.join(".anti-hall/bin").join(launcher)).expect("a stable launcher");
-        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111, 0o111, "{launcher} is executable");
+        assert!(!home.join(".anti-hall/bin").join(launcher).exists(), "{launcher}: the engine writes no launcher file");
     }
     // the same session again: its own seat, no notice
     let second = run(&l);
@@ -1996,4 +2008,124 @@ fn the_parent_gate_and_the_child_role_decide_natively_when_no_launcher_can_be_na
         assert_eq!(got, Some(Some(Verdict::Allow)), "{check}: decided natively, no deferral and no block");
         assert_eq!(handbacks("abandoned", &full), before + 1, "{check}: the dropped decision is counted abandoned at {site}");
     }
+}
+
+/// GH #270 burn breaker: a subagent with a fresh hard-flag marker is blocked on every tool except SendMessage and a plain git commit,
+/// push or status; the main session, a subagent without a marker and a stale marker are never blocked.
+#[test]
+fn burn_breaker_blocks_a_flagged_subagent_except_commit_push_status_and_its_report() {
+    let h = home("burn-breaker");
+    let e = env(&h);
+    let dir = format!("{h}/.anti-hall/agent-tracker/breaker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    std::fs::write(format!("{dir}/a1.json"), json!({"ts": now, "tokens": 3_500_000u64, "agent": "a1"}).to_string()).unwrap();
+    std::fs::write(format!("{dir}/old.json"), json!({"ts": 1u64, "tokens": 3_500_000u64, "agent": "old"}).to_string()).unwrap();
+    let blocked = |p: Value| matches!(run_forced("burn-breaker", &p, &e), Some(Some(Verdict::Exact(x))) if x.code == 2);
+    let bash = |c: &str| json!({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": c}});
+    assert!(blocked(json!({"tool_name": "Read", "agent_id": "a1", "tool_input": {"file_path": "/x"}})));
+    assert!(blocked(bash("cargo test")));
+    assert!(blocked(bash("git commit -m x; rm -rf y")));
+    assert!(blocked(bash("git status | tee out")));
+    assert!(blocked(bash("git commit -m \"$(rm -rf y)\"")));
+    for ok in ["git commit -m \"a; b & c\"", "git -C /w push origin v301/x", "git status --short", "git add -A"] {
+        assert!(!blocked(bash(ok)), "{ok}");
+    }
+    assert!(!blocked(json!({"tool_name": "SendMessage", "agent_id": "a1", "tool_input": {"to": "main"}})), "the report goes through");
+    assert!(!blocked(json!({"tool_name": "Read", "tool_input": {}})), "the main session is never blocked");
+    assert!(!blocked(json!({"tool_name": "Read", "agent_id": "other", "tool_input": {}})), "no marker, no block");
+    assert!(!blocked(json!({"tool_name": "Read", "agent_id": "old", "tool_input": {}})), "a stale marker is ignored");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// GH #270 uncommitted-work guard: a subagent's edit is blocked once its worktree holds 300 uncommitted lines, and allowed again after a commit.
+#[test]
+fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it() {
+    let h = home("uncommitted");
+    let e = env(&h);
+    let repo = format!("{h}/repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok =
+            std::process::Command::new("git").args(["-C", &repo, "-c", "user.name=t", "-c", "user.email=t@t"]).args(args).output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(format!("{repo}/a.txt"), "x\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    let edit = |agent: Option<&str>| {
+        let mut p = json!({"tool_name": "Edit", "cwd": repo, "tool_input": {"file_path": "a.txt"}});
+        if let Some(a) = agent {
+            p["agent_id"] = json!(a);
+        }
+        run_forced("uncommitted-guard", &p, &e)
+    };
+    let blocked = |v: Option<Option<Verdict>>| matches!(v, Some(Some(Verdict::Exact(x))) if x.code == 2);
+    assert!(!blocked(edit(Some("s1"))), "a clean worktree");
+    std::fs::write(format!("{repo}/big.txt"), "line\n".repeat(400)).unwrap();
+    assert!(!blocked(edit(Some("s1"))), "a count under the soft line is trusted for the cache TTL");
+    std::fs::remove_dir_all(format!("{h}/.anti-hall/uncommitted")).unwrap();
+    assert!(blocked(edit(Some("s1"))), "400 untracked lines");
+    assert!(!blocked(edit(None)), "the main session is never judged");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "work"]);
+    assert!(!blocked(edit(Some("s1"))), "a commit lifts the block at once");
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
+/// Direct thin-client events and doctor fixtures omit a root option, while the engine has already loaded its install.
+#[test]
+fn script_options_keep_explicit_roots_and_fall_back_to_the_loaded_install() {
+    let h = home("script-root");
+    let e = env(&h);
+    let st = Settings::from_env(&e);
+    let _ = defaults::text("script.ext");
+    let installed = defaults::root().expect("loaded plugin root").to_string_lossy().into_owned();
+    assert_eq!(super::script_options(&Value::Null, &st)["plugin_root"], installed);
+    let opts = json!({"payload_sha1": "abc", "plugin_root": ""});
+    let resolved = super::script_options(&opts, &st);
+    assert_eq!(resolved["plugin_root"], installed);
+    assert_eq!(resolved["payload_sha1"], "abc");
+    let explicit = json!({"plugin_root": "/explicit", "payload_sha1": "abc"});
+    let request = RequestEnv::from_pairs([("HOME", h.as_str()), ("AH_ENGINE_PLUGIN_ROOT", "/request")]);
+    let request = Settings::from_env(&request);
+    assert_eq!(super::script_options(&Value::Null, &request)["plugin_root"], "/request");
+    assert_eq!(super::script_options(&explicit, &request), explicit);
+    assert_eq!(super::script_options(&json!([1]), &st), json!([1]));
+}
+
+/// A registered child with no report must still be forced to heartbeat when a direct Stop has no root argument.
+#[test]
+fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x", "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+        "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-stop", "cwd": "{HOME}"},
+        "files": {".anti-hall/devswarm/workspaces/b-1.json": "{}"}
+    }));
+    let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
+    let Some(Verdict::Exact(out)) = got else { panic!("a child must report: {got:?}") };
+    assert!(out.out.contains("Heartbeat: before you stop"), "{}", out.out);
+    assert!(out.out.contains("ah-engine mesh"), "{}", out.out);
+    assert!(!out.out.contains("devswarm.js"), "{}", out.out);
+}
+
+/// The parent's neglected-child gate also reaches its decision without a root argument (doctor and direct Stop forms).
+#[test]
+fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
+        "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}"},
+        "files": {
+            ".anti-hall/devswarm/workspaces/c-1.json": "{\"id\":\"c-1\",\"worktreePath\":\"{HOME}/wt/c-1\",\"sessionId\":\"sess-c1\",\"inboxPath\":\"{HOME}/in.ndjson\",\"cursorPath\":\"{HOME}/cursor.json\"}",
+            "in.ndjson": "{\"message\":\"handle this\",\"ts\":1}\n", "cursor.json": "0"
+        }
+    }));
+    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
+    let Some(Verdict::Exact(out)) = got else { panic!("neglect must block: {got:?}") };
+    let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
+    assert_eq!(answer["decision"], "block");
+    assert!(out.out.contains("c-1"), "{}", out.out);
 }

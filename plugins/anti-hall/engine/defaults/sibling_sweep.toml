@@ -326,7 +326,7 @@ min = 1024
 
 [sibling_sweep.msg_what]
 doc = "What happened, in the reminder. Placeholder: {pattern} (the pattern named from the cause statement, or empty)."
-value = "this reply states the cause of a bug{pattern} and the turn shows no search for other occurrences of it"
+value = "this fix has no recorded search for the same cause elsewhere."
 
 [sibling_sweep.msg_pattern]
 doc = "The text that names the pattern in the reminder. Placeholder: {pattern}."
@@ -334,19 +334,19 @@ value = " ({pattern})"
 
 [sibling_sweep.msg_why]
 doc = "Why it matters, in the reminder."
-value = "a bug cause is rarely unique: fixing one site and calling it done leaves its siblings, which is unverified completion"
+value = "The same cause may affect more than one place."
 
 [sibling_sweep.msg_instead]
 doc = "What to do, in the reminder."
-value = "search the codebase for the same pattern (rg, grep or Glob), fix or list every other occurrence, and state the search you ran and what it found"
+value = "search for the same cause and report other matches."
 
 [sibling_sweep.msg_allowed]
 doc = "What stays allowed, in the reminder."
-value = "one honest line is enough when there is none: name the search and say it found no other occurrence"
+value = "If there are no other matches, report the search and that result."
 
 [sibling_sweep.msg_override]
 doc = "How to turn the reminder off, in the reminder."
-value = "guards.siblingSweep=off in /anti-hall:settings"
+value = "tell the agent \"skip sibling-sweep\""
 
 [sibling_sweep.what_log]
 doc = "The {what} of `msg_log_failed` when the telemetry log cannot be written."

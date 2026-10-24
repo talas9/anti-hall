@@ -30,7 +30,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 static HUP: AtomicBool = AtomicBool::new(false);
 static TERM: AtomicBool = AtomicBool::new(false);
@@ -98,10 +98,16 @@ pub struct Shared {
     pub config: crate::cfgstore::ConfigStore,
     /// This build's version string, compared with each client's for handoff.
     pub own: String,
+    /// The build version the hook client (ah-hook) last reported with a request.
+    hook_version: RwLock<String>,
+    hook_engine_min: RwLock<String>,
+    compat_logged: AtomicBool,
+    /// The plugin version read from the manifest of the loaded root, with the config version it was read at.
+    plugin_version: Mutex<(u64, String)>,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
     pub rules: RwLock<Arc<RuleSet>>,
     rules_path: Mutex<std::path::PathBuf>,
-    seen: Mutex<Option<(SystemTime, u64)>>,
+    seen: Mutex<u64>,
     sessions: Mutex<Buckets>,
     projects: Mutex<Buckets>,
     store: Store,
@@ -192,8 +198,12 @@ impl Shared {
             projects: Mutex::new(Buckets::new(cfg.project_rps, cfg.project_burst)),
             config: crate::cfgstore::ConfigStore::fixed(cfg),
             own: own.to_string(),
+            hook_version: RwLock::new(String::new()),
+            hook_engine_min: RwLock::new(String::new()),
+            compat_logged: AtomicBool::new(false),
+            plugin_version: Mutex::new((0, String::new())),
             rules: RwLock::new(Arc::new(rules)),
-            seen: Mutex::new(mtime(&rules_path)),
+            seen: Mutex::new(crate::layers::host_fingerprint(&rules_path, defaults::env_var("rules").is_some())),
             rules_path: Mutex::new(rules_path),
             store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
@@ -351,7 +361,7 @@ impl Shared {
                 serde_json::json!({"counters": keep("counters"), "histograms": keep("histograms")})
             }),
             "trace" => serde_json::json!({"running": true, "entries": crate::obs::trace::snapshot()}),
-            other => crate::obs::diagverbs::local(other)
+            other => crate::obs::diagverbs::local(other, "")
                 .unwrap_or_else(|| serde_json::json!({"error": defaults::render("msg.obs_diag_unknown", &[("topic", &other)])})),
         }
     }
@@ -373,10 +383,12 @@ impl Shared {
     /// Re-read the rules file; a file that fails to parse keeps the previous rules.
     fn reload(&self) {
         let path = lk(&self.rules_path).clone();
-        if let Ok(r) = RuleSet::load(&path) {
+        let explicit = defaults::env_var("rules").is_some();
+        // the shipped file and the user's layers over it (layers.rs); a bad user file is ignored with a notice, the shipped rules stay
+        if let Ok((r, _)) = crate::layers::load_host_rules(&path, explicit) {
             *self.rules.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(r);
         }
-        *lk(&self.seen) = mtime(&path);
+        *lk(&self.seen) = crate::layers::host_fingerprint(&path, explicit);
     }
 
     /// The memory breakdown: the live heap against RSS, and the size of every long-lived in-memory structure, so a growing
@@ -421,6 +433,7 @@ impl Shared {
         if let Some(o) = m.as_object_mut() {
             o.insert("ledger".into(), ledger);
             o.insert("regex".into(), crate::script::regex_diag());
+            o.insert("leak".into(), crate::mem::leak::status());
         }
         m
     }
@@ -475,6 +488,73 @@ impl Shared {
         )
     }
 
+    /// Remember the build version the hook client reported in the request environment.
+    fn note_hook_version(&self, env: &crate::reqenv::RequestEnv) {
+        if let Some(m) = env.get(defaults::text("env.hook_engine_min")).filter(|v| !v.is_empty())
+            && self.hook_engine_min.read().unwrap_or_else(|e| e.into_inner()).as_str() != m
+        {
+            *self.hook_engine_min.write().unwrap_or_else(|e| e.into_inner()) = m.to_string();
+        }
+        let Some(v) = env.get(defaults::text("env.hook_version")).filter(|v| !v.is_empty()) else { return };
+        if self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str() != v {
+            *self.hook_version.write().unwrap_or_else(|e| e.into_inner()) = v.to_string();
+        }
+    }
+
+    /// The compatibility of the plugin, engine and hook client versions this daemon can see (`compat` in status and pulse). The first
+    /// mismatch is written to the engine log once; nothing is ever blocked.
+    fn compat(&self) -> serde_json::Value {
+        let hook = self.hook_version.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let min = self.hook_engine_min.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let report = crate::compat::report(&self.plugin_version(), &hook, &min, "");
+        if report["ok"] == false && !self.compat_logged.swap(true, SeqCst) {
+            let lines = crate::compat::mismatches(&report).join(defaults::text("compat.log_join"));
+            eprintln!("{}", defaults::render("compat.msg_logged", &[("detail", &lines)]));
+        }
+        report
+    }
+
+    /// The version in the manifest of the plugin root the daemon loaded its files from, re-read only when the config changed.
+    fn plugin_version(&self) -> String {
+        let at = self.config.snapshot().version;
+        let mut c = lk(&self.plugin_version);
+        if c.0 != at || c.1.is_empty() {
+            let text = defaults::root().and_then(|r| std::fs::read_to_string(r.join(defaults::text("migrate.plugin_manifest"))).ok());
+            let v = text
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|j| j.get("version").and_then(serde_json::Value::as_str).map(str::to_string));
+            *c = (at, v.unwrap_or_default());
+        }
+        c.1.clone()
+    }
+
+    /// The vital signs for `CTL pulse` (src/web/pulse.rs): atomics and the active config snapshot only.
+    pub fn pulse_json(&self) -> serde_json::Value {
+        let mut pulse = crate::web::pulse::build(&crate::web::pulse::Inputs {
+            version: &self.own,
+            plugin_version: &self.plugin_version(),
+            hook_version: &self.hook_version.read().unwrap_or_else(|e| e.into_inner()),
+            uptime_s: self.started.elapsed().as_secs(),
+            rss_kb: limits::rss_kb(),
+            footprint_kb: limits::footprint_kb(),
+            cpu_s: limits::process_cpu_secs(),
+            requests: self.stats.requests.load(SeqCst),
+            busy_replies: self.stats.busy.load(SeqCst),
+            slow_replies: SLOW_REPLIES.load(SeqCst),
+            errors: self.stats.errors.load(SeqCst),
+            panics: self.stats.panics.load(SeqCst),
+            queue_depth: self.depth.load(SeqCst) as u64,
+            workers: self.busy_since.len() as u64,
+            budget_mask: lk(&self.budget).mask(),
+            restarts: self.starts.saturating_sub(1),
+            config_version: self.config.snapshot().version,
+        });
+        let leak = crate::mem::leak::status();
+        pulse["leak"] = serde_json::json!({"state": leak["state"], "slope_mb_per_h": leak["slope_mb_per_h"], "top": leak["top"]});
+        pulse["compat"] = self.compat();
+        pulse
+    }
+
     fn status(&self) -> String {
         let rss_now = limits::rss_kb();
         let rules = self.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -493,6 +573,9 @@ impl Shared {
             "running": true,
             "pid": std::process::id(),
             "version": self.own,
+            "plugin_version": self.plugin_version(),
+            "hook_version": self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+            "compat": self.compat(),
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
             "footprint_kb": limits::footprint_kb(),
@@ -535,6 +618,16 @@ impl Shared {
                 })
             }),
             "fail_open": crate::failopen::status(&self.telemetry),
+            // answers a request's checks did not give (a guard's is the one to watch): THIS daemon, apart from the lifetime counts
+            "answers_dropped": serde_json::json!({
+                "this_daemon": crate::budget::dropped_this_daemon(),
+                "lifetime": self.telemetry.with_metrics(|m| m.snapshot("")["counters"].as_array().cloned().unwrap_or_default().into_iter()
+                    .filter(|c| c["name"] == "answers_dropped")
+                    .map(|c| serde_json::json!({"event": c["labels"]["event"], "kind": c["labels"]["kind"], "reason": c["labels"]["reason"], "count": c["value"]}))
+                    .collect::<Vec<_>>()),
+            }),
+            // blocks a guard repeated for the same session inside the repeat window (THIS daemon), by guard: the agent kept retrying
+            "repeat_blocks": crate::learn::repeat_blocks(),
             "degraded": degraded,
             "mem_limit": self.rlimit,
             "malloc_stack_logging": cfg.malloc_stack_logging,
@@ -667,18 +760,19 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
         if let Some(root) = crate::bootstrap::ROOT_ENVS.iter().find_map(|n| env.get(n)) {
             sh.config.offer_root(root);
         }
+        sh.note_hook_version(&env);
         let reply = hook(payload, &env, sh, cfg);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("D ") {
         let reply = dispatch(body, sh, cfg);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(v) = head.strip_prefix("G ") {
         let reply = inject_gate(body, sh);
-        let newer = crate::version_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
+        let newer = crate::component_cmp(v.trim(), &sh.own) == std::cmp::Ordering::Greater;
         return (reply, if newer { After::Exit } else { After::Continue });
     }
     if let Some(cwd) = head.strip_prefix("P ") {
@@ -686,11 +780,15 @@ pub fn handle_request_with(req: &[u8], sh: &Shared, cfg: &crate::cfgstore::Snaps
     }
     let ctl = head.strip_prefix("CTL ").map(str::trim);
     let (verb, args) = ctl.map(|c| c.split_once(' ').unwrap_or((c, ""))).unwrap_or(("", ""));
+    if let Some(reply) = ctl.and_then(|_| crate::web::dispatch(verb, args)) {
+        return (Reply::Ok(reply), After::Continue);
+    }
     match ctl.map(|_| verb) {
         Some("metrics") => (Reply::Ok(sh.metrics_json(args).to_string()), After::Continue),
         Some("impact") => (Reply::Ok(sh.impact_json(args).to_string()), After::Continue),
         Some("schedule") => (Reply::Ok(schedule_ctl(sh, args).to_string()), After::Continue),
         Some("devswarm") => (Reply::Ok(crate::dswire::cli::ctl(args)), After::Continue),
+        Some("pulse") => (Reply::Ok(sh.pulse_json().to_string()), After::Continue),
         Some("gate") => (Reply::Ok(crate::gate::global().report().to_string()), After::Continue),
         Some("telemetry") => (Reply::Ok(sh.telemetry_json(args).to_string()), After::Continue),
         Some("profile") => (Reply::Ok(crate::obs::profile::ctl(args)), After::Continue),
@@ -735,6 +833,8 @@ struct DaemonObserver<'a> {
     project: &'a str,
     /// The hook event being served (telemetry labels every check and rule with it).
     event: &'a str,
+    /// Whose call is being served (blocks are recorded with it).
+    who: telemetry::Who,
 }
 
 /// What a check that just finished read and noted (task #66 step 0): its transcript bytes and latency by transcript size class,
@@ -779,10 +879,11 @@ impl crate::hookio::Observer for DaemonObserver<'_> {
         crate::memdiag::note_check(check);
         observe_check_cost_in(self.t, self.event, check, micros);
         crate::obs::trace::push("check", check, telemetry::decision_name(verdict), micros);
+        crate::web::decisions::push(self.event, check, rule_id, "", verdict, micros);
         if matches!(verdict, crate::checks::Verdict::Defer) {
             crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("check:{check}"), rule_id);
         }
-        self.t.observe_check_in(self.event, check, rule_id, verdict, micros, self.project);
+        self.t.observe_check_who(self.event, check, rule_id, verdict, micros, self.project, &self.who);
     }
 
     fn rule(&self, rule_id: &str, action: crate::rules::Action) {
@@ -910,10 +1011,11 @@ fn hook(body: &str, env: &crate::reqenv::RequestEnv, sh: &Shared, cfg: &Config) 
         return Reply::Busy;
     }
     let rules = sh.rules.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let rules = crate::layers::rules_for(p.get("cwd").and_then(|v| v.as_str()).unwrap_or(""), &rules); // the project's rules, tighten-only
     let (start, budget) = cpu_budget(cfg);
     let over = move || over_cpu_budget(start, budget);
     let event = crate::hookio::event_of(&p).unwrap_or(defaults::text("telemetry.no_event_label"));
-    let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event };
+    let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event, who: telemetry::Who::of(&p) };
     let reply = match crate::hookio::respond_observed(&p, &rules, &over, &obs, env) {
         Ok(out) if out == crate::hookio::FALLBACK => Reply::Err(defaults::text("msg.reply_defer").into()),
         Ok(out) => Reply::Ok(out),
@@ -944,6 +1046,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     if let Some(root) = meta.root.as_deref() {
         sh.config.offer_root(root);
     }
+    // every hook call reaches the daemon as a dispatch request, so the launcher's build version rides in its environment
+    sh.note_hook_version(&meta.env);
     if let Some(ms) = meta.deadline_ms {
         crate::deadline::client_window(ms);
     }
@@ -960,6 +1064,8 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         sh.telemetry.fallback("busy", &phash);
         return Reply::Busy;
     }
+    // an agent launch that finished: what it ran on and used, linked to its routing decision by the spawn key
+    sh.telemetry.observe_spawn(&meta.event, &p, crate::health::now_ms());
     // D87: what the client's plan did to each entry (ran, skipped by predicate or cap or budget, shadowed, off), by event and entry
     sh.telemetry.with_metrics(|m| {
         for (id, outcome) in &meta.plan {
@@ -985,7 +1091,7 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
             Answer::Decided(_, routes) => Verdict::Routed(Box::new(Verdict::Allow), routes.clone()),
         };
         if let Verdict::Routed(_, routes) = &v {
-            let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event: &meta.event };
+            let obs = DaemonObserver { t: &sh.telemetry, project: &phash, event: &meta.event, who: telemetry::Who::default() };
             for r in routes {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
@@ -995,12 +1101,29 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         crate::memdiag::note_check(check);
         observe_check_cost_in(&sh.telemetry, &meta.event, check, micros);
         checks_us.set(checks_us.get().saturating_add(micros));
-        sh.telemetry.observe_check(check, &e.id, &v, micros, &phash);
+        // an entry whose id is its check name names no rule of its own: record none, so the dashboard has no duplicate rule hop
+        let rule = if e.id == check { "" } else { e.id.as_str() };
+        crate::web::decisions::push(&meta.event, check, rule, session, &v, micros);
+        sh.telemetry.observe_check_who(
+            defaults::text("telemetry.no_event_label"),
+            check,
+            &e.id,
+            &v,
+            micros,
+            &phash,
+            &telemetry::Who { event: meta.event.clone(), ..telemetry::Who::of(&p) },
+        );
     };
+    // the HARD CPU budget is per check (the CPU one check used): a runaway loses its own answer, never the later checks' answers
     let (start_cpu, budget) = cpu_budget(cfg);
-    let over = || over_cpu_budget(start_cpu, budget);
+    let tripped = std::cell::Cell::new(false);
+    let over = |used: u64| {
+        let over = budget > 0 && used > budget;
+        tripped.set(tripped.get() || over);
+        over
+    };
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
-    if over() {
+    if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
     }
     note_cpu_soft(sh, start_cpu, cfg);
@@ -1461,6 +1584,13 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
             },
         );
     }
+    let how = match &reply {
+        Reply::Busy => crate::web::io::Served::FailOpen,
+        Reply::Err(why) if !why.is_empty() => crate::web::io::Served::FailOpen,
+        _ if late => crate::web::io::Served::Timeout,
+        _ => crate::web::io::Served::Ok,
+    };
+    crate::web::io::client(session.as_deref(), how, started.elapsed().as_micros() as u64);
     sh.load.record(&crate::load::Sample {
         at_ms: health::now_ms(),
         wait_us: wait.as_micros() as u64,
@@ -1641,6 +1771,27 @@ fn watchdog(sh: Arc<Shared>) {
             let edge = lk(&sh.budget).cpu_window(pct, cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_cpu_windows"));
             report_budget_edge(edge, &format!("{pct:.1}"), cfg.effective.num("diagnostics.budget_cpu_pct"), "msg.log_budget_cpu");
             crate::nodeback::shadow::hold(lk(&sh.budget).mask() & 1 == 1); // the Node shadow starts nothing while the CPU budget is breached
+            let hard_edge = lk(&sh.budget).cpu_hard_window(
+                pct,
+                cfg.effective.num("diagnostics.budget_cpu_hard_pct"),
+                cfg.effective.num("diagnostics.budget_cpu_pct"),
+                cfg.effective.num("diagnostics.budget_cpu_windows"),
+            );
+            if let Some(began) = hard_edge {
+                let state = defaults::text(if began { "msg.state_shed_on" } else { "msg.state_shed_off" });
+                let (limit, soft) = (cfg.effective.num("diagnostics.budget_cpu_hard_pct"), cfg.effective.num("diagnostics.budget_cpu_pct"));
+                health::log_event(
+                    "budget",
+                    "cpu_hard",
+                    &defaults::render("msg.log_budget_cpu_hard", &[("state", &state), ("value", &format!("{pct:.1}")), ("limit", &limit), ("soft", &soft)]),
+                );
+            }
+            if crate::budget::shedding() {
+                // background duties wait: the same backoff the sustained-CPU warning uses, renewed every window while shedding
+                if let Some(sched) = sh.sched.get() {
+                    sched.backoff_for(cfg.effective.num("schedule.cpu_backoff_ms"));
+                }
+            }
             if warn_pct > 0.0 && pct >= warn_pct {
                 let backoff_ms = cfg.effective.num("schedule.cpu_backoff_ms");
                 if let Some(sched) = sh.sched.get() {
@@ -1666,6 +1817,7 @@ fn watchdog(sh: Arc<Shared>) {
                 continue;
             }
         }
+        leak_sentinel(&sh);
         if last_rss.elapsed() >= cfg.rss_check {
             last_rss = Instant::now();
             let rss = limits::rss_kb();
@@ -1704,6 +1856,25 @@ fn watchdog(sh: Arc<Shared>) {
             }
         }
     }
+}
+
+/// The leak sentinel's step (mem::leak): sample when due; on a suspected leak write the evidence file, log the notice and record
+/// the impact. Detection only: nothing is restarted or killed.
+fn leak_sentinel(sh: &Arc<Shared>) {
+    let now_s = health::now_ms() / 1000;
+    if !crate::mem::leak::due(sh.started.elapsed().as_secs(), now_s) {
+        return;
+    }
+    let Some(n) = crate::mem::leak::observe(crate::mem::leak::collect(now_s)) else { return };
+    let line = match crate::mem::leak::write_evidence(sh.memory_with_ledger(), health::now_ms()) {
+        Ok(p) => format!("{} [{}]", n.text, p.display()),
+        Err(e) => defaults::render("mem.leak_msg_evidence_failed", &[("text", &n.text), ("err", &e)]),
+    };
+    health::log_event("memory", "leak", &line);
+    crate::agents::notify_coordinator(defaults::text("mem.leak_impact_kind"), &line);
+    let kind = defaults::text("mem.leak_impact_kind");
+    sh.telemetry.impact(kind, &n.top, crate::mem::leak::Level::Suspected.name(), "");
+    sh.telemetry.with_metrics(|m| m.inc("memory_leak_notices", &[("top", &n.top)]));
 }
 
 /// Log the start or the end of a budget breach (one line per change, never one per sample).
@@ -1838,10 +2009,6 @@ fn footing_watch(sh: Arc<Shared>, footing: Footing) {
     }
 }
 
-fn mtime(p: &Path) -> Option<(SystemTime, u64)> {
-    std::fs::metadata(p).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
-}
-
 fn start_fail(code: &str, detail: &str) -> ! {
     health::log_event("start_fail", code, detail);
     health::record_failure("start_fail", code, detail);
@@ -1853,7 +2020,7 @@ fn io_code(e: &std::io::Error) -> String {
 }
 
 /// Run the daemon until it drains: take the singleton lock, bind the socket, start the workers and the watchdog.
-pub fn serve() {
+pub fn serve(start_reason: &str) {
     crate::crash::mark_daemon(true);
     // SAFETY: getppid takes no arguments and cannot fail. Capture it before any startup work so a scratch daemon whose
     // launcher dies during config/defaults loading still knows which parent it was started by.
@@ -1920,16 +2087,19 @@ pub fn serve() {
     let cfg = store.snapshot().config.clone();
     let rlimit = limits::apply_mem_limit(cfg.mem_mb);
     limits::apply_nice(cfg.nice);
+    health::starts::record(start_reason);
     health::write_marker();
     health::clear_env_failure();
     let starts = next_start_count();
+    health::start_log_thread();
     health::log_event("start", "-", &defaults::render("msg.log_start", &[("version", &crate::version()), ("pid", &std::process::id()), ("rlimit", &rlimit)]));
     crate::client::release_spawn_lock();
     crate::dispatch::sweep_stale_spool();
 
     crate::mem::register_defaults_leak();
     let rules_path = paths::rules_file();
-    let mut sh = Shared::new(cfg, &crate::version(), RuleSet::load(&rules_path).unwrap_or_default(), rules_path);
+    let host_rules = crate::layers::load_host_rules(&rules_path, defaults::env_var("rules").is_some()).map(|(r, _)| r).unwrap_or_default();
+    let mut sh = Shared::new(cfg, &crate::version(), host_rules, rules_path);
     sh.config = store;
     sh.rlimit = rlimit;
     sh.starts = starts;
@@ -2012,6 +2182,7 @@ pub fn serve() {
     crate::proc::kill_all(); // a scheduled job still running must not outlive its daemon
     health::clear_marker();
     health::log_event("exit", "clean", "drained");
+    health::flush_log();
     // The socket was unlinked when the drain began (a successor may already own that path); the lock
     // file is never removed (that would let two daemons hold different inodes) and is released on exit.
 }
@@ -2264,7 +2435,7 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
             if moved {
                 *lk(&sh.rules_path) = wanted.clone();
             }
-            let now = mtime(&wanted);
+            let now = crate::layers::host_fingerprint(&wanted, defaults::env_var("rules").is_some());
             if moved || HUP.swap(false, SeqCst) || now != *lk(&sh.seen) {
                 sh.reload();
                 sh.reload_config();
@@ -2416,7 +2587,7 @@ mod tests {
     #[test]
     fn forced_delegation_route_and_delegate_events_are_linkable_and_ledger_ready() {
         let t = Telemetry::new();
-        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse", who: telemetry::Who::default() };
         let route = crate::checks::RouteMeta {
             requested_model: "opus".into(),
             parent_model: "opus".into(),
@@ -2447,7 +2618,7 @@ mod tests {
     #[test]
     fn a_blocking_route_without_delegation_is_serialized_as_a_block() {
         let t = Telemetry::new();
-        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse" };
+        let obs = DaemonObserver { t: &t, project: "p", event: "PreToolUse", who: telemetry::Who::default() };
         let route = crate::checks::RouteMeta {
             requested_model: "sonnet".into(),
             parent_model: "opus".into(),

@@ -13,7 +13,7 @@ doc = "Name of the engine's own user config (TOML) inside the state directory."
 value = "config.toml"
 
 [config.settings_file]
-doc = "Name of anti-hall's settings file inside the base directory (the file hooks/lib/settings.js reads)."
+doc = "Name of anti-hall's settings file inside the base directory (the file the engine and the settings verb read)."
 value = "settings.json"
 
 [config.watch_ms]
@@ -33,11 +33,11 @@ max = 60000
 unit = "ms"
 
 [config.true_tokens]
-doc = "Words a settings.json boolean may be written as to mean true (matches TRUE_TOKENS in hooks/lib/settings-schema.js)."
+doc = "Words a settings.json boolean may be written as to mean true ."
 value = ["1", "on", "true", "yes"]
 
 [config.false_tokens]
-doc = "Words a settings.json boolean may be written as to mean false (matches FALSE_TOKENS in hooks/lib/settings-schema.js)."
+doc = "Words a settings.json boolean may be written as to mean false ."
 value = ["0", "off", "false", "no"]
 
 [config.restart_only]
@@ -46,7 +46,7 @@ value = ["daemon.workers", "daemon.mem_mb", "daemon.nice", "paths.", "storage.",
 
 [config.locked]
 doc = "Settings (exact keys, or prefixes ending in a dot or in *) the owner's files may not change: the names of the environment variables (the contract between the wrapper, the client and the daemon), the settings that say where the config files are, these two lists, the dispatch table (the generated hooks.json is built from it; hooks are configured in [events.*] and [entries.*], whose guard rules keep a guard from being turned off) and the command registry (its read-only flags feed the role gate). config.toml naming one is invalid; settings.json naming one is ignored."
-value = ["env.", "config.user_file", "config.settings_file", "config.restart_only", "config.locked", "dispatch.hooks_*", "cmd."]
+value = ["env.", "config.user_file", "config.settings_file", "config.restart_only", "config.locked", "dispatch.hooks_*", "cmd.", "layers.rule_fields", "layers.project_rule_fields", "layers.tighten_fields", "layers.action_rank", "layers.locked_rules", "layers.project_settings", "layers.project_dir"]
 
 [msg.cfg_err_io]
 doc = "A config file could not be read."

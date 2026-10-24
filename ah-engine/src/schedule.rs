@@ -759,6 +759,7 @@ fn has_work(action: &str) -> bool {
             crate::ghrt::tick_needed(&cfg, crate::health::now_ms())
         }
         "refresh" => defaults::env_var("home").is_some_and(|h| crate::refresh::has_pending(std::path::Path::new(&h))),
+        "jev_arrival" => defaults::env_var("home").is_some_and(|h| crate::jev::arrival::has_pending(std::path::Path::new(&h))),
         // the spool file: absent or empty means no client spooled a write (clients append under the lock and fsync)
         "spool_drain" => std::fs::metadata(crate::spool::path()).map(|m| m.len() > 0).unwrap_or(false),
         _ => true,

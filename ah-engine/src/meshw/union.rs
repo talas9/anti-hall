@@ -18,8 +18,9 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_number_of_str, js_trim};
 use crate::defaults;
 use crate::mesh::MeshReader;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::devswarm_root;
+use crate::meshw::readprimary::store_err;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -38,6 +39,20 @@ pub struct Union {
     pub store_only_unread: Vec<Value>,
     /// Age in ms of the oldest unread row that carries a timestamp, `None` when none does (or the age is negative).
     pub oldest_unread_age_ms: Option<f64>,
+    /// How many of the unread lines and rows are the engine's own wake prompts (see [`is_wake_line`]); they are in the lists above
+    /// (an ack walks them) but not in `unread`, and never set the oldest age.
+    pub wake_unread: usize,
+}
+
+/// Whether an NDJSON line is a wake prompt the engine had DevSwarm queue (`agent_tracker.wake_prefix`): DevSwarm stores it as a direct
+/// mail row, but it only points at mail, so it is never counted, shown or aged as mail.
+pub fn is_wake_line(line: &str) -> bool {
+    line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
+}
+
+/// [`is_wake_line`] for a store row.
+pub fn is_wake_row(row: &Value) -> bool {
+    row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
 }
 
 /// The inputs of [`union_unread`] (Node's `unionUnread` opts).
@@ -79,10 +94,8 @@ pub fn cursor_position(path: &str) -> R<Option<f64>> {
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let raw = js_trim(&text);
     let c = if !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()) {
-        if raw.len() > defaults::num("mesh_write.cursor_max_digits") as usize {
-            // parseInt of a long digit string is only approximated by the specification
-            return defer("cursor-long-digits");
-        }
+        // V8's parseInt of a decimal digit string is correctly rounded, as `f64::from_str` is (checked: equal to Number() for
+        // 400-digit strings, which both read as Infinity, i.e. not a position)
         raw.parse::<f64>().unwrap_or(f64::NAN)
     } else {
         match OVal::parse(raw) {
@@ -93,7 +106,9 @@ pub fn cursor_position(path: &str) -> R<Option<f64>> {
                 Some(OVal::Null) => 0.0,
                 Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
                 None => f64::NAN,
-                Some(_) => return defer("cursor-line-shape"),
+                // Number([..]) is Number(String([..])); Number({..}) is NaN
+                Some(arr @ OVal::Arr(_)) => js_number_of_str(&crate::dssup::ingest::import::js_string(arr)),
+                Some(OVal::Obj(_)) => f64::NAN,
             },
             _ => f64::NAN,
         }
@@ -109,7 +124,7 @@ fn embedded_hash(line: &str) -> R<Option<String>> {
         Some(OVal::Str(s)) => Ok(Some(s.clone())),
         Some(OVal::Num(n)) => Ok(Some(crate::checks::jsport::num::to_js_string(*n))),
         Some(OVal::Bool(b)) => Ok(Some(b.to_string())),
-        Some(_) => defer("ndjson-hash-shape"),
+        Some(other) => Ok(Some(crate::dssup::ingest::import::js_string(other))),
     }
 }
 
@@ -209,14 +224,14 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
                 }
                 true
             })
-            .map_err(|e| Defer(format!("store-read:{e}")))?;
+            .map_err(|e| store_err("store-read", e))?;
         let mut unread_rows: Vec<Value> = Vec::new();
         reader
             .for_each_message(i.id, floor_index(i.store_base) as u64, |m| {
                 unread_rows.push(m);
                 true
             })
-            .map_err(|e| Defer(format!("store-read:{e}")))?;
+            .map_err(|e| store_err("store-read", e))?;
         let unread_row_hashes: HashSet<String> = unread_rows.iter().filter_map(|r| truthy_hash(r).map(str::to_string)).collect();
         let uncovered: Vec<Value> = unread_rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !unread_hashes.contains(h))).collect();
         let by_body = body_covered(&uncovered, &nd_lines, &store_hashes, i.id, unread_start)?;
@@ -235,11 +250,20 @@ pub fn union_unread(i: &UnionIn<'_>) -> R<Union> {
         nd_lines.drain(..nd_skipped);
     }
     let mut oldest: Option<f64> = None;
-    for ts in nd_lines.iter().filter_map(|l| line_ts(l)).chain(store_only.iter().filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
+    let nd_ts = nd_lines.iter().filter(|l| !is_wake_line(l)).filter_map(|l| line_ts(l));
+    for ts in nd_ts.chain(store_only.iter().filter(|r| !is_wake_row(r)).filter_map(|r| r["ts"].as_f64().filter(|t| t.is_finite()))) {
         oldest = Some(oldest.map_or(ts, |o| o.min(ts)));
     }
     let age = oldest.map(|o| i.now as f64 - o).filter(|a| *a >= 0.0);
-    Ok(Union { unread: nd_lines.len() + store_only.len(), nd_unread_lines: nd_lines, nd_skipped, store_only_unread: store_only, oldest_unread_age_ms: age })
+    let wake_unread = nd_lines.iter().filter(|l| is_wake_line(l)).count() + store_only.iter().filter(|r| is_wake_row(r)).count();
+    Ok(Union {
+        unread: nd_lines.len() + store_only.len() - wake_unread,
+        nd_unread_lines: nd_lines,
+        nd_skipped,
+        store_only_unread: store_only,
+        oldest_unread_age_ms: age,
+        wake_unread,
+    })
 }
 
 /// `unionUnread`'s merged `total` over the whole history: the NDJSON lines plus the store rows no line covers (by hash,
@@ -257,7 +281,7 @@ pub fn merged_total(i: &UnionIn<'_>) -> R<usize> {
             rows.push(m);
             true
         })
-        .map_err(|e| Defer(format!("store-read:{e}")))?;
+        .map_err(|e| store_err("store-read", e))?;
     let store_hashes: HashSet<String> = rows.iter().filter_map(|m| m["hash"].as_str().map(str::to_string)).collect();
     let uncovered: Vec<Value> = rows.into_iter().filter(|r| truthy_hash(r).is_none_or(|h| !hashes.contains(h))).collect();
     let by_body = body_covered(&uncovered, &all, &store_hashes, i.id, 0)?;
@@ -268,7 +292,7 @@ pub fn merged_total(i: &UnionIn<'_>) -> R<usize> {
 /// row reads its legacy floor instead, as Node's `positions()` does (`legacyStoreFloor`, `legacyNdFloor` of the caller's cursor path or
 /// the descriptor's); nothing is written.
 pub fn floor_bases(reader: &MeshReader, home: &Path, partition: &str, cursor_path: Option<&str>) -> R<(f64, f64)> {
-    let rows = reader.reader_cursors(partition).map_err(|e| Defer(format!("cursor-rows:{e}")))?;
+    let rows = reader.reader_cursors(partition).map_err(|e| store_err("cursor-rows", e))?;
     let floor_of = |ns: &str| -> Option<f64> {
         rows.iter().find(|r| r["ns"] == ns && r["reader"] == defaults::text("mesh_write.floor_reader")).and_then(|r| r["value"].as_f64())
     };
@@ -337,8 +361,10 @@ pub fn unread_at(
     now: i64,
 ) -> R<Unread> {
     let union = union_unread(&UnionIn { inbox, cursor_file, id, store: Some(reader), store_base, nd_base, now })?;
-    let own_nd = union.nd_unread_lines.iter().filter(|l| line_sender(l).is_some_and(|s| family.contains(&s))).count();
-    let own_store = union.store_only_unread.iter().filter(|r| r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s))).count();
+    // wake rows are already out of `union.unread`; a row counts once, so the family's own wake-free sends are what is taken off here
+    let own_nd = union.nd_unread_lines.iter().filter(|l| !is_wake_line(l) && line_sender(l).is_some_and(|s| family.contains(&s))).count();
+    let own_store =
+        union.store_only_unread.iter().filter(|r| !is_wake_row(r) && r.get("sender").and_then(Value::as_str).is_some_and(|s| family.contains(s))).count();
     let own_excluded = own_nd + own_store;
     Ok(Unread { unread: union.unread - own_excluded, own_excluded, union, store_base, nd_base })
 }
@@ -347,7 +373,7 @@ pub fn unread_at(
 pub fn read_bases(reader: &MeshReader, home: &Path, id: &str, cursor_file: Option<&str>, me: Option<&str>) -> R<(f64, f64)> {
     let (mut store_base, mut nd_base) = floor_bases(reader, home, id, cursor_file)?;
     if let Some(me) = me {
-        let rows = reader.reader_cursors(id).map_err(|e| Defer(format!("cursor-rows:{e}")))?;
+        let rows = reader.reader_cursors(id).map_err(|e| store_err("cursor-rows", e))?;
         let own = |ns: &str| rows.iter().find(|r| r["ns"] == ns && r["reader"] == me).and_then(|r| r["value"].as_f64());
         if let Some(v) = own(defaults::text("mesh_write.cursor_ns_store")) {
             store_base = v;
@@ -394,6 +420,14 @@ pub fn line_sender(line: &str) -> Option<String> {
     }
 }
 
+/// The body an NDJSON line carries.
+pub fn line_body(line: &str) -> Option<String> {
+    match OVal::parse(line)?.get(defaults::text("mesh_write.ndjson_message_field")) {
+        Some(OVal::Str(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
 /// `recipientFamilyIds(recipientId, rows)` on `(id, sessionId)` pairs: the recipient and every row cross-linked to it.
 pub fn family_ids(rid: &str, rows: &[(String, Option<String>)]) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -416,13 +450,13 @@ pub fn store_dir(home: &Path, repo_key: &str) -> std::path::PathBuf {
 }
 
 /// A string that is a JavaScript-truthy path: `Some(non-empty)`, `None` for absent/null/empty/false/0; a value of another
-/// type (which JavaScript would stringify or reject in its own way) defers.
+/// type is no path any file call of Node's accepts (each throws into its own catch), so it reads as no path.
 pub fn path_field(d: &OVal, key: &str) -> R<Option<String>> {
     match d.get(key) {
         None | Some(OVal::Null | OVal::Bool(false)) => Ok(None),
         Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
         Some(OVal::Num(n)) if *n == 0.0 || n.is_nan() => Ok(None),
-        Some(_) => defer("descriptor-field-type"),
+        Some(_) => Ok(None),
     }
 }
 
@@ -469,12 +503,12 @@ mod tests {
     }
 
     #[test]
-    fn a_file_over_the_cap_defers_without_being_read_and_a_directory_is_absent() {
+    fn a_file_past_the_hard_limit_reads_as_absent_without_being_read_and_a_directory_is_absent() {
         let dir = scratch("big");
         let big = dir.join("in.ndjson");
-        std::fs::File::create(&big).unwrap().set_len(defaults::num("mesh_write.file_read_max_bytes") + 1).unwrap();
+        std::fs::File::create(&big).unwrap().set_len(defaults::num("mesh_write.file_read_hard_max_bytes") + 1).unwrap();
         let b = big.to_string_lossy().into_owned();
-        assert!(within("oversize", move || non_empty_lines(&b).is_err() && cursor_position(&b).is_err()));
+        assert!(within("oversize", move || non_empty_lines(&b) == Ok(None) && cursor_position(&b).is_ok()));
         std::fs::create_dir_all(dir.join("d")).unwrap();
         assert_eq!(non_empty_lines(&dir.join("d").to_string_lossy()), Ok(None), "a directory reads as Node's caught EISDIR");
         assert_eq!(non_empty_lines(&dir.join("none").to_string_lossy()), Ok(None));

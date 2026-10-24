@@ -14,6 +14,12 @@ plugin. It is **never** auto-invoked — always user-triggered. Re-running is sa
 
 ## What it does
 
+0. **Engine install (explicit)** — the hooks run the thin client `~/.anti-hall/ah-engine/bin/ah-hook`; until it is installed they pass
+   through with one notice per session, and nothing is downloaded on its own (`engine.bootstrap` defaults to false). If
+   `~/.anti-hall/ah-engine/bin/ah-hook` is missing, ask the user, then run the plugin's one shell file:
+   `sh "${CLAUDE_PLUGIN_ROOT}/hooks/install.sh" --download -v` (sha256-pinned to `ah-engine.lock`; once the thin client exists the
+   same command hands over to `ah-hook install`).
+
 1. **Statusline retired** — do not write Claude `statusLine`. If an older anti-hall statusline exists, tell the user `uninstall-statusline` remains available for cleanup.
 
 2. **Model-routing state** — strict mode is now the **default** (v0.35.0+). No action

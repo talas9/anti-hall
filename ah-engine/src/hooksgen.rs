@@ -5,10 +5,13 @@
 //!   reliability wrapper with the event name. Which entries and rules then apply is decided by the engine from the table
 //!   and the config, not by the host.
 //! * `hooks.registry.json` ([`registry_json`]): the old per-hook form of `hooks.json` (one handler per table entry, with
-//!   its matcher, command and timeout). Nothing in the host reads it; the plugin's Node readers (doctor, the briefing,
-//!   the hook-latency script, tests) and the manual Codex installer use it to know which hook scripts exist.
-//! * `ah-fallback.list` ([`fallback_list`]) and `ah-fallback.map.json` ([`fallback_map`]): what the wrapper runs when the
-//!   engine cannot answer, one row per table entry.
+//!   its matcher, timeout and table id; the command is the thin client's, the same as in `hooks.json`, because the thin client is
+//!   what runs every entry; the Node text of an entry lives in the fallback map only). Nothing in the host reads it; the
+//!   plugin's Node readers (doctor, the briefing, the hook-latency script) and the manual Codex installer use it to know
+//!   which entries exist.
+//! * `ah-fallback.list` ([`fallback_list`]): what the thin client runs when the engine cannot answer, one row per table
+//!   entry that has a Node command. The commands themselves are the hand-kept `ah-fallback.map.json` of the Node backup
+//!   plugin (event, then entry id, to command): the table holds no Node text.
 //!
 //! Every function is a pure function of the shipped table, so `tests/hooks_files.rs` can require that the committed files
 //! equal the output byte for byte, and a new hook is added by one table row.
@@ -38,24 +41,30 @@ pub fn event_timeout(host: &str, event: &str) -> u64 {
     table::entries(host, event).iter().map(|e| e.timeout_s).max().filter(|t| *t > 0).unwrap_or_else(|| defaults::num("dispatch.thin_timeout_s"))
 }
 
-/// The thin command of `event` on `host`: `dispatch.thin_command` with the host's plugin-root variable and extra arguments.
+/// The thin command of `event` on `host`: the direct form `hooks_form.template` (run the installed thin client, else the
+/// installer) with the event, the host's extra arguments and the host's plugin-root variable as the prefix.
 pub fn thin_command(host: &str, event: &str) -> String {
     let var = defaults::raw("dispatch.root_vars").get(host).map(|v| v.strings()).unwrap_or_default().first().copied().unwrap_or("");
     let extra = defaults::raw("dispatch.thin_host_args").str_field(host);
-    defaults::fill(defaults::text("dispatch.thin_command"), &[("var", &var), ("event", &event), ("extra", &extra)])
+    let prefix = format!("${{{var}}}");
+    defaults::fill(defaults::text("hooks_form.template"), &[("event", &event), ("host_args", &extra), ("prefix", &prefix)])
 }
 
 fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
-fn handler(out: &mut String, command: &str, timeout: u64) {
+fn handler(out: &mut String, command: &str, timeout: u64, id: Option<&str>) {
     crate::discard::harmless(write!(
         out,
-        "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}\n          }}",
+        "          {{\n            \"type\": \"command\",\n            \"command\": {},\n            \"timeout\": {}",
         q(command),
         timeout
     )); // keep: formatting into a String cannot fail
+    if let Some(id) = id {
+        crate::discard::harmless(write!(out, ",\n            \"id\": {}", q(id))); // keep: formatting into a String cannot fail
+    }
+    out.push_str("\n          }");
 }
 
 /// The thin `hooks.json` of `host`.
@@ -64,7 +73,7 @@ pub fn hooks_json(host: &str) -> String {
     let evs = events(host);
     for (i, ev) in evs.iter().enumerate() {
         crate::discard::harmless(write!(out, "    {}: [\n      {{\n        \"hooks\": [\n", q(ev))); // keep: formatting into a String cannot fail
-        handler(&mut out, &thin_command(host, ev), event_timeout(host, ev));
+        handler(&mut out, &thin_command(host, ev), event_timeout(host, ev), None);
         out.push_str("\n        ]\n      }\n    ]");
         out.push_str(if i + 1 < evs.len() { ",\n" } else { "\n" });
     }
@@ -85,11 +94,13 @@ fn groups(entries: &[Entry]) -> Vec<(&str, Vec<&Entry>)> {
 }
 
 /// The per-hook registry of `host` in the old `hooks.json` shape (events with at least one table entry only).
+/// Engine-only rows, including the delayed switch notice, use the same table/id generation as every other check.
 pub fn registry_json(host: &str) -> String {
     let mut out = String::from("{\n  \"hooks\": {\n");
-    let evs = table::events(host);
+    let evs: Vec<&str> = table::events(host).into_iter().filter(|ev| !table::entries(host, ev).is_empty()).collect();
     for (i, ev) in evs.iter().enumerate() {
-        let entries = table::entries(host, ev);
+        let entries: Vec<Entry> = table::entries(host, ev);
+        let command = thin_command(host, ev);
         crate::discard::harmless(writeln!(out, "    {}: [", q(ev))); // keep: formatting into a String cannot fail
         let gs = groups(&entries);
         for (gi, (matcher, g)) in gs.iter().enumerate() {
@@ -99,7 +110,7 @@ pub fn registry_json(host: &str) -> String {
             }
             out.push_str("        \"hooks\": [\n");
             for (hi, e) in g.iter().enumerate() {
-                handler(&mut out, &e.command, e.timeout_s);
+                handler(&mut out, &command, e.timeout_s, Some(&e.id));
                 out.push_str(if hi + 1 < g.len() { ",\n" } else { "\n" });
             }
             out.push_str("        ]\n      }");
@@ -113,13 +124,13 @@ pub fn registry_json(host: &str) -> String {
 }
 
 /// The wrapper's fallback list of `host`: a section per thin event (`@Event<TAB>timeout`, marked with the list's empty word
-/// when the table has no entry for it), then one `matcher<TAB>timeout<TAB>command` row per table entry.
+/// when the table has no entry with a Node command for it), then one `matcher<TAB>timeout<TAB>command` row per such entry.
 pub fn fallback_list(host: &str) -> String {
     let mut out = String::from(defaults::text("dispatch.list_banner"));
     out.push('\n');
     let mark = defaults::text("dispatch.list_event_mark");
     for ev in events(host) {
-        let entries = table::entries(host, ev);
+        let entries: Vec<Entry> = table::entries(host, ev).into_iter().filter(|e| !e.command.is_empty()).collect();
         let t = event_timeout(host, ev);
         if entries.is_empty() {
             crate::discard::harmless(writeln!(out, "{mark}{ev}\t{t}\t{}", defaults::text("dispatch.list_empty_word"))); // keep: formatting into a String cannot fail
@@ -135,24 +146,12 @@ pub fn fallback_list(host: &str) -> String {
     out
 }
 
-/// The `--fallback-map` file of `host`: event, then entry id, to the entry's command.
-pub fn fallback_map(host: &str) -> String {
-    let mut m = serde_json::Map::new();
-    for ev in table::events(host) {
-        let ids: serde_json::Map<String, serde_json::Value> =
-            table::entries(host, ev).into_iter().map(|e| (e.id, serde_json::Value::String(e.command))).collect();
-        m.insert(ev.to_string(), serde_json::Value::Object(ids));
-    }
-    serde_json::to_string_pretty(&serde_json::Value::Object(m)).unwrap_or_default() + "\n"
-}
-
-/// The generated file `kind` (`hooks`, `registry`, `list` or `map`) of `host`; `None` for an unknown kind.
+/// The generated file `kind` (`hooks`, `registry` or `list`) of `host`; `None` for an unknown kind.
 pub fn render(host: &str, kind: &str) -> Option<String> {
     match kind {
         "hooks" => Some(hooks_json(host)),
         "registry" => Some(registry_json(host)),
         "list" => Some(fallback_list(host)),
-        "map" => Some(fallback_map(host)),
         _ => None,
     }
 }
@@ -189,8 +188,14 @@ mod tests {
 
     #[test]
     fn the_thin_command_names_the_hosts_root_variable_and_arguments() {
-        assert_eq!(thin_command("claude", "Stop"), "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/ah-hook.sh\" Stop");
-        assert_eq!(thin_command("codex", "Stop"), "sh \"${PLUGIN_ROOT}/hooks/ah-hook.sh\" Stop --host codex");
+        assert_eq!(
+            thin_command("claude", "Stop"),
+            "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop"
+        );
+        assert_eq!(
+            thin_command("codex", "Stop"),
+            "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" Stop --host codex"
+        );
     }
 
     #[test]
@@ -205,7 +210,7 @@ mod tests {
                         got.push((m.clone(), h["command"].as_str().unwrap().to_string(), h["timeout"].as_u64().unwrap()));
                     }
                 }
-                let want: Vec<_> = table::entries(host, ev).into_iter().map(|e| (e.matcher, e.command, e.timeout_s)).collect();
+                let want: Vec<_> = table::entries(host, ev).into_iter().map(|e| (e.matcher, thin_command(host, ev), e.timeout_s)).collect();
                 assert_eq!(got, want, "{host} {ev}");
             }
         }

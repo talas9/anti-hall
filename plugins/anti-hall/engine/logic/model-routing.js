@@ -64,11 +64,6 @@ function mrDeployShaped(corpus) {
   return count >= ah.cfgNum('model_routing.deploy_weak_threshold');
 }
 
-function mrRunsUpdate(corpus) {
-  return mrT('model_routing.update_skill_path_re', corpus) || mrT('model_routing.update_slash_re', corpus) ||
-    (mrT('model_routing.update_node_re', corpus) && corpus.toLowerCase().indexOf(ah.cfg('model_routing.update_qualifier')) >= 0);
-}
-
 // The tier an omitted model inherits: the payload's parent model, else the newest assistant entry of the transcript tail whose
 // model names a known family (session_model_families, first match). null when unknown.
 function mrFamily(id) {
@@ -232,7 +227,7 @@ function decide(p) {
   var prompt = inp !== null && typeof inp.prompt === 'string' ? inp.prompt : '';
   var corpus = jx.sliceUnits(description + '\n' + prompt, ah.cfgNum('model_routing.scan_limit'));
 
-  if (ah.settings.bool('model_routing.update_setting') && mrRunsUpdate(corpus)) {
+  if (mrSpawnBan(p)) {
     return mrRouted(mrBlock(mrBlockMsg(ah.cfg('model_routing.msg_update_what'), ah.cfg('model_routing.msg_update_why'), ah.cfg('model_routing.msg_update_instead'), '')),
       p, input, 'update', tierMain, 'exempt');
   }

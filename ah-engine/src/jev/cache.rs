@@ -48,7 +48,7 @@ pub trait JevCache: Send + Sync {
     }
 }
 
-/// Node's cache file (`jev-assist.js`: `readCache`, `writeCache`, `nextCacheSeq`).
+/// Node's cache file.
 pub struct FileCache {
     path: PathBuf,
     cap: usize,

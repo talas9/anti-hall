@@ -32,7 +32,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | Doc | What it covers |
 |---|---|
 | [`GUIDE.md` install](./GUIDE.md#install-verify-and-uninstall) | Install for Claude Code and Codex, the `.anti-hall/` git-ignore line, how to check it worked, and uninstall (including companions). |
-| [`GUIDE.md` requirements](./GUIDE.md#requirements) | The supported systems, and what `/config` needs. |
+| [`GUIDE.md` requirements](./GUIDE.md#requirements) | What the plugin needs, and what `/config` needs. |
 | [`GUIDE.md` capabilities](./GUIDE.md#capabilities-at-a-glance) | What each area of the plugin does, in one table. |
 | [Skills](#skills) | Every `/anti-hall:<name>` skill, one line each. |
 | [`GUIDE.md` troubleshooting](./GUIDE.md#troubleshooting--faq) | Hooks not firing, a guard blocking something legitimate, statusline, updates. |
@@ -84,7 +84,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | [`KB.md`](./KB.md) | Canonical knowledge-base index: current-plugin ground truth, topic → doc map, staleness ledger. Read this first. |
 | [`GUIDE.md`](./GUIDE.md) | Extended guide: hook reference, skills reference, statusline/config/troubleshooting, contributing. |
 | [`BENCHMARK-METHOD.md`](./BENCHMARK-METHOD.md) | Pre-registered with/without benchmark protocol: hypotheses, metrics, analysis, decision rule; suite in `evals/anti-hall/`. |
-| [`E2E-TESTING.md`](./E2E-TESTING.md) | How the zero-dependency `node:test` hook suite works; per-event I/O contract. |
+| [`E2E-TESTING.md`](./E2E-TESTING.md) | How hooks are verified now (cargo check, build, deploy, live check); per-event I/O contract. |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline design (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); basis for tasklist-guard. |
 | [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | Usage guide for the `tasklist-guard` Stop hook: progress/history file convention, env knobs, escape hatch. |
 

@@ -1,18 +1,18 @@
 # ah-engine shipped defaults for the agent and transcript controls ported from Node: ask-guard, silent-agent-nudge and
-# stale-agent-stop-note, and the transcript agent scan they share (hooks/lib/agent-scan.js). Every pattern, message, setting
+# stale-agent-stop-note, and the transcript agent scan they share. Every pattern, message, setting
 # name and limit of these checks lives here (D17, D30). Regex sources are written as TOML literal strings so no backslash is
 # doubled; those under `agent_scan.re_` are JavaScript sources translated by `checks::guardkit::jsre` unless their doc says
 # they are Rust regex sources. Format: see the header of engine.toml.
 
-# ---- the transcript agent scan (hooks/lib/agent-scan.js, hooks/lib/transcript-tail.js) --------------------------
+# ---- the transcript agent scan --------------------------
 
 [agent_scan.tail_bytes]
-doc = "Bytes read from the end of a transcript by the default scan (MAX_TAIL_BYTES of hooks/lib/transcript-tail.js)."
+doc = "Bytes read from the end of a transcript by the default scan."
 value = 1572864
 unit = "bytes"
 
 [agent_scan.wide_tail_bytes]
-doc = "Bytes read by the one widened scan that proves a zero running-agent count on a transcript longer than the default window (WIDE_TAIL_BYTES of hooks/lib/agent-scan.js)."
+doc = "Bytes read by the one widened scan that proves a zero running-agent count on a transcript longer than the default window."
 value = 12582912
 unit = "bytes"
 
@@ -22,7 +22,7 @@ value = 8388608
 unit = "bytes"
 
 [agent_scan.pending_silence_ms]
-doc = "How long a teammate with an unanswered message still counts as running without a sign of life (PENDING_MESSAGE_SILENCE_MS of hooks/lib/agent-scan.js)."
+doc = "How long a teammate with an unanswered message still counts as running without a sign of life."
 value = 1200000
 unit = "ms"
 
@@ -210,11 +210,11 @@ value = '^([0-9]{4})-([0-9]{2})-([0-9]{2})$'
 doc = "Rust regex source of the text JavaScript's Number() reads as a decimal number (the hexadecimal, octal and binary forms are read separately)."
 value = '^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$'
 
-# ---- ask-guard (hooks/ask-guard.js) ------------------------------------------------------------------------
+# ---- ask-guard ------------------------------------------------------------------------
 
 [ask_guard.summary]
 doc = "One-line description of the ask-guard check in the generated reference."
-value = "Advises on or blocks a question put to the user, and notes background agents still in flight (port of ask-guard.js)."
+value = "Advises on or blocks a question put to the user, and notes background agents still in flight."
 
 [ask_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -242,11 +242,11 @@ value = "do not hold work on a question."
 
 [ask_guard.advise_instead]
 doc = "What to do instead, in the standing-rule advice."
-value = "take the recommended option, say which you took, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+value = "continue with the recommended reversible option."
 
 [ask_guard.block_what]
 doc = "Headline of the block message."
-value = "AskUserQuestion blocked by guards.noBlockingQuestions."
+value = "this question would pause authorized work."
 
 [ask_guard.block_why]
 doc = "Why line of the block message."
@@ -254,7 +254,7 @@ value = "Work should not wait on a question."
 
 [ask_guard.block_instead]
 doc = "What to do instead, in the block message."
-value = "decide the recommended option yourself, state it in your reply, and continue; list anything destructive or irreversible as a non-blocking 'needs your OK' line."
+value = "continue with the recommended reversible option."
 
 [ask_guard.block_allowed]
 doc = "What stays allowed, in the block message."
@@ -262,7 +262,7 @@ value = "a question about a destructive or irreversible action, with the questio
 
 [ask_guard.child_text]
 doc = "Sentence appended in a child workspace, which asks its parent instead of the user."
-value = "\nChild workspace: send the question to your parent with `devswarm.js send --to-primary --question \"...\"` instead of asking the user directly."
+value = "\nChild workspace: send the question to your parent with `~/.anti-hall/ah-engine/bin/ah-engine mesh send --to-primary --question \"...\"` instead of asking the user directly."
 
 [ask_guard.child_env]
 doc = "Environment variable whose non-blank value marks a child workspace."
@@ -322,11 +322,11 @@ value = "). They may act on one of these options before the answer arrives: paus
 doc = "Separator between agent names in the note."
 value = "; "
 
-# ---- stale-agent-stop-note (hooks/stale-agent-stop-note.js) ------------------------------------------------
+# ---- stale-agent-stop-note ------------------------------------------------
 
 [stale_note.summary]
 doc = "One-line description of the stale-agent-stop-note check in the generated reference."
-value = "Advisory: a TaskStop on an agent that was sent a message or resumed after its last report (port of stale-agent-stop-note.js)."
+value = "Advisory: a TaskStop on an agent that was sent a message or resumed after its last report."
 
 [stale_note.tool]
 doc = "The tool this check answers."
@@ -398,11 +398,11 @@ value = "It may be working."
 doc = "What the advisory says about the stop."
 value = "advisory only; the stop is not blocked."
 
-# ---- silent-agent-nudge (hooks/silent-agent-nudge.js) ------------------------------------------------------
+# ---- silent-agent-nudge ------------------------------------------------------
 
 [silent_nudge.summary]
 doc = "One-line description of the silent-agent-nudge check in the generated reference."
-value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge (port of silent-agent-nudge.js)."
+value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge."
 
 [silent_nudge.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -562,6 +562,10 @@ value = "background subagent(s)/shell(s)"
 doc = "Put before a background shell's name in the nudge."
 value = "shell: "
 
+[silent_nudge.monitor_shell_kind]
+doc = "The task_status shell.kind of a background shell started by the Monitor tool (a plain Bash background task records `bash`). A Monitor task is an event stream, quiet by design when nothing happens, so it is never nudged as silent; a plain background Bash task is still judged by its output age."
+value = "monitor"
+
 [silent_nudge.shell_task_type]
 doc = "The task_status taskType of a background shell (anything else adopted is an agent)."
 value = "local_bash"
@@ -580,7 +584,7 @@ value = "Advisory only; nothing was auto-killed."
 
 [silent_nudge.msg_instead]
 doc = "Do-instead line of the nudge; {them} is the pronoun for one agent or several."
-value = "check on {them} (TaskOutput), or re-dispatch with tighter scope if dead (TaskStop first, per orchestration rule I). Verify, do not assume."
+value = "check the silent agents for progress."
 
 [silent_nudge.pronoun_one]
 doc = "The pronoun for one silent agent."
@@ -599,11 +603,11 @@ doc = "Separator between the sorted agent ids the stop-ack signature is computed
 value = ","
 
 [silent_nudge.version_gate_setting]
-doc = "Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on; hooks/lib/stop-version-gate.js)."
+doc = "Where the stale-build downgrade switch is read from (guards.stopHookVersionDowngrade, default on)."
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_setting]
-doc = "Where the stop-ack switch is read from (guards.stopAck, default on; hooks/lib/stop-ack.js)."
+doc = "Where the stop-ack switch is read from (guards.stopAck, default on)."
 value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_dir]
@@ -637,7 +641,7 @@ value = 16
 min = 1
 
 [silent_nudge.ack_hint]
-doc = "The override sentence appended to the nudge (stop-ack.js ackHint); {key} is hook:signature, {now} the time, {path} the ack file."
+doc = "The override sentence appended to the nudge; {key} is hook:signature, {now} the time, {path} the ack file."
 value = "Override (only if the user explicitly confirmed this exact condition is fine): write {\"{key}\": {now}} into {path} (merge with existing keys); it then stays advisory for the rest of the session."
 
 # ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------

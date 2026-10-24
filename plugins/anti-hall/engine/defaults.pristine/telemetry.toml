@@ -95,6 +95,18 @@ env = "AH_ENGINE_TELEMETRY_FLUSH_MS"
 min = 50
 unit = "ms"
 
+[telemetry.block_keep_days]
+doc = "How many days a guard block stays queryable (`ah-engine query guard_blocks`): who was blocked by which guard, when, and the first line of the message."
+value = 14
+min = 1
+unit = "days"
+
+[telemetry.block_reason_chars]
+doc = "How many characters of a guard block's message (its first non-empty line) are kept with the block."
+value = 200
+min = 20
+unit = "chars"
+
 [telemetry.retention_days]
 doc = "How many days of per-day counter rows and events stay in hot.db; older ones are removed by `telemetry rollup` after they are archived in archive.db, where the daily rollups are kept."
 value = 30
@@ -161,6 +173,38 @@ value = "rule"
 doc = "The `e` label used when the hook event is unknown."
 value = "-"
 
+[telemetry.no_answer_reason]
+doc = "The reason stored with a no-answer impact row when the check was dropped outside the dispatcher (which names its own: shed, client_gone, hard_deadline, check_deferred, cpu_budget)."
+value = "no_answer"
+
+[telemetry.spawn_result]
+doc = "The spawn-result event the engine records itself when an agent launch finishes (PostToolUse of the agent tool), linked to the route event by the same spawn key: the key is rebuilt from the same payload fields the routing check hashes (session, calling agent, subagent type, prompt prefix of model_routing.key_prefix_chars characters; joined with sep). event / tool: which call; session, agent, input, prompt, subagent_type: payload fields; response, usage, model: fields of the tool response (model = the model the agent ran on); in, out, cache_read, cache_write: usage fields; check: the h label of the recorded event; key_prefix: the key's text prefix."
+value = { event = "PostToolUse", tool = "Agent", session = "session_id", agent = "agent_id", input = "tool_input", prompt = "prompt", subagent_type = "subagent_type", response = "tool_response", usage = "usage", model = "resolvedModel", in = "input_tokens", out = "output_tokens", cache_read = "cache_read_input_tokens", cache_write = "cache_creation_input_tokens", check = "model-routing", key_prefix = "spawn-", sep = "\u001f" }
+
+[telemetry.injection_kinds]
+doc = "The telemetry row kinds whose injected bytes count as context the engine put in front of the model: check (what each check's advisory or context reply injected) and spill (a reply spilled to a file). The old whole-hook kind is left out: nothing records it any more."
+value = ["check", "spill"]
+
+[telemetry.net_name_injection]
+doc = "Name of the injected-context spender in the NET figure's not-measured list."
+value = "injected context"
+
+[telemetry.net_name_jev]
+doc = "Name of the Jev spender in the NET figure's not-measured list."
+value = "Jev cost"
+
+[telemetry.net_name_routing]
+doc = "Name of the routing saving in the NET figure's not-measured list (no routing decision is linked to a spawn result yet)."
+value = "model routing"
+
+[telemetry.jev_skip_backend]
+doc = "The backend label of a Jev call that got no usable answer (the rule baseline stood): counted as skipped, not as a model call."
+value = "baseline-only"
+
+[telemetry.jev_skip_reason_default]
+doc = "The reason token counted for a Jev call that got no answer and recorded none (no call was made)."
+value = "not-asked"
+
 [telemetry.net_method]
 doc = "How the NET figure of `impact` is computed, shown next to it."
 value = "estimate: routing saved minus routing spent up, minus the estimated cost of injected context (injected bytes / bytes_per_token, priced as input tokens of the most common parent model) minus recorded Jev cost; models missing from the price table are counted as unpriced, not guessed"
@@ -173,7 +217,7 @@ value = "estimate: routing saved minus routing spent up, minus the estimated cos
 
 [telemetry.fields]
 doc = "The extra fields of the event kinds whose schema is data. Each entry is `name:type`, with type `num` (a whole number) or `tok` (an identifier: letters, digits and `._:/[]@+-`, at most token_max_len bytes). A reader refuses any field a kind does not list, so prose cannot be stored. node: one Node hook the dispatcher ran (h = hook id, e = hook event, o = allow|block|advise|error|timeout, ms = wall time, ib = stdout bytes; exit = exit code when it exited, fate = ran|timeout|spawn|died|incomplete, err_bytes = stderr bytes). cmd: one run of a state-writing engine command (h = command, e = its first argument or `-`, o = allow|error, ms = duration; items = what it changed, exit = exit code). daemon: a health snapshot (h and e are daemon_label and daemon_event_label, o = allow, or advise when degraded; fields are readings). model: one model call, recorded by `telemetry::emit::model(&ModelCall { backend, model, purpose, outcome, micros, tokens_in, tokens_out })` once per finished call, from any process (the daemon records at once; any other process appends to the telemetry inbox for the daemon to read); backend and model are identifiers (the model ALIAS, never a pinned version or prompt text), outcome is Allow, Error or Timeout, the token counts are None when the backend did not report them (h = backend, e = model alias, o = allow|error|timeout, ms = latency; tokens_in/tokens_out when known, purpose = what the call was for; counted by backend, alias and outcome with a latency histogram and shown in `telemetry summary` under detail.model). agent: the agent tracker (h = series|signal|reminder|outcome, e = the signal, channel or outcome kind, o = advise for a raised signal or a delivered reminder, skip for one held back by its cooldown or cap, allow otherwise; agent = the agent id, akind = main|subagent|workspace|heartbeat, tin/tout/tcr/tcw = cumulative input, output, cache-read and cache-write tokens, tools = tool calls, progress = progress units, flagged = 1 while a signal is up, state, channel = session|mesh|owner|coordinator, result = sent|suppressed|recovered|false_positive|open, evidence = the number the signal tripped on, idle_s = seconds without output, lat_s = seconds from a reminder to the agent recovering, fp = 1 for a flagged agent that proved productive, recovered = 1 when it recovered, source = transcript|claude_cli|heartbeat|devswarm; shown in `telemetry summary` under detail.agent). act: one action of an acting feature, the ONE schema every feature lane emits with `telemetry::emit::act` (h = feature, e = action, o = allow when it ran|block when refused or stale|skip when not applicable|error|timeout, ms = latency_ms; target = what it acted on, inputs = a short digest of its inputs, reason = why it was refused or failed, action_id = the idempotency key). mistake: a later signal that an earlier action should not have been taken, emitted with `telemetry::emit::mistake` (h = feature, e = action, o = advise; action_id = the act event it refers to, reason = what showed it was wrong, target); `ah-engine devswarm ledger` joins the two for the per-feature mistake rate. jev: the detail of a Jev call beside integration, mode, verdict and cost_uc (conf_pm = confidence in thousandths, backend = jev|cache|baseline-only, breaker = open|closed, error = the failure reason, absent when there was none)."
-value = { node = ["exit:num", "fate:tok", "err_bytes:num"], cmd = ["items:num", "exit:num"], daemon = ["rss_kb:num", "rss_cap_kb:num", "cpu_permille:num", "budget_breach:num", "heap_live_kb:num", "restarts:num", "degraded:num", "queue_depth:num", "queue_cap:num", "workers:num", "busy:num", "saturated:num", "peak_in_flight:num", "max_wait_us:num"], model = ["tokens_in:num", "tokens_out:num", "purpose:tok"], jev = ["conf_pm:num", "backend:tok", "breaker:tok", "error:tok"], agent = ["agent:tok", "akind:tok", "tin:num", "tout:num", "tcr:num", "tcw:num", "tools:num", "progress:num", "flagged:num", "state:tok", "channel:tok", "result:tok", "evidence:num", "idle_s:num", "lat_s:num", "fp:num", "recovered:num", "source:tok"], act = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"], mistake = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"] }
+value = { node = ["exit:num", "fate:tok", "err_bytes:num"], cmd = ["items:num", "exit:num"], daemon = ["rss_kb:num", "rss_cap_kb:num", "cpu_permille:num", "budget_breach:num", "heap_live_kb:num", "restarts:num", "degraded:num", "queue_depth:num", "queue_cap:num", "workers:num", "busy:num", "saturated:num", "peak_in_flight:num", "max_wait_us:num"], model = ["tokens_in:num", "tokens_out:num", "purpose:tok"], jev = ["conf_pm:num", "backend:tok", "breaker:tok", "error:tok"], agent = ["agent:tok", "akind:tok", "tin:num", "tout:num", "tcr:num", "tcw:num", "tools:num", "progress:num", "flagged:num", "state:tok", "channel:tok", "result:tok", "evidence:num", "idle_s:num", "lat_s:num", "fp:num", "recovered:num", "source:tok", "nudge:tok", "parent:tok", "trigger:tok", "answer:tok", "answer_source:tok", "outcome:tok", "path:tok", "health:tok", "tier:tok", "action:tok", "agree:num", "reminders:num", "ignored:num", "snoozes:num", "snooze_min:num", "escalated:num", "walked:num", "delivered:num", "tokens:num", "idle_min:num", "tokens_after:num", "ans_s:num", "act_s:num"], act = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"], mistake = ["target:tok", "inputs:tok", "reason:tok", "action_id:tok"] }
 
 [telemetry.cmd_record]
 doc = "The engine commands whose runs are recorded as `cmd` events (they write state). Each entry is a command word, or `command:arg|arg` to record only runs that carry one of those arguments (`doctor:--repair|--fix` records a repair, not a read-only check; `config:heal` records the heal, not the show)."
@@ -222,6 +266,10 @@ value = { kind = "counter", unit = "requests", labels = [] }
 [metric.budget_trips]
 doc = "Evaluations cut off by the per-request CPU budget."
 value = { kind = "counter", unit = "evaluations", labels = [] }
+
+[metric.answers_dropped]
+doc = "Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started."
+value = { kind = "counter", unit = "answers", labels = ["event", "kind", "reason"] }
 
 [metric.budget_soft]
 doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
@@ -540,8 +588,9 @@ value = { counted = "exact" }
 
 [impact.price_table]
 doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. A model with no entry is reported as `no price for model X` and left out of every figure, never guessed."
-# list prices for Opus 5.5 in USD per million tokens: $4 input, $20 output, $0.20 cache read, $8 cache write
-value = { date = "2026-10-05", source = "fitted exactly on 480 B1 runs, 2026-10-05", models = { opus-5-5 = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 8000000 } } }
+# Current-family aliases; explicit older IDs below prevent applying current rates to older models.
+# Standard global list rates verified 2026-10-24; cache duration and Haiku prompt tier are assumptions, not inferred billing facts.
+value = { date = "2026-10-24", source = "https://platform.claude.com/docs/en/about-claude/pricing; current-family aliases use standard global 5-minute cache writes; Haiku alias assumes prompts <=100K; full version names use explicit entries", models = { "opus-5-5" = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 5000000 }, "opus-5" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "opus-4-8" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "opus-4-7" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "opus-4-6" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "opus-4-5" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "sonnet-5-5" = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 100000, cache_write_uc = 2500000 }, "sonnet-5" = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 200000, cache_write_uc = 2500000 }, "sonnet-4-6" = { in_uc = 3000000, out_uc = 15000000, cache_read_uc = 300000, cache_write_uc = 3750000 }, "sonnet-4-5" = { in_uc = 3000000, out_uc = 15000000, cache_read_uc = 300000, cache_write_uc = 3750000 }, "haiku-5-5" = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 125000 }, "haiku-4-5" = { in_uc = 1000000, out_uc = 5000000, cache_read_uc = 100000, cache_write_uc = 1250000 }, "fable-5-1" = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 12500000 }, "fable-5" = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 1000000, cache_write_uc = 12500000 }, opus = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 5000000 }, sonnet = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 100000, cache_write_uc = 2500000 }, haiku = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 125000 }, fable = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 12500000 } } }
 
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."
@@ -562,3 +611,103 @@ value = { kind = "counter", unit = "events", labels = ["name"] }
 [metric.fail_open]
 doc = "Engine-level fail-opens by reason and check: the request was answered without the check's verdict (missing_key, deadline_cut, script_timeout, jev_breaker_open, busy, internal_error, undelivered_verdict)."
 value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
+
+[telemetry.spawn_tools]
+doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."
+value = ["Agent", "Task"]
+
+[telemetry.spawn_agent_fields]
+doc = "Response keys holding the actual spawned child identity, in precedence order."
+value = ["agentId", "agent_id"]
+
+[telemetry.spawn_model_fields]
+doc = "Response keys holding the actual resolved model, never the requested routing choice."
+value = ["resolvedModel", "resolved_model", "model"]
+
+[telemetry.spawn_stop_event]
+doc = "Completion hook on both host ports."
+value = "SubagentStop"
+
+[telemetry.spawn_transcript_field]
+doc = "The completed child's explicitly supplied transcript; never the parent's transcript."
+value = "agent_transcript_path"
+
+[telemetry.spawn_transcript_max_bytes]
+doc = "Maximum complete child transcript read for outcome recovery. Oversized or malformed files stay unmeasured."
+value = 16777216
+
+[telemetry.spawn_link_retention_ms]
+doc = "How far back to look for persisted launch identities on completion."
+value = 604800000
+
+[telemetry.spawn_unknown_model]
+doc = "Identity-only launch marker, excluded from routing savings until actual model and usage arrive."
+value = "unknown"
+
+[impact.estimate_label]
+doc = "Dashboard label for counterfactual savings and estimated overhead."
+value = "estimate"
+
+[impact.measured_label]
+doc = "Dashboard label for directly recorded observations, not counterfactual savings."
+value = "measured"
+
+[impact.routing_how_counted]
+doc = "Dashboard explanation for gross routing savings and spend-up."
+value = "Actual linked child token classes times requested-model minus actual-model list prices; same-token counterfactual, assumed 5-minute cache writes. Null when no priced usage is linked."
+
+[impact.net_how_counted]
+doc = "Dashboard explanation for net, distinct from gross and scenario estimates."
+value = "Routing savings minus routing spend-up minus estimated injected-context input cost minus recorded Jev cost. Avoided-waste scenarios are excluded. A partial net omits unknown components and complete=false."
+
+[impact.spenders_how_counted]
+doc = "Dashboard provenance for the two overhead components."
+value = "Injection: check/spill bytes divided by bytes_per_token, priced at the most frequent routing parent model input rate (estimate). Jev: sum of recorded cost_uc divided by one million (recorded cost, not a provider invoice)."
+
+[impact.avoided_waste]
+doc = "Configurable scenario assumptions per observed event, NOT measured savings. Count only matching blocked check outcomes in the requested day window. Empty check means no supported event evidence and yields null. Time is a separate scenario, never monetized or added to net. Defaults are illustrative assumptions, not benchmarks; tune per deployment."
+value = { model = "opus", formula = "events * tokens_per_event * input_usd_per_million / 1000000; seconds = events * seconds_per_event", how_counted = "Observed matching block counts multiplied by configurable hypothetical tokens/time avoided; retries may represent the same attempted work. Excluded from measured routing savings and net.", unavailable = "No distinct supported event counter; advisories are not stopped agents and generic swarm blocks are not proven duplicate spawns.", events = { blocked_tests = { check = "lane-test-guard", tokens_per_event = 4000, seconds_per_event = 60 }, blocked_wide_searches = { check = "wide-search-guard", tokens_per_event = 1000, seconds_per_event = 10 }, burn_breaker_trips = { check = "burn-breaker", tokens_per_event = 5000, seconds_per_event = 30 }, stopped_idle_agents = { check = "", tokens_per_event = 2000, seconds_per_event = 60 }, duplicate_spawn_blocks = { check = "", tokens_per_event = 4000, seconds_per_event = 30 } } }
+
+[telemetry.spawn_parent_transcript_field]
+doc = "Explicit launching-session transcript from which the configured child transcript layout can be resolved."
+value = "transcript_path"
+
+[telemetry.spawn_transcript_fields]
+doc = "Child transcript schema for actual usage; required input/output counts, optional cache classes default to zero only when absent."
+value = { type = "type", assistant = "assistant", message = "message", id = "id", model = "model" }
+
+[telemetry.spawn_background_field]
+doc = "Launch input flag identifying a running background child; partial response usage is not a finished outcome."
+value = "run_in_background"
+
+[telemetry.spawn_status_field]
+doc = "Response status field; transcript recovery on PostToolUse requires explicit completion evidence."
+value = "status"
+
+[telemetry.spawn_completed_status]
+doc = "Response status proving a child is complete; absence is not proof of completion."
+value = "completed"
+
+[impact.benchmarks_how_counted]
+doc = "Dashboard explanation for the controlled benchmark list."
+value = "Only registered controlled with/without benchmark results belong here; no measured savings benchmark is currently registered. Actual linked usage is observed, but routing savings remain a counterfactual estimate."
+
+[impact.unlinked_how_counted]
+doc = "Dashboard explanation of missing routing outcome evidence and historical backfill limits."
+value = "Decisions with no proven completed child usage stay unlinked. Stored launch identities are repaired in place on completion; identity-less historical decisions cannot reconstruct missing model/tokens. Ambiguous repeated briefs, missing completion evidence, unreadable/oversized/mixed-model transcripts remain unknown."
+
+[impact.routing_unknown_status]
+doc = "Status for routing decisions without any completed, priced usage evidence."
+value = "Routing decisions exist, but no completed priced usage is linked; savings are unknown."
+
+[impact.recorded_label]
+doc = "Label for recorded accounting values whose provider invoice provenance is not guaranteed."
+value = "recorded"
+
+[telemetry.sql_spawn_by_key]
+doc = "SQL: the stored spawn events of one spawn key (?1), read to find the identity-only row a completed background launch repairs in place."
+value = "SELECT id, data FROM tel_events WHERE k = 'spawn' AND spawn_key = ?1"
+
+[telemetry.sql_update_event]
+doc = "SQL: rewrite one stored event row (?4 = its id) with the replayed completion's time (?1), kind (?2) and data (?3)."
+value = "UPDATE tel_events SET ts_ms = ?1, e = ?2, data = ?3 WHERE id = ?4"

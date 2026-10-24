@@ -48,24 +48,46 @@ fn engine_missing_passes_through_logs_and_tells_the_session_once() {
     assert_eq!((o.code, o.out.len()), (0, 0), "{}", o.err);
     assert!(env.log().contains("engine_missing"), "{}", env.log());
     // #229: an unreachable engine is never silent: the session hears it once (the C9 notice), the call still passes through
-    assert!(o.err.contains("did not answer this PreToolUse call") && o.err.contains("went through unchecked"), "{}", o.err);
+    assert!(
+        o.err.contains("did not answer this PreToolUse call")
+            && o.err.contains("went through unchecked"),
+        "{}",
+        o.err
+    );
     let again = env.run("PreToolUse", PAYLOAD, None, &[]);
     assert_eq!(again.code, 0);
-    assert!(again.err.is_empty(), "the same session is told once: {}", again.err);
+    assert!(
+        again.err.is_empty(),
+        "the same session is told once: {}",
+        again.err
+    );
 }
 
 #[test]
 fn a_fresh_daemon_down_marker_passes_through_and_tells_the_session_once() {
     let env = Env::new("e-down-marker");
     let p = engine(&env, "echo should-not-run");
-    let until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() + 60_000;
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 60_000;
     std::fs::create_dir_all(&env.state).unwrap();
     std::fs::write(env.state.join("daemon.down.until"), until.to_string()).unwrap();
     let o = env.run("PreToolUse", PAYLOAD, Some(&p), &[]);
     assert_eq!((o.code, o.out.len()), (0, 0), "{}", o.err);
-    assert!(o.err.contains("did not answer this PreToolUse call") && o.err.contains("went through unchecked"), "{}", o.err);
+    assert!(
+        o.err.contains("did not answer this PreToolUse call")
+            && o.err.contains("went through unchecked"),
+        "{}",
+        o.err
+    );
     let again = env.run("PreToolUse", PAYLOAD, Some(&p), &[]);
-    assert!(again.err.is_empty(), "the same session is told once: {}", again.err);
+    assert!(
+        again.err.is_empty(),
+        "the same session is told once: {}",
+        again.err
+    );
 }
 
 #[test]
@@ -324,7 +346,9 @@ fn log_write_failure_never_changes_the_outcome() {
     let e = env.script("silent.sh", "cat >/dev/null\nexit 1"); // an engine failure: the failure path tries to log
     let o = env.run("UserPromptSubmit", PAYLOAD, Some(&e), &[]);
     assert_eq!((o.code, o.out.len()), (0, 0), "{}", o.err);
-    assert!(o.err.is_empty(), "{}", o.err);
+    // only the engine-unreachable notice reaches the host: a log that cannot be written adds nothing
+    assert_eq!(o.err.lines().count(), 1, "{}", o.err);
+    assert!(o.err.contains("did not answer"), "{}", o.err);
 }
 
 #[test]
@@ -363,7 +387,7 @@ fn unknown_event_is_passed_to_the_engine_which_decides() {
 }
 
 #[test]
-fn codex_and_claude_hosts_reach_the_engine_with_their_own_map() {
+fn codex_and_claude_hosts_reach_the_engine_with_their_own_host_word() {
     let env = Env::new("hosts");
     let e = engine(&env, "exit 0");
     env.run("UserPromptSubmit", PAYLOAD, Some(&e), &[]);
@@ -384,12 +408,12 @@ fn codex_and_claude_hosts_reach_the_engine_with_their_own_map() {
     assert!(o.err.contains("unknown --host"), "{}", o.err);
     let lines: Vec<String> = env.read("args").lines().map(String::from).collect();
     assert!(
-        lines[0].contains("--host claude") && lines[0].contains("ah-fallback.map.json"),
+        lines[0].contains("--host claude") && !lines[0].contains("fallback"),
         "{}",
         lines[0]
     );
     assert!(
-        lines[1].contains("--host codex") && lines[1].contains("ah-fallback.codex.map.json"),
+        lines[1].contains("--host codex") && !lines[1].contains("fallback"),
         "{}",
         lines[1]
     );

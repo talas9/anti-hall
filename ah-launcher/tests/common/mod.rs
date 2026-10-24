@@ -63,6 +63,8 @@ impl Env {
             "engine.toml",
             "dispatch.toml",
             "messages.toml",
+            "doctor.toml",
+            "nodeback.toml",
         ] {
             std::fs::copy(repo_defaults().join(f), defaults.join(f)).unwrap();
         }

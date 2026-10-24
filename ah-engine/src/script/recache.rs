@@ -13,6 +13,11 @@
 //! programs: 3.8 MB estimated, 1.25 MB measured), so it is the fallback, not the rule. The compile itself is bounded too: `script.regex_size_limit` caps a program and
 //! `script.regex_dfa_size_limit` caps the lazy-DFA scratch each thread may grow for it.
 //!
+//! That scratch (lazy-DFA transition tables and caches) lives per thread inside the compiled pattern and the crate cannot report
+//! its size, but it is real heap: about 21 MB beside 3 MB of programs on the real-payload replay. So an entry also weighs
+//! `daemon.workers` times `script.regex_scratch_bytes` (a calibrated typical use per pattern and thread; the cap
+//! `script.regex_dfa_size_limit` is the worst case). Evicting a pattern drops the `Arc`, and its scratch goes with it.
+//!
 //! The cache is a [`crate::mem::BoundedCache`] registered as `regex`: soft and hard limits are `mem.regex_*`. The lock is held
 //! for the lookup and the bookkeeping only, never for a compile or a match; two threads that miss on the same pattern at once
 //! both compile it and the second insert replaces the first (identical programs). A refused insert (hard limit) still returns
@@ -88,7 +93,12 @@ fn compile(src: &str, flags: &str) -> Option<(Regex, usize)> {
             MEASURED_BYTES.fetch_add(m as u64, Relaxed);
         }
     }
-    Some((re, measured.unwrap_or(estimate)))
+    Some((re, measured.unwrap_or(estimate).saturating_add(scratch_estimate())))
+}
+
+/// What the per-thread search scratch of one cached pattern is assumed to hold: every worker may grow its own.
+pub(super) fn scratch_estimate() -> usize {
+    (defaults::num("daemon.workers") as usize).saturating_mul(defaults::num("script.regex_scratch_bytes") as usize)
 }
 
 /// The compiled pattern for `(src, flags)`, from the shared cache or compiled now.

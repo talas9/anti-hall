@@ -84,7 +84,7 @@ pub struct RouteMeta {
 }
 
 impl Exact {
-    /// The block `io.blockDecision(reason)` produces (`hooks/lib/guard-io.js`): the JSON decision and a newline on
+    /// The block `io.blockDecision(reason)` produces: the JSON decision and a newline on
     /// stdout, the reason and a newline on stderr, exit 2. The JSON is written by hand so the key order is the Node
     /// object's (`decision`, then `reason`), whatever the JSON library's map order is.
     pub fn json_block(reason: &str) -> Exact {
@@ -180,7 +180,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 73] = [
+    static ALL: [&dyn Check; 79] = [
         &scripted::GIT_GUARD,
         &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
@@ -224,6 +224,10 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::EDIT_GUARD,
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::BROAD_KILL_GUARD,
+        &scripted::QUEUED_WAIT_GUARD,
+        &scripted::LANE_TEST_GUARD,
+        &scripted::WIDE_SEARCH_GUARD,
+        &scripted::SWITCH_NOTICE,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
         &scripted::DEVSWARM_COMMS_GUARD,
@@ -254,6 +258,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SESSION_END_MCP_REAPER,
         &scripted::PROCWATCH_ADVISORY,
         &scripted::TASK_TRACKER,
+        &scripted::BURN_BREAKER,
+        &scripted::UNCOMMITTED_GUARD,
     ];
     &ALL
 }

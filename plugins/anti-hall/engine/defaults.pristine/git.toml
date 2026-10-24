@@ -8,7 +8,7 @@
 # ---- shell grammar tables (tokenizer and wrappers) -------------------------------------------------------
 
 [git.wrappers]
-doc = "Words that run another command and are looked through when finding what a segment really executes (git-guard.js WRAPPERS)."
+doc = "Words that run another command and are looked through when finding what a segment really executes."
 value = [
   "command", "builtin", "exec", "sudo", "env", "nice", "nohup", "time", "timeout", "then", "do", "else",
   "if", "while", "until", "elif", "coproc", "!",
@@ -248,26 +248,26 @@ doc = "The only sed shape that may sit beside a data heredoc: a fixed print rang
 value = '^sed[ \t]+-n[ \t]+[0-9]+(?:,[0-9]+)?p(?:[ \t]+[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*)*[ \t]*$'
 
 [git.hd_sed_script]
-doc = "The fixed print-range script word of a neighbouring sed (git-guard.js hdSedOk)."
+doc = "The fixed print-range script word of a neighbouring sed."
 value = '^[0-9]+(?:,[0-9]+)?p$'
 
 [git.hd_sed_operand]
-doc = "A plain-word operand of a neighbouring sed: no leading dash, no flag (git-guard.js hdSedOk)."
+doc = "A plain-word operand of a neighbouring sed: no leading dash, no flag."
 value = '^[A-Za-z0-9_./~$+@%:,=][A-Za-z0-9_./~$+@%:,=-]*$'
 
 [git.hd_assign]
-doc = "A standalone literal assignment `NAME=value` beside a data heredoc (git-guard.js HD_ASSIGN_RE); group 1 is the name, group 2 the value."
+doc = "A standalone literal assignment `NAME=value` beside a data heredoc; group 1 is the name, group 2 the value."
 value = '^([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./~+@%:,=-]+)$'
 
 [git.hd_var_deny]
-doc = "Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly (git-guard.js HD_VAR_DENY)."
+doc = "Variable names (case-insensitive) a standalone assignment beside a data heredoc must not set: ones the shell or the allowed tools read implicitly."
 value = [
   "PATH", "IFS", "HOME", "SHELL", "ENV", "CDPATH", "GLOBIGNORE", "SHELLOPTS", "BASHOPTS", "PS1", "PS2", "PS4",
   "PROMPT_COMMAND", "PAGER", "MANPAGER", "EDITOR", "VISUAL", "BROWSER", "TMPDIR", "LANG",
 ]
 
 [git.hd_var_deny_prefix]
-doc = "Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks (git-guard.js HD_VAR_DENY_PREFIX)."
+doc = "Variable-name prefixes (case-insensitive) a standalone assignment beside a data heredoc must not set: loader, git/gh config, ssh, locale and language-runtime hooks."
 value = ["LD_", "DYLD_", "GIT_", "GH_", "BASH_", "SSH_", "LESS", "LC_", "PYTHON", "NODE_", "NPM_", "RUBY", "PERL"]
 
 [git.heredoc_git_msg_subs]
@@ -442,8 +442,8 @@ doc = "Pattern (case-insensitive) that recognises a path inside the plugin launc
 value = "(?i)\\.anti-hall[\\\\/]+bin(?:[\\\\/]|$)"
 
 [git.skip_command]
-doc = "Command that records a skip for a guard; {script} is the engine shim path (quote-escaped, put inside single quotes here) and {key} the guard id."
-value = "'{script}' skip {key}"
+doc = "Command that records a skip for a guard ({key} is the guard id): the native thin client."
+value = "~/.anti-hall/ah-engine/bin/ah-engine mesh skip {key}"
 
 [git.handover_dir_prefix]
 doc = "Directory under which handovers live (never committed)."
@@ -457,7 +457,7 @@ value = "⛔"
 
 [git.block_mark]
 doc = "Product and guard label after the symbol; also the marker alias notes are inserted after."
-value = " anti-hall · git-guard: "
+value = " anti-hall · git safety: "
 
 [git.label_why]
 doc = "Label of the reason line."
@@ -473,11 +473,11 @@ value = "Allowed here: "
 
 [git.label_override]
 doc = "Label of the override line."
-value = "Override (only if the user explicitly asked): "
+value = "To allow this once: "
 
 [git.file_write_tip]
 doc = "Added to a block when the command writes a file with shell text: the file was scanned as shell."
-value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `devswarm.js send --message-file <path>`)."
+value = "\nTip: this file's content was scanned as shell. Write the file with the Write or Edit tool (not shell-scanned) instead of a Bash heredoc, then reference its path in a plain follow-up command (e.g. `~/.anti-hall/ah-engine/bin/ah-engine mesh send --message-file <path>`)."
 
 [git.re_file_write_heredoc]
 doc = "JavaScript regex source: a heredoc operator, one half of the shape that earns the file-write tip."
@@ -553,15 +553,15 @@ value = ", ..."
 
 [git.msg_launcher]
 doc = "Block: a write into the launcher directory."
-value = { what = "a write into ~/.anti-hall/bin/ (the stable launcher directory) is blocked.", why = "anti-hall installs those files itself (update / doctor --repair); overwriting one would run arbitrary code (such as a force push) under a trusted launcher name.", instead = "leave that directory alone; if the path only appears as prose in a heredoc/brief, write that text with the Write tool instead." }
+value = { what = "a write to the managed launcher folder was stopped.", why = "anti-hall manages those files itself; overwriting one could run unwanted code under a trusted name.", instead = "leave the launcher folder unchanged." }
 
 [git.msg_reused_message]
 doc = "Block: a reused commit message carries an AI self-credit. Placeholder: {origin}."
-value = { what = "a commit whose message is taken from {origin} and carries an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit, even when the message is reused rather than typed.", instead = "commit with an explicit clean message (`-m \"<msg>\"` or `-F <file>`) instead of reusing that one." }
+value = { what = "reused commit message has an AI co-author line.", why = "Commits in this setup carry no AI co-author line, even when the message is reused.", instead = "remove the credit and use an explicit commit message." }
 
 [git.msg_gh_credit]
 doc = "Block: a gh pr, issue or release body or title carries an AI self-credit."
-value = { what = "a gh pr/issue/release body or title carries AI/assistant self-credit (\"Generated with\" footer, Co-Authored-By, a claude.com/claude-code link) is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+value = { what = "PR, issue or release text has an AI credit line.", why = "Pull requests and issues in this setup carry no AI credit.", instead = "remove the credit line and retry." }
 
 [git.credit_label_gh_words]
 doc = "How many non-flag words of a gh command name it in a credit-elsewhere block message (git-guard.js creditElsewhereLabel: `gh pr create`)."
@@ -570,39 +570,39 @@ min = 1
 
 [git.msg_gh_credit_elsewhere]
 doc = "Block: a gh pr, issue or release command is chained with another git/gh command that carries the AI self-credit. Placeholder: {elsewhere} (the carrying command, e.g. `git commit`)."
-value = { what = "a gh pr/issue/release command is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the gh body or title. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
+value = { what = "chained command text has an AI credit line.", why = "The credit line is in the `{elsewhere}` part, not in the gh text; nothing here carries AI credit.", instead = "remove the credit from the chained command." }
 
 [git.msg_runner_placeholder]
 doc = "Block: a runner placeholder stands for the command or subcommand beside a force or delete flag."
-value = { what = "a command whose name or git subcommand is an xargs / find / parallel placeholder, with a force or delete flag, is blocked.", why = "The placeholder is filled from input at run time, so the command may be `git push`.", instead = "run the git command directly with an explicit subcommand and arguments." }
+value = { what = "a runner hides the command beside a force or delete flag.", why = "The placeholder is filled in at run time, so the command could secretly be a git push.", instead = "run git directly with explicit arguments." }
 
 [git.msg_runner_no_subcommand]
 doc = "Block: a runner with git and no subcommand beside a force or delete flag. Placeholder: {runner}."
-value = { what = "`{runner} git` with no subcommand, beside a force or delete flag, is blocked.", why = "{runner} reads the subcommand from its input, so it may be `push` with that flag.", instead = "run the git command directly with an explicit subcommand and arguments." }
+value = { what = "a runner hides the git subcommand beside an unsafe flag.", why = "{runner} supplies the subcommand later, so it could be a push with that flag.", instead = "run git directly with explicit arguments." }
 
 [git.msg_runner_push]
 doc = "Block: a push through xargs or parallel. Placeholder: {runner}."
-value = { what = "force push via `{runner} git push` is blocked.", why = "{runner} appends input words to the command, so the full argv (and any hidden --force/-f) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+value = { what = "a runner could hide a force-push argument.", why = "{runner} adds words to the command, so a hidden --force can't be ruled out.", instead = "run git push directly with explicit arguments." }
 
 [git.msg_find_push]
 doc = "Block: a push through find -exec."
-value = { what = "push via `find -exec git push ... {}` is blocked.", why = "find puts file names where {} stands, so the refspecs (a `+ref` is a force push) cannot be verified statically.", instead = "run `git push` directly with explicit arguments." }
+value = { what = "find could supply hidden force-push arguments.", why = "find fills in the arguments, so a force push (`+ref`) can't be ruled out.", instead = "run git push directly with explicit arguments." }
 
 [git.msg_handover]
 doc = "Block: a commit that includes a session handover. Placeholders: {shown}, {skip}."
-value = { what = "this commit includes a session handover ({shown}) and is blocked.", why = "Handovers are local session state and are never committed.", instead = "unstage a NEW one with `git restore --staged <path>`; if ALREADY tracked, `git rm --cached <path>` and commit that removal (allowed).", override = "{skip} (only if the owner explicitly asked to commit this file)" }
+value = { what = "this commit includes a private session handover.", why = "Handovers are private session notes and are never committed.", instead = "unstage the handover before committing.", override = "tell the agent \"skip git-guard\", only if you want this file committed." }
 
 [git.msg_force_push]
 doc = "Block: a force push."
-value = { what = "force push is blocked.", why = "Rewriting published history is a deliberate human action.", instead = "do it manually with explicit owner confirmation, never from an automated push." }
+value = { what = "a force push was stopped.", why = "Rewriting published history should be a deliberate human decision.", instead = "push without rewriting published history." }
 
 [git.msg_delete_ref]
 doc = "Block: remote ref deletion. Placeholder: {skip}."
-value = { what = "remote ref deletion (push --delete / -d / --prune / an empty-source :<ref> refspec) is blocked.", why = "Deleting published branches or tags needs explicit owner confirmation.", instead = "leave the ref.", override = "{skip} (only if the owner asked for this exact deletion)" }
+value = { what = "remote branch or tag deletion was stopped.", why = "Deleting published refs needs the owner's explicit OK.", instead = "get the owner’s approval for this exact deletion.", override = "tell the agent \"skip git-guard\", only for this exact deletion." }
 
 [git.msg_push_cmdsubst]
 doc = "Block: a push argument produced by command substitution."
-value = { what = "`git push` with an argument produced by command substitution / backticks is blocked.", why = "It can smuggle a --force flag past static inspection.", instead = "run the push with literal arguments (no dollar-paren or backticks). If this is message text in printf/echo written to a file, write that file with the Write tool instead." }
+value = { what = "command substitution could hide a force-push flag.", why = "It could hide a --force flag from the check.", instead = "use literal arguments for git push." }
 
 [git.push_cmdsubst_heredoc_note]
 doc = "Appended to the remedy of the push_cmdsubst block when the command contains a heredoc."
@@ -610,27 +610,27 @@ value = " Heredoc bodies are scanned as shell even when a script only reads them
 
 [git.msg_trailer_remap]
 doc = "Block: a trailer remap to an AI self-credit key."
-value = { what = "a `-c trailer.*.key=` remap to an AI self-credit key (Co-Authored-By / Generated-with) is blocked.", why = "Commits carry no AI co-author credit.", instead = "remove the trailer remap." }
+value = { what = "a trailer setting adds AI credit.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the trailer setting and commit again." }
 
 [git.msg_commit_credit]
 doc = "Block: an inline commit message with an AI self-credit."
-value = { what = "a commit message with an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+value = { what = "commit has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again." }
 
 [git.msg_commit_file_credit]
 doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
-value = { what = "a commit message (via `-F`/`--file`, from a heredoc body or file) with an AI/assistant self-credit trailer is blocked.", why = "Commits carry no AI co-author credit.", instead = "re-run the commit without that trailer." }
+value = { what = "commit message file has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again." }
 
 [git.msg_gh_jev]
 doc = "Block: Jev judged a gh body or title to credit an AI assistant (paraphrased)."
-value = { what = "a gh pr/issue/release body or title appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) and is blocked.", why = "PRs and issues carry no AI attribution.", instead = "remove it and re-run." }
+value = { what = "PR, issue or release text credits an AI assistant.", why = "Pull requests and issues in this setup carry no AI credit.", instead = "remove the AI credit and retry." }
 
 [git.msg_commit_jev]
 doc = "Block: Jev judged an inline commit message to credit an AI assistant (paraphrased)."
-value = { what = "a commit message that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+value = { what = "commit message credits an AI assistant.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the AI credit and commit again." }
 
 [git.msg_commit_file_jev]
 doc = "Block: Jev judged a commit message read from a file or heredoc to credit an AI assistant (paraphrased)."
-value = { what = "a commit message (via `-F`/`--file`) that appears to credit an AI assistant (paraphrased, flagged by the Jev classifier) is blocked.", why = "Commits carry no AI co-author credit.", instead = "reword the message and re-run." }
+value = { what = "commit message file credits an AI assistant.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the AI credit and commit again." }
 
 [git.jev_id]
 doc = "The Jev integration id of the self-credit question (add-block trust)."
@@ -676,17 +676,17 @@ min = 1
 
 [git.msg_creating_credit]
 doc = "Block: a commit-creating command with an AI self-credit line. Placeholder: {sub}."
-value = { what = "a command that creates a commit (git {sub}) and carries an AI/assistant self-credit trailer line is blocked.", why = "Commits carry no AI co-author credit, however the line reaches git (pipe, variable, file written in the same command).", instead = "remove the trailer line and re-run." }
+value = { what = "git {sub} would create a commit with AI credit.", why = "Commits in this setup carry no AI co-author line, however it reaches git.", instead = "remove the Co-Authored-By line and commit again." }
 
 [git.msg_creating_credit_elsewhere]
 doc = "Block: a commit-creating command is chained with another git/gh command that carries the AI self-credit. Placeholders: {sub}, {elsewhere} (the carrying command, e.g. `gh pr create`)."
-value = { what = "a command that creates a commit (git {sub}) is chained with `{elsewhere}`, which carries AI/assistant self-credit; blocked.", why = "The self-credit text is in the `{elsewhere}` part of this command, not in the commit message. Commits, PRs and issues carry no AI attribution.", instead = "remove the self-credit line from the `{elsewhere}` text and re-run." }
+value = { what = "git {sub} is chained with text containing AI credit.", why = "The credit line is in the `{elsewhere}` part, not in the commit message.", instead = "remove the credit from the chained command." }
 
-# ---- PostToolUse audit (git-guard.js --audit) --------------------------------------------------------------------
+# ---- PostToolUse audit --------------------------------------------------------------------
 
 [git_audit.summary]
 doc = "One-line description of the git-audit check in the generated reference."
-value = "Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of git-guard.js --audit)."
+value = "Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer."
 
 [git_audit.window_s]
 doc = "How recent, in seconds, a commit must be for the audit to look at it."
@@ -725,7 +725,7 @@ max = 16
 
 [git_audit.msg]
 doc = "Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes)."
-value = "anti-hall git-guard (audit): recent commit(s) on HEAD (committed in the last {window_min} min) {hits} carry an AI/assistant self-credit trailer (Co-Authored-By / \"Generated with <AI>\") - added by a git hook, template, cherry-pick/rebase, or an editor. Commits carry no AI co-author credit: reword them now (`git commit --amend` for HEAD, `git rebase -i` for older ones) BEFORE pushing."
+value = "⚠️ git safety: recent commits contain AI credit.\nDo instead: remove the credit before pushing."
 
 [git_audit.cd_verb]
 doc = "The verb whose directory argument moves the audit's working directory."

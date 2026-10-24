@@ -3,11 +3,14 @@
 //!
 //! This is the ONLY thing the build derives from the source about configuration, and it is a schema, not configuration:
 //! no value, table, message or default is compiled in (the defaults are read from the plugin's files at run time, D17).
+#[path = "build_support/buildver.rs"]
+mod buildver;
 #[path = "build_support/keyscan.rs"]
 mod keyscan;
 use std::path::Path;
 
 fn main() {
+    buildver::emit();
     let manifest = match std::env::var("CARGO_MANIFEST_DIR") {
         Ok(v) => v,
         Err(e) => {

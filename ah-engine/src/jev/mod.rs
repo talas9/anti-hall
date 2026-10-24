@@ -22,6 +22,7 @@
 //! | `evidence` | (new) | the evidence gate: rules, sufficiency and a labelled pack before any Jev or Haiku call (jev_evidence.toml) |
 //! | `cascade` | (new) | re-judges a Jev answer under the escalation threshold with the Claude CLI |
 //! | `report` | `scripts/jev-report.js` | the `jev-report` command: reads the logs and settings, the plugin script `rules/jev-report` renders the report |
+//! | `arrival` | `jev-triage.js` `enqueueArrival`, `runArrivalWorker`, `triageMessagesSync` | the arrival queue, the drain lock and claims, the capped worker, the label cache writer (jev_arrival.toml) |
 //! | `assist` | `jev-assist.js` `ask`, `finalize` | modes, trust rules, budget, async queue, metrics |
 //!
 //! The decision record's rules for this lane: static checks never route to Jev (D34); every Jev decision has a
@@ -29,6 +30,7 @@
 //! failing (D35); Jev may add a block or advisory, and an explicitly enabled relax-block integration may relax a
 //! blocking baseline when Jev confidently says it should not stand; Jev is never the sole safety gate (D36);
 //! the per-call budget, timeout, cache, warm connection and async queue live in [`assist::Jev`] (D36).
+pub mod arrival;
 pub mod assist;
 pub mod breaker;
 pub mod cache;

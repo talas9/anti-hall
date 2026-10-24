@@ -333,6 +333,7 @@ pub fn daemon_section(doc: &mut Doc) {
     for (pid, socket) in non_live_serve_processes(&mut RealHost::new()) {
         doc.warnl(defaults::render("doctor_msg.daemon_non_live_serve", &[("pid", &pid), ("sock", &socket.display())]));
     }
+    doc.infol(health::starts::doctor_line());
     if let Some(left) = health::crashloop_remaining() {
         let reason = health::read_json("failure").and_then(|f| f["reason"].as_str().map(str::to_string)).unwrap_or_default();
         doc.bad(defaults::render("doctor_msg.crashloop", &[("secs", &(left.as_secs() + 1)), ("reason", &reason)]));

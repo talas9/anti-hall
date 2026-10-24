@@ -13,7 +13,8 @@
 //! 2. `CLAUDE_PLUGIN_ROOT`, then `PLUGIN_ROOT`: the variables the hosts export to hook commands.
 //! 3. The root recorded in the snapshot cache by the last successful load (an invocation with no environment at all,
 //!    such as `ah-engine status` from a terminal, still finds the plugin the daemon runs).
-//! 4. A development checkout: walking up from the executable until a directory holds
+//! 4. The live plugin root recorded by the install routine in the state directory.
+//! 5. A development checkout: walking up from the executable until a directory holds
 //!    `plugins/anti-hall/engine/defaults/index.toml` (a `cargo build` tree inside the repository).
 //!
 //! `AH_ENGINE_PLUGIN_ROOT`, when set, is an explicit choice: if it has no `index.toml` the load fails (it is not replaced by
@@ -36,17 +37,24 @@ pub const LKG_STAMP: &str = "STAMP";
 pub const INDEX_FILE: &str = "index.toml";
 /// Environment variables naming the plugin root, in order of precedence.
 pub const ROOT_ENVS: &[&str] = &["AH_ENGINE_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"];
-/// The hook wrapper, relative to the plugin root: what the doctor hands over to when the defaults cannot load (the shell doctor
-/// has its own texts). Like the other names in this file it is needed before any defaults exist.
-pub const WRAPPER_REL: &str = "hooks/ah-hook.sh";
-/// The wrapper argument that runs the shell doctor.
-pub const SHELL_DOCTOR_ARG: &str = "--doctor";
+/// The installed thin client (`ah-hook`), relative to the home directory: what the doctor hands over to when the defaults cannot load
+/// (its built-in diagnosis needs neither the engine nor its defaults and has its own texts). Like the other names in this file it is
+/// needed before any defaults exist.
+pub const CLIENT_REL: &str = ".anti-hall/ah-engine/bin/ah-hook";
+/// The thin client's arguments that run its built-in diagnosis.
+pub const CLIENT_DOCTOR_ARGS: &[&str] = &["doctor", "--builtin"];
+/// The thin client's argument that names the plugin root.
+pub const CLIENT_ROOT_ARG: &str = "--plugin-root";
 /// The variable that carries the reason the defaults failed to load to the shell doctor.
 pub const DEFAULTS_ERROR_ENV: &str = "AH_DOCTOR_DEFAULTS_ERROR";
 /// The snapshot cache file inside the state directory.
 pub const CACHE_FILE: &str = "defaults.cache";
 /// The last-resort error note inside the state directory (written when no defaults could be loaded, so no log path exists).
 pub const ERROR_FILE: &str = "defaults.error";
+/// The install record, needed before defaults can be read (matches `routine.state_file`).
+pub const INSTALL_FILE: &str = "install.json";
+/// The install record field shared by the bootstrap reader and install writer.
+pub const INSTALL_ROOT_FIELD: &str = "plugin_root";
 /// The temporary-file suffix of an atomic write made before any defaults are loaded (the same as the shipped
 /// `atomic.tmp_suffix`; a test keeps them equal).
 pub const TMP_SUFFIX: &str = ".tmp";
@@ -57,7 +65,7 @@ pub const UNAVAILABLE_EXIT: i32 = 75;
 /// The state directory override (the same variable `env.dir` names in the defaults; a test keeps them equal).
 const STATE_ENV: &str = "AH_ENGINE_DIR";
 /// The home variable and the state directory below it (the same as `paths.base_dir` / `paths.state_dir`; a test keeps them equal).
-const HOME_ENV: &str = "HOME";
+pub const HOME_ENV: &str = "HOME";
 const STATE_REL: [&str; 2] = [".anti-hall", "ah-engine"];
 
 /// The engine state directory, before any defaults are loaded.
@@ -122,7 +130,14 @@ pub fn locate_root(cache_root: Option<&Path>) -> Option<PathBuf> {
     if let Some(r) = env_root() {
         return has_index(&r).then_some(r);
     }
-    cache_root.map(Path::to_path_buf).filter(|r| has_index(r)).or_else(dev_checkout)
+    cache_root.map(Path::to_path_buf).filter(|r| has_index(r)).or_else(installed_root).or_else(dev_checkout)
+}
+
+fn installed_root() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(state_dir()?.join(INSTALL_FILE)).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = PathBuf::from(record.get(INSTALL_ROOT_FIELD)?.as_str()?);
+    (!root.as_os_str().is_empty() && has_index(&root)).then_some(root)
 }
 
 fn dev_checkout() -> Option<PathBuf> {

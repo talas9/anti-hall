@@ -41,7 +41,13 @@ const DESTRUCTIVE = new Set(['git-guard', 'devswarm-read-guard', 'git-stash-guar
 //   - data.all    > now            -> skip, UNLESS name is destructive
 //   env (optional): the environment a guard's evaluate() was given; the marker is
 //   read from THAT env's HOME. Omitted -> the process home (SKIP_FILE), as before.
-function isSkipped(name, env) {
+function sessionId(env, payloadSession) {
+  if (typeof payloadSession === 'string' && payloadSession) return payloadSession;
+  const e = env || process.env;
+  return e.CLAUDE_CODE_SESSION_ID || e.CLAUDE_SESSION_ID || e.ANTIHALL_SESSION_ID || e.CODEX_THREAD_ID || '';
+}
+
+function isSkipped(name, env, payloadSession) {
   try {
     const file = env
       ? path.join(require('../companion/lib/test-home-guard.js').resolveHome(env.HOME || env.USERPROFILE, env), '.anti-hall', 'skip.json')
@@ -52,12 +58,13 @@ function isSkipped(name, env) {
     if (!data || typeof data !== 'object') return false;
     const now = Date.now();
 
-    const own = data[name];
-    if (typeof own === 'number' && own > now) return true;
+    const sid = sessionId(env, payloadSession);
+    const live = key => typeof data[key] === 'number' && data[key] > now;
+    const applies = key => live(key) || (sid !== '' && live(key + '@' + sid));
+    if (applies(name)) return true;
 
     if (!DESTRUCTIVE.has(name)) {
-      const all = data.all;
-      if (typeof all === 'number' && all > now) return true;
+      if (applies('all')) return true;
     }
     return false;
   } catch (_) {
@@ -66,4 +73,4 @@ function isSkipped(name, env) {
   }
 }
 
-module.exports = { isSkipped, SKIP_FILE, DESTRUCTIVE };
+module.exports = { isSkipped, sessionId, SKIP_FILE, DESTRUCTIVE };

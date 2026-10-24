@@ -64,5 +64,11 @@ doc = "The words of mesh.engine_writes, in this order: off, shadow (reads as on)
 value = ["off", "shadow", "on"]
 
 [mesh.db_flag]
-doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a devswarm.js argv."
+doc = "The flag that selects the read-only S0 reader (`ah-engine mesh <roster|unread|read|dump> --db <file>`); without it the words after `mesh` are a ah-engine mesh argv."
 value = "--db"
+
+# ---- the S0 reader without --db: the project's own store ---------------------------------------------------------------
+
+[mesh.store_reader_verbs]
+doc = "The words of the read-only store reader (`ah-engine mesh unread|read|dump [--db <file>]`). Without `--db` the reader opens the store of the project the working directory is in (and, for `read <id>`, the one store that holds the id when this project does not). `roster` is not here: it is the mesh verb of that name."
+value = ["unread", "read", "dump"]

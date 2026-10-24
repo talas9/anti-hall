@@ -56,8 +56,9 @@ fn statusline_installer_is_retired_without_node() {
     let mut seen = Seen::new();
     let mut problems = Vec::new();
 
-    let mut cmd = w.command("/bin/sh", "statusline/install");
-    cmd.arg(w.plugin.join("scripts").join("ah-run.sh")).args(cfg_list(&w.cfg, "statusline", "install_args"));
+    // `ah-hook install-statusline ...` replaces itself with the engine (ah-launcher/tests/cli.rs): the engine, as the thin client runs it
+    let mut cmd = w.command(&w.engine, "statusline/install");
+    cmd.args(cfg_list(&w.cfg, "statusline", "install_args")).env("AH_ENGINE_PLUGIN_ROOT", &w.plugin);
     let inst = w.run(cmd, None, timeout);
     if inst.code != Some(0) {
         problems.push(format!("the status line installer exited {:?}: {}", inst.code, inst.stderr.trim()));

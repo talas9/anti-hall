@@ -90,18 +90,16 @@ function cgWakeLine(l) {
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js with the gate's own texts and skip command.
 function cgFrame(body, ctx) {
-  var clean = text.clean, guard = ah.cfg('devswarm_gates.child_gate_guard_name');
+  var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
   var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
   var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), guard: guard });
-  var lines = [text.render(ah.cfg('devswarm_role.pg_frame_head'), { guard: clean(guard), headline: clean(ah.cfg('devswarm_gates.cg_headline')) })];
-  lines.push(ah.cfg('devswarm_role.pg_frame_why') + clean(ah.cfg('devswarm_gates.cg_why')));
-  var paras = body.split(/\n{2,}/).map(clean).filter(function (x) { return x !== ''; });
-  if (paras.length > 0) {
-    lines.push(ah.cfg('devswarm_role.pg_frame_instead') + paras[0]);
-    paras.slice(1).forEach(function (x) { lines.push(ah.cfg('devswarm_role.pg_frame_indent') + x); });
-  }
-  lines.push(ah.cfg('devswarm_role.pg_frame_override') + clean(skip + ah.cfg('devswarm_role.pg_skip_ttl')));
-  return JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: lines.join('\n') }) + '\n';
+  var reason = text.message('block', guard, {
+    what: ah.cfg('devswarm_gates.cg_headline'),
+    instead: ah.cfg('devswarm_gates.cg_short_instead'),
+    why: ah.cfg('devswarm_gates.cg_why'), override: skip,
+    extra: [body], details: true,
+  }, ctx.sid);
+  return text.blockJson(reason);
 }
 
 // ---- the planned writes (applied at the end) --------------------------------------------------------------

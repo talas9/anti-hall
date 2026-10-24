@@ -1,0 +1,9 @@
+[package]
+name = "ah-web-proto"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Types shared by the Command Center server (ah-web) and its WASM page"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

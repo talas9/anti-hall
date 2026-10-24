@@ -37,6 +37,8 @@ thread_local! {
     /// The app database's builder states as this call first read them (with the handle of the cache write that read owes), so a
     /// gate that asks about hundreds of workspaces reads (and parses) the states once, not once per workspace.
     static APP: RefCell<Option<AppRead>> = const { RefCell::new(None) };
+    /// Repository identity only; mailbox, reader and inbox state are never cached.
+    static IDENT: RefCell<std::collections::HashMap<(String, bool), Result<ident::Ctx, ident::Defer>>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// One read of the app database's builder states, for the `cache` flag it was made with.
@@ -49,6 +51,7 @@ struct AppRead {
 pub(super) fn reset_call() {
     OWED.with(|o| o.borrow_mut().clear());
     APP.with(|a| *a.borrow_mut() = None);
+    IDENT.with(|i| i.borrow_mut().clear());
 }
 
 /// Why an answer cannot be given exactly.
@@ -92,13 +95,24 @@ fn read_json(p: &str) -> Result<Option<OVal>, No> {
     }
 }
 
+fn context_of(cwd: &str, ancestor: bool) -> Result<ident::Ctx, ident::Defer> {
+    IDENT.with(|i| i.borrow_mut().entry((cwd.to_string(), ancestor)).or_insert_with(|| ident::resolve_context(cwd, ancestor)).clone())
+}
+
+fn repo_key_of(cwd: &str) -> Result<Option<String>, ident::Defer> {
+    if cwd.is_empty() {
+        return Ok(None);
+    }
+    Ok(context_of(cwd, false)?.repo_key)
+}
+
 fn ident_of(cwd: &str) -> Result<Value, No> {
-    let top = ident::resolve_context(cwd, true).map_err(|_| No)?.worktree_root;
+    let top = context_of(cwd, true).map_err(|_| No)?.worktree_root;
     let own = match &top {
         Some(top) => Some(ident::primary_workspace_id(top).map_err(|_| No)?),
         None => None,
     };
-    let key = ident::repo_key_for_worktree(cwd).map_err(|_| No)?;
+    let key = repo_key_of(cwd).map_err(|_| No)?;
     Ok(json!({"top": top, "own": own, "key": key}))
 }
 
@@ -267,7 +281,7 @@ fn union_of(st: &Settings, key: &str, id: &str, inbox: Option<&str>, cursor: Opt
     let (sb, nb) = floor_positions(&store, &st.home, id, cursor, reader.as_deref())?;
     let u = union_unread(&UnionIn { inbox, cursor_file: cursor, id, store: Some(&store), store_base: sb, nd_base: nb, now: now as i64 }).map_err(|_| No)?;
     let age = u.oldest_unread_age_ms.filter(|a| a.is_finite());
-    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread, "age": age}))
+    Ok(json!({"state": "ok", "storeOnly": u.store_only_unread.iter().filter(|r| !crate::meshw::union::is_wake_row(r)).collect::<Vec<_>>(), "age": age}))
 }
 
 /// This hook's own reader on partition `id` (`ownReaderDelta` / `ownReaderLiveUnread`): `{reader: false}` when the hook has no
@@ -355,7 +369,7 @@ fn app_builders(st: &Settings) -> Option<String> {
 pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()> {
     h.set("meshAppBuilders", Function::new(c.clone(), || -> rquickjs::Result<Option<String>> { with_settings(app_builders) })?)?;
     h.set("meshIdent", Function::new(c.clone(), |cwd: String| answer(ident_of(&cwd)))?)?;
-    h.set("meshRepoKey", Function::new(c.clone(), |wt: String| answer(ident::repo_key_for_worktree(&wt).map(|k| json!({"key": k})).map_err(|_| No)))?)?;
+    h.set("meshRepoKey", Function::new(c.clone(), |wt: String| answer(repo_key_of(&wt).map(|k| json!({"key": k})).map_err(|_| No)))?)?;
     h.set("meshCanonicalId", Function::new(c.clone(), |wt: String| answer(ident::canonical_mesh_id(&wt).map(|k| json!({"id": k})).map_err(|_| No)))?)?;
     h.set(
         "meshRegisteredKey",
@@ -392,10 +406,7 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
             Ok(answer(with_settings(|st| count_for(st, key.as_deref(), &id, inbox.as_deref(), cursor.as_deref(), now))?))
         })?,
     )?;
-    h.set(
-        "meshContextKey",
-        Function::new(c.clone(), |cwd: String| answer(ident::resolve_context(&cwd, true).map(|c| json!({"key": c.repo_key})).map_err(|_| No)))?,
-    )?;
+    h.set("meshContextKey", Function::new(c.clone(), |cwd: String| answer(context_of(&cwd, true).map(|c| json!({"key": c.repo_key})).map_err(|_| No)))?)?;
     h.set(
         "meshAppArchived",
         Function::new(c.clone(), |id: String, wt: String, cache: bool| -> rquickjs::Result<String> {

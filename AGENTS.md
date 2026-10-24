@@ -18,7 +18,7 @@ then suggest starting a fresh session. When `version-alert.js` says a newer anti
 available or already installed, tell the user (update via the `anti-hall-update` skill,
 then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
-`anti-hall-settings` skill / `scripts/settings.js`, never by hand (Codex has no
+`anti-hall-settings` skill / `ah-hook settings`, never by hand (Codex has no
 `/config` settings UI). Every feature has a settings key in ~/.anti-hall/settings.json, reachable through /anti-hall:settings and grouped by category. Claude Code's plugin options show only the headline switches and the safety guards.
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
@@ -291,10 +291,10 @@ feature/KB touches this area:
 Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects, devswarm, doctor, engine (+11 area skills engine-*), handover, install-statusline, jev, model-policy, omc, omx, orchestration, root-cause, settings, ship-it, simplify, system-briefing, update.
 
 **CLI verbs**:
-- `scripts/devswarm.js`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).
-- `scripts/settings.js`: `show`, `get`, `set`, `reset`, `judge`, `trust-command-allow`, `trust-edit-allow`; `scripts/auto-handover-config.js`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
-- `scripts/jev-setup.js`: `status`, `enable`, `disable`, `set-key`, `bind-generic-key`, `test`, `mode`, `review-due`, `reviewed`, `snooze`; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
-- `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).
+- `ah-hook mesh`: `primary`, `register`, `ensure`, `heartbeat`, `inbox`, `workspaces`, `gate`, `done`, `nudge`, `archive`, `reap-orphans`, `reconcile-registry`, `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`, `migrate`, `logs`, `migrate-owner-keys`, `send`, `relay`, `roster`, `wake-directive`, `app-state`, `sync-ui`, `app-sync`, `diagnose`, `plan`, `scope`, `supervision-report`, `respawn`, `correct`, `healthcheck`, `ready-check`, `mesh`, `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge`, `skip`, `auto-archive`, `prune-archived`, `gate-intent`, `retention`, `notice` (`help <verb>`).
+- `ah-hook settings`: `show`, `get`, `set`, `reset`, `judge`, `trust-command-allow`, `trust-edit-allow`; `ah-hook auto-handover-config`: `get`, `set`, `nag`, `nag-step`, `nag-quiet`, `max-tokens`.
+- `ah-hook jev-setup`: `status`, `enable`, `disable`, `set-key`, `bind-generic-key`, `test`, `mode`, `review-due`, `reviewed`, `snooze`; `ah-hook jev-report`: report (default), `label`, `prune-audit`; `ah-hook defect`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.
+- `ah-hook doctor [--repair]`; `ah-hook update [--check]`; `ah-hook devswarm recover --id <id> --request <request-id>` (the only kill path).
 
 **Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers

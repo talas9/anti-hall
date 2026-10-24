@@ -6,6 +6,73 @@
 //! the limit (one busy window is a burst). Memory is the figure `daemon.mem_metric` selects, and it breaches while over the limit.
 //! A budget of 0 is off. Reporting only: a breach never stops or slows anything (the RSS cap and the CPU back-off are other rules).
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+
+/// The daemon is past its HARD CPU limit and sheds optional work (`diagnostics.budget_cpu_hard_pct`). Process-wide so the check
+/// dispatcher and the Jev client read it without a lock.
+static SHEDDING: AtomicBool = AtomicBool::new(false);
+/// Optional work skipped while shedding (checks of non-guard events, Jev consultations).
+static SHED_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+/// True while the hard CPU limit is crossed: optional work (advisory checks, Jev, background duties) waits.
+pub fn shedding() -> bool {
+    SHEDDING.load(Relaxed)
+}
+
+/// Count one piece of optional work that was skipped because of [`shedding`].
+pub fn note_shed_skipped() {
+    SHED_SKIPPED.fetch_add(1, Relaxed);
+}
+
+/// Answers a request's checks did not give, by `guard|optional` + reason, for THIS daemon (the lifetime counts are the
+/// `answers_dropped` metric, which survives restarts); and the last event-log line per check and reason.
+static DROPPED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+static DROPPED_LOGGED: std::sync::Mutex<BTreeMap<String, u64>> = std::sync::Mutex::new(BTreeMap::new());
+
+thread_local! {
+    /// The reason of the last answer this thread dropped, until the observer of that check takes it ([`take_drop_reason`]).
+    static LAST_DROP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The reason the check just observed gave no answer (shed, client_gone, hard_deadline, check_deferred, cpu_budget, ...), once.
+pub fn take_drop_reason() -> Option<String> {
+    LAST_DROP.with(|l| l.borrow_mut().take())
+}
+
+/// A check of `event` gave no answer, for `reason`: counted (this daemon and lifetime), and logged at most once per
+/// `diagnostics.abandoned_log_interval_ms` per check and reason. A guard event's drop is its own kind (`guard_answer_dropped`) so it
+/// stands out; the dispatcher then applies the check's failure policy (`script.failure_mode_by_check`).
+pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
+    LAST_DROP.with(|l| *l.borrow_mut() = Some(reason.to_string()));
+    let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
+    crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
+    let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
+        *m.entry(format!("{kind}:{reason}")).or_default() += 1;
+    }
+    drop(m);
+    let (now, every) = (crate::health::now_ms(), crate::defaults::num("diagnostics.abandoned_log_interval_ms"));
+    let mut seen = DROPPED_LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    let key = format!("{check}:{reason}");
+    if seen.len() >= crate::defaults::num("diagnostics.abandoned_log_keys_max") as usize {
+        seen.clear();
+    }
+    if seen.get(&key).is_some_and(|last| now.saturating_sub(*last) < every) {
+        return;
+    }
+    seen.insert(key, now);
+    drop(seen);
+    let line = if guard { "guard_answer_dropped" } else { "answer_dropped" };
+    crate::health::log_event(line, check, &crate::defaults::render("msg.log_answer_dropped", &[("check", &check), ("event", &event), ("reason", &reason)]));
+}
+
+/// This daemon's dropped answers: `{guard: n, optional: n, by_reason: {"guard:cpu_budget": n, ...}}`.
+pub fn dropped_this_daemon() -> Value {
+    let m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    let sum = |kind: &str| m.iter().filter(|(k, _)| k.starts_with(&format!("{kind}:"))).map(|(_, v)| *v).sum::<u64>();
+    json!({ "guard": sum(crate::defaults::text("answer_drop.kind_guard")), "optional": sum(crate::defaults::text("answer_drop.kind_optional")), "by_reason": *m })
+}
 
 /// Which budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +108,12 @@ pub struct State {
     mem_breached: bool,
     /// Breaches begun since start (a breach that clears and returns counts twice).
     breaches: u64,
+    /// Consecutive windows at or above the hard CPU limit.
+    hard_over_windows: u64,
+    /// The hard CPU limit in force at the last window (percent, 0 = off).
+    hard_limit_pct: u64,
+    /// Times shedding began since start.
+    hard_breaches: u64,
 }
 
 /// A breach that began or ended: `(which, began)`.
@@ -73,6 +146,30 @@ impl State {
         self.set(Which::Cpu, self.over_windows >= windows.max(1))
     }
 
+    /// One CPU window of `pct` against the HARD limit (`hard_pct` 0 = off, `windows` in a row to cross it). Shedding ends on the first
+    /// window under `soft_pct` (the hard limit when the soft bar is off). `Some(true)` shedding began, `Some(false)` it ended.
+    pub fn cpu_hard_window(&mut self, pct: f64, hard_pct: u64, soft_pct: u64, windows: u64) -> Option<bool> {
+        self.hard_limit_pct = hard_pct;
+        let now = SHEDDING.load(Relaxed);
+        if hard_pct == 0 {
+            self.hard_over_windows = 0;
+            SHEDDING.store(false, Relaxed);
+            return now.then_some(false);
+        }
+        self.hard_over_windows = if pct >= hard_pct as f64 { self.hard_over_windows + 1 } else { 0 };
+        let recover_below = if soft_pct > 0 { soft_pct } else { hard_pct } as f64;
+        if !now && self.hard_over_windows >= windows.max(1) {
+            self.hard_breaches += 1;
+            SHEDDING.store(true, Relaxed);
+            return Some(true);
+        }
+        if now && pct < recover_below {
+            SHEDDING.store(false, Relaxed);
+            return Some(false);
+        }
+        None
+    }
+
     /// One memory sample of `mem_kb` against the budget (`limit_mb` 0 = off).
     pub fn mem_sample(&mut self, mem_kb: u64, limit_mb: u64) -> Edge {
         self.mem_kb = mem_kb;
@@ -101,6 +198,10 @@ impl State {
             "mem_budget_mb": mem_budget_mb,
             "breached": breached,
             "breaches": self.breaches,
+            "cpu_hard_budget_pct": self.hard_limit_pct,
+            "shedding": shedding(),
+            "cpu_hard_breaches": self.hard_breaches,
+            "shed_skipped": SHED_SKIPPED.load(Relaxed),
         })
     }
 }

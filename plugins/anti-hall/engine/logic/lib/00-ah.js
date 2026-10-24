@@ -10,6 +10,8 @@ function ahWf(t) { return typeof t === 'string' ? t.replace(ahWfRe, '\ufffd') : 
 function ahUnableCount(site, kind) { try { if (kind === undefined) ahHost.unable(site); else ahHost.unable(site, kind); } catch (e) { /* a lost count never changes a decision */ } }
 var ahCfgMemo = { gen: -1, map: new Map() };
 var ah = {
+  // Replaced before EVERY check call: authoritative dispatcher options, including --host. Never daemon-global state.
+  request: {},
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
   cfg: function (key) {
     var g = ahHost.cfgGen();
@@ -20,6 +22,8 @@ var ah = {
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
   unable: function (site, kind) { ahUnableCount(site, kind); },
+  // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
+  advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
     get: function (name) { return ahNull(ahHost.env(name)); },

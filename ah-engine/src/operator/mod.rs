@@ -3,14 +3,18 @@
 //! | Command | Node source | What it does |
 //! |---|---|---|
 //! | `update` | `skills/update/scripts/update.js` | `git pull --ff-only` of the marketplace clone, cache sync, harness re-registration, changelog delta |
-//! | `engine-update` | (new, issue #140) | runs the plugin's updater script `hooks/ah-update.sh`; the engine has no network code |
+//! | `engine-update` | (new, issue #140) | hands its arguments to the thin client's updater (`ah-hook update`); the engine has no network code |
+//! | `post-update-check` | (new) | the step every update ends with: verify the running daemon, stop stale processes, clean old artifacts |
 //! | `install-codex` | `codex/install-codex.js` | registers the anti-hall hooks in a Codex `hooks.json` and enables the hooks feature in `config.toml` |
 //!
-//! `doctor`, `migrate` (the port of `migrate-state.js`) and `capability-scan` were ported earlier (`doctor/`, `migrate/`,
+//! `doctor`, `migrate` and `capability-scan` were ported earlier (`doctor/`, `migrate/`,
 //! `setup/`). The texts, paths, limits and patterns of both commands are in the plugin's `engine/defaults/update_cli.toml`.
 pub mod engine_update;
 pub mod install_codex;
+pub mod post_update;
 pub mod postpull;
+pub mod routine;
+pub mod sweep;
 pub mod update;
 
 use crate::defaults;

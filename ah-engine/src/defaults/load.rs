@@ -365,9 +365,9 @@ fn validate(file: &str, key: &str, e: &toml::Table, kinds: &HashMap<&str, Kind>,
         return Err(DefaultsError::new("type", file, key, format!("the shipped value is {}, this one is {}", s.type_str(), v.type_str())));
     }
     let row_ok =
-        |r: &toml::Value| r.as_table().is_some_and(|t| t.get("id").is_some_and(toml::Value::is_str) && t.get("command").is_some_and(toml::Value::is_str));
+        |r: &toml::Value| r.as_table().is_some_and(|t| t.get("id").is_some_and(toml::Value::is_str) && t.get("command").is_none_or(toml::Value::is_str));
     if key.starts_with(table::key("", "").trim_end_matches('_')) && !v.as_array().is_some_and(|a| a.iter().all(row_ok)) {
-        return Err(DefaultsError::new("dispatch", file, key, "a dispatch row must be a list of entry tables, each with a string id and command"));
+        return Err(DefaultsError::new("dispatch", file, key, "a dispatch row must be a list of entry tables, each with a string id"));
     }
     Ok(())
 }
@@ -815,7 +815,7 @@ fn check_rows(root: &Path, entries: &[&'static Entry]) -> Result<(), String> {
     let prefix = prefix.trim_end_matches('_');
     for e in entries.iter().filter(|e| e.key.starts_with(prefix)) {
         if table::rows_of(&e.value).is_none() {
-            return Err(format!("{} must be a list of entry tables, each with a string id and command", e.key));
+            return Err(format!("{} must be a list of entry tables, each with a string id", e.key));
         }
     }
     let lists = get("dispatch.fallback_lists").and_then(V::as_table).ok_or("dispatch.fallback_lists is missing or not a table")?;
@@ -918,12 +918,18 @@ pub fn files_print(root: &Path) -> String {
     d.as_ref()[..12].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The root a cache file records, without reading the rest of it.
+/// The root a cache file records, independent of the writer version, if its defaults index still exists.
 pub fn cache_root(path: &Path) -> Option<PathBuf> {
     let mut head = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(std::fs::File::open(path).ok()?), &mut head).ok()?;
     let mut f = head.trim_end_matches('\n').splitn(4, '\t');
-    (f.next()? == MAGIC && f.next()? == env!("CARGO_PKG_VERSION")).then(|| f.nth(1).map(PathBuf::from).unwrap_or_default())
+    if f.next()? != MAGIC {
+        return None;
+    }
+    let _version = f.next()?;
+    let _print = f.next()?;
+    let root = PathBuf::from(f.next()?);
+    (!root.as_os_str().is_empty() && bootstrap::has_index(&root)).then_some(root)
 }
 
 /// The client's view of the defaults: the cache file, with a line index, parsed one key at a time.
@@ -1046,7 +1052,12 @@ pub fn log_start_failure(e: &DefaultsError) {
 /// Note why no defaults could be loaded where an operator can find it: the event log needs the very settings that are
 /// missing, so this is one line in `defaults.error` in the state directory (overwritten each time) and the same on stderr.
 pub fn report_unavailable(e: &DefaultsError) {
-    let line = format!("ah-engine: defaults unavailable: {e}");
+    // Defaults are unavailable: diagnostics cannot read configurable limits or texts here.
+    let argv: Vec<String> = std::env::args_os().take(4).map(|a| a.to_string_lossy().chars().take(160).collect()).collect();
+    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+    // SAFETY: getppid has no arguments or memory-safety preconditions.
+    let ppid = unsafe { libc::getppid() };
+    let line = format!("ah-engine: defaults unavailable: {e}\tpid={} ppid={ppid} argv={argv:?} cwd={cwd:?}", std::process::id());
     crate::discard::harmless(writeln!(std::io::stderr(), "{line}")); // keep: a closed stderr leaves nobody to tell
     if let Some(p) = bootstrap::state_dir().map(|d| d.join(bootstrap::ERROR_FILE)) {
         crate::discard::harmless(crate::limits::ensure_private_dir(p.parent().unwrap_or(Path::new(".")))); // keep: the write that follows fails too and the stderr line stands
@@ -1074,13 +1085,15 @@ mod tests {
                 }
             }
         }
-        let root = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
-        crate::discard::harmless(std::fs::remove_dir_all(&root));
+        let base = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&base));
+        let root = base.join("plugin");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let node = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node");
         cp(&src.join(bootstrap::DEFAULTS_DIR), &root.join(bootstrap::DEFAULTS_DIR));
-        std::fs::create_dir_all(root.join("hooks")).unwrap();
+        std::fs::create_dir_all(base.join("anti-hall-node/hooks")).unwrap();
         for l in ["ah-fallback.list", "ah-fallback.codex.list"] {
-            std::fs::copy(src.join("hooks").join(l), root.join("hooks").join(l)).unwrap();
+            std::fs::copy(node.join("hooks").join(l), base.join("anti-hall-node/hooks").join(l)).unwrap();
         }
         root
     }

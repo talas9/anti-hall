@@ -8,7 +8,7 @@ use super::{Hooks, Op, RegRow, Unit, UnitEnd};
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::meshw::ident::{self, R, defer};
+use crate::meshw::ident::{self, R};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -94,7 +94,7 @@ pub fn retire_archived_worktree_group(ctx: &Ctx, runner: &dyn Runner, repo_key: 
     let survivor = pick_archive_survivor(&cx, archived_id, &cands)?;
     let fold_cands: Vec<RegRow> = cands.iter().filter(|d| d.row.id != survivor).cloned().collect();
     let mut sim = Sim::default();
-    let (units, out) = plan_group(&cx, &mut sim, &survivor, &fold_cands, true)?;
+    let (units, out) = plan_group(&cx, &mut sim, &survivor, &fold_cands, true, false)?;
     let mut left: Vec<(String, String)> = Vec::new();
     if survivor != archived_id {
         left.push((survivor.clone(), defaults::text("devswarm_recon.reason_live_descriptor").to_string()));
@@ -174,10 +174,8 @@ pub fn plan_forward_archived(
     if batch.is_empty() {
         return Ok((None, ArchivedForward { forwarded: 0, stale, status: defaults::text("devswarm_recon.status_ok").into() }));
     }
-    if !rows.iter().any(|r| r.row.id == survivor) {
-        if allow_archived_dest {
-            return defer("archived-destination");
-        }
+    // Node's door: an unregistered destination is `gone`, unless it is archived-only and the caller passes rows of archived origin
+    if !rows.iter().any(|r| r.row.id == survivor) && !(allow_archived_dest && crate::meshw::summary::archive_complete_ids(home).contains(survivor)) {
         return Ok((None, ArchivedForward { forwarded: 0, stale, status: defaults::text("devswarm_recon.status_gone").into() }));
     }
     let mut seen: HashSet<String> = HashSet::new();
@@ -197,7 +195,7 @@ pub fn plan_forward_archived(
     let unit = Unit {
         label: format!("forward-archived:{id}"),
         lock: None,
-        ops: vec![guard, Op::Forward { store: store.to_string(), dest: survivor.to_string(), rows: batch }],
+        ops: vec![guard, Op::Forward { store: store.to_string(), dest: survivor.to_string(), rows: batch, allow_archived: allow_archived_dest }],
     };
     Ok((Some(unit), ArchivedForward { forwarded: inserted, stale, status: defaults::text("devswarm_recon.status_ok").into() }))
 }

@@ -6,7 +6,7 @@
 use super::backfill::backfill;
 use super::parse::{Facts, Line, NON_STRING_ID, collect_tool_uses, is_not_found, parse_line};
 use super::tail::{lines_of, read_tail};
-use super::{Task, TaskMap, Unknown, is_non_string_status, kept_status, norm_priority, number_of_digits, priority_field};
+use super::{Since, Task, TaskMap, Unknown, is_non_string_status, kept_status, norm_priority, number_of_digits, priority_field};
 use crate::checks::guardkit::jsre;
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::taskkit::jsval::{R, Unsure, first_truthy, get, scalar_string, truthy};
@@ -21,6 +21,8 @@ type CreateRec = (String, String, Option<String>);
 /// What the pass found about tasks.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScanTasks {
+    /// A line or backfill was unresolved; the known task facts remain available.
+    pub unsure: bool,
     /// A TaskCreate, TaskUpdate or TodoWrite was seen (also anywhere in the wide window when the tail held none).
     pub saw_task_activity: bool,
     /// A TaskGet or TaskUpdate came back "not found".
@@ -29,6 +31,22 @@ pub struct ScanTasks {
     pub in_progress_count: u64,
     /// Ids of the open tasks, in task-list order.
     pub open_task_ids: Vec<String>,
+    /// Every task the pass reconstructed, in list order, for the dashboard's per-agent list: subject, status, priority, and the time it
+    /// was last set pending or in progress (milliseconds; `None` when not known).
+    pub all: Vec<ListedTask>,
+}
+
+/// One task as the dashboard lists it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListedTask {
+    /// The task's subject.
+    pub subject: String,
+    /// Its status as the transcript last set it (empty when unknown).
+    pub status: String,
+    /// Its priority label (empty when none).
+    pub priority: String,
+    /// When it was last set pending or in progress, ms since the epoch.
+    pub updated_ms: Option<u64>,
 }
 
 pub(crate) fn created_re() -> std::sync::Arc<Regex> {
@@ -178,11 +196,15 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
         }
         let entry: Value = match parse_line(t) {
             Line::Parsed(v) => v,
-            Line::Unsure => return Err(Unsure),
+            Line::Unsure => {
+                s.unsure = true;
+                continue;
+            }
             Line::Skip => continue,
         };
         if entry.is_null() {
-            return Ok(None);
+            s.unsure = true;
+            continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
             let content = get(&entry, "message").and_then(|m| get(m, "content")).and_then(Value::as_array);
@@ -215,81 +237,90 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
         let mut uses = Vec::new();
         collect_tool_uses(&entry, &mut uses);
         for tu in uses {
-            let name = get(tu, "name").and_then(Value::as_str).unwrap_or("");
-            let inp: &Value = match get(tu, "input") {
-                Some(v) if truthy(v) && v.is_object() => v,
-                _ => &empty,
-            };
-            match name {
-                "TodoWrite" => {
-                    s.saw_task_activity = true;
-                    if let Some(todos) = get(tu, "input").and_then(|i| get(i, "todos")).and_then(Value::as_array) {
-                        window_reset = true;
-                        tasks.clear();
-                        prov.clear();
-                        for todo in todos {
-                            if todo.is_null() {
-                                return Ok(None);
+            let result: R<()> = (|| {
+                let name = get(tu, "name").and_then(Value::as_str).unwrap_or("");
+                let inp: &Value = match get(tu, "input") {
+                    Some(v) if truthy(v) && v.is_object() => v,
+                    _ => &empty,
+                };
+                match name {
+                    "TodoWrite" => {
+                        s.saw_task_activity = true;
+                        if let Some(todos) = get(tu, "input").and_then(|i| get(i, "todos")).and_then(Value::as_array) {
+                            let mut replacement = TaskMap::default();
+                            for todo in todos {
+                                if todo.is_null() {
+                                    return Err(Unsure);
+                                }
+                                let size_v = Value::String(replacement.len().to_string());
+                                let id = scalar_string(first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v))?;
+                                let id_v = Value::String(id.clone());
+                                let content = scalar_string(first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_v)]).unwrap_or(&id_v))?;
+                                replacement
+                                    .set(&id, task(&id, content, Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
                             }
-                            let size_v = Value::String(tasks.len().to_string());
-                            let id = scalar_string(first_truthy(&[get(todo, "id"), get(todo, "content"), Some(&size_v)]).unwrap_or(&size_v))?;
-                            let id_v = Value::String(id.clone());
-                            let content = scalar_string(first_truthy(&[get(todo, "content"), get(todo, "activeForm"), Some(&id_v)]).unwrap_or(&id_v))?;
-                            tasks.set(&id, task(&id, content, Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".into())), None, None));
+                            tasks = replacement;
+                            prov.clear();
+                            window_reset = true;
                         }
                     }
-                }
-                "TaskCreate" => {
-                    s.saw_task_activity = true;
-                    let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) else { continue };
-                    let (tid, tid_v) = match id_v {
-                        Value::String(s) => (s.clone(), id_v.clone()),
-                        // a number or boolean id is its own Map key, never equal to a string id: the task lives under `String(id)`
-                        Value::Number(_) | Value::Bool(_) => (format!("{NON_STRING_ID}{}", scalar_string(id_v)?), id_v.clone()),
-                        _ => return Err(Unsure),
-                    };
-                    let tid = &tid;
-                    let content = scalar_string(
-                        first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)]).unwrap_or(&tid_v),
-                    )?;
-                    let status = kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".into());
-                    let rec = (content, status, norm_priority(priority_field(inp))?);
-                    match prov.iter_mut().find(|(k, _)| k == tid) {
-                        Some(slot) => slot.1 = rec,
-                        None => prov.push((tid.clone(), rec)),
-                    }
-                }
-                "TaskUpdate" => {
-                    s.saw_task_activity = true;
-                    if let Some(Value::String(i)) = get(tu, "id").filter(|v| truthy(v)) {
-                        lookup_ids.insert(i.clone());
-                    }
-                    let id = defaults::list("taskstate.id_keys").iter().find_map(|k| get(inp, k).filter(|v| !v.is_null()));
-                    if let Some(idv) = id {
-                        let id = scalar_string(idv)?;
-                        let existing = tasks.get(&id).cloned().unwrap_or_else(|| Task::unseen(&id));
-                        let has_pri =
-                            get(inp, "priority").is_some() || get(inp, "metadata").filter(|m| !m.is_null()).and_then(|m| get(m, "priority")).is_some();
-                        let priority = if has_pri { norm_priority(priority_field(inp))? } else { existing.priority.clone() };
-                        let status = match kept_status(get(inp, "status"))? {
-                            Some(st) => Some(st),
-                            None => existing.status.clone(),
+                    "TaskCreate" => {
+                        s.saw_task_activity = true;
+                        let Some(id_v) = get(tu, "id").filter(|v| truthy(v)) else { return Ok(()) };
+                        let (tid, tid_v) = match id_v {
+                            Value::String(s) => (s.clone(), id_v.clone()),
+                            // a number or boolean id is its own Map key, never equal to a string id: the task lives under `String(id)`
+                            Value::Number(_) | Value::Bool(_) => (format!("{NON_STRING_ID}{}", scalar_string(id_v)?), id_v.clone()),
+                            _ => return Err(Unsure),
                         };
-                        let unknown = gaps(existing.unknown, inp);
-                        // a rename counts: a task is listed by its current subject, not the one it was created with
-                        let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
-                        let mut t = task(&existing.id, subject.map_or_else(|| existing.content.clone(), str::to_string), status, priority, unknown);
-                        t.subject_updated = subject.is_some() || existing.subject_updated;
-                        t.unknown = unknown;
-                        tasks.set(&id, t);
+                        let tid = &tid;
+                        let content = scalar_string(
+                            first_truthy(&[get(inp, "subject"), get(inp, "title"), get(inp, "content"), get(inp, "description"), Some(&tid_v)])
+                                .unwrap_or(&tid_v),
+                        )?;
+                        let status = kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".into());
+                        let rec = (content, status, norm_priority(priority_field(inp))?);
+                        match prov.iter_mut().find(|(k, _)| k == tid) {
+                            Some(slot) => slot.1 = rec,
+                            None => prov.push((tid.clone(), rec)),
+                        }
                     }
-                }
-                "TaskGet" => {
-                    if let Some(Value::String(i)) = get(tu, "id").filter(|v| truthy(v)) {
-                        lookup_ids.insert(i.clone());
+                    "TaskUpdate" => {
+                        s.saw_task_activity = true;
+                        if let Some(Value::String(i)) = get(tu, "id").filter(|v| truthy(v)) {
+                            lookup_ids.insert(i.clone());
+                        }
+                        let id = defaults::list("taskstate.id_keys").iter().find_map(|k| get(inp, k).filter(|v| !v.is_null()));
+                        if let Some(idv) = id {
+                            let id = scalar_string(idv)?;
+                            let existing = tasks.get(&id).cloned().unwrap_or_else(|| Task::unseen(&id));
+                            let has_pri =
+                                get(inp, "priority").is_some() || get(inp, "metadata").filter(|m| !m.is_null()).and_then(|m| get(m, "priority")).is_some();
+                            let priority = if has_pri { norm_priority(priority_field(inp))? } else { existing.priority.clone() };
+                            let status = match kept_status(get(inp, "status"))? {
+                                Some(st) => Some(st),
+                                None => existing.status.clone(),
+                            };
+                            let unknown = gaps(existing.unknown, inp);
+                            // a rename counts: a task is listed by its current subject, not the one it was created with
+                            let subject = get(inp, "subject").and_then(Value::as_str).filter(|s| !s.is_empty());
+                            let mut t = task(&existing.id, subject.map_or_else(|| existing.content.clone(), str::to_string), status, priority, unknown);
+                            t.subject_updated = subject.is_some() || existing.subject_updated;
+                            t.unknown = unknown;
+                            tasks.set(&id, t);
+                        }
                     }
+                    "TaskGet" => {
+                        if let Some(Value::String(i)) = get(tu, "id").filter(|v| truthy(v)) {
+                            lookup_ids.insert(i.clone());
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+                Ok(())
+            })();
+            if result.is_err() {
+                s.unsure = true;
             }
         }
     }
@@ -335,15 +366,27 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             }
         }
     }
-    let mut facts = Facts { tasks, window_reset, first_created };
-    if truncated {
-        backfill(&mut facts, path, window)?;
+    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure };
+    if truncated && backfill(&mut facts, path, window).is_err() {
+        s.unsure = true;
     }
     // a task that ends the pass with a non-string status: Node's `isOpenTask` lowercases it and throws
-    if facts.tasks.values().any(|t| is_non_string_status(t.status.as_deref())) {
-        return Err(Unsure);
+    for t in facts.tasks.values_mut() {
+        if is_non_string_status(t.status.as_deref()) {
+            t.status = None;
+            s.unsure = true;
+        }
     }
     for t in facts.tasks.values() {
+        s.all.push(ListedTask {
+            subject: t.content.clone(),
+            status: t.status.clone().unwrap_or_default(),
+            priority: t.priority.clone().unwrap_or_default(),
+            updated_ms: match t.since {
+                Since::Ms(v) if v.is_finite() && v > 0.0 => Some(v as u64),
+                _ => None,
+            },
+        });
         if !t.is_open() {
             continue;
         }
@@ -360,9 +403,11 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
     if !s.saw_task_activity
         && truncated
         && let Some(found) = has_task_activity_in_file(path, wide)
-        && found?
     {
-        s.saw_task_activity = true;
+        match found {
+            Ok(hit) => s.saw_task_activity = hit,
+            Err(_) => s.unsure = true,
+        }
     }
     Ok(Some(s))
 }

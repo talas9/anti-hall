@@ -43,6 +43,9 @@ fn open_for_write() -> Result<TelDb, String> {
 pub fn run(rest: &[String]) -> (Value, i32) {
     let sub = rest.first().filter(|w| !w.starts_with("--")).map(String::as_str).unwrap_or("summary");
     let window = flag(rest, "window");
+    if let Err(e) = report::check_window(&window) {
+        return (json!({"error": e}), 64);
+    }
     match sub {
         "summary" | "events" => {
             let (kind, limit) = (flag(rest, "kind"), flag(rest, "limit"));
@@ -64,6 +67,9 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             } else {
                 report::summary_json(tel.as_ref(), None, days, now_ms())
             };
+            if sub == "summary" {
+                v["agent_cost"] = crate::agents::cost_report();
+            }
             v["from"] = json!("files");
             v["running"] = json!(false);
             (v, 0)

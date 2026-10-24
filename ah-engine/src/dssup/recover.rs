@@ -4,7 +4,7 @@
 //! matrix, then the automated-caller rule), an id that is not a plain workspace id, a request id that already ran, a descriptor
 //! without a worktree and a session, a workspace already recovered `maxRecoveries` times. Every request that passes those checks gets
 //! the explicit `native_refused` outcome, before any ledger line is written and before any process is looked at. The kill-and-resume is
-//! the on-demand Node recovery (`companion/devswarm-recover.js`). It is never scheduled and never started by a sweep
+//! the on-demand Node recovery. It is never scheduled and never started by a sweep
 //! (`devswarm_act.automatic_kinds` and `devswarm_sup.duties` do not list it).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable descriptor or verdict is an absent one: the first is a refusal, the second counts as no recoveries
@@ -110,6 +110,6 @@ fn decide(at: &Place, st: &Settings, id: &str, request: &str) -> Result<(Value, 
     }
     // Owner decision F: the engine never kills or resumes a session, and there is no rollback of a kill. The request is refused here,
     // before the ledger or any process is touched, whatever `devswarm_sup.duties_off` says (an opt-out list is no authorisation for a
-    // native kill). The kill-and-resume stays the on-demand Node recovery (`companion/devswarm-recover.js`).
+    // native kill). The kill-and-resume stays the on-demand Node recovery.
     Err(refuse("native_refused", defaults::text("devswarm_sup.msg_recover_native_refused").into()))
 }

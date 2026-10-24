@@ -5,7 +5,7 @@
 //! ticks, subject to a per-signal cooldown, a daily cap, a per-tick cap and the size of the agent's undelivered queue. When a flag
 //! clears, its outcome is recorded: recovered after a reminder (with how long it took), or a false positive (it cleared on its own
 //! while the agent made progress). A reminded flag still up after the outcome window is recorded as not recovered. Nothing here
-//! ever stops an agent.
+//! stops an agent: escalation to the owner and the stop actions are in `escalate`.
 use super::facts::words;
 use super::sinks::{self, MeshOutbox, OwnerNotices, Reminder, SessionQueue, Sink, WakeFeed, age};
 use super::{Agent, Env, Flag, Sample, State, cap, chan, defaults_signals, fmtn, kind_name, lim, pth, state_name};
@@ -27,6 +27,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
     if a.kind == kind_name("heartbeat") {
         return if a.flags.contains_key("heartbeat_stale") { state_name("stale") } else { state_name("running") };
     }
+    if a.dead {
+        return state_name("dead");
+    }
     if a.gone || a.finished {
         return state_name("done");
     }
@@ -34,7 +37,9 @@ pub(crate) fn state_of(a: &Agent) -> &'static str {
         if host("waiting") || host("blocked") {
             return state_name("waiting");
         }
-        if host("busy") {
+        // the host says busy while any shell of the session runs (a wake-watch Monitor runs for the whole session), so a session whose
+        // transcript ended its turn with no tool call open is idle, whatever the host's word
+        if host("busy") && (a.running || !a.pending.is_empty()) {
             return state_name("running");
         }
     }
@@ -121,8 +126,101 @@ fn token_waste(a: &Agent, now: u64) -> Option<Raised> {
     if cur.t.saturating_sub(base.t) < lim("waste_min_span_ms") {
         return None;
     }
-    let tokens = (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct");
+    let tokens = spent(base, cur);
     (tokens >= lim("waste_min_tokens") && cur.progress - base.progress <= lim("waste_max_progress")).then(|| (tokens, String::new()))
+}
+
+/// The tokens spent between two samples (cache reads count `cache_read_pct` percent).
+fn spent(base: &Sample, cur: &Sample) -> u64 {
+    (cur.tin - base.tin) + (cur.tout - base.tout) + (cur.tcw - base.tcw) + (cur.tcr - base.tcr) * lim("cache_read_pct") / fmtn("pct")
+}
+
+/// Everything the agent has spent, counted the way the burn and waste figures count (cache reads at their configured share), so the
+/// total a nudge shows never reads smaller than the part of it spent with no outcome.
+pub(crate) fn total_spent(a: &Agent) -> u64 {
+    a.tin + a.tout + a.tcw + a.tcr * lim("cache_read_pct") / fmtn("pct")
+}
+
+/// Whether the agent's latest calls wait on CI (a `ci_wait` command among the last `ci_wait_calls`).
+pub(crate) fn waiting_on_ci(a: &Agent) -> bool {
+    let Some(re) = defaults::raw("agent_tracker.patterns")
+        .get("ci_wait")
+        .and_then(V::as_str)
+        .and_then(|s| regex::RegexBuilder::new(s).case_insensitive(true).build().ok())
+    else {
+        return false;
+    };
+    a.recent.iter().rev().take(lim("ci_wait_calls") as usize).any(|r| re.is_match(&r.1))
+}
+
+/// Tokens spent since the agent's last outcome (a commit, finished step, passing test or new file), looking back at most one
+/// waste window. An outcome moves the start forward, so the count (and the breaker) resets when the agent produces one.
+pub(crate) fn tokens_since_outcome(a: &Agent, now: u64) -> u64 {
+    let from = now.saturating_sub(lim("waste_window_ms"));
+    let Some(cur) = a.samples.last() else { return 0 };
+    let start = a.samples.iter().rev().take_while(|s| s.t >= from && s.progress == cur.progress).last();
+    start.map_or(0, |b| spent(b, cur))
+}
+
+/// The burn breaker: tokens spent since the last outcome reached the soft band (`burn_soft`: warn) or the hard line (`burn_hard`:
+/// the agent's tool calls are blocked by the `burn-breaker` check except commit, push, status and its report).
+fn burn(env: &Env, a: &Agent, now: u64, soft: bool) -> Option<Raised> {
+    if !running(a) || a.kind == kind_name("heartbeat") || !env.switch("burn.sw") {
+        return None;
+    }
+    let (lo, hi) = (defaults::num("burn.soft_tokens_no_outcome"), defaults::num("burn.hard_tokens_no_outcome"));
+    let t = tokens_since_outcome(a, now);
+    let hit = if soft { lo > 0 && t >= lo && (hi == 0 || t < hi) } else { hi > 0 && t >= hi };
+    hit.then(|| (t, String::new()))
+}
+
+/// Mirror the hard flag into the small marker file the `burn-breaker` check reads on every tool call (one file per agent key, so
+/// the hot path never parses the tracker state). Removed when the flag is down; a stale one expires by `burn.marker_ttl_ms`.
+fn mark_breaker(env: &Env, a: &Agent, burn: Option<&Raised>) {
+    if !env.act {
+        return;
+    }
+    let dir = env.dir().join(defaults::text("burn.marker_dir"));
+    let file = dir.join(format!("{}{}", sinks::key_of(&a.id), defaults::text("burn.marker_ext")));
+    // the hard condition that holds now: the token line first, else the waste sensor's hard mark (its score is NOT a token count)
+    let body = match (burn, super::waste::is_hard(a)) {
+        (Some((tokens, _)), _) => {
+            Some(serde_json::json!({ "ts": env.now_ms, "agent": a.id, "source": "burn", "tokens": tokens, "tokens_text": sinks::count(*tokens) }))
+        }
+        (None, true) => {
+            let tokens = super::waste::window_tokens(a, env.now_ms);
+            Some(serde_json::json!({
+                "ts": env.now_ms, "agent": a.id, "source": "waste", "tokens": tokens, "tokens_text": sinks::count(tokens),
+                "score": a.waste.score as u64, "hard": super::waste::hard_line(), "reason": a.waste.reason,
+            }))
+        }
+        (None, false) => None,
+    };
+    match body {
+        Some(body) => {
+            if std::fs::create_dir_all(&dir).is_ok() {
+                crate::discard::harmless(crate::atomic::write(&file, body.to_string())); // keep: the marker is a cache of the flag; the next tick rewrites it
+            }
+        }
+        None => {
+            if file.exists() {
+                crate::discard::harmless(std::fs::remove_file(&file)); // keep: an absent marker is the goal state
+            }
+        }
+    }
+}
+
+/// Remove markers older than `burn.marker_ttl_ms` (an agent that left the state without clearing its flag).
+fn sweep_markers(env: &Env) {
+    let dir = env.dir().join(defaults::text("burn.marker_dir"));
+    let ttl = std::time::Duration::from_millis(defaults::num("burn.marker_ttl_ms"));
+    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > ttl);
+        if old {
+            crate::discard::harmless(std::fs::remove_file(e.path())); // keep: cleanup that raced; an absent file is the goal state
+        }
+    }
 }
 
 fn drift(a: &Agent) -> Option<Raised> {
@@ -155,6 +253,38 @@ fn idle_open_task(a: &Agent, now: u64) -> Option<Raised> {
     }
     let idle = now.saturating_sub(a.last_output_ms);
     (idle >= lim("idle_open_ms") && idle <= lim("active_window_ms")).then(|| (idle / fmtn("ms_per_s"), a.step.clone()))
+}
+
+/// Only a complete transcript can establish no work. Partial scans and rescue wrappers never raise this signal.
+/// A subagent that is known to have finished (it said so, or its task ended) and spoke at all, without making a single tool call: it did nothing, whatever its last message says ("Done"). Raised once,
+/// so the parent is told not to take the report for a result. `agent_tracker.no_work.max_tools` is the most tool calls that still count.
+fn no_work(a: &Agent) -> Option<Raised> {
+    if !super::is_child(a)
+        || !(a.finished || a.gone)
+        || a.dead
+        || a.tout == 0
+        || !a.transcript_complete
+        || a.partial
+        || a.codex_rescue
+        || a.tools > defaults::raw("agent_tracker.no_work").get("max_tools").and_then(V::as_integer).unwrap_or(0).max(0) as u64
+    {
+        return None;
+    }
+    Some((a.tools, String::new()))
+}
+
+/// The no-work evidence state, including unknown for any incomplete scan.
+pub(crate) fn no_work_state(a: &Agent) -> &'static str {
+    let key = if a.codex_rescue {
+        "excluded"
+    } else if a.partial || !a.transcript_complete {
+        "unknown"
+    } else if no_work(a).is_some() {
+        "no_work"
+    } else {
+        "clear"
+    };
+    defaults::raw("agent_tracker.no_work_states").str_field(key)
 }
 
 /// A background shell task the agent started has ended (a test run, a soak, a build): the session that waits for it is told once.
@@ -194,11 +324,15 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
             "hung" => hung(a, now),
             "looping" => looping(a),
             "token_waste" => token_waste(a, now),
+            "burn_soft" => burn(env, a, now, true),
+            "burn_hard" => burn(env, a, now, false),
+            "agent_waste" => super::waste::raised(a),
             "drift" => drift(a),
             "heartbeat_stale" => heartbeat_stale(a, now),
             "monitor_unarmed" => monitor_unarmed(env, a, st, now),
             "idle_open_task" => idle_open_task(a, now),
             "watched_exit" => watched_exit(a, now),
+            "no_work" => no_work(a),
             _ => None,
         };
         if let Some(r) = r {
@@ -210,11 +344,11 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
 
 // ---- telemetry ----------------------------------------------------------------------------------------------
 
-fn base(a: &Agent) -> Fields {
+pub(crate) fn base(a: &Agent) -> Fields {
     Fields::new().tok("agent", &a.id).tok("akind", &a.kind).tok("state", state_of(a))
 }
 
-fn rec(env: &Env, class: &str, name: &str, outcome: Outcome, fields: Fields) {
+pub(crate) fn rec(env: &Env, class: &str, name: &str, outcome: Outcome, fields: Fields) {
     if env.act {
         emit::event(emit::agent_call(AgentRec { class, name, outcome, fields }));
     }
@@ -271,26 +405,34 @@ enum Target {
     Owner,
 }
 
-fn text_for(env: &Env, a: &Agent, sig: &str, f: &Flag) -> String {
+fn text_for(a: &Agent, sig: &str, f: &Flag) -> String {
     let who = label(a);
     let kind: &str = &a.kind;
     let t = match sig {
         "hung" => defaults::render("msg.agent_hung", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("tool", &f.text)]),
         "looping" => defaults::render("msg.agent_looping", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("what", &f.text)]),
-        "token_waste" => {
-            defaults::render("msg.agent_token_waste", &[("agent", &who), ("kind", &kind), ("tokens", &f.evidence), ("window", &age(lim("waste_window_ms")))])
-        }
+        "token_waste" => defaults::render(
+            "msg.agent_token_waste",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
+        "burn_soft" => defaults::render(
+            "burn.msg_soft",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
+        "burn_hard" => defaults::render(
+            "burn.msg_hard",
+            &[("agent", &who), ("kind", &kind), ("tokens", &sinks::count(f.evidence)), ("window", &age(lim("waste_window_ms")))],
+        ),
+        "agent_waste" => super::waste::text(&who, a, f.evidence, &f.text),
         "drift" => defaults::render("msg.agent_drift", &[("agent", &who), ("step", &f.text), ("overlap", &f.evidence)]),
         "heartbeat_stale" => defaults::render("msg.agent_heartbeat_stale", &[("agent", &who), ("age", &age(f.evidence * fmtn("ms_per_s"))), ("step", &f.text)]),
         "idle_open_task" => {
             defaults::render("msg.agent_idle_open_task", &[("agent", &who), ("kind", &kind), ("idle", &age(f.evidence * fmtn("ms_per_s"))), ("task", &f.text)])
         }
         "watched_exit" => defaults::render("msg.agent_watched_exit", &[("agent", &who), ("kind", &kind), ("count", &f.evidence), ("task", &f.text)]),
+        "no_work" => defaults::render("msg.agent_no_work", &[("agent", &who), ("kind", &kind), ("tools", &f.evidence)]),
         _ if a.ws.as_ref().is_some_and(|w| w.armed == Some(false)) => {
-            let root =
-                env.plugin_root.as_ref().map_or_else(|| defaults::text("agent_tracker.wake_root_fallback").to_string(), |r| r.to_string_lossy().to_string());
-            let command = defaults::render("agent_tracker.wake_command", &[("root", &root)]);
-            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &command)])
+            defaults::render("msg.agent_monitor_unarmed_devswarm", &[("command", &defaults::text("agent_tracker.wake_command"))])
         }
         _ => defaults::render("msg.agent_monitor_unarmed", &[("count", &f.evidence), ("armed", &f.text)]),
     };
@@ -343,7 +485,8 @@ fn targets(env: &Env, st: &State, a: &Agent, sig: &str) -> Vec<Target> {
 }
 
 fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64) {
-    if !env.act || !env.switch("agent_tracker.remind_setting") {
+    // an unhealthy child is the nudge loop's: one question to its direct parent, never a broadcast
+    if !env.act || !env.switch("agent_tracker.remind_setting") || super::nudge::owns(env, a, sig) {
         return;
     }
     let now = env.now_ms;
@@ -368,8 +511,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     let Some(flag) = a.flags.get(sig).cloned() else { return };
     let tg = targets(env, st, a, sig);
     let mut sent = 0;
-    let mut held = why;
     for t in &tg {
+        // per target: a full session queue must not hold back the wake row, which is the one path that reaches an idle session
+        let mut held = why;
         let (sink, key): (Box<dyn Sink>, String) = match t {
             Target::Session(k) => (Box::new(SessionQueue), k.clone()),
             Target::Wake(k) => (Box::new(WakeFeed), k.clone()),
@@ -377,6 +521,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             Target::Owner => (Box::new(OwnerNotices), String::new()),
         };
         if held.is_none() && sink.backlog(env, &key) >= spam("max_pending") {
+            held = Some("pending");
+        }
+        if held.is_none() && sink.has_pending(env, &key, sig, &a.id) {
             held = Some("pending");
         }
         let f = base(a).tok("channel", sink.channel()).tok("result", held.unwrap_or("queued")).num("evidence", flag.evidence);
@@ -394,7 +541,7 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
             ts: now,
             signal: sig.into(),
             agent: a.id.clone(),
-            text: text_for(env, a, sig, &flag),
+            text: text_for(a, sig, &flag),
         };
         match sink.deliver(env, &key, &r) {
             Ok(()) => {
@@ -495,9 +642,13 @@ fn take_deliveries(env: &Env, st: &mut State) {
         st.delivered_lines += 1;
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (agent, sig, ts) = (v["agent"].as_str().unwrap_or(""), v["signal"].as_str().unwrap_or(""), v["ts"].as_u64().unwrap_or(env.now_ms));
-        let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(sig)).map(|f| {
+        super::nudge::delivered(st, &v, ts);
+        // a nudge row names the nudge, not the flag: the flag it answers is the child's trigger signal (#207: those flags stayed at 0)
+        let flag = super::nudge::flag_signal(st, &v).unwrap_or_else(|| sig.to_string());
+        let lat = st.agents.get_mut(agent).and_then(|a| a.flags.get_mut(flag.as_str())).map(|f| {
             f.delivered_at = ts;
-            ts.saturating_sub(f.reminded_at) / fmtn("ms_per_s")
+            f.delivered_to = v["key"].as_str().unwrap_or("").to_string();
+            ts.saturating_sub(if f.reminded_at > 0 { f.reminded_at } else { f.since }) / fmtn("ms_per_s")
         });
         if env.act {
             st.day(env).delivered += 1;
@@ -505,7 +656,7 @@ fn take_deliveries(env: &Env, st: &mut State) {
                 class: "delivery",
                 name: sig,
                 outcome: Outcome::Advise,
-                fields: Fields::new().tok("agent", agent).tok("channel", chan("session")).num("lat_s", lat.unwrap_or(0)),
+                fields: Fields::new().tok("agent", agent).tok("channel", v["channel"].as_str().unwrap_or(chan("session"))).num("lat_s", lat.unwrap_or(0)),
             }));
         }
     }
@@ -516,12 +667,16 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
     let now = env.now_ms;
     take_deliveries(env, st);
     let mut queued = 0;
+    let mut judge_budget = super::waste::judge_budget();
     let ids: Vec<String> = st.agents.keys().cloned().collect();
     for id in ids {
         let Some(mut a) = st.agents.remove(&id) else { continue };
         let prev = a.samples.last().map(|s| s.tin + s.tout).unwrap_or(a.tin + a.tout);
+        super::waste::note_head(env, &mut a);
         sample(&mut a, now);
+        super::waste::update(env, &mut a, &mut judge_budget);
         let raised = raise(env, &a, st, now);
+        mark_breaker(env, &a, raised.get("burn_hard"));
         apply(env, st, &mut a, raised, &mut queued);
         if env.act && !a.flags.is_empty() {
             st.day(env).burned += (a.tin + a.tout).saturating_sub(prev);
@@ -529,11 +684,14 @@ pub(crate) fn evaluate_all(env: &Env, st: &mut State) {
         series(env, &mut a);
         st.agents.insert(id, a);
     }
+    super::nudge::tick(env, st);
+    super::lockwatch::tick(env, st);
     let keep = lim("day_retention");
     let today = now / fmtn("day_ms");
     st.days.retain(|d, _| d.parse::<u64>().is_ok_and(|d| today.saturating_sub(d) <= keep));
     if env.act {
         sinks::compact(env);
+        sweep_markers(env);
         trim_series(env);
     }
 }

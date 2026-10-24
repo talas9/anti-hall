@@ -59,14 +59,14 @@ function decide(p) {
     if (marker === null) {
       var reason = text.message('block', guard, {
         what: ah.cfg('ask_guard.block_what'), why: ah.cfg('ask_guard.block_why'),
-        instead: ah.cfg('ask_guard.block_instead'), allowed: ah.cfg('ask_guard.block_allowed'),
-      }) + suffix;
+        instead: ah.cfg('ask_guard.block_instead'), allowed: ah.cfg('ask_guard.block_allowed'), extra: [suffix],
+      });
       return { exact: { code: 2, out: text.blockJson(reason), err: '' } };
     }
   }
   var parts = [];
   if (mode === 'advise') {
-    parts.push(text.message('tip', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead') }) + suffix);
+    parts.push(text.message('tip', guard, { what: ah.cfg('ask_guard.advise_what'), instead: ah.cfg('ask_guard.advise_instead'), extra: [suffix] }));
   }
   var note = askAgentsNote(p);
   if (note !== '') parts.push(note);

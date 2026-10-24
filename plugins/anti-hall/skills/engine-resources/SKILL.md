@@ -12,13 +12,14 @@ Daemon status, metrics, backups, schedules and limits.
 | Verb | What it does | Roles |
 |---|---|---|
 | `ah-engine backup` | `[--to <dir>]` Make a consistent online snapshot of hot.db and archive.db with SQLite's backup API, scrubbed of secrets, in backups/<ms> or the given... | main, codex |
-| `ah-engine coordinator-work-baseline` | `<transcript.jsonl> [--from-line <n>] [--cwd <dir>] [--json]` Replay a session transcript's main-thread Bash calls through the coordinator-work classifier and window (L03, the port of... | main, codex, workspace, subagent |
+| `ah-engine coordinator-work-baseline` | `<transcript.jsonl> [--from-line <n>] [--cwd <dir>] [--json]` Replay a session transcript's main-thread Bash calls through the coordinator-work classifier and window and print what the guard would... | main, codex, workspace, subagent |
 | `ah-engine ctl` | `<ping\|reload\|stop\|status\|profile on [sample\|full] [--for <dur>]\|profile off\|profile status>` Send a control verb (with its arguments) to the daemon: ping, reload, stop, status, or profile (switch per-check CPU and allocation... | main, codex |
 | `ah-engine diag` | `<cpu\|mem\|threads\|hooks\|mesh\|jev\|fs\|locks\|trace>` Read-only diagnostic reports over state the engine already keeps: cpu, mem, threads, hooks, mesh, jev, fs, locks and the trace ring | main, codex, workspace, subagent |
-| `ah-engine dispatch-report` | `[--json]` Read-only effectiveness metrics (L03, the port of scripts/dispatch-report.js): the parallel-dispatch demand shown, followed and ignored... | main, codex, workspace, subagent |
+| `ah-engine dispatch-report` | `[--json]` Read-only effectiveness metrics: the parallel-dispatch demand shown, followed and ignored with its compliance rate, the idle-neglect... | main, codex, workspace, subagent |
 | `ah-engine impact` | `[--kind <kind>] [--project <hash>] [--window <7d>]` Show everything the engine affected: blocks by reason, warnings, context injected, fallbacks, and labelled savings estimates, including... | main, codex, workspace, subagent |
 | `ah-engine maintain` | `` Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived... | main, codex |
 | `ah-engine metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one... | main, codex, workspace, subagent |
+| `ah-engine query` | `[<source>] [--limit <n>] [--offset <n>] [--where <field=value,...>] [--since <7d>] [--window <7d>] [--schema]` Read-only, paginated query over the existing stores: `query <source> [--limit N] [--offset N] [--where field=value,...] [--since 7d]... | main, codex, workspace, subagent |
 | `ah-engine reset` | `` Clear the client breaker, the crash-loop stop and the failure record | main, codex |
 | `ah-engine restore` | `<snapshot-dir>` Restore a snapshot directory: first keep the current state as an unscrubbed pre-restore snapshot (never deleted), stop the daemon, then... | main, codex |
 | `ah-engine schedule` | `<list\|run <job>\|history> [--job <name>] [--limit <n>]` The scheduler (D33): `list` the jobs with their next run and last result, `run <job>` now (waits briefly for the result), or show the... | main, codex, workspace, subagent (owner args: run) |
@@ -27,15 +28,16 @@ Daemon status, metrics, backups, schedules and limits.
 | `ah-engine stop` | `` Ask the daemon to drain and exit | main, codex |
 | `ah-engine telemetry` | `[summary\|events\|rollup\|actions [feature]] [--window <7d>] [--kind <k>] [--limit <n>] [--mistake <feature> <action> <target> <kind>]` Telemetry (D78): `summary` (invocations, outcomes, latency and injected bytes per hook and check), `events` (routing, spawn, Jev and... | main, codex, workspace, subagent (owner args: rollup) |
 | `ah-engine version` | `` Print the version this build reports | main, codex, workspace, subagent |
-| `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command (the port of companion/mcp-reaper.js): `run` makes one sweep (the scheduled job... | main, codex |
+| `ah-engine web` | `[open\|status] [--no-open] [--json]` The Command Center web dashboard (GH #266): `open` (default) starts the local server when it is not running and prints its address,... | main, codex |
+| `ah-engine mcp-reaper` | `run [--dry-run]` The standalone MCP orphan reaper as an engine command: `run` makes one sweep (the scheduled job `mcp_reaper` runs it every... | main, codex |
 | `ah-engine units` | `<status\|install\|heal\|uninstall> [--dry-run] [--bin <path>]` The engine's service units: `status` lists the engine unit and the units the Node installers wrote, with whether the engine runs their... | main, codex, workspace, subagent (owner args: install, heal, uninstall) |
 | `ah-engine codex-activate` | `` Write the advisory Codex activation marker ~/.anti-hall/codex-activated.json ({activatedAt, scope = the working directory}) that the... | main, codex |
 | `ah-engine codex-limit-status` | `` Print whether limit conservation is active, as JSON (active, reason, weekly, fiveHour, sonnetWeekly, source, stale, resetsAt): the Codex... | main, codex, workspace, subagent |
 
 ## Guards
 
-- `scan-throttle`: Advisory: recommends the background-throttled form of a user-configured heavy scan command (port of scan-throttle.js)
-- `emit-dedupe-reset`: SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted (port of...
+- `scan-throttle`: Advisory: recommends the background-throttled form of a user-configured heavy scan command
+- `emit-dedupe-reset`: SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted
 - `limit-conserve-inject`: UserPromptSubmit: injects the limit-conservation directive while conservation is on or a usage bucket is at the threshold...
 - `session-end-mcp-reaper`: SessionEnd sweep of orphaned MCP server processes (parent PID 1, MCP command signature, old enough, not service-managed, never test...
 

@@ -17,11 +17,10 @@ use super::rehome;
 use super::view::{self, archived_rel, descriptor_rel, registry};
 use super::{Hooks, Op, RegRow, Scope, Unit, UnitEnd};
 use crate::checks::guardkit::ojson::OVal;
-use crate::checks::jsport::num::to_js_string;
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::tick::Ctx;
-use crate::meshw::ident::{R, defer, read_descriptor, repo_key_for_worktree};
+use crate::meshw::ident::{R, read_descriptor, repo_key_for_worktree};
 use crate::meshw::idlock::is_safe_id;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -52,15 +51,11 @@ pub struct HealRun {
     pub verdict: gate::Verdict,
 }
 
-/// `String(v)` of a JSON value for the types the engine models.
+/// `String(v)` of a JSON value (`undefined` for an absent one; arrays join with commas, objects are `[object Object]`).
 pub(super) fn js_string(v: Option<&OVal>) -> R<String> {
     Ok(match v {
         None => "undefined".to_string(),
-        Some(OVal::Null) => "null".to_string(),
-        Some(OVal::Str(t)) => t.clone(),
-        Some(OVal::Num(x)) => to_js_string(*x),
-        Some(OVal::Bool(b)) => b.to_string(),
-        Some(_) => return defer("descriptor-field-type"),
+        Some(other) => crate::dssup::appsync::plan::js_str(other),
     })
 }
 
@@ -78,15 +73,6 @@ fn nonempty_str(v: Option<&OVal>) -> Option<&str> {
     match v {
         Some(OVal::Str(t)) if !t.is_empty() => Some(t),
         _ => None,
-    }
-}
-
-/// JavaScript truthiness of the descriptor's `worktreePath`; only strings are modelled.
-pub(super) fn truthy_path(v: Option<&OVal>) -> R<Option<String>> {
-    match v {
-        None | Some(OVal::Null) => Ok(None),
-        Some(OVal::Str(t)) => Ok((!t.is_empty()).then(|| t.clone())),
-        Some(_) => defer("descriptor-field-type"),
     }
 }
 
@@ -110,18 +96,26 @@ fn plan_row(home: &Path, store: &str, cur: &RegRow) -> R<Row> {
     let id = cur.row.id.as_str();
     let reason = |r: &str| Ok(Row::Done(row_result(id, false, Some(r), false), Vec::new()));
     let Some(desc) = read_descriptor(home, id) else { return reason("no-descriptor") };
-    let wt = truthy_path(desc.get("worktreePath"))?;
-    if js_string(desc.get("id"))? != id || wt.is_none() {
+    // `!desc.worktreePath` is JavaScript truthiness; a path that is not text resolves to no key (`repoKeyForWorktree(5)` is null)
+    let wt_val = desc.get("worktreePath");
+    if js_string(desc.get("id"))? != id || !wt_val.is_some_and(OVal::truthy) {
         return reason("no-descriptor");
     }
-    let wt = wt.unwrap_or_default();
+    let wt = match wt_val {
+        Some(OVal::Str(t)) => Some(t.clone()),
+        _ => None,
+    };
     // identity guard: the row in this store and the descriptor must name the same live session
     let cur_sid = view::descriptor_of(cur).session_id.filter(|s| !s.starts_with(defaults::text("devswarm_recon.synthetic_prefix")));
     let desc_sid = live_session(desc.get("sessionId"))?;
     if !(cur_sid.is_some() && desc_sid.is_some() && cur_sid == desc_sid) {
         return reason("descriptor-identity-mismatch");
     }
-    let Some(fresh) = repo_key_for_worktree(&wt)? else { return reason("unresolvable") };
+    let fresh = match &wt {
+        Some(w) => repo_key_for_worktree(w)?,
+        None => None,
+    };
+    let (Some(fresh), Some(wt)) = (fresh, wt) else { return reason("unresolvable") };
     if fresh != store {
         return Ok(Row::Needs { fresh, worktree: wt });
     }

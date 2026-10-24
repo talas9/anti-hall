@@ -25,17 +25,17 @@ enum Copy {
     Failed(Error),
 }
 
-/// `repoRoot(cwd)`: the git toplevel of `cwd` unless it is the account's home, else `cwd`. `None` when the location cannot be
+/// `repoRoot(cwd)`: the canonical superproject root of `cwd` unless it is the account's home, else `cwd`. `None` when the location cannot be
 /// confirmed without Node (the caller then leaves the step to the Node doctor).
 fn project_root(ctx: &Ctx) -> Option<PathBuf> {
     if !Path::new(&ctx.cwd).is_absolute() {
-        return Some(PathBuf::from(&ctx.cwd));
+        return None;
     }
     let c = ident::resolve_context(&ctx.cwd, false, &RequestEnv::from(ctx.env.clone()));
     if c.unsure {
         return None;
     }
-    match c.toplevel {
+    match c.worktree_root {
         Some(t) if crate::checks::jsport::home::real_home().is_none_or(|h| h != t) => Some(PathBuf::from(t)),
         _ => Some(PathBuf::from(&ctx.cwd)),
     }

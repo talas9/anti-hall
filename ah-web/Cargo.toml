@@ -1,0 +1,33 @@
+[package]
+name = "ah-web"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+description = "Command Center web dashboard server for the anti-hall engine (loopback only, lazy, exits when idle)"
+
+[[bin]]
+name = "ah-web"
+path = "src/main.rs"
+
+[dependencies]
+ah-web-proto = { path = "proto" }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "query", "json", "matched-path"] }
+tokio = { version = "=1.54.1", features = ["rt", "net", "time", "sync", "process", "io-util", "macros", "signal", "fs"] }
+tokio-stream = { version = "=0.1.19", features = ["time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
+libc = "0.2.190"
+humantime = "2"
+
+# The WASM page is built separately (ui/ is its own workspace: other profile, other target).
+[workspace]
+members = ["proto"]
+exclude = ["ui"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

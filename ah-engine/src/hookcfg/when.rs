@@ -239,6 +239,8 @@ pub enum SettingRef {
     /// A shipped boolean switch table (`section`, `key`, `env`, `aliases`, `default`), resolved against the request
     /// environment and the loaded `settings.json`.
     Switch(&'static V),
+    /// A shipped enum setting, resolved with the same chain as script settings.
+    Enum(&'static V),
     /// One of the engine's own settings (`section.key` of `defaults/*.toml`).
     Engine(&'static str),
 }
@@ -355,6 +357,11 @@ fn find_setting(key: &str) -> Option<SettingRef> {
             && e.value.get("default").is_some_and(|d| d.as_bool().is_some())
         {
             return Some(SettingRef::Switch(&e.value));
+        }
+    }
+    for e in defaults::all().iter().copied() {
+        if e.value.str_field("section") == section && e.value.str_field("key") == name && e.value.get("values").is_some() {
+            return Some(SettingRef::Enum(&e.value));
         }
     }
     defaults::get(key).map(|e| SettingRef::Engine(e.key))
@@ -510,7 +517,12 @@ impl When {
                 let value = match src {
                     Source::Tool => cx.tool.or_else(|| cx.payload.get("tool_name").and_then(Json::as_str)).map(|t| Val::Str(t.to_string())),
                     Source::Field(p) => cx.payload.pointer(p).and_then(Val::from_json),
-                    Source::Env(n) => cx.env.get(n).map(|v| Val::Str(v.to_string())),
+                    Source::Env(n) => {
+                        if cx.env.is_incomplete() {
+                            return None;
+                        }
+                        cx.env.get(n).map(|v| Val::Str(v.to_string()))
+                    }
                     Source::Setting(r) => cx.facts.setting(r, cx.env)?,
                     Source::Transcript(f) => cx.facts.transcript(cx.payload, *f)?,
                 };
@@ -568,7 +580,16 @@ pub struct LoadedFacts<'a> {
 
 impl Facts for LoadedFacts<'_> {
     fn setting(&self, r: &SettingRef, env: &RequestEnv) -> Option<Option<Val>> {
+        if env.is_incomplete() {
+            return None;
+        }
+        // The same usable-home and unreadable-settings guards as the scripts, before a predicate may skip their load.
+        let st = crate::checks::devswarm_role::usable_settings(env)?;
+        if crate::checks::guardkit::settings::unreadable_settings_file(&st.home) {
+            return None;
+        }
         Some(match r {
+            SettingRef::Enum(entry) => Some(Val::Str(crate::checks::guardkit::settings::get_enum(&st, entry))),
             SettingRef::Engine(k) => self.effective.get(k).and_then(|x| Val::from_json(&x.value)),
             SettingRef::Switch(entry) => Some(Val::Bool(switch_value(entry, env, self.settings))),
         })
@@ -695,6 +716,37 @@ mod tests {
         assert_eq!(eval_with(&w, &p, &env, &NoFacts, None), None, "no loaded settings: unknown");
         assert_eq!(eval_with(&ok(json!({"setting": "daemon.queue", "at_least": 1})), &p, &env, &f(&off, &loaded), None), Some(true), "an engine setting");
         assert!(When::parse(&json!({"setting": "guards.noSuchThing"})).is_err());
+    }
+
+    /// The dispatch fast path keeps real Primary Stop hooks on both hosts, while only the parent gate is skipped for a child.
+    #[test]
+    fn shipped_mesh_stop_predicates_keep_active_sessions_on_both_hosts() {
+        let loaded = crate::cfgstore::Effective::defaults();
+        let settings = json!(null);
+        let facts = LoadedFacts { settings: &settings, effective: &loaded, index: None };
+        let payload = json!({"hook_event_name": "Stop", "session_id": "s1"});
+        for host in ["claude", "codex"] {
+            let entries = crate::dispatch::table::entries(host, "Stop");
+            let parent = entries.iter().find(|e| e.id == "devswarm-parent-gate").expect("parent gate");
+            let child = entries.iter().find(|e| e.id == "devswarm-child-gate").expect("child gate");
+            assert!(child.when.is_none(), "{host}: child Stop is never removed by a predicate");
+            let predicate = parent.when.as_ref().expect("parent predicate");
+            for pairs in [
+                vec![("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1")],
+                vec![("HOME", "/nonexistent-ah-predicate-home"), ("ANTIHALL_DEVSWARM_SUPERVISOR", "on")],
+            ] {
+                let request = RequestEnv::from_pairs(pairs);
+                assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(true), "{host}: real Primary");
+            }
+            let request =
+                RequestEnv::from_pairs([("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
+            assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(false), "{host}: a child does not run the parent gate");
+            assert_ne!(
+                eval_with(predicate, &payload, &RequestEnv::incomplete(), &facts, None),
+                Some(false),
+                "{host}: incomplete requests are never proved inert"
+            );
+        }
     }
 
     #[test]

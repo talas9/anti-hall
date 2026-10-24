@@ -161,6 +161,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
             || k.starts_with("coordinator_work.lock_") // the lock timings of the coordinator-work-guard script, read as a group (`Params::from_group("coordinator_work")`)
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
+            || k.starts_with("web.") // the Command Center server (ah-web) reads its own file; the engine reads only the start-up keys
             || k.starts_with("launcher.") // the hook launcher (ah-launcher, binary ah-hook) reads these; the engine does not
             || k.starts_with("files.launcher_") // the launcher's own log, drop counter, spawn lock and spawn log
             || k.starts_with("msg.launcher_") // the launcher's texts
@@ -171,10 +172,17 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k == "msg.cold_guard_notice" // the wrapper's notice text
             || k == "files.unreachable_notice" // the wrapper's and the launcher's once-per-session stamp of the engine-unreachable notice
             || k == "msg.engine_unreachable_notice" // that notice's text (read by hooks/ah-hook.sh and by the launcher)
-            || k == "msg.run_engine_missing" // the text scripts/ah-run.sh prints when no engine can run its command
-            || k.starts_with("rollback.") // the integrity script (`hooks/ah-engine-integrity.sh`) reads its names and thresholds itself; the engine reads only script and shell
-            || k == "files.integrity_log" // written by that script
-            || k == "files.wrapper_fail_log" // written by that script, from the hook wrapper's failure reports
+            || k == "msg.run_engine_missing" // the text the thin client (`ah-hook <verb>`) prints when no engine can run its command
+            || k.starts_with("doctor_l.") // the thin client's built-in doctor (`ah-hook doctor`, ah-launcher/src/doctor.rs) reads these; the engine does not
+            || k.starts_with("hooks_form.") // the direct form of a hook command: read by `ah-hook doctor --repair` (the engine's hooks generator follows it)
+            || k.starts_with("updater.") // the thin client's updater (`ah-hook update`, ah-launcher/src/update.rs) reads these; the engine does not
+            || k.starts_with("msg.updater_") // the updater's texts
+            || k == "env.live_kit" // the live-kit directory override, read by the updater
+            || k.starts_with("msg.install_") // the installer's texts (hooks/install.sh and the thin client)
+            || k.starts_with("install.") // the thin client's installer (`ah-hook install`, ah-launcher/src/install.rs) and hooks/install.sh read these; the engine does not
+            || k.starts_with("rollback.") // the thin client (`ah-hook integrity`, ah-launcher) reads its names and thresholds itself; the engine reads only the client name
+            || k == "files.integrity_log" // written by the thin client (`ah-hook integrity`)
+            || k == "files.wrapper_fail_log" // written by the thin client, from its failure reports
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
             || k == "script.p95_budget_by_check" // read by tests/script_latency.rs, the go/no-go gate of the scripted checks
             || k.starts_with("procwatch.mode_") // each orphan class names its mode setting by key (procwatch.classes mode_key)

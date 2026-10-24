@@ -866,3 +866,24 @@ Verdict: 4 MiB (the knee; below it CPU triples).
 **Allocator.** 600 events each: shipped `narenas:1,dirty_decay_ms:0,muzzy_decay_ms:0` 57.9 MB; + `background_thread:true` 58.9; `dirty_decay_ms:1000` 61.0; `narenas:2` 61.7; + `oversize_threshold:65536,lg_tcache_max:12` 56.4 (within the run-to-run spread of about 3 MB, CPU not separable at this load). Verdict: keep the shipped setting; no measured option beats it outside noise. The 29 MB active-vs-allocated gap seen live came from the reload history above, not from the setting.
 
 **Plateau.** 30 min of continuous replay: footprint 19.3 / 62.2 / 63.4 / 65.1 / 64.3 MB at 0 / 5 / 10 / 20 / 30 min, counted heap 7.4 / 40.7 / 41.9 / 43.3 / 41.4: warm-up to about 62 MB in the first 5 minutes, then flat (no monotone growth).
+
+
+## Thin client is the only entry point (owner, 2026-10-22/23)
+
+Supersedes the shell-wrapper parts of 1.74, 1.75 (D87's `sh .../hooks/ah-hook.sh <Event>` command form), the shell bootstrap,
+`ah-update.sh` ("deliberately outside the engine") and `ah-engine-integrity.sh`. Those entries stay as history.
+
+- **D1.** The Rust thin client `ah-hook` (crate `ah-launcher`, installed at `~/.anti-hall/ah-engine/bin/ah-hook`) is the only
+  entry point: hook events of both hosts, every agent and skill command (`ah-hook <verb> [args]` replaces itself with
+  `ah-engine <verb> [args]`), cron and monitor texts, doctor, update, install, integrity and rollback, and the Node-backup
+  fallback switch.
+- **D2.** `hooks.json` (Claude and Codex) runs the installed `ah-hook` directly. The plugin ships exactly one shell file,
+  `hooks/install.sh`, used only on first install or when the binary is missing. `hooks/ah-hook.sh`, `ah-doctor.sh`,
+  `ah-engine-bootstrap.sh`, `ah-engine-integrity.sh`, `ah-update.sh` and `scripts/ah-run.sh` are retired. The binary cannot
+  ship inside the plugin: it is larger than the directory's per-file limit, it is per-platform, and the directory reviews
+  readable source.
+- **D3.** No Node on any entry path. The Node code is a backup outside the published plugin (`plugins/anti-hall-node`):
+  shadow, then off (`ah-engine fallback node|off`), then deleted only with the owner's OK (#78).
+- **D4 (proposed, pending the owner).** A first install downloads nothing on its own: `install.sh` prints one line that points
+  at the setup skill, which downloads with the sha256 pinned in `ah-engine.lock`; automatic download is an opt-in setting.
+- **D5.** Every value and text stays in plugin TOML (both defaults directories); Claude and Codex keep parity.

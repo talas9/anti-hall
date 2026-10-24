@@ -17,7 +17,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 /// Which of the three transcript shapes carried a task-notification
-/// (`companion/lib/devswarm-idle.js` `notificationTexts`).
+///.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// A `user` entry: `message.content` as a string or as `text` blocks.
@@ -86,7 +86,7 @@ pub struct TaskStatus {
     pub ts_ms: Option<i64>,
 }
 
-/// One tool use found in an entry (`hooks/lib/task-state.js` `collectTU`).
+/// One tool use found in an entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolUse {
     /// The `tool_use` block's `id`, when it has a string one.
@@ -142,7 +142,7 @@ pub struct Assistant {
     pub truncated: bool,
 }
 
-/// The last typed user prompt (`hooks/lib/inference-check.js` `lastUserPrompt`).
+/// The last typed user prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prompt {
     /// The prompt text.

@@ -114,13 +114,17 @@ fn record_panic(info: &PanicHookInfo<'_>) {
         "context": ctx.json(),
         "backtrace": backtrace,
     });
+    // message and location lead the row; the (long) backtrace stays in the crash report file
+    let row = defaults::render("msg.panic_row", &[("message", &message), ("location", &loc), ("thread", &thread), ("context", &ctx.json())]);
     if DAEMON.load(Ordering::SeqCst) {
         health::write_crash_report(&v);
-        health::log_event("panic", "panic", &v.to_string());
+        health::log_event("panic", "panic", &row);
     } else {
         // a CLI or hook-client panic is not a daemon crash: it must not set last_crash or count as a restart
         health::write_cli_crash_report(&v);
-        health::log_event("cli_panic", "panic", &v.to_string());
+        health::log_event("cli_panic", "panic", &row);
+        // job runners capture stderr, so the cause shows there too; a closed pipe leaves nobody to tell
+        crate::discard::harmless(std::io::Write::write_all(&mut std::io::stderr(), format!("{row}\n").as_bytes()));
     }
 }
 

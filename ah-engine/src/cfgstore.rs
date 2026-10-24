@@ -190,6 +190,8 @@ pub enum Source {
     Settings,
     /// The setting's environment variable.
     Env,
+    /// The session's project file (`layers.rs`), tighten-only.
+    Project,
 }
 
 impl Source {
@@ -200,6 +202,7 @@ impl Source {
             Source::UserFile => "config_toml",
             Source::Settings => "settings",
             Source::Env => "env",
+            Source::Project => "project",
         }
     }
 }
@@ -340,7 +343,7 @@ fn clamp(e: &Entry, n: i64) -> i64 {
     n
 }
 
-/// Node `lookup(obj, key)` (settings.js): the flat key, else the dotted path walked through nested objects.
+/// Node `lookup(obj, key)`: the flat key, else the dotted path walked through nested objects.
 fn lookup<'a>(obj: &'a Json, key: &str) -> Option<&'a Json> {
     let o = obj.as_object()?;
     if let Some(v) = o.get(key) {
@@ -361,7 +364,7 @@ fn token(raw: &str, list_key: &str) -> bool {
     defaults::list(list_key).iter().any(|t| *t == w)
 }
 
-/// Node `coerceValue(entry, raw)` (settings.js) for one engine setting: `None` means "fall through to the next layer".
+/// Node `coerceValue(entry, raw)` for one engine setting: `None` means "fall through to the next layer".
 fn coerce(e: &Entry, raw: &Json) -> Option<Json> {
     match &e.value {
         V::List(_) | V::Table(_) => {
@@ -501,6 +504,64 @@ fn resolve_one(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<
     }
 }
 
+/// One setting for a session in a project: the layers' value (`resolve_one`) with the project file's value over it when that is
+/// allowed (`layers::tighten_check`: stricter than the value below, or the user layer allowed the key). The second element is
+/// the reason a project value was refused. The environment and locked keys are never overridden. Used per request: the daemon-wide
+/// `defaults::*` overlay is never given a project value, so one project cannot change another's settings.
+pub fn resolve_for_project(
+    e: &'static Entry,
+    layers: &Layers,
+    env: &dyn Fn(&str) -> Option<String>,
+    project: &BTreeMap<String, Json>,
+) -> (Resolved, Option<String>) {
+    let below = resolve_one(e, layers, env);
+    if below.source == Source::Env || locked(e.key) {
+        return (below, None);
+    }
+    let Some(v) = project.get(e.key) else { return (below, None) };
+    match crate::layers::tighten_check(e.key, v, &below.value) {
+        Ok(()) => (Resolved { value: v.clone(), source: Source::Project }, None),
+        Err(why) => (below, Some(why)),
+    }
+}
+
+/// [`explain_setting`] with this process's environment (the command line).
+pub fn explain_setting_here(key: &str, layers: &Layers, project: &BTreeMap<String, Json>) -> Option<Json> {
+    explain_setting(key, layers, project, &|n| std::env::var(n).ok())
+}
+
+/// `config explain <key>`: the effective value of a setting and what every layer holds for it (`applied`, `shadowed` by a higher
+/// layer, `refused`, or absent), highest precedence first. `None` for a key that is not a setting.
+pub fn explain_setting(key: &str, layers: &Layers, project: &BTreeMap<String, Json>, env: &dyn Fn(&str) -> Option<String>) -> Option<Json> {
+    let e = defaults::get(key)?;
+    let (eff, refusal) = resolve_for_project(e, layers, env, project);
+    let from_env = e
+        .env
+        .and_then(env)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|_| matches!(e.value, V::Int(_)))
+        .map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
+    let from_settings = e.key.split_once('.').and_then(|(section, k)| coerce(e, lookup(layers.settings.get(section)?, k)?));
+    let from_user = layers.user.get(e.key).map(|v| merge(e.value.to_json(), v));
+    let held = [from_env, project.get(e.key).cloned(), from_settings, from_user, Some(e.value.to_json())];
+    let names = defaults::list("layers.layer_names");
+    let states = defaults::list("layers.state_names");
+    let rows: Vec<Json> = names
+        .iter()
+        .zip(held)
+        .map(|(name, v)| {
+            let state = match &v {
+                None => states[3],
+                Some(_) if *name == eff.source.name() => states[0],
+                Some(_) if *name == Source::Project.name() && refusal.is_some() => states[2],
+                Some(_) => states[1],
+            };
+            json!({"layer": name, "state": state, "value": v})
+        })
+        .collect();
+    Some(json!({"key": key, "value": eff.value, "source": eff.source.name(), "layers": rows, "refused": refusal}))
+}
+
 /// True when the files may not change `key` (`config.locked`: exact keys, prefixes ending in a dot or in `*`): the names of the
 /// environment variables (the contract between the wrapper, the client and the daemon) and the settings that say where the
 /// config files themselves are. `config.toml` naming one is invalid; `settings.json` naming one falls through, as any bad value.
@@ -565,7 +626,15 @@ pub fn restart_only(key: &str) -> bool {
 }
 
 fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
+    let read = std::fs::read_to_string(path);
+    crate::web::io::path_op(
+        path,
+        read.as_ref().map_or(0, |t| t.len() as u64),
+        read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+        false,
+        None,
+    );
+    match read {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ConfigError::Io { path: path.to_path_buf(), source: e }),
@@ -593,7 +662,7 @@ pub(crate) fn toml_to_json(path: &Path, key: &str, v: &toml::Value) -> Result<Js
 
 /// Walk a TOML table: a path that is a shipped setting takes the whole value, any other table is descended into, and
 /// anything else is an unknown key.
-fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTreeMap<String, Json>) -> Result<(), ConfigError> {
+pub(crate) fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTreeMap<String, Json>) -> Result<(), ConfigError> {
     for (k, v) in t {
         let full = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
         if let Some(e) = defaults::get(&full) {
@@ -1050,7 +1119,7 @@ mod tests {
             "script.",                      // the interpreter switch and deadline are process-wide, not per request
             "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
             "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
-            "rollback.", // the binary roll-back and install lock: read by the integrity script and the install paths once per run, not per request
+            "rollback.", // the binary roll-back and install lock: read by the integrity check and the install paths once per run, not per request
             "refresh.every_ms", // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request
             "wire.ack",  // the hook client's opt-in to the ack protocol (client.rs): read by each client process from its own environment, never by the daemon
             "diagnostics.threads_window_ms", // the sampling window of `status --threads`: read once by that command-line run

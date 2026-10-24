@@ -7,12 +7,12 @@
 # to the shadow ledger (source `engine` or `node`); `ah-engine shadow-compare` reads the ledger.
 #
 # Stage 2, the FALLBACK SWITCH: a manual switch (`ah-engine fallback node|off`) that makes the launcher run the original Node hooks
-# directly instead of the engine. It never flips by itself. The shell launcher (hooks/ah-hook.sh) reads the marker file
+# directly instead of the engine. It never flips by itself. The thin client (`ah-hook`) reads the marker file
 # `files.fallback_switch` in the state directory; the key `nodeback.fallback` below is the shipped default that marker overrides.
 
 [nodeback.shadow_mode]
 doc = "Which events the Node shadow follows: `off` (none), `sampled` (nodeback.shadow_sample_pct of the events, plus every event the engine blocked when nodeback.shadow_sample_blocks is 1) or `all` (every event of nodeback.shadow_events; heavy, a Node process per hook)."
-value = "sampled"
+value = "off"
 
 [nodeback.shadow_sample_pct]
 doc = "Share of the shadowed events, in percent, that `sampled` mode follows."
@@ -99,7 +99,7 @@ value = 60
 min = 1
 
 [nodeback.fallback]
-doc = "The shipped default of the fallback switch: `off` (the engine decides) or `node` (the launcher runs the original Node hooks directly). The marker file written by `ah-engine fallback node|off` overrides it; editing this key in the plugin also turns the switch on for the full shell wrapper and `ah-engine fallback status`."
+doc = "The shipped default of the fallback switch: `off` (the engine decides) or `node` (the launcher runs the original Node hooks directly). The marker file written by `ah-engine fallback node|off` overrides it; editing this key in the plugin also turns the switch on for the thin client and `ah-engine fallback status`."
 value = "off"
 
 [nodeback.fallback_choices]

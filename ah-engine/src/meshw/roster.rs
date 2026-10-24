@@ -1,17 +1,17 @@
 //! Plain `devswarm.js roster`, ported from `scripts/devswarm-lib/roster-diag.js` `cmdRoster` and `rosterHumanText`.
 //!
 //! This file takes the arguments, finds the project and its store, and prints; the rows (hints, archived rows, the app
-//! database's fields, the ghost fold) and the text table are [`super::rosterrows`]. A project with no rows at all is the same
-//! path with nothing to list: `{ok, action, repoKey, known, ..., workspaces: [], recent}` or the text `no live workspaces`.
+//! database's fields, the ghost fold, the native children, the plan fields) and the text table are [`super::rosterrows`]. A project
+//! with no rows at all is the same path with nothing to list: `{ok, action, repoKey, known, ..., workspaces: [], recent}` or the
+//! text `no live workspaces`.
 //!
-//! Nothing is written by this verb (Node's `openStore` only runs `CREATE ... IF NOT EXISTS` over a store that exists). What
-//! the engine cannot reproduce is handed to Node before anything is printed (see `rosterrows` for the cases).
+//! Nothing is written by this verb (Node's `openStore` only runs `CREATE ... IF NOT EXISTS` over a store that exists). Every row
+//! class is answered (see `rosterrows`).
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
-use crate::meshw::args::{Args, FlagVal};
+use crate::meshw::args::Args;
 use crate::meshw::common::{self, Inv, Obj, s};
-use crate::meshw::ident::{self, R, defer};
-use crate::meshw::idlock::devswarm_root;
+use crate::meshw::ident::{self, R};
 use crate::meshw::rosterrows;
 use crate::meshw::send::{Answer, Effect};
 use crate::meshw::summary;
@@ -30,45 +30,40 @@ pub(crate) fn physical_owner_key(d: &OVal) -> R<Option<String>> {
         None | Some(OVal::Null | OVal::Bool(false)) => Ok(None),
         Some(OVal::Str(w)) if w.is_empty() => Ok(None),
         Some(OVal::Str(w)) => ident::repo_key_for_worktree(w),
-        Some(_) => defer("descriptor-worktree-type"),
+        Some(OVal::Num(x)) if *x == 0.0 || x.is_nan() => Ok(None),
+        // a truthy path of another type is `String()`-coerced by Node's `repoKeyForWorktree`
+        Some(other) => ident::repo_key_for_worktree(&ident::js_to_string(other)),
     }
 }
 
-/// A flag the engine reads: bare, and one of `--all` / `--json`.
-fn bare(a: &Args, name: &str) -> R<bool> {
-    match a.flags.get(name) {
-        None => Ok(false),
-        Some(v) if v.iter().all(|x| *x == FlagVal::True) => Ok(true),
-        Some(_) => defer("flag-value"),
-    }
+/// A switch of the verb as `main()` reads it: the exact word anywhere in the argument list (`argv.includes('--json')`), whatever follows.
+fn has_word(a: &Args, name: &str) -> bool {
+    let word = format!("--{name}");
+    a.raw.contains(&word)
 }
 
 /// Run plain `roster`.
 pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
-    if a.is_help() {
-        return defer("help");
-    }
-    if a.positionals.len() != 1 {
-        return defer("argv-shape");
-    }
-    let known = defaults::list("mesh_write.roster_flags");
-    if a.flags.keys().any(|k| !known.contains(&k.as_str())) {
-        return defer("flags");
-    }
-    let json = bare(a, defaults::text("mesh_write.flag_json"))?;
-    let all_flag = bare(a, defaults::text("mesh_write.roster_flag_all"))?;
+    // `cmdRoster(flags, ctx)` reads no flag and no positional; only `main()` reads `--json` and `--all`, and a help request never
+    // arrives here (`simple::classify` takes it first)
+    let json = has_word(a, defaults::text("mesh_write.flag_json"));
+    let all_flag = has_word(a, defaults::text("mesh_write.roster_flag_all"));
     // ---- the project and its store ----
-    let Some(repo_key) = ident::repo_key_for_worktree(&inv.cwd)? else { return defer("no-project") };
-    let dir = devswarm_root(&inv.home).join(defaults::text("mesh_write.dir_store")).join(&repo_key);
-    if !dir.join(defaults::text("mesh_write.store_file")).is_file() {
-        return defer("no-store");
-    }
+    let Some(repo_key) = ident::repo_key_for_worktree(&inv.cwd)? else {
+        let mut o = Obj::default();
+        o.put("ok", OVal::Bool(false))
+            .put("reason", s(defaults::text("devswarm_cli.reason_no_project")))
+            .put("error", s(defaults::text("devswarm_cli.msg_roster_no_project")));
+        return Ok(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None });
+    };
     let st = common::open_store(inv, &repo_key)?;
     let sum = summary::compute(&st, inv, None)?;
     let recent = match sum.get("recent") {
         Some(r @ OVal::Arr(_)) => r.clone(),
         Some(OVal::Null) | None => OVal::Arr(Vec::new()),
-        Some(_) => return defer("recent-shape"),
+        // `sum.recent || []`: any other truthy value is carried as it is
+        Some(other) if other.truthy() => other.clone(),
+        Some(_) => OVal::Arr(Vec::new()),
     };
     let main = ident::resolve_context(&inv.cwd, false)?.main_worktree;
     let built = rosterrows::build(inv, &repo_key, &st, &sum, main.as_deref())?;

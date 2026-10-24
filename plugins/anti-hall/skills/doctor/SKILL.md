@@ -7,7 +7,7 @@ description: Check and repair anti-hall (hooks, guards, legacy cleanup). Use for
 
 ## When to use
 
-Health-check AND repair anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), legacy statusline cleanup is safe, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
+Health-check AND repair anti-hall — confirm the thin client and the engine are installed and healthy, every hook command is the direct form, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), legacy statusline cleanup is safe, and (with --repair) apply safe fixes. Plain doctor is read-only. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "repair anti-hall", "fix the daemon", "are the guards on", or after install/update to verify everything is live.
 
 Answers the only question that matters for a guardrail plugin: **is it actually running,
 and do the guards actually fire?** It checks presence AND behavior — not just that files
@@ -17,9 +17,8 @@ exist, but that the guards block what they should and allow what they should. It
 changes nothing.
 
 ## What it reports
-- **Environment:** Node version (and whether it's ≥ 18 — below that the hooks silently
-  no-op), platform, plugin version.
-- **Hooks:** every script registered in `hooks.json` is present and syntax-valid.
+- **Environment:** platform, plugin version, the installed thin client (`~/.anti-hall/ah-engine/bin/ah-hook`) and engine. No Node is needed on a hook path.
+- **Hooks:** every command in `hooks.json` is the direct form (thin client first, `hooks/install.sh` as the fallback), the plugin ships no shell file besides `hooks/install.sh`, and a hook command or `statusLine` that still runs a retired `ah-hook.sh`/`ah-run.sh` wrapper fails the doctor (`ah-engine doctor --repair` rewrites it, keeping a backup).
 - **Guard behavior (live self-tests):** spawns the real guards with crafted payloads and
   asserts exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
   command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
@@ -44,7 +43,7 @@ changes nothing.
   (a second native `hivecontrol workspace monitor` process would split the
   destructive queue — report-only, never killed). See [Runtime health
   checks](#runtime-health-checks) below.
-- **Orphaned workspace processes** (`companion/lib/doctor-devswarm.js`'s
+- **Orphaned workspace processes** (`doctor-devswarm`'s
   `orphanedWorkspaceProcessCheck`): a bounded (≤2s), report-only scan for any
   LIVE process whose **cwd** sits inside a workspace worktree that is now
   archived (anti-hall's own `archived/<id>.json`, or the DevSwarm app DB's own
@@ -64,7 +63,7 @@ changes nothing.
 
 Wired into the existing "DevSwarm liveness supervisor" section (same gate:
 `isDevswarmActive(env)` or a published workspace descriptor), implemented in
-`companion/lib/doctor-runtime.js`. All four are **report-only** — none of them
+`doctor-runtime`. All four are **report-only** — none of them
 restart, reinstall, or kill anything (that stays doctor-repair.js's job, still
 gated the same way):
 
@@ -102,7 +101,7 @@ gated the same way):
    (`startedAtMs`) when it has never succeeded; inside that window a fresh
    daemon reports **starting up**, not failing. The heartbeat also carries
    `lastMonitorAttemptMs` and `lastMonitorError`. **The remedy depends on
-   WHICH kind of fault it is** (`hooks/lib/doctor-repair.js`'s exported
+   WHICH kind of fault it is** (`doctor-repair`'s exported
    `isMonitorConfigFault()`): a genuine config fault — the daemon's own
    monitor breaker only stamps `lastMonitorErrorCode` for a PERMANENT
    spawn-error code (`ENOENT`/`EACCES`/`ENOTDIR` — the binary itself cannot be
@@ -118,7 +117,7 @@ gated the same way):
    UNKNOWN, never a fault. The SAME verdict (same thresholds, same
    missing-fields=UNKNOWN rule — one shared predicate, `hooks/lib/
    doctor-repair.js`'s exported `monitorFaultFor()`) also drives the
-   **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
+   **in-session hot-path banner**: `ingest-health`'s
    `daemonHealth()` returns `status:'failed'` (distinct from `'healthy'` and
    `'stale'`) for either kind of monitor fault, and `buildMonitorFaultBanner()`
    renders the one-line in-session warning (shown once per fault episode, not
@@ -136,7 +135,7 @@ gated the same way):
 
 ## Foreign skill/hook conflict scan
 
-Its own **unconditional** top-level section (`companion/lib/doctor-runtime.js`'s
+Its own **unconditional** top-level section (`doctor-runtime`'s
 `scanForeignConflicts`) — runs regardless of DevSwarm state. Cross-references
 every OTHER **enabled** plugin's `hooks.json` (found via
 `~/.claude/plugins/installed_plugins.json`, the harness-owned install index) and
@@ -160,7 +159,7 @@ Flags:
 
 | Invocation | Behavior |
 |---|---|
-| `sh scripts/ah-run.sh doctor` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
+| `"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor` (no flags) | FULL detection, **read-only** — no repair pass. This is the default. |
 | `--repair` / `--fix` | FULL detection + apply AUTO-SAFE fixes + GATED daemon fixes only when the DevSwarm gate is open. |
 | `--dry-run` | Detection + print exactly what WOULD be fixed. **Writes nothing** (threads each installer's own `--dry-run`, migrate-state `dryRun:true`). |
 | `--check` | **PURE read-only** — detects + reports everything, mutates NOTHING. The CI / scripting path. |
@@ -187,7 +186,7 @@ Flags:
 
 **One migration registry.** The all-store DevSwarm forward-migrations (fold-all-stores,
 heal-orphan-partitions, fold-archived-rows, fold-archived-family-descriptors,
-reconcile-dual-partition-acks) are listed once in `companion/lib/migrations.js` and shared by `doctor --repair`, `update` and the
+reconcile-dual-partition-acks) are listed once in `migrations` and shared by `doctor --repair`, `update` and the
 supervisor. Each is stamped done per plugin version in `~/.anti-hall/update-sweep-state.json`
 after one clean pass, so a repeat `--repair` skips it with a single marker read instead of
 re-scanning every store. Deletion-class repairs (`--repair-resurrected`) are never in that
@@ -225,19 +224,19 @@ Windows is not supported.
 
 ## How to run
 
-The doctor is a `node` script that now **writes units/settings** in repair mode (and the
+The doctor (`ah-engine doctor`) **writes units/settings** in repair mode (and the
 command-guard blocks heavy commands on the main thread), so **delegate it to a Haiku
 subagent** (`model:"haiku"` — an execution-shaped spawn with no explicit model also trips
 model-routing-guard's strict-mode block) and relay the report:
 
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor           # diagnose only (default, read-only)
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --repair  # diagnose + apply the safe repairs
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --dry-run # show what --repair would fix
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" doctor --check   # read-only (CI)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor           # diagnose only (default, read-only)
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --repair  # diagnose + apply the safe repairs
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --dry-run # show what --repair would fix
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" doctor --check   # read-only (CI)
 ```
 
-The engine runs the doctor (`ah-engine doctor`); Node's `hooks/doctor.js` answers only when the engine is absent. The engine
+The engine runs the doctor (`ah-engine doctor`); Node's `ah-engine doctor` answers only when the engine is absent. The engine
 doctor names what it does not check yet (the DevSwarm runtime checks of an active session, `--prune-cache`,
 `--reclaim-ingest-lock`, `--logs`): run `~/.anti-hall/ah-engine/bin/ah-engine doctor` with that flag for those. The explicit
 `--repair-ingest-orphans`, `--repair-test-stores` and `--repair-resurrected` flags preview by default and act with `--apply`.
@@ -246,5 +245,5 @@ Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critic
 (or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.
 
 After relaying the report, if anything failed: the most common fix is the **engine binary missing**
-(`sh hooks/ah-engine-bootstrap.sh -v`). For older anti-hall statusline entries, run `uninstall-statusline`
+(run the `activate` skill, which installs it). For older anti-hall statusline entries, run `uninstall-statusline`
 to clean them up.

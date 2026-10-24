@@ -1,5 +1,5 @@
-# ah-engine shipped defaults for the native ingest drain (lane l7b, `src/dssup/ingest`): what the Node ingest daemon
-# (companion/devswarm-ingest.js, one launchd / systemd unit per project) does - the single-consumer drain of `hivecontrol workspace
+# ah-engine shipped defaults for the native ingest drain (lane l7b, `src/dssup/ingest`): what the old Node ingest daemon
+# (one launchd / systemd unit per project) did - the single-consumer drain of `hivecontrol workspace
 # monitor` into the per-repo store - taken over by the engine so those units can be uninstalled. Format: see the header of
 # engine.toml. Every key can be overridden in the `devswarm_ingest` section of settings.json. Nothing here is compiled into the binary.
 #
@@ -32,7 +32,7 @@ doc = "Drain only projects that DevSwarm registered: a project qualifies when a 
 value = true
 
 [devswarm_ingest.owner_file]
-doc = "The ownership marker the engine writes in the DevSwarm state directory (devswarm/<this>): {owner, pid, ts, validForMs}. owner is a word of devswarm_ingest.mode_words. The Node ingest installer, the devswarm.js self-heal, doctor --repair and the update heal read it and install or heal no Node ingest unit while owner is engine and ts is younger than validForMs."
+doc = "The ownership marker the engine writes in the DevSwarm state directory (devswarm/<this>): {owner, pid, ts, validForMs}. owner is a word of devswarm_ingest.mode_words. The Node ingest installer, the ah-engine mesh self-heal, doctor --repair and the update heal read it and install or heal no Node ingest unit while owner is engine and ts is younger than validForMs."
 value = "ingest-owner.json"
 
 [devswarm_ingest.owner_refresh_ms]

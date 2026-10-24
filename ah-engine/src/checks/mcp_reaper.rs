@@ -1,6 +1,6 @@
 //! `ah-engine mcp-reaper run [--dry-run]`: the standalone MCP orphan reaper as an engine command, run every
 //! `mcp_reaper.job_every_ms` by the scheduled job `mcp_reaper` (a subprocess in its own process group). Port of
-//! `companion/mcp-reaper.js`, which the Node installer (`companion/install-reaper.js`) ran from its own launchd / systemd unit.
+//! `companion/mcp-reaper.js`, which the Node installer ran from its own launchd / systemd unit.
 //!
 //! This file holds no decision: the plugin script `engine/logic/rules/mcp-reaper.js` (D88) decides whether the reaper is on, which
 //! processes are orphaned MCP servers and which still qualify after the grace period, and the host primitives (`ah.proc.*`) list,

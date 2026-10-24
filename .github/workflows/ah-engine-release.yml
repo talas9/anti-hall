@@ -103,6 +103,20 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         working-directory: ah-engine
         run: scripts/build.sh --target "$TRIPLE"
+      # The thin client (ah-hook, crate ah-launcher; GH #151, #164) is built for the same target and packed into the same archive by package.sh,
+      # which fails when it is missing, so no release archive ships without it.
+      - name: Toolchain (ah-hook)
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-launcher
+        run: |
+          rustup show active-toolchain || rustup toolchain install --profile minimal "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup target add "$TRIPLE"
+      - name: Build ah-hook
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        working-directory: ah-launcher
+        run: RUSTFLAGS="--remap-path-prefix=$PWD=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" cargo build --release --locked --target "$TRIPLE"
       - name: Package
         env:
           TRIPLE: ${{ matrix.triple }}
@@ -189,7 +203,7 @@ jobs:
       - name: Update ah-engine.lock
         run: |
           ah-engine/scripts/update-lock.sh dist ah-engine.lock "$GITHUB_RUN_ID"
-          # The plugin installs only plugins/anti-hall, so its bootstrap (hooks/ah-engine-bootstrap.sh) reads this copy.
+          # The plugin installs only plugins/anti-hall, so its installer (hooks/install.sh, `ah-hook install`) reads this copy.
           cp ah-engine.lock plugins/anti-hall/ah-engine.lock
       - name: Open PR
         env:

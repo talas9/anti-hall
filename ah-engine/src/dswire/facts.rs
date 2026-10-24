@@ -395,6 +395,54 @@ pub fn activity_ms(home: &Path, probe: &FsProbe, b: &AppBuilder, descs: &[&Desc]
     (best > 0).then_some(best)
 }
 
+/// Node's `defaultLastInboundTs`: the newest message addressed to one of `ids` that is no broadcast, no heartbeat and not from one of
+/// them. `None` when the store cannot be read (the caller then holds the workspace).
+pub fn last_inbound_ms(home: &Path, repo_key: Option<&str>, ids: &[String]) -> Option<f64> {
+    let r = reader(home, repo_key?)?;
+    let mut best = 0.0f64;
+    for id in ids {
+        r.for_each_message(id, 0, |m| {
+            let from_self = m.get("sender").and_then(Value::as_str).is_some_and(|s| ids.iter().any(|i| i == s));
+            let broadcast = m.get("mtype").and_then(Value::as_str) == Some(defaults::text("mesh_write.mtype_broadcast"));
+            if !from_self && !broadcast && m.get("isHeartbeat") != Some(&Value::Bool(true)) {
+                best = best.max(m.get("ts").and_then(Value::as_f64).filter(|t| t.is_finite()).unwrap_or(0.0));
+            }
+            true
+        })
+        .ok()?;
+    }
+    Some(best)
+}
+
+/// Whether the candidate's transcripts cannot PROVE that it is idle. Node classifies the tail turn by turn (ignoring its own pings);
+/// this check is deliberately stricter and can only hold a workspace: it is uncertain unless the last user or assistant entry of every
+/// readable transcript is an assistant entry that ended its turn, and when the tail shows background work the child launched. A
+/// transcript that cannot be read says nothing (Node then falls back to the heartbeat and file time, as the activity floor does).
+pub fn idle_uncertain(home: &Path, descs: &[&Desc]) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let tail = defaults::num("devswarm_wire.idle_tail_bytes");
+    descs.iter().any(|d| {
+        let Ok(mut f) = std::fs::File::open(transcript_path(home, &d.worktree, &d.session)) else { return false };
+        let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let start = size.saturating_sub(tail);
+        let mut buf = Vec::new();
+        if f.seek(SeekFrom::Start(start)).is_err() || f.take(tail).read_to_end(&mut buf).is_err() {
+            return true;
+        }
+        let text = String::from_utf8_lossy(&buf);
+        if text.contains(defaults::text("devswarm_wire.idle_background_marker")) {
+            return true;
+        }
+        let last = text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| {
+            matches!(v.get("type").and_then(Value::as_str), Some(t) if t == defaults::text("devswarm_wire.idle_type_assistant") || t == defaults::text("devswarm_wire.idle_type_user"))
+        });
+        !last.is_some_and(|v| {
+            v.get("type").and_then(Value::as_str) == Some(defaults::text("devswarm_wire.idle_type_assistant"))
+                && v.pointer(defaults::text("devswarm_wire.idle_stop_pointer")).and_then(Value::as_str) == Some(defaults::text("devswarm_wire.idle_stop_end_turn"))
+        })
+    })
+}
+
 /// The repository key of a worktree, or `None` when it cannot be resolved.
 pub fn repo_key(worktree: &str) -> Option<String> {
     crate::meshw::ident::repo_key_for_worktree(worktree).ok().flatten()

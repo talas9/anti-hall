@@ -279,7 +279,7 @@ function agMain(p) {
   var vers = bins.map(function (b) { return agVersion(st, b); }).join(agCfg('version_joiner'));
   var reason = text.message('block', ah.cfg('api_guard.guard_name'), {
     what: text.render(agCfg('msg_what'), { versions: vers }), why: agCfg('msg_why'), instead: agCfg('msg_instead'),
-    override: agCfg('msg_override'), extra: uniq.map(function (f) { return agCfg('msg_item_prefix') + f.label; }),
+    override: agCfg('msg_override'), details: true, extra: uniq.map(function (f) { return agCfg('msg_item_prefix') + f.label; }),
   });
   // Codex honors exit 2 only with the reason on stderr; the shell tool and apply_patch carry it there, an edit tool on stdout only
   var toErr = p.tool_name === ah.cfg('api_guard.tool_patch') || p.tool_name === ah.cfg('api_guard.tool_shell');

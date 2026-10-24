@@ -2,14 +2,15 @@
 //! `scripts/devswarm-lib/roster-diag.js` `cmdMeshRead`.
 //!
 //! A consuming read advances the caller's broadcast cursor to the head of the broadcast partition (`advanceBroadcastCursor`,
-//! one statement); a peek writes nothing. `--since` (an ISO time or a duration) and every refusal defer to Node, as does
-//! a caller whose own registry group has more than one row (Node picks among them by liveness).
+//! one statement); a peek writes nothing. Every refusal Node prints (no project, a bad `--seq`, `--last` or `--since`, a filter
+//! on a consuming read) is answered here, exit 2.
 //! A consuming read refreshes the summary after the cursor moves, as Node does (`meshw::summary`).
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::meshw::args::{Args, FlagVal};
 use crate::meshw::common::{self, Inv, Obj, n, s, s_or_null};
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
+use crate::meshw::readprimary::store_err;
 use crate::meshw::send::{Answer, Effect, resolve_mesh_target};
 
 /// `Number(x)` for a flag value.
@@ -17,11 +18,46 @@ fn js_number(x: &str) -> f64 {
     crate::checks::guardkit::text::js_number_of_str(x)
 }
 
-/// Run `mesh read`, `mesh history` or `roster --ack`.
-pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
-    if a.is_help() {
-        return defer("help");
+/// `{ok:false, ...}` with exit 2: the refusals `cmdMeshRead` returns.
+fn refusal(fields: &[(&str, OVal)]) -> Answer {
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false));
+    for (k, v) in fields {
+        o.put(k, v.clone());
     }
+    Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None }
+}
+
+/// `JSON.stringify(String(x))`.
+fn quoted(x: &str) -> String {
+    OVal::Str(x.to_string()).stringify()
+}
+
+/// The `--since` of a peek: a duration (`30m`, `2h`, `1d`) before now, else a date. `None` when it is neither.
+fn since_ts(raw: Option<&str>, now: f64) -> Option<f64> {
+    if let Some(d) = crate::meshw::simple::parse_since_duration(raw) {
+        return Some(now - d);
+    }
+    let text = raw?;
+    match crate::checks::guardkit::jsval::date_parse(text) {
+        crate::checks::guardkit::jsval::DateParse::Ms(ms) if ms.is_finite() => Some(ms),
+        // a date alone is UTC midnight, as `Date.parse` reads the date-only ISO form
+        _ => crate::dispatch::inject::iso_ms(&format!("{text}T00:00:00Z")).filter(|_| text.len() == 10),
+    }
+}
+
+/// Run `mesh read`, `mesh history` or `roster --ack`. (`help` never reaches here: `verb_of` classifies a help request first.)
+pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
+    match run_inner(inv, a, history) {
+        Err(Defer(reason)) if crate::meshw::readprimary::is_store_failure(&reason) && !crate::meshw::committed() => {
+            // the store itself failed: Node throws, and `run()` prints the exception as `{ok:false, error}`, exit 2
+            Ok(crate::meshw::readprimary::failure(&defaults::render("mesh_write.msg_store_failure", &[("reason", &reason)])))
+        }
+        other => other,
+    }
+}
+
+fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     let mut a = a.clone();
     if history {
         a.flags.insert(defaults::text("mesh_write.flag_seq").into(), vec![FlagVal::S(defaults::text("mesh_write.history_seq").into())]);
@@ -29,45 +65,60 @@ pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     }
     let home = &inv.home;
     let cwd = ident::project_cwd_for(home, &inv.env, &inv.cwd)?;
-    let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return defer("no-project") };
+    let Some(repo_key) = ident::repo_key_for_worktree(&cwd)? else { return Ok(refusal(&[("reason", s(defaults::text("mesh_write.reason_no_project")))])) };
     let from = ident::caller_identity_detailed(&inv.env, &cwd)?.identity;
     let st = common::open_store(inv, &repo_key)?;
-    let rows = ident::rows_of(&st.reader().roster().map_err(|e| Defer(format!("registry:{e}")))?);
-    let own = resolve_mesh_target(&rows, Some(&from))?;
+    let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
+    let own = resolve_mesh_target(inv, Some(st.reader()), &rows, Some(&from))?;
     let cursor_key = own.map(|r| r.id).unwrap_or_else(|| from.clone());
-    let cursor = st.reader().broadcast_cursor(&cursor_key).map_err(|e| Defer(format!("cursor:{e}")))? as f64;
+    let cursor = st.reader().broadcast_cursor(&cursor_key).map_err(|e| store_err("cursor", e))? as f64;
     let flag_seq = defaults::text("mesh_write.flag_seq");
     let has_seq = a.has(flag_seq);
     let seq_raw = a.one(flag_seq);
     let mut since_seq = cursor;
     let mut explicit = false;
     if has_seq && seq_raw.is_none() {
-        return defer("bad-seq");
+        return Ok(refusal(&[("error", s(defaults::text("mesh_write.msg_seq_bare"))), ("reason", s(defaults::text("mesh_write.reason_bad_seq")))]));
     }
     if let Some(raw) = seq_raw {
         let v = js_number(raw);
         if !v.is_finite() || v < 0.0 {
-            return defer("bad-seq");
+            let msg = defaults::render("mesh_write.msg_seq_invalid", &[("got", &quoted(raw))]);
+            return Ok(refusal(&[("error", s(&msg)), ("reason", s(defaults::text("mesh_write.reason_bad_seq")))]));
         }
         since_seq = v.floor();
         explicit = true;
     }
     let peek = a.has(defaults::text("mesh_write.flag_peek")) || explicit;
     let has_last = a.has(defaults::text("mesh_write.flag_last"));
-    if a.has(defaults::text("mesh_write.flag_since")) {
-        return defer("since-filter");
-    }
-    if has_last && !peek {
-        return defer("filter-requires-peek");
+    let has_since = a.has(defaults::text("mesh_write.flag_since"));
+    if (has_last || has_since) && !peek {
+        return Ok(refusal(&[
+            ("reason", s(defaults::text("mesh_write.reason_filter_requires_peek"))),
+            ("error", s(defaults::text("mesh_write.msg_filter_requires_peek"))),
+            ("hint", s(defaults::text("mesh_write.hint_filter_requires_peek"))),
+        ]));
     }
     let mut last_n: Option<f64> = None;
     if has_last {
         let raw = a.one(defaults::text("mesh_write.flag_last"));
         let v = raw.map_or(f64::NAN, js_number);
         if raw.is_none() || !v.is_finite() || v < 1.0 {
-            return defer("bad-last");
+            let msg = defaults::render("mesh_write.msg_last_invalid", &[("got", &quoted(raw.unwrap_or_default()))]);
+            return Ok(refusal(&[("error", s(&msg)), ("reason", s(defaults::text("mesh_write.reason_bad_last")))]));
         }
         last_n = Some(v.floor());
+    }
+    let mut sin_ts: Option<f64> = None;
+    if has_since {
+        let raw = a.one(defaults::text("mesh_write.flag_since"));
+        match since_ts(raw, inv.now as f64) {
+            Some(ts) => sin_ts = Some(ts),
+            None => {
+                let msg = defaults::render("mesh_write.msg_since_invalid", &[("got", &quoted(raw.unwrap_or_default()))]);
+                return Ok(refusal(&[("error", s(&msg)), ("reason", s(defaults::text("mesh_write.reason_bad_since")))]));
+            }
+        }
     }
     if !peek {
         common::seat_check(inv)?;
@@ -81,8 +132,11 @@ pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
             }
             true
         })
-        .map_err(|e| Defer(format!("broadcasts:{e}")))?;
+        .map_err(|e| store_err("broadcasts", e))?;
     let unseen_count = unseen.len();
+    if let Some(ts) = sin_ts {
+        unseen.retain(|r| r["ts"].as_f64().is_some_and(|t| t.is_finite() && t >= ts));
+    }
     if let Some(k) = last_n {
         let k = k as usize;
         if unseen.len() > k {
@@ -118,7 +172,7 @@ pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
         cursor
     } else {
         crate::meshw::summary::check(&st, inv, None)?;
-        let c = st.advance_broadcast_cursor(&cursor_key, common::now_ms()).map_err(|e| Defer(format!("advance:{e}")))? as f64;
+        let c = st.advance_broadcast_cursor(&cursor_key, common::now_ms()).map_err(|e| store_err("advance", e))? as f64;
         crate::meshw::mark_committed();
         if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_read"), &why);
@@ -144,6 +198,9 @@ pub fn run(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     }
     if let Some(k) = last_n {
         out.put("last", n(k));
+    }
+    if let Some(ts) = sin_ts {
+        out.put("sinceTs", n(ts));
     }
     if broadcasts.len() != unseen_count {
         out.put("filteredOut", n((unseen_count - broadcasts.len()) as f64));

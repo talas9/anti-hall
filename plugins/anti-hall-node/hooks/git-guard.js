@@ -3839,7 +3839,7 @@ function main(payload, argv, out) {
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('git-guard', guardEnv)) return io.decision(0);
+  if (isSkipped('git-guard', guardEnv, payload.session_id)) return io.decision(0);
 
   let cmd = '';
   let cwd = '';

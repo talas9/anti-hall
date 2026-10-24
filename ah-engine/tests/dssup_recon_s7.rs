@@ -310,13 +310,28 @@ fn tomb_of(f: &Fix, id: &str) -> OVal {
 }
 
 #[test]
-fn retire_is_deferred_when_node_would_create_the_archived_directory() {
+fn retire_creates_the_archived_directory_like_node_and_retires_into_it() {
     let f = fix("retire-nodir");
     let p = f.repo("p");
     f.live("B", &p, "x");
     let desc = OVal::parse(&f.desc("A", &p, "B")).unwrap();
-    assert!(archive::retire_identity_family(&f.home, "A", &desc, false).is_err());
+    assert!(!f.exists(&f.ds("archived")));
+    let plan = archive::retire_identity_family(&f.home, "A", &desc, false).unwrap();
+    assert_eq!(plan.result["retired"], serde_json::json!(["B"]));
+    agreed(&f, &plan);
+    assert!(f.exists(&f.ds("archived/B.json")) && !f.exists(&f.ds("workspaces/B.json")));
+    // with nothing to retire the directory is still created, as Node's `checkedArchivedDir(home, { create: true })` does
+    let g = fix("retire-nodir-empty");
+    let q = g.repo("p");
+    let desc = OVal::parse(&g.desc("A", &q, "B")).unwrap();
+    let plan = archive::retire_identity_family(&g.home, "A", &desc, false).unwrap();
+    agreed(&g, &plan);
+    assert!(g.exists(&g.ds("archived")));
 }
+
+// ---- foldArchivedFamilyDescriptors ----------------------------------------------------------------------------------------------
+
+// ---- foldArchivedRegistryRows ------------------------------------------------------------------------------------------------
 
 // ---- restoreArchivedDescriptor ---------------------------------------------------------------------------------------------
 

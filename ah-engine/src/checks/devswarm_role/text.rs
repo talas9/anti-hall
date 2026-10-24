@@ -82,33 +82,3 @@ pub fn engine_cli(home: &str) -> String {
 pub fn engine_watcher(home: &str) -> String {
     fill_once(defaults::text("devswarm_role.engine_watcher"), &[("home", home)])
 }
-
-/// The POSIX-sh shim source of the CLI (`which` = `cli`) or the watcher (`watcher`): it execs the engine binary, no Node.
-pub fn shim_source(watcher: bool, home: &str) -> String {
-    let engine = fill_once(defaults::text("devswarm_role.engine_bin"), &[("home", home)]);
-    let key = if watcher { "devswarm_role.shim_watcher" } else { "devswarm_role.shim_cli" };
-    fill_once(defaults::text(key), &[("engine", &engine)])
-}
-
-/// Write both shims under `home` where they are absent or differ (executable, atomic); returns how many were written. The shim
-/// file names are the `name` of `devswarm_role.launcher_cli` / `launcher_watcher` under `devswarm_role.bin_dir`.
-pub fn install_shims(home: &std::path::Path) -> std::io::Result<usize> {
-    use std::os::unix::fs::PermissionsExt;
-    let h = home.to_string_lossy().into_owned();
-    let dir = home.join(defaults::text("devswarm_role.bin_dir"));
-    let mut written = 0;
-    for (key, watcher) in [("devswarm_role.launcher_cli", false), ("devswarm_role.launcher_watcher", true)] {
-        let dest = dir.join(defaults::raw(key).str_field("name"));
-        let src = shim_source(watcher, &h);
-        if std::fs::read_to_string(&dest).is_ok_and(|have| have == src) {
-            continue;
-        }
-        std::fs::create_dir_all(&dir)?;
-        let tmp = dest.with_extension(format!("tmp.{}", std::process::id()));
-        crate::atomic::stage(&tmp, &src, crate::atomic::Style { mode: Some(0o755), ..Default::default() })?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::rename(&tmp, &dest)?;
-        written += 1;
-    }
-    Ok(written)
-}

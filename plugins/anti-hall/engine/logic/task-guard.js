@@ -356,7 +356,7 @@ function decide(p) {
   if (isFinite(pruneAfter) && pruneAfter > 0 && completed > pruneAfter) { if (adv.gate(ah.cfg('advisory.kind_task_guard_prune'), sessionId)) out += text.render(ah.cfg('task_guard.prune_advisory'), { n: completed, limit: String(pruneAfter) }); }
   var open = tasks.filter(tk.isOpen);
   if (open.length === 0) {
-    ah.state.remove(stateRel);
+    if (!tasks.unsure) ah.state.remove(stateRel);
     return tgQuiet(out, tasks, home, sessionId);
   }
 

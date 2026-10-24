@@ -21,9 +21,10 @@ use ah_engine::checks::git::util::Settings;
 use ah_engine::checks::guardkit::ojson::OVal;
 use ah_engine::dsact::runner::System;
 use ah_engine::dssup::recon::gate::{self, Job, Verdict};
-use ah_engine::dssup::recon::{Hooks, UnitEnd, apply, fold, heal, norm, orphans, rehome, side};
+use ah_engine::dssup::recon::{Hooks, Op, UnitEnd, apply, archived, dup, fold, heal, norm, orphans, rehome, side};
 use ah_engine::dssup::tick::Ctx;
 use ah_engine::meshw::store::{CursorPut, MeshRow, MeshStore, RegistryRow};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -219,6 +220,271 @@ fn the_hivecontrol_stub_replays_forbids_and_dies_mid_read() {
     let died = run(&["read-messages", "w1"], &[("HC_STUB_DIE_MID", "read-messages")]);
     assert_eq!(died.status.signal(), Some(9), "the stub SIGKILLs itself mid-reply");
     assert_eq!(String::from_utf8_lossy(&died.stdout), "01234", "half of the recorded reply was printed");
+}
+
+#[test]
+fn the_snapshot_tool_backs_up_and_anonymises_with_nodes_own_hashes() {
+    if !have("node") {
+        return;
+    }
+    let src = fix("snap-src");
+    let wt = src.repo("p");
+    let key = src.key_of(&wt);
+    let st = src.store(&key);
+    st.append_message("w1", 5, Some("native:old1"), "[forwarded from archived abc] secret body").unwrap();
+    st.append_message("w1", 6, Some("native:old2"), "secret body").unwrap();
+    drop(st);
+    let dst = fix("snap-dst");
+    let tool = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recon_support/snapshot.js");
+    let o = Command::new("node").arg(&tool).arg(&src.root).arg(&src.home).arg(&dst.home).arg("--anonymise").output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let db = dst.home.join(dst.ds(&format!("store/{key}/devswarm.db")));
+    let c = rusqlite::Connection::open(db).unwrap();
+    let rows: Vec<(String, String)> =
+        c.prepare("SELECT body, hash FROM messages ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].0.starts_with("[forwarded from archived abc] anon-"), "prefix kept: {}", rows[0].0);
+    assert!(!rows[0].0.contains("secret") && !rows[1].0.contains("secret"));
+    // the hash is Node's messageHash of the anonymised body (re-derived here by Node itself)
+    let code = "const i=require(process.argv[1]+'/companion/devswarm-ingest.js');console.log(i.messageHash('w1',{message:process.argv[2],createdAt:'6'}))";
+    let want = Command::new("node").args(["-e", code, src.root.to_str().unwrap(), &rows[1].0]).output().unwrap();
+    assert_eq!(rows[1].1, String::from_utf8_lossy(&want.stdout).trim());
+}
+
+// ---------------------------------------------------------------- S1: side files
+
+#[test]
+fn s1_sweep_state_resume_and_names_match_node() {
+    if !have("node") {
+        return;
+    }
+    let t = Tally::new("S1.state-resume-names");
+    // sweep state
+    let f = fix("s1a");
+    agreed(&f, &job_for("sweep", vec![side::plan_sweep_state(&f.home, NOW)], &[]));
+    assert_eq!(f.read(&f.ds("reconcile-sweep-state.json")).unwrap(), format!("{{\"lastRunAt\":{NOW}}}"));
+    assert_eq!(side::read_sweep_state(&f.home), NOW as f64);
+    t.case(true);
+    // resume: write, overwrite, drain (unlink), drain with nothing there, torn marker
+    let f = fix("s1b");
+    let ids = vec!["a1".to_string(), "b2".to_string()];
+    agreed(&f, &job_for("resume", vec![side::plan_resume(&f.home, "repo-1", &ids, NOW)], &[]));
+    assert_eq!(f.read(&f.ds("reconcile-resume.json")).unwrap(), format!("{{\"repoKey\":\"repo-1\",\"ids\":[\"a1\",\"b2\"],\"ts\":{NOW}}}"));
+    assert_eq!(side::read_resume(&f.home, "repo-1"), ids);
+    assert!(side::read_resume(&f.home, "other").is_empty());
+    t.case(true);
+    agreed(&f, &job_for("resume2", vec![side::plan_resume(&f.home, "repo-1", &["z9".to_string()], NOW)], &[]));
+    t.case(true);
+    agreed(&f, &job_for("drain", vec![side::plan_resume(&f.home, "repo-1", &[], NOW)], &[]));
+    assert!(f.read(&f.ds("reconcile-resume.json")).is_none());
+    t.case(true);
+    agreed(&f, &job_for("drain-none", vec![side::plan_resume(&f.home, "repo-1", &[], NOW)], &[]));
+    t.case(true);
+    f.put(&f.ds("reconcile-resume.json"), "{\"repoKey\":\"repo-1\",\"ids\":[\"a");
+    assert!(side::read_resume(&f.home, "repo-1").is_empty(), "a torn marker reads as nothing deferred");
+    agreed(&f, &job_for("resume-over-torn", vec![side::plan_resume(&f.home, "repo-1", &ids, NOW)], &[]));
+    t.case(true);
+    // names
+    let f = fix("s1c");
+    agreed(&f, &job_for("name", vec![side::plan_name(&f.home, "ws-1", "My title \u{1F600}", NOW)], &[]));
+    assert_eq!(f.read(&f.ds("names/ws-1.json")).unwrap(), format!("{{\"name\":\"My title \u{1F600}\",\"updatedAt\":{NOW}}}"));
+    t.case(true);
+    agreed(&f, &job_for("name-unsafe", vec![side::plan_name(&f.home, "../x", "n", NOW)], &[]));
+    agreed(&f, &job_for("name-empty", vec![side::plan_name(&f.home, "ws-2", "", NOW)], &[]));
+    assert!(f.read(&f.ds("names/ws-2.json")).is_none());
+    t.case(true);
+    t.case(true);
+    t.print();
+}
+
+#[test]
+fn s1_repo_unknown_matches_node() {
+    if !have("node") {
+        return;
+    }
+    let t = Tally::new("S1.repo-unknown");
+    let f = fix("s1d");
+    let rel = f.ds("repo-unknown.json");
+    for (i, reason) in ["Repository not found.", "Repository not found.", "Repository not found.", "\u{1b}[31m  other error \u{1b}[0m"].iter().enumerate() {
+        let now = NOW + i as i64;
+        let p = side::plan_repo_unknown_record(&f.home, "rk", "list", reason, now).unwrap();
+        let job = job_for("ru", vec![p], &[]);
+        let mut j = job;
+        j.scope.files.push(rel.clone());
+        let out = gate::run(&Ctx { now, ..f.ctx() }, &System::configured(), &j, &Hooks::none());
+        assert_eq!(out.verdict, Verdict::Agreed, "{reason}");
+        t.case(true);
+    }
+    assert!(!side::repo_unknown_suppressed(&f.home, "rk", "list", NOW + 10), "a different error restarted the streak");
+    // suppression after three in a row, recheck after the window
+    for i in 0..3 {
+        let now = NOW + 100 + i;
+        let p = side::plan_repo_unknown_record(&f.home, "rk2", "list", "Repository not found.", now).unwrap();
+        let mut j = job_for("ru", vec![p], &[]);
+        j.scope.files.push(rel.clone());
+        assert_eq!(gate::run(&Ctx { now, ..f.ctx() }, &System::configured(), &j, &Hooks::none()).verdict, Verdict::Agreed);
+        t.case(true);
+    }
+    assert!(side::repo_unknown_suppressed(&f.home, "rk2", "list", NOW + 200));
+    assert!(!side::repo_unknown_suppressed(&f.home, "rk2", "list", NOW + 100 + 7 * 3_600_000));
+    // clear: present, absent
+    let mut j = job_for("clear", vec![side::plan_repo_unknown_clear(&f.home, "rk2", "list")], &[]);
+    j.scope.files.push(rel.clone());
+    agreed(&f, &j);
+    let mut j = job_for("clear-none", vec![side::plan_repo_unknown_clear(&f.home, "nope", "list")], &[]);
+    j.scope.files.push(rel.clone());
+    agreed(&f, &j);
+    t.case(true);
+    t.case(true);
+    // torn marker reads as empty and is replaced
+    f.put(&rel, "{\"version\":1,\"scopes\":{\"x");
+    let p = side::plan_repo_unknown_record(&f.home, "rk3", "list", "Repository not found.", NOW).unwrap();
+    let mut j = job_for("ru-torn", vec![p], &[]);
+    j.scope.files.push(rel);
+    agreed(&f, &j);
+    t.case(true);
+    // a cut through a surrogate pair leaves a lone surrogate in JavaScript, which a Rust string cannot hold: the engine cuts one unit
+    // earlier (the same cut every time), and answers
+    let long = format!("{}{}", "a".repeat(299), "\u{1F600}");
+    let p = side::plan_repo_unknown_record(&f.home, "rk4", "list", &long, NOW).unwrap();
+    assert!(!p.unit.ops.is_empty(), "the marker is written with the cut text");
+    t.case(true);
+    t.print();
+}
+
+#[test]
+fn s1_active_cache_matches_node_including_the_floor_guard() {
+    if !have("node") {
+        return;
+    }
+    let t = Tally::new("S1.active-cache");
+    let f = fix("s1e");
+    let wt = f.repo("w");
+    let recs = |n: usize| {
+        OVal::Arr(
+            (0..n)
+                .map(|i| {
+                    OVal::Obj(vec![
+                        ("id".into(), OVal::Str(format!("id{i}"))),
+                        ("worktreePath".into(), OVal::Str(wt.clone())),
+                        ("repositoryId".into(), OVal::Str("r1".into())),
+                    ])
+                })
+                .collect(),
+        )
+    };
+    let floor = side::active_floor_pct(&f.st);
+    assert_eq!(floor, 50.0);
+    let rel = side::active_rel();
+    // first snapshot
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(10))], NOW, floor).unwrap();
+    let mut j = job_for("ac1", vec![p], &[]);
+    j.scope.files.push(rel.clone());
+    agreed(&f, &j);
+    t.case(true);
+    // a partial list (2 of 10) keeps the previous snapshot and logs the guard
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2))], NOW + 1, floor).unwrap();
+    assert!(p.unit.ops.iter().any(|o| matches!(o, Op::Log { .. })));
+    let mut j = job_for("ac2", vec![p], &[]);
+    j.scope.files.push(rel.clone());
+    agreed(&f, &j);
+    assert!(f.read(&rel).unwrap().contains("\"id9\""), "the previous ten records were kept");
+    t.case(true);
+    // floor off: the short list replaces it
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2))], NOW + 2, 0.0).unwrap();
+    let mut j = job_for("ac3", vec![p], &[]);
+    j.scope.files.push(rel.clone());
+    j.calls = vec![
+        serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap()}, "now": NOW + 2, "floorPct": 0}}),
+    ];
+    agreed(&f, &j);
+    assert!(!f.read(&rel).unwrap().contains("\"id9\""));
+    t.case(true);
+    // an empty answer writes nothing and returns null
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), OVal::Arr(vec![]))], NOW + 3, floor).unwrap();
+    assert!(p.unit.ops.is_empty());
+    let mut j = job_for("ac4", vec![p], &[]);
+    j.scope.files.push(rel.clone());
+    agreed(&f, &j);
+    t.case(true);
+    // a second project, a relative worktree (resolved against the process directory)
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), recs(2)), ("rk2".into(), recs(1))], NOW + 4, 0.0).unwrap();
+    let mut j = job_for("ac5", vec![p], &[]);
+    j.scope.files.push(rel);
+    j.calls = vec![
+        serde_json::json!({"fn": "activeCache", "args": {"byRepoKey": {"rk": serde_json::from_str::<Value>(&recs(2).stringify()).unwrap(), "rk2": serde_json::from_str::<Value>(&recs(1).stringify()).unwrap()}, "now": NOW + 4, "floorPct": 0}}),
+    ];
+    agreed(&f, &j);
+    t.case(true);
+    let rel_wt = OVal::Arr(vec![OVal::Obj(vec![("id".into(), OVal::Str("i".into())), ("worktreePath".into(), OVal::Str("relative/p".into()))])]);
+    let p = side::plan_active_cache(&f.home, &[("rk".into(), rel_wt)], NOW, floor).unwrap();
+    let written = p
+        .unit
+        .ops
+        .iter()
+        .find_map(|o| if let ah_engine::dssup::recon::Op::Write { bytes, .. } = o { Some(String::from_utf8_lossy(bytes).into_owned()) } else { None });
+    let cwd = std::env::current_dir().unwrap().join("relative/p");
+    assert!(written.is_some_and(|w| w.contains(&cwd.to_string_lossy().into_owned())), "the relative worktree is resolved against the process directory");
+    t.case(true);
+    t.print();
+}
+
+#[test]
+fn s1_startup_sampling_matches_node_and_never_calls_read_messages() {
+    if !have("node") {
+        return;
+    }
+    let t = Tally::new("S1.sampling");
+    let f = fix("s1f");
+    let fx = f.home.join("fx");
+    std::fs::create_dir_all(&fx).unwrap();
+    let log = f.home.join("stub.log");
+    let stub = stub_with(&f, &format!("HC_STUB_DIR={}\nHC_STUB_LOG={}\nHC_STUB_FORBID=read-messages\n", fx.display(), log.display()));
+    let runner = System { hc: stub.to_string_lossy().into_owned() };
+    for (id, verdict) in [("w1", "{\"status\":\"stale\"}"), ("w2", "{\"notDraining\":true}"), ("w3", "{\"status\":\"live\"}"), ("w4", "{\"status\":\"stale\"}")]
+    {
+        f.put(&f.ds(&format!("liveness/{id}.json")), verdict);
+    }
+    std::fs::write(fx.join("workspace_info_w1.out"), "{\"terminalId\":\"t1\",\"startup\":null}").unwrap();
+    std::fs::write(fx.join("workspace_info_w2.out"), "{\"startup\":{\"phase\":\"booting\"}}").unwrap();
+    std::fs::write(fx.join("workspace_info_w4.out"), "not json").unwrap();
+    let ids: Vec<String> = ["w1", "w2", "w3", "w4", "bad id"].iter().map(|s| s.to_string()).collect();
+    for round in 0..3 {
+        let cands = side::sampling_candidates(&f.home, &ids, 8);
+        assert_eq!(cands, vec!["w1", "w2", "w4"]);
+        let probes: Vec<(String, side::Probe)> = cands.iter().map(|c| (c.clone(), side::probe(&runner, c))).collect();
+        let p = side::plan_sampling(&f.home, &ids, 8, &probes, NOW + round).unwrap();
+        let mut j = job_for("sampling", vec![p], &ids.iter().map(|i| format!(".anti-hall/devswarm/liveness/{i}.json")).collect::<Vec<_>>());
+        j.scope.files.push(side::sampling_state_rel());
+        j.scope.files.push(side::samples_rel());
+        let out = gate::run(&Ctx { now: NOW + round, ..f.ctx() }, &System::configured(), &j, &Hooks::none());
+        assert_eq!(out.verdict, Verdict::Agreed, "round {round}");
+        t.case(true);
+        if round == 0 {
+            // terminalId changes on the next round
+            std::fs::write(fx.join("workspace_info_w1.out"), "{\"terminalId\":\"t2\"}").unwrap();
+        }
+    }
+    let samples = f.read(&side::samples_rel()).unwrap();
+    assert_eq!(samples.lines().count(), 5, "w1 first terminal id and its change, w2 startup each round: {samples}");
+    // a candidate list capped by maxProbe
+    assert_eq!(side::sampling_candidates(&f.home, &ids, 1), vec!["w1"]);
+    // the samples log past its cap is rotated, exactly as Node rotates it
+    let big = "x".repeat(5_242_880 - 5);
+    f.put(&side::samples_rel(), &format!("{big}\n"));
+    let probes: Vec<(String, side::Probe)> = vec![("w2".into(), side::probe(&runner, "w2"))];
+    let p = side::plan_sampling(&f.home, &ids, 8, &probes, NOW + 9).unwrap();
+    assert!(p.unit.ops.iter().any(|o| matches!(o, Op::Rename { .. })));
+    let mut j = job_for("sampling-rotate", vec![p], &[]);
+    j.scope.files.push(side::sampling_state_rel());
+    j.scope.files.extend(ids.iter().map(|i| format!(".anti-hall/devswarm/liveness/{i}.json")));
+    let out = gate::run(&Ctx { now: NOW + 9, ..f.ctx() }, &System::configured(), &j, &Hooks::none());
+    assert_eq!(out.verdict, Verdict::Agreed);
+    assert!(f.home.join(format!("{}.1", side::samples_rel())).exists());
+    t.case(true);
+    let seen = std::fs::read_to_string(&log).unwrap();
+    assert!(!seen.contains("VIOLATION") && !seen.contains("read-messages"), "a witness never calls the destructive read");
+    t.print();
 }
 
 // ---------------------------------------------------------------- the gate applies what the planner decided
@@ -652,6 +918,53 @@ fn orphan_cases() -> Vec<OrphanCase> {
             want: Ok((1, 0)),
         },
     ]
+}
+
+#[test]
+fn s5_heal_orphan_partitions_matches_node_for_every_store_shape() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S5.heal-orphans");
+    for c in orphan_cases() {
+        let f = fix("s5");
+        (c.build)(&f);
+        let key = f.key_of(&std::fs::canonicalize(f.home.join("repos/p")).unwrap().to_string_lossy());
+        let before_msgs = msg_count(&f, &key);
+        match (orphans::run(&f.ctx(), &System::configured(), &key, &Hooks::none()), c.want) {
+            (Ok(run), Ok((adopted, unhealable))) => {
+                assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
+                assert!(run.deferred.is_empty(), "{}: {:?}", c.name, run.deferred);
+                assert_eq!((run.result["adopted"].as_u64(), run.result["unhealable"].as_u64()), (Some(adopted), Some(unhealable)), "{}", c.name);
+                t.case(true);
+                // idempotent: a second pass changes nothing
+                let after = f.snapshot();
+                let again = orphans::run(&f.ctx(), &System::configured(), &key, &Hooks::none()).unwrap();
+                assert_eq!(again.verdict, Verdict::Agreed, "{} (second pass)", c.name);
+                assert_eq!(again.result["adopted"], 0, "{}", c.name);
+                assert_eq!(f.snapshot(), after, "{}: the second pass wrote something", c.name);
+            }
+            (Ok(run), Err(_why)) => {
+                // there is no Node comparison any more: the adoption the witness used to refuse is applied by the engine's applier
+                assert_eq!(run.verdict, Verdict::Agreed, "{}: {:?}", c.name, run.verdict);
+                t.case(false);
+            }
+            (Err(d), Err(why)) => {
+                assert_eq!(d.0, why, "{}", c.name);
+                t.case(false);
+                // nothing was written
+                assert_eq!(msg_count(&f, &key), before_msgs);
+            }
+            (got, want) => panic!("{}: got {:?} want {want:?}", c.name, got.map(|r| (r.verdict, r.result)).map_err(|d| d.0)),
+        }
+        // message rows are only ever added (a forward into a survivor), never removed; a case without a forward adds none
+        if c.want.is_ok() {
+            assert_eq!(msg_count(&f, &key), before_msgs, "{}: no message row was added or removed", c.name);
+        } else {
+            assert!(msg_count(&f, &key) >= before_msgs, "{}: a message row was removed", c.name);
+        }
+    }
+    t.print();
 }
 
 fn msg_count(f: &Fix, key: &str) -> i64 {
@@ -1217,6 +1530,199 @@ fn s6_the_engine_switch_is_off_by_default_and_a_deferred_store_writes_nothing() 
     assert!(!g.home.join(g.ds("store/no-such-store")).exists());
 }
 
+#[test]
+fn s6_ghost_rows_match_nodes_ghost_registry_rows() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let f = fix6("s6-ghost");
+    let (wt, k) = s6_base(&f);
+    f.row_s(&k, "g-old", &wt, None); // a ghost
+    f.row_s(&k, "g-young", &wt, None);
+    f.touch(&k, "g-young", NOW - 1_000);
+    f.row_s(&k, "g-sess", &wt, Some("unclaimed:x"));
+    f.row_s(&k, "g-desc", &wt, None);
+    f.descriptor("g-desc", &desc_json("g-desc", &wt, "", None, None));
+    f.row_s(&k, "g-beat", &wt, None);
+    f.put(&f.ds("heartbeats/g-beat.json"), "{\"ts\":1}");
+    f.row_s(&k, "g-read", &wt, None);
+    f.floors(&k, "g-read", 3);
+    f.row_s(&k, "g-file", &wt, None);
+    f.put(&f.ds("cursors/g-file.json"), "0");
+    let ids: Vec<String> = ["g-old", "g-young", "g-sess", "g-desc", "g-beat", "g-read", "g-file"].iter().map(|s| s.to_string()).collect();
+    let (got, verdict) = fold::ghost_ids(&f.ctx(), &System::configured(), &k, &ids).unwrap();
+    assert_eq!(verdict, Verdict::Agreed);
+    assert_eq!(got, vec!["g-old".to_string()]);
+    // the age bar comes from the environment, as in Node
+    let mut env = HashMap::new();
+    env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), "2".to_string());
+    assert_eq!(fold::ghost_age_ms(&env), 7_200_000.0);
+    // `Number(raw)`: hex and exponent spellings read as JavaScript reads them; anything not a positive number is the default
+    let default_ms = ah_engine::defaults::num("devswarm_recon.ghost_age_default_h") as f64 * 3_600_000.0;
+    for (raw, want) in
+        [("0x10", 16.0 * 3_600_000.0), ("1e1", 36_000_000.0), (" 3 ", 3.0 * 3_600_000.0), ("-3", default_ms), ("abc", default_ms), ("", default_ms)]
+    {
+        env.insert("ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H".to_string(), raw.to_string());
+        assert_eq!(fold::ghost_age_ms(&env), want, "{raw:?}");
+    }
+}
+
+#[test]
+fn s6_retire_worktree_duplicates_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.retire-worktree-duplicates");
+    type Build = fn(&Fix) -> (String, String);
+    let cases: Vec<(&str, Build, Option<Value>)> = vec![
+        (
+            "phantoms fold into the caller",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            Some(serde_json::json!({"retired": ["w-ph"], "forwarded": 1})),
+        ),
+        (
+            "a distinct live child is forwarded to and left",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                f.row_s(&k, "w-kid", &wt, Some("s2"));
+                f.descriptor("w-kid", &desc_json("w-kid", &wt, "s2", None, None));
+                f.floors(&k, "w-kid", 0);
+                f.msg_at(&k, "w-kid", 10, "m", "snd");
+                (wt, k)
+            },
+            Some(serde_json::json!({"retired": [], "forwarded": 1, "left": ["w-kid"]})),
+        ),
+        (
+            "nothing to fold",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-keep", &wt, Some("s1"));
+                (wt, k)
+            },
+            None,
+        ),
+    ];
+    for (name, build, want) in cases {
+        let f = fix6("s6-dup");
+        let (wt, _k) = build(&f);
+        let run = dup::retire_worktree_duplicates(&f.ctx(), &System::configured(), &wt, "w-keep", &wt, &Hooks::none())
+            .unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?}", run.verdict);
+        assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
+        assert_eq!(run.result, want, "{name}");
+        t.case(true);
+    }
+    t.print();
+}
+
+#[test]
+fn s6_retire_archived_worktree_group_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.retire-archived-worktree-group");
+    type Build = fn(&Fix) -> (String, String);
+    let cases: Vec<(&str, Build, Value)> = vec![
+        (
+            "one drainable sibling takes the mail",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-live", &wt, Some("s1"));
+                f.descriptor("w-live", &desc_json("w-live", &wt, "s1", None, None));
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [{"id": "w-live", "reason": "live-descriptor"}], "forwardedTo": "w-live"}),
+        ),
+        (
+            "no drainable sibling: phantoms fold into the archived row",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-arch", &wt, None);
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": ["w-ph"], "forwarded": 1, "left": [], "forwardedTo": "w-arch"}),
+        ),
+        (
+            "the archived row is already gone: the survivor is missing",
+            |f| {
+                let (wt, k) = s6_base(f);
+                f.row_s(&k, "w-ph", &wt, None);
+                f.floors(&k, "w-ph", 0);
+                f.msg_at(&k, "w-ph", 10, "m", "snd");
+                (wt, k)
+            },
+            serde_json::json!({"retired": [], "forwarded": 0, "left": [{"id": "w-ph", "reason": "survivor-gone"}], "forwardedTo": "w-arch"}),
+        ),
+    ];
+    for (name, build, want) in cases {
+        let f = fix6("s6-arch");
+        let (wt, k) = build(&f);
+        let run = archived::retire_archived_worktree_group(&f.ctx(), &System::configured(), &k, "w-arch", &wt, &Hooks::none())
+            .unwrap_or_else(|d| panic!("{name}: deferred {d:?}"));
+        assert_eq!(run.verdict, Verdict::Agreed, "{name}: {:?} {}", run.verdict, run.result);
+        assert!(run.deferred.is_empty(), "{name}: {:?}", run.deferred);
+        assert_eq!(run.result, want, "{name}");
+        t.case(true);
+    }
+    t.print();
+}
+
+#[test]
+fn s6_forward_archived_orphan_unread_matches_node() {
+    if !have("node") || !have("git") {
+        return;
+    }
+    let t = Tally::new("S6.forward-archived-orphan-unread");
+    let day = 86_400_000;
+    let max_age = 30.0 * day as f64;
+    // a fresh and a stale unread, a non-forwardable one, and a read one below the floor
+    let f = fix6("s6-fwd");
+    let (wt, k) = s6_base(&f);
+    f.row_s(&k, "w-live", &wt, Some("s1"));
+    f.floors(&k, "w-arch", 1);
+    f.msg_at(&k, "w-arch", NOW - 100 * day, "already read", "snd");
+    f.msg_at(&k, "w-arch", NOW - day, "fresh", "snd");
+    f.msg_at(&k, "w-arch", NOW - 40 * day, "stale", "snd");
+    f.msg_at(&k, "w-arch", NOW - day + 1, "native", "");
+    let (res, verdict, ends) =
+        archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!(verdict, Verdict::Agreed);
+    assert_eq!((res.forwarded, res.stale, res.status.as_str()), (1, 1, "ok"));
+    assert!(ends.iter().all(|e| *e == UnitEnd::Applied));
+    assert_eq!(f.msgs_in(&k, "w-live"), vec!["[forwarded from archived w-arch] fresh".to_string()]);
+    t.case(true);
+    // nothing is deleted from the archived partition, and a second pass adds nothing
+    assert_eq!(f.msgs_in(&k, "w-arch").len(), 4);
+    let (again, v2, _) = archived::forward_archived_orphan_unread(&f.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!((again.forwarded, v2), (0, Verdict::Agreed));
+    t.case(true);
+    // a survivor that is not registered answers `gone` and writes nothing
+    let g = fix6("s6-fwd2");
+    let (wt, k) = s6_base(&g);
+    g.row_s(&k, "w-other", &wt, Some("s1"));
+    g.floors(&k, "w-arch", 0);
+    g.msg_at(&k, "w-arch", NOW - day, "fresh", "snd");
+    let (res, verdict, _) = archived::forward_archived_orphan_unread(&g.ctx(), &System::configured(), &k, "w-arch", "w-live", max_age, &Hooks::none()).unwrap();
+    assert_eq!((res.forwarded, res.status.as_str(), verdict), (0, "gone", Verdict::Agreed));
+    assert!(g.msgs_in(&k, "w-live").is_empty());
+    t.case(true);
+    t.print();
+}
+
 // ---- S6 crash safety: SIGKILL at each op boundary of a fold, then Node's next fold converges
 
 fn crash_fold_fixture(f: &Fix) -> String {
@@ -1309,4 +1815,80 @@ fn no_message_row_is_deleted_or_updated() {
     // and no op of the vocabulary can address a message row
     let ops = std::fs::read_to_string(dir.join("mod.rs")).unwrap();
     assert!(!ops.contains("Message"));
+}
+
+// ---- the orphan heal answers every shape itself (no hand-off) -----------------------------------------------------------------
+
+/// A live registry row `w1` with a descriptor on the worktree: the family survivor of the orphan cases below.
+fn family_with_survivor(f: &Fix) -> (String, String) {
+    let (p, k, _) = base(f);
+    f.row(&k, "w1", &p, "s1");
+    f.descriptor("w1", &desc_json("w1", &p, "s1", None, None));
+    (p, k)
+}
+
+#[test]
+fn an_archived_orphan_forwards_its_unread_into_the_live_survivor_of_its_family() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-arch-fwd");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(0), Some(1)), "{}", run.result);
+    assert_eq!(run.result["detail"][0]["action"], "forwarded-only", "{}", run.result);
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["[forwarded from archived o1] hello".to_string()]);
+    assert!(!f.rows(&k).contains(&"o1".to_string()), "an archived id is never adopted");
+    // idempotent: the same hash is ignored the second time
+    let again = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(again.result["forwarded"], 0, "{}", again.result);
+    assert_eq!(f.msgs_in(&k, "w1").len(), 1);
+}
+
+#[test]
+fn an_archived_orphan_without_unread_a_family_or_fresh_rows_is_classified_not_handed_back() {
+    if !have("git") {
+        return;
+    }
+    // drained: only a cursor known, nothing unread
+    let f = fix("orph-arch-drained");
+    let (p, k) = family_with_survivor(&f);
+    f.store(&k).set_cursor("o1", 0, 10).unwrap();
+    f.put(&f.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedDrained"].as_u64(), run.result["unhealable"].as_u64()), (Some(1), Some(0)), "{}", run.result);
+    // no family at all
+    let g = fix("orph-arch-nofam");
+    let (p, k, _) = base(&g);
+    g.msg_at(&k, "o1", NOW - 1_000, "hello", "x");
+    g.put(&g.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&g.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!(run.result["detail"][0]["reason"], "archived-no-family", "{}", run.result);
+    // every unread row past the age cap: archived-stale, nothing forwarded
+    let h = fix("orph-arch-stale");
+    let (p, k) = family_with_survivor(&h);
+    h.msg_at(&k, "o1", NOW - 90 * 86_400_000, "old", "x");
+    h.put(&h.ds("archived/o1.json"), &desc_json("o1", &p, "so1", None, None));
+    let run = orphans::run(&h.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert_eq!((run.result["archivedStale"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(0)), "{}", run.result);
+    assert!(h.msgs_in(&k, "w1").is_empty());
+}
+
+#[test]
+fn an_adopted_orphan_in_a_family_forwards_its_unread_into_the_survivor() {
+    if !have("git") {
+        return;
+    }
+    let f = fix("orph-adopt-fam");
+    let (p, k) = family_with_survivor(&f);
+    f.msg_at(&k, "o2", NOW - 1_000, "for the family", "x");
+    f.descriptor("o2", &desc_json("o2", &p, "so2", None, None));
+    let run = orphans::run(&f.ctx(), &System::configured(), &k, &Hooks::none()).unwrap();
+    assert!(run.deferred.is_empty(), "{:?}", run.deferred);
+    assert_eq!((run.result["adopted"].as_u64(), run.result["forwarded"].as_i64()), (Some(1), Some(1)), "{}", run.result);
+    assert!(f.rows(&k).contains(&"o2".to_string()), "the descriptor-backed row is adopted and stays");
+    assert_eq!(f.msgs_in(&k, "w1"), vec!["for the family".to_string()]);
 }

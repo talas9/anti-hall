@@ -6,6 +6,20 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 pub mod scale;
+
+/// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
+/// hook command of both hosts is this binary (the plugin ships no shell wrapper), so a test that drives "the hook" runs it.
+pub fn launcher_bin() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("AH_HOOK_BIN").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
+        return p;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+    ["release", "debug"]
+        .iter()
+        .map(|b| root.join(b).join("ah-hook"))
+        .find(|p| p.is_file())
+        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
+}
 #[allow(unused_imports)] // each test binary uses a subset
 pub use scale::{scaled, scaled_ms, time_scale};
 

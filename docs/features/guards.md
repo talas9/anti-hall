@@ -12,16 +12,15 @@ setting, and you can skip one for a short while.
 
 ## How a block looks
 
-Every block has the same three parts: what was stopped, why, and what to do instead. The
-assistant reads it and takes the other path. For example:
+Every message has one leading emoji and at most two lines: what was stopped, then one
+action. Messages aim for 160 characters and never exceed 250. Long instructions and
+skip hints stay in a details file, linked only when the action needs them.
 
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · git-guard: a commit message with an AI/assistant self-credit trailer
-(Co-Authored-By / "Generated with <AI>") is blocked.
-Why: Commits carry no AI co-author credit.
-Do instead: re-run the commit without that trailer.
+⛔ git safety: commit has an AI co-author line.
+Do instead: remove the Co-Authored-By line and commit again.
 ```
 
 </div>
@@ -44,7 +43,7 @@ Do instead: re-run the commit without that trailer.
 The four `safety.*` guards are **locked**: turning one off needs your direct request or a
 confirmation (see [Changing settings](../settings/index.md#safety-settings)). All settings,
 including the opt-in gates (`guards.mergeGate`, `guards.shipitGate`), are in the
-[Settings reference](../../plugins/anti-hall-node/hooks/lib/settings-schema.js).
+[Settings reference](../../plugins/anti-hall/engine/defaults/settings_cli.toml).
 
 ## Why the main session hands work off
 
@@ -55,16 +54,15 @@ coordinator keeps the overview and checks each helper's result instead of trusti
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · command-guard: heavy command (verb: npm) blocked in the main thread.
-Why: Raw output floods the main thread.
-Do instead: ... a single command: delegate to a subagent (it returns a short summary).
-Allowed here: piped to tail/head/wc/grep -c: `node --test <1-2 files>`, ...
+⛔ command check: this heavy command was stopped in the main thread.
+Do instead: hand the command to a helper agent.
 ```
 
 </div>
 
 Short checks are still allowed in the main session, such as one or two test files piped
-to `tail`, or a `--check` / `--dry-run` run. The full list is in the message itself.
+to `tail`, or a `--check` / `--dry-run` run. Long instructions and skip hints are saved in
+`~/.anti-hall/block-details/`. A message links its details file only when the action needs it.
 
 ## Checking claims
 
@@ -75,11 +73,8 @@ once:
 <div class="ah-term" markdown>
 
 ```text
-⛔ anti-hall · speculation-guard: your reply states something speculative ('probably')
-without verifying it or flagging it as unverified.
-Why: Unverified claims read as facts.
-Do instead: verify it with a tool, or say what is unverified ('I don't know, here is what
-I would check'), then continue.
+⛔ claim check: your reply makes an unverified claim ("probably").
+Do instead: verify the claim or label it unverified.
 ```
 
 </div>

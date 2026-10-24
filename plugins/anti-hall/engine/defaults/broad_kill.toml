@@ -104,7 +104,7 @@ value = "Other processes run on this machine under the same user (the user's dev
 
 [broad_kill.msg_instead]
 doc = "What to do instead."
-value = "kill by PID after checking the process: record the PID when you start it (`cmd & echo $!`), check it with `ps -p <pid> -o pid,command`, then `kill <pid>`. To stop your own children only, `pkill -P $$` is allowed."
+value = "check the target process and stop only its PID."
 
 [broad_kill.msg_override]
 doc = "How the user can lift the block (shown on the last line)."

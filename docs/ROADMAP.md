@@ -55,7 +55,7 @@ A short re-triage of the parked items happens after R1.
 | A | [#43](https://github.com/talas9/anti-hall/issues/43) migration status report → [#66](https://github.com/talas9/anti-hall/issues/66) doctor → [#61](https://github.com/talas9/anti-hall/issues/61) update |
 | B | [#68](https://github.com/talas9/anti-hall/issues/68) Stop nudges → [#23](https://github.com/talas9/anti-hall/issues/23) CI on Linux and Intel macOS → [#17](https://github.com/talas9/anti-hall/issues/17) test-suite speed-up |
 | C | [#64](https://github.com/talas9/anti-hall/issues/64) DevSwarm supervisor and ingest → [#14](https://github.com/talas9/anti-hall/issues/14) DevSwarm CLI remainder → [#72](https://github.com/talas9/anti-hall/issues/72) prompt-side hooks → [#73](https://github.com/talas9/anti-hall/issues/73) gates and roles |
-| Then, in series | [#77](https://github.com/talas9/anti-hall/issues/77) skills and docs call the engine directly → pass-through plus notice → [#76](https://github.com/talas9/anti-hall/issues/76) runtime cutover → [#78](https://github.com/talas9/anti-hall/issues/78) delete the Node files and tests → [#16](https://github.com/talas9/anti-hall/issues/16) umbrella closes with evidence |
+| Then, in series | [#77](https://github.com/talas9/anti-hall/issues/77) skills and docs call the engine through the thin client `ah-hook` → pass-through plus notice → [#76](https://github.com/talas9/anti-hall/issues/76) runtime cutover → [#78](https://github.com/talas9/anti-hall/issues/78) delete the Node files and tests → [#16](https://github.com/talas9/anti-hall/issues/16) umbrella closes with evidence |
 
 ## v0.302 — features
 

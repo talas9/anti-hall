@@ -110,7 +110,14 @@ pub fn run_with(p: &Parsed, env: &dyn Fn(&str) -> Option<String>) -> i32 {
             return fail(p, defaults::text("devswarm_act.msg_audit_off").to_string(), usage);
         }
         let window = flag(rest, "--since");
-        let days = crate::telemetry::report::parse_window(&window).unwrap_or_else(|| defaults::num("devswarm_act.audit_default_days"));
+        let days = if window.trim().is_empty() {
+            defaults::num("devswarm_act.audit_default_days")
+        } else {
+            match crate::telemetry::report::check_window(&window) {
+                Ok(d) => d,
+                Err(e) => return fail(p, e, usage),
+            }
+        };
         out(p, crate::dsact::audit::collect(&state_dir, crate::health::now_ms() as i64, days));
         return 0;
     }
@@ -160,6 +167,7 @@ pub fn status_json(rt: &Rt) -> Value {
         "mode": format!("{:?}", rt.mode()).to_lowercase(), "generation": snap.generation, "appReadable": snap.app_readable,
         "workspaces": snap.workspaces.len(), "line": super::consume::line(rt), "repairs": rt.repairs(),
         "executors": defaults::list("devswarm_wire.act_kinds").iter().map(|k| (k.to_string(), json!(format!("{:?}", super::executor(k)).to_lowercase()))).collect::<serde_json::Map<_, _>>(),
+        "compatibility": defaults::env_var("home").map(|h| crate::refresh::devswarm_compat::cached(Path::new(&h))),
     })
 }
 

@@ -672,9 +672,8 @@ LIB['./lib/jev-assist.js'] = { scrubSecrets: function (t) { return ah.scrub(t); 
 
 LIB['./lib/skip-cmd.js'] = {
   skipCommand: function (key) {
-    // the engine's executable DevSwarm shim under the home, quoted (it runs the engine's own `skip`; no Node is involved)
-    var cli = text.render(ah.cfg('devswarm_role.engine_cli'), { home: ah.env.get(ah.cfg('env.home')) || '' });
-    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), { cli: "'" + cli.replace(/'/g, "'\\''") + "'" });
+    // the native thin client records the consent; no plugin path is involved
+    return text.render(ah.cfg('command.msg_edit_skip_cmd').replace('edit-guard', key), {});
   },
 };
 
@@ -1090,13 +1089,13 @@ LIB['./edit-guard.js'] = (function () {
     if (devswarmActive) {
       var childWorkspace = LIB['./lib/devswarm-role.js'].isChildWorkspace();
       var tierText = !childWorkspace && LIB['./lib/primary-tier.js'].primaryTierTextOn(null, cwd);
-      return text.message('block', guard, {
+      return text.detailsMessage('block', guard, {
         what: what, why: ah.cfg('command.msg_edit_why_orch'),
         instead: text.render(ah.cfg(tierText ? 'command.msg_edit_instead_tier' : 'command.msg_edit_instead'), { sub: SUB }),
         allowed: NOTES, override: override,
-      });
+      }, payload && payload.session_id);
     }
-    return text.message('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override });
+    return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, payload && payload.session_id);
   }
   return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason };
 })();
@@ -2085,7 +2084,7 @@ function isSafeGitFetch(segment) {
 // between `git` and the subcommand cannot hide it) of push/pull/clone
 // (always heavy) or fetch without isSafeGitFetch's safety. This is the fix
 // for the P1 bypass above: the plain-substring git HEAVY_PATTERN
-// (`\bgit\s+(?:push|pull|fetch|clone)\b`) only matches when the subcommand
+// (`\bgit\s+(?:pull|fetch|clone)\b`) only matches when the subcommand
 // is textually ADJACENT to `git`, so it never even sees a global-option-
 // prefixed invocation — this check runs the same tokenized, option-aware
 // parse used by isSafeGitFetch, so the two can never disagree about where
@@ -2102,7 +2101,7 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'push' || sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull' || sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }
@@ -2860,9 +2859,21 @@ function isSyntaxOnlyCompileCheck(segment) {
 // shape only: no globs, no directory target, no extra args past the one
 // target token.
 function isSinglePytestFileCheck(segment) {
-  const m = segment.trim().match(RX60);
-  if (!m) return false;
-  const target = m[1];
+  const tokens = segment.trim().split(RX28).filter(Boolean);
+  if (tokens.length < 4 || !cmdRe(ah.cfg('command.pytest_interpreter_re')).test(basename(tokens[0])) || tokens[1] !== '-m' || tokens[2] !== 'pytest') return false;
+  const valueFlags = ah.cfg('command.pytest_value_flags'), flagRe = cmdRe(ah.cfg('command.pytest_flag_re'));
+  let target = null;
+  for (let i = 3; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('-')) {
+      if (valueFlags.includes(t)) { if (i + 1 >= tokens.length || tokens[i + 1].startsWith('-')) return false; i++; continue; }
+      if (!flagRe.test(t)) return false;
+      continue;
+    }
+    if (target !== null) return false; // one target only
+    target = t;
+  }
+  if (target === null) return false;
   if (RX61.test(target)) return false;
   if (target.endsWith('/')) return false;
   return true;
@@ -3161,6 +3172,35 @@ function isBoundedVerificationCommand(command, ctx) {
     pipelineHasCheck = false;
   }
   return sawQualifying;
+}
+
+// cmdOutputBounded(command) -> true iff every pipeline that runs something other than a plain light command ends in a bounded sink
+// (head, tail, wc, grep -c) or writes its stdout to a file. Used by the delegate stand-down: while spawning is stopped a heavy command
+// may run inline only when its output cannot flood the context. An unquoted `#` or a background `&` is never judged bounded.
+function cmdOutputBounded(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  if (RX82.test(neutralizeQuotedContents(command))) return false;
+  const { segments, delims } = splitSegmentsDetailed(command);
+  if (!segments.length) return false;
+  const redirect = new RegExp(ah.cfg('standdown.redirect_re'));
+  const ends = [';', '&&', '||', '\n', 'end'];
+  let heavy = false;
+  let bounded = false;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i].trim();
+    if (seg) {
+      if (redirect.test(neutralizeQuotedContents(seg)) || isBoundedSinkSegment(seg)) bounded = true;
+      else if (!(i > 0 && delims[i - 1] === '|') && !isPlainLightSegment(seg, command)) heavy = true;
+      else if (i > 0 && delims[i - 1] === '|') heavy = true;
+    }
+    const d = delims[i];
+    if (d === '|') continue;
+    if (ends.indexOf(d) < 0) return false;
+    if (heavy && !bounded) return false;
+    heavy = false;
+    bounded = false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -5039,16 +5079,23 @@ function mainFlow(payload) {
   const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
-  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude');
-  const reason = bm.blockMessage({
-    guard: ah.cfg('command.guard_name'),
+  // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
+  const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));
+  if (standStop) {
+    if (guarded(() => cmdOutputBounded(command))) {
+      const standNote = guarded(() => sd.note(payload, standStop)) || '';
+      return standNote ? { advisory: text.advisoryJson('PreToolUse', standNote) } : 'allow';
+    }
+  }
+  const allowedShapes = ah.cfg('command.msg_heavy_allowed') + ah.cfg(codexHost ? 'command.msg_heavy_allowed_codex' : 'command.msg_heavy_allowed_claude') + (standStop ? ' ' + ah.cfg('standdown.msg_bound_hint') : '');
+  const reason = text.detailsMessage('block', ah.cfg('command.guard_name'), {
     what: heavyWhat,
-    why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : 'command.msg_heavy_why'),
+    why: ah.cfg(cls && cls.risk ? 'command.msg_remote_block_why' : remote ? 'command.msg_heavy_remote_why' : 'command.msg_heavy_why'),
     instead: (devswarmPrimary && tierText
       ? text.render(ah.cfg('command.msg_heavy_instead_tier'), { delegate: delegateTo, sub: SUB })
       : delegateTo + '.') + cdJoinHint,
     allowed: allowedShapes,
-  });
+  }, payload && payload.session_id);
   return blockExact(reason);
 }
 

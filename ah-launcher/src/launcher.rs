@@ -1,5 +1,5 @@
 //! The launcher proper: arguments, settings, the budgets of a call, the cold-start guard wait, the engine run and the outcome
-//! table of `hooks/ah-hook.sh`.
+//! table of the retired `hooks/ah-hook.sh` (now in `plugins/anti-hall-node/legacy-sh/`).
 //!
 //! Failure policy: anything internal that goes wrong lets the hook through (exit 0, empty stdout, one stderr line at most).
 //! The only blocks are the engine's own exit 2 and the guard events' fail-closed rows (bad budget knob, unrunnable fallback
@@ -13,7 +13,7 @@ use crate::proc::{self, Feed, Opts, Retry, Run};
 use crate::util::{
     env_nonempty, fill, is_exec, json_str_field, json_true_field, now_ms, positive, say, uid,
 };
-use crate::{builtin, selftest};
+use crate::{builtin, cli, nodeback, selftest};
 use std::ffi::CString;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 pub static RUN_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 static INTERNAL_TEXT: OnceLock<String> = OnceLock::new();
-static LOG: OnceLock<Log> = OnceLock::new();
+pub static LOG: OnceLock<Log> = OnceLock::new();
 
 /// One stderr line and a log line for a failure of the launcher itself (a panic, a limit): the hook is let through.
 pub fn internal(what: &str) {
@@ -144,21 +144,27 @@ impl L {
         if self.knob("launcher.knob_engine_bin").is_some() {
             return; // never for a test double
         }
-        self.detached(&self.key("launcher.script_integrity"), &[verb]);
+        self.self_spawn(&[verb], "launcher.cli_integrity_verb");
     }
 
-    fn detached(&self, script_name: &str, args: &[&str]) {
-        let script = self.hooks_dir.join(script_name);
-        if script.is_file() {
-            let _ = Command::new("sh")
-                .arg(script)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .process_group(0)
-                .spawn();
+    /// This very binary, in the background, running the maintenance verb named by `verb_key` with `rest`.
+    fn self_spawn(&self, rest: &[&str], verb_key: &str) {
+        // this very binary, in the background: `fail` and `check` may wait for the install lock, and the hook must not
+        let Ok(me) = std::env::current_exe() else {
+            return;
+        };
+        let mut cmd = Command::new(me);
+        if let Some(r) = &self.plugin_root {
+            cmd.arg("--plugin-root").arg(r);
         }
+        let _ = cmd
+            .arg(self.key(verb_key))
+            .args(rest)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn();
     }
 
     fn fresh_marker(&self, files_key: &str) -> bool {
@@ -220,7 +226,11 @@ impl L {
     }
 
     fn cold_notice(&self) {
-        self.session_notice("msg.cold_guard_notice", "files.cold_guard_notice", &[("event", self.event.as_str())]);
+        self.session_notice(
+            "msg.cold_guard_notice",
+            "files.cold_guard_notice",
+            &[("event", self.event.as_str())],
+        );
     }
 
     /// The engine is unreachable (not installed, crashed, timed out, marked down, handed the call back): the call passes
@@ -231,7 +241,11 @@ impl L {
     }
 
     fn unreachable_notice(&self, why: &str) {
-        self.session_notice("msg.engine_unreachable_notice", "files.unreachable_notice", &[("event", self.event.as_str()), ("why", why)]);
+        self.session_notice(
+            "msg.engine_unreachable_notice",
+            "files.unreachable_notice",
+            &[("event", self.event.as_str()), ("why", why)],
+        );
     }
 
     /// One stderr notice per session: the state dir remembers the session id that already got the notice named by `file_key`.
@@ -321,13 +335,26 @@ impl L {
         if sock.as_os_str().len() as u64 > sock_max {
             return None;
         }
-        if gate::probe(
+        let probed = gate::probe(
             &sock,
             Duration::from_millis(self.s.num("launcher.connect_timeout_ms")),
-        ) == Sock::Live
-        {
+        );
+        if probed == Sock::Live {
             return None;
         }
+        // a socket file nobody listens on that is NEWER than a start request is a daemon that request started and that then died: the
+        // request is no reason to keep waiting (a daemon still starting has not bound its socket yet, so the file is older than its request)
+        let sock_ms = (probed == Sock::Stale)
+            .then(|| {
+                std::fs::metadata(&sock)
+                    .ok()?
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            })
+            .flatten();
         let total_ms = self
             .event_timeout_s()
             .unwrap_or(self.timeout_s)
@@ -345,6 +372,7 @@ impl L {
             &self.key("files.launcher_spawn_lock"),
             &self.key("files.launcher_spawn_log"),
             cap,
+            sock_ms,
             self.s.num("launcher.crashloop_window_s"),
             self.s.num("launcher.crashloop_max"),
         );
@@ -486,6 +514,12 @@ impl L {
             envs.push((self.key("env.plugin_root"), root.display().to_string()));
         }
         envs.push((self.key("launcher.stats_env"), self.stats_value()));
+        if let Some(name) = Some(self.key("env.hook_version")).filter(|n| !n.is_empty()) {
+            envs.push((name, env!("AH_BUILD_VERSION").to_string()));
+        }
+        if let Some(name) = Some(self.key("env.hook_engine_min")).filter(|n| !n.is_empty()) {
+            envs.push((name, crate::compat::ENGINE_MIN.to_string()));
+        }
         let argv = [
             engine.to_string(),
             "hook".into(),
@@ -693,7 +727,11 @@ impl L {
     }
 }
 
-fn find_engine(home: Option<&PathBuf>, s: &Settings, knob_bin: Option<String>) -> Option<String> {
+pub fn find_engine(
+    home: Option<&PathBuf>,
+    s: &Settings,
+    knob_bin: Option<String>,
+) -> Option<String> {
     if let Some(b) = knob_bin {
         return is_exec(Path::new(&b)).then_some(b);
     }
@@ -742,6 +780,38 @@ fn plugin_root(args: &[String], env_names: &[String]) -> Option<PathBuf> {
         .map(canonical)
 }
 
+fn has_defaults_index(root: &Path) -> bool {
+    root.join(builtin::CFG_REL_DIR)
+        .join(builtin::CFG_MARKER_FILE)
+        .is_file()
+}
+
+/// The plugin root the install record names, for a hook run with no plugin root of its own (no flag, no host variable, and the
+/// binary not inside a plugin): the same fallback the engine uses, so the shipped settings are read instead of the built-in copy.
+fn installed_plugin_root() -> Option<PathBuf> {
+    let home = env_nonempty(builtin::text("env.home")?)?;
+    let dir = match env_nonempty(builtin::text("env.dir")?) {
+        Some(d) => PathBuf::from(d),
+        None => Path::new(&home)
+            .join(builtin::text("paths.base_dir")?)
+            .join(builtin::text("paths.state_dir")?),
+    };
+    let text = std::fs::read_to_string(dir.join(builtin::INSTALL_RECORD_FILE)).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = PathBuf::from(record.get(builtin::INSTALL_RECORD_ROOT_FIELD)?.as_str()?);
+    has_defaults_index(&root).then(|| canonical(root))
+}
+
+/// The plugin root exactly as the caller wrote it (the `--plugin-root` pair, else the environment): the doctor shows paths the way
+/// the engine's doctor does, without resolving symbolic links.
+fn raw_plugin_root(args: &[String], env_name: &str) -> Option<PathBuf> {
+    args.iter()
+        .position(|a| a == "--plugin-root")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(|| env_nonempty(env_name).map(PathBuf::from))
+}
+
 fn arg_after(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
@@ -751,10 +821,19 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
 
 pub fn run() -> i32 {
     let t0 = Instant::now();
-    let args: Vec<String> = std::env::args_os()
+    let mut args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    // a build fact: answered before any settings are read, so it works with no plugin root
+    if args.first().is_some_and(|a| a == "--version") {
+        println!("{}", env!("AH_BUILD_VERSION"));
+        return 0;
+    }
+    // a shim may name the plugin root first (`ah-hook --plugin-root <dir> <event|verb> ...`): the same as naming it last
+    if args.first().is_some_and(|a| a == "--plugin-root") && args.len() >= 2 {
+        args.rotate_left(2);
+    }
     // before any settings: the host's plugin-root variable names come from the built-in copy
     let root_envs: Vec<String> = builtin::list("launcher.plugin_root_envs")
         .map(|l| l.iter().map(|s| s.to_string()).collect())
@@ -768,11 +847,10 @@ pub fn run() -> i32 {
     let boot_plugin_env = builtin::text("env.plugin_root").unwrap_or_default();
     let cfg_root = match env_nonempty(boot_plugin_env) {
         Some(r) => Some(canonical(PathBuf::from(r))),
-        None => root.clone().filter(|r| {
-            r.join(builtin::CFG_REL_DIR)
-                .join(builtin::CFG_MARKER_FILE)
-                .is_file()
-        }),
+        None => root
+            .clone()
+            .filter(|r| has_defaults_index(r))
+            .or_else(installed_plugin_root),
     };
     let cfg_dir = cfg_root
         .as_ref()
@@ -822,13 +900,39 @@ pub fn run() -> i32 {
         if let Some(l) = LOG.get() {
             l.append(&s.msg(
                 "msg.launcher_config_invalid",
-                &[("file", &s.bad_files.join(","))],
+                &[("file", &s.bad_why.join("; "))],
             ));
         }
     }
 
+    // #160: `--help` / `-h` on one of the launcher's own verbs prints its usage and stops before anything runs (an engine verb gets
+    // the engine's own answer; an event name is never a help request)
+    if let Some(first) = args.first()
+        && args
+            .iter()
+            .skip(1)
+            .take_while(|a| *a != "--")
+            .any(|a| s.list("cli.help_flags").contains(a))
+    {
+        let key = if *first == s.text("launcher.cli_install_verb") {
+            Some("launcher.help_install")
+        } else if *first == s.text("launcher.cli_integrity_verb") {
+            Some("launcher.help_integrity")
+        } else if *first == s.text("launcher.cli_doctor_verb") || first == "--doctor" {
+            Some("launcher.help_doctor")
+        } else if first == "--selftest" {
+            Some("launcher.help_selftest")
+        } else {
+            None
+        };
+        if let Some(k) = key {
+            let _ = writeln!(std::io::stdout(), "{}", s.text(k));
+            return 0;
+        }
+    }
     match args.first().map(String::as_str) {
         Some("--selftest") => {
+            let s = s.with_nodeback(&cfg_dir);
             return selftest::run(
                 &s,
                 root.as_deref(),
@@ -837,14 +941,60 @@ pub fn run() -> i32 {
             );
         }
         Some("--doctor") => {
-            let doctor = hooks_dir.join(s.text("launcher.script_doctor"));
-            if doctor.is_file() {
-                let err = Command::new("sh").arg(doctor).args(&args[1..]).exec();
-                say(&s.msg("msg.launcher_doctor_failed", &[("err", &err.to_string())]));
-            } else {
-                say(&s.text("msg.launcher_no_doctor"));
-            }
-            return 1;
+            // the old wrapper form: the built-in diagnosis, whatever the engine says
+            let mut rest = vec![s.text("launcher.arg_builtin")];
+            rest.extend(cli::forwarded(&args)[1..].iter().cloned());
+            let shown = raw_plugin_root(&args, boot_plugin_env)
+                .or_else(|| cfg_root.clone().or(root.clone()));
+            return crate::doctor::run(s, &cfg_dir, &state_dir, shown.as_deref(), &rest);
+        }
+        Some(first) if first == s.text("launcher.cli_doctor_verb") => {
+            let shown = raw_plugin_root(&args, boot_plugin_env)
+                .or_else(|| cfg_root.clone().or(root.clone()));
+            return crate::doctor::run(
+                s,
+                &cfg_dir,
+                &state_dir,
+                shown.as_deref(),
+                &cli::forwarded(&args)[1..],
+            );
+        }
+        Some(first) if first == s.text("launcher.cli_integrity_verb") => {
+            return crate::integrity::run(&s, &state_dir, &cli::forwarded(&args)[1..]);
+        }
+        Some(first) if first == s.text("launcher.cli_install_verb") => {
+            let base = home
+                .as_ref()
+                .map(|h| h.join(s.text("paths.base_dir")))
+                .unwrap_or_default();
+            return crate::install::run(
+                &s,
+                &state_dir,
+                &base,
+                cfg_root.as_deref().or(root.as_deref()),
+                &cli::forwarded(&args)[1..],
+            );
+        }
+        Some(first) if first == s.text("launcher.cli_update_verb") => {
+            let base = home
+                .as_ref()
+                .map(|h| h.join(s.text("paths.base_dir")))
+                .unwrap_or_default();
+            return crate::update::run(
+                &s,
+                &state_dir,
+                &base,
+                cfg_root.as_deref().or(root.as_deref()),
+                &cli::forwarded(&args)[1..],
+            );
+        }
+        Some(first) if cli::is_verb(&s, first) => {
+            return cli::exec_engine(
+                &s,
+                &args,
+                home.as_ref(),
+                cfg_root.as_deref().or(root.as_deref()),
+            );
         }
         _ => {}
     }
@@ -854,15 +1004,6 @@ pub fn run() -> i32 {
             l.append("no_event");
         }
         return 0;
-    }
-
-    // the Node fallback switch is on (`ah-engine fallback node`): the shell wrapper runs the original Node hooks instead of the engine
-    if !state_dir.as_os_str().is_empty() && state_dir.join(s.text("files.fallback_switch")).exists() {
-        let wrapper = hooks_dir.join(s.text("launcher.script_hook"));
-        if wrapper.is_file() {
-            let err = Command::new("sh").arg(wrapper).args(&args).exec();
-            say(&s.msg("msg.launcher_fallback_exec_failed", &[("err", &err.to_string())]));
-        }
     }
 
     let test = env_nonempty(&s.text("launcher.test_flag_env")).is_some_and(|v| v == "1");
@@ -906,6 +1047,55 @@ pub fn run() -> i32 {
             i += 1;
         }
         i += 1;
+    }
+
+    // the Node fallback switch is on (`ah-engine fallback node`): the launcher runs the original Node hooks itself, no engine. While the
+    // Node backup directory is missing the switch does nothing: one notice line, and the engine decides as it would with the switch off.
+    let switch_on = !state_dir.as_os_str().is_empty()
+        && state_dir.join(s.text("files.fallback_switch")).exists();
+    let s = if switch_on {
+        s.with_nodeback(&cfg_dir)
+    } else {
+        s
+    };
+    if switch_on {
+        let node_dir = cfg_root
+            .as_deref()
+            .or(root.as_deref())
+            .map(|r| r.join(s.text("nodeback.node_dir")));
+        if let Some(d) = node_dir.as_ref().filter(|d| !d.is_dir()) {
+            say(&s.msg(
+                "nodeback.msg_no_node_dir",
+                &[("dir", &d.display().to_string())],
+            ));
+        } else {
+            let guard = s.list("dispatch.guard_events").contains(&event);
+            let tool_flag = s.text("launcher.arg_tool_from_payload");
+            let (payload, _) = proc::read_prefix(
+                0,
+                s.num("launcher.payload_prefix_bytes") as usize,
+                Duration::from_millis(s.num("launcher.stdin_idle_ms")),
+                s.num("launcher.io_chunk_bytes") as usize,
+            );
+            let list_override = if test {
+                env_nonempty(&s.text("launcher.knob_fallback_list")).map(PathBuf::from)
+            } else {
+                None
+            };
+            return nodeback::Call {
+                s: &s,
+                event: &event,
+                host: &host,
+                tool_from_payload: args.contains(&tool_flag),
+                guard,
+                plugin_root: cfg_root.as_deref().or(root.as_deref()),
+                state_dir: &state_dir,
+                list_override,
+                payload: &payload,
+                grace: Duration::from_millis(s.num("client.wrapper_kill_grace_ms")),
+            }
+            .run();
+        }
     }
 
     // the part of the payload the launcher keeps and inspects; the rest is streamed through later
@@ -985,7 +1175,7 @@ pub fn run() -> i32 {
                 .as_ref()
                 .is_some_and(|r| r.join(l.key("launcher.engine_lock_file")).is_file())
         {
-            l.detached(&l.key("launcher.script_bootstrap"), &[]);
+            l.self_spawn(&[&l.key("launcher.arg_auto")], "launcher.cli_install_verb");
         }
     }
     let Some(engine) = find_engine(l.home.as_ref(), &l.s, l.knob("launcher.knob_engine_bin"))
@@ -1057,17 +1247,34 @@ pub fn run() -> i32 {
     code
 }
 
-/// HUP/INT/TERM to the launcher (the host gave up on the hook): take the child's whole group down, remove the run dir, and
-/// exit 128+signal as the shell wrapper's traps do. The signals are blocked in every thread and taken by one `sigwait` thread;
-/// std's spawn resets the mask in the child, so the engine still gets them.
-pub fn install_signal_thread() {
-    // SAFETY: sigset manipulation on a local set; pthread_sigmask on the calling (main) thread before the thread below exists.
+fn hook_signals() -> libc::sigset_t {
+    // SAFETY: sigset manipulation on a local set.
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         for sig in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
             libc::sigaddset(&mut set, sig);
         }
+        set
+    }
+}
+
+/// Before an exec: the new program gets HUP/INT/TERM delivered again (a blocked mask survives exec).
+pub fn unblock_signals() {
+    let set = hook_signals();
+    // SAFETY: pthread_sigmask on the calling thread with a valid set.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// HUP/INT/TERM to the launcher (the host gave up on the hook): take the child's whole group down, remove the run dir, and
+/// exit 128+signal as the shell wrapper's traps do. The signals are blocked in every thread and taken by one `sigwait` thread;
+/// std's spawn resets the mask in the child, so the engine still gets them.
+pub fn install_signal_thread() {
+    let set = hook_signals();
+    // SAFETY: pthread_sigmask on the calling (main) thread before the thread below exists.
+    unsafe {
         if libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
             return;
         }

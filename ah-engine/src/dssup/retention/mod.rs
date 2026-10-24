@@ -55,16 +55,15 @@ fn state_path(home: &Path) -> PathBuf {
     devswarm_root(home).join(defaults::text("devswarm_sup.rt_state_file"))
 }
 
-/// `readState(home)`: the state object with `stores`, `holds` and `phase` normalised the way Node does. An object whose
-/// `stores` or `holds` is an array is a shape this port will not touch.
-pub fn read_state(home: &Path) -> Result<OVal, Defer> {
+/// `readState(home)`: the state object with `stores`, `holds` and `phase` normalised the way Node does. An array where `stores` or
+/// `holds` should be an object keeps no entry by hash in Node (it reads as empty, and is written back as such), so it is the empty object.
+pub fn read_state(home: &Path) -> OVal {
     let mut st = match std::fs::read(state_path(home)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
         Some(o @ OVal::Obj(_)) => o,
         _ => OVal::Obj(Vec::new()),
     };
     for k in [defaults::text("devswarm_sup.rt_state_stores"), defaults::text("devswarm_sup.rt_state_holds")] {
         match st.get(k) {
-            Some(OVal::Arr(_)) => return Err(Defer("state-shape".into())),
             Some(v) if v.truthy() && matches!(v, OVal::Obj(_)) => {}
             _ => st.set(k, OVal::Obj(Vec::new())),
         }
@@ -73,7 +72,7 @@ pub fn read_state(home: &Path) -> Result<OVal, Defer> {
     if !matches!(st.get(defaults::text("devswarm_sup.rt_state_phase")), Some(OVal::Str(p)) if p == armed) {
         st.set(defaults::text("devswarm_sup.rt_state_phase"), OVal::Str(defaults::text("devswarm_sup.rt_phase_dry").into()));
     }
-    Ok(st)
+    st
 }
 
 /// Write the state the way Node does (the whole object, atomically). Unchanged content is not rewritten.
@@ -186,7 +185,6 @@ pub(super) enum Ended {
     Pruned(Box<Pruned>),
     DryRun(Value),
     Held(String),
-    Fallback(Defer),
 }
 
 fn witness_log(ctx: &Ctx, rec: &Value) {
@@ -200,7 +198,7 @@ pub(super) fn one_store(ctx: &Ctx, _runner: &dyn Runner, st: &mut OVal, s: &Sett
     let bytes_before = apply::store_bytes(ctx.home, hash);
     let first = match plan::plan_store(ctx.home, hash, s.rules(), now, &holds) {
         Ok(p) => p,
-        Err(d) => return Ended::Fallback(d),
+        Err(Defer(why)) => return plan_failed(ctx, hash, bytes_before, why, dry),
     };
     let (chosen, choice) = choose(&first, s, bytes_before);
     witness_log(
@@ -210,7 +208,7 @@ pub(super) fn one_store(ctx: &Ctx, _runner: &dyn Runner, st: &mut OVal, s: &Sett
     // the store must not have moved under the comparison
     let second = match plan::plan_store(ctx.home, hash, s.rules(), now, &holds) {
         Ok(p) => p,
-        Err(d) => return Ended::Fallback(d),
+        Err(Defer(why)) => return plan_failed(ctx, hash, bytes_before, why, dry),
     };
     if cand_rows(&first) != cand_rows(&second) || parts_json(&first) != parts_json(&second) {
         witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": false, "detail": defaults::text("devswarm_sup.rt_msg_unstable")}));
@@ -222,19 +220,28 @@ pub(super) fn one_store(ctx: &Ctx, _runner: &dyn Runner, st: &mut OVal, s: &Sett
         );
     }
     let mut run = Run { home: ctx.home, hash, settings: *s, now, budget_ms: if mark { f64::INFINITY } else { budget_ms(ctx) }, state: st, commit: mark };
-    match apply::prune(&mut run, &first, chosen, choice.size, choice.age, bytes_before, choice.over) {
-        Ok(mut r) => {
-            r.total_rows = first.total_rows;
-            r.already_tombstoned = first.total_tombstoned;
-            for p in first.parts.values() {
-                for (i, x) in [p.too_new, p.keep_last, p.unread, p.question, p.ndjson, p.broadcast, p.held].into_iter().enumerate() {
-                    r.protected[i] += x;
-                }
-            }
-            Ended::Pruned(Box::new(r))
+    let mut r = apply::prune(&mut run, &first, chosen, choice.size, choice.age, bytes_before, choice.over);
+    r.total_rows = first.total_rows;
+    r.already_tombstoned = first.total_tombstoned;
+    for p in first.parts.values() {
+        for (i, x) in [p.too_new, p.keep_last, p.unread, p.question, p.ndjson, p.broadcast, p.held].into_iter().enumerate() {
+            r.protected[i] += x;
         }
-        Err(d) => Ended::Fallback(d),
     }
+    Ended::Pruned(Box::new(r))
+}
+
+/// A plan that could not be made (a value Node's sqlite binding refuses, an unreadable table) ends the store the way Node's `catch`
+/// in `pruneStore` does: nothing is written, the store's result is `ok: false` with the error text, and a `prune-error` line is logged.
+fn plan_failed(ctx: &Ctx, hash: &str, bytes_before: u64, why: String, dry: bool) -> Ended {
+    apply::log_event(
+        ctx.home,
+        &[("event", OVal::Str(defaults::text("devswarm_sup.rt_ev_prune_error").into())), ("store", OVal::Str(hash.into())), ("error", OVal::Str(why.clone()))],
+    );
+    if dry {
+        return Ended::DryRun(json!({"hash": hash, "ok": false, "error": why}));
+    }
+    Ended::Pruned(Box::new(Pruned { hash: hash.to_string(), ok: false, error: Some(why), bytes_before, bytes_after: bytes_before, ..Pruned::default() }))
 }
 
 /// `recordStore(st, hash, r, now)`.
@@ -256,7 +263,7 @@ pub(super) fn record_store(st: &mut OVal, hash: &str, r: &Pruned, now: i64) {
         ("bytesAfter", n(r.bytes_after as f64)),
         ("overLimitProtected", OVal::Bool(r.over_limit_protected)),
         ("vacuum", r.vacuum.clone().unwrap_or(OVal::Null)),
-        ("error", OVal::Null),
+        ("error", r.error.as_deref().map_or(OVal::Null, |x| OVal::Str(x.into()))),
         ("budgetExhausted", OVal::Bool(r.budget_exhausted)),
     ] {
         e.set(k, v);
@@ -315,24 +322,24 @@ pub(super) fn archive_cap(ctx: &Ctx, _runner: &dyn Runner, s: &Settings) -> Valu
     v
 }
 
-/// The native sweep. `Err` holds the whole sweep (nothing is half done by then).
-fn sweep(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Result<Value, Defer> {
+/// The native sweep.
+fn sweep(ctx: &Ctx, runner: &dyn Runner, dry: bool) -> Value {
     let s = read_settings(ctx);
     if !s.enabled() {
-        return Ok(json!({"ran": false, "reason": defaults::text("devswarm_sup.msg_disabled")}));
+        return json!({"ran": false, "reason": defaults::text("devswarm_sup.msg_disabled")});
     }
     let Some(held) = nodelock::acquire(&lock_path(ctx.home), lock_params()) else {
-        return Ok(json!({"ran": false, "reason": defaults::text("devswarm_sup.rt_reason_lock_busy")}));
+        return json!({"ran": false, "reason": defaults::text("devswarm_sup.rt_reason_lock_busy")});
     };
     let out = locked(ctx, runner, &s, dry);
     held.release();
     out
 }
 
-fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Result<Value, Defer> {
+fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Value {
     let dry = dry_switch;
     let t0 = std::time::Instant::now();
-    let mut st = read_state(ctx.home)?;
+    let mut st = read_state(ctx.home);
     if !is_armed(&st) {
         return dry::phase(ctx, runner, &mut st, s, dry_switch, budget_ms(ctx));
     }
@@ -380,16 +387,13 @@ fn locked(ctx: &Ctx, runner: &dyn Runner, s: &Settings, dry_switch: bool) -> Res
                 stamp_held(ctx, &target.hash);
                 result = json!({"hash": target.hash, "held": why});
             }
-            Ended::Fallback(d) => return Err(d),
         }
     }
     let cap = if dry { Value::Null } else { archive_cap(ctx, runner, s) };
     if !dry {
         write_state(ctx.home, &st);
     }
-    Ok(
-        json!({"ran": true, "phase": defaults::text("devswarm_sup.rt_phase_armed"), "store": result, "archiveCap": cap, "dryRun": dry, "ms": t0.elapsed().as_millis() as u64}),
-    )
+    json!({"ran": true, "phase": defaults::text("devswarm_sup.rt_phase_armed"), "store": result, "archiveCap": cap, "dryRun": dry, "ms": t0.elapsed().as_millis() as u64})
 }
 
 fn held_path(ctx: &Ctx) -> PathBuf {
@@ -414,16 +418,118 @@ fn stamp_held(ctx: &Ctx, hash: &str) {
     crate::discard::harmless(crate::atomic::write(&p, Value::Object(m).to_string())); // keep: same
 }
 
-/// The duty: native. A sweep the port declines is `held` (counted, nothing written, tried again at the next tick).
+/// The duty: native. A sweep that cannot run is reported in its record (disabled, lock busy), never handed to anyone else.
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     let dry = super::setting(ctx.st, "devswarm_sup.set_dry_run_retention").as_bool().unwrap_or(false);
-    match sweep(ctx, runner, dry) {
-        Ok(v) => json!({"duty": "retention", "outcome": if dry { "dry-run" } else { "ran" }, "detail": v}),
-        Err(Defer(why)) => {
-            if dry {
-                return json!({"duty": "retention", "outcome": "dry-run", "detail": {"ran": false, "reason": why}});
-            }
-            json!({"duty": "retention", "outcome": "held", "detail": super::tick::held("dssup:retention:sweep", &why)})
-        }
+    json!({"duty": "retention", "outcome": if dry { "dry-run" } else { "ran" }, "detail": sweep(ctx, runner, dry)})
+}
+
+#[cfg(test)]
+mod tests {
+    //! The cases the engine used to hand to Node now answer natively, with Node's own result for each.
+    use super::*;
+    use crate::meshw::common::Inv;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-ret-native-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const HASH: &str = "abc123";
+
+    fn store(home: &Path, rows: &str) {
+        let db = plan::db_path(home, HASH);
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch(&format!(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, workspace_id TEXT, ts, seq, needs_reply, is_heartbeat, sender, recipient, mtype, urgency, body, hash, orig_hash, instance_nonce);
+             CREATE TABLE broadcast_cursors (workspace_id TEXT, value);
+             CREATE TABLE registry (id TEXT, inbox_path TEXT);
+             CREATE TABLE cursors (workspace_id TEXT, value);
+             {rows}"
+        ))
+        .unwrap();
+    }
+
+    fn with_ctx<T>(home: &Path, f: impl FnOnce(&Ctx) -> T) -> T {
+        crate::defaults::init().unwrap();
+        let inv = Inv {
+            home: home.to_path_buf(),
+            write_home: home.to_path_buf(),
+            env: Default::default(),
+            cwd: "/".into(),
+            now: 10_000_000_000,
+            stdin: None,
+            store_override: None,
+        };
+        let st = inv.settings();
+        let root = PathBuf::from("/");
+        let ctx = Ctx { home, root: &root, st: &st, now: 10_000_000_000, engine_pokes: false };
+        f(&ctx)
+    }
+
+    fn field(v: &OVal, k: &str) -> OVal {
+        v.get(k).cloned().unwrap_or(OVal::Null)
+    }
+
+    #[test]
+    fn an_integer_javascript_cannot_hold_ends_that_store_with_nodes_error_and_the_rest_carry_on() {
+        let home = scratch("range");
+        store(&home, "INSERT INTO messages VALUES (1,'w1',9007199254740993,1,0,0,'a','b','t',NULL,'one','h1',NULL,NULL);");
+        let (ok, v) = with_ctx(&home, |ctx| cli::run(ctx, &crate::dsact::runner::System::configured(), true, Some(HASH)).unwrap());
+        assert!(!ok);
+        let OVal::Arr(rows) = field(&v, "stores") else { panic!("{}", v.stringify()) };
+        assert_eq!(field(&rows[0], "ok"), OVal::Bool(false));
+        assert!(matches!(field(&rows[0], "error"), OVal::Str(e) if e.contains("out of range")), "{}", v.stringify());
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    #[test]
+    fn a_blob_and_a_number_in_a_body_column_are_read_as_javascript_reads_them() {
+        let home = scratch("blob");
+        store(
+            &home,
+            "INSERT INTO messages VALUES (1,'w1',1000,1,0,0,'a','b','t',NULL,x'00ff10','h1',NULL,NULL), (2,'w1',1000,2,0,0,7,'b','t',NULL,42,'h2',NULL,NULL);
+             INSERT INTO messages VALUES (3,'broadcast',1000,1,0,0,'a','b','t',NULL,x'0102','h3',NULL,NULL);",
+        );
+        let p = plan::plan_store(&home, HASH, plan::Rules { days: 30.0, keep: 0 }, 10_000_000_000.0, &[]);
+        assert!(p.is_ok(), "{:?}", p.err());
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    #[test]
+    fn a_busy_lock_a_disabled_setting_and_an_unknown_store_answer_like_nodes_run() {
+        let home = scratch("answers");
+        store(&home, "INSERT INTO messages VALUES (1,'w1',1000,1,0,0,'a','b','t',NULL,'one','h1',NULL,NULL);");
+        with_ctx(&home, |ctx| {
+            let runner = crate::dsact::runner::System::configured();
+            // an unknown (but well formed) store: Node's pruneStore returns `skipped: no-store`, ok
+            let (ok, v) = cli::run(ctx, &runner, false, Some("nosuchstore")).unwrap();
+            assert!(ok, "{}", v.stringify());
+            let OVal::Arr(rows) = field(&v, "stores") else { panic!() };
+            assert_eq!(field(&rows[0], "skipped"), OVal::Str("no-store".into()));
+            // a held lock: `{ok: false, error: 'retention lock busy'}`
+            let held = nodelock::acquire(&lock_path(ctx.home), lock_params()).unwrap();
+            let (ok, v) = cli::run(ctx, &runner, false, None).unwrap();
+            held.release();
+            assert!(!ok);
+            assert_eq!(field(&v, "error"), OVal::Str("retention lock busy".into()));
+        });
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
+    }
+
+    #[test]
+    fn a_state_whose_stores_is_an_array_reads_as_no_entries() {
+        let home = scratch("state");
+        let p = state_path(&home);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"stores":[1,2],"holds":[3],"phase":"armed"}"#).unwrap();
+        crate::defaults::init().unwrap();
+        let st = read_state(&home);
+        assert!(matches!(st.get("stores"), Some(OVal::Obj(o)) if o.is_empty()));
+        assert!(matches!(st.get("holds"), Some(OVal::Obj(o)) if o.is_empty()));
+        crate::discard::harmless(std::fs::remove_dir_all(home)); // keep: cleanup of a scratch directory
     }
 }

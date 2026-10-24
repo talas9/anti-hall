@@ -88,8 +88,13 @@ function swgInScratch(inp, tree) {
   var t = String(i.prompt || '') + '\n' + String(i.description || '');
   var path = ah.cfg('swarm_guard.scratch_path');
   var scratch = ah.cfg('swarm_guard.scratch_alternatives').map(function (a) { return a.split('{path}').join(path); }).join('|');
+  // A prohibition names the same objects as an affirmative write. Remove only those negated
+  // spans; an independent affirmative clause still cancels the exemption.
+  var place = ah.cfg('swarm_guard.re_in_place');
+  var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
+  var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
   return (ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(ah.cfg('swarm_guard.re_in_place'), 'i', t);
+    !ah.re.test(place, 'i', affirmative);
 }
 
 function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
@@ -150,6 +155,47 @@ function swgDescribe(p) {
   return atype ? tool + ':' + atype : tool;
 }
 
+
+// ---- usage-aware dispatch and the fan-out ceiling (GH #270). Both read what the engine already has: the usage cache the limit-conserve
+// check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
+// metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
+
+// A block reason, an advisory line to ride an allowed spawn ('' for none).
+function swgBudgetGates(p, home) {
+  var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
+  var ceilOn = ah.settings.bool('spawn_ceiling.setting') && !ah.settings.skipped(ah.cfg('spawn_ceiling.guard_name'));
+  if (!usageOn && !ceilOn) return { block: null, note: '' };
+  full = swgFullest(swgUsageBuckets(home));
+  var note = '';
+  if (usageOn && full) {
+    if (full.pct >= ah.cfgNum('spawn_usage.block_pct')) {
+      ah.advisory('flagged', 'spawn_usage_block');
+      return { block: text.message('block', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_block_what'), { limit: full.name, pct: Math.round(full.pct), cap: ah.cfgNum('spawn_usage.block_pct'), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_block_why'), instead: ah.cfg('spawn_usage.msg_block_instead'),
+      }), note: '' };
+    }
+    if (full.pct >= ah.cfgNum('spawn_usage.soft_pct')) {
+      ah.advisory('injected', 'spawn_usage_soft');
+      note = text.message('warn', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_soft_what'), { limit: full.name, pct: Math.round(full.pct), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_soft_why'), instead: ah.cfg('spawn_usage.msg_soft_instead'),
+      });
+    }
+  }
+  if (ceilOn) {
+    var run = swgRunning(p), ceil = swgCeiling(full);
+    if (run !== null && run.n >= ceil) {
+      ah.advisory('flagged', 'spawn_ceiling_block');
+      return { block: text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+        what: text.render(ah.cfg('spawn_ceiling.msg_what'), { n: run.n, ceiling: ceil, names: run.names.join(ah.cfg('spawn_ceiling.join')), more: run.n > run.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: run.n - run.names.length }) : '' }),
+        why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_instead'),
+      }), note: '' };
+    }
+  }
+  return { block: null, note: note };
+}
+
 function swgBlock(reason) { return { exact: { code: 2, out: text.blockJson(reason), err: '' } }; }
 
 function decide(p) {
@@ -157,6 +203,16 @@ function decide(p) {
   var home = hookProc.home(p);
   if (home === null) { ah.unable('swarm-guard:no_home', 'abandoned'); return 'allow'; } // no home at all: no log to count in (Node's own fail-open)
   if (!ah.path.isAbsolute(ah.env.get(ah.cfg('env.home')) || '')) ah.unable('swarm-guard:home_resolved'); // HOME unset or relative: the passwd/stand-in home is used
+  // nested spawn: a worker (subagent or teammate) starting agents of its own; independent of the swarm-guard switch
+  if (!ah.settings.bool('nested_spawn.setting') && !ah.settings.skipped(ah.cfg('nested_spawn.guard_name')) && coordinator.subagentByPayload(p)) {
+    ah.advisory('flagged', 'nested_spawn_block');
+    var nested = text.message('block', ah.cfg('nested_spawn.guard_name'), {
+      what: ah.cfg('nested_spawn.msg_what'), why: ah.cfg('nested_spawn.msg_why'), instead: ah.cfg('nested_spawn.msg_instead'),
+    });
+    // Codex reads the reason from stderr on exit 2; Claude's block keeps its empty stderr
+    return coordinator.isCodexPayload(p) ? { exact: { code: 2, out: text.blockJson(nested), err: nested + '\n' } } : swgBlock(nested);
+  }
+  if (coordinator.isCodexPayload(p)) return 'allow'; // the rate and budget gates below count Claude's Agent and Task spawns
   if (!ah.settings.bool('swarm_guard.setting')) return 'allow';
   if (ah.settings.skipped(ah.cfg('swarm_guard.guard_name'))) return 'allow';
   var now = Date.now(), label = swgDescribe(p);
@@ -167,8 +223,12 @@ function decide(p) {
     return swgBlock(text.render(ah.cfg('swarm_guard.msg_mem'), { avail: mb(mem.available), total: mb(mem.total) }));
   }
 
+  var gates = swgBudgetGates(p, home);
+  if (gates.block !== null) return swgBlock(gates.block);
+
   var note = swgSharedTreeNote(p);
   if (note === null) { ah.unable('swarm-guard:shared_tree_note_unsure'); note = ''; }
+  if (gates.note) note = note ? gates.note + '\n' + note : gates.note;
 
   var dir = ah.cfg('swarm_guard.state_dir');
   var logRel = dir + '/' + ah.cfg('swarm_guard.log_file');

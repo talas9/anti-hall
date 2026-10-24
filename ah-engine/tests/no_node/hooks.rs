@@ -1,5 +1,5 @@
-//! Every hook event of both hosts, driven through the thin trigger (`hooks/ah-hook.sh <Event> [--host codex]`) exactly as
-//! the host runs it, from the payload fixture. The events and matchers come from the generated fallback lists (equal to the
+//! Every hook event of both hosts, driven through the thin trigger (the event's command in the plugin's hooks.json, run with
+//! `sh -c` exactly as the host runs it), from the payload fixture. The events and matchers come from the generated fallback lists (equal to the
 //! dispatch table, tests/it/hooks_files.rs), so a new row or event without a payload fails the coverage test.
 
 use crate::expected;
@@ -8,9 +8,16 @@ use crate::harness::{self, Seen, World, cfg_int, note};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The wrapper's note when it ran the Node fallback instead of the engine's answer (ah-hook.sh `fallback_note`).
+/// The command the host runs for `event`: the one handler of the event in the plugin copy's shipped hooks.json.
+fn hook_command(w: &World, host: &str, event: &str) -> String {
+    let rel = if host == "codex" { "codex/hooks/hooks.json" } else { "hooks/hooks.json" };
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(w.plugin.join(rel)).unwrap()).unwrap();
+    v["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap_or_else(|| panic!("{rel} has no command for {event}")).to_string()
+}
+
+/// The wrapper's note when it ran the Node fallback instead of the engine's answer (the thin client's `msg.launcher_nodeback_*` notes).
 const FALLBACK_NOTE: &str = "anti-hall: the engine did not answer this ";
-/// The wrapper's note when it failed closed (ah-hook.sh `fail_closed`).
+/// The wrapper's note when it failed closed (the thin client's fail-closed text).
 const FAIL_CLOSED_NOTE: &str = "anti-hall: fail closed for ";
 
 pub struct Case {
@@ -48,7 +55,7 @@ pub fn cases() -> Vec<Case> {
 pub fn table() -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
     let mut out = BTreeMap::new();
     for (host, file) in [("claude", "ah-fallback.list"), ("codex", "ah-fallback.codex.list")] {
-        let text = std::fs::read_to_string(harness::plugin_src().join("hooks").join(file)).unwrap();
+        let text = std::fs::read_to_string(harness::plugin_src().join("../anti-hall-node/hooks").join(file)).unwrap();
         let mut events: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut cur = String::new();
         for line in text.lines() {
@@ -129,7 +136,12 @@ fn drive(host: &str) {
     let mut checked = Vec::new();
     let mut rows = Vec::new();
     let mut fallback_cases: Vec<String> = Vec::new();
+    let mut prompt_warmed = false;
     for c in cases().into_iter().filter(|c| c.host == host) {
+        if c.event == "UserPromptSubmit" && !prompt_warmed {
+            w.warm_prompt(host);
+            prompt_warmed = true;
+        }
         let mut payload = serde_json::json!({
             "session_id": format!("no-node-{host}"),
             "transcript_path": w.transcript,
@@ -141,9 +153,9 @@ fn drive(host: &str) {
         }
         let payload = w.subst(&payload.to_string());
         let mut cmd = w.command("/bin/sh", &c.id);
-        cmd.arg(w.plugin.join("hooks").join("ah-hook.sh")).arg(&c.event);
+        cmd.arg("-c").arg(hook_command(&w, host, &c.event));
         if host == "codex" {
-            cmd.args(["--host", "codex"]).env("PLUGIN_ROOT", &w.plugin);
+            cmd.env("PLUGIN_ROOT", &w.plugin);
         }
         cmd.envs(c.env.iter().map(|(k, v)| (k, v)));
         let o = w.run(cmd, Some(&payload), timeout);
@@ -220,13 +232,13 @@ fn drive(host: &str) {
     expected::finish(&format!("hooks-{host}"), report, &problems);
 }
 
-/// Claude Code: every event of the Claude table through `ah-hook.sh <Event>` with no Node installed.
+/// Claude Code: every event of the Claude table through its hooks.json command with no Node installed.
 #[test]
 fn claude_hooks_run_without_node() {
     drive("claude");
 }
 
-/// Codex: every event of the Codex table through `ah-hook.sh <Event> --host codex` with no Node installed.
+/// Codex: every event of the Codex table through its hooks.json command with no Node installed.
 #[test]
 fn codex_hooks_run_without_node() {
     drive("codex");

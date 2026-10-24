@@ -20,8 +20,8 @@ Handover, resume and compaction guards.
 - `auto-handover-pause-nag`: Stop: the Stop-side fire with the decisive good-point line, the pause nag (step, quiet window, open tasks, recent spawns, handover...
 - `compact-advice-guard`: Stop: blocks, once per declaration, a final reply that recommends compacting at low context or just after a compact (phrase analysis,...
 - `progress-prune`: SessionStart maintenance: archives stale per-session progress files into the history ledger before removing them, and reminds weekly to...
-- `precompact-snapshot`: PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it...
-- `handover-resume`: SessionStart: points a fresh or compacted session at the newest handover with git facts measured now (port of handover-resume.js)
+- `precompact-snapshot`: PreCompact: writes a mechanical continuation snapshot (git state, task list, last user messages) before compaction and never blocks it
+- `handover-resume`: SessionStart: points a fresh or compacted session at the newest handover with git facts measured now
 - `handover-hygiene`: SessionStart advisory (engine-only, no Node twin): reports handovers that are unindexed, stale, missing a brief or malformed (no front...
 
 ## Switches
@@ -33,11 +33,11 @@ Handover, resume and compaction guards.
 - `autoHandover.gateNewWork` = true: The autoHandover.gateNewWork setting: the post-handover new-work gate
 - `autoHandover.gateBudgetPct` = 5: The autoHandover.gateBudgetPct setting: the context points a request may use after the handover, and the backstop step
 - `autoHandover.gateHousekeepingMarkers` = "": The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text)
-- `autoHandover.maxTokens` = 0: The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)
+- `autoHandover.maxTokens` = 500000: The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)
 - `autoHandover.nag` = true: The autoHandover.nag setting: remind when a handover is due
 - `autoHandover.nagQuietMin` = 15: The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause
 - `autoHandover.nagStepPct` = 5: The autoHandover.nagStepPct setting: the context points between two nags
-- `autoHandover.pct` = 85: The autoHandover.pct setting: the context percent that triggers the handover
+- `autoHandover.pct` = 93: The autoHandover.pct setting: the context percent that triggers the handover
 - `guards.compactAdviceMarginPct` = 10: The guards.compactAdviceMarginPct setting: context points below autoHandover.pct at which a /compact recommendation counts as low-context
 - `guards.compactAdviceRecentTurns` = 10: The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off)
 - `guards.compactAdviceGuard` = true: The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact
