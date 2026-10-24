@@ -2,7 +2,7 @@
 //! number comes from `/api/ops/config`; this file carries neither. The screens poll only while shown and while the browser tab is
 //! visible, so nothing is asked of the server when nobody is looking. Full draws ring gauges that ease between readings; Lite draws
 //! the same numbers as flat bars (the CSS picks by the page's `data-mode`), with the same data and the same actions.
-use super::{compact, fmt_age, now_ms, since, tx, Ctx};
+use super::{compact, fmt_age, now_ms, short_stamp, since, tx, Ctx};
 use ah_web_proto::ops::{Accounts, Bucket, LogLine, LogTail, OpsCfg, UpdateCheck, OPS_ACCOUNTS_PATH, OPS_CFG_PATH, OPS_LOGS_PATH, OPS_UPDATE_PATH};
 use ah_web_proto::Boot;
 use leptos::prelude::*;
@@ -305,11 +305,11 @@ fn UpdatesScreen() -> impl IntoView {
         <section class="card ops-card">
             <dl class="kv">
                 <dt>{tx("ops_ver_plugin")}</dt><dd>{if plugin.is_empty() { n1 } else { format!("v{plugin}") }}</dd>
-                <dt>{tx("ops_ver_engine")}</dt><dd>{move || pulse(|p| p.version.clone()).unwrap_or_else(|| n2.clone())}</dd>
+                <dt>{tx("ops_ver_engine")}</dt><dd title=move || pulse(|p| p.version.clone()).unwrap_or_default()>{move || short_stamp(&pulse(|p| p.version.clone()).unwrap_or_else(|| n2.clone()))}</dd>
                 <dt>{tx("ops_ver_build")}</dt><dd>{move || pulse(|p| p.build_sha.clone()).unwrap_or_else(|| n3.clone())}</dd>
                 {move || pulse(|p| p.plugin_version.clone()).map(|v| view! { <dt>{tx("ops_ver_engine_plugin")}</dt><dd>{format!("v{v}")}</dd> })}
-                <dt>{tx("ops_ver_hook")}</dt><dd>{move || pulse(|p| p.hook_version.clone()).filter(|v| !v.is_empty()).unwrap_or_else(|| hook_none.clone())}</dd>
-                <dt>{tx("ops_ver_web")}</dt><dd>{format!("v{web}")}</dd>
+                <dt>{tx("ops_ver_hook")}</dt><dd title=move || pulse(|p| p.hook_version.clone()).unwrap_or_default()>{move || short_stamp(&pulse(|p| p.hook_version.clone()).unwrap_or_else(|| hook_none.clone()))}</dd>
+                <dt>{tx("ops_ver_web")}</dt><dd title=web.clone()>{short_stamp(&web)}</dd>
             </dl>
             <Show when=skew><p class="fb fb-bad" role="status">{tx("ops_skew")}</p></Show>
         </section>
@@ -327,10 +327,11 @@ fn UpdatesScreen() -> impl IntoView {
                         {(!c.channel.is_empty()).then(|| view! { <dt>{tx("ops_check_channel")}</dt><dd>{c.channel.clone()}</dd> })}
                         <dt>{tx("ops_check_installed")}</dt><dd>{if c.installed.is_empty() { tx("ops_ver_unknown") } else { c.installed.clone() }}</dd>
                         <dt>{tx("ops_check_latest")}</dt><dd>{if c.latest.is_empty() { tx("ops_ver_unknown") } else { c.latest.clone() }}</dd>
-                        {(!c.build_version.is_empty()).then(|| view! { <dt>{tx("ops_check_build")}</dt><dd>{c.build_version.clone()}</dd> })}
+                        {(!c.build_version.is_empty()).then(|| view! { <dt>{tx("ops_check_build")}</dt><dd title=c.build_version.clone()>{short_stamp(&c.build_version)}</dd> })}
                         {(!c.source.is_empty()).then(|| view! { <dt>{tx("ops_check_source")}</dt><dd>{tx(&format!("ops_source_{}", c.source))}</dd> })}
                         {(!c.latest_release.is_empty()).then(|| view! { <dt>{tx("ops_check_release")}</dt><dd>{c.latest_release.clone()}{c.engine_available.then(|| format!(" ({})", tx("ops_check_available")))}</dd> })}
                         <dt>{tx("ops_check_result")}</dt><dd>{match c.state.as_str() {
+                            _ if c.local_ahead => tx("ops_check_current"),
                             "unknown" | "lagging" => tx(&format!("ops_check_{}", c.state)),
                             _ if c.available => tx("ops_check_available"),
                             _ => tx("ops_check_current"),
@@ -338,7 +339,7 @@ fn UpdatesScreen() -> impl IntoView {
                         <dt>{tx("ops_check_at")}</dt><dd>{since(c.checked_ms)}</dd>
                     </dl>
                     {c.local_ahead.then(|| view! { <p class="fb" role="status">{tx("ops_check_local_ahead").replace("{build}", &c.build_version).replace("{release}", &c.latest_release)}</p> })}
-                    <p class="soft-note">{c.message.clone()}</p>
+                    {(!c.local_ahead).then(|| view! { <p class="soft-note">{c.message.clone()}</p> })}
                     {c.available.then(|| view! {
                         <div><div class="sect">{tx("ops_check_changelog")}</div><p class="soft-note">{tx("ops_check_changelog_none")}</p><p class="soft-note">{tx("ops_check_apply")}</p></div>
                     })}
