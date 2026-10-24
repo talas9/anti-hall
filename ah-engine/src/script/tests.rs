@@ -2072,3 +2072,59 @@ fn uncommitted_guard_blocks_a_subagent_edit_past_the_line_and_a_commit_lifts_it(
     assert!(!blocked(edit(Some("s1"))), "a commit lifts the block at once");
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
+
+/// Direct thin-client events and doctor fixtures omit a root option, while the engine has already loaded its install.
+#[test]
+fn script_options_keep_explicit_roots_and_fall_back_to_the_loaded_install() {
+    let h = home("script-root");
+    let e = env(&h);
+    let st = Settings::from_env(&e);
+    let _ = defaults::text("script.ext");
+    let installed = defaults::root().expect("loaded plugin root").to_string_lossy().into_owned();
+    assert_eq!(super::script_options(&Value::Null, &st)["plugin_root"], installed);
+    let opts = json!({"payload_sha1": "abc", "plugin_root": ""});
+    let resolved = super::script_options(&opts, &st);
+    assert_eq!(resolved["plugin_root"], installed);
+    assert_eq!(resolved["payload_sha1"], "abc");
+    let explicit = json!({"plugin_root": "/explicit", "payload_sha1": "abc"});
+    let request = RequestEnv::from_pairs([("HOME", h.as_str()), ("AH_ENGINE_PLUGIN_ROOT", "/request")]);
+    let request = Settings::from_env(&request);
+    assert_eq!(super::script_options(&Value::Null, &request)["plugin_root"], "/request");
+    assert_eq!(super::script_options(&explicit, &request), explicit);
+    assert_eq!(super::script_options(&json!([1]), &st), json!([1]));
+}
+
+/// A registered child with no report must still be forced to heartbeat when a direct Stop has no root argument.
+#[test]
+fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x", "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+        "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-stop", "cwd": "{HOME}"},
+        "files": {".anti-hall/devswarm/workspaces/b-1.json": "{}"}
+    }));
+    let got = golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate");
+    let Some(Verdict::Exact(out)) = got else { panic!("a child must report: {got:?}") };
+    assert!(out.out.contains("Heartbeat: before you stop"), "{}", out.out);
+    assert!(out.out.contains("ah-engine mesh"), "{}", out.out);
+    assert!(!out.out.contains("devswarm.js"), "{}", out.out);
+}
+
+/// The parent's neglected-child gate also reaches its decision without a root argument (doctor and direct Stop forms).
+#[test]
+fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
+    let case = golden::lay(&json!({
+        "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
+        "event": "Stop", "opts": {"payload_sha1": "doctor-like"},
+        "payload": {"hook_event_name": "Stop", "session_id": "direct-parent", "cwd": "{HOME}"},
+        "files": {
+            ".anti-hall/devswarm/workspaces/c-1.json": "{\"id\":\"c-1\",\"worktreePath\":\"{HOME}/wt/c-1\",\"sessionId\":\"sess-c1\",\"inboxPath\":\"{HOME}/in.ndjson\",\"cursorPath\":\"{HOME}/cursor.json\"}",
+            "in.ndjson": "{\"message\":\"handle this\",\"ts\":1}\n", "cursor.json": "0"
+        }
+    }));
+    let got = golden::run_case("devswarm-parent-gate", &case, 1).expect("a shipped gate");
+    let Some(Verdict::Exact(out)) = got else { panic!("neglect must block: {got:?}") };
+    let answer: Value = serde_json::from_str(&out.out).expect("Stop decision JSON");
+    assert_eq!(answer["decision"], "block");
+    assert!(out.out.contains("c-1"), "{}", out.out);
+}

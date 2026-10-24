@@ -2015,12 +2015,12 @@ doc = "The scratch directory label of the parent-gate self-test."
 value = "ds-pgate"
 
 [doctor.ds_child_env]
-doc = "The environment of a DevSwarm child workspace in the self-tests: supervisor forced on, a source branch set, the stable launchers off (the throwaway home has none installed, so the gate would defer to the hook that installs them)."
-value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH=feature-x", "ANTIHALL_DEVSWARM_STABLE_LAUNCHER=0"]
+doc = "The environment of a DevSwarm child workspace in the self-tests: supervisor forced on and a source branch set. Native command templates need no installed launcher in the throwaway home; the check uses the active plugin root."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH=feature-x"]
 
 [doctor.ds_primary_env]
-doc = "The environment of a DevSwarm Primary in the self-tests: supervisor forced on, no source branch, the stable launchers off (the throwaway home has none installed, so the gate would defer to the hook that installs them)."
-value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH=", "ANTIHALL_DEVSWARM_STABLE_LAUNCHER=0"]
+doc = "The environment of a DevSwarm Primary in the self-tests: supervisor forced on and no source branch. Native command templates need no installed launcher in the throwaway home; the check uses the active plugin root."
+value = ["DISABLE_ANTIHALL_DEVSWARM=", "ANTIHALL_DEVSWARM_SUPERVISOR=on", "DEVSWARM_REPO_ID=repo-x", "DEVSWARM_SOURCE_BRANCH="]
 
 [doctor.ds_payload_turn]
 doc = "The prompt payload of the child-turn self-test; {CWD} is the working directory."

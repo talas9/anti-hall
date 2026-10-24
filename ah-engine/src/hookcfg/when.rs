@@ -716,6 +716,32 @@ mod tests {
         assert!(When::parse(&json!({"setting": "guards.noSuchThing"})).is_err());
     }
 
+    /// The dispatch fast path keeps real Primary Stop hooks on both hosts, while only the parent gate is skipped for a child.
+    #[test]
+    fn shipped_mesh_stop_predicates_keep_active_sessions_on_both_hosts() {
+        let loaded = crate::cfgstore::Effective::defaults();
+        let settings = json!(null);
+        let facts = LoadedFacts { settings: &settings, effective: &loaded, index: None };
+        let payload = json!({"hook_event_name": "Stop", "session_id": "s1"});
+        for host in ["claude", "codex"] {
+            let entries = crate::dispatch::table::entries(host, "Stop");
+            let parent = entries.iter().find(|e| e.id == "devswarm-parent-gate").expect("parent gate");
+            let child = entries.iter().find(|e| e.id == "devswarm-child-gate").expect("child gate");
+            assert!(child.when.is_none(), "{host}: child Stop is never removed by a predicate");
+            let predicate = parent.when.as_ref().expect("parent predicate");
+            for pairs in [
+                vec![("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1")],
+                vec![("HOME", "/nonexistent-ah-predicate-home"), ("ANTIHALL_DEVSWARM_SUPERVISOR", "on")],
+            ] {
+                let request = RequestEnv::from_pairs(pairs);
+                assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(true), "{host}: real Primary");
+            }
+            let request = RequestEnv::from_pairs([("HOME", "/nonexistent-ah-predicate-home"), ("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
+            assert_eq!(eval_with(predicate, &payload, &request, &facts, None), Some(false), "{host}: a child does not run the parent gate");
+            assert_ne!(eval_with(predicate, &payload, &RequestEnv::incomplete(), &facts, None), Some(false), "{host}: incomplete requests are never proved inert");
+        }
+    }
+
     #[test]
     fn transcript_conditions_read_only_the_facts_the_index_computes() {
         assert!(When::parse(&json!({"transcript": "unresolved_agents", "at_least": 1})).is_ok());

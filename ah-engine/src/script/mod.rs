@@ -839,6 +839,25 @@ pub fn cut(name: &str, event: &str) -> Verdict {
     Verdict::Defer
 }
 
+/// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the
+/// request first, then the actual defaults snapshot (including its cached install root), never the daemon's environment.
+/// Keep an explicit nonempty option and every other option intact.
+fn script_options(opts: &Value, st: &Settings) -> Value {
+    if opts.get("plugin_root").and_then(Value::as_str).is_some_and(|r| !r.is_empty()) {
+        return opts.clone();
+    }
+    let root = st.env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned()
+        .or_else(|| defaults::root().map(|r| r.to_string_lossy().into_owned()));
+    let Some(root) = root else { return opts.clone() };
+    let mut resolved = match opts {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(o) => o.clone(),
+        _ => return opts.clone(),
+    };
+    resolved.insert("plugin_root".into(), Value::String(root));
+    Value::Object(resolved)
+}
+
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let mut was_cut = false;
     let mut timed_out = false;
@@ -850,7 +869,7 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let pool = slot.as_mut().ok_or("runtime")?;
         let ctx = ensure_entry(pool, name, libs, own, defaults::text("script.entry"))?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
-        let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
+        let opts_raw = serde_json::to_string(&script_options(opts, &st)).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));

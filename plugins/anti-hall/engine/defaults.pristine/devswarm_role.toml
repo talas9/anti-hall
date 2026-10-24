@@ -5,7 +5,7 @@
 
 [devswarm_role.child_summary]
 doc = "One-line description of the devswarm-child-role check in the generated reference."
-value = "SessionStart: injects the DevSwarm mesh-only messaging directive for a child workspace or a Primary with no seat to settle; a Primary in a git checkout (seat adoption writes the mesh store), a stale stable launcher or anything else it cannot prove byte-identical defers to Node."
+value = "SessionStart: injects the DevSwarm mesh-only messaging directive and native engine commands for a child workspace or Primary; direct ah-hook events use the active plugin defaults root when the request supplies none."
 
 [devswarm_role.gate_summary]
 doc = "One-line description of the devswarm-parent-gate check in the generated reference."
@@ -142,11 +142,11 @@ value = '''
  + re-arm on its final/expired event'''
 
 [devswarm_role.engine_cli]
-doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory."
+doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the installed native engine's `mesh` verb (also callable as `ah-hook mesh`). No retired .sh or Node launcher is discovered or written. Placeholder: {home}, the absolute home directory."
 value = "{home}/.anti-hall/ah-engine/bin/ah-engine mesh"
 
 [devswarm_role.engine_watcher]
-doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}."
+doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the installed native engine's `devswarm wake-watch` verb (also callable as `ah-hook devswarm wake-watch`; no retired .sh or Node watcher). Run with `Monitor` and timeout_ms 1800000. Placeholder: {home}."
 value = "{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto"
 
 
