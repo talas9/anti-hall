@@ -130,8 +130,8 @@ doc = "git arguments to read a file from a ref: the word, then `<ref>:<path>` is
 value = ["show"]
 
 [update.harness_args]
-doc = "The arguments the harness registration runs the Claude binary with."
-value = ["plugin", "update", "anti-hall@anti-hall"]
+doc = "The arguments the harness registration runs the Claude binary with; {key} is the owning install identity."
+value = ["plugin", "update", "{key}"]
 
 [update.git_spawn_error]
 doc = "What a git call that could not start reads as ({code} is ENOENT for a missing binary)."

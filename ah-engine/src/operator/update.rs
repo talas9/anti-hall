@@ -73,12 +73,20 @@ pub(super) struct Paths {
 }
 
 fn resolve_paths(env: &Env, home: &str) -> Paths {
-    let (marketplace, override_ignored) = marketplace_dir(env.get(defaults::text("env.update_marketplace_dir")).filter(|o| !o.is_empty()), home);
-    let plugins_root = resolve_abs(&format!("{marketplace}/../.."));
+    let (mut marketplace, override_ignored) = marketplace_dir(env.get(defaults::text("env.update_marketplace_dir")).filter(|o| !o.is_empty()), home);
+    let root = env.get_nonempty(t("update.plugin_root_env"))
+        .or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
+    let owner = crate::install::owning(home, &root);
+    if env.get_nonempty(defaults::text("env.update_marketplace_dir")).is_none()
+        && let Some(m) = owner.as_ref().and_then(|o| o.marketplace.as_ref()) {
+        marketplace = m.to_string_lossy().into_owned();
+    }
+    let plugins_root = owner.as_ref().and_then(|o| o.registry.parent()).map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| resolve_abs(&format!("{marketplace}/../..")));
     let plugin_src = join(&marketplace, t("update.plugin_src_rel"));
     Paths {
         override_ignored,
-        cache_root: join(&plugins_root, t("update.cache_rel")),
+        cache_root: owner.as_ref().map(|o| o.cache.to_string_lossy().into_owned()).unwrap_or_else(|| join(&plugins_root, t("update.cache_rel"))),
         installed_json: join(&plugins_root, t("update.installed_json")),
         settings_json: resolve_abs(&join(&plugins_root, t("update.settings_rel"))),
         plugin_json: join(&plugin_src, t("update.plugin_json_rel")),
@@ -381,10 +389,6 @@ fn harness_cmd_for(key: &str) -> String {
     format!("{} {} {key}", t("update.claude_bin"), defaults::list("update.harness_check_args").join(" "))
 }
 
-fn harness_cmd() -> String {
-    format!("{} {}", t("update.claude_bin"), defaults::list("update.harness_args").join(" "))
-}
-
 fn remote_version(m: &str) -> Result<Option<String>, String> {
     git(&words("update.git_fetch"), m)?;
     let default_ref = t("update.git_default_ref").to_string();
@@ -420,12 +424,16 @@ fn resolve_chan(paths: &Paths, env: &Env) -> Chan {
         Some(J::Arr(e)) => e.iter().find_map(|x| str_of(x.get("installPath")).map(str::to_string)),
         _ => None,
     });
-    let root = env.get_nonempty(t("update.plugin_root_env")).unwrap_or_default();
-    let key = keys.iter().find(|k| !root.is_empty() && install_path(k).is_some_and(|p| root.starts_with(&p))).or_else(|| keys.first()).cloned().unwrap_or_default();
+    let root = env.get_nonempty(t("update.plugin_root_env")).or_else(|| defaults::root().map(|p| p.to_string_lossy().into_owned())).unwrap_or_default();
+    let owner = paths.installed_json.strip_suffix(t("update.installed_json")).and_then(|_| {
+        let home = Path::new(&paths.settings_json).parent()?.parent()?.to_str()?;
+        crate::install::owning(home, &root)
+    });
+    let key = owner.as_ref().map(|o| o.key.clone()).or_else(|| keys.iter().find(|k| !root.is_empty() && install_path(k).is_some_and(|p| root.starts_with(&p))).or_else(|| keys.first()).cloned()).unwrap_or_default();
     let (plugin, name) = key.split_once('@').map_or((key.as_str(), ""), |(p, n)| (p, n));
     let plugins_root = Path::new(&paths.installed_json).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let fallback = key == t("wake_watch.install_fallback_key");
-    let cache_root = match install_path(&key).and_then(|p| Path::new(&p).parent().map(|d| d.to_string_lossy().into_owned())) {
+    let cache_root = match owner.as_ref().map(|o| o.cache.to_string_lossy().into_owned()).or_else(|| install_path(&key).and_then(|p| Path::new(&p).parent().map(|d| d.to_string_lossy().into_owned()))) {
         Some(c) => c,
         None if fallback => paths.cache_root.clone(),
         None => join(&join(&join(&plugins_root, t("update.cache_dir")), name), plugin),
@@ -489,15 +497,15 @@ fn harness_obj(attempted: bool, ok: bool, detail: String) -> J {
 
 /// `claude plugin update`, only when the registry's own version is older than `latest`. Never interactive: a confirmation
 /// request or any failure is reported with the command for a person to run.
-fn harness_register(rx: &Rx, env: &Env, installed: Option<&str>, latest: Option<&str>) -> J {
-    let cmd = harness_cmd();
+fn harness_register(rx: &Rx, env: &Env, key: &str, installed: Option<&str>, latest: Option<&str>) -> J {
+    let cmd = harness_cmd_for(key);
     let (Some(i), Some(l)) = (installed.filter(|v| is_semver(rx, v)), latest.filter(|v| is_semver(rx, v))) else {
         return harness_obj(false, false, t("update_msg.harness_noop").into());
     };
     if compare(rx, i, l) >= 0 {
         return harness_obj(false, false, t("update_msg.harness_noop").into());
     }
-    let args = words("update.harness_args");
+    let args: Vec<String> = words("update.harness_args").into_iter().map(|a| a.replace("{key}", key)).collect();
     let timeout = defaults::millis("update.harness_timeout_ms");
     let mut r = run_child(t("update.claude_bin"), &args, None, &[], timeout);
     if r.spawn_not_found
@@ -516,13 +524,13 @@ fn harness_register(rx: &Rx, env: &Env, installed: Option<&str>, latest: Option<
     harness_obj(true, false, defaults::render("update_msg.harness_failed", &[("cmd", &cmd), ("reason", &reason)]))
 }
 
-fn harness_action(h: Option<&J>, updated: bool, latest: &str) -> String {
+fn harness_action(h: Option<&J>, updated: bool, latest: &str, key: &str) -> String {
     let flag = |k: &str| h.and_then(|h| h.get(k)).is_some_and(|v| matches!(v, J::Bool(true)));
     if flag("ok") {
         return defaults::render("update_msg.harness_ok", &[("latest", &latest)]);
     }
     if flag("attempted") {
-        return defaults::render("update_msg.harness_manual", &[("cmd", &harness_cmd())]);
+        return defaults::render("update_msg.harness_manual", &[("cmd", &harness_cmd_for(key))]);
     }
     if updated { t("update_msg.reload").into() } else { t("update_msg.up_to_date").into() }
 }
@@ -578,7 +586,8 @@ pub(super) fn progress(line: &str) {
 }
 
 fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> Core {
-    let installed = resolve_installed(rx, paths, None);
+    let chan = resolve_chan(paths, env);
+    let installed = resolve_installed(rx, paths, Some(&chan));
     if !skip_pull {
         let m = &paths.marketplace;
         match git(&words("update.git_status"), m) {
@@ -611,14 +620,14 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
     }
     let inst = installed.clone().unwrap_or_default();
     let updated = latest.as_deref().is_some_and(|l| compare(rx, &inst, l) < 0);
-    let reg_version = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json, None);
+    let reg_version = version_from_installed_json(rx, &paths.installed_json, &paths.settings_json, Some(&chan.key));
     let quiet = stage_quiet(env, home);
     let name = t("update_msg.stage_harness");
     if !quiet {
         progress(&defaults::render("update_msg.stage_start", &[("name", &name)]));
     }
     let t0 = Instant::now();
-    let harness = harness_register(rx, env, reg_version.as_deref(), latest.as_deref());
+    let harness = harness_register(rx, env, &chan.key, reg_version.as_deref(), latest.as_deref());
     if !quiet {
         progress(&defaults::render("update_msg.stage_done", &[("name", &name), ("ms", &t0.elapsed().as_millis())]));
     }
@@ -628,7 +637,7 @@ fn run_core(rx: &Rx, env: &Env, home: &str, paths: &Paths, skip_pull: bool) -> C
             .unwrap_or_default(),
         _ => String::new(),
     };
-    let action = harness_action(Some(&harness), updated, latest.as_deref().unwrap_or(t("update.null_word")));
+    let action = harness_action(Some(&harness), updated, latest.as_deref().unwrap_or(t("update.null_word")), &chan.key);
     Core { installed, latest, updated, synced, harness: Some(harness), action, changelog, stop: false, stages }
 }
 

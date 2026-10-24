@@ -230,7 +230,9 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
             }
         }
     }
-    enabled.retain(|k| k != defaults::text("doctor.self_plugin_key"));
+    let own = crate::install::owning(&ctx.home, &root.to_string_lossy()).map(|o| o.key)
+        .unwrap_or_else(|| defaults::text("doctor.self_plugin_key").to_string());
+    enabled.retain(|k| k != &own);
     let mut results: Vec<(bool, String)> = Vec::new(); // (HIGH, message)
     if !enabled.is_empty() {
         let installed = read_bounded(&Path::new(&ctx.home).join(defaults::text("doctor.installed_plugins_rel")), defaults::num("doctor.installed_max_bytes"));

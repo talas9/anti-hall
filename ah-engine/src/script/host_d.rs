@@ -211,7 +211,7 @@ fn plugin_versions(root: &str) -> rquickjs::Result<String> {
     use crate::checks::session::jval::{J, Parsed, parse};
     let (home, env) = with_settings(|st| (st.home.clone(), crate::reqenv::RequestEnv::from_pairs(st.env.clone())))?;
     let mut unsure = false;
-    let registered = match crate::checks::session::version_alert::harness_version(&env, &home) {
+    let registered = match crate::checks::session::version_alert::harness_version(&env, &home, root) {
         Ok(v) => v,
         Err(()) => {
             unsure = true;

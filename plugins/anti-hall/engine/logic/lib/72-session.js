@@ -8,6 +8,7 @@ var sess = {
   // The plugin root the dispatcher names (opts.plugin_root, else the environment), resolved to its real path; null when unknown.
   pluginRoot: function (opts) {
     var given = opts !== null && typeof opts === 'object' && typeof opts.plugin_root === 'string' && opts.plugin_root !== '' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root'));
+    if (given === null || given === '') given = ah.plugin.root();
     if (given === null || given === '') return null;
     return ah.fs.realpath(given);
   },

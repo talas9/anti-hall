@@ -28,7 +28,7 @@ pub(crate) fn is_semver(v: &str) -> bool {
 }
 
 /// `versionFromInstalledJson` of `update.js` over a parsed registry; `None` when no valid version is found.
-fn version_from_registry(data: &J) -> Option<String> {
+fn version_from_registry(data: &J, key: &str) -> Option<String> {
     if !matches!(data, J::Obj(_) | J::Arr(_)) {
         return None;
     }
@@ -36,7 +36,7 @@ fn version_from_registry(data: &J) -> Option<String> {
         Some(p @ (J::Obj(_) | J::Arr(_))) => p,
         _ => data,
     };
-    match reg.get(defaults::text("session.registry_key"))? {
+    match reg.get(key)? {
         J::Arr(entries) => {
             let valid: Vec<&J> = entries.iter().filter(|e| matches!(e, J::Obj(_)) && e.get("version").and_then(J::as_str).is_some_and(is_semver)).collect();
             let scope = |s: &str| valid.iter().find(|e| e.get("scope").and_then(J::as_str) == Some(s)).copied();
@@ -51,7 +51,7 @@ fn version_from_registry(data: &J) -> Option<String> {
 
 /// The version the host's plugin registry (`installed_plugins.json`) names, found the way `update.js` finds it.
 /// `Err(())` when the registry text may parse differently here and in JavaScript.
-pub(crate) fn harness_version(env: &RequestEnv, home: &str) -> Result<Option<String>, ()> {
+pub(crate) fn harness_version(env: &RequestEnv, home: &str, root: &str) -> Result<Option<String>, ()> {
     let mut marketplace = join(home, defaults::text("session.marketplace_dir"));
     if let Some(o) = env.get(defaults::text("session.marketplace_env")).filter(|o| !o.is_empty())
         && is_absolute(o)
@@ -60,14 +60,16 @@ pub(crate) fn harness_version(env: &RequestEnv, home: &str) -> Result<Option<Str
         marketplace = o.to_string();
     }
     let plugins_root = resolve_abs(&format!("{marketplace}/../.."));
-    let file = join(&plugins_root, defaults::text("session.registry_file"));
+    let owner = crate::install::owning(home, root);
+    let file = owner.as_ref().map(|o| o.registry.to_string_lossy().into_owned()).unwrap_or_else(|| join(&plugins_root, defaults::text("session.registry_file")));
+    let key = owner.as_ref().map(|o| o.key.as_str()).unwrap_or(defaults::text("session.registry_key"));
     let Ok(meta) = std::fs::metadata(&file) else { return Ok(None) };
     if meta.len() > defaults::num("session.registry_max_bytes") {
         return Ok(None);
     }
     let Some(text) = read_text(&file) else { return Ok(None) };
     match parse(&text) {
-        Parsed::Ok(v) => Ok(version_from_registry(&v)),
+        Parsed::Ok(v) => Ok(version_from_registry(&v, key)),
         Parsed::Bad => Ok(None),
         Parsed::Unsure => Err(()),
     }
