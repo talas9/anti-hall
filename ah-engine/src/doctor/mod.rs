@@ -233,6 +233,13 @@ fn plugin_root(p: &Parsed, env: &std::collections::BTreeMap<String, String>) -> 
     flag.or_else(|| env.get(defaults::env_name("plugin_root")).cloned())
         .or_else(|| defaults::list("doctor.plugin_root_envs").iter().find_map(|k| env.get(*k).cloned()))
         .filter(|r| !r.is_empty())
+        .or_else(rootless_root)
+}
+
+/// The root the engine's own defaults load finds with no flag or variable (snapshot-cache root, install record, dev checkout).
+fn rootless_root() -> Option<String> {
+    let cached = crate::bootstrap::cache_path().as_deref().and_then(crate::defaults::cache_root);
+    crate::bootstrap::locate_root(cached.as_deref()).map(|r| r.to_string_lossy().into_owned())
 }
 
 fn hooks_section(doc: &mut Doc, root: &Path) {
