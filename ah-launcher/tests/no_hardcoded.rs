@@ -23,6 +23,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "the one justified constant set: the built-in copy of the shipped defaults, used when the plugin's TOML is missing or invalid; kept equal to the shipped files by builtin_equals_shipped_defaults",
     ),
     (
+        "src/compat.rs",
+        "pub const ENGINE_MIN",
+        "the lowest engine version this launcher works with: a protocol/format compatibility constant of the build, not a tunable",
+    ),
+    (
         "src/main.rs",
         "static ALLOC",
         "the global allocator item: a language construct, not a value",

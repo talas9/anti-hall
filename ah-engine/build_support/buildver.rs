@@ -1,7 +1,7 @@
-//! The build version every binary of this repo reports: `<plugin version>+<branch>.<short sha>[-dirty]`, derived at build time and
+//! The build version every binary of this repo reports: `<crate version>+<branch>.<short sha>[-dirty]` (each component carries its own version), derived at build time and
 //! handed to the crate as the `AH_BUILD_VERSION` compile-time variable. Shared by the build scripts of ah-engine, ah-launcher and ah-web
 //! (each includes this file with `#[path]`). It is a build fact, not configuration: no tunable or message of the running program comes
-//! from here. Without a git checkout or the plugin manifest (a tarball build) it falls back to the crate's own version.
+//! from here. Without a git checkout (a tarball build) it is the crate's own version alone.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -9,16 +9,6 @@ fn git(repo: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").arg("-C").arg(repo).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (out.status.success() && !text.is_empty()).then_some(text)
-}
-
-/// The `"version"` value of a manifest, read without a JSON parser (the build has no dependencies).
-fn manifest_version(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let rest = text.split_once("\"version\"")?.1;
-    let rest = rest.split_once(':')?.1;
-    let rest = rest.split_once('"')?.1;
-    let v = rest.split_once('"')?.0.trim();
-    (!v.is_empty()).then(|| v.to_string())
 }
 
 fn sanitize(branch: &str) -> String {
@@ -30,8 +20,7 @@ pub fn emit() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let pkg = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let repo = manifest.ancestors().find(|d| d.join("plugins/anti-hall/.claude-plugin/plugin.json").is_file()).map(Path::to_path_buf);
-    let plugin = repo.as_ref().and_then(|r| manifest_version(&r.join("plugins/anti-hall/.claude-plugin/plugin.json")));
-    let base = plugin.unwrap_or(pkg);
+    let base = pkg;
     let version = match repo.as_ref().and_then(|r| {
         let sha = git(r, &["rev-parse", "--short=8", "HEAD"])?;
         let branch = git(r, &["rev-parse", "--abbrev-ref", "HEAD"]).map(|b| sanitize(&b)).filter(|b| !b.is_empty() && b != "HEAD");
@@ -51,8 +40,5 @@ pub fn emit() {
         Some(tail) => format!("{base}+{tail}"),
         None => base,
     };
-    if let Some(r) = &repo {
-        println!("cargo:rerun-if-changed={}", r.join("plugins/anti-hall/.claude-plugin/plugin.json").display());
-    }
     println!("cargo:rustc-env=AH_BUILD_VERSION={version}");
 }

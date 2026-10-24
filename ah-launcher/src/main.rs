@@ -16,6 +16,7 @@ mod blog;
 mod builtin;
 mod cfg;
 mod cli;
+mod compat;
 mod doctor;
 mod gate;
 mod install;

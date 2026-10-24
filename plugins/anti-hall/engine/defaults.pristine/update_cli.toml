@@ -645,7 +645,3 @@ value = "latest version unknown — the {channel} marketplace has no readable so
 [update_msg.lag_head]
 doc = "`--check` action head when the version is current but the harness registry and cache disagree (never worded as up to date)."
 value = "version is current but the harness registry and cache disagree"
-
-[update_msg.local_ahead]
-doc = "A local engine/plugin build at least as new as the latest published release has nothing to update; legacy crate-numbered releases compare below current plugin versions."
-value = "You are on a local build newer than the latest published release ({release}). Nothing to update."

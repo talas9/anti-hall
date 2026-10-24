@@ -312,6 +312,14 @@ fn UpdatesScreen() -> impl IntoView {
                 <dt>{tx("ops_ver_web")}</dt><dd title=web.clone()>{short_stamp(&web)}</dd>
             </dl>
             <Show when=skew><p class="fb fb-bad" role="status">{tx("ops_skew")}</p></Show>
+            {move || {
+                let problems = ctx.snap.with(|s| s.pulse.as_ref().map(|p| p.compat.clone()).unwrap_or_default());
+                if problems.is_empty() {
+                    view! { <p class="soft-note" role="status">{tx("ops_compat_ok")}</p> }.into_any()
+                } else {
+                    view! { <div>{problems.into_iter().map(|m| view! { <p class="fb fb-bad" role="status">{m}</p> }).collect_view()}</div> }.into_any()
+                }
+            }}
         </section>
         <section class="card ops-card">
             <div class="ops-card-head">
@@ -331,7 +339,6 @@ fn UpdatesScreen() -> impl IntoView {
                         {(!c.source.is_empty()).then(|| view! { <dt>{tx("ops_check_source")}</dt><dd>{tx(&format!("ops_source_{}", c.source))}</dd> })}
                         {(!c.latest_release.is_empty()).then(|| view! { <dt>{tx("ops_check_release")}</dt><dd>{c.latest_release.clone()}{c.engine_available.then(|| format!(" ({})", tx("ops_check_available")))}</dd> })}
                         <dt>{tx("ops_check_result")}</dt><dd>{match c.state.as_str() {
-                            _ if c.local_ahead => tx("ops_check_current"),
                             "unknown" | "lagging" => tx(&format!("ops_check_{}", c.state)),
                             _ if c.available => tx("ops_check_available"),
                             _ => tx("ops_check_current"),
@@ -339,7 +346,7 @@ fn UpdatesScreen() -> impl IntoView {
                         <dt>{tx("ops_check_at")}</dt><dd>{since(c.checked_ms)}</dd>
                     </dl>
                     {c.local_ahead.then(|| view! { <p class="fb" role="status">{tx("ops_check_local_ahead").replace("{build}", &c.build_version).replace("{release}", &c.latest_release)}</p> })}
-                    {(!c.local_ahead).then(|| view! { <p class="soft-note">{c.message.clone()}</p> })}
+                    <p class="soft-note">{c.message.clone()}</p>
                     {c.available.then(|| view! {
                         <div><div class="sect">{tx("ops_check_changelog")}</div><p class="soft-note">{tx("ops_check_changelog_none")}</p><p class="soft-note">{tx("ops_check_apply")}</p></div>
                     })}

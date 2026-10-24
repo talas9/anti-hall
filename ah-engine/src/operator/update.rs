@@ -817,29 +817,13 @@ fn go(p: &Parsed) -> Result<i32, String> {
         out(&format!("{}\n", paths.override_ignored))?;
     }
     if is_check {
-        let mut status = run_check(&rx, &paths, &env);
-        let engine = super::routine::engine_facts();
-        let build = engine["build_version"].as_str().unwrap_or_default();
-        let release = engine["latest_release"]["version"].as_str().unwrap_or_default();
-        let local = engine["source"].as_str() != Some(t("routine.source_release")) || build.contains('+');
-        let comparable = semver_opt(&rx, str_of(status.get("installed"))) && semver_opt(&rx, str_of(status.get("latest")));
-        if comparable && local && is_semver(&rx, build.split('+').next().unwrap_or(build)) && is_semver(&rx, release) && compare(&rx, build, release) >= 0 {
-            if let J::Obj(fields) = &mut status {
-                for (key, value) in fields {
-                    if key == "action" {
-                        *value = J::Str(defaults::render("update_msg.local_ahead", &[("release", &release)]));
-                    } else if key == "state" {
-                        *value = J::Str(t("update.state_current").to_string());
-                    }
-                }
-            }
-        }
+        let status = run_check(&rx, &paths, &env);
         let text = render_human(&rx, &status, "");
         // the last line is the JSON status: with --json it also carries what the engine itself runs and where it came from
         let (head, last) = text.rsplit_once('\n').map_or(("", text.as_str()), |(h, l)| (h, l));
         let last = match serde_json::from_str::<serde_json::Value>(last) {
             Ok(mut v) if p.json && v.is_object() => {
-                v["engine"] = engine;
+                v["engine"] = super::routine::engine_facts();
                 v.to_string()
             }
             _ => last.to_string(),

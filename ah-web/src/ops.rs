@@ -401,7 +401,7 @@ pub async fn accounts(State(app): State<Shared>, headers: HeaderMap) -> Response
 }
 
 /// Dotted version text as comparable numbers (`0.301.0` -> [0, 301, 0]); anything non-numeric ends the list.
-fn version_nums(v: &str) -> Vec<u64> {
+pub(crate) fn version_nums(v: &str) -> Vec<u64> {
     v.trim_start_matches('v').split(['.', '-', '+']).map_while(|p| p.parse().ok()).collect()
 }
 
@@ -446,13 +446,13 @@ pub async fn update_check(State(app): State<Shared>, headers: HeaderMap) -> Resp
     let rel = eng.get("latest_release").cloned().unwrap_or(Value::Null);
     let latest_release = [s(&rel, "version"), s(&rel, "tag")].into_iter().find(|v| !v.is_empty()).unwrap_or_default();
     let engine_available = !build_version.is_empty() && !s(&rel, "version").is_empty() && version_nums(&s(&rel, "version")) > version_nums(&build_version);
-    let local_ahead = !installed.is_empty() && !latest.is_empty() && !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && version_nums(&s(&rel, "version")) <= version_nums(&build_version);
+    let local_ahead = !s(&rel, "version").is_empty() && !build_version.is_empty() && (s(&eng, "source") != "release" || build_version.contains('+')) && version_nums(&s(&rel, "version")) <= version_nums(&build_version);
     let c = UpdateCheck {
         ok: out.status.success(),
         installed,
         latest,
         message: s(&status, "action").chars().take(o.update_text_max).collect(),
-        available: available && !local_ahead,
+        available,
         channel: s(&status, "channel"),
         state: s(&status, "state"),
         checked_ms: now_ms(),

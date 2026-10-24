@@ -499,6 +499,9 @@ impl L {
         if let Some(name) = Some(self.key("env.hook_version")).filter(|n| !n.is_empty()) {
             envs.push((name, env!("AH_BUILD_VERSION").to_string()));
         }
+        if let Some(name) = Some(self.key("env.hook_engine_min")).filter(|n| !n.is_empty()) {
+            envs.push((name, crate::compat::ENGINE_MIN.to_string()));
+        }
         let argv = [
             engine.to_string(),
             "hook".into(),

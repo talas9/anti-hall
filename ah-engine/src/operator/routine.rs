@@ -499,11 +499,14 @@ struct Pre {
     /// The version stamps the new thin client and dashboard report (empty when not part of the set).
     hook_version: String,
     web_version: String,
+    /// The lowest client and dashboard versions the new engine serves (`version --json` `compat`); empty when it did not say.
+    hook_min: String,
+    web_min: String,
     sha: String,
 }
 
 fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) -> Pre {
-    let mut pre = Pre { problems: Vec::new(), version: String::new(), hook_version: String::new(), web_version: String::new(), sha: sha_of(&src.engine).unwrap_or_default() };
+    let mut pre = Pre { problems: Vec::new(), version: String::new(), hook_version: String::new(), web_version: String::new(), hook_min: String::new(), web_min: String::new(), sha: sha_of(&src.engine).unwrap_or_default() };
     let limit = defaults::secs("routine.call_timeout_s");
     let envs = scratch_env(scratch, src.tree.as_deref().or(tg.roots.first().map(PathBuf::as_path)));
     let v = run(&src.engine, &["version"], &envs, limit, scratch, None);
@@ -513,6 +516,11 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
         return pre;
     }
     log.say(defaults::render("routine.line_new_binary", &[("path", &src.engine.display()), ("version", &pre.version), ("sha", &short(&pre.sha))]));
+    let facts = run(&src.engine, &["version", "--json"], &envs, limit, scratch, None);
+    if let Ok(j) = serde_json::from_str::<Value>(facts.out.trim()) {
+        pre.hook_min = j["compat"]["hook_min"].as_str().unwrap_or_default().to_string();
+        pre.web_min = j["compat"]["web_min"].as_str().unwrap_or_default().to_string();
+    }
     if let Some(h) = &src.hook {
         let args: Vec<&str> = defaults::list("routine.hook_version_args");
         let r = run(h, &args, &[], limit, scratch, None);
@@ -840,12 +848,21 @@ fn install(o: &Opts, scratch: &Path, log: &mut Log) -> (Done, Value) {
         }
         log.say(defaults::render("routine.line_dirty_forced", &[("which", &dirty.join(", "))]));
     }
-    if set.iter().any(|(_, v)| *v != set[0].1) {
-        let list = set.iter().map(|(n, v)| format!("  {n}: {v}")).collect::<Vec<_>>().join("\n");
+    // each part has its own version: the set must satisfy the minimums the new engine declares of the client and the dashboard
+    let (eng, hook, web) = (t("compat.part_engine"), t("compat.part_hook"), t("compat.part_web"));
+    let incompatible: Vec<String> = [
+        crate::compat::check(eng, &pre.version, hook, &pre.hook_min, &pre.hook_version),
+        crate::compat::check(eng, &pre.version, web, &pre.web_min, &pre.web_version),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !incompatible.is_empty() {
+        let list = incompatible.iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n");
         let msg = defaults::render("routine.msg_mismatch", &[("set", &list), ("flag", &flag("force"))]);
         if !o.force {
             log.say(msg);
-            return (Done::Refused, json!({"action": "install", "refused": "mismatch", "set": set.iter().map(|(n, v)| json!({"name": n, "version": v})).collect::<Vec<_>>()}));
+            return (Done::Refused, json!({"action": "install", "refused": "mismatch", "problems": incompatible}));
         }
         log.say(defaults::render("routine.line_mismatch_forced", &[]));
     }

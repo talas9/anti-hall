@@ -45,6 +45,7 @@ pub struct Settings {
     pub idle_exit_s: u64,
     pub idle_check_s: u64,
     pub log_file: String,
+    pub compat_msg: String,
     pub log_max_bytes: u64,
     pub token_bytes: usize,
     pub cookie_name: String,

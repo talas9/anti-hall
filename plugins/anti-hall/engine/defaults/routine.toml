@@ -553,12 +553,12 @@ doc = "A dirty build is installed because the force flag was given. {which}."
 value = "update: installing a build from uncommitted changes (forced): {which}"
 
 [routine.msg_mismatch]
-doc = "The binaries of the set do not report the same version. {set} (one line per binary), {flag}."
-value = "update: refused: the binaries of this set report different versions:\n{set}\n  build them all from one commit, or pass {flag} to install the set anyway; nothing was changed"
+doc = "A binary of the set is older than the new engine supports. {set} (one line per requirement), {flag}."
+value = "update: refused: the binaries of this set are not compatible:\n{set}\n  build the missing part, or pass {flag} to install the set anyway; nothing was changed"
 
 [routine.line_mismatch_forced]
-doc = "A set of different versions is installed because the force flag was given."
-value = "update: installing binaries of different versions (forced)"
+doc = "An incompatible set is installed because the force flag was given."
+value = "update: installing binaries that are not compatible (forced)"
 
 # ---- the legacy sweep (operator/sweep.rs): runs in every install routine run and in `doctor --repair`; moves, never deletes ----
 

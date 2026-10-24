@@ -87,6 +87,9 @@ pub struct Pulse {
     /// The build version the hook client (ah-hook) last reported to the engine; empty before its first call.
     #[serde(default)]
     pub hook_version: String,
+    /// The version-compatibility mismatches the engine reported and this server found, one sentence each; empty when all hold.
+    #[serde(default)]
+    pub compat: Vec<String>,
 }
 
 /// One line of the activity feed, already in plain language.

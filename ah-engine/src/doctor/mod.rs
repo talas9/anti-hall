@@ -490,6 +490,18 @@ pub fn run_doctor(p: &Parsed) -> i32 {
     doc.ok(defaults::render("doctor_msg.platform", &[("platform", &platform), ("arch", &arch)]));
     if root.is_some() {
         doc.ok(defaults::render("doctor_msg.plugin_version", &[("version", &version)]));
+        if let Some(v) = ctx.version.as_deref() {
+            // only the pairs this process can see (plugin and engine): the hook client and dashboard versions are in `status --json` compat
+            let report = crate::compat::report(v, "", "", "");
+            let bad = crate::compat::mismatches(&report);
+            if bad.is_empty() {
+                let checked = report["pairs"].as_array().map_or(0, |a| a.iter().filter(|r| r["state"] != defaults::text("compat.state_unknown")).count());
+                doc.ok(defaults::render("compat.msg_ok", &[("count", &checked)]));
+            }
+            for line in bad {
+                doc.warnl(line);
+            }
+        }
     } else {
         doc.warnl(defaults::text("doctor_msg.no_plugin_root").to_string());
     }

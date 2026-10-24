@@ -18,6 +18,7 @@ pub mod cfgstore;
 pub mod checks;
 pub mod cli;
 pub mod client;
+pub mod compat;
 pub mod config;
 pub mod crash;
 pub mod daemon;
@@ -105,7 +106,7 @@ pub fn version() -> String {
 /// `install-routine`: `update --from-local <dir>` / `update --rollback` are the ONE install routine.
 pub const FEATURES: &[&str] = &["install-routine"];
 
-/// The version this binary was built as: `<plugin version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
+/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
 /// version when the build had no checkout to read).
 pub fn build_version() -> &'static str {
     env!("AH_BUILD_VERSION")

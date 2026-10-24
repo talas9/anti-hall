@@ -5,6 +5,7 @@
 //! `web.idle_exit_s`. Every number and text comes from the plugin's `web.toml`.
 mod app;
 mod cfg;
+mod compat;
 mod ctl;
 mod data;
 mod health;

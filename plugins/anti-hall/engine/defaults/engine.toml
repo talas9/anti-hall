@@ -42,6 +42,10 @@ value = "AH_ENGINE_VERSION"
 doc = "Set by the hook launcher (ah-hook) on the engine client it runs, to the launcher's own build version. It travels with each request (`request_env.allow`) and the daemon reports the last one it saw as `hook_version` in status and pulse."
 value = "AH_ENGINE_HOOK_VERSION"
 
+[env.hook_engine_min]
+doc = "Set by the hook launcher (ah-hook) on the engine client it runs, to the lowest engine version that launcher supports. It travels with each request (`request_env.allow`) and the daemon checks it against its own version (`compat` in status)."
+value = "AH_ENGINE_HOOK_ENGINE_MIN"
+
 [env.allocator]
 doc = "Selects the daemon's allocator: jemalloc (default) or system. The client sets it from `diagnostics.allocator` on the daemon it spawns, unless it is already set; the daemon reads it before its first allocation."
 value = "AH_ENGINE_ALLOCATOR"
@@ -993,7 +997,7 @@ value = "AH_ENGINE_REQUEST_PEER_PID"
 
 [request_env.allow]
 doc = "The environment variables the client forwards with every request, and the only ones the daemon evaluates a check with (never its own environment). A trailing `*` matches a prefix. PATH is read by scan-throttle. DISABLE_ANTIHALL_DEVSWARM and DEVSWARM_REPO_ID decide whether DevSwarm is active, CLAUDE_CONFIG_DIR locates the host's transcripts and NODE_TEST_CONTEXT marks a test run (inbox-read-guard, orch-on-spawn, verify-first-orch). DEVSWARM_SOURCE_BRANCH (non-empty in a DevSwarm child workspace) is read by verify-first-subagent. verify-first also reads DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM to see whether the session could be a DevSwarm Primary. DEVSWARM_SOURCE_BRANCH also marks a DevSwarm child workspace for ask-guard. DEVSWARM_REPO_ID, DEVSWARM_SOURCE_BRANCH and DISABLE_ANTIHALL_DEVSWARM are also read by the DevSwarm prompt gates (devswarm-parent-inbox, devswarm-child-turn). DEVSWARM_BUILDER_ID and DEVSWARM_AI_AGENT (with the repo id, the source branch and the DISABLE_ANTIHALL_DEVSWARM kill switch) are read by the devswarm-child-role and devswarm-parent-gate checks. DEVSWARM_BUILDER_NAME is written into the heartbeat of devswarm-child-turn. CLAUDE_PLUGIN_OPTION_* carry the plugin options the guards' switch chain reads. The rest are what the git check needs to see the client's git, never the daemon's: the `gitcache.bypass_env` names, XDG_CONFIG_HOME (locates git's config), the GIT_CONFIG_* variables (GIT_CONFIG_COUNT with its KEY_n/VALUE_n pairs travel together, since git exits 128 on a COUNT without its KEY_0; PARAMETERS and NOSYSTEM likewise), GIT_EXEC_PATH (locates git's helpers) and the object-store variables GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_NO_REPLACE_OBJECTS. LANG and LC_* are not forwarded: the git calls discard stderr and read only config data from stdout. TZ decides the local calendar date and local-time date strings of the handover and Codex checks, and TMPDIR, TMP and TEMP locate the session scratchpad the Codex nudge exempts, and decide where `os.tmpdir()` points in the task checks (scratch paths do not count as work). DISABLE_OMC and OMC_SKIP_HOOKS are the oh-my-claudecode kill switches task-guard reads before it steps aside for an OMC loop."
-value = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "DEVSWARM_REPO_ID", "DEVSWARM_SOURCE_BRANCH", "DISABLE_ANTIHALL_DEVSWARM", "NODE_TEST_CONTEXT", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "AH_ENGINE_HOOK_VERSION", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_NOSYSTEM", "GIT_EXEC_PATH", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS", "XDG_CONFIG_HOME", "TZ", "TMPDIR", "TMP", "TEMP", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_NAME", "DEVSWARM_AI_AGENT", "DISABLE_OMC", "OMC_SKIP_HOOKS"]
+value = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "DEVSWARM_REPO_ID", "DEVSWARM_SOURCE_BRANCH", "DISABLE_ANTIHALL_DEVSWARM", "NODE_TEST_CONTEXT", "ANTIHALL_*", "ANTI_HALL_*", "HOME", "USERPROFILE", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_OPTION_*", "PATH", "AH_ENGINE_PLUGIN_ROOT", "AH_ENGINE_HOOK_VERSION", "AH_ENGINE_HOOK_ENGINE_MIN", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_*", "GIT_CONFIG_VALUE_*", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_NOSYSTEM", "GIT_EXEC_PATH", "GIT_INDEX_FILE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NO_REPLACE_OBJECTS", "XDG_CONFIG_HOME", "TZ", "TMPDIR", "TMP", "TEMP", "DEVSWARM_BUILDER_ID", "DEVSWARM_BUILDER_NAME", "DEVSWARM_AI_AGENT", "DISABLE_OMC", "OMC_SKIP_HOOKS"]
 
 [request_env.presence_only]
 doc = "Environment variables whose PRESENCE the checks need but whose value they must never see (a secret): the client forwards the presence text when one is set and non-empty, nothing otherwise, and the value never leaves the client. These are the legacy API-key variables the session-start key notice looks for."
@@ -2386,3 +2390,61 @@ value = ["--start-reason", "deploy/routine"]
 [health.start_ring_write_kind]
 doc = "The discard diagnostic key when writing daemon-start provenance fails; startup continues."
 value = "daemon_start_ring_write"
+
+# ---- version compatibility (src/compat.rs): each part has its own version and lists the lowest it supports of the others --------
+
+[compat.engine_min]
+doc = "The lowest engine version this plugin supports. An engine older than this is reported by status and doctor; it never blocks a session."
+value = "0.2.0"
+
+[compat.hook_min]
+doc = "The lowest hook client (ah-hook) version this plugin supports."
+value = "0.2.0"
+
+[compat.web_min]
+doc = "The lowest dashboard (ah-web) version this plugin supports."
+value = "0.2.0"
+
+[compat.part_plugin]
+doc = "The name of the plugin in compatibility reports (`status --json` compat.pairs[].needer / needs)."
+value = "plugin"
+
+[compat.part_engine]
+doc = "The name of the engine in compatibility reports."
+value = "engine"
+
+[compat.part_hook]
+doc = "The name of the hook client in compatibility reports."
+value = "hook"
+
+[compat.part_web]
+doc = "The name of the dashboard in compatibility reports."
+value = "web"
+
+[compat.state_ok]
+doc = "The state of a compatibility pair whose installed version meets the requirement."
+value = "ok"
+
+[compat.state_mismatch]
+doc = "The state of a compatibility pair whose installed version is below the requirement."
+value = "mismatch"
+
+[compat.state_unknown]
+doc = "The state of a compatibility pair where one of the two versions is not known (never a mismatch)."
+value = "unknown"
+
+[compat.msg_mismatch]
+doc = "One pair that does not hold, as doctor, the engine log and the dashboard show it. Placeholders: {needer}, {needer_version}, {needs}, {required}, {actual}."
+value = "{needer} {needer_version} needs {needs} >= {required}, installed {actual} -> update the {needs}"
+
+[compat.msg_ok]
+doc = "The doctor line when every pair that can be checked holds. Placeholder: {count} (pairs checked)."
+value = "component versions are compatible ({count} pairs checked)"
+
+[compat.msg_logged]
+doc = "The one engine log line written when a mismatch is first seen. Placeholder: {detail} (the mismatch lines joined)."
+value = "version mismatch (sessions are not blocked): {detail}"
+
+[compat.log_join]
+doc = "What joins several mismatch lines in the engine log line."
+value = "; "

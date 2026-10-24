@@ -100,6 +100,8 @@ pub struct Shared {
     pub own: String,
     /// The build version the hook client (ah-hook) last reported with a request.
     hook_version: RwLock<String>,
+    hook_engine_min: RwLock<String>,
+    compat_logged: AtomicBool,
     /// The plugin version read from the manifest of the loaded root, with the config version it was read at.
     plugin_version: Mutex<(u64, String)>,
     /// The active rule set; swapped whole on reload, so a request sees one consistent set.
@@ -197,6 +199,8 @@ impl Shared {
             config: crate::cfgstore::ConfigStore::fixed(cfg),
             own: own.to_string(),
             hook_version: RwLock::new(String::new()),
+            hook_engine_min: RwLock::new(String::new()),
+            compat_logged: AtomicBool::new(false),
             plugin_version: Mutex::new((0, String::new())),
             rules: RwLock::new(Arc::new(rules)),
             seen: Mutex::new(crate::layers::host_fingerprint(&rules_path, defaults::env_var("rules").is_some())),
@@ -477,10 +481,28 @@ impl Shared {
 
     /// Remember the build version the hook client reported in the request environment.
     fn note_hook_version(&self, env: &crate::reqenv::RequestEnv) {
+        if let Some(m) = env.get(defaults::text("env.hook_engine_min")).filter(|v| !v.is_empty())
+            && self.hook_engine_min.read().unwrap_or_else(|e| e.into_inner()).as_str() != m
+        {
+            *self.hook_engine_min.write().unwrap_or_else(|e| e.into_inner()) = m.to_string();
+        }
         let Some(v) = env.get(defaults::text("env.hook_version")).filter(|v| !v.is_empty()) else { return };
         if self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str() != v {
             *self.hook_version.write().unwrap_or_else(|e| e.into_inner()) = v.to_string();
         }
+    }
+
+    /// The compatibility of the plugin, engine and hook client versions this daemon can see (`compat` in status and pulse). The first
+    /// mismatch is written to the engine log once; nothing is ever blocked.
+    fn compat(&self) -> serde_json::Value {
+        let hook = self.hook_version.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let min = self.hook_engine_min.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let report = crate::compat::report(&self.plugin_version(), &hook, &min, "");
+        if report["ok"] == false && !self.compat_logged.swap(true, SeqCst) {
+            let lines = crate::compat::mismatches(&report).join(defaults::text("compat.log_join"));
+            eprintln!("{}", defaults::render("compat.msg_logged", &[("detail", &lines)]));
+        }
+        report
     }
 
     /// The version in the manifest of the plugin root the daemon loaded its files from, re-read only when the config changed.
@@ -518,6 +540,7 @@ impl Shared {
         });
         let leak = crate::mem::leak::status();
         pulse["leak"] = serde_json::json!({"state": leak["state"], "slope_mb_per_h": leak["slope_mb_per_h"], "top": leak["top"]});
+        pulse["compat"] = self.compat();
         pulse
     }
 
@@ -541,6 +564,7 @@ impl Shared {
             "version": self.own,
             "plugin_version": self.plugin_version(),
             "hook_version": self.hook_version.read().unwrap_or_else(|e| e.into_inner()).as_str(),
+            "compat": self.compat(),
             "uptime_s": self.started.elapsed().as_secs(),
             "rss_kb": rss_now,
             "footprint_kb": limits::footprint_kb(),
