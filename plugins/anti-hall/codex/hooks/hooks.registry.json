@@ -192,6 +192,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
             "timeout": 10,
             "id": "lane-test-guard"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse --host codex || exec sh \"${PLUGIN_ROOT}/hooks/install.sh\" PreToolUse --host codex",
+            "timeout": 10,
+            "id": "wide-search-guard"
           }
         ]
       }

@@ -539,6 +539,7 @@ value = [
   { id = "uncommitted-guard", matcher = "Write|Edit|MultiEdit|NotebookEdit", timeout = 10, check = "uncommitted-guard" },
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
+  { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -635,6 +636,7 @@ value = [
   { id = "uncommitted-guard", matcher = "apply_patch", timeout = 10, check = "uncommitted-guard" },
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
+  { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
 ]
 
 [dispatch.hooks_codex_Stop]

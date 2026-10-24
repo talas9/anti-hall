@@ -253,7 +253,8 @@ mod tests {
                 "broad-kill-guard",
                 "burn-breaker",
                 "queued-wait-guard",
-                "lane-test-guard"
+                "lane-test-guard",
+                "wide-search-guard"
             ],
             "the Bash entries a built-in check answers, in hooks.json order"
         );
