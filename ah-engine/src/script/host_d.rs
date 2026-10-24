@@ -97,6 +97,7 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
             Ok(Some(s)) => json!({
+                "unsure": s.unsure,
                 "sawTaskActivity": s.saw_task_activity,
                 "taskStoreReset": s.task_store_reset,
                 "inProgressCount": s.in_progress_count,
@@ -119,9 +120,10 @@ fn tasks_of(path: &str, variant: &str, window: f64, wide: f64, kept: bool) -> St
     };
     let Ok(mut facts) = reconstruct(&lines, v) else { return unsure() };
     if truncated && backfill(&mut facts, path, window).is_err() {
-        return unsure();
+        facts.unsure = true;
     }
     json!({
+        "unsure": facts.unsure,
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
         "windowReset": facts.window_reset,
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },

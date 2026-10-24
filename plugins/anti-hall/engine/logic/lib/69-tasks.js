@@ -6,11 +6,13 @@ var tk = {
   // `String(x).replace(/[^A-Za-z0-9_.-]/g, '_')`, one underscore per UTF-16 unit.
   safeKey: function (s) { return String(s).replace(/[^A-Za-z0-9_.-]/g, '_'); },
   // The tasks of a transcript tail ('guard' variant): an array of the engine's task records; a tail the engine cannot read exactly
-  // (counted) is read as holding none.
+  // (counted) keeps any known records and carries an uncertainty flag.
   tasks: function (path) {
     var r = ah.transcript.tasks(path, 'guard', ah.cfgNum('taskstate.tail_bytes'));
-    if (r.unsure) { ah.unable('tasks:tail_unsure'); return []; }
-    return r.unreadable ? [] : r.tasks;
+    if (r.unsure) ah.unable('tasks:tail_unsure');
+    var tasks = r.unreadable ? [] : (r.tasks || []);
+    tasks.unsure = !!r.unsure;
+    return tasks;
   },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
   isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },

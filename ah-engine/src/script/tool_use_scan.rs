@@ -4,7 +4,7 @@
 //!
 //! The lines are the ones `ah.fs.tailLines(path, window, true, needles)` returns (same window, same dropped first line, same
 //! `\r` rule). Each is read as the script's loop reads it, in order, and one item comes back per line that matters:
-//! * `["u"]`: a line only JavaScript can read exactly (the loop answers `defer`; nothing after it is read);
+//! * `["u"]`: a line the parser cannot resolve (recorded as uncertain; later lines are still read);
 //! * `["n"]`: a line that parses to JSON `null` (the loop answers `quiet`; nothing after it is read);
 //! * `[ts, uses]`: an entry; `ts` is its `timestamp` when that is a string, else `null`; `uses` are the tool uses `tlToolUses`
 //!   collects (an object with `type: "tool_use"` and a truthy `name`, found by descending the given keys, in that order) cut down
@@ -14,7 +14,8 @@
 //! A line that is blank or that JSON rejects is left out (the loop skips it). `null` instead of an array: the file is unreadable.
 use super::host_b3::read_tail;
 use crate::checks::replykit::io::truthy;
-use crate::checks::replykit::transcript::{parse_line, prop};
+use crate::checks::replykit::transcript::prop;
+use crate::checks::taskstate::parse::{Line, parse_line};
 use crate::defaults;
 use rquickjs::{Ctx, Function, Object};
 use serde_json::{Value, json};
@@ -56,12 +57,12 @@ fn items_of(text: &str, needles: &[String], keys: &[String]) -> String {
             continue;
         }
         let e = match parse_line(line) {
-            Err(_) => {
+            Line::Unsure => {
                 items.push(json!(["u"]));
-                break;
+                continue;
             }
-            Ok(None) => continue,
-            Ok(Some(e)) => e,
+            Line::Skip => continue,
+            Line::Parsed(e) => e,
         };
         if e.is_null() {
             items.push(json!(["n"]));
@@ -167,12 +168,12 @@ mod tests {
     }
 
     #[test]
-    fn a_null_line_ends_the_list_and_so_does_an_unreadable_one() {
+    fn a_null_line_ends_the_list_but_a_js_readable_line_does_not() {
         let t = "{\"timestamp\":\"t\",\"a\":\"null\"}\nnull\n{\"timestamp\":\"later\",\"a\":\"null\"}\n";
         assert_eq!(scan(t, 1e6), json!([["t", []], ["n"]]));
-        // a lone surrogate escape: only JavaScript reads it exactly
+        // A lone surrogate escape uses the shared JavaScript-compatible parser.
         let t = "{\"timestamp\":\"t\",\"a\":\"null\"}\n{\"a\":\"\\ud800\"}\n{\"timestamp\":\"later\",\"a\":\"null\"}\n";
-        assert_eq!(scan(t, 1e6), json!([["t", []], ["u"]]));
+        assert_eq!(scan(t, 1e6), json!([["t", []], ["later", []]]));
     }
 
     #[test]

@@ -590,7 +590,7 @@ function decide(p, opts) {
   work = tlScanWork(transcript, progressAbs, cx);
   if (work === 'quiet') return 'allow';
   var t = ah.transcript.tasks(transcript, 'scan', tlN('window_bytes'), tlN('wide_window_bytes'));
-  if (t.unsure) { ah.unable('tasklist-guard:tasks_unsure', 'abandoned'); return 'allow'; } // the task state cannot be read exactly: no claim of untracked work
+  if (t.unsure) ah.unable('tasklist-guard:tasks_unsure'); // keep known work and task facts when a line cannot be reconstructed
   if (t.quiet) return 'allow';
   var scan = {
     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
