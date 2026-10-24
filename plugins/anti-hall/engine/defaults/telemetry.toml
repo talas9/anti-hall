@@ -588,10 +588,9 @@ value = { counted = "exact" }
 
 [impact.price_table]
 doc = "Model price table used for model-routing savings: `date` and `source` say where the prices came from, `models` maps a model name (or a family word it contains, such as `opus`) to `{ in_uc, out_uc, cache_read_uc, cache_write_uc }`: micro-dollars per million tokens of each class. A model with no entry is reported as `no price for model X` and left out of every figure, never guessed."
-# keyed by FAMILY word so both the aliases route events carry (opus, sonnet, haiku, fable) and full ids (claude-opus-5-5) match.
-# list prices in USD per million tokens (cached 2026-10-06): opus $4 in / $20 out / $0.20 cache read; sonnet $2 / $10 / $0.20; haiku $0.10 / $0.50 (prompts up to 100K);
-# fable $10 / $50 / $0.25. Cache write is 2x input for every family (the ratio the opus figure was fitted at); haiku cache read is 0.1x input. Those two are derived, not quoted.
-value = { date = "2026-10-23", source = "list prices of the current generation (opus fitted exactly on 480 B1 runs, 2026-10-05); haiku cache read and every cache write derived from input price", models = { opus = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 8000000 }, sonnet = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 200000, cache_write_uc = 4000000 }, haiku = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 200000 }, fable = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 20000000 } } }
+# Current-family aliases; explicit older IDs below prevent applying current rates to older models.
+# Standard global list rates verified 2026-10-24; cache duration and Haiku prompt tier are assumptions, not inferred billing facts.
+value = { date = "2026-10-24", source = "https://platform.claude.com/docs/en/about-claude/pricing; current-family aliases use standard global 5-minute cache writes; Haiku alias assumes prompts <=100K; full version IDs use explicit entries", models = { "claude-opus-5-5" = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 5000000 }, "claude-opus-5" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "claude-opus-4-8" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "claude-opus-4-7" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "claude-opus-4-6" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "claude-opus-4-5" = { in_uc = 5000000, out_uc = 25000000, cache_read_uc = 500000, cache_write_uc = 6250000 }, "claude-sonnet-5-5" = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 100000, cache_write_uc = 2500000 }, "claude-sonnet-5" = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 200000, cache_write_uc = 2500000 }, "claude-sonnet-4-6" = { in_uc = 3000000, out_uc = 15000000, cache_read_uc = 300000, cache_write_uc = 3750000 }, "claude-sonnet-4-5" = { in_uc = 3000000, out_uc = 15000000, cache_read_uc = 300000, cache_write_uc = 3750000 }, "claude-haiku-5-5" = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 125000 }, "claude-haiku-4-5" = { in_uc = 1000000, out_uc = 5000000, cache_read_uc = 100000, cache_write_uc = 1250000 }, "claude-fable-5-1" = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 12500000 }, "claude-fable-5" = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 1000000, cache_write_uc = 12500000 }, opus = { in_uc = 4000000, out_uc = 20000000, cache_read_uc = 200000, cache_write_uc = 5000000 }, sonnet = { in_uc = 2000000, out_uc = 10000000, cache_read_uc = 100000, cache_write_uc = 2500000 }, haiku = { in_uc = 100000, out_uc = 500000, cache_read_uc = 10000, cache_write_uc = 125000 }, fable = { in_uc = 10000000, out_uc = 50000000, cache_read_uc = 250000, cache_write_uc = 12500000 } } }
 
 [impact.savings_method]
 doc = "How a model-routing saving is computed, shown next to every figure so it is never read as a measurement."
@@ -617,63 +616,90 @@ value = { kind = "counter", unit = "events", labels = ["reason", "check"] }
 doc = "Launch tools observed for routing outcomes on Claude/OMC and Codex/OMX payloads."
 value = ["Agent", "Task"]
 
-
 [telemetry.spawn_agent_fields]
 doc = "Response keys holding the actual spawned child identity, in precedence order."
 value = ["agentId", "agent_id"]
-
 
 [telemetry.spawn_model_fields]
 doc = "Response keys holding the actual resolved model, never the requested routing choice."
 value = ["resolvedModel", "resolved_model", "model"]
 
-
 [telemetry.spawn_stop_event]
 doc = "Completion hook on both host ports."
 value = "SubagentStop"
-
 
 [telemetry.spawn_transcript_field]
 doc = "The completed child's explicitly supplied transcript; never the parent's transcript."
 value = "agent_transcript_path"
 
-
 [telemetry.spawn_transcript_max_bytes]
 doc = "Maximum complete child transcript read for outcome recovery. Oversized or malformed files stay unmeasured."
 value = 16777216
-
 
 [telemetry.spawn_link_retention_ms]
 doc = "How far back to look for persisted launch identities on completion."
 value = 604800000
 
-
 [telemetry.spawn_unknown_model]
 doc = "Identity-only launch marker, excluded from routing savings until actual model and usage arrive."
 value = "unknown"
 
+[impact.estimate_label]
+doc = "Dashboard label for counterfactual savings and estimated overhead."
+value = "estimate"
+
+[impact.measured_label]
+doc = "Dashboard label for directly recorded observations, not counterfactual savings."
+value = "measured"
+
+[impact.routing_how_counted]
+doc = "Dashboard explanation for gross routing savings and spend-up."
+value = "Actual linked child token classes times requested-model minus actual-model list prices; same-token counterfactual, assumed 5-minute cache writes. Null when no priced usage is linked."
+
+[impact.net_how_counted]
+doc = "Dashboard explanation for net, distinct from gross and scenario estimates."
+value = "Routing savings minus routing spend-up minus estimated injected-context input cost minus recorded Jev cost. Avoided-waste scenarios are excluded. A partial net omits unknown components and complete=false."
+
+[impact.spenders_how_counted]
+doc = "Dashboard provenance for the two overhead components."
+value = "Injection: check/spill bytes divided by bytes_per_token, priced at the most frequent routing parent model input rate (estimate). Jev: sum of recorded cost_uc divided by one million (recorded cost, not a provider invoice)."
+
+[impact.avoided_waste]
+doc = "Configurable scenario assumptions per observed event, NOT measured savings. Count only matching blocked check outcomes in the requested day window. Empty check means no supported event evidence and yields null. Time is a separate scenario, never monetized or added to net. Defaults are illustrative assumptions, not benchmarks; tune per deployment."
+value = { model = "opus", formula = "events * tokens_per_event * input_usd_per_million / 1000000; seconds = events * seconds_per_event", how_counted = "Observed matching block counts multiplied by configurable hypothetical tokens/time avoided; retries may represent the same attempted work. Excluded from measured routing savings and net.", unavailable = "No distinct supported event counter; advisories are not stopped agents and generic swarm blocks are not proven duplicate spawns.", events = { blocked_tests = { check = "lane-test-guard", tokens_per_event = 4000, seconds_per_event = 60 }, blocked_wide_searches = { check = "wide-search-guard", tokens_per_event = 1000, seconds_per_event = 10 }, burn_breaker_trips = { check = "burn-breaker", tokens_per_event = 5000, seconds_per_event = 30 }, stopped_idle_agents = { check = "", tokens_per_event = 2000, seconds_per_event = 60 }, duplicate_spawn_blocks = { check = "", tokens_per_event = 4000, seconds_per_event = 30 } } }
 
 [telemetry.spawn_parent_transcript_field]
 doc = "Explicit launching-session transcript from which the configured child transcript layout can be resolved."
 value = "transcript_path"
 
-
 [telemetry.spawn_transcript_fields]
 doc = "Child transcript schema for actual usage; required input/output counts, optional cache classes default to zero only when absent."
 value = { type = "type", assistant = "assistant", message = "message", id = "id", model = "model" }
-
 
 [telemetry.spawn_background_field]
 doc = "Launch input flag identifying a running background child; partial response usage is not a finished outcome."
 value = "run_in_background"
 
-
 [telemetry.spawn_status_field]
 doc = "Response status field; transcript recovery on PostToolUse requires explicit completion evidence."
 value = "status"
-
 
 [telemetry.spawn_completed_status]
 doc = "Response status proving a child is complete; absence is not proof of completion."
 value = "completed"
 
+[impact.benchmarks_how_counted]
+doc = "Dashboard explanation for the controlled benchmark list."
+value = "Only registered controlled with/without benchmark results belong here; no measured savings benchmark is currently registered. Actual linked usage is observed, but routing savings remain a counterfactual estimate."
+
+[impact.unlinked_how_counted]
+doc = "Dashboard explanation of missing routing outcome evidence and historical backfill limits."
+value = "Decisions with no proven completed child usage stay unlinked. Stored launch identities are repaired in place on completion; identity-less historical decisions cannot reconstruct missing model/tokens. Ambiguous repeated briefs, missing completion evidence, unreadable/oversized/mixed-model transcripts remain unknown."
+
+[impact.routing_unknown_status]
+doc = "Status for routing decisions without any completed, priced usage evidence."
+value = "Routing decisions exist, but no completed priced usage is linked; savings are unknown."
+
+[impact.recorded_label]
+doc = "Label for recorded accounting values whose provider invoice provenance is not guaranteed."
+value = "recorded"

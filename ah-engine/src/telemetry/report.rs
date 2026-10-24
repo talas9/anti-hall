@@ -335,6 +335,32 @@ pub fn events_json(tel: Option<&TelDb>, rec: Option<&Recorder>, kind: &str, days
     json!({"window": {"days": days}, "kind": kind, "count": events.len(), "events": events})
 }
 
+/// Separate counterfactual scenarios from observed routing economics; never add these to NET.
+pub fn avoided_waste_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now: u64) -> Value {
+    let rows = window_rows(tel, rec, days, now);
+    let cfg = defaults::raw("impact.avoided_waste");
+    let price = PriceTable::from_defaults().price(cfg.str_field("model"));
+    let mut figures = Map::new();
+    for (name, spec) in cfg.get("events").and_then(defaults::V::as_table).unwrap_or_default() {
+        let check = spec.str_field("check");
+        let count: u64 = rows.iter().filter(|r| r.delta.k == "check" && r.delta.h == check && r.delta.o == "block").map(|r| r.delta.n).sum();
+        let n = |k| spec.get(k).and_then(defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+        let tokens = n("tokens_per_event");
+        let seconds = n("seconds_per_event");
+        figures.insert(name.to_string(), json!({
+            "label": defaults::text("impact.estimate_label"), "events_label": defaults::text("impact.measured_label"),
+            "events": if check.is_empty() { None } else { Some(count) }, "check": check,
+            "tokens_per_event": tokens, "seconds_per_event": seconds, "priced_as": cfg.str_field("model"),
+            "estimated_tokens": if check.is_empty() { None } else { count.checked_mul(tokens) },
+            "estimated_seconds": if check.is_empty() { None } else { count.checked_mul(seconds) },
+            "estimated_usd": if check.is_empty() { None } else { price.map(|p| count as f64 * tokens as f64 * p.input as f64 / 1e12) },
+            "formula": cfg.str_field("formula"), "how_counted": cfg.str_field("how_counted"),
+            "unavailable": if check.is_empty() { Some(cfg.str_field("unavailable")) } else { None },
+        }));
+    }
+    json!({"label": defaults::text("impact.estimate_label"), "included_in_net": false, "window": {"days": days}, "figures": figures})
+}
+
 /// The NET section of `impact` for the last `days` days: routing saved and spent up in both directions, minus the spenders.
 pub fn net_json(tel: Option<&TelDb>, rec: Option<&Recorder>, days: u64, now_ms: u64) -> Value {
     let since = now_ms.saturating_sub(days * DAY_MS);

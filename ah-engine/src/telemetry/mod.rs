@@ -482,8 +482,11 @@ impl Telemetry {
         if net["routing"]["decisions"].as_u64().unwrap_or(0) > 0 {
             let r = &mut v["savings"]["model_routing"];
             r["estimated_usd"] = net["routing"]["net_usd"].clone();
-            r["status"] = json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])]));
+            r["status"] = if net["routing"]["net_usd"].is_null() {
+                json!(defaults::text("impact.routing_unknown_status"))
+            } else { json!(defaults::render("msg.tel_net_status", &[("n", &net["routing"]["decisions"]), ("days", &net["window"]["days"])])) };
         }
+        v["savings"]["avoided_waste"] = report::avoided_waste_json(self.tel.as_ref(), Some(&self.rec), days, now_ms());
         v["net"] = net;
         v
     }
