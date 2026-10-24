@@ -357,6 +357,10 @@ value = '''\b(?:gh|github)[- ](?:api|cli)[- ]only\b|\bonly\s+(?:calls?|uses?|run
 doc = "JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading."
 value = '''\bin\s+place\b|\bin\s+(?:the\s+)?(?:session\s+)?repo\b|\brepo\s+files\b|\b(?:session|main)\s+(?:checkout|working\s+tree)\b|\bin\s+the\s+(?:working\s+tree|checkout)\b|\bworking\s+copy\b|\bchecked[- ]out\s+(?:files?|tree|copy|branch)\b|\bon\s+main\b|\bmain\s+branch\b'''
 
+[swarm_guard.re_negated_in_place]
+doc = "Negated write/location spans removed before affirmative in-place detection; {place} expands to re_in_place. Other affirmative clauses remain effective."
+value = '''\b(?:(?:do|does|did|must|will|should|can)\s+not|don'?t|doesn'?t|didn'?t|won'?t|shouldn'?t|can'?t|never|without|no|not)\s+(?:(?:touch(?:ing)?|edit(?:s|ing)?|modify|modifying|write|writing|writes|change(?:s)?|changing|work(?:ing)?)(?:\s+(?:to|on|in|with))?\s+)?(?:(?:the|any|a|local)\s+)*(?:{place})(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+)(?:(?:the|any|a|local)\s+)*(?:{place}))*'''
+
 [swarm_guard.re_no_worktrees]
 doc = "JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory."
 value = '''\bno\s+(?:git\s+)?worktrees?\b'''

@@ -88,8 +88,13 @@ function swgInScratch(inp, tree) {
   var t = String(i.prompt || '') + '\n' + String(i.description || '');
   var path = ah.cfg('swarm_guard.scratch_path');
   var scratch = ah.cfg('swarm_guard.scratch_alternatives').map(function (a) { return a.split('{path}').join(path); }).join('|');
+  // A prohibition names the same objects as an affirmative write. Remove only those negated
+  // spans; an independent affirmative clause still cancels the exemption.
+  var place = ah.cfg('swarm_guard.re_in_place');
+  var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
+  var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
   return (ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(ah.cfg('swarm_guard.re_in_place'), 'i', t);
+    !ah.re.test(place, 'i', affirmative);
 }
 
 function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
