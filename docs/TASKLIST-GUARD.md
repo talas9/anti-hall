@@ -143,12 +143,13 @@ To suppress the guard, write `~/.anti-hall/skip.json` (honored via the shared
 skip-guard):
 
 ```json
-{ "tasklist-guard": 1893456000000 }
+{ "tasklist-guard@<session-id>": 1893456000000 }
 ```
 
 The value is a **unix-ms expiry** — the guard is skipped until that time. Use the
 key `"all"` to suppress every skippable guard. You can also simply **ask the agent to
-skip it**, and it will record your consent by writing this file.
+skip it**, and it will record your consent by writing this file for the current session.
+A bare `"tasklist-guard"` key (written with `--global`) applies to every session.
 
 ## Good workflow
 

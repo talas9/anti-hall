@@ -31,7 +31,7 @@ files on disk. Codex has no `/config` panel and no statusline hook; skills are n
 | coordinator / worker | The main thread plans, delegates and verifies; subagents (workers) do heavy reads, commands and edits. `command-guard`/`edit-guard` enforce it on the coordinator. |
 | guard | A PreToolUse/Stop hook that blocks mechanically (git-guard, command-guard, edit-guard, …). |
 | nudge / advisory | Injected text that informs but never blocks. |
-| skip | A TTL'd per-guard override in `~/.anti-hall/skip.json`, written only on the user's explicit request; `all` never covers git-guard. |
+| skip | A TTL'd per-guard, per-session override in `~/.anti-hall/skip.json` (key `<guard>@<session-id>`; `--global` for all sessions), written only on the user's explicit request; `all` never covers git-guard. |
 | Tier 1 / 2 / 2.5 / 3 | Anti-speculation layers: protocol injection; hedge-word `speculation-guard`; `claim-ledger` (confident claims with no evidence, ledger-only); opt-in LLM `speculation-judge`. |
 | handover | A self-written, lossless session record in `.anti-hall/handovers/` so a fresh session resumes cold. Auto-handover asks for one at 93% context by default, or 500000 tokens on 1M windows (5% before auto-compact; see the settings skill) (UserPromptSubmit, or once at a Stop). `precompact-snapshot.js` (PreCompact) also writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot before every compaction and never blocks it. |
 | known / unknown window | Whether the context window size is known (statusline figure, Codex rollout, env, sticky, inferred 1M). Unknown → a soft advisory only, never the mandatory handover directive. |

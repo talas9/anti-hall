@@ -98,8 +98,9 @@ switches between the compact text (default) and the full text.
 ## Skipping a guard for a while
 
 If a guard is in your way, tell the assistant, for example **"skip the speculation-guard
-for now"**. It records your consent in `~/.anti-hall/skip.json`, per guard, and the skip
-expires after 15 minutes by default.
+for now"**. It records your consent in `~/.anti-hall/skip.json`, per guard and per session
+(key `<guard>@<session-id>`), and the skip expires after 15 minutes by default. A skip
+applies only to the session that set it; `--global` (owner-set) covers every session.
 
 - `"all"` covers the noisy guards at once, but **never** `git-guard`. To skip that one,
   name it.

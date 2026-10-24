@@ -81,7 +81,8 @@ rather than guessing a fix from the symptom.
 ## Turning a check off { #turning-a-check-off }
 
 **For a few minutes:** tell the assistant, for example "skip the tasklist-guard for now".
-It records your consent in `~/.anti-hall/skip.json`, and the skip expires after 15 minutes
+It records your consent in `~/.anti-hall/skip.json` for the current session only (key
+`<guard>@<session-id>`; `--global` covers all sessions), and the skip expires after 15 minutes
 by default. A skip for `"all"` never covers `git-guard`; that one has to be named.
 
 **For good:** turn off its setting. Say "turn off the speculation guard", or use the
