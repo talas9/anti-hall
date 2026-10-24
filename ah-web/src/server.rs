@@ -189,7 +189,13 @@ async fn index(
     r
 }
 
-async fn serve_from(app: &App, headers: &HeaderMap, dir: &str, rel: &str) -> Response {
+async fn serve_from(
+    app: &App,
+    headers: &HeaderMap,
+    dir: &std::path::Path,
+    packaged: Option<&std::path::Path>,
+    rel: &str,
+) -> Response {
     if !cookie_ok(app, headers) {
         return refuse(app);
     }
@@ -205,7 +211,14 @@ async fn serve_from(app: &App, headers: &HeaderMap, dir: &str, rel: &str) -> Res
     let Some(mime) = s.mime.get(ext) else {
         return (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response();
     };
-    match tokio::fs::read(app.root.join(dir).join(rel)).await {
+    let bytes = match tokio::fs::read(dir.join(rel)).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match packaged {
+            Some(root) => tokio::fs::read(root.join(rel)).await,
+            None => Err(e),
+        },
+        other => other,
+    };
+    match bytes {
         Ok(bytes) => ([(header::CONTENT_TYPE, mime.clone())], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, s.msg_not_found.clone()).into_response(),
     }
@@ -217,7 +230,19 @@ async fn static_file(
     Path(p): Path<String>,
 ) -> Response {
     let dir = app.settings().static_dir.clone();
-    serve_from(&app, &headers, &dir, &p).await
+    // ah-web ships its own disk assets beside the binary, under the same configured static directory.
+    // Plugin-owned files keep precedence; the browser URL and access checks are shared by both roots.
+    let packaged = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join(&dir)));
+    serve_from(
+        &app,
+        &headers,
+        &app.root.join(&dir),
+        packaged.as_deref(),
+        &p,
+    )
+    .await
 }
 
 async fn pkg_file(
@@ -226,7 +251,7 @@ async fn pkg_file(
     Path(p): Path<String>,
 ) -> Response {
     let dir = app.settings().pkg_dir.clone();
-    serve_from(&app, &headers, &dir, &p).await
+    serve_from(&app, &headers, &app.root.join(&dir), None, &p).await
 }
 
 /// Counts an open stream in its tier; the poller stops when the last one is gone.
@@ -720,5 +745,101 @@ async fn tel_export(
         )
             .into_response(),
         None => (StatusCode::NOT_FOUND, app.settings().msg_not_found.clone()).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path as FsPath, PathBuf};
+
+    fn fixture() -> (App, HeaderMap, PathBuf) {
+        let root = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let config = root.join("engine/defaults/web.toml");
+        let settings = crate::cfg::Settings::load(&config).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{}=test-token", settings.cookie_name)).unwrap(),
+        );
+        let app = App::new(
+            settings,
+            config,
+            root,
+            PathBuf::new(),
+            PathBuf::new(),
+            "test-token".into(),
+            12345,
+        );
+        (
+            app,
+            headers,
+            FsPath::new(env!("CARGO_MANIFEST_DIR")).join("web/static"),
+        )
+    }
+
+    #[tokio::test]
+    async fn packaged_chart_keeps_its_bytes_mime_and_access_checks() {
+        let (app, headers, packaged) = fixture();
+        let plugin = app.root.join(&app.settings().static_dir);
+        let file = "vendor/apexcharts.min.js";
+        assert!(
+            !plugin.join(file).exists(),
+            "the oversized asset must stay outside the plugin"
+        );
+        let response = serve_from(&app, &headers, &plugin, Some(&packaged), file).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            app.settings().mime["js"]
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            body.as_ref(),
+            include_bytes!("../web/static/vendor/apexcharts.min.js")
+        );
+        assert!(body.starts_with(b"/*!\n * ApexCharts v4.7.0"));
+        assert_eq!(
+            serve_from(&app, &HeaderMap::new(), &plugin, Some(&packaged), file)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for path in [
+            "../Cargo.toml",
+            "/vendor/apexcharts.min.js",
+            "vendor/.hidden.js",
+            "vendor/missing.js",
+        ] {
+            assert_eq!(
+                serve_from(&app, &headers, &plugin, Some(&packaged), path)
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+        // WASM/pkg assets have no server-package fallback.
+        assert_eq!(
+            serve_from(&app, &headers, &plugin, None, file)
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_static_files_still_take_precedence() {
+        let (app, headers, packaged) = fixture();
+        let dir = app.root.join(&app.settings().static_dir);
+        let file = &app.settings().index_file;
+        let response = serve_from(&app, &headers, &dir, Some(&packaged), file).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), std::fs::read(dir.join(file)).unwrap());
     }
 }

@@ -15,6 +15,7 @@ bin="$tdir/$triple/release/ah-engine"
 [ -f "$bin" ] || { echo "package.sh: build $triple first ($bin missing)" >&2; exit 1; }
 
 # The Command Center server (ah-web, GH #266) ships in the same archive, next to ah-engine, so `ah-engine web open` finds it.
+# The server-owned disk assets ship under web/static beside that binary (the same relative path as web.static_dir).
 # AH_WEB_BIN overrides the build path; when no binary is there the archive is the engine alone (the engine then reports the server missing).
 webbin="${AH_WEB_BIN:-$root/../ah-web/target/$triple/release/ah-web}"
 [ -f "$webbin" ] || webbin=""
@@ -31,14 +32,21 @@ fi
 
 name="ah-engine-v${version}-${triple}"
 mkdir -p "$out"
-python3 - "$name" "$bin" "$root/../LICENSE" "$root/README.md" "$out/$name.tar.gz" "$webbin" "$hook" <<'PY'
-import gzip, sys, tarfile
-name, bin_, lic, readme, dest, webbin, hook = sys.argv[1:]
+python3 - "$name" "$bin" "$root/../LICENSE" "$root/README.md" "$out/$name.tar.gz" "$webbin" "$hook" "$root/../ah-web/web/static" <<'PY'
+import gzip, os, sys, tarfile
+name, bin_, lic, readme, dest, webbin, hook, webstatic = sys.argv[1:]
 with open(dest, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0, compresslevel=9) as gz, \
      tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
     members = [(f"{name}/ah-engine", bin_, 0o755), (f"{name}/LICENSE", lic, 0o644), (f"{name}/README.md", readme, 0o644)]
     if webbin:
         members.append((f"{name}/ah-web", webbin, 0o755))
+        if not os.path.isdir(webstatic):
+            raise SystemExit(f"package.sh: missing ah-web static directory: {webstatic}")
+        for directory, _, files in os.walk(webstatic):
+            for file in files:
+                source = os.path.join(directory, file)
+                relative = os.path.relpath(source, webstatic)
+                members.append((f"{name}/web/static/{relative}", source, 0o644))
     if hook:
         members.append((f"{name}/ah-hook", hook, 0o755))
     for arc, src, mode in sorted(members):
