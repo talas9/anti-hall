@@ -210,7 +210,8 @@ fn the_prune_advisory_survives_the_prompt_digest_inline() {
     std::fs::write(&transcript, t).unwrap();
     let map = dir.join("map.json");
     std::fs::write(&map, "{}").unwrap();
-    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "d1d1d1d1-0000-4000-8000-000000000001", "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
+    let sid = "d1d1d1d1-0000-4000-8000-000000000001";
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.args(["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()])
         .env_clear()
