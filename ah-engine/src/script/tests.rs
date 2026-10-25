@@ -2140,3 +2140,157 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
     assert!(details.contains("c-1"), "{details}");
 }
+
+// ---- claim-evidence-guard (GH #313): a claim needs a tool call of this turn; pushed is not done ----
+
+mod claim_evidence_guard {
+    use super::*;
+
+    fn assistant(id: &str, text: &str, cmds: &[&str]) -> Value {
+        let mut blocks: Vec<Value> =
+            cmds.iter().enumerate().map(|(i, c)| json!({"type": "tool_use", "id": format!("u{id}{i}"), "name": "Bash", "input": {"command": c}})).collect();
+        blocks.push(json!({"type": "text", "text": text}));
+        json!({"type": "assistant", "message": {"id": id, "role": "assistant", "content": blocks}})
+    }
+
+    fn result(text: &str) -> Value {
+        json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": text}]}})
+    }
+
+    /// One Stop of a fresh session: the transcript is `lines`, the reply is `reply`. Returns the verdict and the home.
+    fn stop(tag: &str, lines: &[Value], reply: &str, extra: &[(&str, &str)], payload_extra: Value) -> (Option<Option<Verdict>>, String) {
+        let h = home(tag);
+        let t = format!("{h}/t.jsonl");
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(&t, body).unwrap();
+        let mut pairs = vec![("HOME".to_string(), h.clone())];
+        pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let mut payload = json!({"transcript_path": t, "session_id": tag, "cwd": h, "last_assistant_message": reply});
+        for (k, v) in payload_extra.as_object().cloned().unwrap_or_default() {
+            payload[k] = v;
+        }
+        (super::super::run_forced("claim-evidence-guard", &payload, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs)), h)
+    }
+
+    fn blocked(v: &Option<Option<Verdict>>) -> Option<String> {
+        match v {
+            Some(Some(Verdict::Exact(x))) if x.code == 0 && x.out.contains("\"decision\":\"block\"") => Some(x.out.clone()),
+            _ => None,
+        }
+    }
+
+    const ALLOW: Option<Option<Verdict>> = Some(Some(Verdict::Allow));
+
+    #[test]
+    fn a_result_claim_with_no_tool_call_this_turn_is_held_once_and_the_message_is_short() {
+        let reply = "All tests pass and the change is done.";
+        let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+        let (v, h) = stop("ce-claim-none", &lines, reply, &[], json!({}));
+        let out = blocked(&v).unwrap_or_else(|| panic!("held: {v:?}"));
+        let reason = serde_json::from_str::<Value>(out.trim()).unwrap()["reason"].as_str().unwrap().to_string();
+        assert!(reason.lines().count() <= 2 && reason.contains("no matching check"), "{reason}");
+        // the same reply again is not held twice
+        let t = format!("{h}/t.jsonl");
+        let p = json!({"transcript_path": t, "session_id": "ce-claim-none", "cwd": h, "last_assistant_message": reply});
+        let again = super::super::run_forced("claim-evidence-guard", &p, &Value::Null, "Stop", &env(&h));
+        assert_eq!(again, ALLOW, "{again:?}");
+    }
+
+    #[test]
+    fn a_test_claim_backed_by_a_runner_this_turn_passes_and_one_backed_by_an_unrelated_command_is_held() {
+        let reply = "All tests pass.";
+        let ok = [
+            json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+            assistant("m1", "", &["cargo test -j4 --lib x"]),
+            result("test result: ok. 3 passed"),
+            assistant("m2", reply, &[]),
+        ];
+        assert_eq!(stop("ce-claim-ran", &ok, reply, &[], json!({})).0, ALLOW);
+        let bad = [
+            json!({"type": "user", "message": {"role": "user", "content": "go"}}),
+            assistant("m1", "", &["ls -la"]),
+            result("total 0"),
+            assistant("m2", reply, &[]),
+        ];
+        assert!(blocked(&stop("ce-claim-ls", &bad, reply, &[], json!({})).0).is_some());
+        // a runner from an EARLIER turn does not back a claim of this one
+        let older = [
+            json!({"type": "user", "message": {"role": "user", "content": "first"}}),
+            assistant("m1", "", &["cargo test"]),
+            result("ok"),
+            assistant("m2", "done", &[]),
+            json!({"type": "user", "message": {"role": "user", "content": "second"}}),
+            assistant("m3", "", &["ls"]),
+            result("a"),
+            assistant("m4", reply, &[]),
+        ];
+        assert!(blocked(&stop("ce-claim-old", &older, reply, &[], json!({})).0).is_some());
+    }
+
+    #[test]
+    fn an_honest_reply_a_plain_reply_a_quote_a_subagent_a_codex_payload_and_a_stop_retry_are_never_held() {
+        let t = |reply: &str, extra: Value| {
+            let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+            stop("ce-honest", &lines, reply, &[], extra).0
+        };
+        assert_eq!(t("Tests pass in my head but I did not run them; unverified.", json!({})), ALLOW);
+        assert_eq!(t("The rename is in; nothing was run.", json!({})), ALLOW);
+        assert_eq!(t("The old line said \"all tests pass\" and was wrong.", json!({})), ALLOW);
+        assert_eq!(t("All tests pass.", json!({"agent_id": "a1", "agent_type": "worker"})), ALLOW);
+        assert_eq!(t("All tests pass.", json!({"turn_id": "t1", "model": "gpt"})), ALLOW);
+        assert_eq!(t("All tests pass.", json!({"stop_hook_active": true})), ALLOW);
+    }
+
+    #[test]
+    fn pushed_then_called_done_without_a_look_at_ci_is_held_and_a_look_or_an_honest_state_passes() {
+        let reply = "Done, it is all in.";
+        let mk = |cmds: &[&str], text: &str| {
+            let mut v = vec![json!({"type": "user", "message": {"role": "user", "content": "go"}})];
+            for (i, c) in cmds.iter().enumerate() {
+                v.push(assistant(&format!("a{i}"), "", &[c]));
+                v.push(result("ok"));
+            }
+            v.push(assistant("z", text, &[]));
+            v
+        };
+        let held = stop("ce-push-held", &mk(&["git commit -m x", "git push origin feat"], reply), reply, &[], json!({})).0;
+        let out = blocked(&held).unwrap_or_else(|| panic!("held: {held:?}"));
+        assert!(out.contains("CI and merge state"), "{out}");
+        assert_eq!(stop("ce-push-looked", &mk(&["git push", "gh run list --limit 3"], reply), reply, &[], json!({})).0, ALLOW);
+        // a look BEFORE the push does not count
+        assert!(blocked(&stop("ce-push-before", &mk(&["gh run list", "git push"], reply), reply, &[], json!({})).0).is_some());
+        let honest = "Pushed and the PR is open; CI is pending, nothing merged. Done on my side.";
+        assert_eq!(stop("ce-push-honest", &mk(&["git push"], honest), honest, &[], json!({})).0, ALLOW);
+        // no push this turn: nothing to check
+        assert_eq!(stop("ce-push-none", &mk(&["ls"], reply), reply, &[], json!({})).0, ALLOW);
+    }
+
+    #[test]
+    fn each_rule_has_its_own_switch_and_log_mode_never_blocks() {
+        let push = "Done.";
+        let lines = |cmds: &[&str], text: &str| {
+            let mut v = vec![json!({"type": "user", "message": {"role": "user", "content": "go"}})];
+            for (i, c) in cmds.iter().enumerate() {
+                v.push(assistant(&format!("a{i}"), "", &[c]));
+                v.push(result("ok"));
+            }
+            v.push(assistant("z", text, &[]));
+            v
+        };
+        assert_eq!(stop("ce-sw2", &lines(&["git push"], push), push, &[("ANTIHALL_PUSHED_NOT_DONE", "false")], json!({})).0, ALLOW);
+        assert!(blocked(&stop("ce-sw2-on", &lines(&["git push"], push), push, &[("ANTIHALL_CLAIM_EVIDENCE", "false")], json!({})).0).is_some());
+        let claim = "All tests pass.";
+        assert_eq!(stop("ce-sw1", &lines(&[], claim), claim, &[("ANTIHALL_CLAIM_EVIDENCE", "false")], json!({})).0, ALLOW);
+    }
+
+    #[test]
+    fn a_stop_with_no_claim_stays_inside_the_stop_latency_bar() {
+        let reply = "Renamed the function and updated its two callers.";
+        let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &["sed -i x y"])];
+        let _ = stop("ce-lat-warm", &lines, reply, &[], json!({}));
+        let started = std::time::Instant::now();
+        let (v, _) = stop("ce-lat", &lines, reply, &[], json!({}));
+        assert_eq!(v, ALLOW);
+        assert!(started.elapsed() < std::time::Duration::from_millis(20), "{:?}", started.elapsed());
+    }
+}
