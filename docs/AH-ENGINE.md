@@ -115,6 +115,11 @@ labelled with how it was measured in the README of `ah-engine/`.
   whose decision needs a running-agent scan, to the Node hook (D74). `task-tracker` (UserPromptSubmit) stays on Node: its
   output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
   other lanes' ports.
+- **Task-list hygiene.** `tasklist-hygiene` (PostToolUse and PreToolUse on `TaskCreate`/`TaskUpdate`, Claude only: Codex has no task
+  tools or task hook events) is an engine-only script. After a task is marked completed it tells the agent, in one line, to log the
+  outcome to the history ledger and delete the task; a subject over `handover.taskSubjectMax` or open tasks over
+  `handover.taskListBudget` get one advisory line with the numbers. `handover.taskListEnforce` (`off`, `advisory` default, `block`)
+  escalates the same breaches to refusing the call; `handover.taskDoneNote` switches the done line. Texts: `task_guards.toml`.
 - **DevSwarm role ports.** `devswarm-child-role` (SessionStart) and `devswarm-parent-gate` (Stop) share
   `checks/devswarm_role`. The Stop gate is a guard, so it is never weaker than Node (D74): the engine allows only where
   the Node hook exits silently before reading any mailbox (switch off, user skip, supervisor inactive, a child

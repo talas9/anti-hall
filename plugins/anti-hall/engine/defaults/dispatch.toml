@@ -532,6 +532,7 @@ value = [
   { id = "orch-on-spawn", matcher = "Agent|Task|Workflow", timeout = 10, check = "orch-on-spawn" },
   { id = "devswarm-comms-guard", matcher = "SendMessage", timeout = 10, check = "devswarm-comms-guard" },
   { id = "ask-guard", matcher = "AskUserQuestion", timeout = 10, check = "ask-guard" },
+  { id = "tasklist-hygiene", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "stale-agent-stop-note", matcher = "TaskStop", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", timeout = 10, check = "engine-role-guard" },
@@ -555,6 +556,7 @@ value = [
   { id = "coordinator-work-guard:post", matcher = "Bash", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", timeout = 10, check = "codex-quota-detect" },
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "dispatch-tier" },
+  { id = "tasklist-hygiene:post", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
 ]
 
