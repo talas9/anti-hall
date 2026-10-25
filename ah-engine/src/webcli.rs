@@ -182,11 +182,11 @@ mod tests {
 
     #[test]
     fn browser_passes_web_url_as_one_literal_argument() {
-        let argv = ["open", "--background"];
+        let argv = ["open", "--help"];
         for url in ["http://127.0.0.1:1234/", "https://example.com/?x=$(id);&q=`id`", "https://[::1]:1234/"] {
             let cmd = browser_command(url, &argv).expect("valid web URL");
             assert_eq!(cmd.get_program(), "open");
-            assert_eq!(cmd.get_args().collect::<Vec<_>>(), vec!["--background", url]);
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), vec!["--help", url]);
         }
     }
 }
