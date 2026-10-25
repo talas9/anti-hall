@@ -338,7 +338,7 @@ New capability goes into the engine, not into new Node code in the plugin (D80).
 
 ## Branches and pull requests
 
-- `dev` is the working branch. Pushes to `dev` run no CI, so run `cargo check` and a release build of what you touched before pushing.
+- `dev` is the working branch. Pushes to `dev` run only the path-filtered `ah-engine` workflow and `privacy-scan`, so run `cargo check` and a release build of what you touched before pushing.
 - `main` is what users and the plugin directory install from. It changes only through a pull request from `dev`; a ruleset blocks direct pushes. A pull request to `main` from any other branch fails the required `dev-only` check.
 - **Contributors open pull requests against `dev`.** The engine prototype lives on `engine-proto` and goes to `dev` by pull request when a phase is done and tested (D55).
 - Never force-push. Commit messages are conventional (`fix(area): ...`, `feat(area): ...`, `docs: ...`) with no AI-credit lines ([CONTRIBUTING.md](../CONTRIBUTING.md)).

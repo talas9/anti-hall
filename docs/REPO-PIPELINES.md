@@ -13,10 +13,10 @@ maintainers live in the
 
 ```text
 short-lived branch ──► dev ──► pull request ──► main ──► tag vX.Y.Z ──► GitHub Release
-                     (no CI)   (required checks)  (docs deploy)  (immutable)
+                     (path CI) (required checks)  (docs deploy)  (immutable)
 ```
 
-- Work lands on `dev`. Pushes to `dev` run no CI, so the local test suite is the gate.
+- Work lands on `dev`. Pushes to `dev` run only the path-filtered engine workflow and the privacy scan, so the local test suite is the gate.
 - `main` changes only through a pull request from `dev`. Merging that pull request is the
   release, and the docs site deploys from it.
 - Release tags (`vX.Y.Z`, `ah-engine-vX.Y.Z`) are immutable: they are never moved or
