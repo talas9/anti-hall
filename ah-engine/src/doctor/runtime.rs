@@ -287,7 +287,7 @@ pub fn daemon_section(doc: &mut Doc) {
             doc.ok(defaults::render("doctor_msg.daemon_up", &[("reply", &js_trim(r))]));
             let status = crate::client::ctl_json("status");
             // #312: an answer of an essential reminder (diagnostics.shed_never) that was shed is a delivery failure the owner should see
-            let essential_shed = status.as_ref().and_then(|st| st["delivery"]["essential_shed"].as_u64()).unwrap_or(0);
+            let essential_shed = status.as_ref().and_then(|st| st.pointer("/delivery/essential_shed").and_then(serde_json::Value::as_u64)).unwrap_or(0);
             if essential_shed > 0 {
                 doc.warnl(defaults::render("doctor_msg.delivery_shed", &[("n", &essential_shed)]));
             }

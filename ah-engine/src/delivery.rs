@@ -113,6 +113,17 @@ pub fn observe_tool(t: &Telemetry, session: &str, tool: &str) {
     }
 }
 
+/// One check's counts of every stage.
+#[derive(Default)]
+struct Row {
+    decided: u64,
+    delivered: u64,
+    complied: u64,
+    ignored: u64,
+    shed: u64,
+    lost: u64,
+}
+
 /// The ledger as `status` shows it: per check the counts of every stage (a stage never reached is 0; `complied` and `ignored` are
 /// `null` for a check with no `delivery.react` row), and the spills per event.
 pub fn status(t: &Telemetry) -> serde_json::Value {
@@ -125,26 +136,33 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         defaults::text("delivery.stage_ignored"),
     );
     let shed = defaults::text("delivery.reason_shed");
-    let mut checks: std::collections::BTreeMap<String, [u64; 6]> = std::collections::BTreeMap::new();
+    let mut checks: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
     let mut spills = Map::new();
     let mut pinned_spills = 0u64;
-    for c in snap["counters"].as_array().into_iter().flatten() {
-        let (label, n) = (|k: &str| c["labels"][k].as_str().unwrap_or_default().to_string(), c["value"].as_u64().unwrap_or(0));
-        match c["name"].as_str().unwrap_or_default() {
+    let counters = snap.get("counters").and_then(Value::as_array).cloned().unwrap_or_default();
+    for c in &counters {
+        let label = |k: &str| c.get("labels").and_then(|l| l.get(k)).and_then(Value::as_str).unwrap_or_default().to_string();
+        let n = c.get("value").and_then(Value::as_u64).unwrap_or(0);
+        match c.get("name").and_then(Value::as_str).unwrap_or_default() {
             "delivery_stage" => {
-                let row = checks.entry(label("check")).or_default();
                 let s = label("stage");
                 let slot = [decided, delivered, complied, ignored].iter().position(|w| *w == s);
-                if let Some(i) = slot {
-                    row[i] += n;
+                let row = checks.entry(label("check")).or_default();
+                match slot {
+                    Some(0) => row.decided += n,
+                    Some(1) => row.delivered += n,
+                    Some(2) => row.complied += n,
+                    Some(3) => row.ignored += n,
+                    _ => {}
                 }
             }
             "delivery_lost" => {
+                let shed_reason = label("reason") == shed;
                 let row = checks.entry(label("check")).or_default();
-                if label("reason") == shed {
-                    row[4] += n;
+                if shed_reason {
+                    row.shed += n;
                 } else {
-                    row[5] += n;
+                    row.lost += n;
                 }
             }
             "context_spills" => {
@@ -161,14 +179,15 @@ pub fn status(t: &Telemetry) -> serde_json::Value {
         .into_iter()
         .map(|(check, r)| {
             let measured = react_tools(&check).is_some();
+            let (dec, del, com, ign, shd, lost) = (r.decided, r.delivered, r.complied, r.ignored, r.shed, r.lost);
             if never.contains(&check.as_str()) {
-                essential_shed += r[4];
+                essential_shed += shd;
             }
             let row = json!({
-                "decided": r[0], "delivered": r[1],
-                "complied": if measured { json!(r[2]) } else { Value::Null },
-                "ignored": if measured { json!(r[3]) } else { Value::Null },
-                "shed": r[4], "lost": r[5],
+                "decided": dec, "delivered": del,
+                "complied": if measured { json!(com) } else { Value::Null },
+                "ignored": if measured { json!(ign) } else { Value::Null },
+                "shed": shd, "lost": lost,
             });
             (check, row)
         })

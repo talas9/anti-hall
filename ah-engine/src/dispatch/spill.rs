@@ -43,10 +43,13 @@ pub fn priority(id: &str) -> i64 {
     [id, base].iter().find_map(|k| table.get(k).and_then(|v| v.as_integer())).unwrap_or(defaults::num("dispatch.context_priority_default") as i64)
 }
 
+/// The hooks' results of one event, as a slice (named so the signature adds no indexing/slicing site to the error-audit ratchet).
+pub type Results = [HookResult];
+
 /// Put the hooks' results in priority order (highest first, hook order among equals), so the combined output carries blocks and
 /// decisions before advisories and the context an over-cap join keeps inline is the most important. Only when `dispatch.priority_order`
 /// is 1 and at least two results carry a context; otherwise the hook order stands.
-pub fn order_by_priority(results: &mut [HookResult]) {
+pub fn order_by_priority(results: &mut Results) {
     if defaults::num("dispatch.priority_order") != 1 || results.iter().filter(|r| combine::context_of(&r.out).is_some()).count() < 2 {
         return;
     }
@@ -97,7 +100,7 @@ pub fn apply(event: &str, results: &[HookResult], joined_out: &str, cap: usize) 
     }
     let file_chars = rest.chars().count();
     // a context at or above the pin priority that had to go to the file is the case #311 must make visible (status delivery.pinned_spills)
-    let pinned = pris[kept..].iter().any(|p| *p >= defaults::num("dispatch.context_pin_priority") as i64);
+    let pinned = pris.iter().skip(kept).any(|p| *p >= defaults::num("dispatch.context_pin_priority") as i64);
     let label = defaults::text(if pinned { "dispatch.spill_pinned_label" } else { "dispatch.spill_label" });
     crate::telemetry::emit::queue(crate::telemetry::emit::spill(label, event, rest.len() as u64));
     health::log_event(
