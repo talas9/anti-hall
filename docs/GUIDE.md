@@ -1405,6 +1405,10 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `context.injectGateCommsEvery` adv | `30` [1..] | `ANTIHALL_INJECT_GATE_COMMS_EVERY` | Turns between keepalives of the unchanged comms-override line. |
 | `context.injectGateSwarm` | `true` | `ANTIHALL_INJECT_GATE_SWARM` | Cut 4: swarm-guard's shared-tree advisory when new or changed, and again only after N turns. |
 | `context.injectGateSwarmEvery` adv | `20` [1..] | `ANTIHALL_INJECT_GATE_SWARM_EVERY` | Turns between repeats of an unchanged shared-tree advisory. |
+| `context.shrinkInline` | `true` | `ANTIHALL_CONTEXT_SHRINK` | Per-hook inline caps at SessionStart: a hook context over its cap becomes a one-line summary plus the path of a file with the full text (nothing is cut). false = every context is sent whole. |
+| `context.inlineHookChars` adv | `1500` [0..] | `ANTIHALL_CONTEXT_INLINE_HOOK` | Characters one hook may inject inline at SessionStart before it becomes a summary plus a file; 0 = no per-hook cap. |
+| `context.inlineEventChars` adv | `6000` [0..] | `ANTIHALL_CONTEXT_INLINE_EVENT` | Characters all hooks of one SessionStart may inject inline together; the largest shrinkable contexts become a summary plus a file until it fits; 0 = no total. |
+| `context.protocolOnce` | `true` | `ANTIHALL_PROTOCOL_ONCE` | Send the verify-first protocol text once per session: the whole compact text at a fresh start, a short digest after a compaction or resume. false = the whole text at every start. |
 | `maintenance.repairOnReload` | `true` | `ANTIHALL_REPAIR_ON_RELOAD` | repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update. |
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |

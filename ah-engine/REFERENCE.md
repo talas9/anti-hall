@@ -345,7 +345,7 @@ Rule fields (JSON): `id`, `events`, `tools`, `field`, `pattern` (regex), `check`
 | `compact-declaration-guard` | Allows new work unless the current turn may hold a SAFE TO COMPACT declaration; a possible declaration defers to the Node guard, which decides and blocks. |
 | `command` | command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook. |
 | `model-routing` | Anti-waste Agent/Task model routing: blocks execution-shaped flagship or inherited generic spawns and advises on routing mismatches. |
-| `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals and repeats within a turn. |
+| `failure-root-cause-nudge` | Advisory after a failed Bash call: trace the cause before patching; silent for expected exit-1 predicates, interrupts, harness refusals, a shell glob/echo artefact beside output that printed fine, and repeats within a turn. |
 | `git-audit` | Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer. |
 | `verify-first-subagent` | SubagentStart context: injects the verify-first protocol (compact, or full when context.protocolLevel is full) into every spawned subagent. |
 | `verify-first-full` | SessionStart context: injects the verify-first protocol and discipline index for the session, Claude or Codex text. |
@@ -2023,15 +2023,19 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `failure_nudge.artifact_line` | `^(?:-?(?:zsh\|bash\|sh\|ksh\|dash)):\s*(?:\d+:\s*)?(?:no matches found\|no match)\b` |  |  | Regex source (JavaScript syntax) of a line that is only the shell's complaint about a glob that matched nothing (zsh `no matches found`, `no match`), not a failure of the command itself. A failure whose error text holds such a line, other non-empty output and no error_marker word printed fine. |
 | `failure_nudge.cmd_close` | ``)` |  |  | Text after the shown command in the advisory headline. |
 | `failure_nudge.cmd_open` | ` (`` |  |  | Text before the shown command in the advisory headline. |
 | `failure_nudge.ellipsis` | `…` |  |  | Text appended to a cut command. |
+| `failure_nudge.error_marker` | `\b(?:error\|errors\|fatal\|failed\|failure\|traceback\|exception\|panic\|panicked\|den...` |  |  | Regex source (JavaScript syntax, case-insensitive) of the words that make a line of output an error: a failure whose other output holds one is not harmless and is nudged. |
 | `failure_nudge.event` | `PostToolUseFailure` |  |  | The hook event name in the advisory's output. |
 | `failure_nudge.filter_setting` | `6 entries` |  |  | Where the noise-filter switch is read from (guards.failureNudgeFilter, default on). |
 | `failure_nudge.gate_key` | `failure-root-cause-nudge` |  |  | The turn-gate key under which the once-per-turn state of this advisory is kept. |
 | `failure_nudge.guard_name` | `failure-root-cause-nudge` |  |  | The skip.json key that silences this hook. |
+| `failure_nudge.harmless_setting` | `6 entries` |  |  | Where the harmless-failure switch is read from (guards.failureNudgeHarmless, default on): stay silent when the only error text is a shell glob or echo artefact and the call's real output printed fine. |
 | `failure_nudge.max_cmd_len` | `80` |  |  | Longest command text, in UTF-16 units, shown in the advisory before it is cut. |
 | `failure_nudge.message_guard` | `root-cause` |  |  | The guard label shown in the advisory. |
+| `failure_nudge.min_output_lines` | `1` |  |  | Non-empty lines of output, besides the glob complaint, a failure must have printed to count as harmless. |
 | `failure_nudge.msg_instead` | `trace the failure before retrying or patching.` |  |  | Advisory advice. |
 | `failure_nudge.msg_what` | `this command failed{cmd}.` |  |  | Advisory headline; {cmd} is the shown command part or empty. |
 | `failure_nudge.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.failureRootCauseNudge, default on). |
@@ -2360,6 +2364,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `orch_state.auto_mode` | `spawn` |  |  | What context.orchFullOn = auto means: `spawn` (the default) sends the compact orchestration text at the start and the full rules once, on the coordinator's first spawn, per context epoch; `session` sends the full rules (about 7.6k characters) at every start, resume and compaction. A session that cannot be proven to run under Claude Code (no spawn marker possible) always gets `session`. |
 | `orch_state.codex_orch_full_on_setting` | `7 entries` |  |  | Where the Codex delivery mode of the full orchestration rules is read from (context.codexOrchFullOn). |
 | `orch_state.decisions` | `pending, none` |  |  | The decisions a marker may hold: the first is the one meaning the full text is still owed to the first spawn. |
 | `orch_state.dir` | `orch-full` |  |  | Directory of the orchestration markers and claims, relative to the state root. |
@@ -2948,14 +2953,21 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `verify_first.codex_transcript_patterns` | `(^\\|[\\/])rollout-[^\\/]*\.jsonl$, [\\/]\.codex[\\/]` |  |  | Regexes (JavaScript syntax) over transcript_path that mark a Codex payload: a rollout file name, or a .codex directory. |
 | `verify_first.compact_session` | `ANTI-HALL VERIFY-FIRST (re-sent at session start and after compaction). Full ...` |  |  | The compact SessionStart protocol; each <abs> is replaced by the plugin root directory (coreCompactSession). |
 | `verify_first.compact_subagent` | `ANTI-HALL VERIFY-FIRST. Full protocol: <abs>/PROTOCOL.md - Read it when a rul...` |  |  | The compact subagent protocol before the WORKER line; each <abs> is replaced by the plugin root directory (coreCompactSubagent). |
+| `verify_first.delivery_dir` | `vf-delivery` |  |  | Directory of the per-session protocol delivery records, under script.write_root. |
+| `verify_first.delivery_prefix` | `vf` |  |  | File-name prefix of a delivery record. |
+| `verify_first.fresh_sources` | `startup, clear, ` |  |  | SessionStart sources (the payload's `source`) that begin with an empty context: the whole compact text is sent. |
 | `verify_first.full_claude` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The verify-first protocol a Claude session receives at SessionStart when context.protocolLevel is full (verify-first-core.js CORE_FULL then DISCIPLINES_INDEX, joined by newlines, byte for byte). |
 | `verify_first.full_codex` | `VERIFY-FIRST + ROOT-CAUSE PROTOCOL (re-stated so it survives context growth a...` |  |  | The same full text for a Codex session (DISCIPLINES_INDEX_CODEX in place of DISCIPLINES_INDEX). |
 | `verify_first.guard_subagent` | `verify-first-subagent` |  |  | The guard id verify-first-subagent answers to in skip.json. |
 | `verify_first.judge_child_env` | `2 entries` |  |  | Environment variable that marks the headless judge child; a hook that runs in it prints nothing. |
 | `verify_first.mn_line` | `M/N. Workers do not re-delegate; read-only research -> Explore; 3+ parallel/n...` |  |  | The model-routing and no-re-delegation line the compact SessionStart text gains when the orchestration hook is switched off (Claude). |
 | `verify_first.mn_line_codex` | `M/N. Workers do not re-delegate; read-only research -> a read-only sub-agent;...` |  |  | The same line for a Codex session. |
+| `verify_first.repeat_session` | `ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculatio...` |  |  | The one line sent when the session was already served the protocol and this start is neither fresh nor a compaction or resume; each <abs> is replaced by the plugin root directory. |
+| `verify_first.resend_session` | `ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was...` |  |  | The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory. |
+| `verify_first.resend_sources` | `compact, resume` |  |  | SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat. |
 | `verify_first.root_probe` | `hooks/install.sh` |  |  | File under the plugin root whose real location gives the plugin root (the directory two levels above it, symbolic links resolved). A file that stays in the published plugin, never a moved Node file. |
 | `verify_first.setting_level` | `5 entries` |  |  | Where the protocol size is read from (context.protocolLevel: compact or full, default compact). |
+| `verify_first.setting_once` | `6 entries` |  |  | Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start. |
 | `verify_first.setting_orchestration` | `6 entries` |  |  | Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself. |
 | `verify_first.setting_session` | `6 entries` |  |  | Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on). |
 | `verify_first.setting_subagent` | `6 entries` |  |  | Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on). |
@@ -3314,6 +3326,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.task_long_prefix` | `💡 anti-hall · task-tracker: capture EVERY user request` |  |  | How the long task-tracker directive starts (it is always passed on and restarts the short reminder's turn count). |
 | `inject_gate.task_short` | `💡 anti-hall · task-tracker: capture every request as a priority-sorted task; ...` |  |  | The exact short task-tracker reminder the task-tracker hook prints on a turn that is not the long form (a test keeps it equal to the Node text). |
 | `inject_gate.ups_event` | `UserPromptSubmit` |  |  | The event whose dispatch counts as one turn of the session. |
+
+### context_size.toml / context_size
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `context_size.ellipsis` | `…` |  |  | Appended to a summary that was cut. |
+| `context_size.events` | `SessionStart` |  |  | The hook events whose contexts are capped: the ones that fire at every start, resume and compaction. |
+| `context_size.file` | `{event}-full-{ts}-{pid}-{seq}.txt` |  |  | File name of the full texts of one event (in dispatch.spill_dir, mode 0600, swept like the other spill files). Placeholders: {event}, {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads). |
+| `context_size.hook_caps` | `1 entries` |  |  | Per hook entry id, the inline cap in characters that replaces context_size.num_hook_cap (0 = no per-hook cap for that hook). The DevSwarm comms manual is reference text that the full mesh help also prints. |
+| `context_size.msg_ref` | `{summary}\n[anti-hall: full text, {chars} characters, in {path} - Read it bef...` |  |  | What a shrunk context becomes. Placeholders: {summary} the first line, {chars} the size of the full text, {path} the file that holds it. |
+| `context_size.msg_shrunk` | `{hooks} hook context(s) shrunk: {before} characters became {after} inline, th...` |  |  | Event-log detail after contexts were replaced by summaries. Placeholders: {hooks}, {before}, {after} (characters), {path}. |
+| `context_size.never` | `verify-first-full, verify-first-orch, handover-resume, engine-role-note` |  |  | Dispatch entry ids (a variant suffix is ignored) whose context is never shrunk: behavioural blocks that size themselves (the verify-first protocol and orchestration rules, delivered once per session or on the first spawn) and the handover resume steps, which are the task. |
+| `context_size.num_event_cap` | `6 entries` |  |  | Characters all hooks of one event may take inline together (context.inlineEventChars; 0 = no total). Over it, the largest shrinkable contexts become a summary line plus a file until the event fits. The host's own inline cap is dispatch.context_cap; this is the lower, token-oriented budget. |
+| `context_size.num_hook_cap` | `6 entries` |  |  | Characters one hook's context may take inline at the events in context_size.events before it becomes a summary line plus a file (context.inlineHookChars; 0 = no per-hook cap, only the event total applies). context_size.hook_caps overrides it per hook entry. |
+| `context_size.path_reserve` | `150` |  |  | Characters reserved for the file path in the size estimate of a shrunk context. |
+| `context_size.section_head` | `== {id} ==\n` |  |  | Heading before each hook's full text in that file. Placeholder: {id}. |
+| `context_size.summary_chars` | `280` |  |  | Longest summary line a shrunk context keeps inline: its first line, cut at a word end. |
+| `context_size.sw_enabled` | `5 entries` |  |  | Master switch of the per-hook inline caps (context.shrinkInline, default on): off sends every hook's context whole, as before. |
 
 ### session.toml / session
 
@@ -5281,7 +5311,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `352 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `358 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7686,7 +7716,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `352 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `358 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8825,10 +8855,13 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.cooldown_s` | `7 entries` |  |  | Least time before the same process (or the same system warning) is named again (resourceWatch.cooldownSeconds). |
 | `resource_watch.cpu_pct` | `7 entries` |  |  | Warn when a process of a live session averages at least this much CPU (per-core percent, 100 = one core) over the whole window (resourceWatch.cpuPercent). |
 | `resource_watch.cpu_window_s` | `7 entries` |  |  | The window a CPU reading must hold for, in seconds (resourceWatch.cpuWindowSeconds); the sampling interval is schedule.procwatch_ms. |
+| `resource_watch.free_ram_ok_pct` | `7 entries` |  |  | Free RAM, in percent of physical memory, at or above which swap in use is NOT an alarm (resourceWatch.freeRamOkPercent; 0 = swap alone decides, the old behaviour). The OS parks idle pages in swap long before it is short of memory, so a large swap figure beside plenty of free RAM is normal. Free RAM is the macOS kernel's own free percentage (the figure `memory_pressure` prints) and Linux MemAvailable; where it is not known the swap threshold alone decides. |
 | `resource_watch.impact_kind` | `resource_warning` |  |  | Impact kind recorded for every resource warning. |
 | `resource_watch.keep_s` | `3600` |  | s | A warning stays in the report this long, so a session that starts or prompts later still sees it once. |
+| `resource_watch.mac_free_pct_sysctl` | `kern.memorystatus_level` |  |  | The macOS sysctl name of the free memory percentage (the figure `memory_pressure` prints as the system-wide memory free percentage). |
 | `resource_watch.mac_pressure_level` | `7 entries` |  |  | Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off). |
 | `resource_watch.mac_pressure_sysctl` | `kern.memorystatus_vm_pressure_level` |  |  | The macOS sysctl name of the memory pressure level. |
+| `resource_watch.mac_ram_total_sysctl` | `hw.memsize` |  |  | The macOS sysctl name of the physical memory size, in bytes. |
 | `resource_watch.mac_swap_sysctl` | `vm.swapusage` |  |  | The macOS sysctl name of the swap usage record. |
 | `resource_watch.max_tracked` | `256` |  |  | The most processes whose CPU history is kept (the busiest first); the rest are not tracked. |
 | `resource_watch.mem_mb` | `7 entries` |  |  | Warn when a process of a live session holds at least this much memory, in MB (resourceWatch.memoryMb). |
@@ -8838,9 +8871,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `resource_watch.msg_instead` | `check whether the resource use is expected.` |  |  | What to do. |
 | `resource_watch.msg_mem_limit` | `{mb} MB` |  |  | Memory threshold text; {mb} MB. |
 | `resource_watch.msg_mem_usage` | `{mb} MB memory` |  |  | Memory usage text; {mb} MB. |
-| `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit})` |  |  | System memory pressure line; {value} the reading, {limit} the threshold. |
+| `resource_watch.msg_pressure` | `system memory pressure is {value} (threshold {limit}){ram}` |  |  | System memory pressure line; {value} the reading, {limit} the threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known). |
 | `resource_watch.msg_proc_what` | `pid {pid} ({name}, session {session}) is using {usage}; threshold {limit}` |  |  | Process warning line; {name} the command, {pid}, {session} the session pid, {usage} what it uses, {limit} the threshold. |
-| `resource_watch.msg_swap` | `system swap in use is {used} MB (threshold {limit} MB)` |  |  | System swap line; {used} MB in use, {limit} MB threshold. |
+| `resource_watch.msg_ram` | `; free RAM {free_mb} MB of {total_mb} MB ({free_pct}%)` |  |  | The free-RAM figure appended to a system line; {free_mb} MB free of {total_mb} MB, {free_pct} percent. |
+| `resource_watch.msg_swap` | `system swap in use is {used} MB (threshold {limit} MB){ram}` |  |  | System swap line; {used} MB in use, {limit} MB threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known). |
 | `resource_watch.msg_what` | `Resource use is high: {list}.` |  |  | Advisory first line; {list} the findings joined. |
 | `resource_watch.msg_why` | `A runaway process slows every session on this machine and can push it into swap.` |  |  | Why it matters. |
 | `resource_watch.percent_base` | `100` |  |  | The whole in a percentage. |

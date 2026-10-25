@@ -81,6 +81,34 @@ value = { section = "context", key = "verifyFirstSubagent", env = "", aliases = 
 doc = "Where the on/off switch of verify-first-full is read from (context.verifyFirstSession, default on)."
 value = { section = "context", key = "verifyFirstSession", env = "", aliases = [], option = "context_verify_first_session", default = true }
 
+[verify_first.setting_once]
+doc = "Where the once-per-session switch of the protocol text is read from (context.protocolOnce, default on): the whole compact text goes out at a fresh start; after a compaction or resume only a short digest, and a repeated start in the same session one line. false = the whole text at every start."
+value = { section = "context", key = "protocolOnce", env = "ANTIHALL_PROTOCOL_ONCE", aliases = [], option = "", default = true }
+
+[verify_first.delivery_dir]
+doc = "Directory of the per-session protocol delivery records, under script.write_root."
+value = "vf-delivery"
+
+[verify_first.delivery_prefix]
+doc = "File-name prefix of a delivery record."
+value = "vf"
+
+[verify_first.fresh_sources]
+doc = "SessionStart sources (the payload's `source`) that begin with an empty context: the whole compact text is sent."
+value = ["startup", "clear", ""]
+
+[verify_first.resend_sources]
+doc = "SessionStart sources after which the earlier text is gone or buried (the session was compacted or resumed): the short digest is sent. Any other source of an already-served session gets the one-line repeat."
+value = ["compact", "resume"]
+
+[verify_first.resend_session]
+doc = "The short protocol digest sent after a compaction or resume; each <abs> is replaced by the plugin root directory."
+value = "ANTI-HALL VERIFY-FIRST (re-sent after compaction or resume; the full text was delivered earlier this session). Full protocol: <abs>/PROTOCOL.md - Read it when a rule is unclear.\nIRON LAW - NO SPECULATION: no claim without evidence; no fix without a proven root cause. An inference (cause, attribution, metric reading, tidy story) is a claim, not a fact: verify it with a tool or say it is unverified. \"probably\", \"should work\", \"seems to\", \"likely\", \"I suspect\" are guesses - read/run/query it, or say \"I don't know\".\nDONE = checked THIS turn against the agreed acceptance criteria, output shown. State what you did, skipped and failed; label claims / [inference] / [assumption]."
+
+[verify_first.repeat_session]
+doc = "The one line sent when the session was already served the protocol and this start is neither fresh nor a compaction or resume; each <abs> is replaced by the plugin root directory."
+value = "ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculation, no fix without a proven root cause; full protocol: <abs>/PROTOCOL.md"
+
 [verify_first.setting_orchestration]
 doc = "Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself."
 value = { section = "context", key = "verifyFirstOrchestration", env = "", aliases = [], option = "context_verify_first_orchestration", default = true }

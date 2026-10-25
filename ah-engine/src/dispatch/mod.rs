@@ -28,6 +28,7 @@ pub mod inject;
 pub mod native;
 pub mod node;
 pub mod plan;
+pub mod shrink;
 pub mod spill;
 pub mod stoploop;
 pub mod table;
@@ -843,6 +844,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
+    shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
     match combine::combine_for(&results, keep_advisories) {

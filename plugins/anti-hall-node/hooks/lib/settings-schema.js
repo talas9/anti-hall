@@ -232,6 +232,10 @@ const SECTIONS = [
       { key: 'injectGateCommsEvery', type: 'number', min: 1, default: 30, env: 'ANTIHALL_INJECT_GATE_COMMS_EVERY', advanced: true, description: 'Turns between keepalives of the unchanged comms-override line. [read by: ah-engine src/dispatch/inject.rs]' },
       { key: 'injectGateSwarm', type: 'boolean', default: true, env: 'ANTIHALL_INJECT_GATE_SWARM', description: 'Token cut 4: swarm-guard\'s shared-tree advisory is injected when new or changed, and again only after context.injectGateSwarmEvery turns. [read by: ah-engine src/dispatch/inject.rs]' },
       { key: 'injectGateSwarmEvery', type: 'number', min: 1, default: 20, env: 'ANTIHALL_INJECT_GATE_SWARM_EVERY', advanced: true, description: 'Turns between repeats of an unchanged shared-tree advisory. [read by: ah-engine src/dispatch/inject.rs]' },
+      { key: 'shrinkInline', type: 'boolean', default: true, env: 'ANTIHALL_CONTEXT_SHRINK', description: 'Per-hook inline caps at SessionStart: a hook context over its cap becomes a one-line summary plus the path of a file with the full text (nothing is cut). false = every context is sent whole. [read by: ah-engine dispatcher]' },
+      { key: 'inlineHookChars', type: 'number', min: 0, default: 1500, env: 'ANTIHALL_CONTEXT_INLINE_HOOK', advanced: true, description: 'Characters one hook may inject inline at SessionStart before it becomes a summary plus a file; 0 = no per-hook cap. [read by: ah-engine dispatcher]' },
+      { key: 'inlineEventChars', type: 'number', min: 0, default: 6000, env: 'ANTIHALL_CONTEXT_INLINE_EVENT', advanced: true, description: 'Characters all hooks of one SessionStart may inject inline together; the largest shrinkable contexts become a summary plus a file until it fits; 0 = no total. [read by: ah-engine dispatcher]' },
+      { key: 'protocolOnce', type: 'boolean', default: true, env: 'ANTIHALL_PROTOCOL_ONCE', description: 'Send the verify-first protocol text once per session: the whole compact text at a fresh start, a short digest after a compaction or resume. false = the whole text at every start. [read by: ah-engine verify-first-full]' },
     ],
   },
   {
