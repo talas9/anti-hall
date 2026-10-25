@@ -38,6 +38,25 @@ test(/^(no_hardcoded_tunables|no_compiled_config|compiled_logic_gate|process_env
 | binary(no_node) | binary(error_audit_ratchet) | binary(script_cut_knob)
 '''
 
+# The `quick` pack: the PR-into-dev gate (ah-engine.yml job `quick`, target a few minutes). It is the `lane` base (no Node parity lanes, benches,
+# soak or wall-clock drills) minus the groups that spawn daemons by the hundred or measure the machine: dispatch_e2e, session_e2e, reliability
+# and its drills, the memory measurement tests, the soak, watch_bench, the DevSwarm scale budget test, the no_node harness, and the
+# heavy-sweeps tests the lane regexes do not name. All of it still runs in the full pack (a PR into main, a push to main, the nightly,
+# a manual dispatch, or a PR into dev labelled `full-ci`). The policy gates (mem_guard included), the deterministic unit and invariant
+# tests and the script goldens stay in. `cargo nextest list --profile quick` shows the result.
+[profile.quick]
+inherits = "default"
+slow-timeout = { period = "60s", terminate-after = 5 }
+retries = 0
+default-filter = '''
+not (test(/parity/) | test(/matches_node|match_node|_node_answer|node_silence|what_node_does|node_and_engine/)
+| binary(/parity|^mesh_|^devswarm_(l8|ds|cli)|^dssup_recon|^no_node|^mem_(measure|reload)|watch_bench|script_latency|telemetry_overhead|^memory_soak|hardening_bar/)
+| test(/^(reliability|crashloop_drill|fail_closed_matrix|spool|schedule|dispatch_e2e|session_e2e|mem_measure[a-z_]*|mem_restart_e2e|mem_reload|memory_soak)::/)
+| test(the_thread_stays_inside_its_budget_at_scale) | test(every_guard_event_fails_closed) | test(a_seeded_combination_fuzz)
+| test(no_defaults_text_is_embedded) | test(verify_first_through_the_dispatcher)
+| test(session_end_mcp_reaper_script_matches_the_compiled_port))
+'''
+
 # The lane base: every test except the Node parity lanes (a name or a binary that says parity or matches_node), the mesh / devswarm / dssup
 # parity binaries, the benches, the memory soak and the wall-clock drills (reliability, crashloop_drill, fail_closed_matrix, spool, schedule),
 # which the `dev` and `release` packs cover. Narrow it with -E 'test(~module)'; `--ignore-default-filter` runs a named heavy test anyway.
