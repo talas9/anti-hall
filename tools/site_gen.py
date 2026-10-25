@@ -25,7 +25,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SCHEMA = ROOT / "plugins" / "anti-hall" / "hooks" / "lib" / "settings-schema.js"
+SCHEMA = ROOT / "plugins" / "anti-hall-node" / "hooks" / "lib" / "settings-schema.js"
 ENGINE_DEFAULTS = ROOT / "plugins" / "anti-hall" / "engine" / "defaults"
 CHANGELOG = ROOT / "CHANGELOG.md"
 OUT_SETTINGS = ROOT / "docs" / "settings" / "reference.md"

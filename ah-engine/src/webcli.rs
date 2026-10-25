@@ -92,11 +92,24 @@ fn start() -> Result<Running, String> {
     Err(defaults::render("web.msg_start_failed", &[("bin", &bin_name)]))
 }
 
+/// Only web addresses may reach the OS opener: a state file is not authority to launch a file or a custom URL handler.
+fn browser_command(url: &str, argv: &[&str]) -> Option<Command> {
+    let uri = url.parse::<ureq::http::Uri>().ok()?;
+    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.host().is_none_or(str::is_empty) {
+        return None;
+    }
+    let (prog, args) = argv.split_first()?;
+    // Keep the address as one argument, never shell source (including when it contains shell metacharacters).
+    let mut cmd = Command::new(prog);
+    cmd.args(args).arg(uri.to_string()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    Some(cmd)
+}
+
 /// Open `url` in the default browser; best effort, the address is printed either way.
 fn open_in_browser(url: &str) {
-    let argv = defaults::list("web.open_cmd");
-    let Some((prog, args)) = argv.split_first() else { return };
-    crate::discard::harmless(Command::new(prog).args(args).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()); // keep: no opener installed is not an error
+    if let Some(mut cmd) = browser_command(url, &defaults::list("web.open_cmd")) {
+        crate::discard::harmless(cmd.spawn()); // keep: no opener installed is not an error
+    }
 }
 
 /// The `web` command: `open` (default) and `status`.
@@ -140,6 +153,40 @@ pub fn run_cmd(p: &Parsed) -> i32 {
         _ => {
             say(p, defaults::text("web.msg_usage").to_string(), json!({}));
             64
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser_command;
+
+    #[test]
+    fn browser_rejects_non_web_schemes_and_malformed_addresses() {
+        let argv = ["open"];
+        for url in [
+            "file:///tmp/payload",
+            "javascript:alert(1)",
+            "data:text/html,payload",
+            "custom://handler",
+            "//example.com",
+            "-aCalculator",
+            "http://",
+            "https:///",
+            "http://example.com/\n--option",
+        ] {
+            assert!(browser_command(url, &argv).is_none(), "accepted {url:?}");
+        }
+        assert!(browser_command("https://example.com", &[]).is_none());
+    }
+
+    #[test]
+    fn browser_passes_web_url_as_one_literal_argument() {
+        let argv = ["open", "--background"];
+        for url in ["http://127.0.0.1:1234/", "https://example.com/?x=$(id);&q=`id`", "https://[::1]:1234/"] {
+            let cmd = browser_command(url, &argv).expect("valid web URL");
+            assert_eq!(cmd.get_program(), "open");
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), vec!["--background", url]);
         }
     }
 }
