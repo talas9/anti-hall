@@ -1,11 +1,11 @@
 ---
 name: anti-hall-engine-agents
-description: "Use when spawning, messaging or stopping agents, keeping the task list, or delegating work and a delegation, task or model-routing guard applies."
+description: "Use when spawning, messaging or stopping agents, or delegating work and a delegation or model-routing guard applies."
 ---
 
-# Agents and tasks
+# Agents
 
-Subagent, task-list, delegation and routing guards.
+Subagent, delegation and routing guards.
 
 ## Verbs
 
@@ -27,15 +27,9 @@ Subagent, task-list, delegation and routing guards.
 - `silent-agent-nudge`: Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build...
 - `stale-agent-stop-note`: Advisory: a TaskStop on an agent that was sent a message or resumed after its last report
 - `edit-guard`: Coordinator delegation gate for Edit, Write, MultiEdit, NotebookEdit and Codex apply_patch:...
-- `tasklist-hygiene`: Claude only (Codex has no task tools)
 - `swarm-guard`: Blocks an agent spawn past the spawn-rate cap or under critical memory pressure, and adds the...
-- `task-lifecycle-log`: Appends one line per TaskCreated/TaskCompleted event to the per-session history ledger and its index
-- `dispatch-tier`: Asks Jev (dispatchTier, detached) how a new or changed task should be dispatched, once per task...
-- `task-guard`: Stop gate: blocks a Stop while tasks are open (the idle-neglect block when dispatchable work has...
-- `tasklist-guard`: Stop gate: blocks a Stop after untracked work, tasks stalled in progress or a missing or stale...
 - `sibling-sweep`: Stop and SubagentStop reminder: when the reply states the cause of a bug in a fix context and...
 - `agent-reminders`: Delivers the agent tracker's queued reminders and advisories to the session or subagent that...
-- `task-tracker`: UserPromptSubmit task-list discipline: the full directive or the short reminder (window,...
 
 ## Switches
 
@@ -59,27 +53,14 @@ Subagent, task-list, delegation and routing guards.
 - `guards.sharedTreeScratchOnly` = true: Report-only agents share no tree
 - `safety.swarmGuard` = true: The switch safety.swarmGuard (on by default); off makes the guard a no-op
 - `guards.sharedTreeAgentNote` = true: Shared-tree spawn advisory switch
-- `guards.taskGuardOwnerBlockedMarker` = true: Owner-blocked marker switch
 - `guards.idleNeglectAgentMaxAgeMin` = 30: Max age of an agent counted as cover
 - `guards.stopNagBudgetPerPrompt` = 0: Most Stop blocks per user prompt (guards.stopNagBudgetPerPrompt; 0 = no budget)
-- `guards.dispatchDemand` = true: Whether running agents are counted per task from this session's transcript...
 - `guards.maxParallelDispatch` = 0: A fixed cap on running background agents (guards.maxParallelDispatch); 0 uses the CPU-based cap
 - `guards.idleNeglectMinPriority` = "p1": Priority floor of the idle-neglect block
 - `guards.idleNeglectProvenOnly` = true: Block idle neglect only when proven
-- `guards.taskGuard` = true: Where the on/off switch is read from (guards.taskGuard, default on)
-- `maintenance.taskLifecycleLog` = true: Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)
 - `guards.progressFreshMs` = 1800000: How long (ms) a progress file counts as fresh when no work time is known (guards.progressFreshMs)
-- `guards.tasklistNoTaskTools` = "reduced": Nag form when task tools are missing
-- `guards.tasklistGuard` = true: Where the on/off switch is read from (guards.tasklistGuard, default on)
-- `guards.tasklistWorkThreshold` = 3: How many counted file-changing actions make a session non-trivial (guards.tasklistWorkThreshold)
 - `agents.burnBreaker` = true: Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker...
 - `guards.siblingSweep` = true: Where the on/off switch is read from (guards.siblingSweep, default on)
-- `context.taskTrackerChangeOnly` = true: Short reminder speaks only on list change
-- `guards.dispatchSkipFileConflict` = true: Skips tasks whose file a running agent holds
-- `guards.dispatchSkipHeld` = true: Skips held tasks in DISPATCH NOW
-- `context.taskTracker` = true: Where the check's on/off switch is read from (context.taskTracker, default on)
-- `guards.dispatchQuietSpawnStop` = true: Quiets DISPATCH NOW during the spawn stop
-- `context.taskTrackerUntrackedPrompts` = 8: Prompts before the short reminder repeats
 - `agents.actOnStuck` = true: Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, a...
 - `agents.nudgeOwnerActive` = true: Where the switch of the owner-active rule is read from (agents.nudgeOwnerActive, default on):...
 - `agents.ownerNotify` = false: Where the owner-notification switch is read from (agents.ownerNotify, default off): on, routes...

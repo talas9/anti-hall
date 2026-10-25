@@ -368,6 +368,7 @@ value = [
   "{\"section\":\"statusline\",\"key\":\"base\",\"type\":\"string\",\"default\":\"\",\"description\":\"Shell command run as the line-1 base in consolidated statusline mode.\"}",
   "{\"section\":\"statusline\",\"key\":\"noEmail\",\"type\":\"boolean\",\"default\":false,\"description\":\"Suppress the email segment in the statusline.\"}",
   "{\"section\":\"statusline\",\"key\":\"usage\",\"type\":\"boolean\",\"default\":true,\"description\":\"Show the weekly and 5-hour usage percentages (wk:65% | 5h:50%) before the context percentage in the statusline.\"}",
+  "{\"section\":\"statusline\",\"key\":\"version\",\"type\":\"boolean\",\"default\":true,\"description\":\"Show the AH version chip (AH: V<plugin>/V<engine>) at the end of the statusline.\"}",
   "{\"section\":\"codexNudge\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"description\":\"Enable the Codex hand-off nudge hook.\"}",
   "{\"section\":\"codexNudge\",\"key\":\"min\",\"type\":\"number\",\"default\":3,\"advanced\":true,\"description\":\"Minimum substantial code-file edits before the nudge fires.\"}",
   "{\"section\":\"procwatch\",\"key\":\"enabled\",\"type\":\"boolean\",\"default\":true,\"description\":\"procwatch (scheduled sweep + SessionStart/UserPromptSubmit/PreToolUse advisory): look for processes a Claude session left behind (marked by the environment Claude Code sets, owner session gone, class pattern, minimum age) and for agents with no output. Never touches a live session, an unmarked process or a system process.\"}",

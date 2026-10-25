@@ -4905,7 +4905,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `roles.declared_env` | `ANTIHALL_ROLE` |  |  | Environment variable a wrapper may set to declare the caller's role on the command line (a role name from roles.names). It can only narrow what the environment says is possible, never name a role the detection ruled out: a workspace child stays a workspace child. |
 | `roles.describe` | `4 entries` |  |  | What each role is, in one line (shown in the role note and the engine skill). |
 | `roles.engine_bin` | `ah-engine` |  |  | The engine's executable name, as an agent types it in a Bash command. |
-| `roles.groups` | `11 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
+| `roles.groups` | `12 entries` |  |  | The feature areas, in skill order. `skill` is the sub-skill name (the main skill is `engine`), `title` its heading, `brief` the one line the main skill shows, `use_when` the sentence that makes the host load the sub-skill (a skill's description is what triggers loading), `prefixes` the engine checks (guards) it covers by name prefix and `settings_prefixes` the switches it lists by `section.key` prefix (first area that matches wins; the rest go to `guards`). |
 | `roles.guard_name` | `engine-role-guard` |  |  | The guard id the role guard answers to in skip.json and in its messages. |
 | `roles.line_max` | `100` |  |  | Longest one-line description of a verb or guard in a skill, in characters (longer ones are cut at a word with an ellipsis; the generated reference has the full text). |
 | `roles.main_skill` | `3 entries` |  |  | The main skill: its name, its description (when to load it) and its intro line. |
@@ -5353,7 +5353,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `369 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `370 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7766,7 +7766,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `369 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `370 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8152,7 +8152,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.branch_ab` | `# branch.ab ` |  |  | The git status line that counts commits ahead and behind. |
 | `statusline.branch_head` | `# branch.head ` |  |  | The git status line that names the branch. |
 | `statusline.branch_icon` | `🌿` |  |  | Before a branch. |
-| `statusline.chip_label` | `AH: V` |  |  | The version chip label. |
+| `statusline.chip_color_bad` | `red` |  |  | The color of the version chip when the engine version cannot be read, or a major update is available. |
+| `statusline.chip_color_ok` | `dim` |  |  | The color of the version chip when nothing is wrong. |
+| `statusline.chip_color_warn` | `yellow` |  |  | The color of the version chip when the engine is older than the plugin supports, or a minor update is available. |
+| `statusline.chip_fmt` | `AH: V{plugin}/V{engine}` |  |  | The version chip: `{plugin}` is the plugin version, `{engine}` the engine version (no build suffix), each `?` when not known. |
+| `statusline.chip_unknown` | `?` |  |  | Shown in place of a version that is not known. |
 | `statusline.claude_dir` | `.claude` |  |  | The host configuration directory name. |
 | `statusline.claude_dir_prefix` | `claude-` |  |  | Temp directories of the host start with this. |
 | `statusline.claude_json` | `.claude.json` |  |  | The host account file in the home directory. |
@@ -8189,6 +8193,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.header_mark` | `▊ ` |  |  | Starts the rich line. |
 | `statusline.in_progress` | `in_progress` |  |  | The status of the task in progress. |
 | `statusline.inner_timeout_ms` | `2500` |  |  | Longest a base command may run, in milliseconds. |
+| `statusline.level_color_ok` | `brightGreen` |  |  | The color of a context or usage percentage below the yellow level. |
+| `statusline.level_color_red` | `brightRed` |  |  | The color of a context or usage percentage at or above the red level. |
+| `statusline.level_color_yellow` | `brightYellow` |  |  | The color of a context or usage percentage at or above the yellow level. |
 | `statusline.level_red` | `90` |  |  | Context percentage from which the gauge is red. |
 | `statusline.level_yellow` | `70` |  |  | Context percentage from which the gauge is yellow. |
 | `statusline.max_keys` | `max_tokens, total_tokens, context_size` |  |  | The context_window fields that carry the window size. |
@@ -8250,6 +8257,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.update_star` | `★ ` |  |  | Marks an available update. |
 | `statusline.usage_5h_label` | `5h:` |  |  | Before the 5-hour usage percentage. |
 | `statusline.usage_5h_window` | `five_hour` |  |  | The rate_limits entry of the 5-hour window in the statusline input. |
+| `statusline.usage_ctx_gap` | ` ` |  |  | Between the usage segment and the context percentage that follows it. |
 | `statusline.usage_key` | `usage` |  |  | The setting that shows the weekly and 5-hour usage segment. |
 | `statusline.usage_sep` | ` \| ` |  |  | Between the weekly and the 5-hour usage percentages. |
 | `statusline.usage_week_label` | `wk:` |  |  | Before the weekly usage percentage. |
@@ -8257,6 +8265,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.used_keys` | `used_tokens, tokens` |  |  | The context_window fields that carry the used tokens. |
 | `statusline.user_mark` | `● ` |  |  | Before the git user. |
 | `statusline.version_check` | `version-check.json` |  |  | The version check cache, in the base directory. |
+| `statusline.version_key` | `version` |  |  | The setting that shows the version chip. |
 | `statusline.worktree_re` | `[/\\]\.git[/\\]worktrees[/\\]` |  |  | A git directory of a linked worktree. |
 | `statusline.xy_offset` | `2` |  |  | Where the staged and unstaged letters start in a git status line. |
 
