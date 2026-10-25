@@ -26,6 +26,13 @@ ah-engine has its own semver, separate from the plugin. A release is tagged `ah-
 3. Merge the PR. The prepare branch can be deleted afterwards. The prepare run's source commit must stay reachable (merged into a branch) until publish, because publish fetches it to check the fingerprint; if it is gone, rerun prepare.
 4. **Publish.** Push the tag `ah-engine-vX.Y.Z` on the merged commit. The workflow fails unless the tagged commit is on the default branch, `ah-engine.lock` exists, its version equals the tag and `Cargo.toml`, its fingerprint equals the source's, the prepare run was a successful manual run whose source commit has the same fingerprint, the asset names are exactly the `targets.json` triples plus the source tarball for that version, and the prepare run's artifacts match every sha256 in the lock. The release job checks the sums again before creating the release. It then runs build-provenance attestation and creates the GitHub Release with every archive, its `.sha256`, and `SHA256SUMS`. Prepare artifacts expire after the repository's retention period; rerun prepare if they have.
 
+### Rules learned the hard way
+
+- Run prepare only AFTER the last engine-source change has merged into `dev`. Any engine-source merge after it makes the lock fingerprint stale, and verify then fails with "source fingerprint differs".
+- Prepare refuses if the tag `ah-engine-vX.Y.Z` already exists, so a pushed but failed tag means bumping the engine version.
+- The release smoke check compares only the semver part of `version`, because the build adds `+branch.sha`.
+- `ah-launcher` (`ah-hook`) and `ah-web` ship inside the engine release archive and have their own versions (`ah-launcher/Cargo.toml`, `ah-web/Cargo.toml`); minimums between components are listed in the root `RELEASING.md`, "Version dependencies".
+
 ## `ah-engine.lock`
 
 JSON, one object:
