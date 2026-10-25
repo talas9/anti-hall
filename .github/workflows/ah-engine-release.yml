@@ -1,7 +1,7 @@
 name: ah-engine-release
 
 # Two-step ah-engine release (D67, D68).
-#   prepare: manual run. Builds and tests every target in ah-engine/targets.json, packages the assets, then opens a PR that updates ah-engine.lock
+#   prepare: manual run. Builds, packages and smoke-tests every target in ah-engine/targets.json, then opens a PR that updates ah-engine.lock
 #            (version, fingerprint, per-asset sha256). Skipped when the fingerprint is unchanged, unless `force` is set.
 #   publish: runs on tag ah-engine-vX.Y.Z. Takes the prepare run's artifacts named in ah-engine.lock, verifies them against the committed checksums,
 #            attests build provenance and creates the GitHub Release. Fails if no matching prepare exists.
@@ -135,19 +135,9 @@ jobs:
           TRIPLE: ${{ matrix.triple }}
         working-directory: ah-engine
         run: scripts/package.sh "$TRIPLE" "$GITHUB_WORKSPACE/dist"
-      # Tests build their own binary, so they get a separate target directory and cannot replace the packaged one.
-      - name: Test
-        env:
-          TRIPLE: ${{ matrix.triple }}
-          CARGO_TARGET_DIR: ${{ github.workspace }}/ah-engine/target-test
-          # The script CPU limit shipped by default (50 ms) is sized for an idle machine; a loaded shared runner running the suite in parallel needs headroom.
-          AH_ENGINE_SCRIPT_TIME_MS: "2000"
-          # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
-          AH_TEST_TIME_SCALE: "3"
-        working-directory: ah-engine
-        run: cargo test --release --locked --lib --target "$TRIPLE"
-      # The full integration suite runs in ah-engine.yml on pull requests (the release gate); a release target is proven by its unit tests and a smoke of the
-      # packaged binary on a scratch HOME.
+      # The suite runs in ah-engine.yml with nextest's per-test process isolation and the normal target layout. Do not rerun it
+      # with libtest in target-test: process-global state leaks between tests and the bootstrap tests require the normal layout.
+      # Release jobs build and package each target, then smoke-test the release binary on a scratch HOME.
       - name: Smoke
         env:
           TRIPLE: ${{ matrix.triple }}
