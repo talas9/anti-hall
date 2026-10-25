@@ -2166,6 +2166,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `model_routing.deploy_weak_aliases` | `1 entries` |  |  | Weak deploy/migration/secret words normalized before distinct-kind counting. This mirrors Node's production -> prod policy. |
 | `model_routing.deploy_weak_re` | `\b(prod\|production\|secrets?\|credentials?)\b` |  |  | Weak deploy/migration/secret words; two distinct kinds activate the deploy floor. |
 | `model_routing.deploy_weak_threshold` | `2` |  |  | Number of distinct weak deploy/migration/secret signal kinds needed to activate the deploy floor. |
+| `model_routing.exec_report_re` | `\bwrit(?:e\|es\|ing\|ten)\s+(?:\S+\s+){0,4}?(?:reports?\|summar(?:y\|ies)\|findings...` |  |  | Regex (case-insensitive) of a brief that writes a file or report (writes a report, a report file, saves findings to a file) or runs a script or shell commands (run a script, shell commands, bash x.sh, python3 x.py): such an agent needs a general-purpose type, not Explore, so the row-6 Explore hint is withheld whatever read-only words the brief quotes. A negated write is removed first (negated_write_re). |
+| `model_routing.explore_exec_setting` | `6 entries` |  |  | Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files. |
 | `model_routing.explore_type` | `Explore` |  |  | Subagent type recommended for read-only research-shaped generic spawns. |
 | `model_routing.flagship_models` | `opus, fable` |  |  | Explicit model enum values treated as flagship tiers for row 1 and row 3. |
 | `model_routing.generic_type` | `general-purpose` |  |  | The generic subagent type whose spawns are eligible for the generic-agent routing rows. |
@@ -3292,6 +3294,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.cut_limit` | `limit` |  |  | Telemetry label of cut 1. |
 | `inject_gate.cut_swarm` | `swarm` |  |  | Telemetry label of cut 4. |
 | `inject_gate.cut_task` | `task` |  |  | Telemetry label of cut 2. |
+| `inject_gate.digest_events` | `UserPromptSubmit` |  |  | The events whose advisories are digested. |
+| `inject_gate.digest_file` | `digest-{ts}-{pid}.txt` |  |  | File name of one digest's full text, in the dispatch.spill_dir folder. Placeholders: {ts} (milliseconds), {pid}. |
+| `inject_gate.digest_hooks` | `8 items` |  |  | Dispatch entry ids whose context may be digested, most important first (the order is the line order). Entries not listed (handover, DevSwarm, repair) keep their text whole. |
+| `inject_gate.digest_line_chars` | `150` |  | chars | The most characters of one signal's headline in the digest. |
+| `inject_gate.digest_line_sep` | ` \| ` |  |  | What joins the headlines that share the last digest line. |
+| `inject_gate.digest_pointer` | ` (full text: {path})` |  |  | What ends the digest when any text was shortened. {path} is the private file with the full text of every digested advisory. |
 | `inject_gate.field_ctx` | `additionalContext` |  |  | The field of that object the gate rewrites. |
 | `inject_gate.field_hso` | `hookSpecificOutput` |  |  | The object of a hook's JSON output that carries the context. |
 | `inject_gate.hash_chars` | `16` |  |  | Hex characters of the SHA-1 kept as a block's fingerprint. |
@@ -3304,6 +3312,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.max_slots` | `32` |  |  | Gated blocks remembered per session (the oldest is dropped past it). |
 | `inject_gate.note_sep` | ` ` |  |  | Separator task-tracker puts between its reminder and its freshness note. |
 | `inject_gate.num_comms_every` | `6 entries` |  |  | Turns between keepalives of the unchanged comms-override line (context.injectGateCommsEvery). |
+| `inject_gate.num_digest_lines` | `6 entries` |  |  | The most lines the prompt digest has (context.promptDigestLines). |
+| `inject_gate.num_digest_min` | `6 entries` |  |  | The fewest digestible advisories on one prompt at which the digest replaces them (context.promptDigestMin). |
 | `inject_gate.num_limit_every` | `6 entries` |  |  | Turns between keepalives of an unchanged limit-conservation directive (context.injectGateLimitEvery). |
 | `inject_gate.num_swarm_every` | `6 entries` |  |  | Turns between repeats of an unchanged shared-tree advisory (context.injectGateSwarmEvery). |
 | `inject_gate.num_task_every` | `6 entries` |  |  | Turns between short task-tracker reminders and unchanged freshness notes (context.injectGateTaskEvery). |
@@ -3314,6 +3324,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `inject_gate.slot_overhead_bytes` | `96` |  |  | Bytes counted per remembered block besides its name, for the memory figure shown beside the cap. |
 | `inject_gate.start_event` | `SessionStart` |  |  | The event whose dispatch means the context may have been lost (start, resume, clear, compaction): the session's gate state is cleared so the next injection is whole. |
 | `inject_gate.sw_comms` | `5 entries` |  |  | Cut 3 (context.injectGateComms, default on): the DevSwarm comms-override line and the workspace-title instruction are passed on once per session, when changed, and as a keepalive every N turns. |
+| `inject_gate.sw_digest` | `5 entries` |  |  | Switch of the prompt digest (context.promptDigest, default on): when several digestible advisories speak on one prompt, they are replaced by one digest of at most digest_lines lines; the full text goes to a private file the last line names. Blocks, decisions and the hooks not listed in digest_hooks are never touched. |
 | `inject_gate.sw_limit` | `5 entries` |  |  | Cut 1 (context.injectGateLimit, default on): limit-conserve-inject is passed on only when the conservation directive changed (usage band, reset time to the minute), else a short keepalive every N turns. |
 | `inject_gate.sw_master` | `5 entries` |  |  | Master switch of the injection gate (context.injectGate, default on): off hands every gated hook's Node output through unchanged. |
 | `inject_gate.sw_swarm` | `5 entries` |  |  | Cut 4 (context.injectGateSwarm, default on): swarm-guard's shared-tree advisory is passed on when new or changed, and again only after N turns. |
@@ -3882,6 +3893,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.meminfo_available_re` | `MemAvailable:\s+(\d+)\s+kB` |  |  | The available-memory line of the Linux memory report, in kB (JavaScript regex). |
 | `swarm_guard.meminfo_path` | `/proc/meminfo` |  |  | The Linux memory report. |
 | `swarm_guard.meminfo_total_key` | `MemTotal:` |  |  | The total-memory line prefix of the Linux memory report, in kB. |
+| `swarm_guard.memory_files_max` | `200` |  |  | The most memory files read in one folder. |
+| `swarm_guard.memory_slug_re` | `[^A-Za-z0-9-]` |  |  | JavaScript regex source of the characters of a working directory path that the host's project folder name replaces with a dash. |
+| `swarm_guard.memory_sources` | `.claude/projects/{slug}/memory` |  |  | Folders under the home directory whose .md files are read for the no-worktrees rule; {slug} is the working directory with every re of memory_slug_re replaced by a dash (the host's project folder name). |
 | `swarm_guard.msg_mem` | `anti-hall swarm-guard: memory pressure critical ({avail} MB available of {tot...` |  |  | The block reason for critical memory pressure; {avail} and {total} are megabytes. |
 | `swarm_guard.msg_rate_instead` | `wait for running agents to finish before spawning more.` |  |  | What to do instead of spawning past the cap. |
 | `swarm_guard.msg_rate_what` | `spawn limit reached ({count} in 60s, cap {cap}).` |  |  | What the rate block says; {count} is the spawns in the window and {cap} the cap. |
@@ -3892,6 +3906,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.msg_shared_why` | `Two such agents can stage and commit each other's uncommitted changes.` |  |  | Why the shared-tree advisory applies. |
 | `swarm_guard.proc_pidns` | `/proc/self/ns/pid` |  |  | The Linux link that names this process's pid namespace. |
 | `swarm_guard.proc_uptime` | `/proc/uptime` |  |  | The Linux file that holds the uptime in seconds. |
+| `swarm_guard.quiet_no_worktrees_setting` | `6 entries` |  |  | Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on). |
 | `swarm_guard.re_api_only` | `\b(?:gh\|github)[- ](?:api\|cli)[- ]only\b\|\bonly\s+(?:calls?\|uses?\|runs?\|via)\...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it. |
 | `swarm_guard.re_in_place` | `\bin\s+place\b\|\bin\s+(?:the\s+)?(?:session\s+)?repo\b\|\brepo\s+files\b\|\b(?:...` |  |  | JavaScript regex source (case-insensitive): a statement that the spawn works in place in the session repo, which cancels the scratch reading. |
 | `swarm_guard.re_named_tree` | `\b(?:(?:a\|an\|the\|your\|its\|their\|own\|scratch\|separate\|fresh\|lane)\s+(?:clone\|w...` |  |  | JavaScript regex source (case-insensitive): a statement that names the spawn's own working tree ("a\|your\|its\|scratch… clone", worktree, checkout, cd, cwd or work-in target; a bare "git clone <src>" names a source, not a tree) followed by an absolute, ~ or $HOME path. When that path lies outside the session's git tree (and outside its cwd), the spawn works in another checkout and shares no tree; the scratch negation and in-place statements still cancel it. |
@@ -3900,11 +3915,14 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `swarm_guard.re_named_tree_trim` | `[.:]+$` |  |  | JavaScript regex source: trailing sentence punctuation cut from a named-tree path. |
 | `swarm_guard.re_negated_in_place` | `\b(?:(?:do\|does\|did\|must\|will\|should\|can)\s+not\|don'?t\|doesn'?t\|didn'?t\|won'?...` |  |  | Negated write/location spans removed before affirmative in-place detection; {place} expands to re_in_place. Other affirmative clauses remain effective. |
 | `swarm_guard.re_no_worktrees` | `\bno\s+(?:git\s+)?worktrees?\b` |  |  | JavaScript regex source (case-insensitive) matched against the CLAUDE.md / AGENTS.md files of the repo: a rule that forbids worktrees, which drops the isolation hint from the advisory. |
+| `swarm_guard.re_repo_write` | `\b(?:edit\|modify\|patch\|refactor\|fix\|implement\|commit\|push)\b\|\bwrit(?:e\|es\|in...` |  |  | JavaScript regex source (case-insensitive): a brief that also edits, commits or pushes repo files, which cancels the scratch-only reading. |
 | `swarm_guard.re_scratch_negated` | `\b(?:not\|no\|without\|instead\s+of)\s+(?:in\s+\|a\s+\|the\s+\|any\s+)?scratch\b` |  |  | JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading. |
+| `swarm_guard.re_scratch_only` | `\b(?:writ(?:e\|es\|ing)\|sav(?:e\|es\|ing)\|put\|puts\|output\|outputs)\b[^\n]{0,80}?\...` |  |  | JavaScript regex source (case-insensitive; {path} is the scratch path): a brief that writes, saves or puts a report, findings, results or output under the scratch location. |
 | `swarm_guard.read_only_types` | `13 items` |  |  | Agent types that cannot edit files (their definitions exclude the editing tools), lower-case. |
 | `swarm_guard.repo_docs` | `CLAUDE.md, AGENTS.md` |  |  | The files read at each directory level when looking for the no-worktrees rule. |
 | `swarm_guard.repo_docs_levels` | `8` |  |  | How many directory levels up from the spawn's working directory the rule search climbs at most. |
 | `swarm_guard.scratch_alternatives` | `\bwork(?:ing)?\s+(?:in\\|inside)\s+(?:a\\|an\\|the\\|your)?\s*scratch\s+(?:clone\...` |  |  | JavaScript regex sources, joined with \| and matched case-insensitively against the spawn's prompt and description: the statements that establish a scratch working location outside the session's git tree. |
+| `swarm_guard.scratch_only_setting` | `6 entries` |  |  | Where the switch is read from that treats an agent whose brief only writes a report or results under the scratch location as sharing no tree (guards.sharedTreeScratchOnly, default on). |
 | `swarm_guard.scratch_path` | `[\x60'"]?(?:\/private\/tmp\/\|\/tmp\/\|\/var\/folders\/\|[^\s\x60'"]*scratchpad\b)` |  |  | JavaScript regex source for a scratch location in a spawn prompt (a /tmp, /private/tmp, /var/folders or scratchpad path); {path} in the scratch alternatives is replaced by it. |
 | `swarm_guard.setting` | `6 entries` |  |  | The switch safety.swarmGuard (on by default); off makes the guard a no-op. |
 | `swarm_guard.shared_tree_label` | `shared-tree` |  |  | Guard name in the shared-tree advisory. |
@@ -5310,7 +5328,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `355 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `368 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7616,8 +7634,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.annotation_joiner` | ` ` |  |  | What stands between a task label and its tier annotation. |
 | `task_tracker.blocked_tail` | ` (+{n} blocked: {why})` |  |  | The tail naming tasks that wait on someone else; `{n}` is how many and `{why}` who. |
 | `task_tracker.bytes_per_mb` | `1048576` |  |  | Bytes in one megabyte, for the window named in the unknown-count note. |
+| `task_tracker.change_setting` | `6 entries` |  |  | Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window. |
 | `task_tracker.codex_from` | `as a task (TaskCreate) ` |  |  | The words of the directive that name the Claude-only task tool; the Codex text swaps the first occurrence. |
 | `task_tracker.codex_to` | `as an item in your task/plan list ` |  |  | What the Codex text says in their place. |
+| `task_tracker.conflict_setting` | `6 entries` |  |  | Where the switch is read from that keeps a task out of the DISPATCH NOW line when a running agent already works on a file it names (guards.dispatchSkipFileConflict, default on). |
 | `task_tracker.control_re` | `[\x00-\x1F\x7F-\x9F]` |  |  | JavaScript regex source (case-sensitive) of the control characters a quoted subject replaces with a space. |
 | `task_tracker.dd_setting` | `6 entries` |  |  | Where the per-turn dispatch demand switch is read from (guards.dispatchDemand, default on): while it is on, a session with a task the demand line would name is left to Node. |
 | `task_tracker.dedupe_key` | `task-tracker` |  |  | The emit-dedupe key of the directive and the combined text. |
@@ -7629,6 +7649,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.done_statuses` | `completed, done, cancelled, canceled` |  |  | Statuses (lowercase) that mean a task no longer blocks the ones waiting on it. |
 | `task_tracker.ellipsis` | `…` |  |  | What ends a subject that was cut. |
 | `task_tracker.event` | `UserPromptSubmit` |  |  | The hook event name in the output. |
+| `task_tracker.file_token_re` | `(?:[\w.-]+/)+[\w.-]+\.\w+\|[\w-]+\.(?:rs\|js\|ts\|tsx\|toml\|md\|json\|py\|sh\|yml\|yaml...` |  |  | JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension. |
 | `task_tracker.footer_joiner` | ` ` |  |  | What stands between the demand line and the Jev footer. |
 | `task_tracker.freshness_joiner` | ` ` |  |  | What stands between the demand block and the open-tasks line. |
 | `task_tracker.full_level` | `full` |  |  | The protocol level at which the directive keeps the non-blocking clause (any other level drops it). |
@@ -7636,6 +7657,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.growth_bytes` | `245760` |  | bytes | How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay). |
 | `task_tracker.growth_min_gap_ms` | `1800000` |  | ms | The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry. |
 | `task_tracker.guard_name` | `task-tracker` |  |  | The guard name in the message header and in the skip file. |
+| `task_tracker.held_setting` | `6 entries` |  |  | Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named. |
+| `task_tracker.held_status_re` | `blocked\|waiting\|on[-_ ]?hold\|deferred\|parked` |  |  | JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable. |
 | `task_tracker.in_progress_re` | `in[-_]?progress` |  |  | JavaScript regex source (case-insensitive) of a status that means in progress. |
 | `task_tracker.instead_head` | `track each request as a priority-sorted task.` |  |  | The start of the full directive's 'Do instead' line. |
 | `task_tracker.instead_tail` | `` |  |  | The end of the full directive's 'Do instead' line. |
@@ -7673,6 +7696,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.spawn_names` | `Agent, Task, Workflow` |  |  | The tools that spawn an agent. |
 | `task_tracker.state_prefix` | `task-tracker-` |  |  | Prefix of the per-session state file that remembers when the full directive was last injected. |
 | `task_tracker.state_suffix` | `.json` |  |  | Suffix of the per-session state file. |
+| `task_tracker.stop_setting` | `6 entries` |  |  | Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on). |
 | `task_tracker.subject_max` | `50` |  |  | The longest subject the open-tasks line quotes, in UTF-16 units. |
 | `task_tracker.subject_tail` | ` (oldest in_progress subject: {subject})` |  |  | The tail naming the oldest in-progress task; `{subject}` is its quoted subject. |
 | `task_tracker.subject_unknown` | `(subject unknown)` |  |  | What stands for a subject that was never learned. |
@@ -7707,6 +7731,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.unknown_tag` | `tracker` |  |  | The tag the unknown-state note is throttled under. |
 | `task_tracker.unknown_tail` | `): check before dispatching more. ` |  |  | The end of the note that the running-agent count is unknown. |
 | `task_tracker.unknown_unreadable` | `transcript unreadable` |  |  | Part of that note when the transcript could not be read. |
+| `task_tracker.untracked_prompts` | `7 entries` |  |  | Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts). |
 | `task_tracker.what_full` | `requests need tracking before work starts.` |  |  | The first line of the full directive. |
 | `task_tracker.what_short` | `capture every request as a priority-sorted task; keep statuses current; deleg...` |  |  | The short per-turn reminder. |
 | `task_tracker.why_joiner` | `/` |  |  | What joins the distinct reasons tasks are blocked. |
@@ -7716,7 +7741,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `355 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `368 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8102,7 +8127,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.branch_ab` | `# branch.ab ` |  |  | The git status line that counts commits ahead and behind. |
 | `statusline.branch_head` | `# branch.head ` |  |  | The git status line that names the branch. |
 | `statusline.branch_icon` | `🌿` |  |  | Before a branch. |
-| `statusline.chip_label` | `AH: V` |  |  | The version chip label. |
+| `statusline.chip_color_bad` | `red` |  |  | The color of the version chip when the engine version cannot be read, or a major update is available. |
+| `statusline.chip_color_ok` | `dim` |  |  | The color of the version chip when nothing is wrong. |
+| `statusline.chip_color_warn` | `yellow` |  |  | The color of the version chip when the engine is older than the plugin supports, or a minor update is available. |
+| `statusline.chip_fmt` | `AH: V{plugin}/V{engine}` |  |  | The version chip: `{plugin}` is the plugin version, `{engine}` the engine version (no build suffix), each `?` when not known. |
+| `statusline.chip_unknown` | `?` |  |  | Shown in place of a version that is not known. |
 | `statusline.claude_dir` | `.claude` |  |  | The host configuration directory name. |
 | `statusline.claude_dir_prefix` | `claude-` |  |  | Temp directories of the host start with this. |
 | `statusline.claude_json` | `.claude.json` |  |  | The host account file in the home directory. |
@@ -8139,6 +8168,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.header_mark` | `▊ ` |  |  | Starts the rich line. |
 | `statusline.in_progress` | `in_progress` |  |  | The status of the task in progress. |
 | `statusline.inner_timeout_ms` | `2500` |  |  | Longest a base command may run, in milliseconds. |
+| `statusline.level_color_ok` | `brightGreen` |  |  | The color of a context or usage percentage below the yellow level. |
+| `statusline.level_color_red` | `brightRed` |  |  | The color of a context or usage percentage at or above the red level. |
+| `statusline.level_color_yellow` | `brightYellow` |  |  | The color of a context or usage percentage at or above the yellow level. |
 | `statusline.level_red` | `90` |  |  | Context percentage from which the gauge is red. |
 | `statusline.level_yellow` | `70` |  |  | Context percentage from which the gauge is yellow. |
 | `statusline.max_keys` | `max_tokens, total_tokens, context_size` |  |  | The context_window fields that carry the window size. |
@@ -8200,6 +8232,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.update_star` | `★ ` |  |  | Marks an available update. |
 | `statusline.usage_5h_label` | `5h:` |  |  | Before the 5-hour usage percentage. |
 | `statusline.usage_5h_window` | `five_hour` |  |  | The rate_limits entry of the 5-hour window in the statusline input. |
+| `statusline.usage_ctx_gap` | ` ` |  |  | Between the usage segment and the context percentage that follows it. |
 | `statusline.usage_key` | `usage` |  |  | The setting that shows the weekly and 5-hour usage segment. |
 | `statusline.usage_sep` | ` \| ` |  |  | Between the weekly and the 5-hour usage percentages. |
 | `statusline.usage_week_label` | `wk:` |  |  | Before the weekly usage percentage. |
@@ -8207,6 +8240,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.used_keys` | `used_tokens, tokens` |  |  | The context_window fields that carry the used tokens. |
 | `statusline.user_mark` | `● ` |  |  | Before the git user. |
 | `statusline.version_check` | `version-check.json` |  |  | The version check cache, in the base directory. |
+| `statusline.version_key` | `version` |  |  | The setting that shows the version chip. |
 | `statusline.worktree_re` | `[/\\]\.git[/\\]worktrees[/\\]` |  |  | A git directory of a linked worktree. |
 | `statusline.xy_offset` | `2` |  |  | Where the staged and unstaged letters start in a git status line. |
 
@@ -8958,6 +8992,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.patterns` | `17 entries` |  |  | Regular expressions (Rust syntax, case-insensitive) over a shell command: commit (a git commit), push (a git push, counted by the cost report), guard_fire (a tool result that carries an anti-hall guard block heading, counted by the cost report), test (a test run), test_pass (output that says tests passed), test_fail (output that says they failed), task_created (the result of a task-list create: captures the new task id), bg_started (the result of a background shell command: captures the task id whose end notice is awaited), ci_wait (a command that checks or watches CI), merge (a pull-request merge, counted as an outcome), deploy (a deploy command, counted as an outcome), build (a compile or check: cargo build, check, clippy, or an npm/go/make/flutter build), build_pass (output that shows it finished), build_fail (output that shows it failed), report_path (a file path that is a report: written under a scratchpad, reports or findings directory), owner_skip (the start of a user line that is not the owner talking: a task notice, a reminder block, a command echo). |
 | `agent_tracker.primary_prefix` | `primary-` |  |  | The id prefix of a DevSwarm Primary's descriptor. A Primary with no live child is not armed by the DevSwarm wake-watch (its idle-skip), so the tracker does not tell it to; its own wake path is the session wake-watch. |
 | `agent_tracker.progress_request_text` | `Progress requested from the dashboard: reply with a short status (what is don...` |  |  | The reminder an agent gets when the dashboard asks it for progress. |
+| `agent_tracker.rearm_idle_setting` | `6 entries` |  |  | Where the switch is read from that keeps the wake-watch re-arm reminder silent for a Primary checkout with no live child workspaces (agents.rearmNeedsChildren, default on): with nothing to wake it for, the watcher declines to arm and there is nothing to re-arm. |
 | `agent_tracker.registry` | `9 entries` |  |  | The host's registry of live sessions (agent_tracker.paths.sessions: one JSON file per running process, removed when it exits) as a liveness source: a session whose process is alive is running or waiting, never done, however old its transcript. Fields: pid, session (the session id), cwd, started (ms), status, name. busy / waiting / blocked: the status words (the same words as claude_cli's, plus the registry's own: shell = a shell command is running). A status in none of the lists decides nothing and the transcript does. |
 | `agent_tracker.remind_setting` | `6 entries` |  |  | Where the reminder switch is read from (agents.reminders, default on): off, signals are still raised and recorded but nothing is queued for any agent. |
 | `agent_tracker.result_statuses` | `completed` |  |  | The task-notification statuses that mean a subagent returned a result to its launcher (counted once per task id as the agent_result weight). |
