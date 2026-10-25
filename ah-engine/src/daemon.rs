@@ -635,6 +635,7 @@ impl Shared {
             "rss_cap_kb": cfg.rss_cap_kb,
             "budget": lk(&self.budget).report(cfg.effective.num("diagnostics.budget_cpu_pct"), cfg.effective.num("diagnostics.budget_mem_mb")),
             "debug": crate::debug::stats(),
+            "delivery": crate::delivery::status(&self.telemetry),
             "inject_gate": {"sessions": gs.sessions, "slots": gs.slots, "bytes": gs.bytes, "evictions": gs.evictions,
                 "max_sessions": defaults::num("inject_gate.max_sessions"), "max_slots": defaults::num("inject_gate.max_slots")},
             "config": {"version": cfg.version, "pending_restart": cfg.pending_restart, "last_error": cfg.last_error},
@@ -1096,6 +1097,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
                 crate::hookio::Observer::route(&obs, check, &meta.event, r);
             }
         }
+        if matches!(a, Answer::Decided(r, _) if !r.out.is_empty() || r.code == Some(2)) {
+            crate::delivery::decided(&sh.telemetry, session, check); // #312: it said something (a message or a block): delivery is counted at the end of the request
+        }
         let answer = if v == Verdict::Defer { "defer" } else { "decided" };
         sh.telemetry.with_metrics(|m| m.inc("dispatch_checks", &[("event", meta.event.as_str()), ("check", check), ("answer", answer)]));
         crate::memdiag::note_check(check);
@@ -1122,6 +1126,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
         tripped.set(tripped.get() || over);
         over
     };
+    if meta.event == defaults::text("delivery.react_event") {
+        crate::delivery::observe_tool(&sh.telemetry, session, p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("")); // #312: the agent's reaction to what was delivered
+    }
     let answers = crate::dispatch::native::evaluate(&meta, &p, &over, &observe);
     if tripped.get() {
         record_budget_trip(sh, &phash, defaults::text("msg.log_budget"));
@@ -1555,6 +1562,7 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         // the client never read it: what the request recorded is not a decision anyone saw (review finding 4)
         telemetry::stage_discard();
     }
+    crate::delivery::settle(&sh.telemetry, delivered && crate::deadline::in_time());
     crate::deadline::settle_staged(delivered);
     let res = wire.then(|| if delivered { wait_res(&mut s) } else { ResWait::Missing(defaults::text("wire.why_closed")) });
     if late {

@@ -215,6 +215,11 @@ pub fn in_time() -> bool {
     remaining() != Some(Duration::ZERO)
 }
 
+/// How many milliseconds past the HARD deadline the request is (0 before it, and outside a request).
+pub fn past_hard_ms() -> u64 {
+    REQ.with(|r| r.get()).and_then(|r| r.hard).map_or(0, |at| Instant::now().saturating_duration_since(at).as_millis() as u64)
+}
+
 /// Hold a staged write (`tmp` already written) until the reply is delivered.
 pub fn stage(tmp: PathBuf, path: PathBuf, style: crate::atomic::Style) {
     STAGED.with(|s| s.borrow_mut().push((tmp, path, style)));
