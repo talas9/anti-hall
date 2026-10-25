@@ -91,11 +91,11 @@ doc = "DevSwarm's worktree root under the home directory, as its parts: a workin
 value = [".devswarm", "repos"]
 
 [edit_guard.nudge_setting]
-doc = "Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)."
+doc = "Where the inline-work advisory's switch is read from."
 value = { section = "devswarm", key = "inlineWorkNudge", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE", aliases = [], option = "devswarm_inline_work_nudge", default = true }
 
 [edit_guard.nudge_threshold_setting]
-doc = "Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold, default 5, at least 1)."
+doc = "Where the inline-work advisory's call threshold is read from."
 value = { section = "devswarm", key = "inlineWorkNudgeThreshold", env = "ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE_THRESHOLD", aliases = [], option = "devswarm_inline_work_nudge_threshold", default = 5, min = 1 }
 
 [edit_guard.nudge_default_threshold]

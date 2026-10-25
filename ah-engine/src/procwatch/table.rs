@@ -349,7 +349,10 @@ mod sys {
         let total = sysctl_u64(defaults::text("resource_watch.mac_ram_total_sysctl")).unwrap_or(0);
         let pct = sysctl_i32(defaults::text("resource_watch.mac_free_pct_sysctl")).filter(|p| (0..=100).contains(p));
         match (total, pct) {
-            (t, Some(p)) if t > 0 => (t, t / 100 * p as u64),
+            (t, Some(p)) if t > 0 => {
+                let one_percent = t / 100;
+                (t, one_percent * p as u64)
+            }
             _ => (0, 0),
         }
     }

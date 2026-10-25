@@ -254,7 +254,7 @@ doc = "The compact snapshot copy the statusline segment reads (engine state dire
 value = "devswarm-line.json"
 
 [devswarm_rt.set_line_enabled]
-doc = "Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing when DevSwarm is absent or no workspace is active)."
+doc = "Show the DevSwarm workspace segment in the statusline (hidden when DevSwarm is absent or idle)."
 value = { type = "bool", section = "statusline", key = "devswarm.enabled", env = "ANTIHALL_STATUSLINE_DEVSWARM", option = "statusline_devswarm_enabled", default = true }
 
 [devswarm_rt.set_line_format]
@@ -266,7 +266,7 @@ doc = "The segment is cut to this many characters (an ellipsis marks the cut)."
 value = { type = "number", section = "statusline", key = "devswarm.max_chars", env = "ANTIHALL_STATUSLINE_DEVSWARM_MAX_CHARS", option = "statusline_devswarm_max_chars", min = 4, max = 200, default = 40 }
 
 [devswarm_rt.set_line_stale_ms]
-doc = "A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead of a guess."
+doc = "Data older than this shows as `?`, not a guess."
 value = { type = "number", section = "statusline", key = "devswarm.stale_ms", env = "ANTIHALL_STATUSLINE_DEVSWARM_STALE_MS", option = "statusline_devswarm_stale_ms", min = 1000, max = 86400000, default = 180000 }
 
 [devswarm_rt.line_order]

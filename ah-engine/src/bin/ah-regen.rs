@@ -69,7 +69,7 @@ fn main() {
         }
         println!("rewrote  {}", t.rel);
     }
-    println!("{stale} of {total} generated files {}", if check { "are stale" } else { "rewritten" });
+    println!("{stale}/{total} {}", if check { "stale" } else { "rewritten" });
     if check && stale > 0 {
         process::exit(1);
     }

@@ -827,7 +827,7 @@ doc = "guards.allowPlainPush: the plain git push chain allowance (default on)."
 value = { section = "guards", key = "allowPlainPush", type = "boolean", env = "ANTIHALL_ALLOW_PLAIN_PUSH", aliases = [], option = "guards_allow_plain_push", default = true }
 
 [command.setting_allow_bg_scratch]
-doc = "guards.allowBackgroundScratchScripts: the background scratch script allowance (default on)."
+doc = "Allowance for background scratch scripts (default on)."
 value = { section = "guards", key = "allowBackgroundScratchScripts", type = "boolean", env = "ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS", aliases = [], option = "guards_allow_background_scratch_scripts", default = true }
 
 [command.setting_allow_gcloud_reads]
