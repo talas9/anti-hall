@@ -52,6 +52,30 @@ function caReadTurn(lines) {
 
 function caBlock(reason) { return { exact: { code: 0, out: text.render(cb.c('ctxbudget.stop_block_line'), { reason: JSON.stringify(reason) }), err: '' } }; }
 
+// The handover budgets a "safe to compact/restart" declaration must meet: the session task list (open tasks, subject length, no
+// finished task left in it) and the MEMORY.md index that sits beside the transcript. Returns the breaches as text (empty: within budget).
+function caOverBudget(tp) {
+  var out = [], done = cb.c('ctxbudget.hb_done_statuses');
+  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
+  if (r && !r.unsure && !r.unreadable && Array.isArray(r.tasks)) {
+    var live = r.tasks.filter(function (t) { return done.indexOf(String(t.status)) < 0; });
+    var finished = r.tasks.length - live.length, budget = ah.settings.num('ctxbudget.set_h_task_budget'), maxSubject = ah.settings.num('ctxbudget.set_h_task_subject');
+    var long = live.filter(function (t) { return Array.from(String(t.content)).length > maxSubject; }).length;
+    if (live.length > budget) out.push(cb.r('ctxbudget.hb_tasks_over', { n: live.length, max: budget }));
+    if (finished > 0) out.push(cb.r('ctxbudget.hb_tasks_done', { n: finished }));
+    if (long > 0) out.push(cb.r('ctxbudget.hb_subjects_over', { n: long, max: maxSubject }));
+  }
+  var mem = ah.path.resolveAbs(tp + '/..') + '/' + cb.c('ctxbudget.hb_mem_dir') + '/' + cb.c('ctxbudget.hb_mem_file'), size = ah.fs.size(mem);
+  var body = size === null || size === undefined ? null : ah.fs.readText(mem, size);
+  if (body !== null && body !== undefined) {
+    var lines = body.split('\n'), n = lines.length - (lines[lines.length - 1] === '' ? 1 : 0), chars = Array.from(body).length;
+    var maxLines = ah.settings.num('ctxbudget.set_h_mem_lines'), maxChars = ah.settings.num('ctxbudget.set_h_mem_chars');
+    if (n > maxLines) out.push(cb.r('ctxbudget.hb_mem_lines_over', { n: n, max: maxLines }));
+    if (chars > maxChars) out.push(cb.r('ctxbudget.hb_mem_chars_over', { n: chars, max: maxChars }));
+  }
+  return out;
+}
+
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
   var home = caHome();
@@ -100,6 +124,13 @@ function decide(p) {
   if (!found.length) return 'allow';
   var last = found[found.length - 1];
   if (cadv.lastRetraction(finalText) > last.index) return 'allow';
+  var over = caOverBudget(tp);
+  if (over.length) {
+    return caBlock(text.message('block', cb.c('ctxbudget.ca_guard'), {
+      what: cb.r('ctxbudget.hb_what', { phrase: last.phrase, why: over.join(cb.c('ctxbudget.ca_why_join')) }),
+      why: cb.c('ctxbudget.hb_why'), instead: cb.c('ctxbudget.hb_instead'),
+    }));
+  }
   var w = { inferred: null };
   var result = cb.getContextPct(tp, p.session_id, w); // tp is absolute here
   var pct = result && isFinite(result.pct) ? result.pct : null;

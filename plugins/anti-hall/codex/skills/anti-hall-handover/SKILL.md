@@ -232,6 +232,8 @@ Trigger: <auto-threshold|user-request|restart-pending|task-boundary> · context:
 - [ ] `git status` — expect: <what>
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `AGENTS.md` — rules may have been dropped by a context reset
+- [ ] rebuild the session task list from `.anti-hall/tasks/INDEX.md` Active rows only
+- [ ] MEMORY.md consolidated (within `handover.memoryIndexMaxLines` / `handover.memoryIndexMaxChars`)
 - [ ] `<smoke/test command>` — expect: <result>
 - [ ] read-back to the user: goal, next action, active session rules — in your own words, before any new work
 
@@ -296,13 +298,21 @@ as `.anti-hall/progress/INDEX.md`:
 1. Determine session id (a runtime id if available, or sha1-of-transcript-path
    fallback, or a stable slug) and today's date.
 2. Compute seq = (existing `HANDOVER*.md` count in this session's dir) + 1.
-3. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
+3. **Consolidate the task list and the MEMORY.md index** (before writing files):
+   - Task list, open tasks only: delete completed tasks from the session task list. Group duplicates and related items into one task each; keep at most `handover.taskListBudget` active tasks (default 12).
+   - Subjects are `T-<n> [P] <short title>`, at most `handover.taskSubjectMax` characters (default 60). `n` is the PRIORITY RANK: the smaller the number, the higher the priority. Renumber after every change.
+   - Details live in `.anti-hall/tasks/INDEX.md` (one line per active task, plus a Backlog section for the rest) and in `.anti-hall/tasks/T-<n>/` folders only for local material. Never copy a GitHub issue's content: the issue is the spec. Nothing is dropped: a task removed from the session list moves to the INDEX Backlog.
+   - Verify "done" or "obsolete" against real state (GitHub issue/PR state, logs, files) before dropping a task. Never delete data; archive instead.
+   - The handover's Open items and the state.md task table are generated from the INDEX Active section, not from a dump of the session list.
+   - MEMORY.md index: group related one-line entries into topic sections; each line at most ~130 characters; keep every memory file reachable from the index (one line may link several related files: `[a](a.md) · [b](b.md) — shared hook`). Never delete memory files: change structure only. Flag stale or contradicted memories in the handover for owner OK instead of deleting them. Stay within `handover.memoryIndexMaxLines` (default 100) and `handover.memoryIndexMaxChars` (default 12000).
+   - The terminal "ready to restart" declaration is refused while the task list or the memory index is over budget, or while the active list still contains completed tasks.
+4. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
    `decisions.md`, `trials.md`, `knowledge.md` (seq N>1: apply the carry-forward
    rule above first). Detail files are append-only
    across a session's multiple handovers (seq 2 appends to seq 1's `state.md`
    etc., doesn't overwrite); `HANDOVER*.md` itself is a fresh file per seq.
-4. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
-5. Report to the user EVERY path written this call — the handover directory,
+5. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
+6. Report to the user EVERY path written this call — the handover directory,
    each of the 5 files (`HANDOVER*.md`, `state.md`, `decisions.md`, `trials.md`,
    `knowledge.md`), and the exact `INDEX.md` row appended — plus a one-line
    summary of what was captured. Don't summarize the paths away; list them.

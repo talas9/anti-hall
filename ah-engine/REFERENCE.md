@@ -3200,6 +3200,17 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.context_window_env` | `ANTIHALL_CONTEXT_WINDOW_TOKENS` |  |  | Environment variable that overrides the context window size, in tokens (always wins over the other window sources). |
 | `ctxbudget.default_window` | `200000` |  | tokens | The context window assumed when no source states one, in tokens (the reading is then flagged as unknown). |
 | `ctxbudget.env_pct_off` | `ANTIHALL_AUTO_HANDOVER_PCT` |  |  | Environment variable that, when it parses to 0, disables auto-handover outright (the one rule the settings schema cannot express). |
+| `ctxbudget.hb_done_statuses` | `completed, deleted` |  |  | Task statuses that count as finished: a finished task still in the session task list at a restart-ready declaration is over budget. |
+| `ctxbudget.hb_instead` | `consolidate the task list and the MEMORY.md index within the budgets (handove...` |  |  | The instructions of the handover-budget block. |
+| `ctxbudget.hb_mem_chars_over` | `the MEMORY.md index has {n} characters (budget {max})` |  |  | Reason: the MEMORY.md index has {n} characters, more than {max} (handover.memoryIndexMaxChars). |
+| `ctxbudget.hb_mem_dir` | `memory` |  |  | The directory beside the session transcript that holds the project's memory files. |
+| `ctxbudget.hb_mem_file` | `MEMORY.md` |  |  | The memory index file inside hb_mem_dir. |
+| `ctxbudget.hb_mem_lines_over` | `the MEMORY.md index has {n} lines (budget {max})` |  |  | Reason: the MEMORY.md index has {n} lines, more than {max} (handover.memoryIndexMaxLines). |
+| `ctxbudget.hb_subjects_over` | `{n} task subjects exceed {max} characters` |  |  | Reason: {n} task subjects are longer than {max} characters (handover.taskSubjectMax). |
+| `ctxbudget.hb_tasks_done` | `{n} finished tasks are still in the task list` |  |  | Reason: {n} finished tasks are still in the session task list. |
+| `ctxbudget.hb_tasks_over` | `the task list holds {n} active tasks (budget {max})` |  |  | Reason: the session task list holds {n} active tasks, more than the {max} budget (handover.taskListBudget). |
+| `ctxbudget.hb_what` | `your reply declares ready to compact/restart ("{phrase}") but the handover is...` |  |  | The first line of the handover-budget block; {phrase} is the declaration, {why} the breaches. |
+| `ctxbudget.hb_why` | `A restart-ready declaration needs a consolidated task list and memory index, ...` |  |  | The Why line of the handover-budget block. |
 | `ctxbudget.inferred_suffix` | `.inferred-1m.json` |  |  | File name suffix of the inferred one-million-token window latch next to a session's context reading. |
 | `ctxbudget.inferred_window` | `1000000` |  | tokens | The window assumed once the observed usage has exceeded the default window, in tokens. |
 | `ctxbudget.json_null` | `null` |  |  | The JSON literal null. |
@@ -3237,6 +3248,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `ctxbudget.set_ca_margin` | `10 entries` |  |  | The guards.compactAdviceMarginPct setting: context points below autoHandover.pct at which a /compact recommendation counts as low-context. |
 | `ctxbudget.set_ca_recent` | `10 entries` |  |  | The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a /compact recommendation a block (0: off). |
 | `ctxbudget.set_compact_advice_guard` | `8 entries` |  |  | The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or just after a compact. |
+| `ctxbudget.set_h_mem_chars` | `9 entries` |  |  | Most characters the MEMORY.md index may hold at a handover. |
+| `ctxbudget.set_h_mem_lines` | `9 entries` |  |  | Most lines the MEMORY.md index may hold at a handover. |
+| `ctxbudget.set_h_task_budget` | `9 entries` |  |  | Most active tasks the session task list may hold at a handover. |
+| `ctxbudget.set_h_task_subject` | `9 entries` |  |  | Longest task subject (characters) allowed at a handover. |
 | `ctxbudget.set_limit_account_check` | `8 entries` |  |  | The limitConserve.accountCheck setting: hold a high usage reading stale after an account switch until the cache is refreshed. |
 | `ctxbudget.set_limit_mode` | `9 entries` |  |  | The limitConserve.mode setting: force conservation on or off, or auto-detect from the usage cache. |
 | `ctxbudget.set_limit_threshold` | `10 entries` |  |  | The limitConserve.threshold setting: the usage percent at which conservation starts. |
