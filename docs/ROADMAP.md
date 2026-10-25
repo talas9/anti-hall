@@ -33,19 +33,19 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 2. [#310](https://github.com/talas9/anti-hall/issues/310) → [#312](https://github.com/talas9/anti-hall/issues/312) → [#311](https://github.com/talas9/anti-hall/issues/311) → [#313](https://github.com/talas9/anti-hall/issues/313) → [#314](https://github.com/talas9/anti-hall/issues/314) → [#316](https://github.com/talas9/anti-hall/issues/316) → [#225](https://github.com/talas9/anti-hall/issues/225) → [#315](https://github.com/talas9/anti-hall/issues/315)
 3. The issue groups below, highest priority first.
 
-### Issue groups (open children, from each parent's child list on 2026-10-25)
+### Issue groups (children are tracked in each parent issue)
 
-| Parent | Group | Open children |
-|---|---|---|
-| [#307](https://github.com/talas9/anti-hall/issues/307) | Effectiveness gap: Node vs engine | 8 |
-| [#326](https://github.com/talas9/anti-hall/issues/326) | Node-to-engine migration parity bugs | 3 |
-| [#327](https://github.com/talas9/anti-hall/issues/327) | DevSwarm and mesh reliability | 4 |
-| [#328](https://github.com/talas9/anti-hall/issues/328) | CI and test hygiene | 9 |
-| [#329](https://github.com/talas9/anti-hall/issues/329) | Security alerts and supply chain | 4 |
-| [#330](https://github.com/talas9/anti-hall/issues/330) | Install, deploy and update integrity | 3 |
-| [#331](https://github.com/talas9/anti-hall/issues/331) | Backlog: parked features and research | 11 |
-| [#16](https://github.com/talas9/anti-hall/issues/16) | v1.0 no-Node umbrella | 16 |
-| [#158](https://github.com/talas9/anti-hall/issues/158), [#266](https://github.com/talas9/anti-hall/issues/266), [#289](https://github.com/talas9/anti-hall/issues/289), [#270](https://github.com/talas9/anti-hall/issues/270) | Engine safety rows, Command Center, rules as data, runaway token burn | tracked in each issue |
+| Parent | Group |
+|---|---|
+| [#307](https://github.com/talas9/anti-hall/issues/307) | Effectiveness gap: Node vs engine |
+| [#326](https://github.com/talas9/anti-hall/issues/326) | Node-to-engine migration parity bugs |
+| [#327](https://github.com/talas9/anti-hall/issues/327) | DevSwarm and mesh reliability |
+| [#328](https://github.com/talas9/anti-hall/issues/328) | CI and test hygiene |
+| [#329](https://github.com/talas9/anti-hall/issues/329) | Security alerts and supply chain |
+| [#330](https://github.com/talas9/anti-hall/issues/330) | Install, deploy and update integrity |
+| [#331](https://github.com/talas9/anti-hall/issues/331) | Backlog: parked features and research |
+| [#16](https://github.com/talas9/anti-hall/issues/16) | v1.0 no-Node umbrella |
+| [#158](https://github.com/talas9/anti-hall/issues/158), [#266](https://github.com/talas9/anti-hall/issues/266), [#289](https://github.com/talas9/anti-hall/issues/289), [#270](https://github.com/talas9/anti-hall/issues/270) | Engine safety rows, Command Center, rules as data, runaway token burn |
 
 Every open issue carries one `priority:P0`–`P3` label.
 
