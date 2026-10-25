@@ -24,12 +24,18 @@ short-lived branch ──► dev ──► pull request ──► main ──►
 
 ## CI layout
 
+Required checks and the working rules are in [Development guide](DEVELOPMENT.md#merge-model).
+
 | When | What runs |
 |---|---|
-| Pull requests | Lean run: Node 24, Linux and macOS shards |
-| Release candidate tags, tags, pushes to `main`, weekly | Full matrix: Linux and macOS, Node 22 and 24 |
-| Nightly | Engine parity suites and timing benchmarks, kept out of the per-PR run |
-| Pull requests touching docs | Strict docs build (broken links or pages fail it) |
+| Pull request or push to `dev`, touching engine, launcher, plugin engine files | `ah-engine` workflow: `rust` (Linux gate with `./test.sh`, macOS build and smoke), `ah-hook` build on both, `doc-check` |
+| Pull request touching `ah-engine/`, `ah-launcher/`, `plugins/anti-hall/` | `no-node` (Linux and macOS) |
+| Every pull request | `tests-passed` (placeholder), `privacy-scan`, `pr-title`, PR check labels |
+| Pull request to `main` | `dev-only` (source must be `dev`); strict docs build when docs change |
+| Push to `main` | docs deploy (when docs change), `tests-passed`, `privacy-scan` |
+| Nightly and weekly | Full engine suite on both OSes, hardening bar, weekly full `doc-check`; a failure opens or updates one issue |
+
+Pushes to `dev` run the path-filtered engine workflow and the privacy scan only.
 
 ## Repo automation
 
