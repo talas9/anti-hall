@@ -476,6 +476,11 @@ pub(super) fn run(r: &Run) -> Vec<(String, J)> {
         t_ingest.elapsed().as_micros() as u64,
     );
     let mut answers: Vec<(String, J)> = vec![("ingestHeal".into(), ingest)];
+    let mut repairs = Vec::new();
+    let ctx = r.migrate_ctx();
+    migrate::hooks_upgrade(&ctx, &mut repairs);
+    Run::log_notes(&ctx);
+    answers.extend(repairs.into_iter().map(|row| (row.id.clone(), row.to_j())));
     let rows = defaults::raw("update_post.stages").as_array().unwrap_or(&[]);
     let deadline = (r.budget_ms > 0).then(|| now_ms() + r.budget_ms);
     for row in rows {

@@ -1893,6 +1893,27 @@ value = "AH_UPDATE_NO_ATTEST"
 doc = "A hook command in the direct form: run the installed thin client, else the installer. Placeholders: {event}, {host_args}, {prefix} (the plugin root variable or path)."
 value = "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" {event}{host_args} || exec sh \"{prefix}/hooks/install.sh\" {event}{host_args}"
 
+[hooks_form.retired_command_re]
+doc = "Complete retired anti-hall hook command accepted by launcher repair and missing-launcher diagnosis. Captures: launcher, prefix, event, host; arbitrary shell commands are left alone."
+value = '^\s*(?:exec\s+)?sh\s+"(?P<launcher>(?P<prefix>[^"\r\n]+)/hooks/ah-hook\.sh)"\s+(?P<event>[A-Za-z][A-Za-z0-9]*)(?:\s+--host\s+(?P<host>claude|codex))?\s*$'
+
+[hooks_form.repair_targets]
+doc = "Hook registrations upgraded by update and doctor repair. Only matched anti-hall commands change; home and cwd cover user and project Codex installs, root covers both shipped host registrations."
+value = [
+  { host = "codex", path = "{home}/.codex/hooks.json" },
+  { host = "codex", path = "{cwd}/.codex/hooks.json" },
+  { host = "claude", path = "{root}/hooks/hooks.json" },
+  { host = "codex", path = "{root}/codex/hooks/hooks.json" },
+]
+
+[hooks_form.repair_id]
+doc = "Report identifier of the unstamped, idempotent retired-hook-launcher migration."
+value = "hooks-launcher"
+
+[hooks_form.repair_done]
+doc = "Successful hook launcher migration, after an exclusive backup and atomic replacement. Placeholders: n, file."
+value = "rewrote {n} retired anti-hall hook command(s) in {file}; backup saved beside the file"
+
 [hooks_form.host_claude]
 doc = "The name of the Claude host."
 value = "claude"

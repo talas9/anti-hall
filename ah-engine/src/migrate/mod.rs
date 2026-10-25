@@ -580,7 +580,53 @@ pub fn run(ctx: &Ctx) -> Vec<Row> {
     heal_registry_rows(ctx, &mut rows);
     sweeps::all(ctx, &mut rows);
     statusline_upgrade(ctx, &mut rows);
+    hooks_upgrade(ctx, &mut rows);
     rows
+}
+
+/// Upgrade retired hook launchers on both hosts, including user and project Codex registrations. No version stamp: a copied
+/// old registration must be repaired even after an earlier pass. Unreadable or invalid files are left alone.
+pub(crate) fn hooks_upgrade(ctx: &Ctx, rows: &mut Vec<Row>) {
+    let id = defaults::text("hooks_form.repair_id");
+    let mut seen = std::collections::BTreeSet::new();
+    for target in defaults::raw("hooks_form.repair_targets").as_array().unwrap_or_default() {
+        let template = target.str_field("path");
+        if (template.contains("{home}") && ctx.home.is_empty())
+            || (template.contains("{cwd}") && ctx.cwd.is_empty())
+            || (template.contains("{root}") && ctx.plugin_root.as_deref().is_none_or(str::is_empty))
+        {
+            continue;
+        }
+        let path = PathBuf::from(defaults::fill(template, &[("home", &ctx.home), ("cwd", &ctx.cwd), ("root", &ctx.plugin_root.as_deref().unwrap_or(""))]));
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(text) = read_text_note(ctx, &path) else { continue };
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let n = crate::hooksgen::upgrade_hooks(&mut value, target.str_field("host"));
+        if n == 0 {
+            continue;
+        }
+        let body = match serde_json::to_string_pretty(&value) {
+            Ok(body) => body + "\n",
+            Err(e) => {
+                rows.push(Row::new(id, id, "failed", e.to_string()));
+                continue;
+            }
+        };
+        match crate::operator::install_codex::write_changed(&path, &body, ctx.dry_run) {
+            Ok(_) => rows.push(Row::new(
+                id,
+                id,
+                if ctx.dry_run { "skipped" } else { "fixed" },
+                defaults::render(
+                    if ctx.dry_run { "doctor_l.msg_repair_hooks_would" } else { "hooks_form.repair_done" },
+                    &[("n", &n), ("file", &path.display())],
+                ),
+            )),
+            Err(e) => rows.push(Row::new(id, id, "failed", e)),
+        }
+    }
 }
 
 /// Engine only (Node's repair pass has no such step): a status line command that still runs the retired shell wrapper runs the thin
