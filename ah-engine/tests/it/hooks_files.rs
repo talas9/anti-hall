@@ -30,7 +30,7 @@ fn every_committed_generated_file_equals_the_generators_output_byte_for_byte() {
                 let line =
                     want.lines().zip(got.lines()).position(|(w, g)| w != g).map(|n| n + 1).unwrap_or_else(|| want.lines().count().min(got.lines().count()) + 1);
                 panic!(
-                    "{host} {kind}: {rel} differs from `ah-engine gen-hooks --host {host} --kind {kind}` at line {line}; run ah-gen-fallback-list --repo .."
+                    "{host} {kind}: {rel} differs from `ah-engine gen-hooks --host {host} --kind {kind}` at line {line}; run `cargo run -q --bin ah-regen` (from ah-engine/) and commit"
                 );
             }
         }
