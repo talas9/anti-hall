@@ -1519,3 +1519,53 @@ fn every_end_signal_ends_a_silent_running_agent() {
         assert_eq!(signals::state_of(agent(&st, "ax-1")), "done", "end signal {case} must end the agent");
     }
 }
+
+/// Measurement (b), issue #338 item 8: six completion wake rows arrive back to back. Lines the watcher prints for them: before (window 0,
+/// the old behaviour) one each; after (`agents.wakeCoalesceSeconds`) ONE line that counts rows per agent. The tracker rows are the
+/// engine's own; the host's task-notification messages are not printed by this process and are not touched.
+fn wake_burst_lines(window_secs: &str) -> Vec<String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let h = home(&format!("burst-{window_secs}"));
+    let n = now0();
+    let mut e = env(&h, n);
+    e.settings.env.insert("ANTIHALL_AGENT_WAKE_COALESCE_SECONDS".into(), window_secs.into());
+    let (seen, stop) = (Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(AtomicBool::new(false)));
+    let t = {
+        let (seen, stop) = (Arc::clone(&seen), Arc::clone(&stop));
+        let mut e2 = env(&h, n);
+        e2.settings.env = e.settings.env.clone();
+        std::thread::spawn(move || {
+            wake::pump(&e2, "parent", std::time::Duration::from_millis(20), &mut |l| seen.lock().unwrap().push(l.to_string()), &|| stop.load(Ordering::Relaxed))
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let feed = sinks::WakeFeed::file(&e, "parent");
+    std::fs::create_dir_all(feed.parent().unwrap()).unwrap();
+    for (i, (agent, signal)) in [("w1", "watched_exit"), ("w1", "idle_open_task"), ("w2", "watched_exit"), ("w2", "watched_exit"), ("w3", "no_work"), ("w1", "watched_exit")]
+        .into_iter()
+        .enumerate()
+    {
+        let row = json!({"id": format!("r{i}"), "ts": n, "signal": signal, "agent": agent, "text": format!("{agent} {signal}")});
+        sinks::append(&feed, &row).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(if window_secs == "0" { 300 } else { 1500 }));
+    let during = seen.lock().unwrap().clone();
+    stop.store(true, Ordering::Relaxed);
+    t.join().unwrap();
+    assert_eq!(during, seen.lock().unwrap().clone(), "nothing more is printed at stop once the window has passed");
+    during
+}
+
+#[test]
+fn six_wake_rows_in_a_burst_print_six_lines_before_and_one_coalesced_line_after() {
+    let before = wake_burst_lines("0");
+    let after = wake_burst_lines("1");
+    eprintln!("MEASURE b: before (window 0) {} lines: {before:?}", before.len());
+    eprintln!("MEASURE b: after  (window 1s) {} line(s): {after:?}", after.len());
+    assert_eq!(before.len(), 6, "{before:?}");
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(after[0].starts_with("[agent-wake] 6 wake rows in "), "{after:?}");
+    assert!(after[0].contains("w1 x3 (watched_exit, idle_open_task)") && after[0].contains("w2 x2 (watched_exit)") && after[0].contains("w3 x1 (no_work)"), "{after:?}");
+}

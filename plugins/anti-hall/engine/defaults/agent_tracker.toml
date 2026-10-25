@@ -260,6 +260,22 @@ value = "{prefix} a mesh message is waiting for workspace {id}. Run `~/.anti-hal
 doc = "The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}."
 value = "[agent-wake] {text}"
 
+[agent_tracker.wake_coalesce_setting]
+doc = "Where the wake-coalescing window of the session wake-watch is read from (agents.wakeCoalesceSeconds, seconds, default 20, 0 = off: every wake row prints at once). Wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line."
+value = { type = "number", section = "agents", key = "wakeCoalesceSeconds", env = "ANTIHALL_AGENT_WAKE_COALESCE_SECONDS", option = "", min = 0, max = 600, default = 20 }
+
+[msg.agent_wake_merged]
+doc = "The one stdout line the wake-watch prints for several wake rows coalesced in a window. Placeholders: {n} (rows), {secs} (span from the first to the last row, rounded up), {items} (msg.agent_wake_merged_item per agent, joined by agent_tracker.wake_merge.item_sep)."
+value = "[agent-wake] {n} wake rows in {secs}s: {items}. Full texts arrive with your reminders."
+
+[msg.agent_wake_merged_item]
+doc = "One agent of a coalesced wake line. Placeholders: {agent}, {n} (its rows), {signals} (its distinct signals joined by agent_tracker.wake_merge.signal_sep)."
+value = "{agent} x{n} ({signals})"
+
+[agent_tracker.wake_merge]
+doc = "Separators of a coalesced wake line: item_sep between agents, signal_sep between one agent's signals."
+value = { item_sep = "; ", signal_sep = ", " }
+
 [msg.agent_wake_refused]
 doc = "Printed by a wake-watch started by hand (not --auto) that declines to arm. Placeholder: {reason}."
 value = "[agent-wake] not armed: {reason}"

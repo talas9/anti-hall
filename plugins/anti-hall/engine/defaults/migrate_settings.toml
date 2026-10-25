@@ -137,6 +137,7 @@ value = [
   "{\"section\":\"agents\",\"key\":\"tracker\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_TRACKER\"}",
   "{\"section\":\"agents\",\"key\":\"reminders\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_REMINDERS\"}",
   "{\"section\":\"agents\",\"key\":\"wakeWatch\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_AGENT_WAKE_WATCH\"}",
+  "{\"section\":\"agents\",\"key\":\"wakeCoalesceSeconds\",\"type\":\"number\",\"default\":20,\"min\":0,\"max\":600,\"env\":\"ANTIHALL_AGENT_WAKE_COALESCE_SECONDS\"}",
   "{\"section\":\"agents\",\"key\":\"ownerNotify\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_AGENT_OWNER_NOTIFY\"}",
   "{\"section\":\"agents\",\"key\":\"burnBreaker\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_BURN_BREAKER\"}",
   "{\"section\":\"guards\",\"key\":\"uncommittedWork\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_UNCOMMITTED_GUARD\"}",
