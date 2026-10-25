@@ -57,6 +57,7 @@ What the automatic guards check and how to read a block.
 - `handover.memoryIndexMaxLines` = 100: Most lines the MEMORY.md index may hold at a handover
 - `handover.taskListBudget` = 12: Most active tasks the session task list may hold at a handover
 - `handover.taskSubjectMax` = 60: Longest task subject (characters) allowed at a handover
+- `guards.pushedNotDone` = true: Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look...
 - `guards.allowNestedSpawns` = false: Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of...
 - `guards.spawnCeiling` = true: The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op
 - `guards.usageAwareDispatch` = true: The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op
