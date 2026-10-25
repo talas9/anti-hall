@@ -1077,7 +1077,11 @@ fn a_main_session_with_running_agents_and_no_wake_path_is_told_and_a_live_watche
         );
         if armed {
             std::fs::create_dir_all(h.join(".anti-hall/agent-tracker/wake")).unwrap();
-            std::fs::write(h.join(".anti-hall/agent-tracker/wake/m1.armed"), "{}").unwrap();
+            let stamp = h.join(".anti-hall/agent-tracker/wake/m1.armed");
+            std::fs::write(&stamp, "{}").unwrap();
+            // The last tick is exactly stale_lock_ms after n. Linux's coarse filesystem clock can stamp
+            // a new file before n, so pin the fixture to the simulated clock instead of wall-clock mtime.
+            std::fs::File::options().write(true).open(&stamp).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(n)).unwrap();
         }
         let mut st = State::default();
         ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
