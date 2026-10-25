@@ -549,7 +549,9 @@ function decide(p) {
   var kPrune = ah.cfg('advisory.kind_task_guard_prune');
   var gPrune = fresh !== null && fresh.pruneLine !== '' ? adv.decide(kPrune, session, fresh.pruneLine, advState) : null;
   var lineParts = [];
-  if (gPrune !== null && gPrune.emit) lineParts.push(fresh.pruneLine);
+  // the prune note leads the text on a line of its own, never trailing the long reminder: the prompt digest (inject_gate.digest_hooks) keeps
+  // only the first line of an advisory inline and spills the rest to a file, so a note anywhere else is produced and never seen
+  var pruneOut = gPrune !== null && gPrune.emit ? fresh.pruneLine : '';
   if (gDemand !== null && gDemand.emit) lineParts.push(fresh.demand);
   if (gOpen !== null && gOpen.emit) lineParts.push(fresh.openLine);
   var freshLine = lineParts.join(ttT('freshness_joiner'));
@@ -613,13 +615,14 @@ function decide(p) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }
-  var finalText = [emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
+  var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
+  var finalText = [pruneShown, emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
   // count the tables: delivered ones are recorded as injected (and their hash remembered), held-back ones as suppressed
   var delivered = emit && finalText.indexOf(freshLine) >= 0 && freshLine !== '';
   [[gPrune, fresh !== null ? fresh.pruneLine : ''], [gDemand, fresh !== null ? fresh.demand : ''], [gOpen, fresh !== null ? fresh.openLine : '']].forEach(function (g) {
     if (g[0] === null) return;
     if (!g[0].emit) adv.commit(g[0]);
-    else if (delivered) adv.commit(g[0]);
+    else if (g[0] === gPrune ? pruneShown !== '' : delivered) adv.commit(g[0]);
     else { adv.metric(g[0].kind, 'flagged'); adv.metric(g[0].kind, 'suppressed'); } // the dedupe store held the whole text back; the table stays due
   });
   var shownDemand = gDemand !== null && gDemand.emit && delivered && plan !== null ? plan.demandShown : 0;

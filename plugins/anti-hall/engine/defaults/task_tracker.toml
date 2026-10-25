@@ -55,8 +55,8 @@ doc = "The protocol level at which the directive keeps the non-blocking clause (
 value = "full"
 
 [task_tracker.prune_line]
-doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model."
-value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn."
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline."
+value = "[task-guard] {n} completed/cancelled tasks (> {limit}): log them in the history ledger, then prune with TaskUpdate status=deleted."
 
 [task_tracker.event]
 doc = "The hook event name in the output."
