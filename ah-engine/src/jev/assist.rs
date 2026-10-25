@@ -1535,7 +1535,9 @@ mod tests {
         let soft = defaults::num("jev.stop_soft_ms");
         assert!(!jev.note_if_slow("speculation", soft, true), "at the limit is not over it");
         assert!(jev.note_if_slow("speculation", soft + 1, true));
-        assert!(!jev.note_if_slow("speculation", soft + 1, false), "the same time is inside the ordinary soft limit");
+        // a non-stop call is judged against jev.soft_ms, not the stop limit (the two are tuned independently in jev.toml)
+        let ordinary = defaults::num("jev.soft_ms");
+        assert!(!jev.note_if_slow("speculation", ordinary, false), "at the ordinary soft limit is not over it");
         assert_eq!(jev.stats.slow.load(Ordering::Relaxed), 1);
         assert!(soft < defaults::num("jev.stop_hard_ms"));
     }

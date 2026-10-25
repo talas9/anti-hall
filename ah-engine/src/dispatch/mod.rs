@@ -24,6 +24,7 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod combine;
+pub mod digest;
 pub mod inject;
 pub mod native;
 pub mod node;
@@ -843,15 +844,23 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
+    if parsed.is_some() {
+        digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
+    }
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
+    if !guard {
+        spill::order_by_priority(&mut results); // #311: blocks and decisions are never reordered below advisories; context is highest priority first
+    }
     match combine::combine_for(&results, keep_advisories) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
             // that does not exist yet, and exit 75 would lose it. A guard event therefore never gets 75 (its decisions
             // are delivered, the host spills the over-cap context itself).
-            let plain = o.code == 0 && !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out));
+            // a guard event with a block is delivered one hook after another (below); any other event keeps its block fields and only
+            // the context is trimmed (#311: a block next to an over-cap context used to leave the whole spill to the host)
+            let plain = o.code == 0 && (!guard || !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out)));
             let Some((len, cap)) = over_cap(args, &results, &o.out).filter(|_| plain) else { return o };
             crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
             health::log_event("dispatch_context_over_cap", &args.event, &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]));

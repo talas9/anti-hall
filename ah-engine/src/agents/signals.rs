@@ -116,8 +116,14 @@ fn looping(a: &Agent) -> Option<Raised> {
     errs.values().find(|(n, _)| *n >= lim("error_repeats")).map(|(n, lab)| (*n, lab.to_string()))
 }
 
-fn token_waste(a: &Agent, now: u64) -> Option<Raised> {
-    if !running(a) {
+/// Whether the owner has talked to this session lately (a main or workspace session whose owner's last message is within
+/// `limits.owner_active_ms`): such a session is not wasting tokens, the owner is steering it (agents.nudgeOwnerActive).
+pub(crate) fn owner_active(env: &Env, a: &Agent, now: u64) -> bool {
+    a.owner_ms > 0 && now.saturating_sub(a.owner_ms) < lim("owner_active_ms") && !super::is_child(a) && env.switch("agent_tracker.owner_active_setting")
+}
+
+fn token_waste(env: &Env, a: &Agent, now: u64) -> Option<Raised> {
+    if !running(a) || owner_active(env, a, now) {
         return None;
     }
     let from = now.saturating_sub(lim("waste_window_ms"));
@@ -231,10 +237,13 @@ fn drift(a: &Agent) -> Option<Raised> {
     if (step.len() as u64) < lim("drift_min_step_words") {
         return None;
     }
+    // the work is compared with the declared step AND the agent's own task description (a stale step text, or one worded differently
+    // from the files and commands it works on, is not drift while the work belongs to the task it was given)
+    let goal: BTreeSet<String> = step.iter().cloned().chain(words(&a.name)).collect();
     let work: BTreeSet<&String> = a.work.iter().collect();
-    let hit = step.iter().filter(|w| work.contains(w)).count() as u64;
-    let pct = hit * fmtn("pct") / step.len() as u64;
-    (pct <= lim("drift_max_overlap_pct")).then(|| (pct, a.step.clone()))
+    let hit = goal.iter().filter(|w| work.contains(w)).count() as u64;
+    let pct = hit * fmtn("pct") / goal.len() as u64;
+    (pct <= lim("drift_max_overlap_pct") && hit < lim("drift_min_hits")).then(|| (pct, a.step.clone()))
 }
 
 fn heartbeat_stale(a: &Agent, now: u64) -> Option<Raised> {
@@ -323,7 +332,7 @@ fn raise(env: &Env, a: &Agent, st: &State, now: u64) -> BTreeMap<&'static str, R
         let r = match s {
             "hung" => hung(a, now),
             "looping" => looping(a),
-            "token_waste" => token_waste(a, now),
+            "token_waste" => token_waste(env, a, now),
             "burn_soft" => burn(env, a, now, true),
             "burn_hard" => burn(env, a, now, false),
             "agent_waste" => super::waste::raised(a),
@@ -497,7 +506,10 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     let day = fmtn("day_ms");
     a.sent_log.retain(|(_, t)| now.saturating_sub(*t) < day);
     let once = cd.and_then(|c| c.get("once")).and_then(V::as_bool).unwrap_or(false);
-    let why = if once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0) {
+    let step_hash = crate::health::fnv(&a.step);
+    let already_once = once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0);
+    let drift_same_step = sig == "drift" && lim("drift_once_per_step") > 0 && a.drift_step == step_hash;
+    let why = if already_once || drift_same_step {
         Some("once")
     } else if a.last_sent.get(sig).is_some_and(|t| now.saturating_sub(*t) < cool) {
         Some("cooldown")
@@ -556,6 +568,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
         *queued += 1;
         a.last_sent.insert(sig.into(), now);
         a.sent_log.push((sig.into(), now));
+        if sig == "drift" {
+            a.drift_step = step_hash;
+        }
         if let Some(f) = a.flags.get_mut(sig)
             && f.reminded_at == 0
         {

@@ -47,6 +47,7 @@ pub fn note_dropped(guard: bool, check: &str, event: &str, reason: &str) {
     LAST_DROP.with(|l| *l.borrow_mut() = Some(reason.to_string()));
     let kind = if guard { crate::defaults::text("answer_drop.kind_guard") } else { crate::defaults::text("answer_drop.kind_optional") };
     crate::metrics::bump("answers_dropped", &[("event", event), ("kind", kind), ("reason", reason)]);
+    crate::metrics::bump("delivery_lost", &[("check", check), ("reason", reason)]);
     let mut m = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
     if m.len() < crate::defaults::num("answer_drop.dropped_keys_max") as usize || m.contains_key(&format!("{kind}:{reason}")) {
         *m.entry(format!("{kind}:{reason}")).or_default() += 1;

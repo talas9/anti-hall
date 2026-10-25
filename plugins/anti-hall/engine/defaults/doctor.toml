@@ -2202,6 +2202,10 @@ value = "Jev call failed via {transport}: {why} (after {ms} ms)"
 doc = "Finding: Jev is enabled but no API key resolves for its transport, so the test call was not made. Placeholder: {transport}."
 value = "Jev is enabled but has no API key for {transport}"
 
+[doctor_msg.delivery_shed]
+doc = "Finding: answers of checks that must never be shed (diagnostics.shed_never) were shed. Placeholder: {n}."
+value = "{n} answer(s) of essential reminders were shed under load; see `ah-engine status` (delivery) and the event log"
+
 [doctor_msg.fail_open_soft]
 doc = "Finding: the engine has failed open more often than the soft limit in the recent window. Placeholders: {n}, {window}, {top}, {effect}."
 value = "the engine failed open {n} times in the last {window}s (most often {top}: {effect}); see `ah-engine status` (fail_open) and the event log"

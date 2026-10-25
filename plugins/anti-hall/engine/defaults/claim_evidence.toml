@@ -13,7 +13,7 @@ doc = "Switch guards.claimEvidence (default on): off lets a reply assert a check
 value = { section = "guards", key = "claimEvidence", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE", option = "", default = true }
 
 [claim_evidence.sw_pushed]
-doc = "Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state."
+doc = "Pushed work is not done switch. Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state."
 value = { section = "guards", key = "pushedNotDone", type = "boolean", env = "ANTIHALL_PUSHED_NOT_DONE", option = "", default = true }
 
 [claim_evidence.guard_name]

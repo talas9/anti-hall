@@ -52,7 +52,7 @@ function ttPick(home, rel, tp, now) {
   // a transcript that grows by the threshold on every turn would re-send the full directive each turn: growth re-sends it only once the
   // minimum gap since the last full directive has passed (the window still re-sends it on expiry)
   var grew = size >= 0 && lastSize >= 0 && size - lastSize >= ttN('growth_bytes') && now - lastFull >= ttN('growth_min_gap_ms');
-  return { full: !(fresh && !grew), size: size };
+  return { full: !(fresh && !grew), size: size, lastFull: lastFull, lastSize: lastSize };
 }
 
 // The Jev ask for a prompt (`askDetached` of integration `newRequest`): the spec (a cut through a surrogate pair drops the half pair).
@@ -79,6 +79,31 @@ function ttOwnerBlocked(t) {
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
 }
 
+// A task the demand line never names: any `blockedOn` value (the documented key, whoever it names) or a status that says it waits.
+function ttHeld(t) {
+  if (!ah.settings.bool('task_tracker.held_setting')) return false;
+  if (tk.blockedOnText(t) !== '') return true;
+  return new RegExp(ttT('held_status_re'), 'i').test(String(t.status || ''));
+}
+
+// Words of a task that name files (a path or a file name), lowercased.
+function ttFileTokens(t) {
+  var src = String(t.content || '') + ' ' + String(t.description || ''), out = [], m, re = new RegExp(ttT('file_token_re'), 'g');
+  while ((m = re.exec(src)) !== null) { out.push(m[0].toLowerCase()); if (m[0].length === 0) re.lastIndex++; }
+  return out;
+}
+
+// The text of the running agents (description and spawn prompt), lowercased, for the file-conflict test.
+function ttAgentTexts(tp, rows) {
+  var ids = {}, texts = [];
+  rows.forEach(function (r) { ids[r.id] = true; texts.push(String(r.description || '').toLowerCase()); });
+  var w = ah.transcript.agentsWindow(tp);
+  if (w !== null && !w.unsure && w.rows) w.rows.forEach(function (a) {
+    if (ids[a.id] && a.spawnInput && typeof a.spawnInput.prompt === 'string') texts.push(a.spawnInput.prompt.toLowerCase());
+  });
+  return texts;
+}
+
 // `classifyOpen(open, taskMap)`: the pending, unowned (or coordinator-owned) tasks no open blocker holds back.
 function ttActionable(open, tasks) {
   var done = ttT('done_statuses'), known = new Set(), notDone = new Set();
@@ -88,9 +113,26 @@ function ttActionable(open, tasks) {
     if (tk.statusLc(t) !== ttT('pending_status') || t.blockUnknown) return;
     if (t.owner && !mainOwner.test(t.owner)) return;
     if (ttOwnerBlocked(t)) return;
+    if (ttHeld(t)) return;
     if ((t.blockedBy || []).some(function (b) { return notDone.has(b) || !known.has(b); })) return;
     out.push(t);
   });
+  return out;
+}
+
+// A fingerprint of the open-task list (id, status, owner, blockedOn), so the short reminder can tell a changed list from an unchanged one.
+function ttListHash(tasks) {
+  return ah.sha1(tasks.filter(tk.isOpen).map(function (t) { return [t.id, tk.statusLc(t), t.owner || '', tk.blockedOnText(t)].join('|'); }).sort().join(';')).slice(0, 16);
+}
+
+// What the previous prompt left in the state file: {hash, quiet}.
+function ttChangeState(home, rel) {
+  var out = { hash: '', quiet: 0 }, f = jx.read(home + '/' + rel);
+  if (f.text === undefined || f.big) return out;
+  var r = jx.parse(f.text.trim());
+  if (r.unsure || r.invalid || !jx.isObj(r.v)) return out;
+  if (typeof r.v.openHash === 'string') out.hash = r.v.openHash;
+  if (ttFinite(r.v.quiet) && r.v.quiet >= 0) out.quiet = r.v.quiet;
   return out;
 }
 
@@ -326,9 +368,18 @@ function ttFresh(home, tp, sessionRaw, p) {
   var demand = '';
   if (ah.settings.bool('task_tracker.dd_setting')) {
     var actionable = ttActionable(open, tasks);
-    if (actionable.length >= 1) {
+    var stopped = ah.settings.bool('task_tracker.stop_setting') && sd.spawnStop(p) !== null; // the weekly-usage spawn stop: nothing can be dispatched
+    if (actionable.length >= 1 && !stopped) {
       var proof = ah.transcript.countProof(tp);
       if (proof.unsure) { ah.unable('task-tracker:count_proof_unsure'); proof = { rows: null, seen: [], windowBytes: 0 }; } // the running-agent count cannot be trusted
+      if (proof.rows !== null && proof.rows.length && ah.settings.bool('task_tracker.conflict_setting')) {
+        var texts = ttAgentTexts(tp, proof.rows);
+        actionable = actionable.filter(function (t) { // a task on a file a running agent already works on is not dispatched in parallel
+          return !ttFileTokens(t).some(function (f) { return texts.some(function (x) { return x.indexOf(f) >= 0; }); });
+        });
+      }
+    }
+    if (actionable.length >= 1 && !stopped) {
       var res = tk.evaluate(actionable, tasks, open, proof.rows, 0, false);
       if (res.fire) {
         var max = ttN('demand_show_max'), shown = res.dispatch.slice(0, max);
@@ -464,6 +515,20 @@ function decide(p) {
   var chosen = ttPick(home, stateRel, tp, now);
   var full = ttFull(codex), short = ttShort();
   var fresh = ttFresh(home, tp, sessionRaw, p);
+  // change-only: the short reminder speaks when the open-task list changed, or after `untracked_prompts` unchanged prompts (a request may
+  // be untracked); otherwise it is withheld. The full directive keeps its own window.
+  var ch = { hash: '', quiet: 0, hold: false, track: false };
+  if (fresh !== null) {
+    ch.hash = ttListHash(fresh.tasks);
+    ch.track = true;
+    if (!chosen.full && ah.settings.bool('task_tracker.change_setting')) {
+      var prev = ttChangeState(home, stateRel);
+      var changed = prev.hash !== ch.hash;
+      ch.quiet = changed ? 0 : prev.quiet + 1;
+      ch.hold = !changed && ch.quiet < ah.settings.num('task_tracker.untracked_prompts');
+      if (!ch.hold) ch.quiet = 0;
+    }
+  }
   var unknown = null;
   if (fresh !== null) unknown = tk.unknownNote(fresh.tasks, home, sessionRaw, ttT('unknown_tag'));
   var demand = ttResolvePending(home, sessionRaw, tp, !!p.transcript_path, now);
@@ -487,7 +552,8 @@ function decide(p) {
       open = freshLine === '' ? unknownNote : (unknownNote === '' ? freshLine : freshLine + ' ' + unknownNote);
       openAll = freshLineAll === '' ? unknownNote : (unknownNote === '' ? freshLineAll : freshLineAll + ' ' + unknownNote);
     }
-    var lead = chosen.full ? full : short;
+    var lead = chosen.full ? full : (ch.hold ? '' : short);
+    if (lead === '') return { text: open, textAll: openAll, open: open };
     return { text: open === '' ? lead : lead + ttT('note_joiner') + open, textAll: openAll === '' ? lead : lead + ttT('note_joiner') + openAll, open: open };
   }
   var every = ah.settings.num('verify_first.num_repeat_every');
@@ -508,9 +574,15 @@ function decide(p) {
   if (jev !== null) { try { ah.jev.ask(jev); } catch (e) { /* best effort, as Node's try/catch */ } }
   if (chosen.full) {
     try {
-      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(now), lastFullSize: chosen.size }));
+      var st = { lastFull: Math.floor(now), lastFullSize: chosen.size };
+      if (ch.track) { st.openHash = ch.hash; st.quiet = 0; }
+      ah.state.writeAtomic(stateRel, JSON.stringify(st));
       gk.pruneStale(ah.cfg('paths.base_dir'), ttT('prune_prefix'));
     } catch (e) { /* Node ignores a failed state write and injects regardless */ }
+  } else if (ch.track && ah.settings.bool('task_tracker.change_setting')) {
+    try {
+      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(chosen.lastFull), lastFullSize: chosen.lastSize, openHash: ch.hash, quiet: ch.quiet }));
+    } catch (e) { /* a lost write only repeats the reminder */ }
   }
   if (demand !== null) { try { ah.state.writeAtomic(demand.rel, demand.body); } catch (e) { /* lost silently, as Node's */ } }
   var plan = fresh !== null ? fresh.plan : null;
@@ -521,12 +593,13 @@ function decide(p) {
   var primaryBlock = '';
   if (primaryOn) primaryBlock = (dsid === null || should(primaryOpts())) ? primaryText : '';
   var t = c.text, out = t, emit = true;
-  if (dsid !== null) {
+  if (ch.hold) emit = c.open !== ''; // the short reminder is withheld; the open-task tables have their own change gate
+  else if (dsid !== null) {
     var o = { sessionId: dsid, key: ttT('dedupe_key'), content: c.textAll, transcriptPath: tp, normalize: normalize };
     if (t.indexOf(full) === 0) dedupe.record(o);
     else emit = should(o);
   }
-  if (emit && t.indexOf(short) === 0) {
+  if (emit && !ch.hold && t.indexOf(short) === 0) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }

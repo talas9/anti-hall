@@ -115,6 +115,11 @@ labelled with how it was measured in the README of `ah-engine/`.
   whose decision needs a running-agent scan, to the Node hook (D74). `task-tracker` (UserPromptSubmit) stays on Node: its
   output depends on the emit-dedupe state, the Jev decision-log row written on every prompt and the agent scan, which are
   other lanes' ports.
+- **Task-list hygiene.** `tasklist-hygiene` (PostToolUse and PreToolUse on `TaskCreate`/`TaskUpdate`, Claude only: Codex has no task
+  tools or task hook events) is an engine-only script. After a task is marked completed it tells the agent, in one line, to log the
+  outcome to the history ledger and delete the task; a subject over `handover.taskSubjectMax` or open tasks over
+  `handover.taskListBudget` get one advisory line with the numbers. `handover.taskListEnforce` (`off`, `advisory` default, `block`)
+  escalates the same breaches to refusing the call; `handover.taskDoneNote` switches the done line. Texts: `task_guards.toml`.
 - **DevSwarm role ports.** `devswarm-child-role` (SessionStart) and `devswarm-parent-gate` (Stop) share
   `checks/devswarm_role`. The Stop gate is a guard, so it is never weaker than Node (D74): the engine allows only where
   the Node hook exits silently before reading any mailbox (switch off, user skip, supervisor inactive, a child
@@ -1668,15 +1673,14 @@ output is not the plain exit-2 block, for example the JSON block `io.blockDecisi
 cap (10,000 characters on Claude, about 2,500 tokens on Codex); the dispatcher joins them into one value, which the
 host caps as a whole. A join of several hooks' contexts over the cap is therefore not delivered as separate values: the
 dispatcher logs `dispatch_context_over_cap`. On an event that cannot block it then spills natively
-(`dispatch.spill_over_cap`, on by default): the contexts that fit stay inline whole and in hook order, the rest is written
+(`dispatch.spill_over_cap`, on by default): the contexts that fit stay inline whole and in priority order (`dispatch.context_priority`; the hooks of an event that cannot block are combined highest priority first, `dispatch.priority_order`), the rest is written
 to a private file under `dispatch.spill_dir` in the state directory, and a last pointer line (`dispatch.msg_spill_pointer`)
 names it, so nothing is cut and no Node hook runs; the spill is logged (`dispatch_context_spilled`) and counted in telemetry
-as a `spill` event. It applies only when the join is exactly the hooks' contexts joined by `dispatch.context_joiner` and the
+as a `spill` event (per event in `status` `delivery.spills_by_event`; `delivery.pinned_spills` counts spills that had to take a context at or above `dispatch.context_pin_priority`). It applies only when the join is exactly the hooks' contexts joined by `dispatch.context_joiner` and the
 file can be written; otherwise (and with the spill off) the dispatcher prints a message on stderr and exits
 `dispatch.defer_exit` (75), asking its wrapper to run the Node hooks one by one as the host does, or, with
-`dispatch.defer_to_node` 0, delivers the join for the host to spill. Only a plain answer (exit 0, no JSON block) is handed
-back, so a block or a decision is never lost to it. On a guard event it never exits 75: it delivers the merged answer, and
-the host spills the over-cap context itself. **No Node (`dispatch.defer_to_node` 0).** The infrastructure, spent-budget and
+`dispatch.defer_to_node` 0, delivers the join for the host to spill. A block or decision next to an over-cap context on an event that cannot block keeps its fields; only the context is trimmed. On a guard event it never exits 75: it delivers the merged answer, and
+the host spills the over-cap context itself. **Delivery ledger (#312).** `status` `delivery.per_check` counts per check what it decided (a message or a block), what was delivered (the reply carrying it written in time), what the agent complied with (a `delivery.react` tool call within `delivery.react_window_calls` tool calls; `null` for a check with no row) or ignored, and what was shed or lost (`diagnostics.shed_never` lists the checks that are never shed; `delivery.essential_shed` must stay 0 and `doctor` warns otherwise). The counters behind it are the metrics `delivery_stage` (by check and stage), `delivery_lost` (by check and reason), `context_spills` (by event) and `context_spill_pinned`. `diagnostics.deadline_grace_ms` lets named checks start a little past the hard request deadline. **No Node (`dispatch.defer_to_node` 0).** The infrastructure, spent-budget and
 panic paths that otherwise exit 75 answer by themselves: an event that cannot block skips its hooks (logged as
 `dispatch_no_node_skipped`, one stderr line), a guard event follows `dispatch.failure_mode` for the path (`budget` and
 `infra` closed, `panic` open by default; `dispatch_no_node_closed` / `dispatch_no_node_open`). Each answer is counted in
