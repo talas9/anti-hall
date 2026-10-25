@@ -261,7 +261,7 @@ doc = "The stdout line the wake-watch prints for one wake row; this is what the 
 value = "[agent-wake] {text}"
 
 [agent_tracker.wake_coalesce_setting]
-doc = "Where the wake-coalescing window of the session wake-watch is read from (agents.wakeCoalesceSeconds, seconds, default 20, 0 = off: every wake row prints at once). Wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line."
+doc = "Wake rows merge into one line per window. Setting agents.wakeCoalesceSeconds (seconds, default 20, 0 = off: every wake row prints at once): wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line."
 value = { type = "number", section = "agents", key = "wakeCoalesceSeconds", env = "ANTIHALL_AGENT_WAKE_COALESCE_SECONDS", option = "", min = 0, max = 600, default = 20 }
 
 [msg.agent_wake_merged]

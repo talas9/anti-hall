@@ -1542,9 +1542,10 @@ fn wake_burst_lines(window_secs: &str) -> Vec<String> {
     std::thread::sleep(std::time::Duration::from_millis(150));
     let feed = sinks::WakeFeed::file(&e, "parent");
     std::fs::create_dir_all(feed.parent().unwrap()).unwrap();
-    for (i, (agent, signal)) in [("w1", "watched_exit"), ("w1", "idle_open_task"), ("w2", "watched_exit"), ("w2", "watched_exit"), ("w3", "no_work"), ("w1", "watched_exit")]
-        .into_iter()
-        .enumerate()
+    for (i, (agent, signal)) in
+        [("w1", "watched_exit"), ("w1", "idle_open_task"), ("w2", "watched_exit"), ("w2", "watched_exit"), ("w3", "no_work"), ("w1", "watched_exit")]
+            .into_iter()
+            .enumerate()
     {
         let row = json!({"id": format!("r{i}"), "ts": n, "signal": signal, "agent": agent, "text": format!("{agent} {signal}")});
         sinks::append(&feed, &row).unwrap();
@@ -1567,5 +1568,8 @@ fn six_wake_rows_in_a_burst_print_six_lines_before_and_one_coalesced_line_after(
     assert_eq!(before.len(), 6, "{before:?}");
     assert_eq!(after.len(), 1, "{after:?}");
     assert!(after[0].starts_with("[agent-wake] 6 wake rows in "), "{after:?}");
-    assert!(after[0].contains("w1 x3 (watched_exit, idle_open_task)") && after[0].contains("w2 x2 (watched_exit)") && after[0].contains("w3 x1 (no_work)"), "{after:?}");
+    assert!(
+        after[0].contains("w1 x3 (watched_exit, idle_open_task)") && after[0].contains("w2 x2 (watched_exit)") && after[0].contains("w3 x1 (no_work)"),
+        "{after:?}"
+    );
 }

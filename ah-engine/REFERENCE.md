@@ -2774,6 +2774,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.default_timeout_s` | `600` |  | s | The timeout of a Node hook whose hooks.json entry has none (0 in the table): the host's own default for a command hook (600 s on Claude per docs/KB-claude-code-hooks.md; Codex's default is not verified here, so the same bound is used). Never zero: a zero timeout would kill the hook at its first poll. |
 | `dispatch.defer_exit` | `75` |  |  | Exit code with which the dispatcher asks its wrapper to run the event's Node hooks one by one, as the host does (the joined output could not be delivered faithfully). EX_TEMPFAIL; the host reads it as a non-blocking hook error and shows stderr, so without a wrapper the deferral is visible, never silent. |
 | `dispatch.exact_chars` | `_- ,\|` |  |  | Besides letters and digits, the characters a Claude matcher may contain and still be an exact name or list. |
+| `dispatch.fail_open_counter` | `fail_open` |  |  | The status counter group (status.advisory.<group>.<check>) that counts the unanswered guard entries let through under guards.failOpenNonSafety. |
+| `dispatch.fail_open_notice_tag` | `dispatch-fail-open` |  |  | The once-per-session stamp tag of the notice told when a non-safety guard entry was let through unanswered. |
+| `dispatch.fail_open_setting` | `6 entries` |  |  | Non-safety guards pass when unanswered. Setting guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before. |
 | `dispatch.failure_mode` | `3 entries` |  |  | What a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, an entry whose check gave no answer, a lost table row, no engine answer) and `panic` (the dispatcher hit an internal error). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool. |
 | `dispatch.fallback_lists` | `2 entries` |  |  | Per host, the wrapper's fallback list relative to the plugin root (the same files as dispatch.generated_files): a defaults load is rejected when a list runs hooks for an event the table has no row for, and the dispatcher answers an event without a row with the neutral no-op only when this list marks it as a thin trigger. |
 | `dispatch.gen_default_kind` | `hooks` |  |  | The file `gen-hooks` prints when `--kind` is not given. |
@@ -2821,6 +2824,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `dispatch.msg_disabled_event` | `dispatcher switched off: {event} not dispatched` |  |  | Event-log detail for an event let through by a switched-off dispatcher. Placeholder: {event}. |
 | `dispatch.msg_fail_closed` | `anti-hall: the engine could not run the guards for {event} ({why}). The call ...` |  |  | Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}. |
 | `dispatch.msg_fail_closed_stop` | `anti-hall: the engine could not run the guards for {event} ({why}). The agent...` |  |  | Printed on stderr (exit 2) when a Stop or SubagentStop cannot run its guards and the block is still within dispatch.stop_block_cap. Placeholders: {event}, {why}. |
+| `dispatch.msg_fail_open_log` | `{check} ({event}): no answer, not a safety guard: let through` |  |  | Event-log detail of an unanswered non-safety guard entry that was let through. Placeholders: {check}, {event}. |
 | `dispatch.msg_hook_died` | `the hook was killed by a signal or could not be waited for` |  |  | Event-log detail when a Node hook was killed by a signal or could not be waited for. |
 | `dispatch.msg_hook_not_launched` | `no hook command is launched; the built-in check did not answer` |  |  | The reason a hook entry ends as one that could not run: the dispatcher launches no hook command; only a built-in check decides. |
 | `dispatch.msg_hook_spawn` | `the hook's command could not be started: {errno} {err}` |  |  | Event-log detail when a Node hook's command could not be started (the event code is the hook id). Placeholders: {errno} (os<n>, the OS error number), {err} (its text). |
@@ -5281,7 +5285,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `352 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `354 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7686,7 +7690,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `352 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `354 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8944,8 +8948,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `agent_tracker.tools` | `9 entries` |  |  | Tool names by role: edit (change a file), shell (run a command), agent (launch a subagent), todo (a task list rewrite), task_create (a new task-list item), task_update (a single task update), monitor / cron / wakeup (arm a wake path). |
 | `agent_tracker.transcript` | `42 entries` |  |  | Field and value names of the Claude Code transcript lines the tracker reads (the host's own format). |
 | `agent_tracker.wake` | `4 entries` |  |  | How long each kind of wake path keeps the session reachable, in milliseconds: monitor (a Monitor without persistent: true, which ends at its own cap), persistent (a persistent Monitor), cron (a CronCreate job), wakeup_slack (added to a ScheduleWakeup's own delay). |
+| `agent_tracker.wake_coalesce_setting` | `8 entries` |  |  | Wake rows merge into one line per window. Setting agents.wakeCoalesceSeconds (seconds, default 20, 0 = off: every wake row prints at once): wake rows that arrive within this window of the first unprinted one are printed as ONE line that counts rows per agent (msg.agent_wake_merged), so a burst of completions costs one host notification instead of one each. A single row in the window prints unchanged, up to the window late. The rows are also in the coordinator's reminder queue, so nothing is lost by merging the line. |
 | `agent_tracker.wake_command` | `exec "$HOME/.anti-hall/ah-engine/bin/ah-engine" devswarm wake-watch --auto` |  |  | The Monitor command that arms the DevSwarm wake-watch. It names the stable engine path and no plugin root: the engine finds the plugin itself, and a root pinned to one cached version goes stale at the next update. |
 | `agent_tracker.wake_flag_auto` | `--auto` |  |  | The option the plugin's monitor entry passes: the harness started the watcher at session start, so the expected refusals (switched off, no session id, already armed) print nothing. |
+| `agent_tracker.wake_merge` | `2 entries` |  |  | Separators of a coalesced wake line: item_sep between agents, signal_sep between one agent's signals. |
 | `agent_tracker.wake_poll_ms` | `1000` |  | ms | How often the wake-watch looks at its session's wake feed (a size check of one file), in milliseconds. A quiet session costs no tokens. |
 | `agent_tracker.wake_prefix` | `anti-hall wake:` |  |  | The first words of the prompt `workspace reactivate-child` queues. DevSwarm stores that prompt as a direct mesh row from the parent, so the engine recognises a wake row by this prefix and never counts it as mail: not in a workspace's unread count, not in the direct total the wake-watch edge-triggers on. The wake prompt is built from it (`msg.native_wake_prompt`). |
 | `agent_tracker.wake_session_env` | `CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, ANTIHALL_SESSION_ID` |  |  | The variables that name the session the wake-watch belongs to, in order; the first non-empty one is the key of its wake feed. |
@@ -13737,6 +13743,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `msg.agent_token_waste` | Advisory: an agent spends tokens with no progress. Placeholders: {agent}, {kind}, {tokens}, {window}. |
 | `msg.agent_usage` | Usage line of `ah-engine agents`. |
 | `msg.agent_wake_line` | The stdout line the wake-watch prints for one wake row; this is what the host delivers to the idle session. Placeholder: {text}. |
+| `msg.agent_wake_merged` | The one stdout line the wake-watch prints for several wake rows coalesced in a window. Placeholders: {n} (rows), {secs} (span from the first to the last row, rounded up), {items} (msg.agent_wake_merged_item per agent, joined by agent_tracker.wake_merge.item_sep). |
+| `msg.agent_wake_merged_item` | One agent of a coalesced wake line. Placeholders: {agent}, {n} (its rows), {signals} (its distinct signals joined by agent_tracker.wake_merge.signal_sep). |
 | `msg.agent_wake_reason_held` | Why the wake-watch did not arm: another live watcher already covers this session. |
 | `msg.agent_wake_reason_no_session` | Why the wake-watch did not arm: no session id in the environment. |
 | `msg.agent_wake_reason_off` | Why the wake-watch did not arm: a switch is off (agents.tracker or agents.wakeWatch). |

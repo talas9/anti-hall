@@ -255,7 +255,7 @@ max = 255
 
 
 [dispatch.fail_open_setting]
-doc = "guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before."
+doc = "Non-safety guards pass when unanswered. Setting guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, swarm-guard, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before."
 value = { section = "guards", key = "failOpenNonSafety", env = "ANTIHALL_FAIL_OPEN_NON_SAFETY", aliases = [], option = "", default = true }
 
 [dispatch.fail_open_counter]
