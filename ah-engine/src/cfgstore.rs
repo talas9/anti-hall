@@ -1113,6 +1113,7 @@ mod tests {
             "dispatch.in_process",
             "dispatch.max_timeout_s",
             "dispatch.spill_over_cap", // the over-cap SessionStart spill switch: one value for the whole daemon
+            "dispatch.priority_order", // the priority-order combine switch (#311): one value for the whole daemon, not per request
             "session.gitignore_probe_ms",
             "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
             "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request

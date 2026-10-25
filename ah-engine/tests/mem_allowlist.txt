@@ -112,3 +112,5 @@ script/mod.rs | CACHE | one library fingerprint snapshot for the current directo
 web/decisions.rs | RING | decisions.ring rows; drops oldest at cap | dashboard check decisions
 web/io.rs | Reg.names | io.max_clients slots, io.client_name_max characters each | dashboard client registry
 web/pulse.rs | SHA | web.build_sha_bytes rendered as hex, computed once | executable identity
+delivery.rs | DECIDED | thread-local; emptied by delivery::settle at the end of every request, so it holds only the answers of the request in flight | (session, check) of each message or block one request produced
+delivery.rs | PENDING | delivery.pending_sessions_max sessions (the oldest is evicted at the cap) times delivery.pending_per_session_max armed checks; an entry leaves on reaction, window or age (delivery.react_window_calls / react_window_ms) | armed checks waiting for the agent's reaction

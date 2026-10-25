@@ -419,3 +419,33 @@ value = { dispatched = "dispatched-", followed = "followed", overridden = "overr
 doc = "Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out."
 value = 3
 min = 1
+
+# ---- prompt-noise cut (#338): what the demand line leaves out, and when the short reminder speaks ----------------
+
+[task_tracker.held_setting]
+doc = "Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named."
+value = { section = "guards", key = "dispatchSkipHeld", env = "ANTIHALL_DISPATCH_SKIP_HELD", aliases = [], option = "", default = true }
+
+[task_tracker.held_status_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable."
+value = 'blocked|waiting|on[-_ ]?hold|deferred|parked'
+
+[task_tracker.conflict_setting]
+doc = "Where the switch is read from that keeps a task out of the DISPATCH NOW line when a running agent already works on a file it names (guards.dispatchSkipFileConflict, default on)."
+value = { section = "guards", key = "dispatchSkipFileConflict", env = "ANTIHALL_DISPATCH_SKIP_FILE_CONFLICT", aliases = [], option = "", default = true }
+
+[task_tracker.file_token_re]
+doc = "JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension."
+value = '(?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:rs|js|ts|tsx|toml|md|json|py|sh|yml|yaml|go|java|kt|swift|dart|css|html)\b'
+
+[task_tracker.stop_setting]
+doc = "Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on)."
+value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DISPATCH_QUIET_SPAWN_STOP", aliases = [], option = "", default = true }
+
+[task_tracker.change_setting]
+doc = "Where the switch is read from that makes the short reminder speak only when the open-task list changed or the list stayed untouched for untracked_prompts prompts (context.taskTrackerChangeOnly, default on). The full directive keeps its window."
+value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.untracked_prompts]
+doc = "Prompts with an unchanged open-task list after which the short reminder speaks again, because a request may have gone untracked (context.taskTrackerUntrackedPrompts)."
+value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }
