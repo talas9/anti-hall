@@ -1477,7 +1477,9 @@ mod speculation_stop_gate {
 
     const ON: [(&str, &str); 2] = [("ANTIHALL_JEV", "1"), ("CLAUDE_PLUGIN_OPTION_JEV_VERCEL_API_KEY", "vk")];
     /// No hedge word at all: the rule layer flags nothing.
-    const UNFLAGGED: &str = "The build is green and the change is merged.";
+    const UNFLAGGED: &str = "Here is the list of files in the directory.";
+    /// No hedge word, but an unhedged completion claim with no evidence in the reply: the claim gate flags it (#310).
+    const CLAIM: &str = "All done. The fix is complete and everything passes.";
     /// A hedge the reply itself acknowledges (a command it ran): flagged by the hit scan, yet the rule layer alone would not block.
     const FLAGGED: &str = "This probably fixes it, verified in main.js:42.";
 
@@ -1515,6 +1517,32 @@ mod speculation_stop_gate {
         assert!(fake.seen.lock().unwrap().is_empty(), "no request went to Jev");
         assert!(took < std::time::Duration::from_millis(defaults::num("jev.stop_soft_ms")), "{took:?}");
         assert!(format!("{:?}", drained(&jev)).contains("jev_skipped_unflagged"));
+    }
+
+    #[test]
+    fn an_unhedged_done_claim_without_evidence_is_asked_synchronously_and_blocked_on_a_confident_answer() {
+        let (v, jev, fake, _) = run("sg-gate-claim", CLAIM, &[], vec![ok(200, r#"{"answers":{"decision":{"noul":0.95}}}"#)]);
+        assert_eq!(fake.seen.lock().unwrap().len(), 1, "the unhedged claim was asked about, synchronously");
+        assert!(matches!(v, Some(Some(Verdict::Exact(_)))), "Jev's confident verdict added the block: {v:?}");
+        assert!(format!("{:?}", drained(&jev)).contains("jev_asked_sync"));
+    }
+
+    #[test]
+    fn an_unhedged_claim_that_cites_evidence_is_not_asked() {
+        let (v, _, fake, _) = run("sg-gate-claim-ack", "All done. Verified in main.js:42.", &[], vec![ok(200, r#"{"answers":{"decision":{"noul":0.9}}}"#)]);
+        assert_eq!(v, Some(Some(Verdict::Allow)), "{v:?}");
+        assert!(fake.seen.lock().unwrap().is_empty(), "a cited claim is not flagged");
+    }
+
+    #[test]
+    fn the_stop_jev_wait_fits_inside_the_request_and_client_windows() {
+        // jev.stop_hard_ms is the longest a flagged Stop waits; the daemon cuts a check at request_hard_ms - reply_slack_ms, and the
+        // client waits for a late reply up to slow_fallback_max_ms - slow_wait_margin_ms
+        let hard = defaults::num("jev.stop_hard_ms");
+        assert!(defaults::num("jev.stop_soft_ms") < hard);
+        assert!(hard <= defaults::num("jev.timeout_ms"), "no longer than Node's 1500 ms ceiling");
+        assert!(hard < defaults::num("daemon.request_hard_ms") - defaults::num("daemon.reply_slack_ms"));
+        assert!(defaults::num("daemon.request_hard_ms") < defaults::num("client.slow_fallback_max_ms") - defaults::num("client.slow_wait_margin_ms"));
     }
 
     #[test]

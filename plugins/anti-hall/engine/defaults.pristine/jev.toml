@@ -78,14 +78,14 @@ min = 1
 unit = "ms"
 
 [jev.stop_soft_ms]
-doc = "SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used."
-value = 500
+doc = "SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used. Only a Stop whose rule checks flagged a claim with evidence waits at all (jev.gate_enabled, speculation_guard.jev_gate), so the other Stops pay nothing."
+value = 800
 min = 1
 unit = "ms"
 
 [jev.stop_hard_ms]
-doc = "HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously."
-value = 1000
+doc = "HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously. 1500 equals jev.timeout_ms (Node's limit) and fits inside daemon.request_hard_ms less daemon.reply_slack_ms and the client late-reply wait; a late answer still lands in the cache and the log."
+value = 1500
 min = 1
 unit = "ms"
 
