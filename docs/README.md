@@ -84,6 +84,7 @@ reference and the changelog pages are generated at build time by `tools/site_gen
 | [`KB.md`](./KB.md) | Canonical knowledge-base index: current-plugin ground truth, topic → doc map, staleness ledger. Read this first. |
 | [`GUIDE.md`](./GUIDE.md) | Extended guide: hook reference, skills reference, statusline/config/troubleshooting, contributing. |
 | [`BENCHMARK-METHOD.md`](./BENCHMARK-METHOD.md) | Pre-registered with/without benchmark protocol: hypotheses, metrics, analysis, decision rule; suite in `evals/anti-hall/`. |
+| [`EFFECTIVENESS-AUDIT-2026-10.md`](./EFFECTIVENESS-AUDIT-2026-10.md) | Effectiveness audit, Oct 2026: Node vs engine findings and the baseline. |
 | [`E2E-TESTING.md`](./E2E-TESTING.md) | How hooks are verified now (cargo check, build, deploy, live check); per-event I/O contract. |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline design (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); basis for tasklist-guard. |
 | [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | Usage guide for the `tasklist-guard` Stop hook: progress/history file convention, env knobs, escape hatch. |
