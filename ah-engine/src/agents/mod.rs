@@ -202,6 +202,9 @@ pub struct Pending {
     /// A push command: a successful result counts a push (alongside `class`, which a `commit && push` line keeps as `commit`).
     #[serde(default)]
     pub push: bool,
+    /// A background subagent launch: its result is only the launch acknowledgement, the report comes later as a task notice.
+    #[serde(default)]
+    pub ack: bool,
 }
 
 /// A raised signal on one agent.
@@ -241,6 +244,9 @@ pub struct Ws {
     pub step: String,
     /// Plan steps done.
     pub done: u64,
+    /// The workspace is the Primary checkout of its project (judged by the checkout, whatever id the app registered it under).
+    #[serde(default)]
+    pub primary: bool,
 }
 
 /// Everything the tracker keeps about one agent.
@@ -422,6 +428,18 @@ pub struct Agent {
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.
     pub sent_log: Vec<(String, u64)>,
+    /// When the owner last sent this session a message (0 = not seen); only read for main and workspace sessions.
+    #[serde(default)]
+    pub owner_ms: u64,
+    /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
+    #[serde(default)]
+    pub reports: u64,
+    /// Task ids whose notice was already counted as a result (a task may notify more than once).
+    #[serde(default)]
+    pub report_ids: Vec<String>,
+    /// Hash of the step text the drift reminder was last sent for (0 = none): one drift reminder per declared step.
+    #[serde(default)]
+    pub drift_step: u64,
 }
 
 /// One day's totals.
@@ -490,6 +508,9 @@ pub struct State {
     /// Children the health judge called busy: no nudge until the time given.
     #[serde(default)]
     pub nudge_hold: BTreeMap<String, u64>,
+    /// Snoozes by child and trigger (`<child>|<trigger>`): they outlive the nudge they were given to (#333).
+    #[serde(default)]
+    pub nudge_snooze: BTreeMap<String, nudge::Snooze>,
 }
 
 impl State {

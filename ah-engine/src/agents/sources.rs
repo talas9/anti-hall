@@ -218,7 +218,7 @@ fn devswarm(env: &Env, st: &mut State) {
             .is_some_and(|c| crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
         let idle = primary && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
         let armed = Some(idle || watcher_armed(env, &id));
-        a.ws = Some(Ws { id: id.clone(), armed, step, done });
+        a.ws = Some(Ws { id: id.clone(), armed, step, done, primary });
         live_plan(env, &id, a, done);
     }
 }
