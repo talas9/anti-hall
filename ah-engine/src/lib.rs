@@ -27,11 +27,11 @@ pub mod db;
 pub mod deadline;
 pub mod debug;
 pub mod defaults;
+pub mod delivery;
 pub mod devswarm_rt;
 #[cfg(feature = "diag")]
 pub mod diag;
 pub mod discard;
-pub mod delivery;
 pub mod dispatch;
 pub mod docs;
 pub mod doctor;

@@ -155,7 +155,10 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
             crate::budget::note_dropped(guard_event, check, &meta.event, "client_gone");
             Answer::Defer
-        } else if !crate::deadline::in_time() && crate::script::cut_at_deadline(check, &meta.event) && crate::deadline::past_hard_ms() > deadline_grace_ms(check) {
+        } else if !crate::deadline::in_time()
+            && crate::script::cut_at_deadline(check, &meta.event)
+            && crate::deadline::past_hard_ms() > deadline_grace_ms(check)
+        {
             crate::script::cut(check, &meta.event);
             crate::budget::note_dropped(guard_event, check, &meta.event, "hard_deadline");
             Answer::Defer
