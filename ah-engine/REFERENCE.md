@@ -713,6 +713,10 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `hooks_form.host_codex` | `codex` |  |  | The name of the Codex host (the value of --host). |
 | `hooks_form.node_word` | `node` |  |  | The program name that marks Node on an entry path. |
 | `hooks_form.old_markers` | `ah-hook.sh, ah-run.sh` |  |  | Text in a hook or statusLine command that marks the retired shell wrappers. |
+| `hooks_form.repair_done` | `rewrote {n} retired anti-hall hook command(s) in {file}; backup saved beside ...` |  |  | Successful hook launcher migration, after an exclusive backup and atomic replacement. Placeholders: n, file. |
+| `hooks_form.repair_id` | `hooks-launcher` |  |  | Report identifier of the unstamped, idempotent retired-hook-launcher migration. |
+| `hooks_form.repair_targets` | `2 entries, 2 entries, 2 entries, 2 entries` |  |  | Hook registrations upgraded by update and doctor repair. Only matched anti-hall commands change; home and cwd cover user and project Codex installs, root covers both shipped host registrations. |
+| `hooks_form.retired_command_re` | `^\s*(?:exec\s+)?sh\s+"(?P<launcher>(?P<prefix>[^"\r\n]+)/hooks/ah-hook\.sh)"\...` |  |  | Complete retired anti-hall hook command accepted by launcher repair and missing-launcher diagnosis. Captures: launcher, prefix, event, host; arbitrary shell commands are left alone. |
 | `hooks_form.statusline_old_form` | `/scripts/ah-run.sh" --stdin statusline` |  |  | Texts that all appear in a statusLine command that runs the retired shell wrapper (after hooks_form.statusline_old_prefix). |
 | `hooks_form.statusline_old_prefix` | `sh ` |  |  | How a statusLine command that runs the retired shell wrapper starts. |
 | `hooks_form.statusline_template` | `"{client}" statusline` |  |  | The statusLine command in the thin-client form, which the migration (update, doctor --repair) writes in place of one that runs the retired shell wrapper. Placeholder: {client} (the installed ah-hook, absolute). |
@@ -5520,7 +5524,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_l.gh_name` | `gh` |  |  | The GitHub CLI program. |
 | `doctor_l.git_name` | `git` |  |  | The git program. |
 | `doctor_l.header_bytes` | `200` |  | bytes | How many bytes of the engine binary the doctor reads to tell what kind of program it is (ELF and Mach-O headers fit in 200). |
-| `doctor_l.hook_files` | `{root}/hooks/hooks.json, {root}/codex/hooks/hooks.json, {home}/.codex/hooks.j...` |  |  | The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. |
+| `doctor_l.hook_files` | `7 items` |  |  | The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project. |
 | `doctor_l.hooks_claude_rel` | `hooks/hooks.json` |  |  | Claude's hooks file, relative to the plugin root. |
 | `doctor_l.hooks_codex_rel` | `codex/hooks/hooks.json` |  |  | Codex's hooks file, relative to the plugin root. |
 | `doctor_l.install_health_fail` | `1` |  |  | 1 = a failed install-health check (old-form hook commands, Node on an entry path, extra shell files, a bad launcher shim, a missing thin client) fails the doctor; 0 = it only warns. |
@@ -5603,6 +5607,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `doctor_msg.codex_hooks_on` | `Codex config.toml ({label}) has the hooks feature enabled` |  |  | The Codex config enables hooks. Placeholder: {label}. |
 | `doctor_msg.codex_label_global` | `global` |  |  | The label of the home directory's Codex directory. |
 | `doctor_msg.codex_label_project` | `project` |  |  | The label of the project's Codex directory. |
+| `doctor_msg.codex_launcher_missing` | `Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine do...` |  |  | A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file. |
 | `doctor_msg.codex_missing` | `Codex hooks.json ({label}) missing — run `ah-engine install-codex`` |  |  | There is no Codex hooks file. Placeholder: {label}. |
 | `doctor_msg.codex_none` | `Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped` |  |  | No Codex configuration was found. |
 | `doctor_msg.codex_unwired` | `Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-eng...` |  |  | The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}. |
@@ -8328,7 +8333,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_install.features_nl_hooks` | `[features]\nhooks = true\n` |  |  | The replacement. |
 | `codex_install.features_with_hooks_re` | `(?m)\[features\][\s\S]*?^\s*hooks\s*=` |  |  | A [features] table that already sets `hooks`. |
 | `codex_install.heading` | `anti-hall Codex install ({scope}): {status}\n` |  |  | First output line. |
-| `codex_install.hook_group_re` | `/plugins/anti-hall/hooks/\|/hooks/ah-hook\.sh"` |  |  | A hook command that belongs to anti-hall (after backslashes become slashes): a path under its hooks directory, or its thin trigger. |
+| `codex_install.hook_group_re` | `/plugins/anti-hall/hooks/\|/hooks/ah-hook\.sh["\x27]\|/\.anti-hall/ah-engine/bi...` |  |  | An anti-hall hook command (after backslashes become slashes): its legacy hook directory, retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection. |
 | `codex_install.hooks_file` | `hooks.json` |  |  | The Codex hooks file inside it. |
 | `codex_install.line_config` | `- config: {path} {state}\n` |  |  | Output line. |
 | `codex_install.line_hooks` | `- hooks: {path} {state}\n` |  |  | Output line. |
@@ -8339,7 +8344,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `codex_install.separator` | `\n\n` |  |  | What replaces that trailing whitespace before an appended table. |
 | `codex_install.status_done` | `updated` |  |  | Status word. |
 | `codex_install.status_dry` | `would update` |  |  | Status word for --dry-run. |
-| `codex_install.thin_hooks_rel` | `codex/hooks/hooks.json` |  |  | The generated one-wrapper-call-per-event registration, relative to the plugin directory. |
+| `codex_install.thin_hooks_rel` | `codex/hooks/hooks.json` |  |  | The shipped thin-client registration path, relative to the plugin directory (used in diagnostics; installation renders the current dispatch table). |
 | `codex_install.trailing_ws_re` | `\s*$` |  |  | Trailing whitespace of a file. |
 | `codex_install.unchanged` | `unchanged` |  |  | State word. |
 

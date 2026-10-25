@@ -69,7 +69,8 @@ pub(crate) fn upgrade_hooks(value: &mut serde_json::Value, host: &str) -> usize 
                     defaults::text("hooks_form.template"),
                     &[("event", event), ("host_args", &defaults::raw("dispatch.thin_host_args").str_field(host)), ("prefix", &prefix.as_str())],
                 );
-                hook["command"] = serde_json::Value::String(command);
+                let Some(slot) = hook.get_mut("command") else { continue };
+                *slot = serde_json::Value::String(command);
                 changed += 1;
             }
         }
