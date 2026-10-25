@@ -27,7 +27,7 @@ fn the_committed_skills_equal_the_generated_ones_for_both_hosts() {
             let committed = std::fs::read_to_string(plugin().join(&s.path)).unwrap_or_default();
             assert!(
                 committed == s.text,
-                "{} is stale: run ah-engine/scripts/gen-engine-skills.sh and commit ({} bytes committed, {} generated)",
+                "{} is stale: run `cargo run -q --bin ah-regen` (from ah-engine/) and commit ({} bytes committed, {} generated)",
                 s.path,
                 committed.len(),
                 s.text.len()
