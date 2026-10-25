@@ -20,6 +20,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"outputVerifyOncePerTurn\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN\"}",
   "{\"section\":\"guards\",\"key\":\"failureRootCauseNudge\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE\",\"pluginOption\":\"guards_failure_root_cause_nudge\"}",
   "{\"section\":\"guards\",\"key\":\"failureNudgeFilter\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_FAILURE_NUDGE_FILTER\"}",
+  "{\"section\":\"guards\",\"key\":\"failureNudgeHarmless\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_FAILURE_NUDGE_HARMLESS\"}",
   "{\"section\":\"guards\",\"key\":\"repoSelfDrift\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_REPO_SELF_DRIFT\",\"pluginOption\":\"guards_repo_self_drift\"}",
   "{\"section\":\"guards\",\"key\":\"stashGuard\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_STASH_GUARD\",\"pluginOption\":\"guards_stash_guard\",\"locked\":true,\"safetyDirection\":\"off\"}",
   "{\"section\":\"guards\",\"key\":\"broadKill\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_BROAD_KILL\",\"locked\":true,\"safetyDirection\":\"off\"}",
