@@ -54,6 +54,10 @@ value = "as an item in your task/plan list "
 doc = "The protocol level at which the directive keeps the non-blocking clause (any other level drops it)."
 value = "full"
 
+[task_tracker.prune_line]
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model."
+value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn."
+
 [task_tracker.event]
 doc = "The hook event name in the output."
 value = "UserPromptSubmit"

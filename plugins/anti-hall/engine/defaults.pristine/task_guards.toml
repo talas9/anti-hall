@@ -270,7 +270,7 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "Completed or cancelled tasks kept before the Stop advisory suggests pruning."
+doc = "Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning."
 value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
 
 [task_guard.state_prefix]
@@ -281,10 +281,6 @@ value = "last-stop-taskset-"
 doc = "How many hex characters of the transcript path hash name a session that has no id."
 value = 16
 min = 1
-
-[task_guard.prune_advisory]
-doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
-value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
 
 [task_guard.note_line]
 doc = "The line that carries the unknown-state note; `{note}` is the note."

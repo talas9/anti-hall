@@ -62,3 +62,67 @@ fn growth_alone_resends_the_full_directive_only_after_the_minimum_gap() {
     let later = context("later", 2 * 3_600_000);
     assert!(later.contains(FULL), "two hours on (inside the window) the growth re-sends it: {later}");
 }
+
+/// One UserPromptSubmit of session `s1` in `home` (kept between calls) over a transcript of three tasks, two of them completed, with the
+/// prune threshold at 1; returns the additional context the model would get.
+fn prune_context(home: &std::path::Path, dir: &std::path::Path) -> String {
+    let mut t = String::new();
+    for n in 1..=3 {
+        t += &format!(
+            "{}\n",
+            json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("t{n}")}}]}})
+        );
+        t += &format!(
+            "{}\n",
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: t{n}")}]}})
+        );
+    }
+    for n in 1..=2 {
+        t += &format!(
+            "{}\n",
+            json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("u{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "completed"}}]}})
+        );
+    }
+    let transcript = home.join("t.jsonl");
+    std::fs::write(&transcript, t).unwrap();
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["check", "task-tracker"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "1")
+        .env("AH_ENGINE_DIR", dir.join("state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .env("CLAUDE_PLUGIN_ROOT", plugin())
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    if out.trim().is_empty() {
+        return String::new();
+    }
+    let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {out}"));
+    v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+#[test]
+fn the_prune_advisory_reaches_the_model_on_the_prompt_once_per_list_change() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("w6-prune-{}", std::process::id()));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::create_dir_all(home.join("proj")).unwrap();
+    let first = prune_context(&home, &dir);
+    let second = prune_context(&home, &dir);
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    assert!(first.contains("2 completed/cancelled tasks in the list (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
+    assert!(!second.contains("completed/cancelled tasks in the list"), "an unchanged list must not repeat it: {second}");
+}

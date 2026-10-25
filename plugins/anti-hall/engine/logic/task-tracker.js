@@ -362,8 +362,11 @@ function ttFresh(home, tp, sessionRaw, p) {
   var plan = { track: null, annotate: null, demandShown: 0 };
   var tr = ttTrack(home, sessionRaw, tp, tasks);
   plan.track = tr.apply;
+  // the prune-the-list note: a state table keyed on the done-count, so it reaches the model once per list change, not every prompt
+  var pruneLine = '', pruneAfter = ah.settings.num('task_guard.prune_setting'), doneCount = tasks.filter(tk.isDone).length;
+  if (isFinite(pruneAfter) && pruneAfter > 0 && doneCount > pruneAfter) pruneLine = text.render(ttT('prune_line'), { n: doneCount, limit: String(pruneAfter) });
   var open = tasks.filter(tk.isOpen);
-  if (open.length === 0) return { tasks: tasks, demand: '', openLine: '', plan: plan };
+  if (open.length === 0) return { tasks: tasks, demand: '', openLine: '', pruneLine: pruneLine, plan: plan };
   // the per-turn DISPATCH NOW line: it counts running agents, asks Jev for a tier and records a demand
   var demand = '';
   if (ah.settings.bool('task_tracker.dd_setting')) {
@@ -416,7 +419,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   var line = counted.length === 0
     ? text.render(ttT('open_zero'), { blocked: blockedTail })
     : text.render(ttT('open_some'), { n: counted.length, blocked: blockedTail, tail: tail });
-  return { tasks: tasks, demand: demand, openLine: line, plan: plan };
+  return { tasks: tasks, demand: demand, openLine: line, pruneLine: pruneLine, plan: plan };
 }
 
 // `sessionKey(sid)` of hooks/lib/dispatch-demand.js.
@@ -539,13 +542,16 @@ function decide(p) {
   var advState = adv.load(session); // one state for both tables, so their entries are saved together
   var gDemand = fresh !== null && fresh.demand !== '' ? adv.decide(kDemand, session, fresh.demand, advState) : null;
   var gOpen = fresh !== null && fresh.openLine !== '' ? adv.decide(kOpen, session, fresh.openLine, advState) : null;
+  var kPrune = ah.cfg('advisory.kind_task_guard_prune');
+  var gPrune = fresh !== null && fresh.pruneLine !== '' ? adv.decide(kPrune, session, fresh.pruneLine, advState) : null;
   var lineParts = [];
+  if (gPrune !== null && gPrune.emit) lineParts.push(fresh.pruneLine);
   if (gDemand !== null && gDemand.emit) lineParts.push(fresh.demand);
   if (gOpen !== null && gOpen.emit) lineParts.push(fresh.openLine);
   var freshLine = lineParts.join(ttT('freshness_joiner'));
   // `freshLineAll`: the tables as Node writes them, whether or not the advisory layer holds one back; the dedupe store hashes this text
   // (Node's), so a turn that changed nothing is suppressed whole, as in Node, instead of re-showing the short reminder.
-  var freshLineAll = fresh === null ? '' : [fresh.demand, fresh.openLine].filter(function (x) { return x !== ''; }).join(ttT('freshness_joiner'));
+  var freshLineAll = fresh === null ? '' : [fresh.pruneLine, fresh.demand, fresh.openLine].filter(function (x) { return x !== ''; }).join(ttT('freshness_joiner'));
   function compose(unknownNote) {
     var open = '', openAll = '';
     if (fresh !== null) {
@@ -606,7 +612,7 @@ function decide(p) {
   var finalText = [emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
   // count the tables: delivered ones are recorded as injected (and their hash remembered), held-back ones as suppressed
   var delivered = emit && finalText.indexOf(freshLine) >= 0 && freshLine !== '';
-  [[gDemand, fresh !== null ? fresh.demand : ''], [gOpen, fresh !== null ? fresh.openLine : '']].forEach(function (g) {
+  [[gPrune, fresh !== null ? fresh.pruneLine : ''], [gDemand, fresh !== null ? fresh.demand : ''], [gOpen, fresh !== null ? fresh.openLine : '']].forEach(function (g) {
     if (g[0] === null) return;
     if (!g[0].emit) adv.commit(g[0]);
     else if (delivered) adv.commit(g[0]);
