@@ -47,11 +47,17 @@ function swgRunning(p) {
   var found = ah.transcript.agents(hookProc.open(p, tp));
   if (found === null) return null;
   if (found.unsure) { ah.unable('swarm-guard:ceiling_agents_unsure'); return null; }
+  var tracked = ah.transcript.trackedAgents(p);
+  var rows = found.rows.filter(function (a) {
+    if (ah.cfg('spawn_ceiling.excluded_task_types').indexOf(a.taskType) >= 0) return false;
+    var live = ah.transcript.trackedLiveness(a.id, tracked);
+    return live === null ? !ah.cfg('spawn_ceiling.ignore_unknown_liveness') : live;
+  });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
-  var names = found.rows.slice(0, max).map(function (a) {
+  var names = rows.slice(0, max).map(function (a) {
     return String(a.description || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
   });
-  return { n: found.rows.length, names: names };
+  return { n: rows.length, names: names };
 }
 
 

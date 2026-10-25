@@ -2,8 +2,8 @@
 //!
 //! Mirrors `task-guard.js` `parseTasksFromFile` (variant [`Variant::Guard`]) and `lib/task-state.js` `reconstructTasks`
 //! (variant [`Variant::State`]). The two differ in: the State variant skips lines that do not contain `Task` or `TodoWrite`
-//! before parsing them, keeps and updates a task's description and subject, and builds its end-of-scan records differently;
-//! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
+//! before parsing them and builds its end-of-scan records differently; the Guard variant parses every line. Both retain
+//! descriptions for owner-decision markers and keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
     Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, is_non_string_status,
@@ -307,7 +307,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                     Task {
                                         id: id.clone(),
                                         content,
-                                        description: String::new(),
+                                        description: get(todo, "description").and_then(Value::as_str).unwrap_or_default().to_string(),
                                         status: Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
                                         owner: norm_owner(get(todo, "owner")),
                                         blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
@@ -343,7 +343,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                         let rec = Prov {
                             content: scalar_string(content_v)?,
                             description: match get(inp, "description") {
-                                Some(Value::String(s)) if variant == Variant::State => s.clone(),
+                                Some(Value::String(s)) => s.clone(),
                                 _ => String::new(),
                             },
                             status: kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
@@ -371,13 +371,9 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             id: ex.id.clone(),
                             // a rename counts in both variants: a task is listed by its current subject, not the one it was created with
                             content: subject.map_or_else(|| ex.content.clone(), str::to_string),
-                            description: if variant == Variant::State {
-                                match get(inp, "description") {
-                                    Some(Value::String(s)) => s.clone(),
-                                    _ => ex.description.clone(),
-                                }
-                            } else {
-                                String::new()
+                            description: match get(inp, "description") {
+                                Some(Value::String(s)) => s.clone(),
+                                _ => ex.description.clone(),
                             },
                             status,
                             owner: if get(inp, "owner").is_some() { norm_owner(get(inp, "owner")) } else { ex.owner.clone() },
@@ -448,8 +444,12 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
         {
             // `if (!(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs`: the object in the map is the one changed
             e.since = e.since.merge_create(rec.since);
+            if e.description.is_empty() {
+                e.description = rec.description.clone();
+            }
             if let Some(t) = tasks.get_mut(&key) {
                 t.since = e.since;
+                t.description = e.description.clone();
             }
         }
         match (variant, ex) {
@@ -458,7 +458,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                 Task {
                     id: key.clone(),
                     content: rec.content.clone(),
-                    description: if variant == Variant::State { rec.description.clone() } else { String::new() },
+                    description: rec.description.clone(),
                     status: Some(rec.status.clone()),
                     owner: rec.owner.clone(),
                     blocked_by: rec.blocked_by.clone(),
@@ -478,7 +478,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             id: key.clone(),
                             // a subject an update set is newer than the create's
                             content: if e.subject_updated { e.content.clone() } else { rec.content.clone() },
-                            description: String::new(),
+                            description: if e.description.is_empty() { rec.description.clone() } else { e.description.clone() },
                             status: e.status.clone(),
                             owner: if e.owner.is_empty() { rec.owner.clone() } else { e.owner.clone() },
                             blocked_by: if e.blocked_by.is_empty() { rec.blocked_by.clone() } else { e.blocked_by.clone() },

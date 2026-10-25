@@ -218,6 +218,15 @@ var ah = {
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
+    // The same completion/liveness rules as the agent tracker, refreshed read-only.
+    trackedAgents: function (p) { return JSON.parse(ahHost.trackedAgents(p.session_id || '', p.transcript_path || '', p.cwd || '')); },
+    trackedLiveness: function (id, rows) {
+      var matches = rows.filter(function (r) { return r.id === id; });
+      if (!matches.length) matches = rows.filter(function (r) { return r.name === id; });
+      if (!matches.length) return null;
+      if (matches.some(function (r) { return r.known && ah.cfg('agent_tracker.guard_live_states').indexOf(r.state) >= 0; })) return true;
+      return matches.every(function (r) { return ah.cfg('agent_tracker.guard_inactive_states').indexOf(r.state) >= 0; }) ? false : null;
+    },
     // Like `agents`, but only the default window (the Node `runningAgents`): no widening, and an empty window is an empty list.
     agentsWindow: function (p) { return JSON.parse(ahHost.agentsWindow(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.

@@ -2437,6 +2437,41 @@ function remoteMatch(segment, key) {
   return hit.some((e) => e.words.every((w, i) => words[i] === w) && e.opts.every((o) => low.some((t, i) => (t === o[0] && low[i + 1] === o[1]) || t === o[0] + '=' + o[1] || t === o[0] + o[1])));
 }
 
+// Only the configured argv prefixes bypass the heavy rule. The outer shell walk
+// still checks every chained command and substitution independently.
+function isConfiguredReadOnlyRemote(segment) {
+  const verb = effectiveVerb(segment), allowed = ah.cfg('command.read_only_subcommands')[verb];
+  if (!allowed) return false;
+  const tokens = tokenizeQuoted(segment);
+  const bin = tokens.findIndex((t) => basename(t).toLowerCase() === verb);
+  if (bin < 0) return false;
+  let sub = bin + 1;
+  if (verb === 'git') sub = gitSubcommandIndex(tokens, bin);
+  else {
+    const flags = ah.cfg('command.read_only_global_value_flags');
+    while (sub < tokens.length && tokens[sub].startsWith('-')) {
+      const flag = tokens[sub].split('=')[0];
+      if (flags.indexOf(flag) < 0) return false;
+      sub += tokens[sub].includes('=') ? 1 : 2;
+    }
+  }
+  if (sub < 0) return false;
+  if (allowed.some((prefix) => prefix.split(' ').every((word, i) => tokens[sub + i] === word))) return true;
+  const api = ah.cfg('command.read_only_api');
+  if (verb !== api.bin || tokens[sub] !== api.subcommand) return false;
+  const body = cmdRe(api.body_flags_re), attached = cmdRe(api.method_attached_re);
+  for (let i = sub + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (api.denied_endpoints.indexOf(t) >= 0 || body.test(t)) return false;
+    let method = null;
+    if (api.method_flags.indexOf(t) >= 0) method = tokens[++i] || '';
+    else { const m = attached.exec(t); if (m) method = m[1] === undefined ? m[2] : m[1]; }
+    if (method !== null) { if (api.methods.indexOf(method.toUpperCase()) < 0) return false; continue; }
+    if (ah.cfg('command.gh_gql_value_flags').indexOf(t) >= 0) i++;
+  }
+  return api.methods.indexOf(api.default_method) >= 0;
+}
+
 // isHeavyGhSegment(segment) -> true iff this is a `gh` invocation of a
 // mutating subcommand: pr merge/close/edit/create/review, issue
 // create/close/delete/edit, release create/delete/edit/upload, repo
@@ -2464,15 +2499,15 @@ function isHeavyGhSegment(segment, command, strict) {
     if (isReadOnlyGhGraphql(tokens, ghIdx) && !(command || '').includes('`')) return false;
     // `gh api graphql` always POSTs: heavy unless proven a read above.
     if (tokens.slice(ghIdx + 2).some((t) => RX44.test(t))) return true;
+    const api = ah.cfg('command.read_only_api'), body = cmdRe(api.body_flags_re), attached = cmdRe(api.method_attached_re);
     for (let i = ghIdx + 2; i < tokens.length; i++) {
       const t = tokens[i];
-      if (t === '-f' || t === '-F' || t === '--field' || t === '--raw-field') return true;
-      // Attached forms (-fk=v, -Fk=v, --field=k=v, --raw-field=k=v) and a
-      // request body (--input f / --input=f) are data args, same as separated.
-      if (RX48.test(t) || RX49.test(t) || t === '--input') return true;
-      if (t === '-X' || t === '--method') {
-        if (T.ghApiMethods.has((tokens[i + 1] || '').toUpperCase())) return true;
-      }
+      if (body.test(t)) return true;
+      let method = null;
+      if (api.method_flags.indexOf(t) >= 0) method = tokens[++i] || '';
+      else { const m = attached.exec(t); if (m) method = m[1] === undefined ? m[2] : m[1]; }
+      if (method !== null && api.methods.indexOf(method.toUpperCase()) < 0) return true;
+      if (ah.cfg('command.gh_gql_value_flags').indexOf(t) >= 0) i++;
     }
   }
   return false;
@@ -2526,6 +2561,7 @@ function isChildGitSyncChain(command) {
 function isHeavySegment(segment, command) {
   segment = segment.replace(T.controlPrefix, '');
   const unwrapped = segment.replace(T.timeoutPrefix, '');
+  if (isConfiguredReadOnlyRemote(segment)) return false;
   if (remoteMatch(segment, 'command.remote_block')) return true;
   if (remoteMatch(segment, 'command.remote_allow')) return false;
   for (const re of lightList()) {

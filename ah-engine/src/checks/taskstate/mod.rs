@@ -67,7 +67,7 @@ pub struct Task {
     pub id: String,
     /// The subject (`String(content)`).
     pub content: String,
-    /// The description (the state variant only; empty otherwise).
+    /// The description, including owner-decision markers used by the guard.
     pub description: String,
     /// The status; `None` is JavaScript's `undefined` (unknown).
     pub status: Option<String>,

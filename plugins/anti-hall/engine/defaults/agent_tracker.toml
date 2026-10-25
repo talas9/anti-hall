@@ -144,6 +144,18 @@ value = { sessions = "sessions_live", subagents = "subagents_live", teammates = 
 doc = "The names of the derived role of a session in the status JSON: primary (it coordinates at least one other agent) and solo (it does not)."
 value = { primary = "primary", solo = "solo" }
 
+[agent_tracker.guard_live_states]
+doc = "Tracker states that prove a task owner or spawn-ceiling row is live, when its backing transcript is readable and fresh. Finished, dead and stale rows never count as live."
+value = ["running", "waiting"]
+
+[agent_tracker.guard_inactive_states]
+doc = "Tracker states that conclusively exclude a retained row from live guard counts; absent or unreadable evidence remains unknown."
+value = ["done", "dead", "stale"]
+
+[agent_tracker.guard_job_kind]
+doc = "Kind of a background shell job exposed to task coverage from the tracker's unfinished bg_ids; jobs expire using the existing limits.bg_bash_ms."
+value = "shell"
+
 [agent_tracker.states]
 doc = "The names of an agent's states: running, waiting (finished its turn with no tool call open, or the host says it waits for input; a host \"busy\" over an ended turn is a background shell, not work), done (a subagent that finished), stale (running but its heartbeat or transcript went quiet past the active window), dead (no live process and its project directory or transcript is gone, or silent past limits.dead_idle_ms with no live parent: out of the live list, its flags cleared, nothing deleted)."
 value = { running = "running", waiting = "waiting", done = "done", stale = "stale", dead = "dead" }

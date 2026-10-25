@@ -461,7 +461,7 @@ pub(super) fn proc_live(a: &Agent) -> bool {
 /// subagent or teammate has no process of its own: it is dead when its transcript or working directory is gone, or when it has been
 /// silent past `dead_idle_ms` while its launching session has no live process either (nobody is left to deliver to or to stop it). A
 /// session is dead on the same terms with its own process in place of the parent's, once the host calls it gone. Codex rows and heartbeats keep their own rules.
-fn mark_dead(env: &Env, st: &mut State) {
+pub(super) fn mark_dead(env: &Env, st: &mut State) {
     let limit = lim("dead_idle_ms");
     let live: std::collections::BTreeSet<String> = st.agents.values().filter(|a| proc_live(a)).map(|a| a.id.clone()).collect();
     let missing = |p: &str| !p.is_empty() && !Path::new(p).exists();
@@ -487,6 +487,13 @@ fn mark_dead(env: &Env, st: &mut State) {
             );
         }
     }
+}
+
+/// Reconcile retained child rows with host completion evidence without saving history.
+pub(super) fn reconcile_children(env: &Env, st: &mut State) {
+    stopped_subagents(env, st);
+    stopped_teammates(st);
+    off_roster(env, st);
 }
 
 /// Discover and ingest every source; drop agents that disappeared.
@@ -552,9 +559,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {
         live::codex_state(env, a, a.last_output_ms);
     }
-    stopped_subagents(env, st);
-    stopped_teammates(st);
-    off_roster(env, st);
+    reconcile_children(env, st);
     heartbeats(env, st);
     devswarm(env, st);
     let again = relist(env, st, due);

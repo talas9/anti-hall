@@ -66,6 +66,18 @@ value = ["grep", "sed", "awk"]
 
 # ---- heavy commands -----------------------------------------------------------------------------------------------
 
+[command.read_only_subcommands]
+doc = "Exact gh/git argv prefixes exempt from heavy-command delegation, including broad remote_block groups. Each shell segment and substitution is still checked; clone, builds, suites and wide scans keep their existing rules."
+value = { gh = ["release view", "release list", "run list", "run view", "pr checks"], git = ["fetch", "ls-remote"] }
+
+[command.read_only_global_value_flags]
+doc = "gh global options taking a value before a read-only subcommand; git uses its existing global-option parser."
+value = ["-R", "--repo", "--hostname"]
+
+[command.read_only_api]
+doc = "gh API read proof: allowed methods, request-body options (separated or attached), method syntax and endpoints requiring a separate GraphQL proof. Non-GET methods and request bodies retain heavy classification."
+value = { bin = "gh", subcommand = "api", default_method = "GET", methods = ["GET"], method_flags = ["-X", "--method"], method_attached_re = '^(?:-X=?(.*)|--method=(.*))$', body_flags_re = '^(?:-[fF].*|--(?:field|raw-field|input)(?:=.*)?)$', denied_endpoints = ["graphql", "/graphql"] }
+
 [command.heavy_verbs]
 doc = "Effective verbs that are always heavy in the main thread."
 value = [
@@ -240,7 +252,7 @@ doc = "Remote commands that run in the main thread whatever their body or output
 value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit"]
 
 [command.remote_block]
-doc = "Remote commands always blocked in the main thread, named in the block text as irreversible or sensitive (msg_remote_block_why). Same entry format as command.remote_allow; wins over it."
+doc = "Remote commands blocked in the main thread unless read_only_subcommands or read_only_api proves a read, named in the block text as irreversible or sensitive (msg_remote_block_why). Same entry format as command.remote_allow; wins over it."
 value = ["gh pr merge", "gh release", "gh repo edit", "gh repo delete", "gh secret", "gh api -X DELETE", "gh api -X PUT", "gh api -X PATCH", "gh api -X POST", "gh api --method DELETE", "gh api --method PUT", "gh api --method PATCH", "gh api --method POST"]
 
 [command.remote_allow_add]
