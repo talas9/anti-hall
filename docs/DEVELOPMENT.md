@@ -338,7 +338,7 @@ New capability goes into the engine, not into new Node code in the plugin (D80).
 
 ## Branches and pull requests
 
-- `dev` is the working branch. Pushes to `dev` run no CI, so run `cargo check` and a release build of what you touched before pushing.
+- `dev` is the working branch. Pushes to `dev` run only the path-filtered `ah-engine` workflow and `privacy-scan`, so run `cargo check` and a release build of what you touched before pushing.
 - `main` is what users and the plugin directory install from. It changes only through a pull request from `dev`; a ruleset blocks direct pushes. A pull request to `main` from any other branch fails the required `dev-only` check.
 - **Contributors open pull requests against `dev`.** The engine prototype lives on `engine-proto` and goes to `dev` by pull request when a phase is done and tested (D55).
 - Never force-push. Commit messages are conventional (`fix(area): ...`, `feat(area): ...`, `docs: ...`) with no AI-credit lines ([CONTRIBUTING.md](../CONTRIBUTING.md)).
@@ -349,6 +349,56 @@ git push origin dev
 gh pr create --base dev --fill
 gh pr checks
 ```
+
+## Working method for features and fixes
+
+How parallel contributors or agents work on `dev` without blocking each other. Later changes add their own subsections here.
+
+### Merge model
+
+| Branch | Required to merge | Source |
+|---|---|---|
+| `dev` | `tests-passed`, `privacy-scan` | ruleset "dev: required checks" |
+| `main` | `dev-only`, `tests-passed`, `privacy-scan`, plus a pull request (merge commits only) | ruleset "main protection" |
+
+- Every other job (`rust`, `ah-hook`, `doc-check`, `no-node`, `pr-title`, and so on) is **informational**: read it, but it does not block the merge.
+- `tests-passed` is currently a placeholder job in `.github/workflows/test.yml` that only prints a line (the Node suite it once gated is retired). The engine suite is the `rust` job in `.github/workflows/ah-engine.yml`. A green `tests-passed` therefore does not prove the engine tests passed: read `rust` too.
+- Merge as soon as the required checks pass. Open a follow-up only when an informational job points at the pull request's own code.
+- Merge commits, never squash. `dev` reaches `main` by pull request only.
+
+### Workflow rules
+
+1. Before a batch, read once: the required checks (above), the CI timings of the last runs (`gh run list`) and local capacity (cores, free disk).
+2. At most 2-3 concurrent builders, on disjoint files. A builder never edits files another builder owns.
+3. Generated files are regenerated once, by one integrator, after the merges. Never hand-merge them; take either side and regenerate:
+
+   | Generated | Regenerate (from `ah-engine/`) |
+   |---|---|
+   | `REFERENCE.md` | `cargo run -q --locked -- docs --format md > REFERENCE.md` |
+   | Hook files per host (`hooks.json`, `hooks.registry.json`, fallback list) | `cargo run --bin ah-gen-fallback-list -- --repo ..` |
+   | `anti-hall:engine*` skills (Claude and Codex) | `scripts/gen-engine-skills.sh` |
+
+4. Before the first push run `cargo fmt`, `cargo check --tests --locked` and the fast drift tests (see "Local pre-push gate").
+5. Commit early. Push as soon as it builds. Do not wait on CI; read it when it finishes.
+6. Verify a delegated worker's "done" yourself, from the API or the test output, not from its report.
+7. Put only verified facts in a task brief. An unchecked claim in a brief is copied as truth.
+8. A timing-flaky test is fixed or quarantined through an issue, not re-run in a loop until it passes.
+
+### Local pre-push gate
+
+Run from `ah-engine/`, one test runner at a time, `nice -n 10`, `-j 2` where a command takes it.
+
+| Step | Command |
+|---|---|
+| Format | `cargo fmt` (CI runs `cargo fmt --check`) |
+| Compiles, tests included | `cargo check --tests --locked` |
+| Fast drift tests (generated files, docs, policy) | `cargo test --locked --test it -- reference:: hooks_files:: roles:: docs_coverage:: no_hardcoded_tunables:: defaults_keys::` |
+| Touched module plus policy gates | `scripts/lane-tests.sh <module>` |
+| Lint | `cargo clippy --all-targets --locked -- -D warnings` |
+| Before a live deploy | `cargo nextest run -j 2 --profile dev` |
+| Everything CI runs on the engine | `./test.sh` |
+
+The CI quick profile and change-detection job are described in their own subsection once merged.
 
 ## Releases
 

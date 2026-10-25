@@ -190,7 +190,7 @@ doc = "Where the switch of the held snooze is read from (agents.nudgeSnoozeHold,
 value = { section = "agents", key = "nudgeSnoozeHold", env = "ANTIHALL_AGENT_NUDGE_SNOOZE_HOLD", aliases = [], option = "", default = true }
 
 [agent_nudge.once_setting]
-doc = "Where the switch of once-only delivery is read from (agents.nudgeDeliverOnce, default on): on, a nudge goes to the parent's wake feed when a wake-watch is armed (the queue only when it is not, or when the wake line was not delivered within limits.wake_fallback_ms), so the parent sees it once; off, it goes to both."
+doc = "Once-only nudge delivery switch. Where the switch of once-only delivery is read from (agents.nudgeDeliverOnce, default on): on, a nudge goes to the parent's wake feed when a wake-watch is armed (the queue only when it is not, or when the wake line was not delivered within limits.wake_fallback_ms), so the parent sees it once; off, it goes to both."
 value = { section = "agents", key = "nudgeDeliverOnce", env = "ANTIHALL_AGENT_NUDGE_DELIVER_ONCE", aliases = [], option = "", default = true }
 
 [msg.agent_nudge_snooze_clamped]

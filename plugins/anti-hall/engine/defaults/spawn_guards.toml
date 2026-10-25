@@ -99,7 +99,7 @@ doc = "The switch safety.swarmGuard (on by default); off makes the guard a no-op
 value = { section = "safety", key = "swarmGuard", type = "boolean", env = "ANTIHALL_SWARM_GUARD", option = "safety_swarm_guard", default = true }
 
 [swarm_guard.shared_tree_setting]
-doc = "The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent."
+doc = "Shared-tree spawn advisory switch. The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent."
 value = { section = "guards", key = "sharedTreeAgentNote", type = "boolean", env = "ANTIHALL_SHARED_TREE_AGENT_NOTE", option = "", default = true }
 
 [swarm_guard.spawn_cap]
@@ -350,7 +350,7 @@ doc = "JavaScript regex source (case-insensitive): a negated scratch statement, 
 value = '''\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b'''
 
 [swarm_guard.quiet_no_worktrees_setting]
-doc = "Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on)."
+doc = "Quiets the shared-tree note when worktrees are forbidden. Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on)."
 value = { section = "guards", key = "sharedTreeQuietNoWorktrees", env = "ANTIHALL_SHARED_TREE_QUIET_NO_WORKTREES", aliases = [], option = "", default = true }
 
 [swarm_guard.memory_sources]
@@ -367,7 +367,7 @@ value = 200
 min = 1
 
 [swarm_guard.scratch_only_setting]
-doc = "Where the switch is read from that treats an agent whose brief only writes a report or results under the scratch location as sharing no tree (guards.sharedTreeScratchOnly, default on)."
+doc = "Report-only agents share no tree. Where the switch is read from that treats an agent whose brief only writes a report or results under the scratch location as sharing no tree (guards.sharedTreeScratchOnly, default on)."
 value = { section = "guards", key = "sharedTreeScratchOnly", env = "ANTIHALL_SHARED_TREE_SCRATCH_ONLY", aliases = [], option = "", default = true }
 
 [swarm_guard.re_scratch_only]
