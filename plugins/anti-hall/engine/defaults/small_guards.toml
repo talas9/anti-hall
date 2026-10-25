@@ -648,7 +648,7 @@ doc = "Regex (global) of quoted text in a brief: a single-quoted span that opens
 value = '''(^|[^\w'])'[^']{1,1000}'|"[^"]{1,1000}"'''
 
 [model_routing.explore_exec_setting]
-doc = "Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files."
+doc = "Withholds the Explore hint for file-writing briefs. Where the switch is read from that withholds the row-6 Explore hint when the brief writes a file or report or runs a script or shell commands (guards.exploreHintExec, default on): an Explore agent cannot write files."
 value = { section = "guards", key = "exploreHintExec", env = "ANTIHALL_EXPLORE_HINT_EXEC", aliases = [], option = "", default = true }
 
 [model_routing.exec_report_re]
@@ -1246,7 +1246,7 @@ doc = "Minutes of the work window (guards.coordinatorWorkWindowMinutes); 0 turns
 value = { section = "guards", key = "coordinatorWorkWindowMinutes", env = "ANTIHALL_COORDINATOR_WORK_WINDOW_MINUTES", default = 10, min = 0 }
 
 [coordinator_work.nudge_setting]
-doc = "Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
+doc = "Work calls that trigger the advisory. Work calls in the window at which one advisory is shown (guards.coordinatorWorkNudgeAt); 0 means no advisory."
 value = { section = "guards", key = "coordinatorWorkNudgeAt", env = "ANTIHALL_COORDINATOR_WORK_NUDGE_AT", default = 4, min = 0 }
 
 [coordinator_work.block_setting]

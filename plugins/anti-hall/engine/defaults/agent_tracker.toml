@@ -28,7 +28,7 @@ doc = "Where the reminder switch is read from (agents.reminders, default on): of
 value = { section = "agents", key = "reminders", env = "ANTIHALL_AGENT_REMINDERS", aliases = [], option = "", default = true }
 
 [agent_tracker.rearm_idle_setting]
-doc = "Where the switch is read from that keeps the wake-watch re-arm reminder silent for a Primary checkout with no live child workspaces (agents.rearmNeedsChildren, default on): with nothing to wake it for, the watcher declines to arm and there is nothing to re-arm."
+doc = "Quiets the re-arm note with no child workspaces. Where the switch is read from that keeps the wake-watch re-arm reminder silent for a Primary checkout with no live child workspaces (agents.rearmNeedsChildren, default on): with nothing to wake it for, the watcher declines to arm and there is nothing to re-arm."
 value = { section = "agents", key = "rearmNeedsChildren", env = "ANTIHALL_AGENT_REARM_NEEDS_CHILDREN", aliases = [], option = "", default = true }
 
 [agent_tracker.owner_setting]

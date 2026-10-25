@@ -531,6 +531,7 @@ value = [
   { id = "speculation-guard", matcher = "", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
+  { id = "claim-evidence-guard", matcher = "", timeout = 30, check = "claim-evidence-guard" },
   { id = "codex-nudge", matcher = "", timeout = 30, check = "codex-nudge" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },

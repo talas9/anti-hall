@@ -103,7 +103,7 @@ doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
 
 [dispatch_tier.owner_marker_setting]
-doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+doc = "Owner-blocked marker switch. Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
 value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
 
 [dispatch_tier.owner_values]
@@ -379,7 +379,7 @@ value = 2
 min = 0
 
 [task_guard.min_priority_setting]
-doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+doc = "Priority floor of the idle-neglect block. The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
 value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
 
 [task_guard.dispatch_demand_setting]
@@ -387,11 +387,11 @@ doc = "Whether running agents are counted per task from this session's transcrip
 value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
 
 [task_guard.proven_only_setting]
-doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+doc = "Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
 value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
 
 [task_guard.agent_max_age_setting]
-doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+doc = "Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
 value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
 
 [task_guard.agent_max_age_default_min]
@@ -1058,7 +1058,7 @@ doc = "The session summary Jev judges; the fields are the work count, threshold,
 value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
 
 [tasklist_guard.no_task_tools_setting]
-doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+doc = "Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
 value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
 
 [tasklist_guard.protocol_setting]
