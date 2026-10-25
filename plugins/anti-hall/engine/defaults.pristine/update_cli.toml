@@ -492,7 +492,7 @@ doc = "The Codex configuration file inside it."
 value = "config.toml"
 
 [codex_install.thin_hooks_rel]
-doc = "The generated one-wrapper-call-per-event registration, relative to the plugin directory."
+doc = "The shipped thin-client registration path, relative to the plugin directory (used in diagnostics; installation renders the current dispatch table)."
 value = "codex/hooks/hooks.json"
 
 [codex_install.root_token]
@@ -500,8 +500,8 @@ doc = "The placeholder in that file the installer replaces with the plugin direc
 value = "${PLUGIN_ROOT}"
 
 [codex_install.hook_group_re]
-doc = "A hook command that belongs to anti-hall (after backslashes become slashes): a path under its hooks directory, or its thin trigger."
-value = "/plugins/anti-hall/hooks/|/hooks/ah-hook\\.sh\""
+doc = "An anti-hall hook command (after backslashes become slashes): its legacy hook directory, retired wrapper, or installed Rust thin client. Used by installer replacement and doctor detection."
+value = '/plugins/anti-hall/hooks/|/hooks/ah-hook\.sh["\x27]|/\.anti-hall/ah-engine/bin/ah-hook["\x27]'
 
 [codex_install.features_with_hooks_re]
 doc = "A [features] table that already sets `hooks`."

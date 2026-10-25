@@ -140,25 +140,34 @@ pub fn codex_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) -> Option<&'
     let expected = codex_events(root);
     let re = crate::checks::lit_re(defaults::text("doctor.codex_hooks_enabled_re"));
     let dir = defaults::text("codex_install.dir");
-    let mut found: Vec<(&str, bool, Option<bool>)> = Vec::new();
+    let mut found = Vec::new();
     for (label, base) in [(defaults::text("doctor_msg.codex_label_project"), &ctx.cwd), (defaults::text("doctor_msg.codex_label_global"), &ctx.home)] {
         let d = Path::new(base).join(dir);
         let cfg = d.join(defaults::text("codex_install.config_file"));
-        if !cfg.is_file() {
+        let hooks = d.join(defaults::text("codex_install.hooks_file"));
+        if !cfg.is_file() && !hooks.is_file() {
             continue;
         }
         let enabled = std::fs::read_to_string(&cfg).is_ok_and(|t| re.is_match(&t));
-        found.push((label, enabled, codex_wired(&d.join(defaults::text("codex_install.hooks_file")), &expected)));
+        let missing = std::fs::read_to_string(&hooks)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|value| crate::hooksgen::missing_launcher(&value, &ctx.home, root, &ctx.env));
+        found.push((label, enabled, codex_wired(&hooks, &expected), missing, hooks));
     }
     if found.is_empty() {
         return Some(defaults::text("doctor_msg.codex_none"));
     }
     doc.head(defaults::text("doctor_msg.head_codex"));
-    for (label, enabled, wired) in found {
+    for (label, enabled, wired, missing, hooks) in found {
         if enabled {
             doc.ok(defaults::render("doctor_msg.codex_hooks_on", &[("label", &label)]));
         } else {
             doc.warnl(defaults::render("doctor_msg.codex_hooks_off", &[("label", &label)]));
+        }
+        if missing {
+            doc.bad(defaults::render("doctor_msg.codex_launcher_missing", &[("label", &label), ("file", &hooks.display())]));
+            continue;
         }
         match wired {
             Some(true) => doc.ok(defaults::render("doctor_msg.codex_wired", &[("label", &label)])),

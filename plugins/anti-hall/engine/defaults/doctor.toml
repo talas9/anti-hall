@@ -1480,6 +1480,10 @@ value = "Codex config.toml ({label}) found but [features] hooks is not enabled"
 doc = "The Codex hooks file registers anti-hall's hooks. Placeholder: {label}."
 value = "Codex hooks.json ({label}) has anti-hall hooks registered"
 
+[doctor_msg.codex_launcher_missing]
+doc = "A Codex registration still invokes the retired anti-hall shell launcher, and that launcher is missing. Placeholders: label, file."
+value = "Codex hooks point at a missing launcher ({label}: {file}) — run `ah-engine doctor --repair`"
+
 [doctor_msg.codex_unwired]
 doc = "The Codex hooks file lacks anti-hall's hooks. Placeholder: {label}."
 value = "Codex hooks.json ({label}) present but no anti-hall hooks found — run `ah-engine install-codex`"
@@ -2377,8 +2381,8 @@ doc = "The command that prints the command line of one process. Placeholder: {pi
 value = ["ps", "-p", "{pid}", "-o", "command="]
 
 [doctor_l.hook_files]
-doc = "The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment."
-value = ["{root}/hooks/hooks.json", "{root}/codex/hooks/hooks.json", "{home}/.codex/hooks.json", "{home}/.claude/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/codex/hooks/hooks.json"]
+doc = "The hooks files the doctor looks at; {root} is the plugin root, {home} the home directory, * matches one path segment. Relative paths cover the current project."
+value = ["{root}/hooks/hooks.json", "{root}/codex/hooks/hooks.json", "{home}/.codex/hooks.json", ".codex/hooks.json", "{home}/.claude/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/hooks/hooks.json", "{home}/.codex/plugins/cache/*/anti-hall/*/codex/hooks/hooks.json"]
 
 [doctor_l.msg_builtin_daemon_note]
 doc = "Informational line of the built-in doctor."

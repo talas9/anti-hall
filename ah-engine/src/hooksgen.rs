@@ -23,6 +23,7 @@
 use crate::defaults;
 use crate::dispatch::table::{self, Entry};
 use std::fmt::Write;
+use std::path::Path;
 
 /// The events `host` gets a thin trigger for: every event the table has entries for, then the rest of
 /// `dispatch.thin_events`, in listed order, without repeats.
@@ -48,6 +49,59 @@ pub fn thin_command(host: &str, event: &str) -> String {
     let extra = defaults::raw("dispatch.thin_host_args").str_field(host);
     let prefix = format!("${{{var}}}");
     defaults::fill(defaults::text("hooks_form.template"), &[("event", &event), ("host_args", &extra), ("prefix", &prefix)])
+}
+
+/// Rewrite only complete retired anti-hall launcher commands, preserving every other hook and its metadata.
+pub(crate) fn upgrade_hooks(value: &mut serde_json::Value, host: &str) -> usize {
+    let Ok(re) = regex::Regex::new(defaults::text("hooks_form.retired_command_re")) else { return 0 };
+    let Some(events) = value.get_mut("hooks").and_then(|v| v.as_object_mut()) else { return 0 };
+    let mut changed = 0;
+    for (event, groups) in events {
+        for group in groups.as_array_mut().into_iter().flatten() {
+            for hook in group.get_mut("hooks").and_then(|v| v.as_array_mut()).into_iter().flatten() {
+                let Some(command) = hook.get("command").and_then(|v| v.as_str()) else { continue };
+                let Some(captures) = re.captures(command) else { continue };
+                let (Some(prefix), Some(old_event)) = (captures.name("prefix"), captures.name("event")) else { continue };
+                if old_event.as_str() != event.as_str() || captures.name("host").is_some_and(|h| h.as_str() != host) {
+                    continue;
+                }
+                let command = defaults::fill(
+                    defaults::text("hooks_form.template"),
+                    &[("event", event), ("host_args", &defaults::raw("dispatch.thin_host_args").str_field(host)), ("prefix", &prefix.as_str())],
+                );
+                hook["command"] = serde_json::Value::String(command);
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// Whether a retired anti-hall launcher named in a hook command can be resolved and is missing on disk.
+pub(crate) fn missing_launcher(value: &serde_json::Value, home: &str, root: Option<&Path>, env: &std::collections::BTreeMap<String, String>) -> bool {
+    let Ok(re) = regex::Regex::new(defaults::text("hooks_form.retired_command_re")) else { return false };
+    let Some(events) = value.get("hooks").and_then(|v| v.as_object()) else { return false };
+    events.values().any(|groups| {
+        groups.as_array().into_iter().flatten().any(|group| {
+            group.get("hooks").and_then(|v| v.as_array()).into_iter().flatten().any(|hook| {
+                let Some(command) = hook.get("command").and_then(|v| v.as_str()) else { return false };
+                let Some(captures) = re.captures(command) else { return false };
+                let Some(launcher) = captures.name("launcher") else { return false };
+                let mut path = launcher.as_str().to_string();
+                let home_var = defaults::text("env.home");
+                path = path.replace(&format!("${{{home_var}}}"), home).replace(&format!("${home_var}"), home);
+                for host in table::hosts() {
+                    for var in defaults::raw("dispatch.root_vars").get(host).map(|v| v.strings()).unwrap_or_default() {
+                        let replacement = env.get(var).map(String::as_str).or_else(|| root.and_then(Path::to_str));
+                        if let Some(replacement) = replacement {
+                            path = path.replace(&format!("${{{var}}}"), replacement).replace(&format!("${var}"), replacement);
+                        }
+                    }
+                }
+                Path::new(&path).is_absolute() && !path.contains('$') && Path::new(&path).try_exists().is_ok_and(|exists| !exists)
+            })
+        })
+    })
 }
 
 fn q(s: &str) -> String {
