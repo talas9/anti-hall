@@ -403,6 +403,14 @@ value = { section = "guards", key = "spawnCeiling", type = "boolean", env = "ANT
 doc = "Guard name in the block message and the skip file (a per-session owner override goes through ~/.anti-hall/skip.json)."
 value = "spawn-ceiling"
 
+[spawn_ceiling.ignore_unknown_liveness]
+doc = "Do not count a transcript row toward the spawn ceiling unless the agent tracker proves it live; missing, unreadable or stale evidence fails open. False retains the legacy count for unknown rows."
+value = true
+
+[spawn_ceiling.excluded_task_types]
+doc = "Background task types that do not consume an agent spawn slot; their owners can still cover task-guard work."
+value = ["local_bash"]
+
 [spawn_ceiling.base]
 doc = "The ceiling at full usage headroom: a spawn is blocked when this many agents already run."
 value = 12

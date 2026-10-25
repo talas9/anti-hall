@@ -18,6 +18,8 @@ function tgCoordinator(owner) { return tgRe('task_guard.coordinator_owner_re', '
 function tgOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
   if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  var value = [t.owner || '', t.content || '', t.description || ''].join(' ').toLowerCase();
+  if (ah.cfg('task_guard.owner_decision_markers').some(function (m) { return value.indexOf(m.toLowerCase()) >= 0; })) return true;
   return tgRe('dispatch_tier.owner_subject_re', 'i').test(t.content);
 }
 
@@ -54,15 +56,24 @@ function tgChildAttended(owner) { return tk.childAttended(owner); }
 
 // A task whose owner names an agent this session has running (its id, the name it was launched with, or its description) is attended: the agent is working
 // it. `rows` is the running-agent list of the transcript scan (null when unreadable: nothing is attended through it).
-function tgLiveAgentOwner(owner, rows) {
+function tgMatchingOwners(owner, rows) {
   var o = (owner || '').trim().toLowerCase();
-  if (!o || rows === null || tgCoordinator(o)) return false;
+  if (!o || rows === null || tgCoordinator(o)) return [];
   var min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
-  return rows.some(function (r) {
+  return rows.filter(function (r) {
     var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
     var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
     return o === id || (d !== '' && o === d) || (nm !== '' && o === nm) || (o.length >= min && d.indexOf(o) >= 0);
   });
+}
+
+function tgLiveAgentOwner(owner, rows) {
+  return tgMatchingOwners(owner, rows).some(function (r) { return r.live === true; });
+}
+
+function tgUnresolvedOwner(t, rows) {
+  if (!t.owner || tgCoordinator(t.owner) || tgOwnerBlocked(t) || tgChildAttended(t.owner)) return false;
+  return !tgMatchingOwners(t.owner, rows).some(function (r) { return r.live !== null; });
 }
 
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the
@@ -86,6 +97,7 @@ function tgUnblocked(open, tasks, rows) {
     var t = open[i];
     if (tgOwnerBlocked(t) || valid(t).some(function (b) { return reach[b] === true; })) continue;
     if (tgLiveAgentOwner(t.owner, rows)) continue;
+    if (ah.cfg('task_guard.advise_unresolved_owners') && tgUnresolvedOwner(t, rows)) continue;
     if (!tgChildAttended(t.owner)) out.push(t);
   }
   return out;
@@ -382,8 +394,17 @@ function decide(p) {
   if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
     var own = tgAgents();
     if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
-    rows = own === null ? null : own.rows;
+    var tracked = ah.transcript.trackedAgents(p);
+    rows = (own === null ? [] : own.rows).map(function (r) {
+      r.live = ah.transcript.trackedLiveness(r.id, tracked);
+      return r;
+    });
+    tracked.forEach(function (r) {
+      rows.push({ id: r.id, description: r.name, live: ah.transcript.trackedLiveness(r.id, tracked) });
+    });
   }
+  var unresolved = ah.cfg('task_guard.advise_unresolved_owners') ? open.filter(function (t) { return tgUnresolvedOwner(t, rows); }) : [];
+  if (unresolved.length > 0) out += text.render(ah.cfg('task_guard.unresolved_owner_advisory'), { list: tgRenderList(unresolved) });
   var nudge = tgUnblocked(open, tasks, rows);
   if (!idle && nudge.length === 0) return tgQuiet(out, tasks, home, sessionId);
 

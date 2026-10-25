@@ -37,6 +37,7 @@ pub mod waste;
 use crate::checks::git::util::Settings;
 use crate::defaults::{self, V};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -508,6 +509,55 @@ pub(crate) fn load_state(env: &Env) -> State {
         Ok(m) if m.len() <= lim("state_max_bytes") => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         _ => State::default(),
     }
+}
+
+/// A read-only, request-local reconciliation of retained tracker rows for guards.
+/// Reuse the tracker's ingestion and state rules; never tick, save, probe a CLI,
+/// deliver reminders or rewrite the user's history from a hook decision.
+pub(crate) fn guard_rows(env: &Env, session: &str, transcript: &str, cwd: &str) -> Vec<Value> {
+    let mut st = load_state(env);
+    let owner = st.agents.values().find(|a| a.path == transcript).map(|a| a.id.clone()).unwrap_or_else(|| session.to_string());
+    st.agents.retain(|_, a| a.id == owner || a.parent == owner || (!cwd.is_empty() && a.cwd == cwd));
+    let sessions = live::registry(env);
+    live::apply(&mut st, sessions.as_deref(), false);
+    let mut readable = std::collections::BTreeSet::new();
+    for a in st.agents.values_mut() {
+        let mtime = crate::checks::agent_scan::mtime_ms(std::path::Path::new(&a.path));
+        if a.kind == kind_name("codex") {
+            if let Some(mtime) = mtime {
+                live::codex_state(env, a, mtime as u64);
+                if std::fs::File::open(&a.path).is_ok() {
+                    readable.insert(a.id.clone());
+                }
+            }
+        } else if mtime.is_some() {
+            facts::ingest(a, env.now_ms);
+            if a.transcript_complete {
+                readable.insert(a.id.clone());
+            }
+            if is_child(a)
+                && let Some(meta) = sources::json_of(std::path::Path::new(&facts::meta_path(&a.path)))
+                && let Some(finished) = meta.get(defaults::raw("agent_tracker.meta").str_field("finished")).and_then(Value::as_bool)
+            {
+                a.finished |= finished;
+            }
+        }
+    }
+    sources::reconcile_children(env, &mut st);
+    sources::mark_dead(env, &mut st);
+    let mut out = Vec::new();
+    for a in st.agents.values() {
+        let state = signals::state_of(a);
+        let known = readable.contains(&a.id) && a.last_output_ms > 0 && env.now_ms.saturating_sub(a.last_output_ms) <= lim("active_window_ms");
+        out.push(serde_json::json!({"id": a.id, "name": a.name, "parent": a.parent, "kind": a.kind,
+            "state": state, "known": known, "lastSeenMs": a.last_output_ms}));
+        for (id, started) in &a.bg_ids {
+            out.push(serde_json::json!({"id": id, "name": id, "parent": a.id,
+                "kind": defaults::text("agent_tracker.guard_job_kind"), "state": if a.dead || a.gone || a.finished { state } else { state_name("running") },
+                "known": known && env.now_ms.saturating_sub(*started) <= lim("bg_bash_ms"), "lastSeenMs": a.last_output_ms}));
+        }
+    }
+    out
 }
 
 pub(crate) fn save_state(env: &Env, st: &State) {

@@ -329,6 +329,18 @@ value = "pending"
 doc = "The field of the Agent call that launched a running agent which names it (its `name`). A task whose owner is that name is attended, like one owned by the agent's id or description."
 value = "name"
 
+[task_guard.owner_decision_markers]
+doc = "Case-insensitive phrases in a task owner, subject or description that mean an explicit owner decision is pending. Honored while guards.taskGuardOwnerBlockedMarker is enabled."
+value = ["owner-go", "waiting owner", "needs your OK"]
+
+[task_guard.advise_unresolved_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner cannot be resolved to known live or finished tracker work. False restores blocking for unresolved owners."
+value = true
+
+[task_guard.unresolved_owner_advisory]
+doc = "Fail-open advisory for unresolved task owners; {list} uses the existing bounded task renderer."
+value = "[task-guard] owner liveness is unknown; resolve or reassign these tasks when ready: {list}\n"
+
 [task_guard.owner_match_min]
 doc = "The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block."
 value = 4

@@ -481,6 +481,20 @@ pub fn agents(path: &str) -> String {
     }
 }
 
+/// The tracker's current liveness facts, reconciled without persisting state.
+pub fn tracked_agents(session: &str, transcript: &str, cwd: &str) -> rquickjs::Result<String> {
+    let settings = with_settings(Clone::clone)?;
+    let env = crate::agents::Env {
+        home: std::path::PathBuf::from(&settings.home),
+        now_ms: now_ms() as u64,
+        plugin_root: defaults::root(),
+        use_cli: false,
+        settings,
+        act: false,
+    };
+    Ok(serde_json::to_string(&crate::agents::guard_rows(&env, session, transcript, cwd)).unwrap_or_default())
+}
+
 /// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
 /// it (no widening to a longer window, and no refusal to count when the window shows none): `null` (unreadable),
 /// `{"unsure":true}`, else `{"rows":[...]}` as [`agents`].
@@ -1009,6 +1023,7 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
+    h.set("trackedAgents", Function::new(c.clone(), |s: String, p: String, d: String| tracked_agents(&s, &p, &d))?)?;
     h.set("agentsWindow", Function::new(c.clone(), |p: String| agents_window(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
     h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
