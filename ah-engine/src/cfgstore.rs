@@ -2,8 +2,9 @@
 //!
 //! # Layers
 //!
-//! Every shipped setting (`defaults/*.toml`, compiled in by `build.rs`) is resolved from these sources, highest first.
-//! The order mirrors `get()` in `plugins/anti-hall/hooks/lib/settings.js` (env, then `settings.json`, then the tiers
+//! Every shipped setting (the plugin's `engine/defaults/*.toml`, read AT RUN TIME through `defaults.rs`: at start-up, on plugin update
+//! and on file change; nothing is compiled in, `build.rs` only collects the key names as a schema) is resolved from these sources, highest first.
+//! The order mirrors `get()` in `plugins/anti-hall-node/hooks/lib/settings.js` (env, then `settings.json`, then the tiers
 //! below the file, then the default), with the engine's own TOML in the slot Node gives to its "below the file" tiers:
 //!
 //! 1. **env**: the setting's own `env` variable (numeric settings only, as `defaults::num` already did).
@@ -32,6 +33,13 @@
 //! error the old snapshot stays and `config_invalid` is logged. Settings listed in `config.restart_only` keep their
 //! running value until the next start (the edit is reported as `pending_restart`).
 //!
+//! # Every read is the effective value (#195)
+//!
+//! `defaults::num`/`text`/`list`/`raw` answer what these layers resolve to, not only the shipped value: the daemon's store
+//! ([`ConfigStore::load`]) installs every snapshot it swaps in as the `defaults` overlay (the settings a FILE supplies; the env
+//! layer is read by `defaults::num` itself), and any other process reads both files once at start
+//! ([`install_process_overlay`]). Settings in `config.locked` resolve to the shipped value whatever the files say.
+//!
 //! Watching is by polling file metadata (mtime, size, inode) every `config.watch_ms`, with a `config.debounce_ms`
 //! settle time. Why not `notify`: it needs one dependency tree per OS (FSEvents, kqueue, inotify), has no good story
 //! for a file that is deleted and re-created by an atomic-rename editor, and the watched set is two tiny files.
@@ -50,6 +58,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Instant, SystemTime};
 
@@ -110,6 +119,13 @@ pub enum ConfigError {
         /// The dotted key.
         key: String,
     },
+    /// The user file sets a setting listed in `config.locked` (a key the files may not change).
+    Locked {
+        /// The file.
+        path: PathBuf,
+        /// The dotted key.
+        key: String,
+    },
     /// An `[events.*]` or `[entries.*]` section (hook configuration, D87) is invalid.
     Hooks {
         /// The file.
@@ -132,6 +148,7 @@ impl ConfigError {
             ConfigError::Type { .. } => "type",
             ConfigError::Range { .. } => "range",
             ConfigError::Unsupported { .. } => "unsupported",
+            ConfigError::Locked { .. } => "locked",
             ConfigError::Hooks { .. } => "hooks",
         }
     }
@@ -151,6 +168,7 @@ impl fmt::Display for ConfigError {
             ConfigError::Range { path, key, value, min, max } => {
                 r("msg.cfg_err_range", &[("path", &path.display()), ("key", key), ("value", value), ("min", min), ("max", max)])
             }
+            ConfigError::Locked { path, key } => r("msg.cfg_err_locked", &[("path", &path.display()), ("key", key)]),
             ConfigError::Hooks { path, key, detail } => r("msg.cfg_err_hooks", &[("path", &path.display()), ("key", key), ("detail", detail)]),
             ConfigError::Unsupported { path, key } => {
                 r("msg.cfg_err_unsupported", &[("path", &path.display()), ("key", key), ("found", &defaults::text("msg.cfg_type_other"))])
@@ -172,6 +190,8 @@ pub enum Source {
     Settings,
     /// The setting's environment variable.
     Env,
+    /// The session's project file (`layers.rs`), tighten-only.
+    Project,
 }
 
 impl Source {
@@ -182,6 +202,7 @@ impl Source {
             Source::UserFile => "config_toml",
             Source::Settings => "settings",
             Source::Env => "env",
+            Source::Project => "project",
         }
     }
 }
@@ -322,7 +343,7 @@ fn clamp(e: &Entry, n: i64) -> i64 {
     n
 }
 
-/// Node `lookup(obj, key)` (settings.js): the flat key, else the dotted path walked through nested objects.
+/// Node `lookup(obj, key)`: the flat key, else the dotted path walked through nested objects.
 fn lookup<'a>(obj: &'a Json, key: &str) -> Option<&'a Json> {
     let o = obj.as_object()?;
     if let Some(v) = o.get(key) {
@@ -343,7 +364,7 @@ fn token(raw: &str, list_key: &str) -> bool {
     defaults::list(list_key).iter().any(|t| *t == w)
 }
 
-/// Node `coerceValue(entry, raw)` (settings.js) for one engine setting: `None` means "fall through to the next layer".
+/// Node `coerceValue(entry, raw)` for one engine setting: `None` means "fall through to the next layer".
 fn coerce(e: &Entry, raw: &Json) -> Option<Json> {
     match &e.value {
         V::List(_) | V::Table(_) => {
@@ -399,27 +420,8 @@ impl Effective {
     /// not settings of this kind: they travel with each request (`request_env`, D76) and the checks read them from there.
     pub fn resolve(layers: &Layers, env: &dyn Fn(&str) -> Option<String>) -> Effective {
         let mut map = BTreeMap::new();
-        for e in defaults::all() {
-            let from_env = e
-                .env
-                .and_then(env)
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .filter(|_| matches!(e.value, V::Int(_)))
-                .map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
-            let from_settings = || {
-                let (section, key) = e.key.split_once('.')?;
-                coerce(e, lookup(layers.settings.get(section)?, key)?)
-            };
-            let r = if let Some(v) = from_env {
-                Resolved { value: v, source: Source::Env }
-            } else if let Some(v) = from_settings() {
-                Resolved { value: v, source: Source::Settings }
-            } else if let Some(v) = layers.user.get(e.key) {
-                Resolved { value: merge(e.value.to_json(), v), source: Source::UserFile }
-            } else {
-                Resolved { value: e.value.to_json(), source: Source::Default }
-            };
-            map.insert(e.key, r);
+        for e in defaults::all().iter().copied() {
+            map.insert(e.key, resolve_one(e, layers, env));
         }
         Effective { map }
     }
@@ -476,13 +478,163 @@ impl Effective {
     }
 }
 
+/// One setting through the layers (see the module docs for the order). A locked key (`config.locked`) is always the shipped default.
+pub(crate) fn resolve_one(e: &'static Entry, layers: &Layers, env: &dyn Fn(&str) -> Option<String>) -> Resolved {
+    if locked(e.key) {
+        return Resolved { value: e.value.to_json(), source: Source::Default };
+    }
+    let from_env = e
+        .env
+        .and_then(env)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|_| matches!(e.value, V::Int(_)))
+        .map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
+    let from_settings = || {
+        let (section, key) = e.key.split_once('.')?;
+        coerce(e, lookup(layers.settings.get(section)?, key)?)
+    };
+    if let Some(v) = from_env {
+        Resolved { value: v, source: Source::Env }
+    } else if let Some(v) = from_settings() {
+        Resolved { value: v, source: Source::Settings }
+    } else if let Some(v) = layers.user.get(e.key) {
+        Resolved { value: merge(e.value.to_json(), v), source: Source::UserFile }
+    } else {
+        Resolved { value: e.value.to_json(), source: Source::Default }
+    }
+}
+
+/// One setting for a session in a project: the layers' value (`resolve_one`) with the project file's value over it when that is
+/// allowed (`layers::tighten_check`: stricter than the value below, or the user layer allowed the key). The second element is
+/// the reason a project value was refused. The environment and locked keys are never overridden. Used per request: the daemon-wide
+/// `defaults::*` overlay is never given a project value, so one project cannot change another's settings.
+pub fn resolve_for_project(
+    e: &'static Entry,
+    layers: &Layers,
+    env: &dyn Fn(&str) -> Option<String>,
+    project: &BTreeMap<String, Json>,
+) -> (Resolved, Option<String>) {
+    let below = resolve_one(e, layers, env);
+    if below.source == Source::Env || locked(e.key) {
+        return (below, None);
+    }
+    let Some(v) = project.get(e.key) else { return (below, None) };
+    match crate::layers::tighten_check(e.key, v, &below.value) {
+        Ok(()) => (Resolved { value: v.clone(), source: Source::Project }, None),
+        Err(why) => (below, Some(why)),
+    }
+}
+
+/// [`explain_setting`] with this process's environment (the command line).
+pub fn explain_setting_here(key: &str, layers: &Layers, project: &BTreeMap<String, Json>) -> Option<Json> {
+    explain_setting(key, layers, project, &|n| std::env::var(n).ok())
+}
+
+/// `config explain <key>`: the effective value of a setting and what every layer holds for it (`applied`, `shadowed` by a higher
+/// layer, `refused`, or absent), highest precedence first. `None` for a key that is not a setting.
+pub fn explain_setting(key: &str, layers: &Layers, project: &BTreeMap<String, Json>, env: &dyn Fn(&str) -> Option<String>) -> Option<Json> {
+    let e = defaults::get(key)?;
+    let (eff, refusal) = resolve_for_project(e, layers, env, project);
+    let from_env = e
+        .env
+        .and_then(env)
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|_| matches!(e.value, V::Int(_)))
+        .map(|n| json!(clamp(e, n.min(i64::MAX as u64) as i64)));
+    let from_settings = e.key.split_once('.').and_then(|(section, k)| coerce(e, lookup(layers.settings.get(section)?, k)?));
+    let from_user = layers.user.get(e.key).map(|v| merge(e.value.to_json(), v));
+    let held = [from_env, project.get(e.key).cloned(), from_settings, from_user, Some(e.value.to_json())];
+    let names = defaults::list("layers.layer_names");
+    let states = defaults::list("layers.state_names");
+    let rows: Vec<Json> = names
+        .iter()
+        .zip(held)
+        .map(|(name, v)| {
+            let state = match &v {
+                None => states[3],
+                Some(_) if *name == eff.source.name() => states[0],
+                Some(_) if *name == Source::Project.name() && refusal.is_some() => states[2],
+                Some(_) => states[1],
+            };
+            json!({"layer": name, "state": state, "value": v})
+        })
+        .collect();
+    Some(json!({"key": key, "value": eff.value, "source": eff.source.name(), "layers": rows, "refused": refusal}))
+}
+
+/// True when the files may not change `key` (`config.locked`: exact keys, prefixes ending in a dot or in `*`): the names of the
+/// environment variables (the contract between the wrapper, the client and the daemon) and the settings that say where the
+/// config files themselves are. `config.toml` naming one is invalid; `settings.json` naming one falls through, as any bad value.
+pub fn locked(key: &str) -> bool {
+    matches_list(key, "config.locked")
+}
+
+/// `key` is in the list `list_key`: an exact key, a prefix ending in a dot, or a prefix ending in `*` (the star dropped).
+fn matches_list(key: &str, list_key: &str) -> bool {
+    defaults::shipped(list_key).strings().iter().any(|p| match p.strip_suffix('*') {
+        Some(prefix) => key.starts_with(prefix),
+        None if p.ends_with('.') => key.starts_with(p),
+        None => key == *p,
+    })
+}
+
+/// What the owner's files set, for [`defaults::set_overlay`]: every setting `settings.json` or `config.toml` supplies (the
+/// environment layer is read by `defaults::num` itself, the shipped value is the fallback).
+fn overlay_of(eff: &Effective) -> Vec<(&'static str, Json)> {
+    eff.iter().filter(|(_, r)| matches!(r.source, Source::Settings | Source::UserFile)).map(|(k, r)| (k, r.value.clone())).collect()
+}
+
+/// The dotted paths of `v` under `prefix` (every node, so the flat and the nested form of a key are both found).
+fn paths_of(prefix: &str, v: &Json, out: &mut std::collections::BTreeSet<String>) {
+    out.insert(prefix.to_string());
+    if let Json::Object(o) = v {
+        for (k, x) in o {
+            paths_of(&format!("{prefix}.{k}"), x, out);
+        }
+    }
+}
+
+/// Make this process's `defaults::*` reads answer the owner's files (#195), for a process without a daemon's config store (a
+/// command, the hook client, the status line): reads both files once, resolves only the keys they name (a hook call must not
+/// resolve every setting), and installs the result. An invalid file reads as empty, as at a daemon's cold start; the daemon logs it.
+pub fn install_process_overlay() {
+    let paths = Paths::from_env();
+    let (layers, _errs) = load_layers_cold(&paths); // keep: the daemon reports an invalid file (`config_invalid`); a one-shot process runs the layers that load
+    if layers.user.is_empty() && !layers.settings.as_object().is_some_and(|o| !o.is_empty()) {
+        return;
+    }
+    let mut keys: std::collections::BTreeSet<String> = layers.user.keys().cloned().collect();
+    if let Some(o) = layers.settings.as_object() {
+        for (section, v) in o {
+            paths_of(section, v, &mut keys);
+        }
+    }
+    let env = |n: &str| std::env::var(n).ok();
+    let values: Vec<(&'static str, Json)> = keys
+        .iter()
+        .filter_map(|k| defaults::get(k))
+        .map(|e| (e.key, resolve_one(e, &layers, &env)))
+        .filter(|(_, r)| matches!(r.source, Source::Settings | Source::UserFile))
+        .map(|(k, r)| (k, r.value))
+        .collect();
+    defaults::set_overlay(&values);
+}
+
 /// True when `key` only takes effect at the next start (`config.restart_only`: exact keys, or prefixes ending in a dot).
 pub fn restart_only(key: &str) -> bool {
-    defaults::list("config.restart_only").iter().any(|p| if p.ends_with('.') { key.starts_with(p) } else { key == *p })
+    matches_list(key, "config.restart_only")
 }
 
 fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
+    let read = std::fs::read_to_string(path);
+    crate::web::io::path_op(
+        path,
+        read.as_ref().map_or(0, |t| t.len() as u64),
+        read.is_ok() || read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+        false,
+        None,
+    );
+    match read {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ConfigError::Io { path: path.to_path_buf(), source: e }),
@@ -510,10 +662,13 @@ pub(crate) fn toml_to_json(path: &Path, key: &str, v: &toml::Value) -> Result<Js
 
 /// Walk a TOML table: a path that is a shipped setting takes the whole value, any other table is descended into, and
 /// anything else is an unknown key.
-fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTreeMap<String, Json>) -> Result<(), ConfigError> {
+pub(crate) fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTreeMap<String, Json>) -> Result<(), ConfigError> {
     for (k, v) in t {
         let full = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-        if let Some(e) = defaults::all().iter().find(|e| e.key == full) {
+        if let Some(e) = defaults::get(&full) {
+            if locked(&full) {
+                return Err(ConfigError::Locked { path: path.to_path_buf(), key: full });
+            }
             let j = toml_to_json(path, &full, v)?;
             shape(path, &full, &e.value, &j)?;
             if let (V::Int(_), Some(n)) = (&e.value, j.as_i64()) {
@@ -691,6 +846,8 @@ pub struct ConfigStore {
     watch: Mutex<Watch>,
     /// A plugin root a request named that differs from the active one (a plugin update): adopted at the next poll when it is newer.
     offered: Mutex<Option<PathBuf>>,
+    /// True for the process's own store (the daemon's): each swapped-in snapshot is also installed as the `defaults::*` overlay.
+    publish: AtomicBool,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -714,13 +871,32 @@ impl ConfigStore {
             paths: None,
             watch: Mutex::new(Watch { seen: Fingerprint { files: vec![], defaults: vec![] }, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
+            publish: AtomicBool::new(false),
         }
     }
 
-    /// Load the files for this process. A rejected file is logged (`config_invalid`) and the shipped defaults run
-    /// instead, because there is no earlier good config to keep.
+    /// Load the files for this process and make every `defaults::*` read follow this store's snapshots ([`ConfigStore::publish`]).
+    /// A rejected file is logged (`config_invalid`) and the shipped defaults run instead, because there is no earlier good config to keep.
     pub fn load() -> ConfigStore {
-        ConfigStore::load_from(Paths::from_env())
+        let store = ConfigStore::load_from(Paths::from_env());
+        store.publish();
+        store
+    }
+
+    /// Install the active snapshot, and every later one, as this process's `defaults::*` overlay (#195). Only the process's own
+    /// store does this (the daemon's); a store a test builds over scratch files does not, so it never changes another test's reads.
+    pub fn publish(&self) {
+        self.publish.store(true, Ordering::SeqCst);
+        defaults::set_overlay(&overlay_of(&self.snapshot().effective));
+    }
+
+    /// Swap `next` in (and into the `defaults::*` overlay of a publishing store).
+    fn install(&self, next: Snapshot) {
+        let overlay = self.publish.load(Ordering::SeqCst).then(|| overlay_of(&next.effective));
+        *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(next);
+        if let Some(o) = overlay {
+            defaults::set_overlay(&o);
+        }
     }
 
     /// `load` for explicit paths.
@@ -738,6 +914,7 @@ impl ConfigStore {
             paths: Some(paths),
             watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
+            publish: AtomicBool::new(false),
         }
     }
 
@@ -827,7 +1004,7 @@ impl ConfigStore {
         }
         let v = next.version;
         health::log_event("config_applied", "ok", &defaults::render("msg.cfg_log_applied", &[("version", &v), ("changed", &changed.len())]));
-        *self.cur.write().unwrap_or_else(|x| x.into_inner()) = Arc::new(next);
+        self.install(next);
         match user_err {
             Some(e) => Reload::Invalid(e.code()),
             None => Reload::Applied(v),
@@ -912,7 +1089,7 @@ mod tests {
     /// switch (`ANTIHALL_*`) would stick to whichever client started the daemon, so none may be an integer setting.
     #[test]
     fn only_engine_tunables_read_the_process_environment() {
-        for e in defaults::all() {
+        for e in defaults::all().iter().copied() {
             if let (Some(name), V::Int(_)) = (e.env, &e.value) {
                 assert!(name.starts_with("AH_ENGINE_"), "{} reads {name} from the daemon's environment", e.key);
             }
@@ -935,10 +1112,17 @@ mod tests {
             "tier.",
             "dispatch.in_process",
             "dispatch.max_timeout_s",
+            "dispatch.spill_over_cap", // the over-cap SessionStart spill switch: one value for the whole daemon
             "session.gitignore_probe_ms",
-            "realtime.",        // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
-            "script.",          // the interpreter switch and deadline are process-wide, not per request
-            "ops.shadow_rate_", // the shadow sampling rates of the operator command-line tools: each run is its own process
+            "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
+            "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
+            "script.",                      // the interpreter switch and deadline are process-wide, not per request
+            "mcp_reaper.job_every_ms",      // the interval of the scheduled reaper job: the daemon's scheduler reads it, not a request
+            "engine_update.every_ms",       // the interval of the scheduled engine-update job: the daemon's scheduler reads it, not a request
+            "rollback.", // the binary roll-back and install lock: read by the integrity check and the install paths once per run, not per request
+            "refresh.every_ms", // the interval of the scheduled refresh job: the daemon's scheduler reads it, not a request
+            "wire.ack",  // the hook client's opt-in to the ack protocol (client.rs): read by each client process from its own environment, never by the daemon
+            "diagnostics.threads_window_ms", // the sampling window of `status --threads`: read once by that command-line run
         ];
         let odd: Vec<&str> = defaults::all().iter().filter(|e| e.env.is_some() && !PROCESS.iter().any(|p| e.key.starts_with(p))).map(|e| e.key).collect();
         assert!(odd.is_empty(), "env-overridable settings that are not process tunables: {odd:?}");
@@ -957,7 +1141,7 @@ mod tests {
     #[test]
     fn precedence_is_env_then_settings_then_user_file_then_default() {
         let key = "daemon.queue";
-        let d = defaults::raw(key).as_integer().unwrap();
+        let d = defaults::shipped(key).as_integer().unwrap();
         let both = layers(json!({"daemon": {"queue": 11}}), "[daemon]\nqueue = 22\n");
         let r = Effective::resolve(&both, &no_env);
         assert_eq!((r.get(key).unwrap().value.clone(), r.get(key).unwrap().source), (json!(11), Source::Settings));
@@ -1019,21 +1203,82 @@ mod tests {
     }
 
     #[test]
+    fn locked_keys_are_invalid_in_the_user_file_and_ignored_in_settings_json() {
+        let p = Path::new("t.toml");
+        for (text, key) in [
+            ("[env]\nhome = \"X\"\n", "env.home"),
+            ("[config]\nuser_file = \"x.toml\"\n", "config.user_file"),
+            ("[config]\nlocked = []\n", "config.locked"),
+            ("[config]\nrestart_only = []\n", "config.restart_only"),
+            ("[cmd.version]\nargs = \"[x]\"\n", "cmd.version"),
+            ("[dispatch]\nhooks_claude_Stop = []\n", "dispatch.hooks_claude_Stop"),
+        ] {
+            match parse_user(p, text) {
+                Err(ConfigError::Locked { key: k, .. }) => assert_eq!(k, key),
+                other => panic!("{key}: {other:?}"),
+            }
+        }
+        assert!(parse_user(p, "[config]\nwatch_ms = 600\n").is_ok(), "an unlocked key of the same section is fine");
+        let s = json!({"env": {"home": "X"}, "config": {"user_file": "y.toml", "watch_ms": 700}});
+        let r = Effective::resolve(&Layers { settings: s, user: BTreeMap::new(), ..Default::default() }, &no_env);
+        assert_eq!(r.get("env.home").unwrap().source, Source::Default);
+        assert_eq!(r.get("config.user_file").unwrap().source, Source::Default);
+        assert_eq!((r.get("config.watch_ms").unwrap().value.clone(), r.get("config.watch_ms").unwrap().source), (json!(700), Source::Settings));
+    }
+
+    #[test]
+    fn the_overlay_is_what_the_files_supply_and_nothing_else() {
+        let l = layers(json!({"daemon": {"queue": 11}}), "[daemon]\nqueue = 22\nworker_wait_ms = 99\n");
+        let env = |n: &str| (n == defaults::env_of("daemon.workers").unwrap()).then(|| "3".to_string());
+        let o = overlay_of(&Effective::resolve(&l, &env));
+        assert_eq!(o, vec![("daemon.queue", json!(11)), ("daemon.worker_wait_ms", json!(99))], "env-sourced and default keys stay out");
+    }
+
+    /// settings.json is shared with the Node settings store, which owns every `section.key` of its schema and the pre-0.108.4
+    /// `jev.integrations.<id>` form (#195 made every shipped key readable from settings.json, so a shipped key named like one of
+    /// these paths would read the user's Node value as an engine tunable: `jev.integrations.newRequest = "on"` turned a shadow
+    /// integration on in the engine while Node ignored it).
+    #[test]
+    fn no_shipped_key_is_a_path_the_node_settings_store_owns() {
+        let mut paths = std::collections::BTreeSet::new();
+        for e in crate::migrate::settings::entries() {
+            paths_of(&e.section, &json!({ e.key.as_str(): {} }), &mut paths);
+        }
+        let old = format!("{}.{}", defaults::text("migrate.settings_section_jev"), defaults::text("migrate.integrations_key_prefix").trim_end_matches('.'));
+        paths.insert(old);
+        let hit: Vec<&String> = paths.iter().filter(|p| defaults::get(p).is_some()).collect();
+        assert!(hit.is_empty(), "shipped keys named like Node settings.json paths: {hit:?}");
+        // the behaviour behind it: the old per-integration form changes nothing the engine resolves
+        let l = layers(json!({"jev": {"integrations": {"newRequest": "on"}}}), "");
+        let r = Effective::resolve(&l, &no_env);
+        let from_settings: Vec<&str> = r.iter().filter(|(_, x)| x.source == Source::Settings).map(|(k, _)| k).collect();
+        assert!(from_settings.is_empty(), "read from settings.json: {from_settings:?}");
+    }
+
+    #[test]
+    fn every_dotted_path_of_settings_json_is_a_candidate_key() {
+        let mut out = std::collections::BTreeSet::new();
+        paths_of("a", &json!({"b": {"c": 1}, "d.e": 2}), &mut out);
+        let got: Vec<&str> = out.iter().map(String::as_str).collect();
+        assert_eq!(got, vec!["a", "a.b", "a.b.c", "a.d.e"]);
+    }
+
+    #[test]
     fn a_table_setting_takes_a_partial_override_merged_over_the_default() {
         let path = Path::new("t.toml");
-        let user = parse_user(path, "[cmd.version]\nargs = \"[x]\"\n").unwrap();
+        let user = parse_user(path, "[agent_tracker.kinds]\nmain = \"x\"\n").unwrap();
         let r = Effective::resolve(&Layers { settings: Json::Null, user, ..Default::default() }, &no_env);
-        let v = &r.get("cmd.version").unwrap().value;
-        assert_eq!(v["args"], "[x]");
-        assert_eq!(v["status"], "implemented", "the other fields of the default table survive: {v}");
-        assert_eq!(parse_user(path, "[cmd.version]\nnope = 1\n").unwrap_err().code(), "unknown_key");
-        assert_eq!(parse_user(path, "[cmd.version]\nargs = 3\n").unwrap_err().code(), "type");
+        let v = &r.get("agent_tracker.kinds").unwrap().value;
+        assert_eq!(v["main"], "x");
+        assert_eq!(v["subagent"], defaults::shipped("agent_tracker.kinds").str_field("subagent"), "the other fields of the default table survive: {v}");
+        assert_eq!(parse_user(path, "[agent_tracker.kinds]\nnope = 1\n").unwrap_err().code(), "unknown_key");
+        assert_eq!(parse_user(path, "[agent_tracker.kinds]\nmain = 3\n").unwrap_err().code(), "type");
     }
 
     #[test]
     fn every_shipped_setting_resolves_to_its_default_without_overrides() {
         let r = Effective::resolve(&Layers::default(), &no_env);
-        for e in defaults::all() {
+        for e in defaults::all().iter().copied() {
             let got = r.get(e.key).unwrap_or_else(|| panic!("{} missing", e.key));
             assert_eq!((&got.value, got.source), (&e.value.to_json(), Source::Default), "{}", e.key);
         }

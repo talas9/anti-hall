@@ -1,5 +1,6 @@
 //! Overhead of Node-hook telemetry. Its own test binary: a p95 timing is meaningless beside other tests' daemons and threads.
 
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 use ah_engine::telemetry::event::Outcome;
 
 /// The budget for what the Node-hook telemetry adds to one hook call, p95 (a call with three Node hooks: build and queue

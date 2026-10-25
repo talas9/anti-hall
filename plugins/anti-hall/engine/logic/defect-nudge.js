@@ -1,8 +1,8 @@
 // check = "defect-nudge" (SessionStart). A once-a-day, non-blocking nudge about the file-based defect channel
 // (~/.anti-hall/defects/*.jsonl). In the anti-hall repository it counts unfinished reports; anywhere else it counts defects this
 // project reported that now carry a later ruling. The line holds counts and ages only. The defect files are other agents' data:
-// read-only here. The hook falls back to its own working directory when the payload has no cwd; a script does not know it, so it
-// defers. Mirrors hooks/defect-nudge.js and the reading half of hooks/lib/defect-store.js. Keys and texts: session.toml (session.defect_*).
+// read-only here. The hook falls back to its own working directory when the payload has no cwd; the script uses the stand-in
+// directory (hookProc.cwd, counted). Mirrors hooks/defect-nudge.js and the reading half of hooks/lib/defect-store.js. Keys and texts: session.toml (session.defect_*).
 'use strict';
 
 function dnExists(p) { return ah.fs.isFile(p) || ah.fs.isDir(p); }
@@ -73,9 +73,10 @@ function dnShow(defects, fp) {
 function decide(p) {
   if (sess.judgeChild()) return 'allow';
   if (!ah.settings.bool('session.setting_defect_nudge') || ah.settings.skipped(ah.cfg('session.defect_nudge_guard'))) return 'allow';
-  var cwd = p && typeof p.cwd === 'string' && p.cwd !== '' && ah.path.isAbsolute(p.cwd) ? p.cwd : null;
+  var cwd = hookProc.cwd(p); // the payload's cwd, else the stand-in for the hook process's directory
+  if (!(p && typeof p.cwd === 'string' && p.cwd !== '' && ah.path.isAbsolute(p.cwd))) ah.unable('defect-nudge:cwd_stand_in');
   var home = spawn.osHome();
-  if (cwd === null || home === null) return 'defer';
+  if (home === null) { ah.unable('defect-nudge:no_home', 'abandoned'); return 'allow'; } // no absolute HOME: no stamp or defect store
   var stamp = ah.cfg('session.state_dir') + '/' + ah.cfg('session.defect_stamp'), now = ah.clock.now();
   var raw = ah.state.readText(stamp);
   if (raw !== null && raw.trim() !== '') {
@@ -86,7 +87,7 @@ function decide(p) {
   }
   var defects = home + '/' + ah.cfg('session.state_dir') + '/' + ah.cfg('session.defects_dir'), ext = ah.cfg('session.defect_ext');
   var names = ah.fs.listDir(defects) || [];
-  if (ah.fs.isDir(defects) && ah.fs.readdir(defects) === null) return 'defer'; // too many entries to list exactly
+  if (ah.fs.isDir(defects) && ah.fs.readdir(defects) === null) ah.unable('defect-nudge:listing_too_big'); // the entries listDir gave are the ones counted
   var list = names.filter(function (n) { return n.endsWith(ext); }).map(function (n) {
     return { fp: n.slice(0, n.length - ext.length), lines: dnLines(defects + '/' + n) };
   });

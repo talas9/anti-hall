@@ -5,13 +5,13 @@
 #   agg --font-size 22 --theme github-dark --last-frame-duration 3 assets/demo/shell-demo.cast assets/demo/shell-demo.gif
 #
 # Every "BLOCKED" message below is the REAL stderr of the real hook, captured live:
-# a PreToolUse JSON payload is piped into plugins/anti-hall/hooks/git-guard.js run
+# a PreToolUse JSON payload is piped into plugins/anti-hall-node/hooks/git-guard.js run
 # with a throwaway HOME. Nothing is hand-typed. Long messages are word-wrapped and cut
 # after MAXL lines with an ellipsis (trimmed, never reworded).
 
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-HOOK="$ROOT/plugins/anti-hall/hooks/git-guard.js"
+HOOK="$ROOT/plugins/anti-hall-node/hooks/git-guard.js"
 DEMO_HOME="$(mktemp -d)"; trap 'rm -rf "$DEMO_HOME"' EXIT
 export ANTIHALL_INGEST_DRY_RUN=1
 W=86; MAXL=3

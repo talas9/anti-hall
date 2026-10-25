@@ -3,11 +3,11 @@
 //! `resolveChildHashes` and `pollMsFromEnv` of `companion/lib/devswarm-wake-watch.js`, plus `readDescriptors` of
 //! `companion/devswarm-supervisor.js`.
 //!
-//! Where Node would run git (a checkout nested in another one) the engine cannot reproduce the answer: the identity functions
-//! return [`Defer`] and the verb is left to Node before anything is written.
+//! Where the engine asks git (a checkout nested in another one) and git does not answer, the identity functions return the
+//! upstream resolver's error and the verb ends before anything is written.
 use super::read::Hashes;
 use crate::checks::git::util::Settings;
-use crate::checks::guardkit::settings::{get_num, get_setting};
+use crate::checks::guardkit::settings::{get_enum, get_num, get_setting};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::json::J;
 use crate::defaults;
@@ -61,6 +61,16 @@ pub fn is_child_workspace(p: &Proc) -> bool {
 /// The registered descriptors (`readDescriptors`): the `*.json` files of `workspaces/` that parse and carry a worktree path, a
 /// session id and a safe id, in file-name order.
 pub fn read_descriptors(home: &Path) -> Vec<J> {
+    read_rows(home, true)
+}
+
+/// Every descriptor with a worktree path and a safe id, session or not: the DevSwarm app's own row for a Primary's checkout has
+/// `sessionId: null`, and a watcher armed under either row covers the checkout.
+pub fn read_checkout_rows(home: &Path) -> Vec<J> {
+    read_rows(home, false)
+}
+
+fn read_rows(home: &Path, need_session: bool) -> Vec<J> {
     let dir = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces"));
     let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() };
     let mut names: Vec<String> =
@@ -70,7 +80,7 @@ pub fn read_descriptors(home: &Path) -> Vec<J> {
     for n in names {
         let Some(d) = super::read::read_text(&dir.join(&n)).and_then(|t| super::read::parse_json(&t)) else { continue };
         let safe_id = matches!(d.get("id"), Some(J::Str(s)) if is_safe_id(s));
-        if matches!(d, J::Obj(_)) && j_truthy(d.get("worktreePath")) && j_truthy(d.get("sessionId")) && safe_id {
+        if matches!(d, J::Obj(_)) && j_truthy(d.get("worktreePath")) && (!need_session || j_truthy(d.get("sessionId"))) && safe_id {
             out.push(d);
         }
     }
@@ -106,28 +116,24 @@ fn descriptor_at(descriptors: &[J], cwd: &str) -> Option<J> {
     descriptors.iter().find(|d| str_member(d, "worktreePath").is_some_and(|wt| !real_forms(&wt, cwd).is_disjoint(&cwd_forms))).cloned()
 }
 
-/// `isDevswarmActive`: the kill switch, the supervisor mode, then the DevSwarm repo variable. `Err` when the mode needs a plugin root
-/// the caller does not have. Keys: `spawn_ctx.*` (the same ones the compiled spawn-context helpers read).
-fn devswarm_active(st: &Settings, plugin_root: &str) -> Result<bool, crate::checks::guardkit::settings::Undecidable> {
+/// `isDevswarmActive`: the kill switch, the supervisor mode, then the DevSwarm repo variable. Keys: `spawn_ctx.*` (the same ones the compiled spawn-context helpers read).
+fn devswarm_active(st: &Settings) -> bool {
     if st.env.get(defaults::text("spawn_ctx.devswarm_kill_env")).map(String::as_str) == Some(defaults::text("spawn_ctx.devswarm_kill_value")) {
-        return Ok(false);
+        return false;
     }
-    let mode = get_setting(st, defaults::raw("spawn_ctx.supervisor_setting"), Some(Value::String("auto".into())), plugin_root)?;
-    let mode = mode.as_ref().and_then(Value::as_str).map(|m| js_trim(m).to_lowercase()).unwrap_or_default();
-    Ok(match mode.as_str() {
+    // the mode entry has no legacy file, so its read never depends on the plugin root: the variable, `settings.json`, the plugin option, "auto"
+    match js_trim(&get_enum(st, defaults::raw("spawn_ctx.supervisor_setting"))).to_lowercase().as_str() {
         "off" => false,
         "on" => true,
         _ => st.env.get(defaults::text("spawn_ctx.devswarm_repo_env")).is_some_and(|v| !js_trim(v).is_empty()),
-    })
+    }
 }
 
 /// `isDevswarmActiveGate`: arms on positive evidence of DevSwarm and on nothing else.
 pub fn gate(p: &Proc) -> R<bool> {
     // (a) the explicit opt-in / feature-detect
-    match devswarm_active(&p.st, &p.root) {
-        Ok(true) => return Ok(true),
-        Ok(false) => {}
-        Err(_) => return ident::defer("settings-undecidable"),
+    if devswarm_active(&p.st) {
+        return Ok(true);
     }
     // (b) tier 1 of the identity: a child workspace with a builder id
     if is_child_workspace(p) && p.env_nonblank("mesh_write.env_builder_id").is_some() {
@@ -226,4 +232,40 @@ pub fn child_hashes(cwd: &str, id: &str) -> R<Option<Hashes>> {
 /// A deferral reason for a caller that wants the code only.
 pub fn defer_reason(d: &Defer) -> &str {
     &d.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(env: &[(&str, &str)]) -> Settings {
+        Settings { home: "/nonexistent-home".into(), env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+    }
+
+    /// The mode read never depends on the plugin root (the entry has no legacy file): the variable decides, then the repository variable.
+    #[test]
+    fn the_supervisor_mode_is_decided_from_the_environment_alone() {
+        assert!(devswarm_active(&st(&[("ANTIHALL_DEVSWARM_SUPERVISOR", "on")])));
+        assert!(!devswarm_active(&st(&[("ANTIHALL_DEVSWARM_SUPERVISOR", " OFF "), ("DEVSWARM_REPO_ID", "r")])));
+        assert!(devswarm_active(&st(&[("DEVSWARM_REPO_ID", "r")])), "auto follows the repository variable");
+        assert!(!devswarm_active(&st(&[])), "auto without it is dormant");
+    }
+    /// An unreadable `settings.json` inside the DevSwarm gate does not end the gate as "not DevSwarm": the remaining tiers still
+    /// run, as `isDevswarmActiveGate` runs them (devswarm-wake-watch.js:1567-1613).
+    #[test]
+    fn an_unreadable_settings_file_still_lets_the_later_tiers_arm_the_gate() {
+        let home = std::env::temp_dir().join(format!("ah-who-gate-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        std::fs::write(home.join(".anti-hall/settings.json"), "{not json").unwrap();
+        let env: Env = [(defaults::text("wake_watch.env_source_branch"), "b"), (defaults::text("mesh_write.env_builder_id"), "id1")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let st = Settings { home: home.to_string_lossy().into(), env: env.clone() };
+        let p = Proc { home: home.clone(), cwd: home.to_string_lossy().into(), env, st, root: String::new() };
+        assert!(gate(&p).unwrap(), "tier 1 (child workspace with a builder id) arms it");
+        let bare = Proc { env: Env::new(), st: Settings { home: p.st.home.clone(), env: Default::default() }, ..p };
+        assert!(!gate(&bare).unwrap(), "no evidence at any tier: not DevSwarm");
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup
+    }
 }

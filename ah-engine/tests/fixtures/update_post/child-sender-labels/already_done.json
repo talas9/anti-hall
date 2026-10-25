@@ -1,0 +1,36 @@
+{
+  "answer": {
+    "aliased": 0,
+    "attempted": true,
+    "detail": "child-sender-labels: already completed for 0.1.0 - skipped (one-time per-version migration)",
+    "errors": 0,
+    "forwarded": 0,
+    "labels": 0,
+    "retired": 0,
+    "skippedAlreadyDone": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/update-sweep-state.json": "644 {\"repairChildSenderLabels\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "c1",
+          "workspace_id": "kid-2"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "kid-2",
+          "session_id": null,
+          "worktree_path": "{REPO}-child"
+        }
+      ]
+    }
+  }
+}

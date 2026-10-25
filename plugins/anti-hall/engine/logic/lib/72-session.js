@@ -8,6 +8,7 @@ var sess = {
   // The plugin root the dispatcher names (opts.plugin_root, else the environment), resolved to its real path; null when unknown.
   pluginRoot: function (opts) {
     var given = opts !== null && typeof opts === 'object' && typeof opts.plugin_root === 'string' && opts.plugin_root !== '' ? opts.plugin_root : ah.env.get(ah.cfg('env.plugin_root'));
+    if (given === null || given === '') given = ah.plugin.root();
     if (given === null || given === '') return null;
     return ah.fs.realpath(given);
   },
@@ -59,14 +60,23 @@ var sess = {
     if (a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])) return { advise: true, reason: 'newer' };
     return { advise: true, reason: 'older' };
   },
-  // The drift probe of an installed tool: the cache says what is installed; a stale cache hands the hook to Node (which starts the probe).
+  // Ask the engine's refresh job (`ah-engine refresh`, engine/defaults/refresh.toml) to run `probe`: where the Node hook started a
+  // detached refresh process, the check writes a request file and answers silently, as the Node hook did that session. Best
+  // effort: an unwritten request is written again by the next session that finds the cache stale.
+  requestRefresh: function (probe, extra) {
+    var body = Object.assign({ requestedAt: ah.clock.now() }, extra || {});
+    try { ah.state.writeAtomic(ah.cfg('refresh.request_dir') + '/' + probe + ah.cfg('refresh.request_ext'), JSON.stringify(body)); } catch (e) { /* the next session asks again */ }
+  },
+  // The drift probe of an installed tool: the cache says what is installed; a stale cache asks the refresh job for the probe
+  // and says nothing this session (the Node hook started the probe and said nothing).
   driftProbe: function (o) {
     if (sess.judgeChild()) return 'allow';
     if (!ah.settings.bool(o.setting) || ah.settings.skipped(ah.cfg(o.guard))) return 'allow';
     var now = ah.clock.now(), rel = ah.cfg(o.cache), cache = sess.readCache(rel);
-    if (!sess.isFresh(cache, now, ah.cfgNum('session.drift_cache_ttl_ms'))) return 'defer';
+    if (!sess.isFresh(cache, now, ah.cfgNum('session.drift_cache_ttl_ms'))) { sess.requestRefresh(o.probe); return 'allow'; }
     if (cache.installed === null || typeof cache.installed !== 'string' || !cache.installed) return 'allow';
     var baseline = ah.cfg(o.baseline), drift = sess.classify(cache.installed, baseline);
+    if (o.exact && drift.reason === 'patch') drift.advise = true;
     if (!drift.advise) return 'allow';
     var key = o.keyed ? { installed: cache.installed, baseline: baseline } : null;
     if (o.keyed ? sess.alreadyAdvised(cache, key) : (cache.lastAdvised && typeof cache.lastAdvised === 'object' && cache.lastAdvised.installed === cache.installed && cache.lastAdvised.baseline === baseline)) return 'allow';

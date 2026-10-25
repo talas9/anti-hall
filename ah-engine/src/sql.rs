@@ -6,7 +6,7 @@
 //! parameters at run time and come from the defaults; nothing tunable is written into a statement.
 
 /// hot.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
-pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7];
+pub const HOT_MIGRATIONS: &[&str] = &[HOT_V1, HOT_V2, HOT_V3, HOT_V4, HOT_V5, HOT_V6, HOT_V7, HOT_V8, HOT_V9];
 
 /// archive.db migrations, applied in order; `PRAGMA user_version` records how many have run. Append only.
 pub const ARCHIVE_MIGRATIONS: &[&str] = &[ARCHIVE_V1, ARCHIVE_V2, ARCHIVE_V3, ARCHIVE_V4];
@@ -232,6 +232,29 @@ CREATE TABLE IF NOT EXISTS rt_edges (id INTEGER PRIMARY KEY, ns TEXT NOT NULL, k
 CREATE INDEX IF NOT EXISTS rt_edges_ns ON rt_edges (ns, id);
 ";
 
+/// hot.db v8: one row per guard block (which guard, which session and agent, when, and the first line of its message), so a block
+/// can be asked about afterwards (`ah-engine query guard_blocks`). Kept for `telemetry.block_keep_days`.
+const HOT_V8: &str = "
+CREATE TABLE IF NOT EXISTS guard_blocks (id INTEGER PRIMARY KEY, ts_ms INTEGER NOT NULL, guard TEXT NOT NULL, rule TEXT NOT NULL, event TEXT NOT NULL, session TEXT NOT NULL, agent TEXT NOT NULL, tool TEXT NOT NULL, project TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS guard_blocks_ts ON guard_blocks (ts_ms);
+";
+
+/// hot.db v9: how many blocks the guard had given the session inside the repeat window when this one was a repeat (0: not a repeat).
+const HOT_V9: &str = "
+ALTER TABLE guard_blocks ADD COLUMN repeat INTEGER NOT NULL DEFAULT 0;
+";
+
+/// Record one guard block.
+pub const BLOCK_INSERT: &str =
+    "INSERT INTO guard_blocks (ts_ms, guard, rule, event, session, agent, tool, project, reason, repeat) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+
+/// Drop the blocks older than a time.
+pub const BLOCK_PRUNE: &str = "DELETE FROM guard_blocks WHERE ts_ms < ?1";
+
+/// The newest blocks since a time.
+pub const BLOCK_RECENT: &str =
+    "SELECT ts_ms, guard, rule, event, session, agent, tool, project, reason, repeat FROM guard_blocks WHERE ts_ms >= ?1 ORDER BY id DESC LIMIT ?2";
+
 /// Insert or replace one realtime entity.
 pub const RT_ENTITY_PUT: &str = "INSERT INTO rt_entity (ns, key, body, src_sig, observed_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (ns, key) DO UPDATE SET body = excluded.body, src_sig = excluded.src_sig, observed_ms = excluded.observed_ms";
 
@@ -308,6 +331,9 @@ pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipie
 pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE sender = ?1 ORDER BY id DESC LIMIT ?2";
 /// How many messages one workspace holds.
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
+/// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
+/// message with no sender counts.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR substr(COALESCE(body, ''), 1, length(?)) <> ?)";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -371,9 +397,9 @@ pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (worksp
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
-pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// `appendMessage` without a hash.
-pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body) VALUES (?, ?, ?, ?);";
+pub const MESHW_APPEND_MESSAGE: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender) VALUES (?, ?, ?, ?, ?);";
 /// One registry row (the columns `upsertRegistry` writes), for the merge-preserving self-registration.
 pub const MESHW_REGISTRY_ROW: &str = "SELECT id, worktree_path, session_id, inbox_path, cursor_path, nudge_command FROM registry WHERE id = ?;";
 /// The ids of the registry (`listRegistry`), for the partition door's "still registered here" recheck.
@@ -414,6 +440,8 @@ pub const MESHW_ALTER_REGISTRY_WRITE_SEQ: &str = "ALTER TABLE registry ADD COLUM
 pub const MESHW_JOURNAL_WAL: &str = "PRAGMA journal_mode = WAL;";
 /// Node's foreign-keys pragma.
 pub const MESHW_FOREIGN_KEYS: &str = "PRAGMA foreign_keys = ON;";
+/// SQLite's change counter as seen by one connection: it differs between two reads exactly when another connection committed in between.
+pub const DATA_VERSION: &str = "PRAGMA data_version;";
 /// The DevSwarm app's `builders` columns (`devswarm-app-db.js` `tableColumns`), read-only.
 pub const MESHW_APP_BUILDER_COLUMNS: &str = "PRAGMA table_info(builders)";
 /// Start of the `builders` read `builderForWorktree` needs: id and active flag, then the worktree and type columns.
@@ -471,6 +499,10 @@ pub const RT_BC_ALL: &str = "SELECT value FROM broadcast_cursors";
 pub const RT_BC_ONE: &str = "SELECT value FROM broadcast_cursors WHERE workspace_id = ?1";
 /// The registry rows (id and NDJSON inbox path).
 pub const RT_REGISTRY: &str = "SELECT id, inbox_path FROM registry ORDER BY id ASC";
+/// A message row's hash and whether its body is a tombstone (retention restore).
+pub const RT_RESTORE_GET: &str = "SELECT hash, body IS NULL AS tomb FROM messages WHERE id = ?1;";
+/// Puts an archived body back into a tombstoned row (retention restore).
+pub const RT_RESTORE_SET: &str = "UPDATE messages SET body = ?1 WHERE id = ?2 AND body IS NULL;";
 /// A partition's reader cursor rows.
 pub const RT_READER_ROWS: &str = "SELECT ns, reader, value, retired_line FROM reader_cursors WHERE partition = ?1";
 /// A partition's store-namespace reader rows (the in-transaction bound).
@@ -533,5 +565,7 @@ pub const RECON_MESSAGES_OF: &str = "SELECT id, ts, hash, body, sender, recipien
 pub const RECON_HASH_PRESENT: &str = "SELECT 1 FROM messages WHERE hash = ? LIMIT 1;";
 /// The reconcile port: the number of message rows in a partition.
 pub const RECON_MESSAGE_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?;";
+/// The unguarded removal of one registry row (the re-home's tombstone of its source row, after the copy was verified).
+pub const RECON_REGISTRY_DELETE: &str = "DELETE FROM registry WHERE id = ?;";
 /// The reconcile port: `removeRegistryIf` (the guard compares session, `updated_at` and `write_seq`, NULL-safe).
 pub const RECON_REGISTRY_DELETE_IF: &str = "DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;";

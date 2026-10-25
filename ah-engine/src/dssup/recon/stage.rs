@@ -21,7 +21,7 @@ use super::{Hooks, archive, fold, heal, orphans};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
-use crate::dssup::tick::{Ctx, node, parse};
+use crate::dssup::tick::Ctx;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -264,23 +264,28 @@ struct Walk<'a> {
     hooks: &'a Hooks<'a>,
     stage: &'a str,
     deadline_ms: i64,
-    timeout_ms: u64,
 }
 
 impl Walk<'_> {
-    /// Node's own function for one item, bounded. A subprocess that fails is the stage function's `{ok:false}` catch.
-    fn node_item(&self, item: &str) -> Value {
-        let deadline = self.deadline_ms.to_string();
-        let r = node(self.runner, self.ctx, defaults::text("devswarm_recon.node_item_snippet"), &[self.stage, item, &deadline], self.timeout_ms);
-        if r.ok {
-            parse(&r.stdout)
-        } else {
-            let why = r.error.clone().unwrap_or_else(|| crate::dssup::tick::cut(&r.stderr));
-            json!({"ok": false, "error": why})
-        }
+    /// An item the engine did not take: held (counted `native_unable`), it counts as an error of the stage so its marker stays and the
+    /// item is tried again on the next pass. Nothing was written for it.
+    fn held_item(&self, why: &str) -> Value {
+        let held = crate::dssup::tick::held(&format!("dssup:recon:{}", self.stage), why);
+        json!({"ok": false, "error": held["held"]})
     }
 
-    /// The engine's witnessed result for one item, shaped like Node's; `Err(why)` sends the item to Node.
+    /// Whether the reason is a store on the legacy journal backend, which the engine does not read.
+    fn is_legacy(why: &str) -> bool {
+        why == defaults::text("devswarm_recon.reason_store_backend")
+    }
+
+    /// A legacy journal store: counted `disabled` (not held: nothing waits for a later try), and the stage's marker is not kept back by it.
+    fn legacy_item(&self) -> Value {
+        crate::obs::counters::account("stage", defaults::text("devswarm_recon.legacy_site"), crate::obs::counters::Outcome::Disabled, 0, 0);
+        json!({"ok": true, "legacyJournalStore": true})
+    }
+
+    /// The engine's result for one item, shaped like Node's; `Err(why)` holds the item.
     fn engine_item(&self, item: &str) -> Result<Value, String> {
         let agreed = |v: &Verdict, deferred: &[(String, String)]| -> Result<(), String> {
             if *v != Verdict::Agreed {
@@ -412,16 +417,15 @@ fn pause(ms: u64) {
 }
 
 /// Run one deferred stage natively. `None`: the engine does not take this stage now (not engine mode, an unknown stage, a marker
-/// the engine will not interpret) and Node's `runDeferredStage` runs it whole.
+/// the engine will not interpret) and the duty holds it.
 pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option<StageOut> {
     if !archive::engine_mode(ctx.st) {
         return None;
     }
-    let timeout_ms = defaults::raw("devswarm_sup.duty.deferred").get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
     let budget = budget_ms(ctx);
-    let w = Walk { ctx, runner, hooks, stage, deadline_ms: ctx.now + budget as i64, timeout_ms };
+    let w = Walk { ctx, runner, hooks, stage, deadline_ms: ctx.now + budget as i64 };
     if stage == defaults::text("devswarm_recon.stage_archived") {
-        return Some(archived(&w, budget));
+        return Some(archived(&w, budget, None));
     }
     let key = defaults::raw("devswarm_sup.ds_stage_keys").get(stage).and_then(crate::defaults::V::as_str)?;
     let state = read_state(ctx.home);
@@ -430,6 +434,53 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
         _ => return None,
     };
     let Items::List(items) = sweep_items_for(&state, key, &version) else { return None };
+    Some(walk(&w, Some((key, &version, &state)), &items, budget))
+}
+
+/// What the update's wrapper hands a store stage (`foldAllStoresPostUpdate` and its siblings): the new version, the stores to walk
+/// when nothing is pending (the shared listing, smallest store first), the stage's own sweep budget and the cap the overall post-pull
+/// budget puts on every store's deadline.
+pub struct UpdateRun<'a> {
+    /// The new version; `None`: nothing is stamped and nothing is resumed (the wrapper's `version = null`).
+    pub version: Option<&'a str>,
+    /// `fullEnumerate()`: the stores of a first run at this version.
+    pub hashes: Vec<String>,
+    /// `sweepBudgetMs(env)`.
+    pub budget_ms: f64,
+    /// `postPullDeadline`, epoch ms.
+    pub deadline_cap: Option<i64>,
+}
+
+/// The update's store stages run natively behind the same switch as the supervisor's (`devswarm_sup.sweep_tail_mode`): the
+/// `sweepItemsFor` of the wrapper (a prior partial run's list, else the enumeration), the throttled walk, `recordSweepResult` and
+/// `recordRun`. `None`: the stage is not run here (not engine mode, an unknown stage, a stage already stamped).
+pub fn run_update(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks, up: &UpdateRun) -> Option<StageOut> {
+    if !archive::engine_mode(ctx.st) {
+        return None;
+    }
+    let own = ctx.now + up.budget_ms as i64;
+    let deadline_ms = up.deadline_cap.map_or(own, |c| own.min(c));
+    let w = Walk { ctx, runner, hooks, stage, deadline_ms };
+    if stage == defaults::text("devswarm_recon.stage_archived") {
+        return Some(archived(&w, up.budget_ms, Some(up)));
+    }
+    let key = defaults::raw("devswarm_sup.ds_stage_keys").get(stage).and_then(crate::defaults::V::as_str)?;
+    let state = read_state(ctx.home);
+    let Some(version) = up.version.filter(|v| !v.is_empty()) else {
+        return Some(walk(&w, None, &up.hashes, up.budget_ms));
+    };
+    let items = match sweep_items_for(&state, key, version) {
+        Items::Skip => return None,
+        Items::Enumerate => up.hashes.clone(),
+        Items::List(l) => l,
+    };
+    Some(walk(&w, Some((key, version, &state)), &items, up.budget_ms))
+}
+
+/// The walk of a store stage over `items` (the stage function's `runThrottledSweep`), then the marker (`record`: the stage's key,
+/// the version and the state read before the walk; `None`: nothing is stamped), then the stage's answer.
+fn walk(w: &Walk, record: Option<(&str, &str, &OVal)>, items: &[String], budget: f64) -> StageOut {
+    let (ctx, hooks, stage) = (w.ctx, w.hooks, w.stage);
     let yield_ms = defaults::num("devswarm_recon.stage_yield_ms");
     let start = Instant::now();
     let mut acc = Acc::default();
@@ -441,7 +492,8 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
         (hooks.at)(&format!("stage:{stage}:{i}:before"));
         let (r, by, why) = match w.engine_item(item) {
             Ok(r) => (r, defaults::text("devswarm_recon.by_engine"), String::new()),
-            Err(why) => (w.node_item(item), defaults::text("devswarm_recon.by_node"), why),
+            Err(why) if Walk::is_legacy(&why) => (w.legacy_item(), defaults::text("devswarm_recon.by_legacy"), why),
+            Err(why) => (w.held_item(&why), defaults::text("devswarm_recon.by_held"), why),
         };
         acc.take(stage, item, &r);
         records.push(json!({"item": item, "by": by, "why": why}));
@@ -461,7 +513,9 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
     } else {
         (acc.errors == 0.0, 0.0, 0.0)
     };
-    record_sweep_result(ctx, &state, key, &version, &processed, &remaining, exhausted, clean, pending_rows, forward_failed);
+    if let Some((key, version, state)) = record {
+        record_sweep_result(ctx, state, key, version, &processed, &remaining, exhausted, clean, pending_rows, forward_failed);
+    }
     (hooks.at)(&format!("stage:{stage}:record:after"));
     let n_stores = fmt_n(processed.len() as f64);
     let tail = |detail: &mut String| {
@@ -539,12 +593,12 @@ pub fn run(ctx: &Ctx, runner: &dyn Runner, stage: &str, hooks: &Hooks) -> Option
         json!({"attempted": true, "checked": jn(acc.checked), "healed": jn(acc.healed), "rehomed": jn(acc.rehomed), "errors": jn(acc.errors), "stores": acc.stores,
             "budgetExhausted": exhausted, "pending": remaining.len(), "detail": d})
     };
-    Some(StageOut { result, items: records, budget_ms: budget })
+    StageOut { result, items: records, budget_ms: budget }
 }
 
 // ---- fold-archived-rows -----------------------------------------------------------------------------------------------------
 
-/// One half of the archived stage: the engine's witnessed plan, else Node's function for that half.
+/// One half of the archived stage: the engine's plan, else the half is held (counted, nothing written, tried again).
 fn half(w: &Walk, label: &str, plan: crate::meshw::ident::R<archive::Plan>, records: &mut Vec<Value>) -> Value {
     let engine = plan.map_err(|d| d.0).and_then(|p| {
         let run = archive::run_plan(w.ctx, w.runner, &p, w.hooks);
@@ -558,21 +612,31 @@ fn half(w: &Walk, label: &str, plan: crate::meshw::ident::R<archive::Plan>, reco
     });
     let (r, by, why) = match engine {
         Ok(r) => (r, defaults::text("devswarm_recon.by_engine"), String::new()),
-        Err(why) => (w.node_item(label), defaults::text("devswarm_recon.by_node"), why),
+        Err(why) if Walk::is_legacy(&why) => (w.legacy_item(), defaults::text("devswarm_recon.by_legacy"), why),
+        Err(why) => (w.held_item(&why), defaults::text("devswarm_recon.by_held"), why),
     };
     records.push(json!({"item": label, "by": by, "why": why}));
     r
 }
 
-/// `foldArchivedRowsPostUpdate` with no version: both halves run, nothing is stamped, the resume markers (written by the folds
-/// themselves) drive the next pass.
-fn archived(w: &Walk, budget: f64) -> StageOut {
+/// `foldArchivedRowsPostUpdate`. With no version (`up` is `None`, or it carries none) both halves run and nothing is stamped, the
+/// resume markers (written by the folds themselves) drive the next pass. With the update's version a half whose one-time marker is
+/// already stamped is not run (its counts are zero), and each half that ran is stamped by `recordRun` when the one completeness
+/// predicate says it is done: `foldArchivedRows` for the rows, `foldArchivedFamilyDescriptors` for the twin descriptors.
+fn archived(w: &Walk, budget: f64, up: Option<&UpdateRun>) -> StageOut {
     let ctx = w.ctx;
     let stage = w.stage;
+    let version = up.and_then(|u| u.version).filter(|v| !v.is_empty());
+    let stamped = |key: &str| {
+        let state = read_state(ctx.home);
+        version.is_some_and(|v| matches!(state.get(key).and_then(|e| e.get("completedVersion")), Some(OVal::Str(c)) if c == v))
+    };
+    let (rows_key, fam_key) = (defaults::text("devswarm_recon.marker_archived_rows"), defaults::text("devswarm_recon.marker_archived_family"));
+    let (rows_done, fam_done) = (stamped(rows_key), stamped(fam_key));
     let mut records = Vec::new();
     let deadline = Some(w.deadline_ms);
     (w.hooks.at)(&format!("stage:{stage}:rows:before"));
-    let r = half(w, "rows", archive::fold_archived_rows(ctx.home, ctx.now, deadline), &mut records);
+    let r = if rows_done { json!({}) } else { half(w, "rows", archive::fold_archived_rows(ctx, deadline), &mut records) };
     (w.hooks.at)(&format!("stage:{stage}:rows:after"));
     if r.get("threw") == Some(&Value::Bool(true)) {
         let d = defaults::render("devswarm_recon.d_raised", &[("stage", &stage), ("error", &js_text(&r["error"]))]);
@@ -589,21 +653,31 @@ fn archived(w: &Walk, budget: f64) -> StageOut {
             ));
         }
     };
-    why_not("devswarm_recon.label_rows", &r);
+    if !rows_done {
+        if let Some(v) = version {
+            record_run(ctx, rows_key, v, &r);
+        }
+        why_not("devswarm_recon.label_rows", &r);
+    }
     (w.hooks.at)(&format!("stage:{stage}:family:before"));
-    let fr = half(w, "family", archive::fold_archived_family(ctx.home, ctx.now, deadline), &mut records);
+    let fr = if fam_done { None } else { Some(half(w, "family", archive::fold_archived_family(ctx.home, ctx.now, deadline), &mut records)) };
     (w.hooks.at)(&format!("stage:{stage}:family:after"));
-    let (fam_retired, fam_left, fam_errors, fam_ok) = if fr.get("threw") == Some(&Value::Bool(true)) {
-        (0.0, 0.0, 1.0, false)
-    } else {
-        let fr = if fr.is_null() { json!({}) } else { fr };
-        why_not("devswarm_recon.label_twins", &fr);
-        (
-            fr.get("retired").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64),
-            fr.get("left").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64),
-            js_num(fr.get("errors")),
-            fr.get("ok") != Some(&Value::Bool(false)),
-        )
+    let (fam_retired, fam_left, fam_errors, fam_ok) = match fr {
+        None => (0.0, 0.0, 0.0, true),
+        Some(fr) if fr.get("threw") == Some(&Value::Bool(true)) => (0.0, 0.0, 1.0, false),
+        Some(fr) => {
+            let fr = if fr.is_null() { json!({}) } else { fr };
+            if let Some(v) = version {
+                record_run(ctx, fam_key, v, &fr);
+            }
+            why_not("devswarm_recon.label_twins", &fr);
+            (
+                fr.get("retired").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64),
+                fr.get("left").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64),
+                js_num(fr.get("errors")),
+                fr.get("ok") != Some(&Value::Bool(false)),
+            )
+        }
     };
     let retired = r.get("retired").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64);
     let left = r.get("left").and_then(Value::as_array).map_or(0.0, |a| a.len() as f64);
@@ -646,4 +720,31 @@ fn archived(w: &Walk, budget: f64) -> StageOut {
         m.insert(k.into(), v);
     }
     StageOut { result: Value::Object(m), items: records, budget_ms: budget }
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use super::*;
+
+    #[test]
+    fn dssup_recon_a_legacy_journal_store_is_disabled_not_held() {
+        crate::defaults::init().unwrap();
+        let dir = crate::db::TempDir::new("legacy-store");
+        let home = dir.0.join("home");
+        let store = crate::migrate::readercur::store_dir(&home, "aaaa1111");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join(defaults::text("mesh.backend_marker")), "journal\n").unwrap();
+        // the registry read of a journal store refuses with the legacy reason ...
+        let why = crate::dssup::recon::view::registry(&home, "aaaa1111").unwrap_err().0;
+        assert!(Walk::is_legacy(&why), "{why}");
+        // ... which a recon stage item counts as disabled and does not hold (the stage's marker is not kept back by it)
+        let st = crate::checks::git::util::Settings { home: home.to_string_lossy().into_owned(), env: std::collections::HashMap::new() };
+        let ctx = Ctx { home: &home, root: &home, st: &st, now: 1_760_000_000_000, engine_pokes: true };
+        let hooks = Hooks::none();
+        let runner = crate::dsact::runner::System::configured();
+        let w = Walk { ctx: &ctx, runner: &runner, hooks: &hooks, stage: "fold-all", deadline_ms: 0 };
+        let r = w.legacy_item();
+        assert_eq!((r["ok"].clone(), r["legacyJournalStore"].clone()), (json!(true), json!(true)));
+        assert!(!Walk::is_legacy("rehome-not-applied"));
+    }
 }

@@ -4,11 +4,10 @@
 //! Node's `send` and consuming `mesh read` refresh this file in the same call that writes the store; the wake watcher, the
 //! parent-inbox hook and the Stop gates read it. So the engine refreshes it too, byte for byte.
 //!
-//! Boundary (defer, never guess): every branch whose evidence the engine does not read is a [`Defer`] — an orphan
-//! partition with unread mail (its classification needs the archive gate and liveness ranking), a durable NDJSON inbox
-//! with unread lines (the loss-free union count), a settings tier the engine cannot resolve. A verb calls [`check`]
-//! BEFORE it writes, so such a store is handed to Node whole; after its write it calls [`derive_after_write`], which can
-//! no longer hand anything to Node (that would write twice) and therefore logs a failure instead of returning it.
+//! Nothing here hands a case to Node (there is no Node): a store read that fails reads as Node's `readAll` fail-open does
+//! (no rows, a zero count, logged with the site), a settings file JavaScript reads but the engine cannot parse falls to
+//! the next layer (logged), and [`check`] has nothing left to refuse. After its write a verb calls [`derive_after_write`],
+//! which logs a failure instead of returning it (the write is done and must not be repeated).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - a file that is missing or does not parse is Node's fail-open default (`try { JSON.parse(...) } catch { ... }`)
 // - text that does not decode as UTF-8 is read lossily, as Node's `readFileSync(p, 'utf8')` does
@@ -18,7 +17,7 @@ use crate::checks::guardkit::ojson::OVal;
 use crate::checks::guardkit::text::{js_string_of, js_trim};
 use crate::defaults;
 use crate::meshw::common::{Inv, n, s, s_or_null};
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::store::MeshStore;
 use serde_json::Value;
@@ -53,8 +52,12 @@ struct Msg {
     is_heartbeat: bool,
 }
 
-fn err<T>(what: &str, e: impl std::fmt::Display) -> R<T> {
-    Err(Defer(format!("summary-{what}:{e}")))
+/// A store read that failed: Node's `readAll` swallows it to an empty result (devswarm-store.js, "fail-open contract"), so
+/// the projection carries on from the default and the failure is logged with the site (`mesh_summary_read_failed`).
+fn soft<T: Default>(what: &str, e: impl std::fmt::Display) -> T {
+    crate::metrics::bump("mesh_summary_read_failed", &[("site", what)]);
+    crate::debug::violated("meshw", &defaults::render("mesh_write.msg_summary_read_failed", &[("site", &what), ("error", &e)]));
+    T::default()
 }
 
 /// A JavaScript number as JSON: NaN and the infinities are `null`.
@@ -88,8 +91,8 @@ fn oval_of(v: &Value) -> OVal {
 }
 
 fn registry(st: &MeshStore) -> R<Vec<Reg>> {
-    let rows = st.reader().roster().or_else(|e| err("registry", e))?;
-    let nudges: HashMap<String, Option<String>> = st.reader().registry_nudges().or_else(|e| err("registry", e))?.into_iter().collect();
+    let rows = st.reader().roster().unwrap_or_else(|e| soft("registry", e));
+    let nudges: HashMap<String, Option<String>> = st.reader().registry_nudges().unwrap_or_else(|e| soft("registry", e)).into_iter().collect();
     let mut out = Vec::new();
     for r in rows {
         let (raw_id, id, id_is_str) = match &r["id"] {
@@ -133,7 +136,7 @@ fn messages(st: &MeshStore, id: &str, since: f64) -> R<Vec<Msg>> {
             });
             true
         })
-        .or_else(|e| err("messages", e))?;
+        .unwrap_or_else(|e| soft("messages", e));
     Ok(out)
 }
 
@@ -193,7 +196,7 @@ fn ndjson_backlog(inbox: Option<&str>, cursor: Option<&str>) -> (bool, f64) {
     (c.is_finite() && c >= 0.0, total)
 }
 
-/// Paths and file reads of the legacy cursor files (`companion/lib/reader-cursors.js`).
+/// Paths and file reads of the legacy cursor files.
 struct Cursors {
     dir: PathBuf,
     names: Option<Vec<String>>,
@@ -236,34 +239,41 @@ impl Cursors {
     }
 
     /// `legacyStoreFloor(store, home, id)`.
-    fn legacy_store_floor(&mut self, st: &MeshStore, id: &str) -> R<f64> {
+    fn legacy_store_floor(&mut self, st: &MeshStore, id: &str) -> f64 {
         let base_name = format!("{id}{}", defaults::text("mesh_write.cursor_base_suffix"));
         let baseline = if Self::legacy_safe(id) && self.file(&base_name).exists() {
             read_cursor(&self.file(&base_name))
         } else {
             // legacySharedCursor: max(cursors/<id>.json, the cursors table row)
             let json = read_cursor(&self.file(id));
-            let row = st.reader().cursor(id).or_else(|e| err("cursor", e))? as f64;
+            let row = st.reader().cursor(id).unwrap_or_else(|e| soft("cursor", e)) as f64;
             json.max(row)
         };
         let files = self.list(id, defaults::text("mesh_write.cursor_inst_sep"));
-        Ok(match files.iter().copied().reduce(f64::min) {
+        match files.iter().copied().reduce(f64::min) {
             None => baseline,
             Some(min) => baseline.max(min),
-        })
+        }
     }
 }
 
+/// `floorCursor(store, id, home)` (a failed read is 0): the store-namespace floor of one partition.
+pub(crate) fn store_floor(st: &MeshStore, home: &Path, id: &str) -> f64 {
+    let mut cur = Cursors::new(home);
+    floor_of(st, &mut cur, home, &home.to_string_lossy(), id, false)
+}
+
 /// `floorOf(store, partition, ns)`: the `#floor` reader-cursor row, else the legacy floor.
-fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, id: &str, nd: bool) -> R<f64> {
-    let rows = st.reader().reader_cursors(id).or_else(|e| err("reader-cursors", e))?;
+fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, cwd: &str, id: &str, nd: bool) -> f64 {
+    let rows = st.reader().reader_cursors(id).unwrap_or_else(|e| soft("reader-cursors", e));
     let ns = defaults::text(if nd { "mesh_write.cursor_ns_nd" } else { "mesh_write.cursor_ns_store" });
     let floor = defaults::text("mesh_write.cursor_floor_reader");
     let row = rows.iter().find(|r| r["ns"].as_str() == Some(ns) && r["reader"].as_str() == Some(floor));
-    let v = if !nd {
+
+    if !nd {
         match row {
-            Some(r) => fv(&r["value"]),
-            None => cur.legacy_store_floor(st, id)?,
+            Some(r) => stored_position(&r["value"]),
+            None => cur.legacy_store_floor(st, id),
         }
     } else {
         // the descriptor's cursorPath (descriptorCursorPath), and distinctNdFloor when a #floor row exists
@@ -284,21 +294,23 @@ fn floor_of(st: &MeshStore, cur: &mut Cursors, home: &Path, id: &str, nd: bool) 
             Some(r) => {
                 let distinct = match &cp {
                     None => 0.0,
-                    Some(p) if !p.starts_with('/') => return defer("summary-relative-cursor-path"),
+                    // `path.resolve(cursorPath)`: a relative path is the process's, so the caller's, directory
                     Some(p) => {
+                        let abs = ident::resolve(cwd, p);
                         let primary = cur.file(id);
-                        if ident::resolve_abs(p) == ident::resolve_abs(&primary.to_string_lossy()) { 0.0 } else { read_cursor(Path::new(p)) }
+                        if abs == ident::resolve_abs(&primary.to_string_lossy()) { 0.0 } else { read_cursor(Path::new(&abs)) }
                     }
                 };
-                fv(&r["value"]).max(distinct)
+                stored_position(&r["value"]).max(distinct)
             }
-            None => cp.map_or(0.0, |p| read_cursor(Path::new(&p))),
+            None => cp.map_or(0.0, |p| read_cursor(Path::new(&ident::resolve(cwd, &p)))),
         }
-    };
-    if !v.is_finite() {
-        return defer("summary-floor-nan");
     }
-    Ok(v)
+}
+
+/// A `reader_cursors` value as the store returns it: a finite non-negative number floored, else 0.
+fn stored_position(v: &Value) -> f64 {
+    v.as_f64().filter(|x| x.is_finite() && *x >= 0.0).map_or(0.0, f64::floor)
 }
 
 /// `archiveCompleteIds(home)`: `archived/<id>.json` present and `workspaces/<id>.json` absent.
@@ -547,7 +559,7 @@ fn held_partitions_keys() -> CsvKeys {
 
 /// A `csv`/`string` setting as `hooks/lib/settings.js` `getWithEnv(section, key, undefined, env)` resolves it: the
 /// environment variable, then `settings.json`, then the plugin option (ignored when it equals `option_default`), then the
-/// schema default. A settings file the engine cannot read the way JavaScript would defers.
+/// schema default. A settings file the engine cannot parse the way JavaScript would reads as having no `devswarm` section.
 fn csv_setting(inv: &Inv, k: &CsvKeys) -> R<String> {
     // coerceValue for csv/string: a string, number or boolean, trimmed; empty is undefined
     let coerce = |v: &Value| -> Option<String> {
@@ -562,12 +574,17 @@ fn csv_setting(inv: &Inv, k: &CsvKeys) -> R<String> {
         return Ok(v);
     }
     let home = inv.home.to_string_lossy().to_string();
-    if crate::checks::guardkit::settings::unreadable_settings_file(&home) {
-        return defer("summary-settings-unreadable");
+    // a settings file JavaScript reads but serde cannot parse (a number past the f64 range, nesting past the limit): the engine
+    // reads it as having no `devswarm` section, so the setting falls to the plugin option and the default, and says so
+    let unreadable = crate::checks::guardkit::settings::unreadable_settings_file(&home);
+    if unreadable {
+        crate::metrics::bump("mesh_summary_settings_unreadable", &[("key", k.key)]);
+        crate::debug::violated("meshw", &defaults::render("mesh_write.msg_summary_settings_unreadable", &[("key", &k.key)]));
     }
     let st = Settings { home: home.clone(), env: inv.env.clone() };
     let section = defaults::text("mesh_write.settings_devswarm_section");
     if let Some(v) = crate::checks::guardkit::settings::read_object(&st, defaults::text("guardkit.settings_file"))
+        .filter(|_| !unreadable)
         .and_then(|o| o.get(section).and_then(Value::as_object).and_then(|sct| sct.get(k.key)).and_then(coerce))
     {
         return Ok(v);
@@ -607,14 +624,14 @@ pub(crate) fn held_ids(inv: &Inv) -> R<HashSet<String>> {
 }
 
 /// `jev-triage.js` `hashMessage(text)`.
-fn jev_hash(text: &str) -> String {
+pub(crate) fn jev_hash(text: &str) -> String {
     let d = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
     crate::meshw::store::hex(d.as_ref())[..defaults::num("mesh_write.jev_hash_hex") as usize].to_string()
 }
 
-/// `computeSummary(store, {home, env, now})`. `touched` is the partition the caller is about to write: it must project
-/// as a live workspace afterwards, or the write would create an orphan the engine cannot classify.
-pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
+/// `computeSummary(store, {home, env, now})`. `_touched` (the partition a caller is about to write) is no longer read: a write
+/// that leaves an orphan is classified by the same rules as any other, after the write.
+pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let home = inv.home.as_path();
     let now = inv.now as f64;
     let mut required = csv_parts(&csv_setting(inv, &required_gates_keys())?);
@@ -652,32 +669,46 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             ]));
             continue;
         }
-        let total = st.reader().message_count(&d.id).or_else(|e| err("count", e))? as f64;
-        let floor = floor_of(st, &mut cur, home, &d.id, false)?;
-        let cursor = floor;
+        let total = st.reader().message_count(&d.id).unwrap_or_else(|e| soft("count", e)) as f64;
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false);
+        // #181: the roster counts from the least-advanced LIVE reader of the partition (computed now, never the stored floor a dead
+        // reader can hold back), so no live reader's unread is hidden; a partition with no live reader row falls back to the floor
+        let owner = crate::meshw::union::live_base_of(&st.reader().reader_cursors(&d.id).unwrap_or_else(|e| soft("reader-cursors", e)));
+        if owner.is_none() {
+            crate::metrics::bump("mesh_summary_owner_fallback", &[]);
+        }
+        let cursor = owner.as_ref().and_then(|o| o.store).unwrap_or(floor);
         let mut unread = (total - cursor).max(0.0);
+        // unread rows the recipient's own family sent, when the union already counted them (the store-only path counts them below)
+        let mut own_unread: Option<usize> = None;
+        let family = recipient_family(&d.id, &rows);
         if d.inbox_path.is_some() || d.cursor_path.is_some() {
-            let nd_floor = floor_of(st, &mut cur, home, &d.id, true)?;
+            let nd_floor = match owner.as_ref().and_then(|o| o.nd) {
+                Some(v) => v,
+                None => floor_of(st, &mut cur, home, &inv.cwd, &d.id, true),
+            };
             let (known, lines) = ndjson_backlog(d.inbox_path.as_deref(), d.cursor_path.as_deref());
             if known && lines > nd_floor {
                 // the NDJSON side has unread lines: the summary counts the loss-free union at the floors (reader-cursors
                 // `countFor` with no reader), which `unionUnreadFor` reports when it is known
-                let u = crate::meshw::union::union_unread(&crate::meshw::union::UnionIn {
-                    inbox: d.inbox_path.as_deref(),
-                    cursor_file: d.cursor_path.as_deref(),
-                    id: &d.id,
-                    store: Some(st.reader()),
-                    store_base: floor,
-                    nd_base: nd_floor,
-                    now: inv.now,
-                })?;
-                unread = u.unread as f64;
+                let u = crate::meshw::union::unread_at(
+                    st.reader(),
+                    &d.id,
+                    d.inbox_path.as_deref(),
+                    d.cursor_path.as_deref(),
+                    (cursor, nd_floor),
+                    &family,
+                    inv.now,
+                )?;
+                crate::meshw::tick::note_own_excluded(&u);
+                unread = u.union.unread as f64;
+                own_unread = Some(u.own_excluded);
             }
         }
         let (gate_vals, gate_by) = {
             let mut vals = OVal::Obj(Vec::new());
             let mut by = OVal::Obj(Vec::new());
-            for (name, v, set_by) in st.reader().gate_rows(&d.id).or_else(|e| err("gates", e))? {
+            for (name, v, set_by) in st.reader().gate_rows(&d.id).unwrap_or_else(|e| soft("gates", e)) {
                 vals.set(&name, OVal::Bool(v));
                 by.set(&name, s_or_null(set_by.as_deref()));
             }
@@ -698,7 +729,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         let is_req = |r: &Msg| r.mtype.as_deref() == Some(direct) && r.body.contains(marker);
         let archive_requested = unread_rows.iter().any(is_req);
         let archive_request_only = !unread_rows.is_empty() && unread_rows.iter().all(is_req);
-        let needs = st.reader().needs_reply(&d.id).or_else(|e| err("needs-reply", e))?;
+        let needs = st.reader().needs_reply(&d.id).unwrap_or_else(|e| soft("needs-reply", e));
         let mut resolved = Vec::new();
         for r in &needs {
             let ts = match &r["ts"] {
@@ -719,7 +750,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
                 if let Some(OVal::Num(q)) = e.get("seq")
                     && q.is_finite()
                 {
-                    let m = st.reader().needs_reply_previews(&d.id, &[*q as i64]).or_else(|e| err("previews", e))?;
+                    let m = st.reader().needs_reply_previews(&d.id, &[*q as i64]).unwrap_or_else(|e| soft("previews", e));
                     if let Some(Value::String(b)) = m.values().next() {
                         p.set(&crate::checks::jsport::num::to_js_string(*q), s(b));
                     }
@@ -757,8 +788,13 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
                 jev_candidates = collapse(found);
             }
         }
-        let bc_cursor = st.reader().broadcast_cursor(&d.id).or_else(|e| err("broadcast-cursor", e))? as f64;
-        let family = recipient_family(&d.id, &rows);
+        let bc_cursor = st.reader().broadcast_cursor(&d.id).unwrap_or_else(|e| soft("broadcast-cursor", e)) as f64;
+        // directUnread: the unread direct mail without what the recipient's own identity family sent
+        let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
+        let direct_unread = (unread - own_unread as f64).max(0.0);
+        // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
+        let direct_from_others =
+            st.reader().message_count_from_others(&d.id, &family, defaults::text("agent_tracker.wake_prefix")).unwrap_or_else(|e| soft("count", e)) as f64;
         let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
         let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
         let mut working_on = OVal::Null;
@@ -777,7 +813,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             ("total".into(), num(total)),
             ("cursor".into(), num(cursor)),
             ("unread".into(), num(unread)),
-            ("directUnread".into(), num(unread)),
+            ("directTotalFromOthers".into(), num(direct_from_others)),
+            ("directUnread".into(), num(direct_unread)),
             ("oldestDirectUnreadTs".into(), opt_num(oldest_ts)),
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),
             ("broadcastUnread".into(), n(unread_bc.len() as f64)),
@@ -911,25 +948,30 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
             OVal::Obj(e)
         })
         .collect();
-    // orphans: a partition with unread mail and no live registry row. Classifying it (archived-stranded, forwarded-
-    // drained, held, plain) needs the archive gate and liveness ranking, which stay with Node.
-    let mut candidates: Vec<String> = st.reader().workspace_ids();
-    if let Some(t) = touched
-        && !candidates.iter().any(|c| c == t)
-    {
-        candidates.push(t.to_string());
-    }
+    // orphans: a partition with unread mail and no live registry row, sorted the way `computeSummary` does (archived-stranded,
+    // forwarded-drained, owner-held, plain). The archive gate's liveness proof and the forwarded-drained proof stay with Node.
+    let candidates: Vec<String> = st.reader().workspace_ids();
+    let (mut orphans, mut stranded, mut held_out): (Vec<OVal>, Vec<OVal>, Vec<OVal>) = (Vec::new(), Vec::new(), Vec::new());
+    let mut sorter = crate::meshw::orphan::Classifier::new(home, rows.iter().filter_map(|r| r.worktree_path.clone()).filter(|w| !w.is_empty()).collect());
     for id in &candidates {
         if id == bpart || registry_ids.contains(id) || !is_safe_id(id) {
             continue;
         }
-        let total = st.reader().message_count(id).or_else(|e| err("count", e))? as f64;
-        let floor = floor_of(st, &mut cur, home, id, false)?;
-        if total - floor > 0.0 || touched == Some(id.as_str()) {
-            return defer("summary-orphan");
+        let total = st.reader().message_count(id).unwrap_or_else(|e| soft("count", e)) as f64;
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, id, false);
+        let unread = (total - floor).max(0.0);
+        if unread <= 0.0 {
+            continue;
+        }
+        let entry = OVal::Obj(vec![("id".into(), s(id)), ("messageCount".into(), n(total)), ("unread".into(), n(unread))]);
+        if sorter.classify(id)? == crate::meshw::orphan::Class::Stranded {
+            stranded.push(entry);
+        } else if held.contains(id) {
+            held_out.push(entry);
+        } else {
+            orphans.push(entry);
         }
     }
-    let _ = held; // held ids only divert orphans, and any orphan defers above
     let mut stale: Vec<OVal> = Vec::new();
     for d in &rows {
         if d.id == bpart || !is_safe_id(&d.id) || archived.contains(&d.id) {
@@ -939,8 +981,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         if Path::new(&ident::worktree_real_path(wt)?).exists() {
             continue;
         }
-        let total = st.reader().message_count(&d.id).or_else(|e| err("count", e))? as f64;
-        let floor = floor_of(st, &mut cur, home, &d.id, false)?;
+        let total = st.reader().message_count(&d.id).unwrap_or_else(|e| soft("count", e)) as f64;
+        let floor = floor_of(st, &mut cur, home, &inv.cwd, &d.id, false);
         let unread = (total - floor).max(0.0);
         if unread > 0.0 {
             stale.push(OVal::Obj(vec![("id".into(), s(&d.id)), ("worktreePath".into(), s(wt)), ("unread".into(), num(unread))]));
@@ -953,15 +995,21 @@ pub fn compute(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<OVal> {
         ("recent".into(), OVal::Arr(recent)),
         ("archivedRegistryRows".into(), OVal::Arr(archived_rows)),
     ];
+    for (key, list) in [("orphans", orphans), ("archivedStranded", stranded), ("heldPartitions", held_out)] {
+        if !list.is_empty() {
+            out.push((key.into(), OVal::Arr(list)));
+        }
+    }
     if !stale.is_empty() {
         out.push(("staleRegistryPartitions".into(), OVal::Arr(stale)));
     }
     Ok(OVal::Obj(out))
 }
 
-/// Check, before a write, that the engine can refresh the summary afterwards (see the module header).
-pub fn check(st: &MeshStore, inv: &Inv, touched: Option<&str>) -> R<()> {
-    compute(st, inv, touched).map(|_| ())
+/// Kept for the verbs that call it before their write: nothing is refused any more, because a projection that fails after
+/// the write is logged by [`derive_after_write`] and the next derive refreshes the file (see the module header).
+pub fn check(_st: &MeshStore, _inv: &Inv, _touched: Option<&str>) -> R<()> {
+    Ok(())
 }
 
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -992,8 +1040,7 @@ pub fn derive_after_write(st: &MeshStore, inv: &Inv, repo_key: &str) -> Option<S
 }
 
 /// `deriveSummary(store, {home, env, now})` where the caller also prints from the projection: the summary, and the write
-/// failure (as text) when the refresh could not be written. The projection itself failing is an `Err` (the caller decides:
-/// before its write that is a deferral).
+/// failure (as text) when the refresh could not be written. The projection itself failing is an `Err` (the caller decides).
 pub fn derive_value(st: &MeshStore, inv: &Inv, repo_key: &str) -> R<(OVal, Option<String>)> {
     let sum = compute(st, inv, None)?;
     let failed = write_atomic(&inv.write_home, repo_key, &sum).err().map(|e| format!("summary-write:{e}"));
@@ -1031,5 +1078,130 @@ mod tests {
         assert!(cross_linked("x", None, "y", Some("x")));
         assert!(!cross_linked("x", Some("x"), "x", None));
         assert!(!cross_linked("x", None, "y", None));
+    }
+
+    /// A scratch store holding workspace "X" with three directs from "other", `#floor` at 1 and the given store reader rows
+    /// `(reader, position, retired_line)`; the summary row of X.
+    fn summary_row_of_x(tag: &str, readers: &[(&str, i64, Option<i64>)]) -> (i64, i64) {
+        use crate::meshw::store::{CursorPut, RegistryRow};
+        let dir = std::env::temp_dir().join(format!("ah-summary-owner-{}-{tag}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        for i in 0..3 {
+            st.append_message_from("X", 1_700_000_000_000 + i, Some(&format!("h{i}")), "m", Some("other")).unwrap();
+        }
+        let put = |ns: &str, reader: &str, value: i64, retired_line: Option<i64>| CursorPut {
+            partition: "X".into(),
+            ns: ns.into(),
+            reader: reader.into(),
+            value,
+            retired_line: retired_line.map(Some),
+            updated_at: 1,
+        };
+        let mut puts = vec![put("store", "#floor", 1, None), put("nd", "#floor", 0, None)];
+        puts.extend(readers.iter().map(|(r, v, line)| put("store", r, *v, *line)));
+        st.reader_cursor_txn(&puts).unwrap();
+        let inv = Inv {
+            home: dir.clone(),
+            env: HashMap::new(),
+            cwd: dir.to_string_lossy().into_owned(),
+            now: 1_700_000_100_000,
+            stdin: None,
+            write_home: dir.clone(),
+            store_override: None,
+        };
+        let sum = compute(&st, &inv, None).unwrap();
+        let w = sum.get("workspaces").and_then(|w| w.get("X")).expect("X is in the summary").clone();
+        let num = |k: &str| match w.get(k) {
+            Some(OVal::Num(x)) => *x as i64,
+            _ => panic!("{k} is no number"),
+        };
+        let got = (num("unread"), num("cursor"));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+        got
+    }
+
+    #[test]
+    fn the_roster_counts_from_the_least_advanced_live_reader_never_a_dead_ones_floor() {
+        // #181: 3 messages, stored `#floor` 1 held by a RETIRED reader, the live reader X read all 3: no phantom unread
+        assert_eq!(summary_row_of_x("dead", &[("h:1:1", 3, None), ("h:2:2", 1, Some(1))]), (0, 3));
+        // two LIVE readers at 3 and 1: the lagging one's 2 unread are not hidden
+        assert_eq!(summary_row_of_x("live", &[("h:1:1", 3, None), ("h:2:2", 1, None)]), (2, 1));
+        // no reader row: the floor is the fallback
+        assert_eq!(summary_row_of_x("floor", &[]), (2, 1));
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ah-summary-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn inv_in(dir: &std::path::Path) -> Inv {
+        Inv {
+            home: dir.to_path_buf(),
+            env: HashMap::new(),
+            cwd: dir.to_string_lossy().into_owned(),
+            now: 1,
+            stdin: None,
+            write_home: dir.to_path_buf(),
+            store_override: None,
+        }
+    }
+
+    #[test]
+    fn a_stored_position_is_a_finite_non_negative_whole_number_else_zero() {
+        assert_eq!(stored_position(&serde_json::json!(4.7)), 4.0);
+        assert_eq!(stored_position(&serde_json::json!(-3)), 0.0);
+        assert_eq!(stored_position(&serde_json::json!("7")), 0.0);
+        assert_eq!(stored_position(&serde_json::Value::Null), 0.0);
+    }
+
+    #[test]
+    fn a_relative_descriptor_cursor_path_is_read_from_the_callers_directory() {
+        use crate::meshw::store::RegistryRow;
+        defaults::init().unwrap();
+        let dir = scratch("relcursor");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        let ws = devswarm_root(&dir).join(defaults::text("mesh_write.dir_workspaces"));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("X.json"), r#"{"id":"X","cursorPath":"rel/cur.txt"}"#).unwrap();
+        let cwd = dir.join("callers");
+        std::fs::create_dir_all(cwd.join("rel")).unwrap();
+        std::fs::write(cwd.join("rel").join("cur.txt"), "2").unwrap();
+        let mut cur = Cursors::new(&dir);
+        assert_eq!(floor_of(&st, &mut cur, &dir, &cwd.to_string_lossy(), "X", true), 2.0);
+        // from another directory the same relative path names nothing: an unreadable cursor is 0
+        assert_eq!(floor_of(&st, &mut cur, &dir, &dir.to_string_lossy(), "X", true), 0.0);
+    }
+
+    #[test]
+    fn a_settings_file_javascript_reads_but_serde_cannot_falls_to_the_default() {
+        defaults::init().unwrap();
+        let dir = scratch("settings");
+        let ah = dir.join(defaults::text("mesh_write.dir_anti_hall"));
+        std::fs::create_dir_all(&ah).unwrap();
+        // a number past the f64 range: JavaScript reads Infinity, serde refuses
+        std::fs::write(ah.join("settings.json"), r#"{"devswarm":{"requiredGates":"only-this"},"big":1e999}"#).unwrap();
+        let got = csv_setting(&inv_in(&dir), &required_gates_keys()).unwrap();
+        assert_eq!(got, required_gates_keys().default, "the engine reads the file as holding no devswarm section and says so");
+    }
+
+    #[test]
+    fn check_refuses_nothing_and_a_failed_read_is_the_default() {
+        defaults::init().unwrap();
+        let dir = scratch("check");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        assert!(check(&st, &inv_in(&dir), Some("anything")).is_ok(), "an orphan-to-be is classified after the write, not refused before it");
+        let v: Vec<u8> = soft("test", "boom");
+        assert!(v.is_empty());
     }
 }

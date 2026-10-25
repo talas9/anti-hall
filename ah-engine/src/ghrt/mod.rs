@@ -8,11 +8,12 @@ pub mod api;
 pub mod cfg;
 pub mod parse;
 pub mod poll;
+pub mod ready;
 pub mod repos;
 #[cfg(test)]
 mod tests;
 
-use crate::cli::Parsed;
+use crate::{cli::Parsed, defaults};
 use cfg::Cfg;
 use serde_json::{Value, json};
 
@@ -35,15 +36,65 @@ pub fn note_cwd(eff: &crate::cfgstore::Effective, cwd: &str) {
     );
 }
 
-/// The `gh_poll` scheduled job (`ah-engine gh_poll --json`): one tick. Always exits 0 (a missing gh, a logged-out gh or a
-/// network that is down is a state shown by `gh status`, never an error of the job).
+/// True when the GitHub realtime poller has at least one recent hook-reported working directory to follow.
+pub fn has_recent_sessions(cfg: &Cfg, now: u64) -> bool {
+    !repos::recent(cfg, now).is_empty()
+}
+
+/// True when a `gh_poll` tick could do anything: a directory not yet resolved, a repo never looked at, a push or checkout seen in
+/// the git files (stat only), a repo whose poll time has come, or a merge follow-up due. When nothing is, the scheduler skips the
+/// job and the re-exec of the engine (config load, state parse, a `git` or `gh` child per repo) is not paid for. Anything unclear
+/// answers true, so the worst case is the tick that would have run anyway.
+pub fn tick_needed(cfg: &Cfg, now: u64) -> bool {
+    let recent = repos::recent(cfg, now);
+    if recent.is_empty() {
+        return false;
+    }
+    if !cfg.flag("github_rt.enabled") {
+        return true;
+    }
+    let st = poll::load(cfg);
+    if st.ticked_ms == 0 {
+        return true;
+    }
+    let resolve_again = cfg.int("github_rt.poll_done_ms");
+    if recent.iter().any(|(cwd, _)| st.cwd_root.get(cwd).is_none_or(|(root, at)| root.is_empty() && now.saturating_sub(*at) >= resolve_again)) {
+        return true;
+    }
+    if st.hold_until_ms <= now && ready::followups_pending(cfg, now) {
+        return true;
+    }
+    st.repos.values().any(|r| {
+        if r.gitdir.is_empty() {
+            return now >= r.next_poll_ms;
+        }
+        let (l, rm) = repos::signature(cfg, &r.gitdir, &r.commondir, &r.branch);
+        if l != r.sig_local || rm != r.sig_remote {
+            return true;
+        }
+        now >= r.next_poll_ms && r.err_until_ms <= now && st.hold_until_ms <= now
+    })
+}
+
+/// The `gh_poll` scheduled job (`ah-engine gh_poll --json`): one tick. No recent sessions are a skip; with recent sessions,
+/// a tick that leaves `gh status` non-ok is a failed job so the scheduler backs off.
 pub fn run_poll(p: &Parsed) -> i32 {
     let cfg = Cfg::load();
-    let report = poll::tick(&cfg, &api::GhRunner::new(&cfg), crate::health::now_ms(), false);
+    let (v, code) = poll_once(&cfg, &api::GhRunner::new(&cfg), crate::health::now_ms());
     if p.json {
-        println!("{}", json!({"polled": report.polled, "calls": report.calls, "edges": report.edges}));
+        println!("{v}");
     }
-    0
+    code
+}
+
+fn poll_once(cfg: &Cfg, runner: &dyn api::Runner, now: u64) -> (Value, i32) {
+    if !has_recent_sessions(cfg, now) {
+        return (json!({"skipped": true, "reason": defaults::text("msg.schedule_no_work")}), 0);
+    }
+    let report = poll::tick(cfg, runner, now, false);
+    let gh = poll::load(cfg).gh;
+    let code = i32::from(gh != "ok");
+    (json!({"polled": report.polled, "calls": report.calls, "edges": report.edges, "gh": gh}), code)
 }
 
 /// `ah-engine gh <status|segment|poll>`.

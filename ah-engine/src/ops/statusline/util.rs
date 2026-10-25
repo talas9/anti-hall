@@ -6,24 +6,31 @@ use crate::checks::jsport::json::J;
 use crate::checks::jsport::num;
 use crate::defaults;
 use crate::migrate::{j_number, j_string};
-use crate::ops::js::Defer;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// `safeLabel(s)`: strip terminal-escape sequences, control characters and bidi overrides from dynamic text.
-pub fn safe_label(s: &str) -> Result<String, Defer> {
-    // `.` after ESC consumes one UTF-16 unit in JavaScript, which would leave half of an astral character behind.
-    let c: Vec<char> = s.chars().collect();
-    if c.windows(2).any(|w| w[0] == '\u{1b}' && (w[1] as u32) > 0xFFFF) {
-        return Err(Defer);
-    }
+///
+/// JavaScript's `.` after ESC consumes one UTF-16 unit, so an ESC followed by an astral character loses only the high surrogate;
+/// the lone low surrogate left behind is written by Node as the replacement character. The engine gives that pair the same
+/// output (`statusline.lone_surrogate_text`) instead of dropping the whole character.
+pub fn safe_label(s: &str) -> String {
     let mut out = s.to_string();
     for key in ["statusline.safe_osc", "statusline.safe_csi", "statusline.safe_esc_any", "statusline.safe_controls", "statusline.safe_bidi"] {
-        out = jsre::compile(defaults::text(key), false).replace_all(&out, "").into_owned();
+        let re = jsre::compile(defaults::text(key), false);
+        out = if key == "statusline.safe_esc_any" {
+            re.replace_all(&out, |c: &regex::Captures<'_>| {
+                let astral = c.get(0).and_then(|m| m.as_str().chars().last()).is_some_and(|ch| u32::from(ch) > 0xFFFF);
+                if astral { defaults::text("statusline.lone_surrogate_text") } else { "" }
+            })
+            .into_owned()
+        } else {
+            re.replace_all(&out, "").into_owned()
+        };
     }
-    Ok(out)
+    out
 }
 
 /// JavaScript truthiness of an optional value.
@@ -55,6 +62,19 @@ pub fn parse_int_of(v: Option<&J>) -> Option<f64> {
 /// `s.trim()`.
 pub fn trim(s: &str) -> &str {
     js_trim(s)
+}
+
+/// When the whole run must be over (set once by `statusline::run`): every child's own limit is cut to what is left of it.
+static END: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Arm (`Some`) or lift (`None`) the overall deadline of this run.
+pub fn set_end(at: Option<Instant>) {
+    *END.lock().unwrap_or_else(|e| e.into_inner()) = at;
+}
+
+/// Time left before the overall deadline; `None` when none is armed.
+pub fn left() -> Option<Duration> {
+    END.lock().unwrap_or_else(|e| e.into_inner()).map(|e| e.saturating_duration_since(Instant::now()))
 }
 
 /// What a bounded child came to.
@@ -95,6 +115,12 @@ pub fn run_with_input_detail(mut cmd: Command, input: &[u8], timeout: Duration, 
 }
 
 fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usize) -> Option<Finished> {
+    // past the overall deadline nothing new starts; before it a child never outlives it
+    let timeout = match left() {
+        Some(l) if l.is_zero() => return None,
+        Some(l) => timeout.min(l),
+        None => timeout,
+    };
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     let mut child = cmd.spawn().ok()?;
     let mut stdin = child.stdin.take()?;
@@ -117,7 +143,7 @@ fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usiz
                             over = true;
                             break;
                         }
-                        buf.extend_from_slice(&chunk[..k]);
+                        buf.extend_from_slice(chunk.get(..k).unwrap_or_default());
                     }
                 }
             }
@@ -156,3 +182,6 @@ fn run_inner(cmd: &mut Command, input: &[u8], timeout: Duration, max_bytes: usiz
     }
     Some(Finished::Done { code: status.code(), stdout })
 }
+
+#[cfg(all(test, unix))]
+mod tests;

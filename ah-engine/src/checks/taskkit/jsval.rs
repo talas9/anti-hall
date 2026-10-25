@@ -49,7 +49,14 @@ pub fn scalar_string(v: &Value) -> R<String> {
         Value::String(s) => Ok(s.clone()),
         Value::Bool(b) => Ok(b.to_string()),
         Value::Number(_) | Value::Null => super::js_string(v).ok_or(Unsure),
-        _ => Err(Unsure),
+        // `String({})`; an own `toString` / `valueOf` makes JavaScript call it (or throw), which is not reproduced
+        Value::Object(o) if o.contains_key("toString") || o.contains_key("valueOf") => Err(Unsure),
+        Value::Object(_) => Ok("[object Object]".to_string()),
+        // `String([a, b])` is `a,b` with null as the empty text, each element converted the same way
+        Value::Array(items) => {
+            let parts: R<Vec<String>> = items.iter().map(|i| if i.is_null() { Ok(String::new()) } else { scalar_string(i) }).collect();
+            Ok(parts?.join(","))
+        }
     }
 }
 

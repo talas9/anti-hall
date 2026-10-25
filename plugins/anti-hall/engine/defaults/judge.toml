@@ -1,10 +1,10 @@
 # ah-engine shipped defaults for the LLM judge calls the engine makes itself (the `judge` module): the local Claude CLI
-# client (`hooks/lib/judge-core.js` `runCliJudge`), the speculation-judge Stop check (`hooks/speculation-judge.js`) and the
-# mesh triage worker (`hooks/lib/jev-triage-worker.js`). Format: see the header of engine.toml. Every prompt, argument,
+# client, the speculation-judge Stop check and the
+# mesh triage worker. Format: see the header of engine.toml. Every prompt, argument,
 # limit and timeout below is the Node hook's own, byte for byte; tune them here, never in Rust. Regex sources use
 # JavaScript syntax (translated by `checks::guardkit::jsre`) and are TOML literal strings, so no backslash is doubled.
 
-# ---- the Claude CLI client (judge-core.js runCliJudge) -------------------------------------------------------------
+# ---- the Claude CLI client -------------------------------------------------------------
 
 [judge.cli_bin]
 doc = "The program the judge runs, looked up on the PATH of the hook's own environment (Node: spawn('claude'))."
@@ -87,7 +87,7 @@ doc = "The judgeBackend value that picks api when an Anthropic key is visible, e
 value = "auto"
 
 [judge.anthropic_key_env]
-doc = "The plugin option that holds the Anthropic API key (Node credentials.js: CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY). Only its presence is read here."
+doc = "The plugin option that holds the Anthropic API key. Only its presence is read here."
 value = "CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY"
 
 [judge.anthropic_legacy_env]
@@ -109,6 +109,14 @@ value = 1048576
 [judge.backend_haiku_cli]
 doc = "The backend name a telemetry row gives a call through the Claude CLI."
 value = "haiku-cli"
+
+[judge.backend_api]
+doc = "The backend name a telemetry row gives a call that needed the Anthropic Messages API, which the engine never makes."
+value = "anthropic-api"
+
+[judge.err_api_refused]
+doc = "Telemetry error word: a label the Jev answer left open would have been asked of the Anthropic Messages API (a key is visible), which the engine does not call; the label stays open, as it does when no key is visible."
+value = "api-not-called"
 
 [judge.backend_jev]
 doc = "The backend name a telemetry row gives a Jev call."
@@ -134,7 +142,7 @@ value = "output"
 doc = "Telemetry error word: the model's answer did not parse into the expected decision."
 value = "answer"
 
-# ---- speculation-judge: the native judge call (hooks/speculation-judge.js, hooks/lib/judge-core.js) ----------------
+# ---- speculation-judge: the native judge call ----------------
 
 [speculation_judge.backend_setting]
 doc = "Which backend answers the speculation question when the semantic judge is on: haiku (default, today's behaviour: the judge asks the model, except while Jev's own speculation integration is on) jev (the judge never asks the model; speculation-guard's Jev path is the only semantic check) or cascade (as jev, with the Jev-first cascade switched on for the speculation integration: a Jev answer under the escalation threshold is re-judged by the model in the background and applies from the next turn). Setting jev.speculationBackend, env ANTIHALL_JEV_SPECULATION_BACKEND."
@@ -212,7 +220,7 @@ value = "block"
 doc = "The decision value that allows."
 value = "allow"
 
-# ---- tool evidence and the user request (hooks/lib/inference-check.js collectEvidence, lastUserPrompt) -------------
+# ---- tool evidence and the user request -------------
 
 [judge_evidence.observe_tools_re]
 doc = "Tool names whose input counts as evidence (Node: OBSERVE_INPUT_TOOLS, case-insensitive)."
@@ -246,7 +254,7 @@ value = "_output"
 doc = "Transcript type and role values the collectors match (Claude and Codex transcript shapes)."
 value = { response_item = "response_item", function_call = "function_call", custom_tool_call = "custom_tool_call", local_shell_call = "local_shell_call", event_msg = "event_msg", user_message = "user_message", assistant = "assistant", user = "user", tool_use = "tool_use", tool_result = "tool_result", text = "text" }
 
-# ---- mesh triage (hooks/lib/jev-triage-worker.js), run as `ah-engine jev triage` -----------------------------------
+# ---- mesh triage, run as `ah-engine jev triage` -----------------------------------
 
 [triage.kind_instructions]
 doc = "The Jev Choice question that classifies a mesh message's kind (Node: KIND_QUESTION.instructions)."
@@ -309,7 +317,7 @@ doc = "A call starts only with more than this much of the budget left, and gets 
 value = 50
 
 [triage.backend_setting]
-doc = "Which backend labels mesh messages: jev (default, today's behaviour: Jev first, the Anthropic API fills a missing label when a key is visible) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND."
+doc = "Which backend labels mesh messages: jev (default: Jev first; a label Jev leaves open stays open, because the engine never calls the Anthropic API, and with a key visible it counts an api-not-called row in the judge telemetry) haiku (the model alone, through jev.judgeBackend) or cascade (as jev, then a label Jev left open is re-judged by the model, shown Jev's answer, through the Claude CLI). Setting jev.triageBackend, env ANTIHALL_JEV_TRIAGE_BACKEND."
 value = { section = "jev", key = "triageBackend", env = "ANTIHALL_JEV_TRIAGE_BACKEND", aliases = [], option = "", default = "jev", values = ["jev", "haiku", "cascade"] }
 
 [triage.backend_haiku]
@@ -331,10 +339,6 @@ value = "unknown"
 [triage.integration]
 doc = "The integration name telemetry rows of triage calls carry."
 value = "triage"
-
-[msg.jev_triage_defer]
-doc = "Said on stderr when `jev triage` leaves the run to the Node worker (it would need the Anthropic API, which only Node calls); the exit code is dispatch.defer_exit."
-value = "ah-engine jev triage: this run needs the Anthropic API, which the engine does not call; run hooks/lib/jev-triage-worker.js"
 
 # ---- the Jev cascade (ah-engine src/jev/cascade.rs): Jev first, the model when Jev is unsure ------------------------
 
@@ -426,3 +430,59 @@ value = 6000
 [cascade.backend_settings]
 doc = "Integrations whose own backend setting can name the cascade (value `cascade`), switching it on for that integration: the Jev integration id to the defaults entry of its backend setting."
 value = { speculation = "speculation_judge.backend_setting", triage = "triage.backend_setting" }
+
+# ---- the speculation judge's model call and its block text (restored for the in-process call, #69) ----
+
+[speculation_judge.system_prompt]
+doc = "The judge's system prompt, byte for byte."
+value = "You are an anti-hallucination evaluator for a coding assistant.\nYour job: assess whether the assistant's most recent message contains one or more\nUNVERIFIED FACTUAL ASSERTIONS stated with confident, definitive language and NO\nacknowledgment that the claim was unverified.\n\nYou are given the USER REQUEST the message answers, TOOL EVIDENCE (the tool calls\nand tool output the assistant saw earlier in the session, most recent last), and\nthe MESSAGE to evaluate.\n\nHow to read them:\n  - The situation or symptom the user describes is given. Restating it (\"the\n    build got slower\", \"latency doubled\") is not a claim to verify. A cause or\n    explanation the user only suggests is NOT evidence.\n  - A cause or conclusion is SUPPORTED when the tool evidence shows the\n    mechanism behind it (an error message, a log line, a config value, code,\n    command output) or the conclusion itself. Do not demand separate proof of\n    the causal link, or of the symptom, once the mechanism is shown.\n  - A claim is UNSUPPORTED when the evidence is absent, is about something else,\n    or contradicts it.\n\nBLOCK if the message asserts a factual claim, a cause, an attribution, or a\nmetric/log interpretation about the project that:\n  - is UNSUPPORTED by the tool evidence, AND\n  - is NOT explicitly flagged as unverified / uncertain, AND\n  - is stated CONFIDENTLY (no hedge word like \"probably\", \"likely\", \"I think\",\n    \"I suspect\", \"it seems\", \"it appears\", \"I'm not sure\", \"I'd guess\", etc.).\n\nDO NOT block:\n  - Claims the tool evidence shows or supports, even if worded differently.\n  - Honest hedging (\"I haven't verified this, but...\", \"I'm not sure, but...\",\n    \"this might be...\").\n  - Quoted or paraphrased text from the user's own input, or from logs the user pasted.\n  - Explicit hypotheticals (\"if X were the case...\", \"suppose...\").\n  - Plans, proposals, design rationale (\"I used X because Y\"), or next steps.\n  - Claims that are trivially verifiable by inspection of the message itself\n    (e.g. describing what a code snippet says, where the snippet is present).\n  - Claims prefaced with \"I don't know\", \"I haven't checked\", \"unverified\",\n    \"let me verify\", \"I'll check\", \"need to confirm\", or similar.\n  - General software/CS knowledge that doesn't depend on this project's state\n    (e.g. \"HTTP 404 means not found\").\n\nBe conservative: when in doubt, ALLOW.\n\nRespond with ONLY valid JSON, no prose, no markdown code fences:\n  {\"decision\":\"block\",\"claim\":\"<one short sentence naming the unverified claim>\"}\n  or\n  {\"decision\":\"allow\"}"
+
+[speculation_judge.timeout_ms]
+doc = "The CLI judge's timeout (Node: runCliJudge timeoutMs 25000; the Stop hook's budget is 30 s)."
+value = 25000
+
+[speculation_judge.evidence_window]
+doc = "Bytes of the transcript tail read for the user request and the tool evidence (Node: 1024 * 1024)."
+value = 1048576
+
+[speculation_judge.claim_default]
+doc = "The claim named in the block when the judge gave none (Node: sanitizeClaim fallback)."
+value = "an unverified factual claim"
+
+[speculation_judge.claim_max]
+doc = "UTF-16 units of the judge's claim kept in the block reason."
+value = 120
+
+[speculation_judge.claim_ellipsis]
+doc = "Appended to a claim cut at claim_max."
+value = "…"
+
+[speculation_judge.claim_controls_re]
+doc = "Control characters replaced by a space in the judge's claim (Node: /[\\x00-\\x1F\\x7F-\\x9F]/g)."
+value = '[\x00-\x1F\x7F-\x9F]'
+
+[speculation_judge.claim_bidi_re]
+doc = "Bidi overrides and isolates removed from the judge's claim (U+202A-U+202E, U+2066-U+2069)."
+value = "[‪-‮⁦-⁩]"
+
+[speculation_judge.claim_ws_re]
+doc = "White space runs collapsed to one space in the judge's claim (Node: /\\s+/g)."
+value = '\s+'
+
+[speculation_judge.msg_what]
+doc = "What the block says; {claim} is the sanitized claim."
+value = "your reply states an unchecked claim as fact."
+
+[speculation_judge.msg_why]
+doc = "Why the block matters."
+value = "Unverified claims read as facts."
+
+[speculation_judge.msg_instead]
+doc = "What to do instead."
+value = "verify the claim or label it unverified."
+
+# ---- tool evidence and the user request -------------
+
+[judge.dispatch_blocking_checks]
+doc = "The checks the dispatcher process runs itself, once, when the daemon deferred them: their answer needs a model call of seconds, which the daemon's exchange deadline cannot wait for, but the dispatcher is a one-shot process under the hook's own timeout (the Stop hook allows 30 s; the CLI judge is cut at speculation_judge.timeout_ms). The speculation-judge script never defers in that process (a call it cannot make there is counted and allowed), so no Node hook is started for it."
+value = ["speculation-judge"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Full-outcome parity for the built-in `command` check: the Node command-guard (authority) vs the engine, comparing
 // exit code, stdout and stderr exactly (trailing whitespace trimmed).
-//   node run-command.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus c.jsonl
+//   node run-command.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks --corpus c.jsonl
 //        [--profiles coord,sub,plain,devswarm] [--mode oneshot|daemon|both] [--limit N] [--conc 8] [--show 15]
 //        [--out mismatches.json]
 // Corpus lines: {"command": "...", "cwd": "/optional/dir", "sub": false, "source": "..."} (a field command, run once
@@ -67,7 +67,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
   }
   const dir = path.join(tmp, 'e'), rf = path.join(tmp, 'rules.json');
   fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [{ id: 'command-guard', events: ['PreToolUse'], tools: ['Bash'], check: 'command', action: 'deny' }] }));
-  const denv = { ...baseEnv, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: wrapper, AH_ENGINE_BREAKER_N: '1000000' };
+  const denv = { ...baseEnv, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_SCRIPT_CUT_AT_DEADLINE: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: wrapper, AH_ENGINE_BREAKER_N: '1000000' };
   if (MODE !== 'oneshot') {
     await run(ENGINE, ['hook'], JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo warm' }, cwd: '/tmp' }), denv, '/tmp');
     for (let i = 0; i < 100; i++) { const r = await run(ENGINE, ['ctl', 'ping'], '', denv, '/tmp'); if (r.code === 0) break; await new Promise(r => setTimeout(r, 50)); }

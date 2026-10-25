@@ -32,7 +32,34 @@ use std::path::{Path, PathBuf};
 
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
+    (
+        "src/budget.rs",
+        "static LAST_DROP",
+        "an empty thread-local slot that holds the reason of the last dropped answer until its observer takes it: an initial None, not a tunable",
+    ),
+    ("src/learn.rs", "static LAST_REPEAT", "a thread-local counter slot that starts at zero and is set per block: an initial value, not a tunable"),
+    (
+        "src/lib.rs",
+        "pub const FEATURES",
+        "the capability names of this build that an updater reads from `version --json`: a build fact versioned with the binary, not a setting",
+    ),
+    (
+        "src/mesh.rs",
+        "vec![\"?\"; senders.len()]",
+        "SQL bind placeholders sized to the sender list (the query syntax, not a tunable); the empty list yields an empty quoted literal",
+    ),
+    (
+        "src/operator/routine.rs",
+        "std::env::var_os(\"PATH\")",
+        "the name of the standard PATH environment variable that a cleared-environment child inherits: an OS interface name, not a setting",
+    ),
+    ("src/operator/sweep.rs", "take(2)", "the label of a plugin root is its last two path components: the shape of the label, not a limit anyone tunes"),
     // ---- wire and host protocols: part of the interface, versioned with it, not tunables --------------------
+    (
+        "src/checks/taskstate/mod.rs",
+        "NON_STRING_STATUS: char",
+        "the in-band mark of the task reconstruction for a status that is not a string (an internal sentinel character of the scan, never shown, never configured, and a string status that starts with it is treated as unsure)",
+    ),
     (
         "src/diag.rs",
         "",
@@ -42,6 +69,21 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "src/main.rs",
         "static ALLOC",
         "the dhat allocator hook of the `diag` feature (developer diagnostics only, not compiled into a release build): a global-allocator declaration, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const PLUGIN_MIN",
+        "the lowest plugin version this build runs: a protocol/format compatibility constant of the build, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const HOOK_MIN",
+        "the lowest hook client version this build serves: a protocol/format compatibility constant of the build, not a tunable",
+    ),
+    (
+        "src/compat.rs",
+        "pub const WEB_MIN",
+        "the lowest dashboard version this build serves: a protocol/format compatibility constant of the build, not a tunable",
     ),
     ("src/frame.rs", "const MAGIC", "reply frame magic: the wire format identifier"),
     ("src/frame.rs", "const END", "reply frame trailer: the wire format identifier"),
@@ -61,10 +103,36 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/docs.rs", "\"| `{}` |", "row layout of the generated Markdown reference"),
     ("src/docs.rs", "\\n## ", "section headings and intro lines of the generated Markdown reference: the generator's own format"),
-    ("src/memstat.rs", "static INNER", "the allocator the counters wrap: a compile-time choice by target, code not configuration"),
+    ("src/memstat.rs", "static JEMALLOC", "the allocator the counters may wrap: a target-gated allocator value, not configuration"),
+    ("src/memstat.rs", "static SYSTEM", "the allocator the counters may wrap: the platform allocator value, not configuration"),
+    (
+        "src/memstat.rs",
+        "AH_ENGINE_ALLOCATOR",
+        "the allocator selector env name must be read with libc getenv before defaults can be loaded, because loading defaults allocates",
+    ),
+    ("src/memstat.rs", "static TL_", "per-thread byte counters initialised to zero (the allocator cannot allocate or read the config): state, not tunables"),
     ("src/main.rs", "static ALLOC", "the global allocator item: a language construct, not a value"),
+    ("src/memdiag.rs", "static ON", "a thread-local flag initialised off: state, not a tunable"),
+    (
+        "src/memdiag.rs",
+        "static NOTE",
+        "a thread-local slot initialised empty (the checks and transcript path of the request in progress): state, not a tunable",
+    ),
+    ("src/memdiag.rs", "static ARRIVED", "a condition variable the snapshot waits on: a language construct, not a value"),
+    ("src/memdiag.rs", "static REPORTED", "a thread-local marker initialised to zero (which snapshot this worker already answered): state, not a tunable"),
+    ("src/script/tasks_cache.rs", "let mut b = [0u8; 1]", "a one-byte read buffer for the byte before a window start: structural, not a tunable"),
+    ("src/script/evidence_walk.rs", "static MINE", "a thread-local handle initialised to zero (the walk this worker made last): state, not a tunable"),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
+    ("src/load.rs", "static CHECK_SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
+    ("src/load.rs", "static CHECK_CPU_US", "a thread-local counter initialised to zero: state, not a tunable"),
+    ("src/load.rs", "static CHECK_MEM", "a thread-local note initialised to none: state, not a tunable"),
+    ("src/load.rs", "static NOTES", "a thread-local list initialised empty: state, not a tunable"),
+    ("src/load.rs", "static TRANSCRIPT_SIZE", "a thread-local slot initialised empty: state, not a tunable"),
     ("src/load.rs", "static REQUEST", "a thread-local slot initialised empty: state, not a tunable"),
+    ("src/client.rs", "static LAST_NON_OK_REPLY", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/client.rs", "static LAST_UNAVAILABLE", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/client.rs", "static GUARD_CALL", "a thread-local boolean marker initialised false: state, not a tunable"),
+    ("src/crash.rs", "static BREADCRUMB", "a thread-local breadcrumb slot initialised empty: state, not a tunable"),
     (
         "src/checks/scripted.rs",
         "Scripted::new(",
@@ -72,6 +140,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
+    ("src/script/mod.rs", "static POLLS", "a thread-local count of the interpreter's interrupt polls, starting at the type's default: state, not a tunable"),
     ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
     (
         "src/script/host.rs",
@@ -83,6 +152,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "src/script/host.rs",
         "static EXECS",
         "a thread-local counter of the processes the script call started, initialised to zero (its bound is script.exec_max_calls): state, not a tunable",
+    ),
+    (
+        "src/script/host_spawn.rs",
+        "static RUNS",
+        "a thread-local counter of the programs this script call has started, zero at the start (its bound is host_spawn.max_calls): state, not a tunable",
     ),
     (
         "src/script/host_proc.rs",
@@ -109,12 +183,41 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "static HEREDOC",
         "a thread-local slot for the heredoc scan of the command being walked, initialised empty: state, not a tunable",
     ),
+    ("src/script/host_mesh.rs", "static OWED", "a thread-local list of the app-cache writes the call's lookups owe, initialised empty: state, not a tunable"),
+    ("src/script/host_mesh.rs", "static IDENT", "a thread-local cache of the resolved mesh identity of this call, initialised empty: state, not a tunable"),
+    ("src/script/host_mesh.rs", "static APP", "a thread-local slot initialised empty (the app database read this call made): state, not a tunable"),
+    ("src/script/host_childturn.rs", "static PLANNED", "a thread-local slot for the registration the call planned, initialised empty: state, not a tunable"),
+    (
+        "src/script/host_parentinbox.rs",
+        "static SNAP",
+        "a thread-local slot for the app database snapshot the call read, initialised empty: state, not a tunable",
+    ),
     ("src/script/host.rs", "static CALL", "a thread-local slot for the request state of one script call, initialised empty: state, not a tunable"),
-    ("src/script/host.rs", "static RES", "a thread-local regex cache, initialised empty (its size bound is script.regex_cache_max): state, not a tunable"),
+    ("src/daemon.rs", "static REQUEST_PEER", "a thread-local slot for the socket peer of the request being served, initialised empty: state, not a tunable"),
+    ("src/mem/registry.rs", "pub const fn new(", "the constructor signature of a holder's identity (its config keys are the arguments)"),
+    ("src/mem/registry.rs", "pub const fn with_entries(", "the constructor signature of a holder's identity"),
+    (
+        "src/mem/registry.rs",
+        "const GLOBAL_NAME",
+        "the label the process total is reported under in events and in `status --memory`: an identifier, not a message",
+    ),
+    ("src/mem/registry.rs", "/ 100", "percent arithmetic: 100 is the definition of a percent, the percentages themselves are mem.*_low_water_pct"),
+    ("src/mem/registry.rs", ".min(100)", "a percentage is clamped to 100: the definition of a percent"),
+    ("src/mem/mod.rs", "static ANCHOR", "the owner of the defaults-leak holder, initialised once: state, not a tunable"),
+    ("src/mem/mod.rs", "static GLOBAL", "the process-wide registry, initialised once: state, not a tunable"),
+    ("src/mem/mod.rs", "static LEAKED", "a byte counter initialised to zero: state, not a tunable"),
     ("src/watch/kq.rs", "const FFLAGS", "the kqueue vnode event flags the backend subscribes to: a kernel protocol constant, not a tunable"),
     ("src/watch/kq.rs", "const GONE", "the kqueue vnode event flags that mean the file went away: a kernel protocol constant, not a tunable"),
+    (
+        "src/devswarm_rt/sources.rs",
+        "static WHERE",
+        "a thread-local slot initialised empty (which code path and cause the probe reads of this thread are attributed to): state, not a tunable",
+    ),
     ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static EVENT", "a thread-local slot initialised empty (the hook event of the request being served): state, not a tunable"),
     ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
+    ("src/deadline.rs", "static PEER", "a thread-local slot initialised empty (the connection of the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static GONE_SKIPS", "a thread-local counter initialised to zero (checks skipped for a client that had gone): state, not a tunable"),
     ("src/telemetry/mod.rs", "static STAGE", "a thread-local slot initialised empty (what a request staged): state, not a tunable"),
     ("src/checks/mod.rs", "static ALL", "the check registry: the list of compiled-in checks is code, not configuration"),
     ("src/cli.rs", "for name in [\"kind\"", "the impact command's filter flag names: part of the command line itself"),
@@ -153,6 +256,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "src/telemetry/emit.rs",
         "static BATCH",
         "a thread-local buffer that starts empty and holds the current call's events until they are written: state, not a tunable",
+    ),
+    (
+        "src/nodeback/shadow.rs",
+        "static CAPTURE",
+        "a thread-local buffer that starts empty and holds the current call's engine verdicts until the shadow job is written: state, not a tunable",
     ),
     (
         "src/telemetry/emit.rs",
@@ -235,6 +343,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
     // ---- layouts of generated output and the wire --------------------------------------------------------------------
     ("src/docs.rs", "chars().count() > 80", "the width a value is cut to in the generated Markdown reference (the generator's format)"),
     ("src/frame.rs", ".take(64)", "the longest reply-frame header scanned: a bound of the wire format"),
+    (
+        "src/jev/assist.rs",
+        "static ASKING_CHECK",
+        "a per-thread cell that starts empty and holds the name of the check now running (runtime state); it carries no configured value, so there is nothing to move to the defaults",
+    ),
     // ---- the database schema: code, versioned by its migrations; every tunable value is a bound parameter ---------
     (
         "src/sql.rs",

@@ -93,7 +93,7 @@ value = "This command writes a lot of data."
 
 [disk_watch.msg_blocked]
 doc = "Block reason when diskWatch.blockAtCritical is on; {list} the volume lines."
-value = "Blocked: disk space is critical ({list}). Free space, or set diskWatch.blockAtCritical=false."
+value = "this command is blocked: disk space is critical ({list}). Free some space, or ask the user to set diskWatch.blockAtCritical=false."
 
 [disk_watch.impact_kind]
 doc = "Impact kind recorded for every disk warning."

@@ -5,6 +5,7 @@
 //! plugin directory filled in) into `<.codex>/hooks.json`: every group of anti-hall's own is replaced, every other group is
 //! kept in place; and it makes sure `<.codex>/config.toml` enables the hooks feature. A file that changes is first copied to
 //! `<file>.bak-<time>`; nothing is deleted. `--dry-run` writes nothing. Running it twice changes nothing the second time.
+//! Engine-only: no Node script is started (v1.0 lane L16); the Node installer stays only as the witness of the parity test.
 use super::{out, t, warn};
 use crate::checks::guardkit::text::js_trim;
 use crate::checks::jsport::date::{now_ms, to_iso};
@@ -131,13 +132,6 @@ fn go(p: &Parsed) -> Result<(), String> {
     };
     let (hooks_path, config_path) = (target.join(t("codex_install.hooks_file")), target.join(t("codex_install.config_file")));
 
-    // the Node installer in dry-run mode writes nothing: run before the engine writes, it reports what the engine is about to do
-    let node_dry = {
-        let mut a: Vec<String> = rest.iter().filter(|x| *x != t("operator.dry_run_flag")).cloned().collect();
-        a.push(t("operator.dry_run_flag").to_string());
-        let cwd = std::env::current_dir().ok();
-        super::shadow_line(&env, &root.join(t("operator.codex_script_rel")).to_string_lossy(), &a, cwd.as_deref())
-    };
     let thin = root.join(t("codex_install.thin_hooks_rel"));
     let src = std::fs::read(&thin).map_err(|e| defaults::render("codex_install.err_hooks", &[("path", &thin.display()), ("error", &e)]))?;
     let plugin_dir = root.to_string_lossy().replace('\\', "/");
@@ -172,12 +166,5 @@ fn go(p: &Parsed) -> Result<(), String> {
         text.push_str(n);
     }
     out(&text)?;
-    if let Some(node) = node_dry {
-        // the first line differs by design (would update / updated); every other line is the result
-        let tail = |t: &str| t.split_once('\n').map(|x| x.1.to_string());
-        if tail(&node) != tail(&text) {
-            crate::discard::note("install_codex_shadow_mismatch", &defaults::render("operator.shadow_codex_log", &[("node", &node), ("engine", &text)]));
-        }
-    }
     Ok(())
 }

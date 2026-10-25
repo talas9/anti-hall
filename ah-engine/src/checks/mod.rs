@@ -18,6 +18,7 @@ pub mod git;
 pub mod guardkit;
 pub mod idle_agent_sweep;
 pub mod jsport;
+pub mod mcp_reaper;
 pub mod replykit;
 pub mod scripted;
 pub mod session;
@@ -83,7 +84,7 @@ pub struct RouteMeta {
 }
 
 impl Exact {
-    /// The block `io.blockDecision(reason)` produces (`hooks/lib/guard-io.js`): the JSON decision and a newline on
+    /// The block `io.blockDecision(reason)` produces: the JSON decision and a newline on
     /// stdout, the reason and a newline on stderr, exit 2. The JSON is written by hand so the key order is the Node
     /// object's (`decision`, then `reason`), whatever the JSON library's map order is.
     pub fn json_block(reason: &str) -> Exact {
@@ -133,13 +134,25 @@ pub fn compiled_logic_checks_remaining() -> usize {
 
 /// Evaluate `check` for one request: the one place every dispatcher goes through. When the request's environment is
 /// incomplete (dropped over the cap, absent, or no usable `HOME`) the check is not evaluated at all and the answer is
-/// [`Verdict::Defer`], so Node, which sees the real environment, decides. Evaluating with no home and default switches
+/// the check's failure policy decides ([`crate::script::failed`]). Evaluating with no home and default switches
 /// would read a gate that is on as off and allow what Node blocks.
 pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+    // the bytes this check (or its script) allocates are measured here, the one place every caller (the dispatcher, the hook path,
+    // diagnostics) runs a check through; the observer reads the note when the check finishes
+    let (verdict, mem) = crate::mem::measure(|| run_env_unmeasured(check, subject, payload, opts, env));
+    crate::load::note_check_mem(mem);
+    if let Some(d) = mem {
+        crate::memdiag::note_check_mem(check.name(), d.peak, d.alloc);
+    }
+    verdict
+}
+
+fn run_env_unmeasured(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
+    crate::script::set_session(payload.get("session_id").and_then(Value::as_str).unwrap_or_default());
     if env.is_incomplete() {
         return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_env_incomplete")));
     }
-    // a settings file only JavaScript can parse (a number like 1e400, nesting past 128) is not "missing": defer to Node
+    // a settings file only JavaScript can parse (a number like 1e400, nesting past 128) is not "missing": the failure policy decides
     let home = env.get(crate::defaults::env_name("home")).or_else(|| env.get(crate::defaults::env_name("home_alt"))).unwrap_or_default();
     if guardkit::settings::unreadable_settings_file(home) {
         return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_settings_unreadable")));
@@ -159,12 +172,15 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
 /// the first time its code path runs, so a failure is a bug in the source, not a runtime condition. The tests that
 /// exercise each code path compile every such pattern, so an invalid one fails the build, not a user.
 pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
-    regex::Regex::new(pattern).unwrap_or_else(|e| panic!("{}: {e}", crate::defaults::text("msg.regex_literal_invalid")))
+    regex::Regex::new(pattern).unwrap_or_else(|e| {
+        eprintln!("{}: {e}", crate::defaults::text("msg.regex_literal_invalid"));
+        std::process::abort();
+    })
 }
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 72] = [
+    static ALL: [&dyn Check; 79] = [
         &scripted::GIT_GUARD,
         &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
@@ -207,6 +223,11 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::API_GUARD,
         &scripted::EDIT_GUARD,
         &scripted::ENGINE_ROLE_GUARD,
+        &scripted::BROAD_KILL_GUARD,
+        &scripted::QUEUED_WAIT_GUARD,
+        &scripted::LANE_TEST_GUARD,
+        &scripted::WIDE_SEARCH_GUARD,
+        &scripted::SWITCH_NOTICE,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
         &scripted::DEVSWARM_COMMS_GUARD,
@@ -237,6 +258,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SESSION_END_MCP_REAPER,
         &scripted::PROCWATCH_ADVISORY,
         &scripted::TASK_TRACKER,
+        &scripted::BURN_BREAKER,
+        &scripted::UNCOMMITTED_GUARD,
     ];
     &ALL
 }
@@ -244,6 +267,27 @@ pub fn registry() -> &'static [&'static dyn Check] {
 /// Look a check up by its rule name.
 pub fn get(name: &str) -> Option<&'static dyn Check> {
     registry().iter().copied().find(|c| c.name() == name)
+}
+
+/// The one hook event the dispatch table runs the check `name` under (on every host), if there is exactly one. The
+/// dispatcher takes the event from the hook row (`--event`), never from the payload, and a Node hook registered for one
+/// event does not read `hook_event_name` at all; so `ah-engine check` answers a payload that names no event as that row
+/// would, instead of under an invented event (a Stop gate run as PreToolUse lets the stop through where Node blocks).
+fn listed_event(name: &str) -> Option<String> {
+    use crate::dispatch::table;
+    let mut found: Option<&'static str> = None;
+    for host in table::hosts() {
+        for event in table::events(host) {
+            if table::entries(host, event).iter().any(|e| e.check.as_deref() == Some(name)) {
+                match found {
+                    None => found = Some(event),
+                    Some(f) if f == event => {}
+                    Some(_) => return None,
+                }
+            }
+        }
+    }
+    found.map(str::to_string)
 }
 
 /// `ah-engine check <name>`: run one check in-process on a hook payload from stdin and print what the Node guard
@@ -266,8 +310,9 @@ pub fn cli_main(name: &str) -> i32 {
         return 0;
     };
     let null = Value::Null;
+    let listed = listed_event(name);
     let subject = Subject {
-        event: p.get("hook_event_name").and_then(Value::as_str).unwrap_or("PreToolUse"),
+        event: p.get("hook_event_name").and_then(Value::as_str).or(listed.as_deref()).unwrap_or("PreToolUse"),
         tool: p.get("tool_name").and_then(Value::as_str),
         cwd: p.get("cwd").and_then(Value::as_str),
         tool_input: p.get("tool_input").unwrap_or(&null),
@@ -323,9 +368,10 @@ mod tests {
 
     /// Review P0 (D74): a settings file that exists but that serde cannot parse while JavaScript can (`1e400` is `Infinity`; nesting
     /// past 128) was read as missing, so an opt-in block mode was ignored and the engine allowed where Node blocks. Every check now
-    /// defers; a file both parsers reject is missing for both and changes nothing.
+    /// takes its failure policy (a blocking guard fails closed, naming the settings file; no Node hook is launched to defer to); a
+    /// file both parsers reject is missing for both and changes nothing.
     #[test]
-    fn a_settings_file_only_javascript_can_parse_defers_every_check() {
+    fn a_settings_file_only_javascript_can_parse_takes_the_failure_policy_of_every_check() {
         let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
@@ -335,22 +381,23 @@ mod tests {
         let null = Value::Null;
         let subject = Subject { event: "PreToolUse", tool: Some("AskUserQuestion"), cwd: None, tool_input: &null, prompt: None };
         let run = || run_env_guarded(&scripted::ASK_GUARD, &subject, &payload, &Value::Null, &env);
+        let held = |v: Option<Verdict>| matches!(v, Some(Verdict::Block(m)) if m.contains(crate::defaults::text("script.msg_settings_unreadable")));
         let write = |text: &str| std::fs::write(home.join(".anti-hall/settings.json"), text).unwrap();
         // the baseline: a readable file with the block mode on is answered, not deferred
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
-        assert_ne!(run(), Some(Verdict::Defer), "a readable settings file is answered by the check");
+        assert!(!held(run()), "a readable settings file is answered by the check");
         // a number beyond f64 (JavaScript: Infinity)
         write(r#"{"guards":{"noBlockingQuestions":"block"},"x":1e400}"#);
-        assert_eq!(run(), Some(Verdict::Defer), "1e400");
+        assert!(held(run()), "1e400");
         // nesting past serde's recursion limit
         write(&format!(r#"{{"guards":{{"noBlockingQuestions":"block"}},"deep":{}1{}}}"#, "[".repeat(200), "]".repeat(200)));
-        assert_eq!(run(), Some(Verdict::Defer), "depth 200");
+        assert!(held(run()), "depth 200");
         // a lone surrogate escape
         write(r#"{"guards":{"noBlockingQuestions":"block"},"s":"\ud800"}"#);
-        assert_eq!(run(), Some(Verdict::Defer), "lone surrogate");
+        assert!(held(run()), "lone surrogate");
         // text both parsers reject is a missing file for both: the check answers (with the defaults)
         write("{oops");
-        assert_ne!(run(), Some(Verdict::Defer), "a syntax error is missing for Node too");
+        assert!(!held(run()), "a syntax error is missing for Node too");
         // review 3: the legacy Jev file (`jev.json`) is read below settings.json by Node's resolver, so it counts too
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         let jev = home.join(".anti-hall/jev.json");
@@ -360,19 +407,19 @@ mod tests {
             ("jev surrogate", r#"{"enabled":true,"x":"\ud800"}"#.to_string()),
         ] {
             std::fs::write(&jev, body).unwrap();
-            assert_eq!(run(), Some(Verdict::Defer), "{name}");
+            assert!(held(run()), "{name}");
         }
         std::fs::write(&jev, r#"{"enabled":true}"#).unwrap();
-        assert_ne!(run(), Some(Verdict::Defer), "a readable jev.json is answered");
+        assert!(!held(run()), "a readable jev.json is answered");
         crate::discard::harmless(std::fs::remove_file(&jev)); // keep: cleanup that raced; an absent file is the goal state
         // the host's settings file and the skip file are read by the same chain
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::write(home.join(".claude/settings.json"), r#"{"pluginConfigs":{"a":{"n":1e999}}}"#).unwrap();
-        assert_eq!(run(), Some(Verdict::Defer), "~/.claude/settings.json");
+        assert!(held(run()), "~/.claude/settings.json");
         std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
         std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":1e999}"#).unwrap();
-        assert_eq!(run(), Some(Verdict::Defer), "skip.json");
+        assert!(held(run()), "skip.json");
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
     }
 

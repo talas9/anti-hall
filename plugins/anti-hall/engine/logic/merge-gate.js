@@ -50,6 +50,8 @@ function hasResolution(t) {
   return ah.cfg('merge_gate.resolutions').some(function (p) { return lower.indexOf(p) >= 0; });
 }
 
+// The text blocks of an entry (a lone surrogate, which the host's masking cannot take, read as U+FFFD: no hedge or quote rule
+// matches either).
 function textOf(entry) {
   var m = entry.message, content = isObj(m) ? m.content : undefined;
   if (Array.isArray(content)) {
@@ -59,9 +61,9 @@ function textOf(entry) {
       if (b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
       if (b.type === 'tool_result') result = true;
     });
-    return { text: parts.join('\n'), result: result };
+    return { text: hookProc.usv(parts.join('\n')), result: result };
   }
-  return { text: typeof content === 'string' ? content : '', result: false };
+  return { text: typeof content === 'string' ? hookProc.usv(content) : '', result: false };
 }
 
 function maskedMaybe(t) {
@@ -76,14 +78,14 @@ function nonHuman(entry) {
   return !(typeof kind === 'string' && ah.cfg('merge_gate.non_human_origins').indexOf(kind) >= 0);
 }
 
-// The records of the tail, or null when a line is not JSON.
+// The records of the tail; a line that is not JSON is skipped, as Node skips it.
 function readRecords(tail) {
   var out = [], lines = tail.split('\n');
   for (var n = 0; n < lines.length; n++) {
     var line = lines[n].trim();
     if (line === '') continue;
     var entry;
-    try { entry = JSON.parse(line); } catch (e) { return null; }
+    try { entry = JSON.parse(line); } catch (e) { if (e instanceof SyntaxError) continue; throw e; }
     var type = isObj(entry) ? entry.type : undefined;
     if (type === 'assistant') out.push({ k: 'a', t: maskedMaybe(textOf(entry).text) });
     else if (type === 'user') {
@@ -127,25 +129,21 @@ function decide(p) {
   if (cmd === '' || !isAutoMerge(cmd)) return 'allow';
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return 'allow';
-  if (!ah.path.isAbsolute(tp)) return 'defer';
+  tp = hookProc.open(p, tp); // a relative path is read from the hook process's directory, as Node reads it
   var tail = ah.fs.readTail(tp, ah.cfgNum('merge_gate.window_bytes'));
   if (tail === null) return 'allow';
   var records = readRecords(tail);
-  if (records === null) return 'defer';
   var said = records.filter(function (r) { return r.k === 'a'; }).map(function (r) { return r.t; }).join('\n');
   if (said === '' || !hasHedge(said)) return 'allow';
   var unresolved = hedgeUnresolved(records);
   var n = ah.cfgNum('merge_gate.jev_state_chars'), window = said;
   if (n < said.length) {
     var hi = said.charCodeAt(said.length - n - 1), lo = said.charCodeAt(said.length - n);
-    if (hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF) return 'defer';
-    window = said.slice(said.length - n);
+    // Node's window would start with a lone low surrogate; the Jev shadow question (never the decision) starts one unit later
+    window = said.slice(said.length - n + (hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF ? 1 : 0));
   }
   var sid = null;
-  if (truthy(p.session_id)) {
-    if (typeof p.session_id === 'object') return 'defer';
-    sid = String(p.session_id);
-  }
+  if (truthy(p.session_id)) sid = String(p.session_id);
   ah.jev.ask({
     id: ah.cfg('merge_gate.jev_id'),
     question: { type: 'noul', instructions: ah.cfg('merge_gate.jev_instructions'), criteria: [['true', ah.cfg('merge_gate.jev_true')], ['false', ah.cfg('merge_gate.jev_false')]] },

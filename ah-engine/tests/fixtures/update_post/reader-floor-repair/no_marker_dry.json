@@ -1,0 +1,135 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "reader-floor repair: dry run, would repair 2 of 2 across 1 store(s)",
+    "errors": 0,
+    "partitions": 2,
+    "repaired": 0,
+    "retired": 0,
+    "stores": 1
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/p2.json": "644 {\"id\":\"p2\",\"cursorPath\":\"{ROOT}/nd-p2.cursor\"}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "c0",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c1",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c2",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c3",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c4",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "c5",
+          "workspace_id": "p1"
+        },
+        {
+          "hash": "d0",
+          "workspace_id": "p2"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:999999:1000000000001",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:{PID}:4000000000000",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "p1",
+          "reader": "h:{PID}:5000000000000",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 2
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:999999:1000000000001",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:{PID}:4000000000000",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 5
+        },
+        {
+          "ns": "store",
+          "partition": "p1",
+          "reader": "h:{PID}:5000000000000",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 2
+        },
+        {
+          "ns": "nd",
+          "partition": "p2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "p2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        }
+      ],
+      "registry": []
+    }
+  }
+}

@@ -2,16 +2,16 @@ name: ah-engine
 
 # Self-contained CI for the Rust engine in ah-engine/ (D69). Two tiers:
 # - the gate (push, pull request): fmt, test.sh on ubuntu (the `ci` nextest profile: everything but the memory soak, the
-#   wall-clock benches and the heavy Node parity sweeps; every policy gate stays in), a macOS build + smoke subset, docs;
+#   wall-clock benches; every policy gate stays in), a macOS build + smoke subset, docs;
 # - the full run (the nightly schedule, a manual dispatch, a version tag): the whole suite (`nightly` profile) on both OSes;
 #   a scheduled failure opens or updates one issue.
 on:
   push:
     branches: [engine-proto, dev, main]
     tags: ['v*']
-    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/engine/**', 'docs/DEVELOPMENT.md', '.github/workflows/ah-engine.yml']
   pull_request:
-    paths: ['ah-engine/**', 'plugins/anti-hall/engine/**', 'plugins/anti-hall/hooks/lib/settings-schema.js', '.github/workflows/ah-engine.yml']
+    paths: ['ah-engine/**', 'ah-launcher/**', 'plugins/anti-hall/engine/**', '.github/workflows/ah-engine.yml']
   schedule:
     - cron: '17 3 * * *' # nightly: the full suite on both OSes
     - cron: '17 4 * * 1' # weekly: the full doc-check on both OSes
@@ -25,6 +25,28 @@ env:
   AH_FULL: ${{ (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *') || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
+  # The thin client (ah-hook, crate ah-launcher; GH #164) is part of every release archive: the gate builds it on both OSes.
+  launcher:
+    name: ah-hook (${{ matrix.os }})
+    if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: ah-launcher
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-launcher
+      - run: cargo build --release --locked
+
   rust:
     name: rust (${{ matrix.os }})
     if: github.event_name != 'schedule' || github.event.schedule == '17 3 * * *'
@@ -39,45 +61,60 @@ jobs:
       run:
         working-directory: ah-engine
     env:
+      # The Rust hook and install contract tests need the thin client in this job's checkout (jobs do not share builds).
+      AH_HOOK_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
+      AH_LAUNCHER_BIN: ${{ github.workspace }}/ah-launcher/target/release/ah-hook
       # Headroom for the script CPU limit on a loaded shared runner (the shipped default is sized for an idle machine).
       AH_ENGINE_SCRIPT_TIME_MS: "2000"
       # Wall-clock tests (a transcript answered within the script limit) get the same headroom: 2000 ms x 3.
       AH_TEST_TIME_SCALE: "3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The Node parity lanes run the Node hooks; with CI=true they fail rather than skip when Node is missing.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
       # Install exactly the toolchain pinned in rust-toolchain.toml (channel, rustfmt and clippy), so CI never drifts from it.
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest
       - run: cargo fmt --check
         if: matrix.os == 'ubuntu-latest'
+      - name: Check target without jemalloc (macOS x86_64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --target x86_64-apple-darwin
+      - name: Build the thin client for hook and install tests
+        working-directory: ah-launcher
+        run: cargo build --release --locked
       # The gate on ubuntu: test.sh (release clippy -D warnings, the `ci` profile, doctests, wrapper and bootstrap tests, the
       # daemon-survivor check). Clippy runs only here, once.
       - name: test.sh (gate)
         if: matrix.os == 'ubuntu-latest' && env.AH_FULL != 'true'
         run: ./test.sh
-      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions) and the
-      # wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
+      # The gate on macOS: build everything, then the end-to-end smoke (hook dispatch, daemon lifecycle, sessions), the
+      # archive-cap retention fixture, and the wrapper and bootstrap shell tests. The full macOS suite runs in the nightly tier.
       - name: build + smoke (macOS gate)
         if: matrix.os == 'macos-latest' && env.AH_FULL != 'true'
         run: |
-          cargo nextest run --release --profile ci --no-run
-          cargo nextest run --release --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
-          sh tests/wrapper.sh && sh tests/bootstrap.sh
+          cargo nextest run --cargo-profile ci-test --profile ci --no-run
+          cargo nextest run --cargo-profile ci-test --profile ci -E 'test(/^dispatch_e2e::/) | test(/^e2e::/) | test(/^session_e2e::/)'
+          sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
       - name: test.sh (full)
         if: env.AH_FULL == 'true'
         run: ./test.sh
         env:
           AH_TEST_PROFILE: nightly
+      - name: Upload generated reference on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ah-engine-generated-reference-${{ matrix.os }}
+          path: ${{ runner.temp }}/ah-engine-generated-reference.md
+          retention-days: 7
+          if-no-files-found: ignore
       - run: cargo doc --no-deps
         if: matrix.os == 'ubuntu-latest'
         env:
@@ -117,7 +154,7 @@ jobs:
         os: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
       - name: Toolchain
@@ -133,7 +170,7 @@ jobs:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit,cargo-deny
       - run: cargo audit
@@ -154,10 +191,10 @@ jobs:
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - run: rustup component add llvm-tools-preview
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Line coverage summary
@@ -176,10 +213,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-bloat
       - name: Release size and top crates

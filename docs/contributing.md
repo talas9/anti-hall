@@ -31,7 +31,7 @@ GitHub. The site is built with [MkDocs](https://www.mkdocs.org/) and the open-so
 [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/) theme from `docs/`.
 Two pages are generated at build time and are not files in `docs/`:
 
-- the **Settings reference**, from `plugins/anti-hall/hooks/lib/settings-schema.js`;
+- the **Settings reference**, from `plugins/anti-hall/engine/defaults/settings_cli.toml`;
 - the **Changelog**, from `CHANGELOG.md`.
 
 To build the site locally:

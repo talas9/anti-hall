@@ -11,6 +11,7 @@ Install, go-live, rollback and what still runs on Node: [`docs/AH-ENGINE.md`](..
 - What it is, what works today and what is **planned (D-n)**: [`docs/AH-ENGINE.md`](../docs/AH-ENGINE.md)
 - Every command, setting, metric, impact kind, check and error code (generated, cannot drift): [REFERENCE.md](REFERENCE.md)
 - The versioned design decision record (D1 to D70): [DECISIONS.md](DECISIONS.md)
+- October 2026 hardening: every failure, root cause, fix, test and status: [docs/HARDENING-2026-10.md](docs/HARDENING-2026-10.md)
 
 This directory is self-contained: its own Cargo workspace, CI (`.github/workflows/ah-engine.yml`), docs and tests. It is
 never a submodule (D69).
@@ -39,8 +40,6 @@ never a submodule (D69).
 | `src/defaults.rs`, `src/defaults/load.rs`, `src/bootstrap.rs`, `build.rs` | the run-time loader of the plugin's `engine/defaults/*.toml` (validation, atomic snapshot, cache for the thin client, change watching) and the few names needed to find them; `build.rs` only collects the keys the source reads. The defaults themselves live in `plugins/anti-hall/engine/`, never in this crate |
 | `src/docs.rs` | the reference generator |
 | `tests/` | end-to-end and reliability tests against a real daemon, the no-hardcoding test, the defaults-keys test, the reference drift test, the agent CLI and residency tests |
-| `tests/it/node_parity/` | one test binary of Node-vs-engine parity lanes (the ported hook checks: each runs the real Node hook as the reference); corpora are Rust, or JSON data under `session_corpus/` and `ctxbudget_corpus/` |
-| `parity/` | the parity harnesses of the older lanes (git, command, Jev, dispatcher, merge-side-pick, scan-throttle, ship-it, compact declaration), and `transcript-facts.js` / `run-transcript.js` for the transcript index |
 | `examples/transcript_facts.rs` | prints the facts the index derives from a transcript (the parity harness runs it) |
 | `DECISIONS.md`, `REFERENCE.md` | the decision record and the generated reference |
 
@@ -92,7 +91,7 @@ gh attestation verify <asset> --repo talas9/anti-hall
 | No hangs: hard client deadline, read deadline, oversize rejection, CPU budget | `hung_engine_times_out_then_falls_back`, `oversize_input_skips_engine_and_daemon_rejects_oversize_requests`, `slow_sender_cannot_wedge_the_daemon`, `cpu_budget_trips_to_fallback` |
 | Watchdog, breaker, crash-loop stop | `stalled_loop_triggers_clean_exit_and_next_client_respawns`, `stuck_worker_triggers_exit`, `breaker_opens_after_repeated_failures_and_skips_engine`, `crash_loop_stops_respawning_records_reason_and_advises_once` |
 | Single instance, stale lock and socket recovery | `twenty_parallel_cold_clients_yield_exactly_one_daemon`, `stale_lock_from_dead_pid_is_recovered_but_live_engine_pid_is_not_stolen`, `non_socket_at_socket_path_is_never_deleted` |
-| Resource caps | `queue_overflow_answers_busy_and_clients_fall_back`, `rate_limited_session_gets_busy_so_it_falls_back`, `memory_limit_and_nice_are_applied_and_reported`, `rss_over_cap_restarts_cleanly_and_next_client_respawns` |
+| Resource caps | `queue_overflow_answers_busy_and_the_guard_event_follows_its_failure_mode`, `rate_limited_session_gets_busy_so_it_falls_back`, `memory_limit_and_nice_are_applied_and_reported`, `rss_over_cap_restarts_cleanly_and_next_client_respawns` |
 | Safety: socket mode, private directory, symlinks, peer uid, payload never executed, project isolation | `socket_is_0600_and_state_dir_0700`, `long_path_socket_dir_is_private_and_owner_checked`, `symlinked_state_dir_is_refused`, `payload_text_is_never_executed`, `projects_are_isolated_through_the_daemon` |
 | Residency: stays up when idle by default; idle exit is a config key | `tests/it/agent_cli.rs` (`the_daemon_stays_resident_when_idle_by_default`, `idle_exit_is_a_config_key_and_is_reset_by_activity`) |
 | Agent CLI: metrics, impact and status fed by real hook calls; `--json` everywhere; planned commands say so | `tests/it/agent_cli.rs` |
@@ -135,11 +134,11 @@ Deliberate differences from the Node guard:
 
 ## Built-in checks: the small guards (`src/checks/guardkit`, one module per guard)
 
-`merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only) is a port of `hooks/merge-side-pick.js`. PostToolUse
+`merge-side-pick` (PreToolUse and PostToolUse on Bash; advisory only) is a port of `merge-side-pick`. PostToolUse
 records a one-sided conflict resolution (`--ours`, `--theirs`, `-X ours`, `-s ours`) and test runs per session; a push while
 a side-pick has no test run after it adds one advisory line. The shared helpers in `checks/guardkit` mirror
-`hooks/lib/settings.js` (a switch resolves env, then `settings.json`, then the plugin option, then the default),
-`hooks/skip-guard.js`, `hooks/lib/block-message.js`, and translate JavaScript regex sources kept in
+`settings` (a switch resolves env, then `settings.json`, then the plugin option, then the default),
+`skip-guard`, `block-message`, and translate JavaScript regex sources kept in
 `defaults/small_guards.toml` so `\s`, `\b`, `.` and the `i` flag keep their JavaScript meaning.
 
 Deliberate differences from the Node guard:
@@ -182,9 +181,9 @@ Deliberate differences from the Node guard:
   removes a file; that is kept so the files on disk stay the same (a finding for the Node side).
 - `verify-first-subagent`, `verify-first-full` and `fable-availability` (context checks, never block; `checks/verify_first`,
   `checks/fable_availability`; parity test `tests/it/node_parity/verify_first.rs`): the protocol texts live in
-  `defaults/verify_first.toml`, copied from `hooks/verify-first-core.js`, and the harness fails when either side drifts. The
+  `defaults/verify_first.toml`, copied from `verify-first-core`, and the harness fails when either side drifts. The
   compact text names `<plugin root>/PROTOCOL.md`; the root is derived like Node does (the real location of
-  `hooks/verify-first-core.js`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
+  `verify-first-core`), and a root the engine cannot prove defers. A payload the engine's JSON reader rejects
   defers for every hook (the dispatcher's rule). `fable-availability` writes the same state file as Node (key order
   `available`, `checkedAt`, `source`); a `~/.claude.json` the engine's reader rejects (after replacing unpaired surrogate
   escapes, which JSON.parse accepts) or nests deeper than its limit defers, so Node reads and writes it. The switches are the
@@ -219,9 +218,24 @@ Deliberate differences from the Node guard:
   `classifyBashWork` from command-guard and the hook's `CLAUDE_CODE_ENTRYPOINT`, neither of which the engine has yet, so
   every main-thread call defers to the Node guard, which keeps all of the window's state; the engine keeps none, so the
   two cannot disagree. The window moves in with the command-guard port (planned, D75).
-- `devswarm-parent-inbox`, `devswarm-child-turn`: the gate of the two DevSwarm prompt hooks. Silent cases (not a Primary or not
-  a child, DevSwarm inactive, the hook's switch off, a Jev judge child) are answered; an active Primary or child defers to the
-  Node hook, which owns the roster, the mailbox and the dedupe state until the engine owns the mesh and mailbox (D45).
+- `devswarm-parent-inbox`: the DevSwarm Primary prompt hook, in a checkout or not. The silent cases, the communication-override
+  reminder, the ingest-daemon banners and summary refresh, the mailbox-wake line, the session-drift and maintainer-notice feeds,
+  the live workspace table of the project's summary with its unread nudges, archive recommendation and not-draining /
+  stale-build labels, the orphaned-mesh, stale-registry and broadcast segments, the Primary's own inbox with the questions it
+  was asked, the screenshot-sync ask and the parked supervisor escalations are answered. Handed to Node, each before the first
+  write: a seat conflict still owed its repeat, a setting of the hook set anywhere, an unseen maintainer notice, a row the
+  supervisor's auto-archive owns, an own-reader cursor that changes the unread count, and the other rare states. Every deferral
+  writes its cause to the event log (`parent-inbox-defer`). Parity: `tests/it/devswarm_parent_inbox_parity.rs` (255 scenes on
+  real git repositories against the Node hook).
+- `devswarm-child-turn`: the DevSwarm child prompt hook, in a checkout or not. The silent cases, the heartbeat (with the git
+  push state), the registration of the child (descriptor, registry row and summary under the workspace lock, the project's store
+  created on the first turn), the ingest-daemon banners, the fixed reminder block, the step plan, unread parent mail, mesh-direct
+  mail and the archive request are answered. Handed to Node, each before the first write: an archived workspace, a truncated
+  builder id, a second registry row of the worktree, a phantom descriptor, a row at another worktree, a journal-backend store, a
+  workspace lock that stays busy, and (after the idempotent registration) mesh-direct mail while some reader of the partition holds
+  a cursor of its own, since the hook's reader identity comes from its process ancestry, which the daemon does not share. Every
+  deferral writes its cause to the event log (`child-turn-defer`). Parity: `tests/it/devswarm_child_turn_parity.rs` (42 scenes on
+  real git repositories against the Node hook).
 - `compact-declaration-guard`: decides whether the call is new work (Node's patterns, quotes blanked, handover edits
   exempt), reads the last 1.5 MB of `transcript_path` itself (the shared transcript index is another lane), rebuilds the
   current turn's assistant text with Node's turn rules and allows unless that text contains "safe", which both
@@ -252,7 +266,7 @@ Deliberate differences from the Node guard:
   younger than its window, a repair stamped at the running version or cooling down) and otherwise defers to the Node hook,
   which builds the report, reads the review log or takes the lock and starts the detached repair (D60: the repair
   implementation stays callable with the engine down). The engine never writes a state file for them. The list of default
-  migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `companion/lib/migrations.js`.
+  migration keys is shipped in `defaults/session_gates.toml` and a test compares it with `migrations`.
   Codex registers the same three hooks, so the same checks answer its table; it registers neither `swarm-guard` nor
   `devswarm-comms-guard`.
 - Handover and Codex hook ports (`handover-resume`, `precompact-snapshot`, `codex-availability`, `codex-quota-detect`,
@@ -264,12 +278,12 @@ Deliberate differences from the Node guard:
   `Check::run_payload`; its `run` defers, so a caller that cannot supply the payload never gets a silent allow.
 ## Scripted checks (D88)
 
-A check whose decision is editable plugin JavaScript is registered as a `Scripted` entry (a name and a summary) and answered by `engine/logic/<check>.js` on the embedded QuickJS (`src/script`). Batch 1: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`, `verify-first-full`, `fable-availability`, `edit-guard`; batch 2: `ship-it-guard`, `compact-declaration-guard`, `devswarm-parent-inbox`, `devswarm-child-turn`. A script defines `decide(payload, opts, event)` and returns `'allow'`, `'defer'`, `null` (nothing to say, Node decides), `{block}`, `{advisory}` or `{exact: {code, out, err}}`. Its API is `ah.*` (`engine/logic/lib/00-ah.js`): `cfg`, `env`, `settings`, `fs`, `path`, `re`, `transcript`, and `state.writeAtomic`, `state.appendFile` and `state.remove` (the only writes: scoped to the state directory under `~/.anti-hall`, size-capped, no link below the root). Shared helpers: `lib/10-text.js` (message layout), `20-spawn.js` (home, state home, DevSwarm), `30-verify-first.js`, `40-coordinator.js`, `50-devswarm.js`. Edit a script in the plugin, or override it file by file in `~/.anti-hall/logic/`; the next call reloads it. A script that cannot answer defers to the Node hook; an engine-only check blocks on a guard event and allows elsewhere (`script.engine_only_checks`). Parity: `tests/golden/<check>.jsonl` (frozen from the compiled port) is replayed by `script::tests` and, against the Node hook, by `node parity/run-golden.js <check> hooks/<check>.js`. The v1.0 gate is `compiled_logic_checks_remaining` reaching 0 (`tests/compiled_logic_gate.rs`).
+A check whose decision is editable plugin JavaScript is registered as a `Scripted` entry (a name and a summary) and answered by `engine/logic/<check>.js` on the embedded QuickJS (`src/script`). Batch 1: `api-guard`, `inbox-read-guard`, `orch-on-spawn`, `verify-first-subagent`, `verify-first-full`, `fable-availability`, `edit-guard`; batch 2: `ship-it-guard`, `compact-declaration-guard`, `devswarm-parent-inbox`, `devswarm-child-turn`. A script defines `decide(payload, opts, event)` and returns `'allow'`, `'defer'`, `null` (nothing to say, Node decides), `{block}`, `{advisory}` or `{exact: {code, out, err}}`. Its API is `ah.*` (`engine/logic/lib/00-ah.js`): `cfg`, `env`, `settings`, `fs`, `path`, `re`, `transcript`, and `state.writeAtomic` / `appendFile` / `remove` / `op` (the scoped writes: under `~/.anti-hall`, size-capped, no link below the root; `writeAtomic` is atomic). Shared helpers: `lib/10-text.js` (message layout), `20-spawn.js` (home, state home, DevSwarm), `30-verify-first.js`, `40-coordinator.js`, `50-devswarm.js`. Edit a script in the plugin, or override it file by file in `~/.anti-hall/logic/`; the next call reloads it. A script that cannot answer defers to the Node hook; an engine-only check blocks on a guard event and allows elsewhere (`script.engine_only_checks`). Parity: `tests/golden/<check>.jsonl` (frozen from the compiled port) is replayed by `script::tests` and, against the Node hook, by `node parity/run-golden.js <check> hooks/<check>.js`. The v1.0 gate is `compiled_logic_checks_remaining` reaching 0 (`tests/compiled_logic_gate.rs`).
 
 ## Built-in checks: agent and transcript controls (`src/checks/agent_scan`, `ask_guard`, `silent_agent_nudge`, `stale_agent_stop_note`)
 
 Three Node hooks read the session transcript to learn which background agents and named teammates are running, and share
-one parser, `hooks/lib/agent-scan.js`. `checks/agent_scan` is its port. It streams the transcript tail line by line (the
+one parser, `agent-scan`. `checks/agent_scan` is its port. It streams the transcript tail line by line (the
 Node hook reads it whole), so a 64 MiB window never sits in the daemon's memory; what it keeps is the small state the walk
 needs, plus the answers to `TaskOutput` and `SendMessage` calls for the delivered-but-unnotified safety net, bounded by
 `agent_scan.retain_bytes`.
@@ -351,7 +365,7 @@ verdict on a written path, the repo's command allowlist, and git subprocesses fo
 also a stdout JSON line plus stderr, which the `Block` verdict cannot carry. So the check returns Allow only when Node
 allows the command whatever the context, and Defer otherwise (the client then runs the Node hook, D11):
 
-1. no DevSwarm or stash guard can fire (DevSwarm CLI verb in any scanned segment, `devswarm.js`, `stash`, or an
+1. no DevSwarm or stash guard can fire (DevSwarm CLI verb in any scanned segment, `ah-hook mesh`, `stash`, or an
    `inbox`/`store` path component in the command or the cwd);
 2. no write target the edit-guard parity branch would judge (redirects, tee, `sed -i`, `perl -i`, cp/mv, and inline
    interpreter code that might name one; targets with `$`, globs, braces or a leading `~` are skipped as in Node);
@@ -383,103 +397,9 @@ and case folding, while the trigger test of test 1 is exact on the command with 
 into blanks (a character that lower-cases to ASCII still defers). Exact blocks are planned (D57) once the
 engine carries the hook's environment and a block verdict with a stdout part.
 
-## Parity harness (`parity/`)
+## Parity harnesses (retired)
 
-`parity/run-git.js` runs each command through the Node git-guard (the authority) and the engine and compares exit code,
-stdout and stderr exactly:
-
-```
-node run-git.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus corpus.jsonl [--mode oneshot|daemon|both]
-```
-
-`--mode oneshot` runs `ah-engine check git` (the logic in-process), `--mode daemon` runs `ah-engine hook` against a real
-daemon, `both` does both. It waits for its daemon to exit before it finishes. Re-run after this phase against the Node
-hooks at dev bcddfb7:
-
-| corpus | n | agreement |
-|---|---|---|
-| committed `corpus.jsonl` (<=400 chars) | 526 | **100%** oneshot and daemon |
-| uncapped phase-2 corpus | 1253 | **100%** oneshot |
-| real recorded git commands (seeded sample) | 5000 | **100%** oneshot |
-| adversarial probe lists | 536 | **100%** oneshot |
-| mutation fuzz, seed set 1 | 6000 | **100%** oneshot |
-| grammar fuzz, seed set 1 | 15000 | **100%** oneshot |
-
-Earlier phases also ran the git-guard Node test payloads (1366, 7 deferred) and larger fuzz sets (46000 and 30000 lines)
-at 100%; those corpora are not committed (size cap).
-
-`parity/run-jev.js` is the Jev lane's harness. The Node client at dev 3d36268 is the authority; both sides talk to a
-loopback mock server and a fixture home, never the real network or home. It compares the outbound scrub, the HTTP request
-bodies and headers, the decisions and the `jev-assist.ndjson` rows, and the resolved settings and modes:
-
-```
-node run-jev.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --cmds <cmds.jsonl> [--scrub-n 12000 --fuzz-n 25000 --body-n 150]
-```
-
-| what | n | agreement |
-|---|---|---|
-| outbound scrub: real recorded commands (8,400 with secret-like text, 3,600 without) plus fuzz (25,000) plus edge cases | 37005 | **100%** |
-| decisions (modes x trust x baselines x server answers x fallback x breaker x redirect x timeout x cache) | 711 | **100%** |
-| request bodies and headers, per vendor | 1398 | **100%** |
-| `jev-assist.ndjson` rows, field for field and in key order | 699 | **100%** |
-| resolved settings and modes over a settings matrix | 418 | **100%** |
-| shipped integration table against `settings-schema.js` | 43 | **100%** |
-
-The one deliberate difference (a `true` advisory baseline is never lowered, D36) is asserted separately, not skipped;
-relax-block and the `mode: "off"` row of a skipped call are identical to Node's and compared in full. The breaker state is
-Node's own file (`cache/jev-breaker.json`), so hooks and engine share one breaker. A mutation run (a changed scrub rule and breaker threshold) drops agreement to 99.7%, so the
-harness is not vacuous.
-
-`parity/run.js` is the phase-2 decision-agreement harness for the regex rules; the force-push and AI-credit regex rules
-are examples, not ports, because a regex cannot tokenize shell.
-
-## Dispatcher parity and timing (`parity/run-dispatch.js`)
-
-`ah-engine hook --event PreToolUse` against the separate Node hooks it replaces, Node hooks from `dev` at 3d36268:
-the reference runs every matching hook as its own process at once (as the host does) and combines their outputs with
-`parity/dispatch-lib.js`, an independent model of the host; the dispatcher answers git-guard with the built-in `git`
-check and runs the other hooks through Node. Exit code, stdout and stderr are compared byte for byte (no trimming).
-Each side has its own temporary HOME, every item its own session, and commands run in a throwaway git repo.
-
-```
-node run-dispatch.js --plugin <repo>/plugins/anti-hall --corpus corpus.jsonl [--host claude|codex] [--mode oneshot|daemon|both]
-node fuzz-dispatch.js --out <dir> --n 3000 && node run-dispatch.js --plugin ... --corpus <dir>/corpus.jsonl --fallback-map <dir>/map.json
-```
-
-| corpus | host | n | oneshot (in-process checks) | daemon |
-|---|---|---|---|---|
-| committed git corpus `corpus.jsonl` | claude (9 Bash hooks) | 526 | **100%** | **100%** |
-| real recorded commands, seeded sample | claude | 5000 | **100%** | **100%** |
-| adversarial: several guards at once, odd payloads (no cwd, bad cwd, no command, numeric command) | claude | 61 | **100%** | **100%** |
-| combination fuzz (`fuzz-dispatch.js`, seed 11): fake hooks printing blocks, JSON blocks, contexts, messages, decisions, plain text, non-zero exits, conflicting fields | claude | 3000 (707 blocks, 922 single, 873 merged, 392 conflicts) | **100%** | **100%** |
-| committed git corpus | codex (7 Bash hooks) | 526 | **100%** | **100%** |
-| review round 1 re-run (guards fail closed, conflicts in order): git corpus, claude and codex | claude, codex | 526 each | **100%** | **100%** |
-| review round 1 re-run: real recorded commands, spread sample | claude | 1500 | **100%** | **100%** |
-| review round 1 re-run: combination fuzz (seed 11, 141 conflicts delivered in order) | claude | 1000 | **100%** | **100%** |
-| review round 2 re-run (fail-closed matrix, merged conflicts): git corpus | claude, codex | 526 each | **100%** | **100%** |
-| review round 2 re-run: real recorded commands, spread sample (2 blocked) | claude | 1500 | **100%** | **100%** |
-| review round 2 re-run: combination fuzz (seed 11; 221 blocks, 283 single, 454 merged, 141 conflicts delivered as one merged answer) | claude | 1000 | **100%** | **100%** |
-| review round 4 re-run (genuine Stop block kept past a failed sibling, git alias from `GIT_CONFIG_*` env; corpus now 529): git corpus | claude, codex | 529 each | **100%** | **100%** |
-| review round 4 re-run: real recorded commands, spread sample | claude | 1500 | **100%** | **100%** |
-| review round 4 re-run: combination fuzz (seed 11) | claude | 1000 | **100%** | **100%** |
-| adversarial | codex | 61 | **100%** | **100%** |
-| real recorded commands, first 1250 of the sample | codex | 1250 | **100%** | **100%** |
-
-The real-command sample is mostly silent in a fresh repo (13 of 5000 blocked, none produced two outputs), so the merge
-rules rest on the fuzz corpus. Changing the context joiner and the decision order on purpose dropped the fuzz run to
-95.5%, so the harness does see a wrong merge.
-
-Wall time and CPU of a whole Bash PreToolUse event, median of 30, same machine and minute, with other work running
-(CPU = the caller's child processes, so the daemon's own CPU is not counted):
-
-| command | 9 Node hooks at once (host) | 9 Node hooks one by one | dispatcher, daemon | dispatcher, in-process |
-|---|---|---|---|---|
-| `ls -la` (allow) | 37 ms, 250 ms CPU | 240 ms, 220 ms CPU | 37 ms, 217 ms CPU | 38 ms, 227 ms CPU |
-| force push (block) | 77 ms, 320 ms CPU | 417 ms, 353 ms CPU | 85 ms, 309 ms CPU | 85 ms, 310 ms CPU |
-| commit then push | 105 ms, 391 ms CPU | 423 ms, 382 ms CPU | 67 ms, 319 ms CPU | 67 ms, 340 ms CPU |
-
-With one of nine hooks built in, the event costs about what the host's parallel Node hooks cost: eight Node processes
-still start. Each ported check removes one Node process per event; the D58 savings arrive with the ports (D57).
+The Node parity harnesses (`parity/run-*.js`, which ran the Node originals beside the engine and compared exit code, stdout and stderr) are retired with the Node tests: the Node originals live on only as the backup in `plugins/anti-hall-node`. A change to a check is verified with `cargo check`, one release build, a deploy with `scripts/engine-deploy.sh` and a live check (`ah-hook doctor --check`, `ah-hook status`, `ah-hook diag hooks`). The recorded-golden replays of `cargo nextest` (see [DEVELOPMENT.md](../docs/DEVELOPMENT.md)) stay.
 
 ## Measurements
 

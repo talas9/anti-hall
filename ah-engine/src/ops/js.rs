@@ -14,25 +14,6 @@ pub fn len16(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
-/// `s.slice(from, to)` on UTF-16 code units; `Err` when an edge falls inside a surrogate pair (JavaScript would keep half of
-/// it, a Rust string cannot).
-pub fn slice16(s: &str, from: usize, to: usize) -> Result<String, Defer> {
-    let u: Vec<u16> = s.encode_utf16().collect();
-    let to = to.min(u.len());
-    let from = from.min(to);
-    for edge in [from, to] {
-        if edge > 0 && edge < u.len() && (0xD800..0xDC00).contains(&u[edge - 1]) && (0xDC00..0xE000).contains(&u[edge]) {
-            return Err(Defer);
-        }
-    }
-    String::from_utf16(&u[from..to]).map_err(|_| Defer)
-}
-
-/// `s.slice(0, n)`.
-pub fn head16(s: &str, n: usize) -> Result<String, Defer> {
-    slice16(s, 0, n)
-}
-
 /// `a.localeCompare(b)` with the default (root) collation, for the printable ASCII text the tools sort: punctuation and
 /// symbols in the shipped order, then digits, then letters ignoring case; ties are broken by case with lower case first.
 /// `Err` for any other character (control or non-ASCII), whose weight this port does not carry.

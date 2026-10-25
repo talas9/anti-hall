@@ -35,9 +35,14 @@ pub trait Sink {
     fn backlog(&self, _env: &Env, _target: &str) -> u64 {
         0
     }
+    /// Whether a reminder of `signal` about `agent` is already queued for `target` and not yet taken (false when the channel cannot
+    /// tell): the same notice is never queued twice in front of one prompt.
+    fn has_pending(&self, _env: &Env, _target: &str, _signal: &str, _agent: &str) -> bool {
+        false
+    }
 }
 
-fn append(path: &PathBuf, row: &Value) -> Result<(), String> {
+pub(super) fn append(path: &PathBuf, row: &Value) -> Result<(), String> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
@@ -82,6 +87,42 @@ impl Sink for SessionQueue {
         let taken: u64 = std::fs::read_to_string(PathBuf::from(cur)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
         lines_in(&q).saturating_sub(taken)
     }
+    fn has_pending(&self, env: &Env, target: &str, signal: &str, agent: &str) -> bool {
+        let q = Self::file(env, target);
+        let mut cur = q.clone().into_os_string();
+        cur.push(pth("cursor_ext"));
+        let taken: usize = std::fs::read_to_string(PathBuf::from(cur)).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        let text = std::fs::read_to_string(&q).unwrap_or_default();
+        text.lines().skip(taken).filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|v| v["signal"] == signal && v["agent"] == agent)
+    }
+}
+
+/// The wake feed of a session: the file `agents wake-watch` (a Monitor armed at session start) tails, so a row here wakes the session
+/// even while it is idle. The row carries the same text as the queued reminder.
+pub struct WakeFeed;
+
+impl WakeFeed {
+    pub(crate) fn file(env: &Env, target: &str) -> PathBuf {
+        env.dir().join(pth("wake")).join(format!("{}{}", key_of(target), pth("queue_ext")))
+    }
+    /// The stamp a live watcher renews: its age says whether the session can be woken.
+    pub(crate) fn stamp(env: &Env, target: &str) -> PathBuf {
+        env.dir().join(pth("wake")).join(format!("{}{}", key_of(target), pth("armed_ext")))
+    }
+}
+
+/// Whether a live `agents wake-watch` covers the session: its stamp was renewed within `stale_lock_ms`.
+pub(crate) fn wake_armed(env: &Env, session: &str) -> bool {
+    crate::checks::agent_scan::mtime_ms(&WakeFeed::stamp(env, session)).is_some_and(|m| env.now_ms.saturating_sub(m as u64) <= lim("stale_lock_ms"))
+}
+
+impl Sink for WakeFeed {
+    fn channel(&self) -> &'static str {
+        super::chan("wake")
+    }
+    fn deliver(&self, env: &Env, target: &str, r: &Reminder) -> Result<(), String> {
+        append(&Self::file(env, target), &row(r))
+    }
 }
 
 /// The DevSwarm seam: nudge rows for the mesh action layer.
@@ -116,8 +157,13 @@ impl Sink for OwnerNotices {
 
 /// Remove queue files that were fully taken a while ago.
 pub(crate) fn compact(env: &Env) {
-    let dir = env.dir().join(pth("reminders"));
-    let Ok(rd) = std::fs::read_dir(&dir) else { return };
+    for d in ["reminders", "wake"] {
+        compact_dir(env, &env.dir().join(pth(d)));
+    }
+}
+
+fn compact_dir(env: &Env, dir: &PathBuf) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
         if !p.to_string_lossy().ends_with(pth("queue_ext")) {
@@ -133,6 +179,24 @@ pub(crate) fn compact(env: &Env) {
             crate::discard::harmless(std::fs::remove_file(&cur)); // keep: same
         }
     }
+}
+
+/// A token count for a message: the largest step that fits, with the configured suffix (995687 -> `995k`, 1500000 -> `1.5M`).
+pub(crate) fn count(n: u64) -> String {
+    let fmt = crate::defaults::raw("agent_tracker.fmt");
+    let steps = fmt
+        .get("count_steps")
+        .and_then(crate::defaults::V::as_array)
+        .map(|a| a.iter().filter_map(crate::defaults::V::as_integer).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let names = fmt.get("count_units").map(crate::defaults::V::strings).unwrap_or_default();
+    let i = steps.iter().rposition(|u| n >= (*u).max(1) as u64).unwrap_or(0);
+    let step = steps.get(i).copied().unwrap_or(1).max(1) as u64;
+    let tenths = n * 10 / step;
+    let (units, frac) = (tenths / 10, tenths % 10);
+    let decimal_below = fmt.get("count_decimal_below_tenths").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    let whole = if tenths < decimal_below && frac != 0 { format!("{units}.{frac}") } else { units.to_string() };
+    format!("{whole}{}", names.get(i).copied().unwrap_or(""))
 }
 
 /// Age text: the largest unit that fits, with the configured suffixes.

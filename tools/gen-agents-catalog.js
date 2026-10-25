@@ -8,7 +8,7 @@
 //   skills     <- plugins/anti-hall/skills/*/ and codex/skills/*/
 //   CLI verbs  <- the dispatch switches of devswarm.js / settings.js /
 //                 auto-handover-config.js, jev-report.js / jev-setup.js / defect.js
-//   settings   <- plugins/anti-hall/hooks/lib/settings-schema.js
+//   settings   <- plugins/anti-hall-node/hooks/lib/settings-schema.js
 //   state      <- llms.txt's "State files" table
 // Usage: node tools/gen-agents-catalog.js          (rewrite AGENTS.md in place)
 //        node tools/gen-agents-catalog.js --check  (exit 1 when AGENTS.md is stale)
@@ -98,15 +98,15 @@ function build() {
   out.push('');
   // CLI verbs
   out.push('**CLI verbs**:');
-  out.push('- `scripts/devswarm.js`: ' + switchVerbs('plugins/anti-hall/scripts/devswarm.js', 'function runArmed(').map((v) => '`' + v + '`').join(', ') + ' (`help <verb>`).');
-  out.push('- `scripts/settings.js`: ' + switchVerbs('plugins/anti-hall/scripts/settings.js', 'function main(').map((v) => '`' + v + '`').join(', ') + '; `scripts/auto-handover-config.js`: '
-    + usageVerbs('plugins/anti-hall/scripts/auto-handover-config.js', /usage: auto-handover-config\.js ([^']+)'/).map((v) => '`' + v + '`').join(', ') + '.');
-  out.push('- `scripts/jev-setup.js`: ' + usageVerbs('plugins/anti-hall/scripts/jev-setup.js', /usage: jev-setup\.js ([^'"`\n]+)/).map((v) => '`' + v + '`').join(', ')
+  out.push('- `scripts/devswarm.js`: ' + switchVerbs('plugins/anti-hall-node/scripts/devswarm.js', 'function runArmed(').map((v) => '`' + v + '`').join(', ') + ' (`help <verb>`).');
+  out.push('- `scripts/settings.js`: ' + switchVerbs('plugins/anti-hall-node/scripts/settings.js', 'function main(').map((v) => '`' + v + '`').join(', ') + '; `scripts/auto-handover-config.js`: '
+    + usageVerbs('plugins/anti-hall-node/scripts/auto-handover-config.js', /usage: auto-handover-config\.js ([^']+)'/).map((v) => '`' + v + '`').join(', ') + '.');
+  out.push('- `scripts/jev-setup.js`: ' + usageVerbs('plugins/anti-hall-node/scripts/jev-setup.js', /usage: jev-setup\.js ([^'"`\n]+)/).map((v) => '`' + v + '`').join(', ')
     + '; `scripts/jev-report.js`: report (default), `label`, `prune-audit`; `scripts/defect.js`: `report`, `list`, `show`, `rule`, `archive`, `backfill`, `recurring`, `similar`.');
   out.push('- `hooks/doctor.js [--repair]`; `skills/update/scripts/update.js [--check]`; `companion/devswarm-recover.js <id>` (the only kill path).');
   out.push('');
   // Settings
-  const schema = require(P('hooks', 'lib', 'settings-schema.js'));
+  const schema = require(P('..', 'anti-hall-node', 'hooks', 'lib', 'settings-schema.js'));
   out.push('**Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):');
   for (const sec of schema.SECTIONS) {
     const vis = sec.settings.filter((x) => !x.advanced);

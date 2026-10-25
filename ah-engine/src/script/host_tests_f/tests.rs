@@ -118,6 +118,33 @@ fn rename_moves_a_regular_file_inside_the_scope_and_refuses_what_leaves_it() {
 }
 
 #[test]
+fn create_makes_a_file_only_for_the_first_caller_and_touch_refreshes_a_modification_time() {
+    let h = home("create");
+    std::fs::write(format!("{h}/.anti-hall/m.json"), "M").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    std::fs::File::options().write(true).open(format!("{h}/.anti-hall/m.json")).unwrap().set_modified(old).unwrap();
+    put_override(
+        &h,
+        "zz-create",
+        &format!(
+            "function decide(p){{ var r = ah.home(), try1 = function (f) {{ try {{ return f(); }} catch (e) {{ return 'refused'; }} }}, res = [try1(function () {{ return ah.state.op(r, 'create', '.anti-hall/sub/c.json', 'first'); }}), try1(function () {{ return ah.state.op(r, 'create', '.anti-hall/sub/c.json', 'second'); }}), try1(function () {{ return ah.state.op(r, 'touch', '.anti-hall/m.json'); }}), try1(function () {{ return ah.state.op(r, 'touch', '.anti-hall/none.json'); }}), try1(function () {{ return ah.state.op(r, 'create', '../escape.json', 'x'); }})]; {WRITE} }}"
+        ),
+    );
+    assert_eq!(run("zz-create", &env(&h)), Some(Some(Verdict::Allow)));
+    let got = out(&h);
+    assert_eq!(got[0], json!(true), "the first caller creates the file");
+    assert_eq!(got[1], json!(false), "the second finds it there");
+    assert_eq!(got[2], json!(true), "an existing file is touched");
+    assert_ne!(got[3], json!(true), "a missing file is not created by a touch: {got}");
+    assert_ne!(got[4], json!(true), "a path outside the scope is refused: {got}");
+    assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/sub/c.json")).unwrap(), "first");
+    assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/m.json")).unwrap(), "M", "touch leaves the content alone");
+    let age = std::fs::metadata(format!("{h}/.anti-hall/m.json")).unwrap().modified().unwrap().elapsed().unwrap_or_default();
+    assert!(age.as_secs() < 3600, "the modification time is now: {age:?}");
+    assert!(!std::path::Path::new(&format!("{h}/.anti-hall/none.json")).exists());
+}
+
+#[test]
 fn a_second_lock_is_held_beside_the_first_and_a_third_is_refused_and_the_wait_is_the_scripts() {
     let h = home("locks");
     put_override(

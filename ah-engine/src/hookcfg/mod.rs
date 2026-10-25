@@ -172,6 +172,12 @@ fn event_ids(event: &str) -> BTreeSet<String> {
     table::hosts().into_iter().flat_map(|h| table::entries(h, event)).map(|e| e.id).collect()
 }
 
+/// The shipped budget of `event`: its entry in the `hooks.event_budget_ms` table, else the table's `default`.
+pub fn default_budget(event: &str) -> u64 {
+    let t = defaults::raw("hooks.event_budget_ms");
+    t.get(event).or_else(|| t.get("default")).and_then(|v| v.as_integer()).map_or(0, |n| n.max(0) as u64)
+}
+
 fn bound(key: &str) -> (i64, i64) {
     let e = defaults::get(key);
     (e.and_then(|e| e.min).unwrap_or(0), e.and_then(|e| e.max).unwrap_or(i64::MAX))
@@ -229,7 +235,7 @@ fn parse_event(path: &Path, origin: Origin, event: &str, v: &Json) -> Result<Eve
     only_fields(path, &key, o, &defaults::list("hooks.event_fields"))?;
     let mode = mode_of(path, &key, o)?;
     let max_rules = number(path, &key, "max_rules", o, "hooks.event_max_rules")?;
-    let budget_ms = number(path, &key, "budget_ms", o, "hooks.event_budget_ms")?;
+    let budget_ms = number(path, &key, "budget_ms", o, "hooks.event_budget_limit_ms")?;
     let order = match o.get("order") {
         None => None,
         Some(a) => {
@@ -340,12 +346,15 @@ pub(crate) fn check_shipped(entries: &[&defaults::Entry]) -> Result<(), String> 
 }
 
 /// The shipped layer for the active defaults.
-fn shipped() -> &'static Layer {
+fn shipped() -> std::sync::Arc<Layer> {
     static L: crate::defaults::Cache<Layer> = crate::defaults::Cache::new();
     L.get_or_init(|| {
         let mut entries = defaults::with_prefix("events.");
         entries.extend(defaults::with_prefix("entries."));
-        shipped_of(&entries).unwrap_or_else(|e| panic!("{e:?}"))
+        shipped_of(&entries).unwrap_or_else(|e| {
+            eprintln!("{e:?}");
+            std::process::abort();
+        })
     })
 }
 
@@ -402,10 +411,11 @@ impl HookCfg {
                 Mode::Off
             },
             max_rules: defaults::num("hooks.event_max_rules") as usize,
-            budget_ms: defaults::num("hooks.event_budget_ms"),
+            budget_ms: default_budget(event),
             order: defaults::list("hooks.event_order").into_iter().map(str::to_string).collect(),
         };
-        for layer in [shipped(), &self.project, &self.user] {
+        let shipped = shipped();
+        for layer in [&*shipped, &self.project, &self.user] {
             if let Some(p) = layer.events.get(event) {
                 cfg.mode = p.mode.unwrap_or(cfg.mode);
                 cfg.max_rules = p.max_rules.map_or(cfg.max_rules, |n| n as usize);
@@ -429,7 +439,8 @@ impl HookCfg {
             when: defaults::raw("hooks.entry_when").as_table().filter(|t| !t.is_empty()).and_then(|_| When::from_v(defaults::raw("hooks.entry_when")).ok()),
         };
         let qualified = format!("{event}/{id}");
-        for layer in [shipped(), &self.project, &self.user] {
+        let shipped = shipped();
+        for layer in [&*shipped, &self.project, &self.user] {
             for k in [id, qualified.as_str()] {
                 if let Some(p) = layer.entries.get(k) {
                     cfg.mode = p.mode.unwrap_or(cfg.mode);

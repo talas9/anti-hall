@@ -56,31 +56,8 @@ var dedupe = {
   scanTail: function (tp, bytes) {
     var mk = tp + '\0' + bytes;
     if (Object.prototype.hasOwnProperty.call(dedupe.scanMemo, mk)) return dedupe.scanMemo[mk];
-    var size = ah.fs.size(tp), result = null;
-    if (size !== null) {
-      var tail = ah.fs.readTail(tp, bytes);
-      if (tail !== null) {
-        var atts = [], anyTs = false, unsure = false, att = ah.cfg('emit_dedupe.attachment_type'), ev = ah.cfg('emit_dedupe.hook_event');
-        tail.split('\n').forEach(function (line) {
-          if (!line || unsure) return;
-          if (!anyTs && line.indexOf('"timestamp"') !== -1) anyTs = true;
-          if (line.indexOf(att) === -1) return;
-          var e;
-          try { e = JSON.parse(line); } catch (x) { return; }
-          var a = e && e.type === 'attachment' ? e.attachment : null;
-          if (!a || a.type !== att || a.hookEvent !== ev) return;
-          var raw = e.timestamp, ts;
-          if (typeof raw === 'string') {
-            ts = jx.dateParse(raw);
-            if (ts === undefined) { unsure = true; return; }
-          } else if (typeof raw === 'number' || Array.isArray(raw)) { unsure = true; return; }
-          else return;
-          if (!isFinite(ts)) return;
-          atts.push({ ts: ts, els: Array.isArray(a.content) ? a.content.map(function (x) { return String(x); }) : [String(a.content == null ? '' : a.content)] });
-        });
-        result = unsure ? { unsure: true } : (anyTs ? { atts: atts, size: size } : null);
-      }
-    }
+    // The host reads the window and returns the delivered attachments (a 4 MB window is far past the script's CPU limit line by line).
+    var raw = ahHost.transcriptDedupeTail(tp, bytes), result = raw === null || raw === undefined ? null : JSON.parse(raw);
     dedupe.scanMemo[mk] = result;
     return result;
   },
@@ -104,8 +81,9 @@ var dedupe = {
     var mins = ah.settings.num('emit_dedupe.num_window_min');
     return isFinite(mins) && mins > 0 ? mins * ah.cfgNum('emit_dedupe.ms_per_minute') : ah.cfgNum('emit_dedupe.window_default_ms');
   },
-  // `shouldEmit({sessionId, key, content, transcriptPath, keepaliveTurns})`: false when the block is a repeat the model already
-  // holds. Anything that cannot be persisted emits.
+  // `shouldEmit({sessionId, key, content, transcriptPath, keepaliveTurns, readPath})`: false when the block is a repeat the model
+  // already holds. Anything that cannot be persisted emits. `readPath` (optional) is the path the transcript is opened at when the
+  // payload's is relative (hookProc.open); the record still names the payload's own path, as Node's does.
   shouldEmit: function (o) {
     var r = dedupe.evaluate(o, true);
     if (r === 'unsure') throw new Error('emit-dedupe: a transcript timestamp only JavaScript reads exactly');
@@ -130,7 +108,7 @@ var dedupe = {
     var emit = true, nextTurns = 0;
     if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
-      var consumed = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
+      var consumed = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
       if (consumed === 'unsure') return 'unsure';
       if (consumed === null) {
         if ((now - prev.lastEmittedAt) < windowMs) { emit = false; nextTurns = turns; }
@@ -141,7 +119,7 @@ var dedupe = {
       } else if (!consumed) {
         if ((now - prev.lastEmittedAt) < maxPending) { emit = false; nextTurns = turns; }
       } else if (keepalive > 0) {
-        var nt = dedupe.findInTail(o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
+        var nt = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
         if (nt === 'unsure') return 'unsure';
         var t = turns + (nt === true ? 1 : 0);
         if (t > keepalive) emit = true; else { emit = false; nextTurns = t; }

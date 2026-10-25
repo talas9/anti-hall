@@ -16,13 +16,23 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod ctl;
+mod escalate;
 mod facts;
+mod live;
+mod lockwatch;
+pub(crate) mod native_wake;
+pub mod nudge;
+mod procs;
 mod signals;
 mod sinks;
 mod sources;
 mod status;
+mod wake;
+pub use status::cost_report;
 #[cfg(test)]
 mod tests;
+pub mod waste;
 
 use crate::checks::git::util::Settings;
 use crate::defaults::{self, V};
@@ -30,10 +40,44 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub use ctl::{Send, document as web_document, heartbeat, send, session_pids, transcript_path};
+pub use nudge::document as nudge_document;
+pub(crate) use status::document as status_document;
 pub use status::run_cmd;
+
+/// Hand a notice from outside the tracker (the leak sentinel) to the owner notices file and, when a wake-watch covers it, to the
+/// wake feed of the most recently active main session. The caller rate-limits.
+pub(crate) fn notify_coordinator(signal: &str, text: &str) {
+    let Some(env) = Env::current() else { return };
+    let r =
+        sinks::Reminder { id: format!("{signal}-{}", env.now_ms), ts: env.now_ms, signal: signal.to_string(), agent: String::new(), text: text.to_string() };
+    use sinks::Sink;
+    crate::discard::harmless(sinks::OwnerNotices.deliver(&env, "", &r)); // keep: the wake feed below is the second route
+    let st = load_state(&env);
+    let main = st.agents.values().filter(|m| m.kind == kind_name("main")).max_by_key(|m| m.last_output_ms).map(|m| m.id.clone());
+    if let Some(id) = main
+        && sinks::wake_armed(&env, &id)
+    {
+        crate::discard::harmless(sinks::WakeFeed.deliver(&env, &id, &r)); // keep: the owner notice already landed
+    }
+}
 
 pub(crate) fn lim(k: &str) -> u64 {
     defaults::raw("agent_tracker.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+/// When the agent started: the creation time of its transcript (the tracker's `first_seen` is only the first tick that saw it, which
+/// is later for an agent that ran before the engine looked), else `first_seen`.
+pub(crate) fn started_ms(a: &Agent) -> u64 {
+    let born = std::fs::metadata(&a.path)
+        .ok()
+        .and_then(|m| m.created().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
+    match (born, a.first_seen) {
+        (0, f) => f,
+        (b, 0) => b,
+        (b, f) => b.min(f),
+    }
 }
 pub(crate) fn weight(k: &str) -> u64 {
     defaults::raw("agent_tracker.weights").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
@@ -61,6 +105,10 @@ pub(crate) fn state_name(k: &str) -> &'static str {
 }
 pub(crate) fn chan(k: &str) -> &'static str {
     defaults::raw("agent_tracker.channels").str_field(k)
+}
+/// A subagent or an in-process teammate: an agent a session launched, which finishes ("done") rather than waits.
+pub(crate) fn is_child(a: &Agent) -> bool {
+    a.kind == kind_name("subagent") || a.kind == kind_name("teammate")
 }
 /// `Math.min`-style cap of a text to `n` characters.
 pub(crate) fn cap(s: &str, n: u64) -> String {
@@ -147,6 +195,12 @@ pub struct Pending {
     pub label: String,
     /// `commit`, `test` or empty.
     pub class: String,
+    /// A background shell command: its result names the task whose end the session is told of.
+    #[serde(default)]
+    pub bg: bool,
+    /// A push command: a successful result counts a push (alongside `class`, which a `commit && push` line keeps as `commit`).
+    #[serde(default)]
+    pub push: bool,
 }
 
 /// A raised signal on one agent.
@@ -170,6 +224,9 @@ pub struct Flag {
     pub base_tokens: u64,
     /// The outcome was already recorded as not recovered.
     pub timed_out: bool,
+    /// The session key the delivered row names (the parent that got it).
+    #[serde(default)]
+    pub delivered_to: String,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -190,7 +247,7 @@ pub struct Ws {
 pub struct Agent {
     /// The agent id (a session id, a subagent id, a heartbeat id).
     pub id: String,
-    /// `main`, `subagent`, `workspace` or `heartbeat`.
+    /// `main`, `subagent`, `teammate`, `codex`, `workspace` or `heartbeat`.
     pub kind: String,
     /// The session that launched it (a subagent), or its own session id.
     pub parent: String,
@@ -206,6 +263,21 @@ pub struct Agent {
     pub offset: u64,
     /// Its totals count from part way into the transcript.
     pub partial: bool,
+    /// This tick consumed a complete, valid transcript through its current end.
+    #[serde(default)]
+    pub transcript_complete: bool,
+    /// Proven coverage from byte zero (older cached offsets alone cannot prove it).
+    #[serde(default)]
+    pub transcript_from_start: bool,
+    /// Work runs in a background Codex job; wrapper tool counts do not measure it.
+    #[serde(default)]
+    pub codex_rescue: bool,
+    /// Rescue launches awaiting their host result.
+    #[serde(default)]
+    pub rescue_calls: std::collections::BTreeSet<String>,
+    /// Children whose launch or returned Codex job identified them as rescue wrappers.
+    #[serde(default)]
+    pub rescue_children: std::collections::BTreeSet<String>,
     /// First tick that saw it.
     pub first_seen: u64,
     /// Last tick that saw it.
@@ -226,8 +298,23 @@ pub struct Agent {
     pub edits: u64,
     /// Commits.
     pub commits: u64,
+    /// Successful pushes.
+    #[serde(default)]
+    pub pushes: u64,
+    /// Successful merges and deploys (`gh pr merge`, a deploy command): the work that reaches users, counted as outcomes.
+    #[serde(default)]
+    pub shipped: u64,
+    /// When the last commit, push, merge or deploy of the agent succeeded.
+    #[serde(default)]
+    pub last_ship_ms: u64,
+    /// Tool results that carried an anti-hall guard block (the cost report's "guard fires").
+    #[serde(default)]
+    pub guard_fires: u64,
     /// Test runs that passed.
     pub tests_pass: u64,
+    /// Builds and compile checks that finished.
+    #[serde(default)]
+    pub builds_ok: u64,
     /// Plan steps completed.
     pub steps_done: u64,
     /// Progress units (commits, steps, passing tests, new files, weighted).
@@ -240,6 +327,40 @@ pub struct Agent {
     pub host: String,
     /// The host reports it exited.
     pub gone: bool,
+    /// No live process and nothing left to come back to (its project directory or transcript is gone, or it has been silent past
+    /// `limits.dead_idle_ms` with no live parent): state `dead`, out of the live list. Decided afresh each tick; nothing is deleted.
+    #[serde(default)]
+    pub dead: bool,
+    /// Its parent was told once that it died.
+    #[serde(default)]
+    pub dead_noticed: bool,
+    /// The team a teammate belongs to (its meta file).
+    #[serde(default)]
+    pub team: String,
+    /// The host's meta file records the agent as finished.
+    #[serde(default)]
+    pub finished: bool,
+    /// A Codex rollout as last read: (mtime, size), so an unchanged file is not read again.
+    #[serde(default)]
+    pub codex_stamp: (u64, u64),
+    /// A Codex rollout's last turn has ended (a terminal record is the last mark in its tail).
+    #[serde(default)]
+    pub codex_terminal: bool,
+    /// A Codex rollout is a one-shot run (its originator is one of `exec_originators`).
+    #[serde(default)]
+    pub codex_exec: bool,
+    /// Its transcript start was checked and is not a headless run (checked once).
+    #[serde(default)]
+    pub interactive: bool,
+    /// The pid of the live process the session registry joined to this agent (0 = none).
+    #[serde(default)]
+    pub pid: u32,
+    /// A nudge about one of its children is open: its turns are kept (`turns`).
+    #[serde(default)]
+    pub watch: bool,
+    /// While `watch`: its newest turns after the nudge, (time, kind, text) - a tool call as `<tool>\t<value>...`, or a reply's text.
+    #[serde(default)]
+    pub turns: Vec<(u64, String, String)>,
     /// Unanswered tool calls by id.
     pub pending: BTreeMap<String, Pending>,
     /// Message ids already counted (the transcript repeats a message's usage on every line).
@@ -252,6 +373,12 @@ pub struct Agent {
     pub files: Vec<String>,
     /// The declared step.
     pub step: String,
+    /// The task whose subject is the declared step (empty when the step came from elsewhere).
+    #[serde(default)]
+    pub step_task: String,
+    /// Task id -> subject, from the task-list creates and updates this agent made (names the step of a status-only update).
+    #[serde(default)]
+    pub task_names: std::collections::BTreeMap<String, String>,
     /// Edits and commands since the step was declared.
     pub step_events: u64,
     /// Words of the recent work.
@@ -264,6 +391,15 @@ pub struct Agent {
     pub armed_until: u64,
     /// The last time a wake path was armed (0 = never in the window).
     pub armed_at: u64,
+    /// A task is open (a declared step not yet completed): set when a step is declared, cleared when the task list or an update completes it.
+    #[serde(default)]
+    pub open: bool,
+    /// Background shell tasks it started and has not seen end: task id, when it started.
+    #[serde(default)]
+    pub bg_ids: BTreeMap<String, u64>,
+    /// Background shell tasks that ended and are not yet reported: task id, when it ended.
+    #[serde(default)]
+    pub exited: Vec<(String, u64)>,
     /// DevSwarm facts, when it is a workspace.
     pub ws: Option<Ws>,
     /// Heartbeat file facts.
@@ -276,6 +412,9 @@ pub struct Agent {
     pub samples: Vec<Sample>,
     /// When the last series record was written.
     pub last_series: u64,
+    /// The waste sensor's last evaluation of this agent (score, judge verdict, action).
+    #[serde(default)]
+    pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
     /// When each signal was last reminded.
@@ -303,6 +442,9 @@ pub struct Totals {
     pub unrecovered: u64,
     /// Tokens (input plus output) flagged agents spent.
     pub burned: u64,
+    /// Lock-holder stalls the watchdog alerted on.
+    #[serde(default)]
+    pub lock_stalls: u64,
 }
 
 /// The tracker's persisted state; only a cache, a damaged file is discarded.
@@ -320,6 +462,33 @@ pub struct State {
     pub cli_ok: Option<bool>,
     /// When the CLI source was last probed.
     pub cli_checked: u64,
+    /// When the host's session listing was last taken, and the main and workspace agents it named.
+    #[serde(default)]
+    pub cli_listed: u64,
+    /// The ids of the main and workspace agents the last listing was taken for.
+    #[serde(default)]
+    pub cli_seen: Vec<String>,
+    /// Headless one-shot transcripts seen in the active window (not agents: never tracked or listed).
+    #[serde(default)]
+    pub headless: std::collections::BTreeSet<String>,
+    /// The lock-holder watchdog's memory per lock file.
+    #[serde(default)]
+    pub locks: BTreeMap<String, lockwatch::LockWatch>,
+    /// When the watchdog last ran.
+    #[serde(default)]
+    pub lock_checked: u64,
+    /// The open nudges, by child id.
+    #[serde(default)]
+    pub nudges: BTreeMap<String, nudge::Nudge>,
+    /// The closed nudges, oldest first (bounded by agent_nudge.limits.log_max).
+    #[serde(default)]
+    pub nudge_log: Vec<nudge::Nudge>,
+    /// Rows of the nudge answers file already read.
+    #[serde(default)]
+    pub nudge_answer_lines: u64,
+    /// Children the health judge called busy: no nudge until the time given.
+    #[serde(default)]
+    pub nudge_hold: BTreeMap<String, u64>,
 }
 
 impl State {

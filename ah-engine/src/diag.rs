@@ -99,11 +99,11 @@ pub fn run(args: &[String]) -> i32 {
         return 64;
     }
     let home = std::env::temp_dir().join(format!("ah-diag-heap-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&home);
+    crate::discard::harmless(std::fs::create_dir_all(&home)); // keep: scratch HOME setup; replay below reports any resulting failure
     let env = RequestEnv::from_pairs([("HOME", home.to_string_lossy().into_owned()), ("ANTIHALL_INGEST_DRY_RUN", "1".to_string())]);
     println!("replaying {} payload(s) through {} checks (scratch HOME {})", payloads.len(), checks::registry().len(), home.display());
     print!("{}", render(&heap(&payloads, &env)));
-    let _ = std::fs::remove_dir_all(&home); // our own scratch dir, created above
+    crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: our own scratch dir, created above
     0
 }
 

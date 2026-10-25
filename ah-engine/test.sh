@@ -18,6 +18,8 @@ if cargo nextest --version >/dev/null 2>&1; then
   [ "${CI:-}" = true ] && profile=ci
   # AH_TEST_PROFILE names another profile (the nightly run: `nightly`, the whole suite)
   profile="${AH_TEST_PROFILE:-$profile}"
+  # Which profile when (docs/DEVELOPMENT.md, "Test packs"): lane / policy / dev are run with `cargo nextest` directly (scripts/lane-tests.sh);
+  # this script is the full gate: release and nightly (everything), ci, soak, record.
   # The wall-clock budget tests (a p95 in microseconds) measure the machine when the suite's own Node sweeps load every
   # core, so they run after the suite, one at a time, and nothing of the suite runs beside them. The memory soak is one of
   # them: its daemon's watchdog (daemon.stuck_ms) restarts it when a single request takes 8 s, which a 4-core runner shared
@@ -38,6 +40,17 @@ else
   echo "note: cargo-nextest not found, falling back to cargo test (install: cargo install --locked cargo-nextest, or taiki-e/install-action in CI)" >&2
   cargo test --release "$@"
   rc=$?
+fi
+# The reload-memory guard (tests/mem_reload.rs) has a release-build heap cap and is ignored in debug builds: run it here, in
+# release, with --include-ignored, print its figure, and fail the gate when it did not run, so it cannot drop out silently.
+if [ "$rc" -eq 0 ]; then
+  mem_out="$(cargo test --release --test mem_reload -- --include-ignored --nocapture 2>&1)"
+  mem_rc=$?
+  printf '%s\n' "$mem_out" | grep -E 'RELOAD x|test result' >&2
+  if [ "$mem_rc" -ne 0 ] || ! printf '%s\n' "$mem_out" | grep -q '1 passed'; then
+    echo "FAIL: tests/mem_reload.rs did not pass in release" >&2
+    rc=1
+  fi
 fi
 if [ "$rc" -eq 0 ]; then
   sh tests/wrapper.sh && sh tests/bootstrap.sh

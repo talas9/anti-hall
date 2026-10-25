@@ -1,0 +1,24 @@
+{
+  "answer": {
+    "attempted": true,
+    "backfilled": 4,
+    "detail": "ownerKey migrate: scanned 5, backfilled 4, re-homed 0",
+    "errors": 0,
+    "rehomed": 0,
+    "scanned": 5
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/archived/": "755",
+    ".anti-hall/devswarm/archived/ok-5.json": "644 {\"id\":\"ok-5\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s5\",\"ownerKey\":\"{REPOKEY}\",\"repoKey\":\"{REPOKEY}\"}",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/notes.json": "644 {\"hello\":\"world\"}",
+    ".anti-hall/devswarm/workspaces/ok-1.json": "644 {\"id\":\"ok-1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"s1\",\"ownerKey\":\"{REPOKEY}\",\"repoKey\":\"{REPOKEY}\"}",
+    ".anti-hall/devswarm/workspaces/ok-2.json": "644 {\"id\":\"ok-2\",\"worktreePath\":\"/nonexistent/ok-2\",\"sessionId\":\"s2\",\"repoKey\":\"kept-abc123\",\"ownerKey\":\"kept-abc123\"}",
+    ".anti-hall/devswarm/workspaces/ok-3.json": "644 {\"id\":\"ok-3\",\"worktreePath\":\"/nonexistent/ok-3\",\"ownerKey\":\"b826cbf7\"}",
+    ".anti-hall/devswarm/workspaces/ok-4.json": "644 {\"id\":\"ok-4\",\"worktreePath\":\"/nonexistent/ok-4\",\"ownerKey\":\"already-111111\"}",
+    ".anti-hall/update-sweep-state.json": "644 {\"ownerKeyMigrate\":{\"completedVersion\":\"0.1.0\",\"completedTs\":0,\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null}}"
+  },
+  "stores": {}
+}

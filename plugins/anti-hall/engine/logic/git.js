@@ -5,8 +5,9 @@
 // hooks/lib/git-alias-scan.js; every table, pattern, limit and text is in git.toml / limits.toml (git.*), the engine supplies
 // only the file system, `git` process, settings and Jev primitives (`ah.*`).
 //
-// A script failure (an exception, a stack overflow on a pathological command, the time limit) defers to the Node hook.
-// Anything that cannot be reproduced exactly sets S.overflow and the whole verdict defers (never weaker than Node).
+// A script failure (an exception, a stack overflow on a pathological command, the time limit) is the engine's fail-open/fail-closed policy, never a hand-back.
+// What the Node hook read from its own process (its working directory) is answered by lib/78-hook-proc.js; a file over one read is
+// scanned at its head and tail; a Jev consult gets the time the request has left.
 'use strict';
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -103,12 +104,7 @@ function gitSettingOn(key) { return ah.settings.bool(key); }
 // gm(opts) -> the block text in the shared layout (hooks/lib/block-message.js, guard git-guard).
 function gitClean(s) { return String(s).split(/\s+/).filter(Boolean).join(' '); }
 function gm(o) {
-  const lines = [ah.cfg('git.block_emoji') + ah.cfg('git.block_mark') + gitClean(o.what)];
-  if (o.why) lines.push(ah.cfg('git.label_why') + gitClean(o.why));
-  if (o.instead) lines.push(ah.cfg('git.label_instead') + gitClean(o.instead));
-  if (o.allowed) lines.push(ah.cfg('git.label_allowed') + gitClean(o.allowed));
-  if (o.override) lines.push(ah.cfg('git.label_override') + gitClean(o.override));
-  return lines.join('\n');
+  return text.message('block', ah.cfg('git.guard_name'), o);
 }
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
@@ -116,8 +112,7 @@ function gmKey(key, args) {
   return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
 }
 function skipCmd(k) {
-  const script = ah.cfg('git.skip_script');
-  return text.render(ah.cfg('git.skip_command'), { script: (S.pluginRoot + '/' + script).split("'").join("'\\''"), key: k });
+  return text.render(ah.cfg('git.skip_command'), { key: k });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -125,7 +120,16 @@ function skipCmd(k) {
 
 const CMDSUBST_SENTINEL = '\x00CMDSUBST\x00';
 
+// tokenize and splitSegments are pure in their argument and the scan asks for the same segments again and again (aliases, backstops,
+// runners, shell definitions): the answers are kept for the call (decide clears them) and a copy is handed out, because a caller
+// replaces elements of what it gets.
+var TOK_MEMO = new Map(), SEG_MEMO = new Map();
 function tokenize(segment) {
+  let r = TOK_MEMO.get(segment);
+  if (r === undefined) { r = tokenizeUncached(segment); TOK_MEMO.set(segment, r); }
+  return r.slice();
+}
+function tokenizeUncached(segment) {
   const tokens = [];
   let cur = '', curHasUnquoted = false, started = false, tokStart = -1, i = 0;
   const n = segment.length;
@@ -185,12 +189,28 @@ function isBraceGroupWord(cur, c, c2) {
 }
 
 function splitSegments(cmd) {
+  let r = SEG_MEMO.get(cmd);
+  if (r === undefined) { r = splitSegmentsUncached(cmd); SEG_MEMO.set(cmd, r); }
+  return r.slice();
+}
+function splitSegmentsUncached(cmd) {
   const segments = [];
   let cur = '', i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
   function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
   function flushWithSubst() { cur += ' ' + CMDSUBST_SENTINEL + ' '; flush(); }
+  // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
+  // (a shell reading it is scanned by stdinScriptVerdict, a git message by the heredoc-body scans); same walk as the command check
+  let heredoc = null;
   while (i < n) {
+    if (heredoc && i >= heredoc.lineEnd) {
+      flush();
+      i = Math.max(i, heredoc.end);
+      heredoc = null;
+      inSingle = false;
+      inDouble = false;
+      continue;
+    }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
     if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
@@ -208,6 +228,17 @@ function splitSegments(cmd) {
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
     if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+    // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
+    // is two segments); a second `<<` on the same line is left as text, so its body is still scanned
+    if (c === '<' && c2 === '<' && !heredoc) {
+      const parsed = shellScan.parseHeredocAt(cmd, i);
+      if (parsed) {
+        cur += cmd.slice(i, parsed.openerEnd);
+        i = parsed.openerEnd;
+        if (parsed.lineEnd !== undefined) heredoc = parsed;
+        continue;
+      }
+    }
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
     if (c === '|') {
@@ -554,22 +585,24 @@ function consultJev(text) {
   if (S.jevSpentMs + budget + ah.cfg('git.jev_backstop_ms') > ah.cfg('git.jev_total_budget_ms')) return false;
   // inside a request whose client stops waiting before this consult could finish: the whole verdict goes to Node, whose hook
   // consults Jev with its full budget
+  // inside a request whose client stops waiting before the full consult could finish: the consult gets what is left (an 'on'
+  // answer that does not arrive adds no block, as a timed-out Node consult adds none); too little left to ask at all is logged
   const left = ah.jev.deadlineLeftMs();
+  let wait = budget;
   if (left !== null && left < budget + ah.cfg('git.jev_backstop_ms')) {
-    // only a mode that can change the verdict ('on') needs Node's full-budget consult; a shadow ask never changes it
-    if (ah.jev.mode(ah.cfg('git.jev_id')) === 'on') S.overflow = true;
-    return false;
+    wait = left - ah.cfg('git.jev_backstop_ms');
+    if (wait <= 0) { if (ah.jev.mode(ah.cfg('git.jev_id')) === 'on') ah.log('git_jev_no_time', String(left)); return false; }
   }
-  const n = ah.cfg('git.jev_state_chars');
-  // a window that would cut a surrogate pair is Node's lone surrogate: the whole verdict is deferred
-  if (key.length > n && /[\ud800-\udbff]/.test(key.charAt(n - 1)) && /[\udc00-\udfff]/.test(key.charAt(n))) { S.overflow = true; return false; }
+  let n = ah.cfg('git.jev_state_chars');
+  // the window never ends in a lone high surrogate (Node's would; the question's state is one unit shorter, its answer unchanged)
+  if (key.length > n && /[\ud800-\udbff]/.test(key.charAt(n - 1)) && /[\udc00-\udfff]/.test(key.charAt(n))) n--;
   const started = Date.now();
   let verdict = false;
   try {
     verdict = ah.jev.ask({
       id: ah.cfg('git.jev_id'),
       question: { type: 'noul', instructions: ah.cfg('git.jev_instructions'), criteria: [['true', ah.cfg('git.jev_true')], ['false', ah.cfg('git.jev_false')]] },
-      state: key.slice(0, n), trust: 'add_block', baseline: false, budgetMs: budget,
+      state: key.slice(0, n), trust: 'add_block', baseline: false, budgetMs: wait,
       sessionId: S.session === null ? undefined : S.session, projectFrom: S.procCwd, sync: true,
     }) === true;
   } catch (e) { verdict = false; }
@@ -584,8 +617,13 @@ function readFileText(path) {
   const cap = ah.cfgNum('script.read_max_bytes');
   const size = ah.fs.size(path);
   if (size === null) return null;
-  if (size > cap) { S.overflow = true; return null; } // a file this script cannot read whole
-  return ah.fs.readText(path, cap);
+  if (size <= cap) return ah.fs.readText(path, cap);
+  // a file over one read: its head (cut at the last line end) and its tail (from a whole line) are scanned; the middle is not
+  ah.log('git_file_over_read_cap', path);
+  const head = ah.fs.readText(path, cap), tail = ah.fs.readTail(path, cap);
+  if (head === null) return tail;
+  const cut = head.lastIndexOf('\n');
+  return (cut > 0 ? head.slice(0, cut) : head) + '\n' + (tail === null ? '' : tail);
 }
 
 function ghSelfCreditMessage(args) {
@@ -1903,7 +1941,11 @@ function expandAlias(args, sub, rest, dir, env) {
 }
 
 function annotate(msg, note) {
-  return String(msg).replace(new RegExp('^(\\S+' + gitEsc(ah.cfg('git.block_mark')) + ')'), '$1' + note + ' ');
+  const guard = ah.cfg('git.guard_name');
+  const prefix = ah.cfg('guardkit.icons').block + ah.cfg('guardkit.msg_head') + (ah.cfg('guardkit.plain_names')[guard] || guard) + ': ';
+  if (!String(msg).startsWith(prefix)) return String(msg);
+  const lines = String(msg).slice(prefix.length).split('\n');
+  return text.message('block', guard, { what: lines[0], instead: (lines[1] || '').replace(/^Do instead: /, ''), extra: [note] });
 }
 
 function aliasBodyCommand(v) {
@@ -2451,6 +2493,51 @@ function backstopEnv(cmd) {
   return env;
 }
 
+// The command with the BODY of every terminated heredoc removed, unless a shell reads it (`bash <<EOF`, `cat <<EOF | sh`, `eval`, ...):
+// the body of any other consumer is text, not a command of this chain, so the line-by-line backstop must not read it as one. A shell
+// body is scanned by stdinScriptVerdict; an unterminated heredoc keeps its tail (stricter, as in the command check).
+function withoutPlainHeredocBodies(cmd) {
+  if (cmd.indexOf('<<') === -1) return cmd;
+  let out = '', last = 0, i = 0, inSingle = false, inDouble = false;
+  const n = cmd.length;
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { i += 2; continue; }
+      if (c === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = true; i++; continue; }
+    if (c === '<' && c2 === '<') {
+      const parsed = shellScan.parseHeredocAt(cmd, i);
+      if (parsed) {
+        if (parsed.terminated && parsed.lineEnd !== undefined && !heredocOpenerLineHasShell(cmd, i, parsed.lineEnd)) {
+          out += cmd.slice(last, parsed.lineEnd + 1);
+          last = parsed.end;
+        }
+        i = parsed.end;
+        if (!parsed.terminated) break;
+        continue;
+      }
+    }
+    i++;
+  }
+  return last === 0 ? cmd : out + cmd.slice(last);
+}
+
+function heredocOpenerLineHasShell(cmd, openerAt, lineEnd) {
+  const line = cmd.slice(cmd.lastIndexOf('\n', openerAt - 1) + 1, lineEnd);
+  for (const seg of splitSegments(line)) {
+    const ev = effectiveVerb(tokenize(seg));
+    if (ev && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) return true;
+  }
+  return false;
+}
+
 function gitBackstopLines(cmd, d, heredocBodies, cwd) {
   const benv = backstopEnv(cmd);
   const joined = cmd.replace(/\\\r?\n/g, ' ');
@@ -2475,6 +2562,7 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
 
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
   const benv = backstopEnv(cmd);
+  const scanned = withoutPlainHeredocBodies(cmd);
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
   if (d < 3) {
     for (const payload of pipedEchoShellPayloads(cmd)) {
@@ -2482,7 +2570,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       if (hit) return hit;
     }
   }
-  for (const raw of backstopPieces(cmd)) {
+  for (const raw of backstopPieces(scanned)) {
     const trimmed = raw.replace(/^\s+/, '');
     const variants = [trimmed];
     if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
@@ -2510,13 +2598,13 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
       }
     }
   }
-  return gitBackstopLines(cmd, d, heredocBodies, cwd);
+  return gitBackstopLines(scanned, d, heredocBodies, cwd);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // entry
 
-// a stack overflow, memory or time-limit exception must reach the engine (it then defers), never be swallowed by a fail-open catch
+// a stack overflow, memory or time-limit exception must reach the engine (its policy applies), never be swallowed by a fail-open catch
 function gitFatal(e) {
   return e instanceof RangeError || (e && /stack|memory|interrupt/i.test(String(e.message || e)));
 }
@@ -2529,6 +2617,9 @@ function looksLikeFileWriteShape(cmd) {
 }
 
 function decide(p, opts, event) {
+  try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
+}
+function decideScan(p, opts, event) {
   if (event !== 'PreToolUse' || !p || p.tool_name !== 'Bash') return null;
   const ti = p.tool_input;
   if (!ti || typeof ti !== 'object' || typeof ti.command !== 'string') return null;
@@ -2537,9 +2628,10 @@ function decide(p, opts, event) {
   if (ah.settings.skipped(ah.cfg('git.guard_name'))) return 'allow';
   const cmd = ti.command;
   if (cmd === '') return 'allow';
-  const cwdIn = typeof p.cwd === 'string' ? p.cwd : '';
-  // without a working directory the daemon cannot know the hook process's own: Node decides
-  if (cwdIn === '') return 'defer';
+  // `payload.cwd || process.cwd()`: without one, the hook process's own directory (lib/78-hook-proc.js)
+  // a relative payload cwd resolves against the stand-in for the hook process's directory (counted)
+  if (typeof p.cwd === 'string' && p.cwd !== '' && p.cwd.charAt(0) !== '/') ah.unable('git:relative_cwd'); // resolved against the stand-in directory (hookProc.cwd)
+  const cwdIn = hookProc.cwd(p);
   let home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
   const session = p.session_id ? String(p.session_id) : null;
@@ -2549,7 +2641,6 @@ function decide(p, opts, event) {
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
   const hit = scanCommand(cmd, 0, cwdIn);
-  if (S.overflow) return 'defer';
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
   if (S.handoverSkipped > 0) {
     const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });

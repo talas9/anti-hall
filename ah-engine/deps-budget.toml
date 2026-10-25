@@ -20,9 +20,11 @@
 # `cargo tree` (engine excluded): macOS arm64 60 (Intel 58, no jemalloc), Linux x86_64 and arm64 67. The Linux-only crates are
 # notify, notify-types, inotify, inotify-sys, mio, walkdir, same-file (inotify watching); base_crates is the macOS arm64 count
 # plus one and the headroom is the Linux-only set, so every host stays inside [base - 1, base + headroom].
-base_crates = 61
+# 2026-10-15 (#195, config overlay): arc-swap =1.9.1 adds 2 measured crates (arc-swap, its rustversion proc-macro): macOS arm64
+# 60 -> 62, so base_crates 61 -> 63 and max_crates 67 -> 69. Reason: the A/B in Cargo.toml (a contended read 84 ns against 733 ns).
+base_crates = 63
 # Crates approved but not yet in the tree; the headroom covers their own entries only.
 approved = []
 approved_headroom = 6
 # The limit the test enforces: base_crates + approved_headroom.
-max_crates = 67
+max_crates = 69

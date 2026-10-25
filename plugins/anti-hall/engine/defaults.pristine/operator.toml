@@ -4,10 +4,6 @@
 # The message texts are the Node tools' own, word for word, because the parity tests compare the commands' output with the
 # scripts' byte for byte. Generated once during the port; edit this file directly from now on.
 
-[ops.defer_exit]
-doc = "Exit code of an operator command that leaves the work to the Node tool because it cannot reproduce the Node behaviour exactly (nothing is written)."
-value = 75
-
 [ops.list_sep]
 doc = "Separator of the values listed in a settings message."
 value = ", "
@@ -145,8 +141,12 @@ doc = "Output of `settings reset`. Placeholders: name, value."
 value = "{name} reset -> {value}"
 
 [ops.lock_busy]
-doc = "Said when another process holds the settings lock past the wait budget; the Node tool names the holder, so the command leaves the change to it."
-value = "settings.json is being written by another process; run the Node settings tool to see which and retry"
+doc = "Said when another process holds the settings lock past the wait budget. Placeholders: pid (the holder's process id, or the lock_pid_unknown word)."
+value = "settings.json is being written by another process (pid {pid}); retry"
+
+[ops.lock_pid_unknown]
+doc = "Stands for the holder's pid in lock_busy when the lock record names none."
+value = "unknown"
 
 [ops.set_err_object]
 doc = "Why a file-only setting cannot be set."
@@ -310,11 +310,11 @@ value = "Cost: {cost}."
 
 [ops.judge_cost_api]
 doc = "What the API judge costs."
-value = "about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on tools/eval/inference-bench.js (84 synthetic cases)"
+value = "about $0.0001–0.001 and 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on the inference benchmark (84 synthetic cases)"
 
 [ops.judge_cost_cli]
 doc = "What the CLI judge costs."
-value = "no API bill (your Claude login's usage) and about 5–6 s per turn end, measured; precision 0.78–0.81 and recall 1.0 measured on tools/eval/inference-bench.js (84 synthetic cases)"
+value = "no API bill (your Claude login's usage) and about 5–6 s per turn end, measured; precision 0.78–0.81 and recall 1.0 measured on the inference benchmark (84 synthetic cases)"
 
 [ops.kind_command]
 doc = "The name of the command allowlist kind."
@@ -413,8 +413,16 @@ doc = "The allowlist file state."
 value = "not valid JSON"
 
 [ops.trust_unsure]
-doc = "Said when the repository layout cannot be classified exactly; the Node tool decides."
-value = "the repository layout needs the Node settings tool to classify; nothing was recorded"
+doc = "Said when the repository holding the target has a .git file whose line breaks cannot be classified exactly, or the repository cannot be located exactly; nothing is recorded. Placeholders: target."
+value = "cannot classify the repository layout at {target} exactly; nothing was recorded. Run the command from the repository's top-level directory"
+
+[ops.trust_unparsable]
+doc = "Said when the allow file holds JSON the engine's parser does not reproduce (a lone surrogate escape, or nesting past the limit); nothing is recorded. Placeholders: rel, top."
+value = "{rel} in {top} uses JSON the engine cannot read exactly (a lone surrogate escape or very deep nesting); nothing was recorded"
+
+[ops.trust_exotic_breaks]
+doc = "Line-break characters that make a .git file's gitdir line ambiguous between the engine and JavaScript; a repository whose .git file holds one is refused. List of strings."
+value = ["\r", "\u2028", "\u2029"]
 
 [ops.trust_not_git]
 doc = "No repository. Placeholder: target."
@@ -796,10 +804,6 @@ value = "{k} ({len} chars -> cap {cap}{marked})"
 doc = "Added when a truncation marker was written into the value."
 value = ", marker written"
 
-[defect.deferred]
-doc = "Said when the input needs the Node tool to answer exactly; nothing was written."
-value = "this input needs the Node defect tool to answer exactly; nothing was written"
-
 [defect.true_word]
 doc = "How a bare flag reads as text."
 value = "true"
@@ -1148,135 +1152,6 @@ value = "\\x1b\\[[0-9;]*[a-zA-Z]"
 doc = "A control character."
 value = "[\\x00-\\x1f\\x7f]"
 
-[ops.verb_settings]
-doc = "The shadow name of the settings command."
-value = "settings"
-
-[ops.verb_defect]
-doc = "The shadow name of the defect command."
-value = "defect"
-
-[ops.verb_statusline]
-doc = "The shadow name of the status line."
-value = "statusline"
-
-[ops.script_settings]
-doc = "The Node settings script, relative to the plugin root."
-value = "scripts/settings.js"
-
-[ops.script_defect]
-doc = "The Node defect script, relative to the plugin root."
-value = "scripts/defect.js"
-
-[ops.script_statusline]
-doc = "The Node status line dispatcher, relative to the plugin root."
-value = "statusline/statusline.js"
-
-[ops.shadow_rate_statusline]
-doc = "How many runs in a thousand of the statusline command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
-value = 50
-env = "AH_ENGINE_SHADOW_RATE_STATUSLINE"
-min = 0
-max = 1000
-
-[ops.shadow_rate_settings]
-doc = "How many runs in a thousand of the settings command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
-value = 1000
-env = "AH_ENGINE_SHADOW_RATE_SETTINGS"
-min = 0
-max = 1000
-
-[ops.shadow_rate_defect]
-doc = "How many runs in a thousand of the defect command are also run by the Node version in the background and compared (0 turns the shadow off). The engine result is always the real one."
-value = 1000
-env = "AH_ENGINE_SHADOW_RATE_DEFECT"
-min = 0
-max = 1000
-
-[ops.shadow_dir]
-doc = "The shadow scratch directory, inside the engine state directory."
-value = "shadow"
-
-[ops.shadow_copy]
-doc = "The entries of ~/.anti-hall the Node shadow gets a private copy of (everything it may change); compared after both runs."
-value = ["settings.json", "jev.json", "defects", "update-sweep-state.json", "trusted-command-allow.json", "trusted-edit-allow.json", "phase-state.json"]
-
-[ops.shadow_skip]
-doc = "The entries of ~/.anti-hall the Node shadow never sees."
-value = ["context-pct", "ah-engine", "ah-node-shadow", "shadow"]
-
-[ops.shadow_link_home]
-doc = "The home entries the Node shadow reads through links."
-value = [".claude", ".claude.json"]
-
-[ops.shadow_lock_ext]
-doc = "Lock files are never linked into the shadow home."
-value = ".lock"
-
-[ops.shadow_ignore_ext]
-doc = "File name endings left out of the state comparison."
-value = [".lock", ".tmp"]
-
-[ops.shadow_copy_bytes]
-doc = "Most bytes copied into one shadow home."
-value = 16777216
-
-[ops.shadow_child_env]
-doc = "Set in the shadow child so it never starts a shadow of its own."
-value = "AH_ENGINE_SHADOW_CHILD"
-
-[ops.shadow_dry_env]
-doc = "The dry-run switch every Node script honours."
-value = "ANTIHALL_INGEST_DRY_RUN"
-
-[ops.shadow_command]
-doc = "The internal command that runs one comparison."
-value = "shadow-compare"
-
-[ops.shadow_event]
-doc = "The command name of the telemetry event a comparison leaves."
-value = "shadow"
-
-[ops.shadow_node]
-doc = "The Node program the shadow runs when AH_ENGINE_NODE is not set."
-value = "node"
-
-[ops.shadow_timeout_ms]
-doc = "Longest a Node shadow run may take."
-value = 20000
-
-[ops.shadow_keep]
-doc = "How many mismatching comparisons keep their files for review."
-value = 20
-
-[ops.shadow_home_word]
-doc = "Replaces the real and the scratch home in compared text."
-value = "HOME"
-
-[ops.shadow_job_file]
-doc = "The comparison job file."
-value = "job.json"
-
-[ops.shadow_engine_out]
-doc = "The engine stdout of a sampled run."
-value = "engine.out"
-
-[ops.shadow_engine_err]
-doc = "The engine stderr of a sampled run."
-value = "engine.err"
-
-[ops.shadow_stdin_file]
-doc = "The stdin of a sampled run."
-value = "stdin.bin"
-
-[ops.shadow_report_file]
-doc = "The report left by a mismatching comparison."
-value = "mismatch.txt"
-
-[ops.shadow_masks]
-doc = "Patterns replaced before comparing (`regex => replacement`): clock values and animation frames, and the engine-first status line command (the launcher form) read as the Node installer's own `node \"<dispatcher>\"`."
-value = ["[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z => TS", "corrupt-[0-9]+ => corrupt-N", "[◐◓◑◒] => S", "\\.[0-9]+\\.[0-9a-f]{8}\\.tmp => .tmp", "\"ts\":[0-9]+ => \"ts\":N", "\"started\":[0-9]+ => \"started\":N", "[0-9]+[hms]( |\\x1b|$) => D$1", 'sh \\"[^"]*/ah-run\.sh\\" --stdin statusline -- \\"([^"]*)\\" => node \"$1\"']
-
 [statusline.poll_ms]
 doc = "How often a bounded child is checked, in milliseconds."
 value = 2
@@ -1290,6 +1165,19 @@ value = 200
 [statusline.stdin_watchdog_ms]
 doc = "Longest the status line waits for its input, in milliseconds."
 value = 3000
+
+[statusline.total_deadline_ms]
+doc = "Longest the whole status line run may take, input wait included, in milliseconds. Past it the first line already rendered is printed and the run ends, and every step's own limit (git, base command) is cut to what is left, so a loaded machine costs a late second line, never a status line the host has stopped waiting for. Set it just under the host's own wait."
+value = 3000
+env = "AH_ENGINE_STATUSLINE_DEADLINE_MS"
+min = 500
+max = 30000
+
+[statusline.cut_grace_ms]
+doc = "How long past the overall deadline the run waits for a step that is finishing, before it prints what it has."
+value = 100
+min = 0
+max = 5000
 
 [statusline.inner_timeout_ms]
 doc = "Longest a base command may run, in milliseconds."
@@ -1332,8 +1220,8 @@ doc = "The shell flag that takes the command."
 value = "-c"
 
 [statusline.dir]
-doc = "The status line directory of the plugin."
-value = "statusline"
+doc = "The status line renderer directory, relative to the plugin root. The renderers are Node and live in the Node backup tree (nodeback.node_dir), outside the published plugin."
+value = "../anti-hall-node/statusline"
 
 [statusline.rich_file]
 doc = "The rich renderer file."
@@ -1406,18 +1294,6 @@ value = ".gitmodules"
 [ops.judge_verbs]
 doc = "The verbs of `settings judge`."
 value = ["on", "off", "status"]
-
-[ops.shadow_per]
-doc = "The sampling denominator of the shadow rates."
-value = 1000
-
-[ops.shadow_digest_bytes]
-doc = "Bytes of the content digest in the shadow state comparison."
-value = 8
-
-[ops.shadow_report]
-doc = "The report a mismatching comparison leaves. Placeholders: want, got, e_out, n_out, e_err, n_err, e_state, n_state."
-value = "engine exit {want}, node exit {got}\n--- engine stdout\n{e_out}\n--- node stdout\n{n_out}\n--- engine stderr\n{e_err}\n--- node stderr\n{n_err}\n--- engine state\n{e_state}\n--- node state\n{n_state}\n"
 
 [statusline.tmp_env]
 doc = "The variables that name the temp directory, first match wins."
@@ -1758,3 +1634,68 @@ value = "\\+(\\d+)\\s+-(\\d+)"
 [statusline.worktree_re]
 doc = "A git directory of a linked worktree."
 value = "[/\\\\]\\.git[/\\\\]worktrees[/\\\\]"
+
+# ---- tunables: the engine's own keys, listed from the shipped defaults themselves (`ah-engine settings tunables`) ----------
+
+[ops.tunable_verb]
+doc = "The `settings` sub-verb that lists every key of the plugin's engine/defaults/*.toml (the keys the Node schema does not hold)."
+value = "tunables"
+
+[ops.tunable_file_suffix]
+doc = "Suffix of a defaults file name that is dropped to name the category of its keys."
+value = ".toml"
+
+[ops.tunable_title]
+doc = "Heading of the tunables listing."
+value = "Engine tunables"
+
+[ops.tunable_intro]
+doc = "Intro line of the tunables listing."
+value = "Every key of the plugin's engine/defaults/*.toml (the single source; category = the file). Change one by editing that file in the plugin, or through the environment variable in its Env column; the engine re-reads it on change. Node-schema settings are listed by `settings show`."
+
+[ops.tunable_headers]
+doc = "Column headers of the tunables table."
+value = ["Key", "Category", "Default", "Env", "Range", "What it does"]
+
+[ops.tunable_cat_headers]
+doc = "Column headers of the tunables category table."
+value = ["Category", "Keys"]
+
+[ops.tunable_more]
+doc = "Closing line of the category table. Placeholder: total."
+value = "{total} keys. `settings tunables <category|key prefix>` lists one group, `settings tunables --all` every key, `--json` the full data (descriptions in full)."
+
+[ops.tunable_unknown]
+doc = "Error when no engine key or category matches. Placeholder: name."
+value = "💡 anti-hall · settings: no engine key or category matches '{name}' (see `settings tunables`)"
+
+[ops.tunable_value_max]
+doc = "Longest default shown in a table cell, in characters (longer ones are cut; --json has them whole)."
+value = 60
+min = 10
+
+[ops.tunable_doc_max]
+doc = "Longest description shown in a table cell, in characters (the first sentence, cut at a word)."
+value = 120
+min = 20
+
+[ops.tunable_ellipsis]
+doc = "Appended to a cut cell."
+value = "…"
+
+[ops.tunable_sentence_end]
+doc = "The text that ends the first sentence of a description."
+value = ". "
+
+[ops.tunable_list]
+doc = "Cell for a list default. Placeholder: n."
+value = "[{n} items]"
+
+[ops.tunable_table]
+doc = "Cell for a table default. Placeholder: n."
+value = "[{n} keys]"
+
+[ops.tunable_json_depth]
+doc = "Deepest nesting read back when a default is rendered in `--json`."
+value = 64
+min = 8

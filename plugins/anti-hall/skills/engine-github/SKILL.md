@@ -11,21 +11,21 @@ Git, merge and release guards.
 
 | Verb | What it does | Roles |
 |---|---|---|
-| `ah-engine gh` | `<status\|segment\|poll> [--cwd <dir>] [--force]` GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file with no network, what is followed (the... | main, codex, workspace, subagent (owner args: poll) |
-| `ah-engine gh_poll` | `` The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos that are due inside the rate budget and... | main, codex |
+| `ah-engine gh` | `<status\|segment\|poll> [--cwd <dir>] [--force]` GitHub realtime (feature #20, independent of DevSwarm): `status` prints, from the state file... | main, codex, workspace, subagent (owner args: poll) |
+| `ah-engine gh_poll` | `` The scheduled GitHub realtime tick (the `gh_poll` job): notices pushes, polls the followed repos... | main, codex |
 
 ## Guards
 
-- `git`: Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self-credit in commits, handover commits, launcher-directory...
-- `merge-side-pick`: Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since (port of merge-side-pick.js)
-- `git-audit`: Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer (port of...
-- `merge-gate`: Opt-in false-done backstop: answers every Bash call natively, including the block of an auto-merge after an unresolved self-hedge and...
-- `gh-rt-advisory`: Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once each: CI went red or green, the pull...
+- `git`: Port of the git-guard hook: blocks force pushes, remote ref deletion, AI self-credit in commits,...
+- `merge-side-pick`: Advisory: a push after a conflict was resolved by taking one side wholesale, with no test run since
+- `git-audit`: Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI...
+- `merge-gate`: Opt-in false-done backstop: answers every Bash call natively, including the block of an...
+- `gh-rt-advisory`: Advisory (UserPromptSubmit, engine-only): tells a session about GitHub edges in its repo, once...
 
 ## Switches
 
 - `guards.gitAliasResolve` = true: Switch for git alias and shell definition resolution
-- `safety.gitGuard` = true: Master switch of the check: settings.json section and key, environment variable and plugin-option name
+- `safety.gitGuard` = true: Master switch of the check: settings.json section and key, environment variable and...
 - `guards.gitGuardHeredocData` = true: Switch for data-heredoc masking
 - `guards.gitReusedMessageCheck` = true: Switch for the reused-commit-message check
 - `guards.mergeGate` = false: Where the opt-in switch is read from (guards.mergeGate, default off)

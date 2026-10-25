@@ -5,9 +5,10 @@
 // against a fresh listing (a recycled pid must qualify again) and sends the forced signal to those that remain; every step is appended
 // to the audit log. The selection is decided HERE from the process table (ah.proc.list / ages / managed); the host only lists, probes,
 // waits and signals the pids this script names (ah.proc.signal refuses anything its own listing did not show, a forced signal before a
-// polite one, the engine itself and its parent, pids below 2). Nothing is written or signalled before the selection is complete, and a
-// case the host cannot decide the way Node would (a probe it cannot read, an ambiguous local time) leaves the state as it was and
-// defers. Mirrors hooks/session-end-mcp-reaper.js and companion/mcp-reaper.js. Keys and texts: mcp_reaper.toml, host_proc.toml.
+// polite one, the engine itself and its parent, pids below 2). Nothing is written or signalled before the selection is complete. Every
+// home is Node's os.homedir() (hookProc.adoptHome: HOME unset adopts the passwd home). What the host cannot read the way Node would
+// leaves the state as it was and kills nothing (counted, native_unable, logged under mcp_reaper.unsure_log_kind): no home, the real home
+// under a test marker, a process id past the exact range, a probe it cannot read. Mirrors hooks/session-end-mcp-reaper.js and companion/mcp-reaper.js. Keys and texts: mcp_reaper.toml, host_proc.toml.
 'use strict';
 
 function mrArgv0(cmd) {
@@ -18,31 +19,36 @@ function mrArgv0(cmd) {
 
 function mrRe(key, flags) { return jx.re(key, flags); }
 
+// The per-call constants of the signature test, read and compiled once per sweep, never per listed row (the listing holds hundreds of
+// orphans, and a host call or a pattern lookup per row dominated the sweep). Same keys, same patterns, same order as the row test.
+function mrMatcher() {
+  return {
+    orphan: ah.cfgNum('mcp_reaper.orphan_ppid'), program: ah.cfg('mcp_reaper.start_program'),
+    self: mrRe('mcp_reaper.mcp_self_re', 'i'), modelctx: mrRe('mcp_reaper.modelctx_re', 'i'), runtime: mrRe('mcp_reaper.runtime_re', ''),
+    token: mrRe('mcp_reaper.token_re', 'i'), tokenA0: mrRe('mcp_reaper.token_argv0_re', 'i'), start: mrRe('mcp_reaper.start_re', 'i'),
+    suffix: mrRe('mcp_reaper.suffix_re', 'i'), scoped: mrRe('mcp_reaper.scoped_re', 'i'), suffixA0: mrRe('mcp_reaper.suffix_argv0_re', 'i'),
+    runners: ah.cfg('mcp_reaper.runner_exclude_res').map(function (src) { return new RegExp(src, 'i'); })
+  };
+}
+
 // `matchesMcp(cmd, extraRe)`: a real MCP command, never a mere mention of one.
-function mrMatchesMcp(cmd, extra) {
+function mrMatchesMcp(m, cmd, extra) {
   if (!cmd) return false;
-  if (mrRe('mcp_reaper.mcp_self_re', 'i').test(cmd)) return false;
-  if (mrRe('mcp_reaper.modelctx_re', 'i').test(cmd)) return true;
-  var base = mrArgv0(cmd), runtime = mrRe('mcp_reaper.runtime_re', '').test(base), program = ah.cfg('mcp_reaper.start_program');
-  if (mrRe('mcp_reaper.token_re', 'i').test(cmd) && (runtime || mrRe('mcp_reaper.token_argv0_re', 'i').test(base))) return true;
-  if (mrRe('mcp_reaper.start_re', 'i').test(cmd) && (runtime || base === program)) return true;
-  if ((mrRe('mcp_reaper.suffix_re', 'i').test(cmd) || mrRe('mcp_reaper.scoped_re', 'i').test(cmd)) && (runtime || mrRe('mcp_reaper.suffix_argv0_re', 'i').test(base) || base === program)) return true;
+  if (m.self.test(cmd)) return false;
+  if (m.modelctx.test(cmd)) return true;
+  var base = mrArgv0(cmd), runtime = m.runtime.test(base);
+  if (m.token.test(cmd) && (runtime || m.tokenA0.test(base))) return true;
+  if (m.start.test(cmd) && (runtime || base === m.program)) return true;
+  if ((m.suffix.test(cmd) || m.scoped.test(cmd)) && (runtime || m.suffixA0.test(base) || base === m.program)) return true;
   return !!(extra && extra.test(cmd));
 }
 
-var mrRunners = { gen: -1, list: [] };
-function mrExcludedRunner(cmd) {
-  if (!cmd) return false;
-  var g = ahHost.cfgGen();
-  if (mrRunners.gen !== g) mrRunners = { gen: g, list: ah.cfg('mcp_reaper.runner_exclude_res').map(function (src) { return new RegExp(src, 'i'); }) };
-  return mrRunners.list.some(function (re) { return re.test(cmd); });
-}
-
-function mrInvariant(p, extra, exclude) {
-  if (p.ppid !== ah.cfgNum('mcp_reaper.orphan_ppid')) return false;
-  if (!mrMatchesMcp(p.cmd, extra)) return false;
+function mrInvariant(m, p, extra, exclude) {
+  if (p.ppid !== m.orphan) return false;
+  if (!mrMatchesMcp(m, p.cmd, extra)) return false;
   if (exclude && exclude.test(p.cmd)) return false;
-  return !mrExcludedRunner(p.cmd);
+  for (var i = 0; i < m.runners.length; i++) if (m.runners[i].test(p.cmd)) return false;
+  return true;
 }
 
 function mrInitPid1(rows) {
@@ -81,15 +87,31 @@ function mrLog(rel, abs, fields) {
 
 function mrProc(p, action) { return { pid: p.pid, ppid: p.ppid, cmd: p.cmd, action: action }; }
 
-function decide(p, opts) {
+// Node's os.homedir() for this call: false when there is none or it is the real home under a test marker (Node's own guard then writes nothing);
+// a relative HOME is resolved against the stand-in directory (counted).
+function mrAdopt(p) {
+  var why = hookProc.adoptHome();
+  if (why === null) return true;
+  ah.unable('mcp-reaper:' + why);
+  if (why !== 'relative_home') return false;
+  var h = hookProc.home(p);
+  if (h === null) return false;
+  ah.useHome(h);
+  return true;
+}
+
+// A selection the host cannot prove exactly kills nothing (counted and logged).
+function mrHold(why) { ah.unable('mcp-reaper:' + why); ah.log(ah.cfg('mcp_reaper.unsure_log_kind'), why); return 'allow'; }
+
+function decide(p) {
+  if (!mrAdopt(p)) return 'allow';
   if (!ah.settings.bool('mcp_reaper.setting')) return 'allow';
   var reason = p && typeof p === 'object' ? mrReason(p) : null;
   if (reason === null || ah.cfg('mcp_reaper.act_reasons').indexOf(reason) === -1) return 'allow';
-  // the Node hook does nothing when the companion module it reuses cannot be loaded; act only where it is present
-  var root = sess.pluginRoot(opts);
-  if (root === null || !ah.fs.isFile(root + '/' + ah.cfg('mcp_reaper.node_module'))) return 'defer';
-  var home = spawn.osHome();
-  if (home === null) return 'defer';
+  // The Node hook reuses companion/mcp-reaper.js's signature test and does nothing when that module cannot be loaded. The engine
+  // carries the whole selection itself (mrInvariant and the host process probes), so it acts with or without the Node module: the
+  // two differ only on an install whose companion file is gone, where the engine still sweeps (the sweep is the feature).
+  var home = ah.home();
   var listed = ah.proc.list();
   if (listed === null || listed.rows.length === 0) return 'allow';
   var rows = listed.rows;
@@ -102,16 +124,16 @@ function decide(p, opts) {
   var extra = mrUserRe(ah.settings.str('mcp_reaper.match_setting')), exclude = mrUserRe(ah.settings.str('mcp_reaper.exclude_setting'));
   var minAge = mrEnvInt('mcp_reaper.min_age_env', 'mcp_reaper.min_age_default_s'), max = mrEnvInt('mcp_reaper.max_env', 'mcp_reaper.max_default');
   // ---- the selection: signature, parent PID 1, exclusions; the age floor; the service-manager filter; the cap ----
-  var raw = rows.filter(function (q) { return mrInvariant(q, extra, exclude); }), kept = [], skipped = [];
+  var matcher = mrMatcher(), raw = rows.filter(function (q) { return mrInvariant(matcher, q, extra, exclude); }), kept = [], skipped = [];
   if (raw.length) {
     var exact = ah.cfgNum('hostproc.max_exact_id');
-    if (raw.some(function (q) { return !(q.pid >= 0 && q.pid < exact); })) return 'defer';
+    if (raw.some(function (q) { return !(q.pid >= 0 && q.pid < exact); })) return mrHold('pid_range');
     var ages = ah.proc.ages(raw.map(function (q) { return q.pid; }));
-    if (ages.unsure) return 'defer';
+    if (ages.unsure) return mrHold('ages');
     var aged = raw.filter(function (q) { var a = ages.ages[String(q.pid)]; return typeof a === 'number' && a >= minAge; });
     if (aged.length) {
       var m = ah.proc.managed(aged.map(function (q) { return q.pid; }));
-      if (m.unsure) return 'defer';
+      if (m.unsure) return mrHold('managed');
       if (m.unverifiable) {
         skipped = aged.map(function (q) { return { proc: q, reason: ah.cfg('mcp_reaper.reason_launchd_unverifiable') }; });
       } else {
@@ -135,7 +157,7 @@ function decide(p, opts) {
   candidates.forEach(function (c) { ah.proc.signal(c.pid, false); });
   ah.sleep(ah.cfgNum('mcp_reaper.grace_ms'));
   // a fresh listing: a pid recycled during the grace period must qualify again on its own signature
-  var again = ah.proc.list(), still = again === null ? [] : again.rows.filter(function (q) { return mrInvariant(q, extra, exclude); }).map(function (q) { return q.pid; });
+  var again = ah.proc.list(), matcher2 = mrMatcher(), still = again === null ? [] : again.rows.filter(function (q) { return mrInvariant(matcher2, q, extra, exclude); }).map(function (q) { return q.pid; });
   candidates.forEach(function (c) {
     if (still.indexOf(c.pid) === -1) return;
     mrLog(logRel, logAbs, mrProc(c, ah.cfg('mcp_reaper.action_kill')));

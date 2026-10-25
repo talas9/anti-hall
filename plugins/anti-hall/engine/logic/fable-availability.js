@@ -1,7 +1,7 @@
 // check = "fable-availability" (SessionStart): record whether a Fable model is available, from the host's own model cache in
 // ~/.claude.json, and tell the session when it is. Writes ~/.anti-hall/fable-availability.json on every run (through the scoped
-// atomic write) and speaks only when `available` is true. A config the reader cannot parse, or one larger than a script may
-// read, defers to Node, which decides and writes the state itself. Mirrors hooks/fable-availability.js.
+// atomic write) and speaks only when `available` is true. A config the reader cannot parse is unknown availability (as in Node); one larger than a script may
+// read is unknown too (counted). Mirrors hooks/fable-availability.js.
 // Keys, cache layout and messages: verify_first.toml (fable_availability.*).
 'use strict';
 
@@ -36,17 +36,17 @@ function decide() {
   if (ah.env.get(judge.name) === judge.on) return 'allow';
   var home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
-  if (home === null || home === '') return 'defer';
+  if (home === null || home === '') { ah.unable('fable-availability:no_home', 'abandoned'); return 'allow'; } // no home: no config to read, no state to keep
   var file = home + '/' + ah.cfg('fable_availability.config_file'), found;
   var size = ah.fs.size(file);
-  if (size !== null && size > ah.cfgNum('script.read_max_bytes')) return 'defer';
-  var raw = ah.fs.readText(file);
+  var tooBig = size !== null && size > ah.cfgNum('script.read_max_bytes');
+  if (tooBig) ah.unable('fable-availability:config_big'); // too big to read here: recorded as unknown availability
+  var raw = tooBig ? null : ah.fs.readText(file);
   if (raw === null) {
     found = { available: null, source: ah.cfg('fable_availability.unknown_source') };
   } else {
     var cfg;
-    try { cfg = JSON.parse(raw); } catch (e) { return 'defer'; }
-    found = detect(cfg);
+    try { cfg = JSON.parse(raw); found = detect(cfg); } catch (e) { found = { available: null, source: ah.cfg('fable_availability.unknown_source') }; } // as Node: unparsable is unknown
   }
   var state = JSON.stringify({ available: found.available, checkedAt: Date.now(), source: found.source });
   var wrote = ah.state.writeAtomic(ah.cfg('fable_availability.state_file'), state);

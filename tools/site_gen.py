@@ -6,7 +6,7 @@ Run before `mkdocs build` (stdlib only, run with `python3 -I`):
     python3 -I tools/site_gen.py
 
 Writes (both git-ignored, rebuilt on every build):
-  docs/settings/reference.md  every setting in plugins/anti-hall/hooks/lib/settings-schema.js,
+  docs/settings/reference.md  every setting in plugins/anti-hall-node/hooks/lib/settings-schema.js,
                               plus the engine defaults in plugins/anti-hall/engine/defaults/*.toml
                               when that directory exists
   docs/changelog.md           CHANGELOG.md
@@ -25,7 +25,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SCHEMA = ROOT / "plugins" / "anti-hall" / "hooks" / "lib" / "settings-schema.js"
+SCHEMA = ROOT / "plugins" / "anti-hall-node" / "hooks" / "lib" / "settings-schema.js"
 ENGINE_DEFAULTS = ROOT / "plugins" / "anti-hall" / "engine" / "defaults"
 CHANGELOG = ROOT / "CHANGELOG.md"
 OUT_SETTINGS = ROOT / "docs" / "settings" / "reference.md"
@@ -247,7 +247,7 @@ Settings live in `~/.anti-hall/settings.json`. Change them with `/anti-hall:sett
 ("set autoHandover.pct to 80") or the CLI:
 
 ```bash
-node plugins/anti-hall/scripts/settings.js set autoHandover.pct 80
+node plugins/anti-hall-node/scripts/settings.js set autoHandover.pct 80
 ```
 
 **How to read the tables**
@@ -284,7 +284,7 @@ def render_settings(sections, engine_dir, repo_url):
     toc = ", ".join(f"[{sec['label']}](#{sec['key'].lower()})" for sec in sections)
     count_line = f"**{total} settings in {len(sections)} sections:** {toc}."
     lines.append(SETTINGS_INTRO.format(
-        schema_url=f"{repo_url}/blob/main/plugins/anti-hall/hooks/lib/settings-schema.js",
+        schema_url=f"{repo_url}/blob/main/plugins/anti-hall-node/hooks/lib/settings-schema.js",
         count_line=count_line,
     ))
     for sec in sections:

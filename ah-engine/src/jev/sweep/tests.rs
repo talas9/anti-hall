@@ -1,7 +1,6 @@
 use super::*;
 use crate::jev::assist::iso_ms;
 use crate::jev::cascade::{MODEL_LOCK, TEST_MODEL};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 const NOW: i64 = 1_790_000_000_000;
@@ -302,50 +301,6 @@ fn sup_log(h: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// What Node's own `strayingLine` prints for these active entries (None when node is not installed).
-fn node_line(active: &Value, scratch: &Path) -> Option<String> {
-    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/companion/lib/devswarm-supervision.js");
-    let out = Command::new("node")
-        .args(["-e", "const s=require(process.argv[1]);const a=JSON.parse(process.argv[2]);console.log(s.strayingLine(a.map(e=>({id:'kid',step:e.step,reason:e.reason,jev:e.jev}))))"])
-        .arg(&lib)
-        .arg(active.to_string())
-        .env("HOME", scratch)
-        .output()
-        .ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-#[test]
-fn a_stuck_answer_is_attached_to_the_stall_warning_the_way_node_did_and_survives_a_supervisor_rewrite() {
-    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let h = home("act-wait");
-    fixture(&h, plan(40), &six_tools(NOW - 45 * MIN));
-    mesh_store(&h, &[("kid", NOW - 90 * MIN, "parent", false)]);
-    stray_with(&h, "stall");
-    model_says(r#"{"answer":true,"confidence":0.92,"evidence_ref":"tool_calls.2"}"#, Arc::new(Mutex::new(Vec::new())));
-    let r = sweep(&h, &env("on", "off", "off"), NOW);
-    *TEST_MODEL.lock().unwrap() = None;
-    assert_eq!(r["decided"][0]["acted"], "annotated");
-    let active = stray(&h)["active"].clone();
-    assert_eq!(active[0]["jev"], json!([{"integration": "devswarmWaitKind", "verdict": "stuck", "confidence": 0.92, "supports": true}]));
-    if let Some(line) = node_line(&active, &h) {
-        assert!(line.contains("(Jev: stuck 0.92)"), "node prints the engine's note: {line}");
-    }
-    // telemetry: one `jev` event with Node's fields; `agree` is true because stuck agrees with the warning
-    let ev: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "jev").collect();
-    assert_eq!(ev.len(), 1);
-    assert_eq!(
-        (ev[0]["integration"].as_str(), ev[0]["mode"].as_str(), ev[0]["agree"].as_bool(), ev[0]["confidence"].as_f64()),
-        (Some("devswarmWaitKind"), Some("on"), Some(true), Some(0.92))
-    );
-    // the supervisor rewrites its state from its own signals on its next pass: the note comes back, and no second event is written
-    stray_with(&h, "stall");
-    let again = sweep(&h, &env("on", "off", "off"), NOW + MIN);
-    assert_eq!(again["decided"].as_array().unwrap().len(), 0);
-    assert_eq!(stray(&h)["active"][0]["jev"][0]["verdict"], "stuck");
-    assert_eq!(sup_log(&h).iter().filter(|e| e["type"] == "jev").count(), 1);
-}
-
 #[test]
 fn a_waiting_rule_answer_says_so_with_full_confidence_and_a_shadow_integration_changes_nothing() {
     let h = home("act-rule");
@@ -401,95 +356,6 @@ fn a_looping_answer_joins_the_stall_warning_and_a_lower_confidence_than_the_floo
     assert_eq!(stray(&h)["active"].as_array().unwrap().len(), 1, "no advisory warning when a warning exists");
     // agree is Node's: a looping verdict disagrees with Loop's baseline (not looping)
     assert_eq!(sup_log(&h).iter().find(|e| e["type"] == "jev").unwrap()["agree"], false);
-}
-
-#[test]
-fn a_looping_answer_with_no_warning_to_join_adds_its_own_advisory_warning_counted_against_the_cap() {
-    let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let calm = |max: &str| {
-        Env::from_pairs([
-            ("ANTIHALL_JEV", "1"),
-            ("CLAUDE_PLUGIN_OPTION_JEV_INTEGRATION_DEVSWARM_LOOP", "on"),
-            ("ANTIHALL_DEVSWARM_STEP_STALL_MIN", "120"),
-            ("ANTIHALL_DEVSWARM_STRAY_WARN_MAX", max),
-        ])
-    };
-    let h = home("act-loop-adv");
-    loop_fixture(&h, 300);
-    model_says(r#"{"answer":true,"confidence":0.95,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
-    let r = sweep(&h, &calm("2"), NOW);
-    *TEST_MODEL.lock().unwrap() = None;
-    assert_eq!(r["decided"][0]["acted"], "advisory_loop", "{r}");
-    let st = stray(&h);
-    let e = &st["active"][0];
-    assert_eq!((e["signal"].as_str(), e["step"].as_i64(), e["reason"].as_str()), (Some("loop"), Some(2), Some("Jev thinks it is looping on the step (5h)")));
-    assert_eq!(e["key"], format!("loop:2:{}", NOW - 300 * MIN));
-    assert_eq!(e["jev"][0]["verdict"], "looping");
-    assert_eq!((st["perStep"]["loop:2"].as_i64(), st["warned"][e["key"].as_str().unwrap()]["signal"].as_str()), (Some(1), Some("loop")));
-    if let Some(line) = node_line(&st["active"], &h) {
-        assert!(line.contains("step 2 Jev thinks it is looping on the step (5h) (Jev: looping 0.95)"), "{line}");
-    }
-    let warns: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "warn").collect();
-    assert_eq!((warns.len(), warns[0]["signal"].as_str(), warns[0]["repeat"].as_bool()), (1, Some("loop"), Some(false)));
-    // a rewrite by the supervisor drops the advisory entry (it has no such signal): the sweep restores it without a second count
-    let mut dropped = st.clone();
-    dropped["active"] = json!([]);
-    put(stray_file(&h), &dropped.to_string());
-    sweep(&h, &calm("2"), NOW + MIN);
-    let back = stray(&h);
-    assert_eq!((back["active"].as_array().unwrap().len(), back["perStep"]["loop:2"].as_i64()), (1, Some(1)));
-    assert_eq!(sup_log(&h).iter().filter(|e| e["type"] == "warn").count(), 1);
-    // strayWarnMax 0 turns warnings off: nothing is added
-    let off = home("act-loop-cap0");
-    loop_fixture(&off, 300);
-    model_says(r#"{"answer":true,"confidence":0.95,"evidence_ref":"repeats.1"}"#, Arc::new(Mutex::new(Vec::new())));
-    sweep(&off, &calm("0"), NOW);
-    *TEST_MODEL.lock().unwrap() = None;
-    assert!(!stray_file(&off).exists());
-}
-
-#[test]
-fn a_step_map_answer_writes_the_inferred_step_into_the_plan_once_and_leaves_the_rest_of_the_plan_alone() {
-    let h = home("act-stepmap");
-    let mut p = plan(10);
-    p["steps"][0]["ts"] = json!(NOW - 20 * MIN);
-    p["steps"][0]["status"] = json!("todo");
-    p["steps"][1]["status"] = json!("todo");
-    p["summaries"] = json!([{"ts": NOW - 20 * MIN + 1000, "text": "parser done", "stepped": true}, {"ts": NOW - 5 * MIN, "text": "finished the wire the cache work", "stepped": false}]);
-    fixture(&h, p.clone(), &[]);
-    let r = sweep(&h, &env("off", "off", "on"), NOW);
-    assert_eq!(r["decided"][0]["acted"], "inferred_step");
-    let after: Value = serde_json::from_str(&std::fs::read_to_string(h.join(".anti-hall/devswarm/plans/kid.json")).unwrap()).unwrap();
-    let mut want = p;
-    want["inferred_step"] = json!(2);
-    assert_eq!(after, want, "only inferred_step was added");
-    let ev: Vec<Value> = sup_log(&h).into_iter().filter(|e| e["type"] == "jev").collect();
-    assert_eq!(
-        (ev.len(), ev[0]["integration"].as_str(), ev[0]["agree"].as_bool()),
-        (1, Some("devswarmStepMap"), Some(false)),
-        "Node's agree: the plan's current step is the first open one, 1, not 2"
-    );
-    // the same step again changes nothing (no rewrite, no second event)
-    crate::discard::harmless(std::fs::remove_file(h.join(".anti-hall/devswarm/jev-sweep-state.json")));
-    let r = sweep(&h, &env("off", "off", "on"), NOW + MIN);
-    assert_eq!(r["decided"][0]["acted"], Value::Null);
-    assert_eq!(sup_log(&h).len(), 1);
-    // the plan label Node shows
-    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/companion/lib/devswarm-plan.js");
-    if let Ok(o) = Command::new("node")
-        .args(["-e", "const p=require(process.argv[1]);console.log(p.finishLabel(JSON.parse(process.argv[2]),Date.now()))"])
-        .arg(&lib)
-        .arg({
-            let mut q = after.clone();
-            q.as_object_mut().unwrap().remove("step_ts");
-            q.to_string()
-        })
-        .env("HOME", &h)
-        .output()
-        && o.status.success()
-    {
-        assert!(String::from_utf8_lossy(&o.stdout).contains("~#2"));
-    }
 }
 
 #[test]

@@ -26,16 +26,20 @@
 pub mod apply;
 pub mod archive;
 pub mod archived;
+pub mod capprobe;
 pub mod dup;
 pub mod fold;
 pub mod gate;
 pub mod heal;
+pub mod labelfill;
 pub mod mirror;
 pub mod norm;
 pub mod orphans;
 pub mod pull;
+pub mod rehome;
 pub mod side;
 pub mod stage;
+pub mod survivor;
 pub mod sweep;
 pub mod view;
 
@@ -103,6 +107,9 @@ pub enum Op {
         rel: String,
         /// The bytes.
         bytes: Vec<u8>,
+        /// Tail-preserving rotation after the append (the cursor journal's): keep the newest this-many non-blank records and move
+        /// the older ones to `<rel>.1`, replacing what was there. `None`: append only.
+        keep: Option<usize>,
     },
     /// Rename a file when it exists (a log rotation).
     Rename {
@@ -137,6 +144,23 @@ pub enum Op {
         dest: String,
         /// The rows, already addressed to `dest`.
         rows: Vec<MeshRow>,
+        /// `allowArchivedDest`: a destination that is archived-only (no live descriptor, an archive marker) takes the rows too; set only
+        /// for rows of archived origin.
+        allow_archived: bool,
+    },
+    /// `mkdirSync(dir, { recursive: true })` of a directory under the home (`checkedArchivedDir(home, { create: true })`).
+    Mkdir {
+        /// The directory, relative to the home.
+        rel: String,
+    },
+    /// `importLegacy` of one partition that has no floor rows yet (`raiseAllLossFree` makes the same import inside its own transaction): the
+    /// legacy read positions become the `#floor` rows and the live readers' rows, once; a second run finds the floors and writes nothing. A
+    /// session the engine cannot place hands the unit back before anything of it was written.
+    ImportCursors {
+        /// The store (repo key).
+        store: String,
+        /// The partition whose cursors are imported.
+        partition: String,
     },
     /// `readerCursors.raiseAllLossFree` on the store namespace, then the legacy projection (the shared cursor file, then the
     /// `cursors` table, both upward only). Only valid after a forward that made every row below `value` reachable elsewhere.

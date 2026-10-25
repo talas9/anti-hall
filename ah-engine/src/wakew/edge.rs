@@ -225,6 +225,14 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     if moved2 && let Some(t) = total2 {
         st.last_total2 = t;
     }
+    // The inbound count is a different metric from the raw total an older seen-file recorded and can read lower: resync DOWN
+    // silently (never a wake) so the next genuinely new inbound message still fires.
+    if let Some(t) = total.filter(|t| *t < st.last_total) {
+        st.last_total = t;
+    }
+    if let Some(t) = total2.filter(|t| *t < st.last_total2) {
+        st.last_total2 = t;
+    }
     // BROADCAST CHANNEL: a third, independent observation, never merged into the dual-channel logic.
     let total3 = snap.total3.flatten();
     if let Some(t3) = total3

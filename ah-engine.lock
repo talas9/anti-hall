@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "version": "0.1.0",
-  "tag": "ah-engine-v0.1.0",
-  "fingerprint": "26dd782611a17026207cfcb2c41b9fa96313f3d88128a2063305b356ac4ad5fb",
-  "prepare_run": 38001263985,
+  "version": "0.2.0",
+  "tag": "ah-engine-v0.2.0",
+  "fingerprint": "55f9a59c47165a1756c971a24f4c81bf5baf0b4953067405c91c563470a8b707",
+  "prepare_run": 40149263716,
   "assets": {
-    "ah-engine-v0.1.0-aarch64-apple-darwin.tar.gz": "c34221a5f6f7a5579af13d51361ebfd52585026b84aa8e38114af65fe2f5d380",
-    "ah-engine-v0.1.0-aarch64-unknown-linux-gnu.tar.gz": "2aa86fe625d90b93c08f2071422a95ae245410aaa1012338cebfbd07e345f42a",
-    "ah-engine-v0.1.0-aarch64-unknown-linux-musl.tar.gz": "6a7bc90aaf22e934ed507d6a4cf4c799310ff6f0493eaa0d4a35d4004ade8807",
-    "ah-engine-v0.1.0-src.tar.gz": "d9dcb9cc6534f0e2fe07c887f88904e739de656488b95ee1d7344c752aed510c",
-    "ah-engine-v0.1.0-x86_64-apple-darwin.tar.gz": "69a77129dae39d5f884776f669e57a97fd8e4ebe2021ccb8853673be5d9d17f7",
-    "ah-engine-v0.1.0-x86_64-unknown-linux-gnu.tar.gz": "381954a1294d52b35fe68c81c86ff499fc394ab1648de5fc6afe9c1ee115064c",
-    "ah-engine-v0.1.0-x86_64-unknown-linux-musl.tar.gz": "136d5c323dfc5b308976572f7684c5ee5a1b34f99bfc934a0a712dd457999f94"
+    "ah-engine-v0.2.0-aarch64-apple-darwin.tar.gz": "623f45beda47ad66b69be5a80f3c758b97c635265e8464d494bcdc5cb4f68316",
+    "ah-engine-v0.2.0-aarch64-unknown-linux-gnu.tar.gz": "5272e1962f45fbe005495695dc12d36e1d23feb642a708a4f6953e68f83aca74",
+    "ah-engine-v0.2.0-aarch64-unknown-linux-musl.tar.gz": "e3d0478c41c5c9b0d8733d952cd399b4a06e94cf4f7f7d03f6c92d48131b635f",
+    "ah-engine-v0.2.0-src.tar.gz": "144fad1c4a691a3834390c9e23f43d39a7303149730d3c2a3a3c0ed0bdfa52c6",
+    "ah-engine-v0.2.0-x86_64-apple-darwin.tar.gz": "862ed4ab986ff5c837153be5b994f058fe196572d9c62d8f88f07d24952600b4",
+    "ah-engine-v0.2.0-x86_64-unknown-linux-gnu.tar.gz": "a1d4afb43a82e5ed05627a2265aecd1f1570f173b5ddb63503a1e00612363f8b",
+    "ah-engine-v0.2.0-x86_64-unknown-linux-musl.tar.gz": "41f8286b068bc70617ba368628056d9d83231c5a75d1680ea68b5819ae7d2054"
   }
 }

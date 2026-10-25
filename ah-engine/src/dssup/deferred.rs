@@ -3,16 +3,14 @@
 //! Every tick the supervisor takes ONE of four post-update stages in rotation (`fold-all-stores`, `heal-orphan-partitions`,
 //! `fold-archived-rows`, `heal-registry-rows`), but only runs it when the stage's OWN marker says work was deferred. The
 //! rotation cursor (`deferred-sweep-state.json`), the marker peek and the "nothing pending" answer are the whole tick on a
-//! machine with nothing deferred, so they are native: no Node process is started for a no-op tick. A stage that has work is run
-//! by Node's own `runDeferredStage` (the stage bodies are the store folds of `update.js`, thousands of lines that move user
-//! data and are not ported).
+//! machine with nothing deferred, so they are native: no Node process is started for a no-op tick. A stage that has work is
+//! walked by the engine's own ports (`recon::stage`); one the engine does not take is `held` and comes round again.
 //!
 //! Like Node, the cursor is advanced BEFORE the stage is peeked or run, so a stage that hangs or fails is not retried first on
-//! every tick. A cursor the engine cannot read exactly like Node (a fractional index selects no stage in JavaScript) hands the
-//! tick to Node's function.
+//! every tick. A cursor the engine cannot read exactly like Node (a fractional index selects no stage in JavaScript) holds the tick.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable marker or cursor is the absent one (Node: `try { JSON.parse(...) } catch (_) {}`, fail-open to "nothing pending")
-use super::tick::{Ctx, node};
+use super::tick::Ctx;
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
@@ -60,25 +58,23 @@ pub fn has_deferred_work(home: &Path, stage: &str) -> bool {
     any_bucket || ids
 }
 
-/// The duty's record: Node's `{ stage, ran, reason | budgetMs, result }`.
+/// The duty's record: `{ stage, ran, reason | budgetMs, result }` in `detail`. A cursor the engine cannot read exactly like JavaScript, or
+/// a stage the engine does not take now, is `held` (counted, nothing run; the next tick tries again).
 pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     duty_with(ctx, runner, &super::recon::Hooks::none())
 }
 
+fn held_record(site: &str, why: &str) -> Value {
+    json!({"duty": "deferred", "outcome": "held", "detail": super::tick::held(site, why)})
+}
+
 /// [`duty`] with kill points for the crash tests.
 pub fn duty_with(ctx: &Ctx, runner: &dyn Runner, hooks: &super::recon::Hooks) -> Value {
-    let d = defaults::raw("devswarm_sup.duty.deferred");
+    if !super::recon::archive::engine_mode(ctx.st) {
+        return json!({"duty": "deferred", "outcome": "disabled", "reason": defaults::text("devswarm_sup.msg_duty_off")});
+    }
     let stages = defaults::list("devswarm_sup.ds_stages");
-    let fallback = |why: &str| {
-        let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-        let r = node(runner, ctx, d.str_field("snippet"), &[], timeout);
-        if r.ok {
-            json!({"duty": "deferred", "outcome": "ran", "detail": super::tick::parse(&r.stdout), "node": why})
-        } else {
-            json!({"duty": "deferred", "outcome": "failed", "error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out, "node": why})
-        }
-    };
-    let Ok(idx) = cursor(ctx.home) else { return fallback("cursor") };
+    let Ok(idx) = cursor(ctx.home) else { return held_record("dssup:deferred:cursor", defaults::text("devswarm_sup.ds_why_cursor")) };
     let stage = stages[idx];
     // persisted BEFORE the stage is peeked or run
     let p = devswarm_root(ctx.home).join(defaults::text("devswarm_sup.ds_state_file"));
@@ -89,16 +85,12 @@ pub fn duty_with(ctx: &Ctx, runner: &dyn Runner, hooks: &super::recon::Hooks) ->
     if !has_deferred_work(ctx.home, stage) {
         return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": false, "reason": defaults::text("devswarm_sup.ds_reason_no_marker")}});
     }
-    let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    // With `devswarm_sup.sweep_tail_mode = engine` the engine walks the stage's pending items itself (see `recon::stage`); a stage it
-    // does not take (an unusable marker, an unknown stage) falls through to Node's whole `runDeferredStage` below.
-    if let Some(out) = super::recon::stage::run(ctx, runner, stage, hooks) {
-        return json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}});
-    }
-    let r = node(runner, ctx, d.str_field("stage_snippet"), &[stage], timeout);
-    if r.ok {
-        json!({"duty": "deferred", "outcome": "ran", "detail": super::tick::parse(&r.stdout)})
-    } else {
-        json!({"duty": "deferred", "outcome": "failed", "error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out})
+    // the engine walks the stage's pending items itself (see `recon::stage`); a stage it does not take (an unusable marker, an unknown
+    // stage) is held: its marker stays, so the stage comes round again
+    match super::recon::stage::run(ctx, runner, stage, hooks) {
+        Some(out) => {
+            json!({"duty": "deferred", "outcome": "ran", "detail": {"stage": stage, "ran": true, "budgetMs": out.budget_ms, "result": out.result}, "engine": {"items": out.items}})
+        }
+        None => held_record("dssup:deferred:stage", &defaults::render("devswarm_sup.ds_why_stage", &[("stage", &stage)])),
     }
 }

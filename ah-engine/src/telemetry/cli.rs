@@ -1,4 +1,4 @@
-//! `ah-engine telemetry [summary|events|rollup]` (D78).
+//! `ah-engine telemetry [summary|events|rollup|actions]` (D78). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
 //! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
@@ -23,7 +23,7 @@ fn now_ms() -> u64 {
 }
 
 /// Open the databases for reading; `None` when no database exists yet.
-fn open_existing() -> Option<TelDb> {
+pub(crate) fn open_existing() -> Option<TelDb> {
     let dir = paths::dir();
     if !dir.join(defaults::text("storage.hot_file")).exists() {
         return None;
@@ -43,6 +43,9 @@ fn open_for_write() -> Result<TelDb, String> {
 pub fn run(rest: &[String]) -> (Value, i32) {
     let sub = rest.first().filter(|w| !w.starts_with("--")).map(String::as_str).unwrap_or("summary");
     let window = flag(rest, "window");
+    if let Err(e) = report::check_window(&window) {
+        return (json!({"error": e}), 64);
+    }
     match sub {
         "summary" | "events" => {
             let (kind, limit) = (flag(rest, "kind"), flag(rest, "limit"));
@@ -64,10 +67,14 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             } else {
                 report::summary_json(tel.as_ref(), None, days, now_ms())
             };
+            if sub == "summary" {
+                v["agent_cost"] = crate::agents::cost_report();
+            }
             v["from"] = json!("files");
             v["running"] = json!(false);
             (v, 0)
         }
+        "actions" => crate::actlog::run_cli(rest),
         "rollup" => match open_for_write().and_then(|t| t.rollup(now_ms(), defaults::num("telemetry.retention_days")).map_err(|e| e.to_string())) {
             Ok(v) => (v, 0),
             Err(e) => (json!({"error": e}), 1),

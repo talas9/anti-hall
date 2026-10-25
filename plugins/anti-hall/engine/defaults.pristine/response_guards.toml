@@ -43,13 +43,13 @@ value = ["surrogate", "hex escape", "recursion limit", "out of range"]
 doc = "The role value of an assistant transcript entry."
 value = "assistant"
 
-# ---- once-per-turn gate (hooks/lib/turn-gate.js) ----------------------------------------------------------
+# ---- once-per-turn gate ----------------------------------------------------------
 
-# ---- speculation-guard (hooks/speculation-guard.js) -------------------------------------------------------
+# ---- speculation-guard -------------------------------------------------------
 
 [speculation_guard.summary]
 doc = "One-line description of the speculation-guard check in the generated reference."
-value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair (port of speculation-guard.js)."
+value = "Stop gate: blocks once per reply that states something with a hedge word and no evidence or uncertainty flag, asks Jev (speculation, add-block; speculationFramed, relax-block) and records the outcome of the previous block; defers the causal-claim scan, a payload without the reply text and a reply window that would cut a surrogate pair."
 
 [speculation_guard.guard_name]
 doc = "The guard id this check answers to in skip.json and in messages."
@@ -106,6 +106,34 @@ value = [
   '''\bi think it'?s\b''',
   '\bmy hunch\b',
 ]
+
+[speculation_guard.cite_token_re]
+doc = "Regex source (JavaScript, no flags) of the words of a reply that may name a specific found in tool output (a path, version, number or identifier)."
+value = '[A-Za-z0-9_./-]+'
+
+[speculation_guard.cite_specific_re]
+doc = "Regex source a word must match to count as a specific rather than a common word: it holds a dot, slash, underscore, hyphen or digit."
+value = '[./_0-9-]'
+
+[speculation_guard.cite_min_len]
+doc = "The shortest word that can count as a cited specific."
+value = 6
+unit = "chars"
+min = 3
+max = 40
+
+[speculation_guard.cite_min_hits]
+doc = "How many distinct specifics of the reply must appear in the tool output of the same turn for the hedge to count as evidenced (tool results since the last human prompt are the citation)."
+value = 2
+min = 1
+max = 20
+
+[speculation_guard.cite_output_max_chars]
+doc = "The most tool-output text of the current turn searched for cited specifics, newest first."
+value = 200000
+unit = "chars"
+min = 1000
+max = 5000000
 
 [speculation_guard.modal_markers]
 doc = "Lower-cased hedge matches that may state a requirement instead of a guess; each occurrence is judged on its own."
@@ -186,7 +214,7 @@ value = '‘[^‘’\n]*’'
 
 [speculation_guard.msg_what]
 doc = "Block headline; {marker} is the hedge found."
-value = "your reply states something speculative ('{marker}') without verifying it or flagging it as unverified."
+value = "your reply makes an unverified claim (\"{marker}\")."
 
 [speculation_guard.msg_why]
 doc = "Block reason."
@@ -194,11 +222,15 @@ value = "Unverified claims read as facts."
 
 [speculation_guard.msg_instead]
 doc = "Block advice."
-value = "verify it with a tool, or say what is unverified ('I don't know, here is what I would check'), then continue."
+value = "verify the claim or label it unverified."
 
 [speculation_guard.jev_id]
 doc = "The Jev integration id of the speculation question (add-block trust)."
 value = "speculation"
+
+[speculation_guard.jev_gate]
+doc = "When the Stop waits for Jev on the speculation question: `hit` (default) only when the hedge scan found a marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop. Any other value is read as `hit`. Ignored while jev.gate_enabled is 0."
+value = "hit"
 
 [speculation_guard.jev_framed_id]
 doc = "The Jev integration id of the framed-expectation question (relax-block trust)."
@@ -214,7 +246,7 @@ value = "Speculative: it asserts a cause, a fix, or a done/works/passes/resolved
 
 [speculation_guard.jev_false]
 doc = "The label for a false answer of the speculation question."
-value = "Not speculative: it reports what a tool actually showed (command output such as \"12 pass, 0 fail\", a commit hash, grep results, a file:line reference like src/app.js:42); or it honestly says something is not yet verified and names the check to run; or it makes no claim about the project at all (a question, a plan, code the user asked for, general technical knowledge, an explicit hypothetical, or small talk)."
+value = "Not speculative: it reports what a tool actually showed (command output such as \"12 pass, 0 fail\", a commit hash, grep results, a file:line reference like main.rs:42); or it honestly says something is not yet verified and names the check to run; or it makes no claim about the project at all (a question, a plan, code the user asked for, general technical knowledge, an explicit hypothetical, or small talk)."
 
 [speculation_guard.framed_instructions]
 doc = "The Noul question of the framed-expectation ask (byte-identical to the Node hook's FRAMED_JEV_QUESTION)."
@@ -265,7 +297,7 @@ value = '\(unverified\)|\bnot yet measured\b'
 
 [speculation_guard.msg_what_jev]
 doc = "Block headline when Jev added the block."
-value = "your reply asserts a cause or outcome without citing evidence (command output, a test result, or a file:line reference)."
+value = "your reply asserts a cause or outcome without evidence."
 
 [speculation_guard.outcome_override]
 doc = "Outcome recorded for the previous block when the user skipped the guard."
@@ -283,11 +315,11 @@ value = "repeat-speculation"
 doc = "The source recorded in the pending outcome of a block Jev added."
 value = "jev"
 
-# ---- speculation-judge (hooks/speculation-judge.js) -------------------------------------------------------
+# ---- speculation-judge -------------------------------------------------------
 
 [speculation_judge.summary]
 doc = "One-line description of the speculation-judge check in the generated reference."
-value = "Stop: the opt-in semantic judge; answers every path without a model call, and in a one-shot process asks the Claude CLI judge itself (jev.judgeBackend cli); an Anthropic API call, and a model call inside the daemon, stay with Node (port of speculation-judge.js)."
+value = "Stop: the opt-in semantic judge; answers every path without a model call, and asks the Claude CLI judge itself (jev.judgeBackend cli) in the dispatcher process or a one-shot process (the daemon hands the check to the dispatcher, which cannot be made to wait); an Anthropic API call is never made by the engine (counted, the reply is allowed)."
 
 [speculation_judge.guard_name]
 doc = "The guard id this check answers to in skip.json."
@@ -305,15 +337,19 @@ value = "ANTIHALL_JUDGE_CHILD"
 doc = "The value of the judge-child variable that means this process is the judge's child."
 value = "1"
 
-# ---- claim-ledger (hooks/claim-ledger.js) -----------------------------------------------------------------
+# ---- claim-ledger -----------------------------------------------------------------
 
 [claim_ledger.summary]
 doc = "One-line description of the claim-ledger check in the generated reference."
-value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting (port of claim-ledger.js)."
+value = "Stop, never blocks: records the checkable claims of the last reply that no evidence in the session backs; asks the Jev shadow question (claimLedger) for each flag on the shared Jev lane without waiting."
 
 [claim_ledger.guard_name]
 doc = "The guard id this check answers to in skip.json."
 value = "claim-ledger"
+
+[claim_ledger.unsure_log_kind]
+doc = "Engine log kind of a claim-ledger case the engine cannot reproduce exactly, so it defers (logged, before anything is written): relative_home, no_home, test_guard (HOME set but relative or empty, no home at all, or HOME unset with the passwd home being the real one under a spawn_ctx.test_markers variable; HOME unset otherwise adopts the passwd home as os.homedir() does), relative_transcript (a relative transcript path with no absolute payload cwd), transcript (a transcript record only JavaScript reads exactly)."
+value = "claim_ledger_unsure"
 
 [claim_ledger.setting]
 doc = "Where the on/off switch is read from (guards.claimLedger, default on)."
@@ -417,11 +453,11 @@ value = '\b\d+\s+days?\s+ago\b'
 doc = "Regex source of a number in the evidence (thousands separators allowed)."
 value = '\d[\d,]*(?:\.\d+)?'
 
-# ---- output-verify-guard (hooks/output-verify-guard.js) ---------------------------------------------------
+# ---- output-verify-guard ---------------------------------------------------
 
 [output_verify.summary]
 doc = "One-line description of the output-verify-guard check in the generated reference."
-value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting (port of output-verify-guard.js)."
+value = "PostToolUse advisory: flags a test-runner output with both a passing and a failing signal; asks the Jev shadow question (outputVerifyGuard) without waiting."
 
 [output_verify.guard_name]
 doc = "The guard id this check answers to in skip.json, in messages and as the once-per-turn key."
@@ -567,7 +603,7 @@ value = "|"
 
 [output_verify.msg_what]
 doc = "Advisory headline; {bits} are the signals found."
-value = "this Bash command's output contains {bits} in the same run (advisory, not a block)."
+value = "command output contains conflicting results."
 
 [output_verify.msg_why]
 doc = "Advisory reason."
@@ -575,4 +611,4 @@ value = "A mixed summary is not a clean pass."
 
 [output_verify.msg_instead]
 doc = "Advisory advice."
-value = "before reporting \"tests pass\" / \"build succeeded\", re-read the full output and confirm the actual pass/fail counts and exit code."
+value = "read the full output before reporting the result."

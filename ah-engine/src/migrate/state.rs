@@ -25,17 +25,17 @@ enum Copy {
     Failed(Error),
 }
 
-/// `repoRoot(cwd)`: the git toplevel of `cwd` unless it is the account's home, else `cwd`. `None` when the location cannot be
+/// `repoRoot(cwd)`: the canonical superproject root of `cwd` unless it is the account's home, else `cwd`. `None` when the location cannot be
 /// confirmed without Node (the caller then leaves the step to the Node doctor).
 fn project_root(ctx: &Ctx) -> Option<PathBuf> {
     if !Path::new(&ctx.cwd).is_absolute() {
-        return Some(PathBuf::from(&ctx.cwd));
+        return None;
     }
     let c = ident::resolve_context(&ctx.cwd, false, &RequestEnv::from(ctx.env.clone()));
     if c.unsure {
         return None;
     }
-    match c.toplevel {
+    match c.worktree_root {
         Some(t) if crate::checks::jsport::home::real_home().is_none_or(|h| h != t) => Some(PathBuf::from(t)),
         _ => Some(PathBuf::from(&ctx.cwd)),
     }
@@ -110,14 +110,27 @@ pub(super) fn legacy_state(ctx: &Ctx, rows: &mut Vec<Row>) {
 
 /// What the migrations of one directory of state files counted.
 #[derive(Default)]
-struct Report {
-    scanned: u64,
-    migrated: u64,
-    already: u64,
-    pending: u64,
-    errors: u64,
+pub(crate) struct Report {
+    pub scanned: u64,
+    pub migrated: u64,
+    /// `alreadyAppendOnly` (reply state) or `alreadyCurrent` (gate intents); always 0 for the auto-archive record.
+    pub already: u64,
+    pub pending: u64,
+    pub errors: u64,
     /// Durable auto-archive entries whose `doneHead` is not in its canonical form (see [`norm_head`]).
-    normalized: u64,
+    pub normalized: u64,
+}
+
+/// One state-file forward migration applied (not a preview), as `migrate-state.js` runs it for the post-pull stages of
+/// `update`: `reply_state` (`migrateReplyState`), `gate_intents` (`migrateGateIntents`) or `auto_archived`
+/// (`migrateAutoArchivedState`). `None` for any other name.
+pub(crate) fn apply(ctx: &Ctx, which: &str) -> Option<Report> {
+    match which {
+        "reply_state" => Some(migrate_reply_state(ctx, false)),
+        "gate_intents" => Some(migrate_gate_intents(ctx, false)),
+        "auto_archived" => Some(migrate_auto_archived(ctx, false)),
+        _ => None,
+    }
 }
 
 fn gate_dir(ctx: &Ctx) -> PathBuf {

@@ -1,0 +1,60 @@
+{
+  "answer": {
+    "adopted": 1,
+    "attempted": true,
+    "budgetExhausted": false,
+    "detail": "heal-orphan-partitions: adopted 1 orphan partition(s) across 2 store(s)",
+    "errors": 0,
+    "forwarded": 0,
+    "pending": 0,
+    "pendingRows": 0,
+    "skipped": 0,
+    "stores": 2,
+    "unhealable": 0,
+    "unhealableSample": []
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/summaries/": "755",
+    ".anti-hall/devswarm/summaries/{REPOKEY}.json": "644 {\"generatedAt\":0,\"requiredGates\":[\"done\",\"merged\",\"tests_passed\"],\"workspaces\":{\"o1\":{\"id\":\"o1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"so1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null,\"total\":2,\"cursor\":0,\"unread\":2,\"directTotalFromOthers\":2,\"directUnread\":2,\"oldestDirectUnreadTs\":1790000000000,\"oldestDirectUnreadSender\":\"sender\",\"broadcastUnread\":0,\"broadcastUnreadFromOthers\":0,\"urgencyMax\":\"normal\",\"broadcastUrgencyMax\":null,\"working_on\":null,\"gates\":{},\"archive_ready\":false,\"archive_requested\":false,\"archive_request_only_unread\":false,\"pendingQuestions\":[]}},\"recent\":[],\"archivedRegistryRows\":[]}",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/o1.json": "644 {\"id\":\"o1\",\"worktreePath\":\"{REPO}\",\"sessionId\":\"so1\",\"inboxPath\":null,\"cursorPath\":null,\"nudgeCommand\":null}",
+    ".anti-hall/update-sweep-state.json": "644 {\"healOrphanPartitions\":{\"completedVersion\":\"0.1.0\",\"pendingVersion\":null,\"pendingHashes\":[],\"lastCompletedHash\":null,\"completedTs\":0}}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "other",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    },
+    "{REPOKEY}": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "o1-a",
+          "workspace_id": "o1"
+        },
+        {
+          "hash": "o1-b",
+          "workspace_id": "o1"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "o1",
+          "session_id": "so1",
+          "worktree_path": "{REPO}"
+        }
+      ]
+    }
+  }
+}

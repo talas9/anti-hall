@@ -33,6 +33,14 @@ var ho = {
     var rh = ah.fs.realpath(spawn.osHome() || '') || spawn.osHome();
     return ctx.toplevel && ctx.toplevel !== rh ? ctx.toplevel : cwd;
   },
+  // `sessionProjectRoot(cwd)`: the outermost superproject's checkout (a submodule cwd climbs to it), or cwd itself when there is none
+  // or it is the home directory; hooks/lib/handover-find.js sessionProjectRoot. null: the host cannot say.
+  sessionProjectRoot: function (cwd) {
+    var ctx = ho.context(cwd);
+    if (ctx.unsure) return null;
+    var rh = ah.fs.realpath(spawn.osHome() || '') || spawn.osHome();
+    return ctx.root && ctx.root !== rh ? ctx.root : cwd;
+  },
   handoversRoot: function (cwd) {
     var r = ho.repoRoot(cwd);
     return r === null ? null : ah.path.join(r, ah.cfg('codex_handover.handovers_dir'));

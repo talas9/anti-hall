@@ -3,9 +3,15 @@
 // RECENT COMPACT (a boundary within guards.compactAdviceRecentTurns turns), unless the threshold-fired auto-handover latch allows it.
 // Almost no reply recommends compacting, so the cheap tests come first: the final text (last_assistant_message, else the current turn's
 // assistant text read by ah.transcript.turnText) must hold the words of a recommendation before the transcript is parsed. The phrase
-// rules are lib/76-compact-advice.js (the Node regular expressions); the context and latch are lib/75-ctxbudget.js. A transcript path
-// that is not absolute, a transcript line only V8 reads and a request whose HOME is unset defer to Node. Mirrors
-// hooks/compact-advice-guard.js. Keys and texts: ctxbudget.toml (ctxbudget.ca_*).
+// rules are lib/76-compact-advice.js (the Node regular expressions); the context and latch are lib/75-ctxbudget.js. Every Stop is
+// decided here: the home is Node's os.homedir() (HOME when set, else the passwd home; under a test marker the real
+// home is refused as companion/lib/test-home-guard.js does, where Node's hook ends with an error that never blocks); a relative
+// transcript path is opened from the absolute payload cwd (hookProc.openKnown); a compact boundary's timestamp is read by jx.isoMs, else
+// jx.dateParse. Four cases only V8 or the Node process can decide exactly are decided natively, counted and logged
+// (ctxbudget.ca_unsure_log_kind), towards the stricter verdict: a relative or empty HOME and a relative transcript path resolve against
+// the stand-in directory, a transcript line the interpreter cannot parse as V8 does leaves the turn to the context reading alone, and a
+// latch comparison that needs a compact boundary time neither reader reads takes the boundary as after the fire. Mirrors hooks/compact-advice-guard.js. Keys and
+// texts: ctxbudget.toml (ctxbudget.ca_*).
 'use strict';
 
 function caAllow(w) {
@@ -13,34 +19,81 @@ function caAllow(w) {
   return 'allow';
 }
 
+// A compact boundary whose timestamp neither jx.isoMs nor jx.dateParse reads (V8's legacy parser and the local zone decide it).
+var CA_UNKNOWN_TS = { unknownTs: true };
+
+// A case only V8 or the Node process decides exactly is decided natively, counted (native_unable) and logged; for a block input the
+// stricter reading is taken (an unreadable boundary time counts as compacted after the fire; an unreadable turn is judged on the context reading alone).
+function caUnsure(why) { ah.unable('compact-advice-guard:' + why); ah.log(ah.cfg('ctxbudget.ca_unsure_log_kind'), why); }
+
+// Node's resolveHome() (companion/lib/test-home-guard.js over os.homedir(), hookProc.nodeHome): {home, passwd}, {relative: true} (a
+// relative or empty HOME, resolved against the stand-in directory), or {allow: why} (no home at all, or the real home refused under a test marker: the Node hook throws, and
+// its own try/catch ends it silently).
+function caHome() {
+  var nh = hookProc.nodeHome();
+  if (nh.relative) return { relative: true };
+  if (nh.none) return { allow: 'home_none' };
+  if (hookProc.testGuarded(nh.home)) return { allow: 'home_test_guard' };
+  return nh;
+}
+
+// cadv.readTurn with the timestamp forms jx.dateParse reads too (the shared reader stays as the other guards use it).
+function caReadTurn(lines) {
+  var tsOf = cadv.tsOf;
+  cadv.tsOf = function (e) {
+    if (!e || typeof e.timestamp !== 'string') return null;
+    var ms = jx.isoMs(e.timestamp);
+    if (ms === undefined) ms = jx.dateParse(e.timestamp);
+    if (ms === undefined) return CA_UNKNOWN_TS;
+    return isFinite(ms) ? ms : null;
+  };
+  try { return cadv.readTurn(lines); } finally { cadv.tsOf = tsOf; }
+}
+
 function caBlock(reason) { return { exact: { code: 0, out: text.render(cb.c('ctxbudget.stop_block_line'), { reason: JSON.stringify(reason) }), err: '' } }; }
 
 function decide(p) {
   if (ah.env.get(ah.cfg('ctxbudget.judge_child_env')) === ah.cfg('ctxbudget.judge_child_on')) return 'allow';
-  var home = ah.env.get(ah.cfg('ctxbudget.home_env'));
-  if (home === null || !ah.path.isAbsolute(home)) return 'defer';
+  var home = caHome();
+  if (home.relative) {
+    caUnsure('home_relative');
+    var rh = hookProc.home(p);
+    if (rh === null) return 'allow';
+    ah.useHome(rh);
+  }
+  if (home.allow) { ah.log(ah.cfg('ctxbudget.ca_unsure_log_kind'), home.allow); return 'allow'; }
+  // HOME unset: settings, skips and state are read and written under the passwd home, as Node's os.homedir() does
+  if (home.passwd) ah.useHome(home.home);
   if (!ah.settings.bool('ctxbudget.set_compact_advice_guard')) return 'allow';
   if (p === null || typeof p !== 'object' || ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; }) || p.stop_hook_active === true) return 'allow';
   if (ah.settings.skipped(ah.cfg('ctxbudget.skip_compact_advice'))) return 'allow';
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : null;
   if (!tp) return 'allow';
-  if (!ah.path.isAbsolute(tp)) return 'defer';
-  var tail = ah.fs.readTail(tp, cb.n('ctxbudget.tail_bytes'));
-  if (tail === null) return 'allow';
+  if (hookProc.openKnown(p, tp) === null) caUnsure('relative_transcript'); // no absolute payload cwd: the stand-in directory is used
+  tp = hookProc.open(p, tp);
+  var tailBytes = cb.n('ctxbudget.tail_bytes');
+  // an unreadable transcript allows. A zero-byte window opens and measures the file exactly as the full read does, without
+  // pulling it in: most Stops end at `mayAdvise` below and never need the text.
+  if (ah.fs.tailLines(tp, 0, false, ['\u0000']) === null) return 'allow';
   var lam = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
   if (lam.trim()) {
     if (!cadv.mayAdvise(lam)) return 'allow';
   } else {
     // the final text is the turn's last part: a cheap exact test on the host first, then the whole turn's text (a superset of it)
     var hint = ah.cfg('ctxbudget.advice_prefilter');
-    var lower = tail.toLowerCase();
-    if (tail.indexOf('\\u') === -1 && !hint.some(function (w) { return lower.indexOf(w.toLowerCase()) !== -1; })) return 'allow';
+    var seen = ah.fs.tailHasAny(tp, tailBytes, ['\\u'], hint.map(function (w) { return w.toLowerCase(); }));
+    if (seen === null || !seen) return 'allow';
     var tt = ah.transcript.turnText(tp, cb.n('ctxbudget.tail_bytes'), '');
     if (tt !== null && !tt.unsure && tt.parts && !cadv.mayAdvise(tt.parts.join('\n'))) return 'allow';
   }
-  var lines = tail.split('\n'); // a trailing \r stays: JSON.parse reads past it
-  var turn = cadv.readTurn(lines);
-  if (turn === null) return 'defer';
+  var lines = ah.fs.tailLines(tp, tailBytes, false); // a trailing \r stays: JSON.parse reads past it
+  if (lines === null) return 'allow';
+  var turn = caReadTurn(lines);
+  if (turn === null) {
+    // a transcript line only V8 reads exactly: judged on the last message and the context reading alone (no recent-compaction exemption)
+    caUnsure('transcript_line');
+    turn = { finalText: lam, turnsSinceCompact: null, compactAt: null };
+  }
   var finalText = lam.trim() ? lam : turn.finalText;
   if (!cadv.mayAdvise(finalText)) return 'allow';
   var found = cadv.findAdvice(finalText);
@@ -48,8 +101,7 @@ function decide(p) {
   var last = found[found.length - 1];
   if (cadv.lastRetraction(finalText) > last.index) return 'allow';
   var w = { inferred: null };
-  var result = cb.getContextPct(tp, p.session_id, w);
-  if (result === 'defer') return 'defer';
+  var result = cb.getContextPct(tp, p.session_id, w); // tp is absolute here
   var pct = result && isFinite(result.pct) ? result.pct : null;
   var threshold = ah.settings.num('ctxbudget.set_ah_pct'), margin = ah.settings.num('ctxbudget.set_ca_margin'), window = ah.settings.num('ctxbudget.set_ca_recent');
   var low = pct !== null && pct < threshold - margin;
@@ -59,6 +111,8 @@ function decide(p) {
   if (!tag) return caAllow(w);
   var latch = cb.readLatch(tag);
   var firedAt = typeof latch.firedAt === 'number' && isFinite(latch.firedAt) ? latch.firedAt : null;
+  // only this comparison needs the boundary's time: one only V8 reads leaves it unknown
+  if (turn.compactAt === CA_UNKNOWN_TS && turn.turnsSinceCompact !== null && latch.fired === true && firedAt !== null) { caUnsure('compact_timestamp'); turn.compactAt = null; }
   var compactAfterFire = turn.turnsSinceCompact !== null && (turn.compactAt === null || firedAt === null || turn.compactAt >= firedAt);
   var tokensFired = latch.fired === true && cb.c('ctxbudget.ca_tokens_vias').indexOf(latch.firedVia) !== -1;
   if (latch.fired === true && (!low || tokensFired) && !compactAfterFire) return caAllow(w);

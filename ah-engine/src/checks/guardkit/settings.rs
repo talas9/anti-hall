@@ -107,10 +107,26 @@ pub fn unreadable_settings_file(home: &str) -> bool {
 
 /// `readStoredPluginOptions`: the options the host stored for this plugin, flat and nested forms merged.
 pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Value>> {
+    stored_options_at(st, &crate::install::running_root(&st.env))
+}
+
+fn stored_options_at(st: &Settings, root: &str) -> Option<serde_json::Map<String, Value>> {
     let host = read_object(st, defaults::text("guardkit.claude_settings_file"))?;
     let map = host.get("pluginConfigs")?.as_object()?;
     let mut out: Option<serde_json::Map<String, Value>> = None;
-    for k in defaults::list("guardkit.plugin_config_keys") {
+    let owner = crate::install::owning(&st.home, root);
+    let keys = owner
+        .map(|o| {
+            let mut keys: Vec<String> = defaults::list("guardkit.plugin_config_keys")
+                .into_iter()
+                .filter(|k| !k.contains(defaults::text("wake_watch.key_sep")))
+                .map(str::to_string)
+                .collect();
+            keys.push(o.key);
+            keys
+        })
+        .unwrap_or_else(|| defaults::list("guardkit.plugin_config_keys").into_iter().map(str::to_string).collect());
+    for k in &keys {
         let Some(e) = map.get(k).and_then(Value::as_object) else { continue };
         let o = out.get_or_insert_with(serde_json::Map::new);
         if let Some(opts) = e.get("options").and_then(Value::as_object) {
@@ -128,7 +144,7 @@ pub(crate) fn stored_options(st: &Settings) -> Option<serde_json::Map<String, Va
 }
 
 /// The value one boolean switch resolves to before its default: `None` when no source sets it.
-/// The type a setting's value is read as (`coerceValue` of `hooks/lib/settings.js`).
+/// The type a setting's value is read as.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ty {
     Bool,
@@ -294,10 +310,12 @@ pub fn is_skipped(st: &Settings, guard: &str) -> bool {
     let Some(o) = read_object(st, defaults::text("guardkit.skip_file")) else { return false };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
     let live = |k: &str| o.get(k).and_then(Value::as_f64).is_some_and(|t| t > now);
-    if live(guard) {
-        return true;
-    }
-    !defaults::list("guardkit.destructive_guards").contains(&guard) && live(defaults::text("guardkit.skip_all_key"))
+    let payload_session = crate::script::session();
+    let session = (!payload_session.is_empty())
+        .then_some(payload_session.as_str())
+        .or_else(|| defaults::list("guardkit.skip_session_env").into_iter().find_map(|k| st.env.get(k).filter(|s| !s.is_empty()).map(String::as_str)));
+    let applies = |guard: &str| live(guard) || session.is_some_and(|sid| live(&format!("{guard}{}{sid}", defaults::text("guardkit.skip_session_separator"))));
+    applies(guard) || (!defaults::list("guardkit.destructive_guards").contains(&guard) && applies(defaults::text("guardkit.skip_all_key")))
 }
 
 /// `coerceValue` for a number entry on a JSON value or string: `None` when the value does not count (so the next source is
@@ -402,7 +420,7 @@ fn migration_stamped(st: &Settings, plugin_root: &str) -> Result<bool, Undecidab
 
 /// `readPluginOption`: the plugin option's value unless it equals the entry default (which the host exports even when
 /// the person never touched it, so it must not mask a lower tier).
-fn plugin_option_typed(st: &Settings, entry: &V) -> Option<Value> {
+fn plugin_option_typed(st: &Settings, entry: &V, root: &str) -> Option<Value> {
     let option = entry.str_field("option");
     if option.is_empty() {
         return None;
@@ -415,7 +433,7 @@ fn plugin_option_typed(st: &Settings, entry: &V) -> Option<Value> {
     if let Some(raw) = st.env.get(&env_key) {
         return if *raw == default { None } else { coerce_typed(entry, &Value::String(raw.clone())) };
     }
-    let stored = stored_options(st)?;
+    let stored = stored_options_at(st, root)?;
     let v = stored.get(option)?;
     if js_string_of(v).is_some_and(|s| s == default) {
         return None;
@@ -457,7 +475,7 @@ pub fn get_setting(st: &Settings, entry: &V, dflt: Option<Value>, plugin_root: &
     if legacy_first && let Some(v) = legacy_typed(st, entry) {
         return Ok(Some(v));
     }
-    if let Some(v) = plugin_option_typed(st, entry) {
+    if let Some(v) = plugin_option_typed(st, entry, plugin_root) {
         return Ok(Some(v));
     }
     if !legacy_first && let Some(v) = legacy_typed(st, entry) {

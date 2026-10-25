@@ -9,14 +9,15 @@
 //!   markers BEFORE the first write; a disagreement, a Node that cannot run, or a marker retirement to do (Node's function is the
 //!   actor there) hands the whole verb to Node with nothing written.
 //!
-//! Deferred BEFORE the first write (Node then runs the verb): whatever the app sync itself defers (a shape JavaScript would order
-//! or evaluate differently), an object key JavaScript orders first, a gap report the formatter cannot print exactly.
+//! The table is built the way `formatAppState` builds it, on JavaScript's own semantics: a field of the wrong type prints as
+//! JavaScript prints it, and a read that throws in Node (a property of `null`, a call on a value without the method) answers
+//! `{ ok: false, error }` with exit 2, which is what Node's `run()` does with the exception.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - an unreadable optional file is the same as an absent one (fail-open, as Node's try/catch)
 // A failure that must be seen goes through `crate::discard` instead.
 use crate::checks::guardkit::ojson::{OVal, is_array_index_key};
-use crate::checks::guardkit::text::slice_utf16;
 use crate::checks::jsport::num::to_js_string;
+use crate::checks::jsport::text::slice16_lossy;
 use crate::defaults;
 use crate::dsact::runner::{Runner, System};
 use crate::dssup::appsync::{self, Opts};
@@ -24,7 +25,7 @@ use crate::dssup::tick::Ctx;
 use crate::meshw::args::Args;
 use crate::meshw::common::{Inv, Obj, n, s};
 use crate::meshw::extverbs::tpl;
-use crate::meshw::ident::{R, defer};
+use crate::meshw::ident::R;
 use crate::meshw::idlock::devswarm_root;
 use crate::meshw::send::{Answer, Effect};
 use std::collections::BTreeMap;
@@ -38,206 +39,264 @@ fn truthy(v: Option<&OVal>) -> bool {
     v.is_some_and(OVal::truthy)
 }
 
-/// `'' + v` for the scalars JavaScript prints the same everywhere; `None` (absent) is `undefined`. Containers defer.
-fn concat(v: Option<&OVal>) -> R<String> {
-    Ok(match v {
-        None => "undefined".to_string(),
-        Some(OVal::Null) => "null".to_string(),
-        Some(OVal::Bool(b)) => b.to_string(),
-        Some(OVal::Num(x)) => to_js_string(*x),
-        Some(OVal::Str(t)) => t.clone(),
-        Some(_) => return defer("concat-container"),
-    })
+/// A JavaScript exception raised while formatting. Node's `run()` catches it and answers `{ ok: false, error: <message> }` with exit 2.
+#[derive(Debug)]
+pub(crate) struct Thrown(pub String);
+
+type J<T> = Result<T, Thrown>;
+
+/// `String(v)` for any JSON value: objects print as `[object Object]`, arrays join their elements with commas (`null` is empty).
+pub(crate) fn js_string(v: &OVal) -> String {
+    match v {
+        OVal::Null => "null".to_string(),
+        OVal::Bool(b) => b.to_string(),
+        OVal::Num(x) => to_js_string(*x),
+        OVal::Str(t) => t.clone(),
+        OVal::Arr(a) => a.iter().map(|e| if matches!(e, OVal::Null) { String::new() } else { js_string(e) }).collect::<Vec<_>>().join(","),
+        OVal::Obj(_) => defaults::text("devswarm_cli.app_js_object").to_string(),
+    }
 }
 
-/// `String(id).slice(0, 8)`.
-fn short(id: &str) -> R<String> {
-    slice_utf16(id, defaults::num("devswarm_cli.app_short_id") as usize).ok_or_else(|| crate::meshw::ident::Defer("surrogate-cut".into()))
+/// `Object.keys(o)` / `Object.entries(o)` order: the integer-like keys first in ascending order, then the others as inserted.
+pub(crate) fn js_entries(kv: &[(String, OVal)]) -> Vec<(&String, &OVal)> {
+    let mut ints: Vec<(u64, &String, &OVal)> = kv.iter().filter(|(k, _)| is_array_index_key(k)).filter_map(|(k, v)| Some((k.parse().ok()?, k, v))).collect();
+    ints.sort_by_key(|(i, _, _)| *i);
+    ints.into_iter().map(|(_, k, v)| (k, v)).chain(kv.iter().filter(|(k, _)| !is_array_index_key(k)).map(|(k, v)| (k, v))).collect()
 }
 
-/// `a || b` over two strings-or-scalars, as the text `+` prints.
-fn either(a: Option<&OVal>, b: Option<&OVal>) -> R<String> {
+/// `Object.entries(v)` of a value a script may hold: an object's entries, an array's indices, a string's UTF-16 units, nothing else.
+fn entries_of(v: &OVal) -> Vec<(String, OVal)> {
+    match v {
+        OVal::Obj(kv) => js_entries(kv).into_iter().map(|(k, x)| (k.clone(), x.clone())).collect(),
+        OVal::Arr(a) => a.iter().enumerate().map(|(i, x)| (i.to_string(), x.clone())).collect(),
+        OVal::Str(t) => t.encode_utf16().enumerate().map(|(i, u)| (i.to_string(), OVal::Str(String::from_utf16_lossy(&[u])))).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `v[key]` for a value that may be `undefined` (`None`) or `null`: those throw, a container answers its field, a scalar has none.
+fn prop<'a>(v: Option<&'a OVal>, key: &str) -> J<Option<&'a OVal>> {
+    match v {
+        None => Err(Thrown(tpl("devswarm_cli.app_msg_js_read", &[("kind", "undefined"), ("prop", key)]))),
+        Some(OVal::Null) => Err(Thrown(tpl("devswarm_cli.app_msg_js_read", &[("kind", "null"), ("prop", key)]))),
+        Some(x) => Ok(x.get(key)),
+    }
+}
+
+/// `v.length` truthiness: an array's or string's length is nonzero; a value without one reads `undefined`; `null` and `undefined` throw.
+fn has_length(v: Option<&OVal>) -> J<bool> {
+    match v {
+        Some(OVal::Arr(a)) => Ok(!a.is_empty()),
+        Some(OVal::Str(t)) => Ok(!t.is_empty()),
+        other => prop(other, "length").map(|n| n.is_some_and(OVal::truthy)),
+    }
+}
+
+/// `v.join(sep)` / `v.map(...)`: only an array has them.
+fn items<'a>(v: Option<&'a OVal>, what: &str) -> J<&'a [OVal]> {
+    match v {
+        Some(OVal::Arr(a)) => Ok(a),
+        _ => Err(Thrown(tpl("devswarm_cli.app_msg_js_not_function", &[("what", what)]))),
+    }
+}
+
+/// The source expression of Node's `formatAppState` that a TypeError names.
+fn expr(name: &str) -> &'static str {
+    defaults::raw("devswarm_cli.app_js_exprs").str_field(name)
+}
+
+/// The exception of calling `v.<method>(...)` where `what` is the expression Node names: reading `method` off `undefined` or `null`
+/// throws on the read, any other value lacks the method.
+fn missing_method(v: Option<&OVal>, what: &str) -> Thrown {
+    let method = what.rsplit('.').next().unwrap_or(what);
+    match prop(v, method) {
+        Err(t) => t,
+        Ok(_) => Thrown(tpl("devswarm_cli.app_msg_js_not_function", &[("what", what)])),
+    }
+}
+
+/// `for (const x of v)`: an array's elements or a string's characters; anything else is not iterable.
+fn iterate(v: Option<&OVal>, what: &str) -> J<Vec<OVal>> {
+    match v {
+        Some(OVal::Arr(a)) => Ok(a.clone()),
+        Some(OVal::Str(t)) => Ok(t.chars().map(|c| OVal::Str(c.to_string())).collect()),
+        _ => Err(Thrown(tpl("devswarm_cli.app_msg_js_not_iterable", &[("what", what)]))),
+    }
+}
+
+/// `'' + v` (`None` is `undefined`).
+pub(crate) fn concat(v: Option<&OVal>) -> String {
+    v.map_or_else(|| "undefined".to_string(), js_string)
+}
+
+/// `names.shortId(id)`: the first `app_short_id` characters, after the mesh prefix when the id carries one (GH #203). A cut through
+/// a surrogate pair leaves a lone surrogate in JavaScript, which the UTF-8 write turns into U+FFFD.
+pub fn short(id: &str) -> R<String> {
+    Ok(short16(id))
+}
+
+fn short16(id: &str) -> String {
+    let mut width = defaults::num("devswarm_cli.app_short_id") as usize;
+    let prefix = defaults::text("devswarm_cli.app_short_id_mesh_prefix");
+    if id.starts_with(prefix) {
+        width += prefix.encode_utf16().count();
+    }
+    slice16_lossy(id, width)
+}
+
+/// `a || b` over two values, as the text `+` prints.
+fn either(a: Option<&OVal>, b: Option<&OVal>) -> String {
     if truthy(a) { concat(a) } else { concat(b) }
 }
 
-fn list_join(v: Option<&OVal>, sep: &str) -> R<String> {
-    let Some(OVal::Arr(items)) = v else { return defer("list-shape") };
-    let mut parts = Vec::new();
-    for i in items {
-        parts.push(match i {
-            OVal::Str(t) => t.clone(),
-            OVal::Num(x) => to_js_string(*x),
-            // `join` prints null and undefined as empty
-            OVal::Null => String::new(),
-            _ => return defer("join-element"),
-        });
-    }
-    Ok(parts.join(sep))
+/// `list.join(sep)` of a list read as `what`: `null` elements are empty.
+fn list_join(v: Option<&OVal>, sep: &str, what: &str) -> J<String> {
+    Ok(items(v, what)?.iter().map(|i| if matches!(i, OVal::Null) { String::new() } else { js_string(i) }).collect::<Vec<_>>().join(sep))
 }
 
 /// The people-and-ids list of `unknownToAntiHall` / `openButMarkedArchived`: `(label || id) (id8)` joined.
-fn id_list(v: Option<&OVal>) -> R<String> {
-    let Some(OVal::Arr(items)) = v else { return defer("list-shape") };
+fn id_list(v: Option<&OVal>, what: &str) -> J<String> {
     let mut parts = Vec::new();
-    for u in items {
-        let id = match u.get("id") {
-            Some(OVal::Str(t)) => t.clone(),
-            _ => return defer("id-shape"),
-        };
-        parts.push(format!("{} ({})", either(u.get("label"), u.get("id"))?, short(&id)?));
+    for u in items(v, what)? {
+        let label = prop(Some(u), "label")?;
+        let id = u.get("id");
+        parts.push(format!("{} ({})", either(label, id), short16(&concat(id))));
     }
     Ok(parts.join(defaults::text("devswarm_cli.app_join_semi")))
 }
 
 /// `formatAppState(r)`.
-fn format_app_state(r: &OVal) -> R<String> {
+fn format_app_state(r: &OVal) -> J<String> {
     if !truthy(r.get("appDb")) {
-        let reason = if truthy(r.get("reason")) { concat(r.get("reason"))? } else { defaults::text("devswarm_cli.app_no_db").to_string() };
+        let reason = if truthy(r.get("reason")) { concat(r.get("reason")) } else { defaults::text("devswarm_cli.app_no_db").to_string() };
         return Ok(tpl("devswarm_cli.app_msg_unavailable", &[("reason", reason.as_str())]));
     }
-    let Some(counts) = r.get("counts").filter(|c| matches!(c, OVal::Obj(_))) else { return defer("counts-shape") };
     let mut l: Vec<String> = Vec::new();
-    let version = if truthy(r.get("appVersion")) { concat(r.get("appVersion"))? } else { defaults::text("devswarm_cli.app_version_unknown").to_string() };
+    let version = if truthy(r.get("appVersion")) { concat(r.get("appVersion")) } else { defaults::text("devswarm_cli.app_version_unknown").to_string() };
+    let counts = r.get("counts");
+    let builders = concat(prop(counts, "builders")?);
+    let active_n = concat(prop(counts, "active")?);
+    let archived_n = concat(prop(counts, "archived")?);
     l.push(tpl(
         "devswarm_cli.app_msg_head",
-        &[
-            ("version", version.as_str()),
-            ("builders", concat(counts.get("builders"))?.as_str()),
-            ("active", concat(counts.get("active"))?.as_str()),
-            ("archived", concat(counts.get("archived"))?.as_str()),
-        ],
+        &[("version", version.as_str()), ("builders", builders.as_str()), ("active", active_n.as_str()), ("archived", archived_n.as_str())],
     ));
-    let nonempty = |v: Option<&OVal>| -> R<bool> {
-        match v {
-            Some(OVal::Arr(a)) => Ok(!a.is_empty()),
-            _ => defer("list-shape"),
-        }
-    };
-    if nonempty(r.get("missing"))? {
-        l.push(tpl("devswarm_cli.app_msg_missing", &[("list", list_join(r.get("missing"), defaults::text("devswarm_cli.app_join_comma"))?.as_str())]));
+    let comma = defaults::text("devswarm_cli.app_join_comma");
+    if has_length(r.get("missing"))? {
+        l.push(tpl("devswarm_cli.app_msg_missing", &[("list", list_join(r.get("missing"), comma, expr("missing_join"))?.as_str())]));
     }
-    if nonempty(r.get("gated"))? {
-        l.push(tpl("devswarm_cli.app_msg_gated", &[("list", list_join(r.get("gated"), defaults::text("devswarm_cli.app_join_comma"))?.as_str())]));
+    if has_length(r.get("gated"))? {
+        l.push(tpl("devswarm_cli.app_msg_gated", &[("list", list_join(r.get("gated"), comma, expr("gated_join"))?.as_str())]));
     }
     l.push(defaults::text("devswarm_cli.app_table_head").to_string());
     l.push(defaults::text("devswarm_cli.app_table_rule").to_string());
     let sessions = r.get("sessions");
-    let Some(OVal::Arr(active)) = r.get("active") else { return defer("list-shape") };
     let dash = defaults::text("devswarm_cli.app_dash");
-    for a in active {
-        let id = match a.get("id") {
-            Some(OVal::Str(t)) => t.clone(),
-            _ => return defer("id-shape"),
-        };
-        let label = either(a.get("label"), a.get("id"))?.replace('|', "\\|");
-        let mut title = tpl("devswarm_cli.app_title", &[("label", label.as_str()), ("id", short(&id)?.as_str())]);
+    for a in iterate(r.get("active"), expr("active"))? {
+        let a = &a;
+        // `(a.label || a.id).replace(...)`: only a string has `replace`
+        let named = if prop(Some(a), "label")?.is_some_and(OVal::truthy) { a.get("label") } else { a.get("id") };
+        let Some(OVal::Str(name)) = named else { return Err(missing_method(named, expr("replace"))) };
+        let id8 = short16(&concat(a.get("id")));
+        let mut title = tpl("devswarm_cli.app_title", &[("label", name.replace('|', "\\|").as_str()), ("id", id8.as_str())]);
         if truthy(a.get("isPinned")) {
             title.push_str(defaults::text("devswarm_cli.app_pinned"));
         }
         if truthy(a.get("focused")) {
             title.push_str(defaults::text("devswarm_cli.app_on_screen"));
         }
-        let sess = match a.get("sessionId") {
-            Some(OVal::Str(sid)) if !sid.is_empty() => {
-                if sid == defaults::text("devswarm_cli.app_proto_key") {
-                    return defer("proto-key");
-                }
-                let corroborated = truthy(sessions.and_then(|m| m.get(sid)).and_then(|e| e.get("corroborated")));
-                format!("{}{}", short(sid)?, if corroborated { "" } else { defaults::text("devswarm_cli.app_unverified") })
-            }
-            Some(v) if !v.truthy() => dash.to_string(),
-            None => dash.to_string(),
-            _ => return defer("session-shape"),
+        let sess = if truthy(a.get("sessionId")) {
+            let sid = concat(a.get("sessionId"));
+            // `r.sessions[a.sessionId]` throws when there is no sessions object; `(entry || {}).corroborated`
+            let entry = prop(sessions, &sid)?;
+            let corroborated = entry.filter(|e| e.truthy()).is_some_and(|e| truthy(e.get("corroborated")));
+            format!("{}{}", short16(&sid), if corroborated { "" } else { defaults::text("devswarm_cli.app_unverified") })
+        } else {
+            dash.to_string()
         };
         let rank = match a.get("rank") {
             None | Some(OVal::Null) => dash.to_string(),
-            v => concat(v)?,
+            v => concat(v),
         };
-        let or_dash = |k: &str| -> R<String> { if truthy(a.get(k)) { concat(a.get(k)) } else { Ok(dash.to_string()) } };
+        let or_dash = |k: &str| -> String { if truthy(a.get(k)) { concat(a.get(k)) } else { dash.to_string() } };
         l.push(tpl(
             "devswarm_cli.app_row",
             &[
                 ("rank", rank.as_str()),
                 ("title", title.as_str()),
-                ("type", or_dash("builderType")?.as_str()),
-                ("finish", or_dash("finish")?.as_str()),
-                ("brief", or_dash("brief")?.as_str()),
+                ("type", or_dash("builderType").as_str()),
+                ("finish", or_dash("finish").as_str()),
+                ("brief", or_dash("brief").as_str()),
                 ("session", sess.as_str()),
             ],
         ));
     }
     let unknown = r.get("unknownToAntiHall");
-    if nonempty(unknown)? {
-        l.push(tpl("devswarm_cli.app_msg_unknown", &[("list", id_list(unknown)?.as_str())]));
+    if has_length(unknown)? {
+        l.push(tpl("devswarm_cli.app_msg_unknown", &[("list", id_list(unknown, expr("unknown_map"))?.as_str())]));
     }
     let stale = r.get("openButMarkedArchived");
-    if nonempty(stale)? {
-        l.push(tpl("devswarm_cli.app_msg_stale", &[("list", id_list(stale)?.as_str())]));
+    if has_length(stale)? {
+        l.push(tpl("devswarm_cli.app_msg_stale", &[("list", id_list(stale, expr("stale_map"))?.as_str())]));
     }
     if truthy(r.get("wouldMark")) {
-        l.push(tpl("devswarm_cli.app_msg_would_mark", &[("n", concat(r.get("wouldMark"))?.as_str())]));
+        l.push(tpl("devswarm_cli.app_msg_would_mark", &[("n", concat(r.get("wouldMark")).as_str())]));
     }
-    if nonempty(r.get("scheduledForDeletion"))? {
-        l.push(tpl(
-            "devswarm_cli.app_msg_deletion",
-            &[("list", list_join(r.get("scheduledForDeletion"), defaults::text("devswarm_cli.app_join_comma"))?.as_str())],
-        ));
+    let deletion = r.get("scheduledForDeletion");
+    if has_length(deletion)? {
+        l.push(tpl("devswarm_cli.app_msg_deletion", &[("list", list_join(deletion, comma, expr("deletion_join"))?.as_str())]));
     }
     match r.get("gaps").filter(|g| g.truthy()) {
         Some(g) => {
-            let Some(OVal::Arr(repos)) = g.get("repos") else { return defer("gaps-shape") };
-            for repo in repos {
-                if !matches!(repo, OVal::Obj(_)) {
-                    return defer("gaps-shape");
-                }
-                if !truthy(repo.get("app")) {
+            for repo in iterate(g.get("repos"), expr("repos"))? {
+                let repo = &repo;
+                if !prop(Some(repo), "app")?.is_some_and(OVal::truthy) {
                     continue;
                 }
                 let reason = if truthy(repo.get("reason")) {
-                    tpl("devswarm_cli.app_msg_gap_reason", &[("reason", concat(repo.get("reason"))?.as_str())])
+                    tpl("devswarm_cli.app_msg_gap_reason", &[("reason", concat(repo.get("reason")).as_str())])
                 } else {
                     String::new()
                 };
                 l.push(tpl(
                     "devswarm_cli.app_msg_gap",
                     &[
-                        ("name", either(repo.get("name"), repo.get("repositoryId"))?.as_str()),
-                        ("app", concat(repo.get("app"))?.as_str()),
-                        ("matched", concat(repo.get("matched"))?.as_str()),
-                        ("archived", concat(repo.get("archivedTarget"))?.as_str()),
-                        ("pre", concat(repo.get("preIngest"))?.as_str()),
-                        ("gap", concat(repo.get("gap"))?.as_str()),
+                        ("name", either(repo.get("name"), repo.get("repositoryId")).as_str()),
+                        ("app", concat(repo.get("app")).as_str()),
+                        ("matched", concat(repo.get("matched")).as_str()),
+                        ("archived", concat(repo.get("archivedTarget")).as_str()),
+                        ("pre", concat(repo.get("preIngest")).as_str()),
+                        ("gap", concat(repo.get("gap")).as_str()),
                         ("reason", reason.as_str()),
                     ],
                 ));
-                match repo.get("byBranch") {
-                    None | Some(OVal::Null) => {}
-                    Some(OVal::Obj(by)) => {
-                        // an integer-like key is listed first by JavaScript
-                        if by.iter().any(|(k, _)| is_array_index_key(k)) {
-                            return defer("branch-key-order");
-                        }
-                        for (b, v) in by {
-                            l.push(tpl(
-                                "devswarm_cli.app_msg_gap_branch",
-                                &[
-                                    ("branch", b.as_str()),
-                                    ("n", concat(v.get("n"))?.as_str()),
-                                    ("h1", concat(v.get("lt1h"))?.as_str()),
-                                    ("d1", concat(v.get("lt1d"))?.as_str()),
-                                    ("d7", concat(v.get("lt7d"))?.as_str()),
-                                    ("older", concat(v.get("older"))?.as_str()),
-                                ],
-                            ));
-                        }
+                if let Some(by) = repo.get("byBranch").filter(|b| b.truthy()) {
+                    for (b, v) in entries_of(by) {
+                        let v = Some(&v);
+                        l.push(tpl(
+                            "devswarm_cli.app_msg_gap_branch",
+                            &[
+                                ("branch", b.as_str()),
+                                ("n", concat(prop(v, "n")?).as_str()),
+                                ("h1", concat(prop(v, "lt1h")?).as_str()),
+                                ("d1", concat(prop(v, "lt1d")?).as_str()),
+                                ("d7", concat(prop(v, "lt7d")?).as_str()),
+                                ("older", concat(prop(v, "older")?).as_str()),
+                            ],
+                        ));
                     }
-                    Some(_) => return defer("gaps-shape"),
                 }
             }
         }
         None => l.push(defaults::text("devswarm_cli.app_msg_no_gap_report").to_string()),
     }
     Ok(l.join("\n"))
+}
+
+/// The plugin root the loaded defaults came from. Every verb runs after the defaults loaded (its first `defaults::text` would
+/// otherwise have failed), so the root is always there; the sync context carries it and nothing in the sync reads it.
+fn plugin_root() -> std::path::PathBuf {
+    defaults::root().unwrap_or_default()
 }
 
 fn ctx_of<'a>(inv: &'a Inv, root: &'a Path, st: &'a crate::checks::git::util::Settings) -> Ctx<'a> {
@@ -255,17 +314,13 @@ pub fn app_state(inv: &Inv, a: &Args) -> R<Answer> {
 
 /// [`app_state`] with the runner given (a dry pass starts no process).
 pub fn app_state_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
-    let Some(root) = defaults::root() else { return defer("no-plugin-root") };
+    let root = plugin_root();
     let st = inv.settings();
     let ctx = ctx_of(inv, &root, &st);
     let pass = appsync::pass_with(&ctx, runner, Opts { dry: true, ..Opts::default() })?;
     let last: Option<OVal> = std::fs::read(state_file(inv)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
-    let last_obj = match &last {
-        Some(l @ OVal::Obj(_)) => Some(l),
-        None | Some(OVal::Null) => None,
-        // a scalar or an array: `last.gaps` and friends are property reads of a non-object
-        Some(_) => return defer("last-shape"),
-    };
+    // `last && last.gaps`: a falsy parse (`null`, `false`, `0`, `""`) is no record; a truthy non-object reads every field as absent
+    let last_obj = last.as_ref().filter(|l| l.truthy());
     let stv = pass.state.as_ref();
     let field = |k: &str, empty: OVal| -> OVal { stv.and_then(|v| v.get(k)).cloned().unwrap_or(empty) };
     let or_null = |v: Option<&OVal>| -> OVal { v.filter(|x| x.truthy()).cloned().unwrap_or(OVal::Null) };
@@ -313,8 +368,15 @@ pub fn app_state_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     let no_json_flag = !a.has(defaults::text("devswarm_cli.flag_json"));
     let mut result = o.done();
     if no_json_flag {
-        let text = format_app_state(&result)?;
-        result.set("text", s(&text));
+        match format_app_state(&result) {
+            Ok(text) => result.set("text", s(&text)),
+            // the exception Node's `run()` catches
+            Err(Thrown(error)) => {
+                let mut o = Obj::default();
+                o.put("ok", OVal::Bool(false)).put("error", s(&error));
+                return crate::meshw::ident::refuse(&o.done().stringify());
+            }
+        }
     }
     // main() prints the table only when `--json` is not among the words and the result carries it
     let printed = if !a.raw.iter().any(|w| w == defaults::text("devswarm_cli.json_word")) {
@@ -355,7 +417,7 @@ pub fn app_sync(inv: &Inv, a: &Args) -> R<Answer> {
 
 /// [`app_sync`] with the runner given.
 pub fn app_sync_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
-    let Some(root) = defaults::root() else { return defer("no-plugin-root") };
+    let root = plugin_root();
     let st = inv.settings();
     let ctx = ctx_of(inv, &root, &st);
     let env_dry = inv.env.get(defaults::text("devswarm_sup.as_env_dry")).is_some_and(|v| v == defaults::text("devswarm_sup.as_env_dry_on"));
@@ -404,4 +466,80 @@ pub fn app_sync_with(inv: &Inv, a: &Args, runner: &dyn Runner) -> R<Answer> {
     o.put("gapTotal", rec["gapTotal"].as_f64().map_or(OVal::Null, n));
     o.put("missing", count(rec, "schemaMissing")).put("elapsedMs", n(elapsed));
     Ok(answer(0, o.done().stringify()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A state result as `cmdAppState` builds it, with the given fields replaced by JSON text.
+    fn result(patch: &[(&str, &str)]) -> OVal {
+        let mut r = OVal::parse(
+            r#"{"appDb":true,"reason":null,"appVersion":"2.5.3","missing":[],"gated":[],"counts":{"builders":2,"active":1,"archived":1},
+            "active":[],"sessions":{},"unknownToAntiHall":[],"openButMarkedArchived":[],"gaps":null,"scheduledForDeletion":[],"wouldMark":0}"#,
+        )
+        .unwrap();
+        for (k, v) in patch {
+            r.set(k, OVal::parse(v).unwrap());
+        }
+        r
+    }
+
+    fn text(patch: &[(&str, &str)]) -> String {
+        format_app_state(&result(patch)).unwrap()
+    }
+
+    fn thrown(patch: &[(&str, &str)]) -> String {
+        format_app_state(&result(patch)).unwrap_err().0
+    }
+
+    /// JavaScript throws on a property of `null` or a call of a method the value lacks; Node's `run()` answers that as `{ok:false,error}`.
+    #[test]
+    fn a_read_that_throws_in_javascript_is_a_refusal_with_its_message() {
+        assert_eq!(thrown(&[("counts", "null")]), "Cannot read properties of null (reading 'builders')");
+        assert_eq!(thrown(&[("unknownToAntiHall", r#""x""#)]), "r.unknownToAntiHall.map is not a function");
+        assert_eq!(thrown(&[("active", "5")]), "r.active is not iterable");
+        assert_eq!(thrown(&[("active", r#"[null]"#)]), "Cannot read properties of null (reading 'label')");
+        assert_eq!(thrown(&[("active", r#"[{"id":5}]"#)]), "(a.label || a.id).replace is not a function");
+        assert_eq!(thrown(&[("active", r#"[{"label":"a","id":"b","sessionId":"s"}]"#), ("sessions", "null")]), "Cannot read properties of null (reading 's')");
+        assert_eq!(thrown(&[("gaps", r#"{"repos":[{"app":1,"byBranch":{"b":null}}]}"#)]), "Cannot read properties of null (reading 'n')");
+    }
+
+    /// Values of another type print the way JavaScript's `+` prints them.
+    #[test]
+    fn a_field_of_another_type_prints_like_javascript() {
+        let t = text(&[("missing", r#"["a",null,3,[1,[2]],{"x":1}]"#), ("scheduledForDeletion", r#"{"length":0}"#), ("wouldMark", r#"[7,8]"#)]);
+        assert!(t.contains("a, , 3, 1,2, [object Object]"), "{t}");
+        assert!(t.contains("next sync marks 7,8 descriptor(s)"), "{t}");
+        assert!(!t.contains("pending app deletion"), "an object has no length: nothing to list");
+        let t = text(&[("counts", r#"{"builders":1.50}"#)]);
+        assert!(t.contains("1.5 builders, undefined open, undefined archived"), "{t}");
+    }
+
+    /// `String(id).slice(0, 8)` through a surrogate pair leaves a lone surrogate, which the write turns into U+FFFD.
+    #[test]
+    fn a_cut_through_a_surrogate_pair_prints_the_replacement_character() {
+        let t = text(&[("active", "[{\"id\":\"1234567\u{1d4b3}x\",\"label\":\"L|M\",\"sessionId\":\"__proto__\",\"rank\":0,\"isPinned\":true}]")]);
+        assert!(t.contains("L\\|M (1234567\u{fffd}) [pinned]"), "{t}");
+        assert!(t.contains("__proto_ (unverified)"), "an id that names a special object key is an ordinary key: {t}");
+    }
+
+    /// `Object.entries` lists integer-like keys first, ascending; a branch map that is an array lists its indices.
+    #[test]
+    fn the_gap_report_lists_branches_in_javascript_key_order() {
+        let gaps = r#"{"repos":[{"app":3,"name":"r","matched":1,"archivedTarget":0,"preIngest":0,"gap":2,
+            "byBranch":{"feat":{"n":1},"10":{"n":2},"9":{"n":3}}},{"app":0},"skipped",{"app":1,"byBranch":[{"n":4}]},{"app":2,"byBranch":5}]}"#;
+        let t = text(&[("gaps", gaps)]);
+        let order: Vec<usize> = ["gap → 9:", "gap → 10:", "gap → feat:"].iter().map(|k| t.find(k).unwrap_or_else(|| panic!("{k} in {t}"))).collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{t}");
+        assert!(t.contains("gap → 0: 4"), "an array lists its indices: {t}");
+    }
+
+    #[test]
+    fn a_mesh_id_keeps_its_hash_and_a_uuid_keeps_eight() {
+        assert_eq!(short("primary-d7a18d81").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("primary-d7a18d81ffee").unwrap(), "primary-d7a18d81");
+        assert_eq!(short("48f38c9e-8dc2-426a-adb2-f9401ab84e99").unwrap(), "48f38c9e");
+        assert_eq!(short("abc").unwrap(), "abc");
+    }
 }

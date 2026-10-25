@@ -24,12 +24,12 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -d "$ANTI_HALL_ROOT/.codex-plugin" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Run the existing pure-Node debt harvester:
+Run the engine's debt harvester:
 
 ```bash
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest --json
-sh "$ANTI_HALL_ROOT/scripts/ah-run.sh" harvest --dir src --stale-days 60
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" harvest --dir src --stale-days 60
 ```
 
 Debt marker format:

@@ -1,0 +1,227 @@
+# ah-engine shipped defaults for the Node backup (owner decision 2026-10-22): the original Node hooks stay in the plugin as a backup,
+# in two stages. Format: see the header of engine.toml.
+#
+# Stage 1, the SHADOW: the engine decides every hook event, as always. For a bounded share of the guard events the engine also starts
+# a detached `ah-engine shadow-run` that runs the same Node hooks on their own, in a scratch home, with their own timeout. It never
+# changes the engine's verdict and never delays the hook (it starts after the answer is written). Both sides write one row per check
+# to the shadow ledger (source `engine` or `node`); `ah-engine shadow-compare` reads the ledger.
+#
+# Stage 2, the FALLBACK SWITCH: a manual switch (`ah-engine fallback node|off`) that makes the launcher run the original Node hooks
+# directly instead of the engine. It never flips by itself. The thin client (`ah-hook`) reads the marker file
+# `files.fallback_switch` in the state directory; the key `nodeback.fallback` below is the shipped default that marker overrides.
+
+[nodeback.shadow_mode]
+doc = "Which events the Node shadow follows: `off` (none), `sampled` (nodeback.shadow_sample_pct of the events, plus every event the engine blocked when nodeback.shadow_sample_blocks is 1) or `all` (every event of nodeback.shadow_events; heavy, a Node process per hook)."
+value = "off"
+
+[nodeback.shadow_sample_pct]
+doc = "Share of the shadowed events, in percent, that `sampled` mode follows."
+value = 10
+min = 0
+max = 100
+unit = "%"
+
+[nodeback.shadow_sample_blocks]
+doc = "1 = in `sampled` mode an event the engine blocked is always followed (blocks are rare and the most informative); 0 = blocks are sampled like every other event."
+value = 1
+min = 0
+max = 1
+
+[nodeback.shadow_end_date]
+doc = "The first UTC day (YYYY-MM-DD) on which the shadow is over: from then on it turns itself off and says so once. Empty = no end."
+value = "2026-11-22"
+
+[nodeback.shadow_events]
+doc = "The hook events the shadow follows. Only decision events by default: the other events' Node hooks write state (task lists, ledgers) that a second run would double."
+value = ["PreToolUse", "PermissionRequest", "Stop", "SubagentStop"]
+
+[nodeback.shadow_max_concurrent]
+doc = "Most shadow runs alive at once (each runs its event's Node hooks one after the other). A shadow event that finds every slot taken is skipped and counted (`shadow` / `skip_busy`)."
+value = 2
+min = 1
+max = 16
+
+[nodeback.shadow_node_timeout_ms]
+doc = "Longest one Node hook may run in the shadow, in ms (the hook's own timeout from the dispatch table applies too; the shorter wins). A hook past it is killed with its process group and recorded as `timeout`."
+value = 8000
+min = 100
+unit = "ms"
+
+[nodeback.shadow_max_payload_bytes]
+doc = "Largest hook payload the shadow follows; a bigger one is skipped and counted (`shadow` / `skip_payload`)."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[nodeback.shadow_load_max_pct]
+doc = "Skip the shadow while the one-minute load average per core is at or above this percent (0 = do not look at the load). Skips are counted (`shadow` / `skip_load`)."
+value = 85
+min = 0
+unit = "%"
+
+[nodeback.shadow_env]
+doc = "Variables set for every shadowed Node hook (NAME=VALUE), so a hook that is run for comparison starts no process watch, reaper sweep or ingest action of its own."
+value = ["ANTIHALL_PROCWATCH=0", "ANTIHALL_SESSION_END_REAPER=0", "ANTIHALL_INGEST_DRY_RUN=1", "ANTIHALL_NODE_SHADOW=1"]
+
+[nodeback.shadow_scratch_dir]
+doc = "The home the shadowed Node hooks run in, relative to the state directory. Its `.anti-hall/settings.json` is a link to the real one, so the hooks read the same settings the engine does; every other file they write stays here."
+value = "shadow/home"
+
+[nodeback.shadow_jobs_dir]
+doc = "Where a shadow job (the payload and the engine's rows of one event) waits for its `shadow-run`, relative to the state directory. A job older than nodeback.job_max_age_s is removed by the next run."
+value = "shadow/jobs"
+
+[nodeback.shadow_slots_dir]
+doc = "The slot lock files that bound nodeback.shadow_max_concurrent, relative to the state directory."
+value = "shadow/slots"
+
+[nodeback.job_max_age_s]
+doc = "A shadow job file this old (its run died or never started) is removed."
+value = 600
+min = 10
+unit = "s"
+
+[nodeback.ledger_max_bytes]
+doc = "Size at which the shadow ledger is rotated to `<ledger>.1` (one generation is kept)."
+value = 16777216
+min = 65536
+unit = "bytes"
+
+[nodeback.report_days]
+doc = "Days `shadow-compare` covers unless --days is given."
+value = 7
+min = 1
+unit = "days"
+
+[nodeback.report_max_checks]
+doc = "Most checks a `shadow-compare` text report lists (the worst by disagreement first); --json always lists all."
+value = 60
+min = 1
+
+[nodeback.fallback]
+doc = "The shipped default of the fallback switch: `off` (the engine decides) or `node` (the launcher runs the original Node hooks directly). The marker file written by `ah-engine fallback node|off` overrides it; editing this key in the plugin also turns the switch on for the thin client and `ah-engine fallback status`."
+value = "off"
+
+[nodeback.fallback_choices]
+doc = "The words `ah-engine fallback` accepts, in order: the switch on, the switch off, the report."
+value = ["node", "off", "status"]
+
+[files.shadow_ledger]
+doc = "The shadow ledger (state directory): one JSON line per check and source, written by the engine side, by the shadow runs and by the shell fallback."
+value = "shadow.ndjson"
+
+[files.shadow_hold]
+doc = "Marker file (state directory) the daemon keeps while its own CPU budget (diagnostics.budget_cpu_pct) is breached: the shadow starts nothing while it exists."
+value = "shadow.hold"
+
+[files.shadow_ended]
+doc = "Marker file (state directory) written when the shadow noticed its end date, so the one-line notice is printed once."
+value = "shadow.ended"
+
+[nodeback.msg_shadow_ended]
+doc = "Printed once on stderr (exit 0) and logged when the shadow's end date has passed. Placeholder: {date}."
+value = "anti-hall: the Node shadow ended on {date}; the engine decides alone (shadow-compare keeps its report)"
+
+[nodeback.msg_fallback_on]
+doc = "Printed by `ah-engine fallback node`. Placeholder: {file}."
+value = "anti-hall: fallback is ON - the original Node hooks answer every hook event; the engine is bypassed ({file}). Turn it off with: ah-engine fallback off"
+
+[nodeback.msg_fallback_off]
+doc = "Printed by `ah-engine fallback off`."
+value = "anti-hall: fallback is OFF - the engine answers hook events"
+
+[nodeback.msg_fallback_still_node]
+doc = "Printed by `ah-engine fallback off` when the marker is gone but the shipped default (nodeback.fallback) still says node."
+value = "anti-hall: the switch marker is removed, but nodeback.fallback in the plugin's defaults is still `node`; edit that key to turn the fallback off"
+
+[nodeback.msg_fallback_status]
+doc = "The `ah-engine fallback status` line. Placeholders: {state} (node|off), {marker} (yes|no), {default} (the shipped default)."
+value = "fallback: {state} (marker: {marker}, shipped default: {default})"
+
+[nodeback.msg_fallback_usage]
+doc = "Printed for a missing or unknown word after `ah-engine fallback`."
+value = "usage: ah-engine fallback node|off|status"
+
+[nodeback.msg_fallback_write_failed]
+doc = "Printed when the marker cannot be written or removed. Placeholders: {file}, {err}."
+value = "anti-hall: cannot change the fallback marker {file}: {err}"
+
+[nodeback.msg_report_none]
+doc = "The `shadow-compare` line when the ledger holds no row in the window. Placeholder: {days}."
+value = "shadow-compare: no shadow rows in the last {days} day(s) (mode: {mode}, ends {end})"
+
+[nodeback.msg_report_head]
+doc = "The first `shadow-compare` line. Placeholders: {days}, {runs}, {rows}, {mode}, {end}."
+value = "shadow-compare: last {days} day(s), {runs} compared event(s), {rows} row(s); mode {mode}, ends {end}"
+
+[nodeback.msg_report_check]
+doc = "One check line of the `shadow-compare` text report. Placeholders: {check}, {n}, {agree}, {weaker}, {stricter}, {node_err}, {engine_err}."
+value = "{check}: n={n} agree={agree} engine-weaker={weaker} engine-stricter={stricter} node-errors={node_err} engine-errors={engine_err}"
+
+[nodeback.msg_report_total]
+doc = "The totals line of the `shadow-compare` text report. Placeholders as in msg_report_check."
+value = "TOTAL: n={n} agree={agree} engine-weaker={weaker} engine-stricter={stricter} node-errors={node_err} engine-errors={engine_err}"
+
+[nodeback.msg_report_skips]
+doc = "The skip-count line of the `shadow-compare` text report. Placeholder: {skips} (reason=count pairs)."
+value = "skipped (not followed): {skips}"
+
+[nodeback.msg_report_daily]
+doc = "One day line of the `shadow-compare` text report. Placeholders: {day}, plus those of msg_report_check."
+value = "{day}: n={n} agree={agree} engine-weaker={weaker} engine-stricter={stricter} node-errors={node_err} engine-errors={engine_err}"
+
+[nodeback.settings_rel]
+doc = "The settings file, relative to a home directory. The shadow's scratch home gets a link to the real one at the same place, so the shadowed Node hooks read the settings the engine does."
+value = ".anti-hall/settings.json"
+
+[nodeback.day_ms]
+doc = "Milliseconds in a day, for the shadow's end date and the `shadow-compare` window."
+value = 86400000
+
+[nodeback.compare_flags]
+doc = "The flags `shadow-compare` accepts; the first three take a value."
+value = ["--days", "--check", "--event", "--daily"]
+
+[nodeback.read_chunk_bytes]
+doc = "Size of one read of a shadowed Node hook's output."
+value = 8192
+min = 512
+unit = "bytes"
+
+[nodeback.ident_max_len]
+doc = "Longest identifier (check, host, event, tool) a ledger row holds; longer ones are cut."
+value = 64
+min = 8
+unit = "bytes"
+
+[nodeback.msg_job_unreadable]
+doc = "Logged when a shadow run cannot read its job file."
+value = "shadow run: the job file is unreadable"
+
+[nodeback.log_kind]
+doc = "The health-log kind of the Node backup's events (shadow end, fallback switch, run failures)."
+value = "shadow"
+
+[nodeback.msg_usage_run]
+doc = "Printed by `ah-engine shadow-run` without a job file."
+value = "usage: ah-engine shadow-run <job file> (internal; started by the engine)"
+
+[nodeback.msg_usage_compare]
+doc = "Printed by `ah-engine shadow-compare` for a bad flag."
+value = "usage: ah-engine shadow-compare [--days N] [--check ID] [--event NAME] [--daily] [--json]"
+
+[nodeback.report_file]
+doc = "File (state directory) the daily `shadow_report` job writes its JSON report to."
+value = "shadow-report.json"
+
+[nodeback.verdict_words]
+doc = "The verdict words the ledger holds, from least to most severe: `allow`, `advise`, `block`. Others (`error`, `timeout`, `skip`) mean the side gave no verdict and are counted as errors, never as agreement or disagreement."
+value = ["allow", "advise", "block"]
+
+[nodeback.node_dir]
+doc = "The directory of the Node backup (the original Node hooks, companion and scripts), relative to the plugin root. It is NOT part of the published plugin (plugins/anti-hall-node, a sibling of plugins/anti-hall); the install that ships both trees has it. When the directory is missing the shadow and the fallback switch are logged no-ops: the engine keeps deciding, nothing blocks."
+value = "../anti-hall-node"
+
+[nodeback.msg_no_node_dir]
+doc = "Logged (and printed by `ah-engine fallback node`) when the Node backup directory is missing. Placeholders: {dir}."
+value = "anti-hall: the Node backup directory {dir} is missing, so the Node shadow and fallback do nothing; the engine keeps deciding"

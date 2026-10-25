@@ -2,8 +2,9 @@
 // (available memory under a few percent of the total blocks the spawn) and the spawn rate (the cap per rolling window, counted
 // in ~/.anti-hall/swarm-spawns.log under the lock file the Node hook shares). An allowed spawn is recorded, a blocked one is not
 // (a blocked retry must never extend the window) but is noted in the trip log, which the decision never reads. The shared-tree
-// advisory (a write-capable agent started while another runs in the same tree) rides an allowed spawn. Anything this script
-// cannot reproduce exactly defers BEFORE the spawn is recorded, so the Node hook counts it once. Any trouble taking the lock,
+// advisory (a write-capable agent started while another runs in the same tree) rides an allowed spawn. What this script cannot
+// reproduce exactly is decided natively and counted (native_unable): a log over the read cap is read from its tail (entries ascend,
+// so the window is at the end), a shared-tree note it cannot settle says nothing, and the rate cap still applies. Any trouble taking the lock,
 // reading the memory figures or writing the log allows the spawn. Mirrors hooks/swarm-guard.js and lib/shared-tree-note.js.
 // Keys and messages: spawn_guards.toml (swarm_guard.*).
 'use strict';
@@ -39,20 +40,68 @@ function swgIsolated(inp) {
   return ah.cfg('swarm_guard.isolation_values').indexOf(v) >= 0;
 }
 
-function swgInScratch(inp) {
+// The session's working tree: {dirs} (its cwd and git toplevel, lexical and real), null when there is no cwd (the named-tree reading is then off), or 'unsure' (counted).
+function swgTree(cwd) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  var ctx = ah.repo.context(cwd);
+  if (ctx.unsure) return 'unsure';
+  var dirs = [ah.path.resolveAbs(cwd)];
+  if (ctx.toplevel) dirs.push(ah.path.resolveAbs(ctx.toplevel));
+  dirs.slice().forEach(function (d) { var r = ah.fs.realpath(d); if (r && dirs.indexOf(r) < 0) dirs.push(r); });
+  return { dirs: dirs };
+}
+
+// True when `abs` (or, when it exists, its real path) lies inside one of the session tree's directories (lexical and real).
+function swgInTree(abs, tree) {
+  var cands = [abs], r = ah.fs.realpath(abs);
+  if (r && r !== abs) cands.push(r);
+  return cands.some(function (a) { return tree.dirs.some(function (d) { return swgUnder(a, d); }); });
+}
+
+function swgUnder(abs, dir) {
+  if (!dir) return false;
+  var rel = ah.path.relative(dir, abs);
+  return rel === '' || (rel !== '..' && rel.indexOf('../') !== 0 && !ah.path.isAbsolute(rel));
+}
+
+// True when the brief names its own working tree (a clone, worktree, cd or work-in target) at an absolute or ~ path outside the
+// session's tree: that agent works in another checkout, so it shares nothing with this one.
+function swgNamesOtherTree(t, tree) {
+  if (!tree) return false;
+  var hits = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree'), 'i', t), home = ah.home();
+  for (var i = 0; i < hits.length; i++) {
+    var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
+    if (!at) continue;
+    var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
+    if (trim) raw = raw.slice(0, trim[0]);
+    var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
+    if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[1]); }
+    if (!ah.path.isAbsolute(raw)) continue;
+    var abs = ah.path.resolveAbs(raw);
+    if (!swgInTree(abs, tree)) return true;
+  }
+  return false;
+}
+
+function swgInScratch(inp, tree) {
   var i = swgIsObj(inp) ? inp : {};
   var t = String(i.prompt || '') + '\n' + String(i.description || '');
   var path = ah.cfg('swarm_guard.scratch_path');
   var scratch = ah.cfg('swarm_guard.scratch_alternatives').map(function (a) { return a.split('{path}').join(path); }).join('|');
-  return ah.re.test(scratch, 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(ah.cfg('swarm_guard.re_in_place'), 'i', t);
+  // A prohibition names the same objects as an affirmative write. Remove only those negated
+  // spans; an independent affirmative clause still cancels the exemption.
+  var place = ah.cfg('swarm_guard.re_in_place');
+  var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
+  var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
+  return (ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
+    !ah.re.test(place, 'i', affirmative);
 }
 
-function swgSharesTree(inp) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp); }
+function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
 
 function swgDirname(d) { var i = d.lastIndexOf('/'); return i <= 0 ? '/' : d.slice(0, i); }
 
-// true / false, or null when the answer needs something this script cannot reproduce (the caller defers).
+// true / false, or null when the answer needs something this script cannot reproduce (counted by the caller).
 function swgRepoDocsMatch(dir0, re) {
   var ctx = ah.repo.context(dir0);
   if (ctx.unsure) return null;
@@ -74,18 +123,20 @@ function swgRepoDocsMatch(dir0, re) {
   return false;
 }
 
-// The advisory text, '' when silent, null when the answer cannot be reproduced (defer).
+// The advisory text, '' when silent, null when the answer cannot be reproduced (counted; no note).
 function swgSharedTreeNote(p) {
   if (!ah.settings.bool('swarm_guard.shared_tree_setting')) return '';
   var inp = swgIsObj(p.tool_input) ? p.tool_input : null;
-  if (!inp || !swgSharesTree(inp)) return '';
+  var tree = swgTree(p.cwd);
+  if (tree === 'unsure') return null;
+  if (!inp || !swgSharesTree(inp, tree)) return '';
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
-  var scan = ah.transcript.agents(tp);
+  var scan = ah.transcript.agentsWindow(tp); // Node's runningAgents: the default window only
   if (scan === null) return '';
   if (scan.unsure) return null;
   // Another agent counts only when its own spawn input is known, write-capable and not isolated.
-  if (!scan.rows.some(function (a) { return a.spawnInput && swgSharesTree(a.spawnInput); })) return '';
+  if (!scan.rows.some(function (a) { return a.spawnInput && swgSharesTree(a.spawnInput, tree); })) return '';
   // `String(payload.cwd || process.cwd())`: the daemon cannot know the hook process's directory
   if (!p.cwd) return null;
   var noWt = swgRepoDocsMatch(String(p.cwd), ah.cfg('swarm_guard.re_no_worktrees'));
@@ -104,12 +155,64 @@ function swgDescribe(p) {
   return atype ? tool + ':' + atype : tool;
 }
 
+
+// ---- usage-aware dispatch and the fan-out ceiling (GH #270). Both read what the engine already has: the usage cache the limit-conserve
+// check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
+// metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
+
+// A block reason, an advisory line to ride an allowed spawn ('' for none).
+function swgBudgetGates(p, home) {
+  var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
+  var ceilOn = ah.settings.bool('spawn_ceiling.setting') && !ah.settings.skipped(ah.cfg('spawn_ceiling.guard_name'));
+  if (!usageOn && !ceilOn) return { block: null, note: '' };
+  full = swgFullest(swgUsageBuckets(home));
+  var note = '';
+  if (usageOn && full) {
+    if (full.pct >= ah.cfgNum('spawn_usage.block_pct')) {
+      ah.advisory('flagged', 'spawn_usage_block');
+      return { block: text.message('block', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_block_what'), { limit: full.name, pct: Math.round(full.pct), cap: ah.cfgNum('spawn_usage.block_pct'), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_block_why'), instead: ah.cfg('spawn_usage.msg_block_instead'),
+      }), note: '' };
+    }
+    if (full.pct >= ah.cfgNum('spawn_usage.soft_pct')) {
+      ah.advisory('injected', 'spawn_usage_soft');
+      note = text.message('warn', ah.cfg('spawn_usage.guard_name'), {
+        what: text.render(ah.cfg('spawn_usage.msg_soft_what'), { limit: full.name, pct: Math.round(full.pct), resets: swgResetText(full) }),
+        why: ah.cfg('spawn_usage.msg_soft_why'), instead: ah.cfg('spawn_usage.msg_soft_instead'),
+      });
+    }
+  }
+  if (ceilOn) {
+    var run = swgRunning(p), ceil = swgCeiling(full);
+    if (run !== null && run.n >= ceil) {
+      ah.advisory('flagged', 'spawn_ceiling_block');
+      return { block: text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+        what: text.render(ah.cfg('spawn_ceiling.msg_what'), { n: run.n, ceiling: ceil, names: run.names.join(ah.cfg('spawn_ceiling.join')), more: run.n > run.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: run.n - run.names.length }) : '' }),
+        why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_instead'),
+      }), note: '' };
+    }
+  }
+  return { block: null, note: note };
+}
+
 function swgBlock(reason) { return { exact: { code: 2, out: text.blockJson(reason), err: '' } }; }
 
 function decide(p) {
   if (p === null || typeof p !== 'object') p = {};
-  var home = ah.env.get(ah.cfg('env.home'));
-  if (home === null || !ah.path.isAbsolute(home)) return 'defer';
+  var home = hookProc.home(p);
+  if (home === null) { ah.unable('swarm-guard:no_home', 'abandoned'); return 'allow'; } // no home at all: no log to count in (Node's own fail-open)
+  if (!ah.path.isAbsolute(ah.env.get(ah.cfg('env.home')) || '')) ah.unable('swarm-guard:home_resolved'); // HOME unset or relative: the passwd/stand-in home is used
+  // nested spawn: a worker (subagent or teammate) starting agents of its own; independent of the swarm-guard switch
+  if (!ah.settings.bool('nested_spawn.setting') && !ah.settings.skipped(ah.cfg('nested_spawn.guard_name')) && coordinator.subagentByPayload(p)) {
+    ah.advisory('flagged', 'nested_spawn_block');
+    var nested = text.message('block', ah.cfg('nested_spawn.guard_name'), {
+      what: ah.cfg('nested_spawn.msg_what'), why: ah.cfg('nested_spawn.msg_why'), instead: ah.cfg('nested_spawn.msg_instead'),
+    });
+    // Codex reads the reason from stderr on exit 2; Claude's block keeps its empty stderr
+    return coordinator.isCodexPayload(p) ? { exact: { code: 2, out: text.blockJson(nested), err: nested + '\n' } } : swgBlock(nested);
+  }
+  if (coordinator.isCodexPayload(p)) return 'allow'; // the rate and budget gates below count Claude's Agent and Task spawns
   if (!ah.settings.bool('swarm_guard.setting')) return 'allow';
   if (ah.settings.skipped(ah.cfg('swarm_guard.guard_name'))) return 'allow';
   var now = Date.now(), label = swgDescribe(p);
@@ -120,9 +223,12 @@ function decide(p) {
     return swgBlock(text.render(ah.cfg('swarm_guard.msg_mem'), { avail: mb(mem.available), total: mb(mem.total) }));
   }
 
-  // Decided before the spawn is recorded: a deferral then leaves the count to the Node hook.
+  var gates = swgBudgetGates(p, home);
+  if (gates.block !== null) return swgBlock(gates.block);
+
   var note = swgSharedTreeNote(p);
-  if (note === null) return 'defer';
+  if (note === null) { ah.unable('swarm-guard:shared_tree_note_unsure'); note = ''; }
+  if (gates.note) note = note ? gates.note + '\n' + note : gates.note;
 
   var dir = ah.cfg('swarm_guard.state_dir');
   var logRel = dir + '/' + ah.cfg('swarm_guard.log_file');
@@ -133,8 +239,11 @@ function decide(p) {
   var cutoff = now - ah.cfgNum('swarm_guard.window_ms'), cap = ah.cfgNum('swarm_guard.spawn_cap');
   var recent = [], logPath = ah.path.join(home, logRel);
   var raw = null, size = ah.fs.size(logPath);
-  if (size !== null && size > ah.cfgNum('script.read_max_bytes')) { ah.state.unlock(lock); return 'defer'; }
-  if (size !== null) raw = ah.fs.readText(logPath, size + 1);
+  if (size !== null && size > ah.cfgNum('script.read_max_bytes')) {
+    ah.unable('swarm-guard:log_big'); // the window is at the end of the log: read its tail, without the partly cut first line
+    raw = ah.fs.readEnd(logPath, ah.cfgNum('script.read_max_bytes'));
+    if (raw !== null) raw = raw.slice(raw.indexOf('\n') + 1);
+  } else if (size !== null) raw = ah.fs.readText(logPath, size + 1);
   if (raw !== null) {
     recent = raw.trim().split(/\r?\n/).map(function (l) { return parseInt(l.trim(), 10); })
       .filter(function (n) { return isFinite(n) && n > 0; }).filter(function (t) { return t > cutoff; });
@@ -146,10 +255,8 @@ function decide(p) {
       what: text.render(ah.cfg('swarm_guard.msg_rate_what'), { count: recent.length, cap: cap }),
       why: ah.cfg('swarm_guard.msg_rate_why'), instead: ah.cfg('swarm_guard.msg_rate_instead'),
     });
-  } else if (recent.some(function (t) { return t > ah.cfgNum('swarm_guard.exact_int_limit'); })) {
-    ah.state.unlock(lock);
-    return 'defer';
   } else {
+    if (recent.some(function (t) { return t > ah.cfgNum('swarm_guard.exact_int_limit'); })) ah.unable('swarm-guard:int_past_exact'); // kept in the window as they are
     recent.push(now);
     ah.state.writeAtomic(logRel, recent.join('\n') + '\n'); // a failed write allows the spawn unrecorded, as Node
   }

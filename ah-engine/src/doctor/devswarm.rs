@@ -1,4 +1,4 @@
-//! The DevSwarm liveness-supervisor section: do the supervisor's own files parse, do the four mechanical DevSwarm hooks still fire
+//! The DevSwarm liveness-supervisor section: do the four mechanical DevSwarm hooks still fire
 //! (each is run on a fixture home with the DevSwarm role environment and must have its observable effect), is the background
 //! supervisor installed, and, when a DevSwarm session is active, the counters of the wake-watch and mailbox-cron measurements.
 //! Ported from the first half of the Node doctor's section 5c.
@@ -22,7 +22,7 @@ enum Verdict {
     Pass(String),
     Fail(String),
     Skip(String),
-    /// The engine defers the check to its Node hook and Node could not run it: not exercised, reported as a warning.
+    /// The engine does not decide the check: not exercised, reported as a warning.
     Deferred(String),
 }
 
@@ -83,7 +83,7 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
     // 1. a child's turn writes a heartbeat and injects the parent-update reminder
     if let Some(h) = selftest::Scratch::new(ctx, text("doctor.ds_label_turn")) {
         let env = env_for(&h.dir, &child_env, &[]);
-        let r = selftest::run_check(ctx, root, "devswarm-child-turn", text("doctor.ds_script_turn"), &payload("doctor.ds_payload_turn", &[]), &env);
+        let r = selftest::run_check("devswarm-child-turn", &payload("doctor.ds_payload_turn", &[("{CWD}", ctx.cwd.clone())]), &env);
         if r.text().is_none() {
             out.push(deferred("devswarm-child-turn"));
         } else {
@@ -103,14 +103,8 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
         let builder = text("doctor.ds_builder_id");
         let wrote = write_workspace(&h.dir, builder, &[], 0);
         let env = env_for(&h.dir, &child_env, &[format!("{}={builder}", text("doctor.ds_builder_env"))]);
-        let r = selftest::run_check(
-            ctx,
-            root,
-            "devswarm-child-gate",
-            text("doctor.ds_script_cgate"),
-            &payload("doctor.ds_payload_stop", &[("{SID}", format!("cg-{now}"))]),
-            &env,
-        );
+        let r =
+            selftest::run_check("devswarm-child-gate", &payload("doctor.ds_payload_stop", &[("{SID}", format!("cg-{now}")), ("{CWD}", ctx.cwd.clone())]), &env);
         let ok = wrote.is_ok() && r.text().is_some_and(blocked);
         out.push(if r.text().is_none() {
             deferred("devswarm-child-gate")
@@ -131,14 +125,7 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
                 let wrote = std::fs::create_dir_all(&dir)
                     .and_then(|()| std::fs::write(dir.join(format!("{key}{}", text("mesh_write.json_suffix"))), text("doctor.ds_summary_json")));
                 let env = env_for(&h.dir, &primary_env, &[]);
-                let r = selftest::run_check(
-                    ctx,
-                    root,
-                    "devswarm-parent-inbox",
-                    text("doctor.ds_script_inbox"),
-                    &payload("doctor.ds_payload_inbox", &[("{CWD}", ctx.cwd.clone())]),
-                    &env,
-                );
+                let r = selftest::run_check("devswarm-parent-inbox", &payload("doctor.ds_payload_inbox", &[("{CWD}", ctx.cwd.clone())]), &env);
                 let said = r.text().is_some_and(|t| {
                     crate::checks::lit_re(text("doctor.ds_inbox_re")).is_match(t) && crate::checks::lit_re(text("doctor.ds_inbox_re2")).is_match(t)
                 });
@@ -157,11 +144,8 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
         let wrote = write_workspace(&h.dir, text("doctor.ds_workspace_id"), &lines, 0);
         let env = env_for(&h.dir, &primary_env, &[]);
         let r = selftest::run_check(
-            ctx,
-            root,
             "devswarm-parent-gate",
-            text("doctor.ds_script_pgate"),
-            &payload("doctor.ds_payload_stop", &[("{SID}", format!("pg-{now}"))]),
+            &payload("doctor.ds_payload_stop", &[("{SID}", format!("pg-{now}")), ("{CWD}", ctx.cwd.clone())]),
             &env,
         );
         let ok = wrote.is_ok() && r.text().is_some_and(blocked);
@@ -174,29 +158,6 @@ fn hook_tests(ctx: &Ctx, root: Option<&str>) -> Vec<Verdict> {
         });
     }
     out
-}
-
-/// The supervisor files that do not parse (`node --check`): `(file name, first line of the error)`.
-fn syntax_errors(ctx: &Ctx, root: &Path) -> Vec<(String, String)> {
-    let Some(node) = super::system::which(text("doctor.node_default"), ctx.env.get("PATH").map(String::as_str).unwrap_or("")) else { return Vec::new() };
-    let mut bad = Vec::new();
-    for rel in defaults::list("doctor.ds_supervisor_files") {
-        let file = root.join(rel);
-        if !file.exists() {
-            continue;
-        }
-        let mut cmd = std::process::Command::new(&node);
-        cmd.arg(text("doctor.node_check_flag")).arg(&file).env_clear().envs(&ctx.env);
-        match crate::proc::run(cmd, text("doctor.probe_label"), defaults::millis("doctor.probe_timeout_ms"), defaults::millis("doctor.probe_poll_ms")) {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
-                let first = String::from_utf8_lossy(&o.stderr).lines().next().unwrap_or("").to_string();
-                bad.push((file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), first));
-            }
-            Err(e) => bad.push((file.display().to_string(), e.into_io().to_string())),
-        }
-    }
-    bad
 }
 
 /// Whether the background supervisor is installed (a launchd agent or a systemd timer file; nothing is spawned).
@@ -249,20 +210,25 @@ fn count_lines(path: &Path, trigger: Option<&str>) -> usize {
 /// The section; nothing is printed when everything is quiet.
 pub fn section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
     let root_str = root.map(|r| r.to_string_lossy().into_owned());
-    let syntax = root.map(|r| syntax_errors(ctx, r)).unwrap_or_default();
     let tests = hook_tests(ctx, root_str.as_deref());
     let any_fail = tests.iter().any(|t| matches!(t, Verdict::Fail(_)));
     let sched = installed(ctx);
     let n_desc = descriptors(ctx);
     let env_active = crate::checks::spawnctx::devswarm_active(&Settings::from_env(&RequestEnv::from(ctx.env.clone())));
     let active = env_active || n_desc > 0;
-    if !active && sched.is_none() && syntax.is_empty() && !any_fail {
+    if !active && sched.is_none() && !any_fail {
         return;
     }
     doc.head(text("doctor_msg.head_devswarm"));
-    for (file, err) in syntax {
-        doc.bad(defaults::render("doctor_msg.ds_syntax", &[("file", &file), ("error", &err)]));
-    }
+    let compat = crate::refresh::devswarm_compat::cached(Path::new(&ctx.home));
+    doc.infol(defaults::render(
+        "devswarm_compat.doctor_summary",
+        &[
+            ("version", &compat.get("version").and_then(Value::as_str).unwrap_or("unknown")),
+            ("status", &compat.get("status").and_then(Value::as_str).unwrap_or("unverified")),
+            ("reason", &compat.get("reason").and_then(Value::as_str).unwrap_or("")),
+        ],
+    ));
     for t in tests {
         match t {
             Verdict::Pass(m) => doc.ok(m),

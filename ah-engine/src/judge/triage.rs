@@ -11,9 +11,10 @@
 //!   its confidence threshold; a label Jev leaves open is filled by the Anthropic API when a key is visible;
 //! * `haiku`: the model alone, through `jev.judgeBackend` (the Claude CLI runs here).
 //!
-//! The engine never calls the Anthropic API: a run that could need it (the default backend with a key visible, or
-//! `haiku` routed to the API) writes nothing to stdout, says why on stderr and exits with `dispatch.defer_exit`, before
-//! any call is made, so its caller can run the Node worker instead. Every model call leaves a telemetry row.
+//! The engine never calls the Anthropic API, so a label Jev leaves open stays open when a key is visible (Node's worker
+//! would have asked the API). That is the same answer the worker gives with no key: the item is classified with no
+//! confident label (`null`), and the refusal leaves one telemetry row (`judge.err_api_refused`) so it is counted, never
+//! silent. The same holds for the `haiku` backend routed to the API. Every model call leaves a telemetry row.
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this file is a deliberate keep, for these reasons:
 // - malformed input is the empty request (Node: JSON.parse catch prints {})
 // A failure that must be seen goes through `crate::discard` instead.
@@ -241,6 +242,23 @@ fn ask_model(ctx: &Ctx, text: &str, out: &mut Label) {
     );
 }
 
+/// A label that would have been asked of the Anthropic Messages API: the engine does not call it, so the label stays open
+/// and the refusal is counted.
+fn refuse_api(ctx: &Ctx) {
+    telemetry::record(
+        &ctx.home,
+        &telemetry::Row {
+            integration: defaults::text("triage.integration"),
+            backend: defaults::text("judge.backend_api"),
+            model: None,
+            ms: 0,
+            confidence: None,
+            decision: None,
+            error: Some(defaults::text("judge.err_api_refused")),
+        },
+    );
+}
+
 /// `classifyOne`: `None` when no label was confident.
 fn classify(ctx: &Ctx, client: &JevClient, raw: &str) -> Option<Label> {
     let text = scrub_secrets(raw);
@@ -248,10 +266,19 @@ fn classify(ctx: &Ctx, client: &JevClient, raw: &str) -> Option<Label> {
     if !ctx.haiku_only {
         ask_jev(ctx, client, &text, &mut out);
     }
-    // the default backend reaches here only with no key visible (a key defers the whole run), so the model fills a
-    // missing label only on the haiku backend
-    if ctx.haiku_only && (out.kind.is_none() || out.urgency.is_none()) {
-        ask_model(ctx, &text, &mut out);
+    let open = out.kind.is_none() || out.urgency.is_none();
+    if open {
+        // Node's Haiku fill: through the Anthropic API when a key is visible (refused here), else not at all. The `haiku`
+        // backend asks the model through the Claude CLI unless `jev.judgeBackend` routes it to the API (refused).
+        if ctx.haiku_only {
+            if matches!(route(&ctx.st, true), Route::Api | Route::Unknown) {
+                refuse_api(ctx);
+            } else {
+                ask_model(ctx, &text, &mut out);
+            }
+        } else if anthropic_key_visible(&ctx.st, true) == Some(true) {
+            refuse_api(ctx);
+        }
     }
     if out.kind.is_none() && out.urgency.is_none() {
         return None;
@@ -277,16 +304,35 @@ fn results_json(results: &[(String, Option<Label>)]) -> String {
     format!("{{{}}}", body.join(","))
 }
 
-/// Why the run is left to the Node worker, decided before any call.
-fn needs_api(st: &Settings, haiku_only: bool) -> bool {
-    // this one-shot process's environment is the whole caller environment, so a key's presence is always known
-    if haiku_only { matches!(route(st, true), Route::Api | Route::Unknown) } else { anthropic_key_visible(st, true) != Some(false) }
+/// Label `items` (hash, text) within `timeout_ms`, as the worker does: one result per item it reached, in the order it
+/// reached them, `None` for an item classified with no confident label. An item the budget cut off is absent, so its caller
+/// retries it. This process's environment is the whole caller environment (a one-shot process).
+pub fn label_items(home: &std::path::Path, items: &[(String, String)], timeout_ms: u64, urgent_threshold: f64) -> Vec<(String, Option<Label>)> {
+    let started = Instant::now();
+    let env = Env::process();
+    let st = Settings { home: home.to_string_lossy().into_owned(), env: cli::process_env() };
+    let haiku_only = integration_backend(&st, defaults::raw("triage.backend_setting")) == defaults::text("triage.backend_haiku");
+    let jev = JevSettings::resolve(home, Sources::load(home, env));
+    let client = crate::jev::assist::production_client(home);
+    let ctx = Ctx { home: home.to_path_buf(), st, jev, haiku_only, urgent_threshold, deadline: started + Duration::from_millis(timeout_ms) };
+    let min = Duration::from_millis(defaults::num("triage.min_remaining_ms"));
+    let mut results: Vec<(String, Option<Label>)> = Vec::new();
+    for (hash, text) in items {
+        if Instant::now() + min >= ctx.deadline {
+            break; // out of budget: the rest stay unlabelled and absent
+        }
+        let label = classify(&ctx, &client, text);
+        match results.iter_mut().find(|(k, _)| k == hash) {
+            Some(slot) => slot.1 = label,
+            None => results.push((hash.clone(), label)),
+        }
+    }
+    results
 }
 
 /// The `jev triage` command; returns the exit code.
 pub fn run_cmd() -> i32 {
     super::allow_blocking_calls();
-    let started = Instant::now();
     let mut raw = String::new();
     crate::discard::harmless(std::io::stdin().read_to_string(&mut raw)); // keep: unreadable stdin is the empty request, as in Node
     let payload: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
@@ -305,28 +351,8 @@ pub fn run_cmd() -> i32 {
         print!("{{}}");
         return 0;
     };
-    let st = Settings { home: home.to_string_lossy().into_owned(), env: cli::process_env() };
-    let haiku_only = integration_backend(&st, defaults::raw("triage.backend_setting")) == defaults::text("triage.backend_haiku");
-    if items.iter().any(|i| valid(i).is_some()) && needs_api(&st, haiku_only) {
-        eprintln!("{}", defaults::text("msg.jev_triage_defer"));
-        return defaults::num("dispatch.defer_exit") as i32;
-    }
-    let jev = JevSettings::resolve(&home, Sources::load(&home, env));
-    let client = crate::jev::assist::production_client(&home);
-    let ctx = Ctx { home: home.clone(), st, jev, haiku_only, urgent_threshold, deadline: started + Duration::from_millis(timeout_ms as u64) };
-    let min = Duration::from_millis(defaults::num("triage.min_remaining_ms"));
-    let mut results: Vec<(String, Option<Label>)> = Vec::new();
-    for item in &items {
-        if Instant::now() + min >= ctx.deadline {
-            break; // out of budget: the rest stay unlabelled and absent
-        }
-        let Some((hash, text)) = valid(item) else { continue };
-        let label = classify(&ctx, &client, &text);
-        match results.iter_mut().find(|(k, _)| *k == hash) {
-            Some(slot) => slot.1 = label,
-            None => results.push((hash, label)),
-        }
-    }
+    let valid_items: Vec<(String, String)> = items.iter().filter_map(valid).collect();
+    let results = label_items(&home, &valid_items, timeout_ms as u64, urgent_threshold);
     print!("{}", results_json(&results));
     0
 }
@@ -358,5 +384,54 @@ mod tests {
     fn the_kind_table_is_the_node_one_in_order() {
         let k: Vec<String> = kinds().into_iter().map(|(k, _)| k).collect();
         assert_eq!(k, ["question-needs-answer", "blocker", "status-report", "done-report", "fyi"]);
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn ctx(haiku_only: bool, env: &[(&str, &str)]) -> (Ctx, Settings) {
+        let home = std::env::temp_dir().join(format!("ah-triage-api-{}-{}", std::process::id(), haiku_only));
+        std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+        let envm: HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let st = Settings { home: home.to_string_lossy().into_owned(), env: envm };
+        let jev = JevSettings::resolve(&home, Sources::load(&home, Env::from_pairs(Vec::<(String, String)>::new())));
+        let c = Ctx {
+            home: home.clone(),
+            st: Settings { home: st.home.clone(), env: st.env.clone() },
+            jev,
+            haiku_only,
+            urgent_threshold: 0.9,
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        (c, st)
+    }
+
+    fn telemetry_text(c: &Ctx) -> String {
+        std::fs::read_to_string(c.home.join(defaults::text("paths.base_dir")).join(defaults::text("judge.telemetry_log"))).unwrap_or_default()
+    }
+
+    // The case that used to exit with the defer code: a key is visible, so Node's worker would have asked the Anthropic API.
+    // The engine answers natively: the item is classified with no confident label, and one telemetry row says why.
+    #[test]
+    fn a_visible_key_is_a_native_refusal_not_a_deferral() {
+        let (c, _) = ctx(false, &[("CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY", "k")]);
+        let client = crate::jev::assist::production_client(&c.home);
+        assert!(classify(&c, &client, "is the build green?").is_none());
+        let t = telemetry_text(&c);
+        assert!(t.contains(defaults::text("judge.err_api_refused")) && t.contains(defaults::text("judge.backend_api")), "{t}");
+        // without a key nothing is refused, so nothing is recorded
+        let (c2, _) = ctx(true, &[("ANTIHALL_JUDGE_BACKEND", "api"), ("CLAUDE_PLUGIN_OPTION_ANTHROPIC_API_KEY", "k")]);
+        let client2 = crate::jev::assist::production_client(&c2.home);
+        // the haiku backend routed to the API is refused the same way, and spawns no model
+        assert!(classify(&c2, &client2, "is the build green?").is_none());
+        assert!(telemetry_text(&c2).contains(defaults::text("judge.err_api_refused")));
+    }
+
+    #[test]
+    fn the_defer_word_and_exit_are_gone_from_the_triage_command() {
+        assert!(!defaults::has("msg.jev_triage_defer"));
     }
 }

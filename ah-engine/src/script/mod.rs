@@ -20,6 +20,14 @@
 //! times every worker thread, all of it in the C allocator's zone outside the heap counters; see DECISIONS.md, revision
 //! 1.111. The runtime allocates through the Rust allocator, so its heap is in `status --memory`'s live heap.
 //!
+//! Bounds (issue #21): a worker's interpreter reports its size to the memory registry (holder `quickjs`, limits `mem.quickjs_*`,
+//! per worker) and holds only as many loaded checks as fit `mem.quickjs_soft_bytes` after a
+//! collection; past it the least recently called checks are unloaded (down to the low-water mark (`mem.quickjs_low_water_pct`)) and rebuilt from
+//! their files by their next call. The per-call heap ceiling is `script.call_memory_bytes` above the size after loading, never
+//! past the absolute `mem.quickjs_hard_bytes`. Measured on a replay, the interpreter's size after a collection equals its size
+//! before it (no garbage waits for the collector) and is flat once every check has been loaded, so the bound is on what is kept
+//! loaded, not on garbage.
+//!
 //! A call runs under a CPU-time limit (`script.time_limit_ms`, with a wall-clock backstop of `script.wall_limit_factor` times it, both enforced by the interpreter's interrupt handler), a heap ceiling (`script.call_memory_bytes` above the size measured after loading) and a
 //! stack ceiling. Any failure (exception, interrupt, out of memory, a verdict of the wrong shape) is a deferral, never a
 //! silent allow (D11).
@@ -33,13 +41,26 @@
 // - an unreadable optional file or directory is the same as an absent one
 // A failure that must be seen goes through `crate::discard` instead.
 
+pub mod evidence_cache;
+pub mod evidence_walk;
 pub mod host;
 pub mod host_b3;
+pub mod host_childturn;
 pub mod host_d;
 mod host_io;
+pub mod host_mesh;
+pub mod host_parentinbox;
+pub mod host_port;
 pub mod host_proc;
+pub(crate) mod host_seat;
+pub mod host_shell;
+pub mod host_spawn;
+pub mod host_transcript;
 pub mod host_ts;
+pub mod recache;
 pub mod sysmem;
+pub mod tasks_cache;
+pub mod tool_use_scan;
 
 use crate::checks::git::util::Settings;
 use crate::checks::{Exact, RouteMeta, Verdict};
@@ -63,15 +84,25 @@ struct Pool {
     ctx: Option<(Fingerprint, Context)>,
     /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
     checks: HashMap<String, Fingerprint>,
+    /// When each loaded entry was last called (a per-pool counter), for least-recently-used unloading.
+    used: HashMap<String, u64>,
+    tick: u64,
+    /// This worker's share of the `quickjs` memory holder.
+    inst: crate::mem::Instance,
+    /// Calls since the last collection by [`maintain`].
+    calls: u64,
     /// Interrupt deadlines of the call in progress.
     deadline: Arc<Deadline>,
     epoch: Instant,
+    /// When a script was last called on this interpreter, for `script.idle_free_ms`.
+    last_call: Instant,
     rt: Runtime,
 }
 
 impl Drop for Pool {
     fn drop(&mut self) {
         self.checks.clear();
+        self.used.clear();
         self.ctx = None;
         self.rt.run_gc();
     }
@@ -87,20 +118,132 @@ pub struct Deadline {
     pub cpu: AtomicU64,
     /// The wall-clock backstop (ns since the pool epoch).
     pub wall: AtomicU64,
+    /// When the client of the request being answered stops waiting (ns since the pool epoch; 0 = none): past it nobody reads the
+    /// answer, so the call is cut and the check takes its failure policy. Never moved by blocked time (the client waits in
+    /// real time); lifted with the other limits by `commit()`.
+    pub req: AtomicU64,
+    /// Which limit interrupted the call in progress ([`Trip`] as a number; 0 = none yet). The first limit to fire stays.
+    pub trip: AtomicU64,
+    /// The thread CPU time (us) at which the call in progress was armed, for the soft-limit check after it.
+    pub start_cpu: AtomicU64,
+}
+
+/// Calls that ran past their SOFT limit (and were not cut), since the last [`take_soft_overruns`].
+static SOFT_OVERRUNS: AtomicU64 = AtomicU64::new(0);
+
+/// The soft-limit overruns counted since the last call; the daemon adds them to its metrics.
+pub fn take_soft_overruns() -> u64 {
+    SOFT_OVERRUNS.swap(0, Ordering::Relaxed)
+}
+
+/// The HARD CPU limit (ms) of a call whose SOFT limit is `soft_ms`.
+fn hard_ms_of(soft_ms: u64) -> u64 {
+    // never past `script.time_hard_cap_ms`, except that a soft limit already above the cap (a batch job's) is its own hard limit
+    soft_ms.saturating_mul(defaults::num("script.time_hard_factor").max(1)).min(defaults::num("script.time_hard_cap_ms").max(soft_ms))
+}
+
+/// The limit that interrupted a script call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trip {
+    /// The thread's CPU time reached `script.time_limit_ms`.
+    Cpu = 1,
+    /// The wall-clock backstop (`script.wall_limit_factor` times the CPU limit) passed.
+    Wall = 2,
+    /// The request's client stopped waiting.
+    Request = 3,
+}
+
+impl Trip {
+    fn of(n: u64) -> Option<Trip> {
+        match n {
+            1 => Some(Trip::Cpu),
+            2 => Some(Trip::Wall),
+            3 => Some(Trip::Request),
+            _ => None,
+        }
+    }
+
+    fn message_key(self) -> &'static str {
+        match self {
+            Trip::Cpu => "msg.script_limit_cpu",
+            Trip::Wall => "msg.script_limit_wall",
+            Trip::Request => "msg.script_limit_request",
+        }
+    }
+}
+
+impl Deadline {
+    /// The limit the call has run past, given the thread's CPU time and the pool clock now (CPU first, then wall, then the
+    /// client's deadline); a limit that is not armed (0) never fires.
+    fn exceeded(&self, cpu_now: u64, now_ns: u64) -> Option<Trip> {
+        let (cpu, wall, req) = (self.cpu.load(Ordering::Relaxed), self.wall.load(Ordering::Relaxed), self.req.load(Ordering::Relaxed));
+        if cpu != 0 && cpu_now > cpu {
+            Some(Trip::Cpu)
+        } else if wall != 0 && now_ns > wall {
+            Some(Trip::Wall)
+        } else if req != 0 && now_ns > req {
+            Some(Trip::Request)
+        } else {
+            None
+        }
+    }
+
+    /// `error` with the limit that interrupted the call and its numbers, when one did.
+    fn explain(&self, error: &str, limit_ms: u64) -> String {
+        let Some(trip) = Trip::of(self.trip.load(Ordering::Relaxed)) else { return error.to_string() };
+        let limit = defaults::text(trip.message_key());
+        let hard_ms = hard_ms_of(limit_ms);
+        let wall_ms = hard_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1));
+        defaults::render("msg.script_interrupted", &[("error", &error), ("limit", &limit), ("cpu_ms", &hard_ms), ("wall_ms", &wall_ms)])
+    }
 }
 
 impl Pool {
-    /// Start the limits of a call of `limit_ms` script time.
-    fn arm(&self, limit_ms: u64) {
+    /// Start the limits of a call of `limit_ms` script time; `cut` also arms the request's client deadline.
+    fn arm(&self, limit_ms: u64, cut: bool) {
         let cpu_now = crate::limits::thread_cpu_us();
-        self.deadline.cpu.store(cpu_now.saturating_add(limit_ms.saturating_mul(1000)).max(1), Ordering::Relaxed);
-        let wall = limit_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
-        self.deadline.wall.store((self.epoch.elapsed().as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
+        let hard_ms = hard_ms_of(limit_ms);
+        self.deadline.start_cpu.store(cpu_now, Ordering::Relaxed);
+        self.deadline.cpu.store(cpu_now.saturating_add(hard_ms.saturating_mul(1000)).max(1), Ordering::Relaxed);
+        let now = self.epoch.elapsed();
+        let wall = hard_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
+        self.deadline.wall.store((now.as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
+        let req = crate::deadline::at().filter(|_| cut).map_or(0, |at| {
+            let left = at.saturating_duration_since(Instant::now());
+            (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
+        });
+        self.deadline.req.store(req, Ordering::Relaxed);
+        self.deadline.trip.store(0, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(req != 0);
+    }
+
+    /// Whether the call in progress has run past its request's client deadline.
+    fn past_request(&self) -> bool {
+        let req = self.deadline.req.load(Ordering::Relaxed);
+        req != 0 && self.epoch.elapsed().as_nanos() as u64 > req
+    }
+
+    /// A call that finished (or was interrupted) having used more thread CPU than its SOFT limit: logged and counted.
+    fn note_soft(&self, name: &str, event: &str, soft_ms: u64) {
+        let used = crate::limits::thread_cpu_us().saturating_sub(self.deadline.start_cpu.load(Ordering::Relaxed));
+        if self.deadline.start_cpu.load(Ordering::Relaxed) != 0 && used > soft_ms.saturating_mul(1000) {
+            SOFT_OVERRUNS.fetch_add(1, Ordering::Relaxed);
+            let hard = hard_ms_of(soft_ms);
+            crate::discard::note(
+                "script_soft",
+                &defaults::render(
+                    "msg.script_soft_overrun",
+                    &[("check", &name), ("event", &event), ("used_us", &used), ("soft_ms", &soft_ms), ("hard_ms", &hard)],
+                ),
+            );
+        }
     }
 
     fn disarm(&self) {
         self.deadline.cpu.store(0, Ordering::Relaxed);
         self.deadline.wall.store(0, Ordering::Relaxed);
+        self.deadline.req.store(0, Ordering::Relaxed);
+        crate::deadline::set_cut_armed(false);
     }
 
     fn new() -> Option<Pool> {
@@ -113,16 +256,61 @@ impl Pool {
         let epoch = Instant::now();
         let d = deadline.clone();
         rt.set_interrupt_handler(Some(Box::new(move || {
-            let cpu = d.cpu.load(Ordering::Relaxed);
-            let wall = d.wall.load(Ordering::Relaxed);
-            (cpu != 0 && crate::limits::thread_cpu_us() > cpu) || (wall != 0 && epoch.elapsed().as_nanos() as u64 > wall)
+            POLLS.with(|c| c.set(c.get().wrapping_add(1)));
+            let (cpu, wall) = (d.cpu.load(Ordering::Relaxed), d.wall.load(Ordering::Relaxed));
+            if cpu != 0 || wall != 0 {
+                crate::deadline::beat(); // the interpreter is running: a slow call, not a hung worker
+            }
+            let now = epoch.elapsed().as_nanos() as u64;
+            match d.exceeded(crate::limits::thread_cpu_us(), now) {
+                Some(trip) => {
+                    // the first limit to fire is the one reported
+                    crate::discard::harmless(d.trip.compare_exchange(0, trip as u64, Ordering::Relaxed, Ordering::Relaxed)); // keep: a loser means a limit already fired
+                    true
+                }
+                None => false,
+            }
         })));
-        Some(Pool { ctx: None, checks: HashMap::new(), deadline, epoch, rt })
+        Some(Pool {
+            ctx: None,
+            checks: HashMap::new(),
+            used: HashMap::new(),
+            tick: 0,
+            inst: budget().instance(),
+            calls: 0,
+            deadline,
+            epoch,
+            last_call: Instant::now(),
+            rt,
+        })
     }
+}
+
+/// The `quickjs` holder of the memory registry (one instance per worker thread; the limits apply to each).
+fn budget() -> &'static crate::mem::Budget {
+    static BUDGET: std::sync::OnceLock<crate::mem::Budget> = std::sync::OnceLock::new();
+    BUDGET.get_or_init(|| {
+        crate::mem::global().register_instances(crate::mem::Spec::new(
+            "quickjs",
+            "mem.quickjs_soft_bytes",
+            "mem.quickjs_hard_bytes",
+            "mem.quickjs_low_water_pct",
+        ))
+    })
 }
 
 thread_local! {
     static POOL: RefCell<Option<Pool>> = const { RefCell::new(None) };
+    /// How many times the interpreter has polled its interrupt handler on this thread. The interpreter polls on a fixed count of
+    /// calls and backward jumps, so the number is a measure of the work scripts did that does not depend on the machine's load
+    /// (a test that a script does less work cannot use a clock).
+    static POLLS: std::cell::Cell<u64> = std::cell::Cell::default();
+}
+
+/// The interrupt polls of this thread's interpreter so far (see [`POLLS`]).
+#[cfg(test)]
+pub(crate) fn interpreter_polls() -> u64 {
+    POLLS.with(std::cell::Cell::get)
 }
 
 /// The calling thread's interpreter after a collection: (checks loaded, bytes QuickJS holds, allocations outstanding,
@@ -136,6 +324,36 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
             (p.checks.len(), u.malloc_size, u.malloc_count, u.js_func_count, u.js_func_code_size)
         })
     })
+}
+
+/// The shared regex cache against what its programs measured (`status --memory`): patterns and bytes held under the cache's weights,
+/// and the totals of every compile so far, estimated and measured (the calibration of the two `script.regex_*` weights).
+pub fn regex_diag() -> serde_json::Value {
+    let (patterns, held) = recache::usage();
+    let (compiled, est, measured, n) = recache::compiled_totals();
+    serde_json::json!({
+        "patterns_held": patterns, "bytes_held_by_cache_weights": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
+        "compiled": {"programs": compiled, "estimated_bytes": est, "measured_programs": n, "measured_bytes": measured},
+    })
+}
+
+/// This thread's share of the memory picture for the cap-trip snapshot: its interpreter (runtimes, contexts, loaded checks, bytes
+/// QuickJS holds) and its regex cache. Runs a collection, so only for a diagnostic, never on a request path.
+pub fn thread_diag() -> serde_json::Value {
+    let regex_cache = host::regex_cache_len();
+    let (compiled, est, measured, n) = host::regex_totals();
+    let regex_compiled = serde_json::json!({"programs": compiled, "estimated_bytes": est, "measured_bytes": measured, "measured_programs": n});
+    let thread = std::thread::current().name().map(str::to_string);
+    // QuickJS bytes before and after one collection: a drop is garbage that waited for the GC threshold, not a leak
+    let before = POOL.with(|c| c.borrow().as_ref().map(|p| p.rt.memory_usage().malloc_size));
+    match pool_usage() {
+        Some((checks, bytes, allocs, funcs, code)) => serde_json::json!({
+            "thread": thread, "runtimes": 1, "contexts": 1, "checks_loaded": checks, "quickjs_bytes": bytes, "quickjs_bytes_before_gc": before,
+            "quickjs_allocs": allocs, "js_funcs": funcs, "js_func_code_bytes": code, "regex_cache": regex_cache,
+            "regex_compiled": regex_compiled,
+        }),
+        None => serde_json::json!({"thread": thread, "runtimes": 0, "contexts": 0, "regex_cache": regex_cache, "regex_compiled": regex_compiled}),
+    }
 }
 
 fn mtime_ns(m: &std::fs::Metadata) -> u128 {
@@ -159,12 +377,20 @@ fn dirs(home: &str) -> Vec<PathBuf> {
     out
 }
 
-/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
-/// script exists for `name`.
-fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
-    let ext = defaults::text("script.ext");
-    let ds = dirs(home);
-    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+/// The lib files (by name) of the logic directories `ds`, each with its size and modification time. The listing is the same for every
+/// check, so it is taken once per `script.fingerprint_ttl_ms` and shared by all worker threads: a check call used to list the library
+/// directory and stat every lib file (about 40 file operations per check, 15 checks per tool call). An edited or added lib file is seen
+/// within the interval; 0 lists on every call.
+fn lib_fingerprint(ds: &[PathBuf], ext: &str) -> Fingerprint {
+    static CACHE: std::sync::Mutex<Option<(Vec<PathBuf>, std::time::Instant, Fingerprint)>> = std::sync::Mutex::new(None);
+    let ttl = std::time::Duration::from_millis(defaults::num("script.fingerprint_ttl_ms"));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((key, at, fp)) = cache.as_ref()
+        && key.as_slice() == ds
+        && at.elapsed() < ttl
+    {
+        return fp.clone();
+    }
     let mut libs: std::collections::BTreeMap<String, (PathBuf, u64, u128)> = std::collections::BTreeMap::new();
     // the shipped directory last, so an override of the same file name wins
     for d in ds.iter().rev() {
@@ -178,7 +404,18 @@ fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
             }
         }
     }
-    let libs: Fingerprint = libs.into_values().collect();
+    let fp: Fingerprint = libs.into_values().collect();
+    *cache = Some((ds.to_vec(), std::time::Instant::now(), fp.clone()));
+    fp
+}
+
+/// The files a check runs from: the lib files (by name), then its own files (its includes, then its script); `None` when no
+/// script exists for `name`.
+fn resolve(name: &str, home: &str) -> Option<(Fingerprint, Fingerprint)> {
+    let ext = defaults::text("script.ext");
+    let ds = dirs(home);
+    let script = ds.iter().find_map(|d| file_id(&d.join(format!("{name}{ext}"))))?;
+    let libs = lib_fingerprint(&ds, ext);
     let mut fp: Fingerprint = Vec::new();
     // scripts the owner's configuration says this check builds on (`script.includes`: check name to script names), loaded as
     // libraries after the shared helpers and before the check's own script, which may then redefine the entry
@@ -231,6 +468,9 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
         Value::Null => None,
         Value::String(t) if t == "allow" => Some(Verdict::Allow),
         Value::String(t) if t == "defer" => Some(Verdict::Defer),
+        // `{dispatcher: true}`: this process cannot wait for the model call the check needs (the daemon); the one-shot dispatcher runs the
+        // check itself (`judge.dispatch_blocking_checks`). It is the one hand-over that stays: nothing of it goes to Node.
+        Value::Object(o) if o.get("dispatcher") == Some(&Value::Bool(true)) => Some(Verdict::Defer),
         Value::Object(_) if s("block").is_some() => Some(Verdict::Block(s("block").unwrap_or_default())),
         Value::Object(_) if s("advisory").is_some() => Some(Verdict::Advisory(s("advisory").unwrap_or_default())),
         Value::Object(o) if o.get("exact").is_some_and(Value::is_object) => {
@@ -271,35 +511,88 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
 }
 
 /// What a check does when its script cannot give an answer (missing file, exception, interrupt, out of memory, a verdict of
-/// the wrong shape). The rule (D88 condition b), all of it configuration:
+/// the wrong shape). No Node hook is launched any more, so there is nothing to defer to: the check's failure mode
+/// (`script.failure_mode_by_check`, else `script.failure_mode_default`) decides, for every check:
 ///
-/// - a check that has a Node twin (every check not listed in `script.engine_only_checks`) DEFERS: the Node hook decides, so a
-///   broken script never changes a decision;
-/// - an ENGINE-ONLY check has no Node hook to defer to (its fallback command is a no-op). Its failure mode
-///   (`script.failure_mode_by_check`, else `script.failure_mode_default`) decides: `closed` BLOCKS on a guard event
-///   (`dispatch.guard_events`) with `script.msg_fail_closed`, for a security guard whose silent allow would let through what it
-///   exists to stop; `open` (every advisory check) ALLOWS, because a check's own failure must never block the user's agent.
-///   Every other event allows whatever the mode.
+/// - `closed` BLOCKS on a guard event (`dispatch.guard_events`) with `script.msg_fail_closed`, for a security guard whose silent allow
+///   would let through what it exists to stop;
+/// - `open` (every other check) ALLOWS, because a check's own failure must never block the user's agent. The allow is never silent:
+///   the failure is logged, counted, and the user gets one notice per session and check (`script.msg_guard_down`).
 ///
-/// Every failure is logged (`script_error`, rate-limited) and counted (a telemetry check event with outcome `error`).
+/// Every other event allows whatever the mode. Every failure is logged (`script_error`, rate-limited) and counted (a telemetry
+/// check event with outcome `error`).
 pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    failure_verdict(name, event, why, defaults::list("script.engine_only_checks").contains(&name), failure_mode(name))
+    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
-/// [`failed`]'s decision for a check that is (or is not) engine-only and has failure mode `mode`.
-fn failure_verdict(name: &str, event: &str, why: &str, engine_only: bool, mode: &str) -> Verdict {
-    if !engine_only {
-        return Verdict::Defer;
-    }
+/// The decision for a check that gave no answer at all (a deferral of any origin: a cut call, a verdict that says nothing, a daemon
+/// that could not run it): the same failure policy as [`failed`], so a deferral never reaches a Node hook that is not launched.
+pub fn unanswered(name: &str, event: &str) -> Verdict {
+    let why = defaults::text("script.msg_unanswered");
+    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+}
+
+/// [`failed`]'s decision for a check with failure mode `mode`.
+fn failure_verdict(name: &str, event: &str, why: &str, mode: &str) -> Verdict {
     if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) {
         return Verdict::Block(defaults::render("script.msg_fail_closed", &[("check", &name), ("why", &why)]));
     }
     Verdict::Allow
 }
 
-/// The failure mode of engine-only check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
+/// The session of the request being answered on each serving thread (set by [`set_session`]), by thread; bounded by `script.notice_max`.
+static SESSIONS: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn thread_key() -> String {
+    format!("{:?}", std::thread::current().id())
+}
+
+/// Names the session of the request this thread is answering, so a guard that is not guarding is told to the user once per session.
+pub fn set_session(id: &str) {
+    let mut m = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if m.len() >= defaults::num("script.notice_max") as usize {
+        m.clear();
+    }
+    m.insert(thread_key(), id.to_string());
+}
+
+pub(crate) fn session() -> String {
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner()).get(&thread_key()).cloned().unwrap_or_default()
+}
+
+/// The (session, check) pairs already told; bounded by `script.notice_max` (cleared when full: at worst one notice repeats).
+fn noticed() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// A fail-open `Allow` of a check that could not run says so, once per session and check: a guard that is not guarding must not be
+/// silent. Any other verdict (a block) already tells the user.
+fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
+    if v != Verdict::Allow {
+        return v;
+    }
+    let session = session();
+    if session.is_empty() {
+        return v; // no session to tell (a call outside a hook request)
+    }
+    let first = {
+        let mut seen = noticed().lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() >= defaults::num("script.notice_max") as usize {
+            seen.clear();
+        }
+        seen.insert((session, name.to_string()))
+    };
+    if !first {
+        return v;
+    }
+    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &why)]);
+    Verdict::Advisory(serde_json::json!({ defaults::text("script.notice_key"): msg }).to_string())
+}
+
+/// The failure mode of check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
 pub fn failure_mode(name: &str) -> &'static str {
     defaults::raw("script.failure_mode_by_check").get(name).and_then(defaults::V::as_str).unwrap_or_else(|| defaults::text("script.failure_mode_default"))
 }
@@ -337,15 +630,61 @@ fn limit_ms(name: &str, event: &str) -> u64 {
         .map_or_else(|| defaults::num("script.time_limit_ms"), |ms| ms.max(1) as u64)
 }
 
+/// Prepare the configured cold entries on their owning worker, without calling their decision functions.
+/// File fingerprints still invalidate these entries normally after an owner edit or plugin update.
+pub(crate) fn prewarm() {
+    if defaults::num("script.enabled") == 0 {
+        return;
+    }
+    let st = Settings::from_env(&RequestEnv::capture());
+    // Optional warm-up settings may be absent in the immutable pristine fallback.
+    for name in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.strings()) {
+        let Some((libs, own)) = resolve(name, &st.home) else { continue };
+        let result = host::with_call(st.clone(), || {
+            POOL.with(|cell| -> Result<(), String> {
+                let mut slot = cell.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(Pool::new().ok_or("runtime")?);
+                }
+                let pool = slot.as_mut().ok_or("runtime")?;
+                ensure_entry(pool, name, &libs, &own, defaults::text("script.entry"))?;
+                Ok(())
+            })
+        });
+        crate::discard::logged("script_prewarm", result);
+    }
+}
+
+/// Compile shared patterns before workers accept their first Stop. No decision or state write runs here.
+pub(crate) fn prewarm_patterns() {
+    crate::checks::guardkit::mask::mask_quoted_text("");
+    for row in defaults::with_prefix("script.prewarm_").iter().flat_map(|e| e.value.as_array().unwrap_or_default()) {
+        if row.get("key").is_none() {
+            continue;
+        }
+        let value = defaults::raw(row.str_field("key"));
+        let patterns = value.as_str().map(|s| vec![s]).unwrap_or_else(|| value.strings());
+        for pattern in patterns {
+            crate::discard::logged("script_pattern_prewarm", recache::get(pattern, row.str_field("flags")));
+        }
+    }
+}
+
 /// The shared context with the entry `entry` of `own` registered under `key`, built (and the memory ceiling set) when the lib
 /// files or the entry's files changed since.
 fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprint, entry: &str) -> Result<Context, String> {
+    pool.tick += 1;
+    pool.calls += 1;
+    pool.last_call = Instant::now();
+    pool.used.insert(key.to_string(), pool.tick);
     let libs_stale = pool.ctx.as_ref().is_none_or(|(fp, _)| fp != libs);
     if libs_stale || pool.checks.get(key).is_none_or(|fp| fp != own) {
         // a replaced context or entry goes before the new one is built, and its cycles are collected
         pool.checks.remove(key);
         if libs_stale {
             pool.checks.clear();
+            pool.used.clear();
+            pool.used.insert(key.to_string(), pool.tick);
             pool.ctx = None;
         }
         pool.rt.set_memory_limit(0);
@@ -358,9 +697,105 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
         pool.checks.insert(key.to_string(), own.clone());
         pool.rt.run_gc();
         let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
-        pool.rt.set_memory_limit(base + defaults::num("script.call_memory_bytes") as usize);
+        let base = fit(pool, &ctx, key, base).ok_or("memory")?;
+        // the ceiling is relative to what the scripts hold now, but never past the absolute per-runtime one
+        let limit = base.saturating_add(defaults::num("script.call_memory_bytes") as usize).min(pool.inst.hard_limit());
+        pool.rt.set_memory_limit(limit);
     }
     pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or_else(|| "context".to_string())
+}
+
+/// Report the interpreter's `size` (just after a collection) to the registry and act on its answer: at the soft limit unload the
+/// coldest checks (never `keep`) down to the low-water mark; over the hard limit unload everything but `keep` and, if that is not
+/// enough, recycle the interpreter (`None`: the call that needed it fails open). Returns the size it ends at.
+fn fit(pool: &mut Pool, ctx: &Context, keep: &str, mut size: usize) -> Option<usize> {
+    match pool.inst.report(size) {
+        crate::mem::Action::None => {}
+        crate::mem::Action::Shrink(target) => {
+            size = unload_cold(pool, ctx, keep, target);
+            pool.inst.report(size);
+        }
+        crate::mem::Action::Recycle => {
+            size = unload_cold(pool, ctx, keep, 0);
+            if matches!(pool.inst.report(size), crate::mem::Action::Recycle) {
+                pool.checks.clear();
+                pool.used.clear();
+                pool.ctx = None;
+                pool.rt.run_gc();
+                pool.inst.report(pool.rt.memory_usage().malloc_size.max(0) as usize);
+                return None;
+            }
+        }
+    }
+    Some(size)
+}
+
+/// Between requests (the worker loop, after the reply went out; `idle`: no request is waiting): every `script.gc_every_calls`
+/// calls, and once when the worker goes idle after any call, collect this worker's interpreter, report its size to the memory
+/// registry and act on it ([`fit`]). QuickJS frees acyclic garbage at once but leaves cycles (closures, objects that point at
+/// each other) to a collector that otherwise runs only at 1.5 times its size after the previous run, and the `quickjs` holder was
+/// measured only when a check loaded: with every check loaded (about 5.7 MB a worker) up to about 2.8 MB of garbage per worker
+/// waited, unseen by the registry (the 30-minute soak's footprint rise). Its own collector stays the backstop within a call.
+pub fn maintain(idle: bool) {
+    POOL.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if idle && slot.as_ref().is_some_and(idle_expired) {
+            *slot = None; // dropping the pool frees the interpreter; the next scripted call on this thread builds a new one
+            return;
+        }
+        let Some(pool) = slot.as_mut() else { return };
+        if pool.calls == 0 || (!idle && pool.calls < defaults::num("script.gc_every_calls").max(1)) {
+            return;
+        }
+        pool.calls = 0;
+        pool.rt.run_gc();
+        let size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+        match pool.ctx.as_ref().map(|(_, c)| c.clone()) {
+            Some(ctx) => {
+                crate::discard::harmless(fit(pool, &ctx, "", size).ok_or(())); // keep: a recycled interpreter is rebuilt by its next call
+            }
+            None => {
+                pool.inst.report(size);
+            }
+        }
+    })
+}
+
+/// Whether `pool` has gone unused for `script.idle_free_ms` (0 = never).
+fn idle_expired(pool: &Pool) -> bool {
+    let ms = defaults::num("script.idle_free_ms");
+    ms > 0 && pool.last_call.elapsed() >= std::time::Duration::from_millis(ms)
+}
+
+/// Unload the least recently called entries (never `keep`) until the runtime holds at most `target` bytes (the registry's low-water mark), `script.unload_batch` entries per collection; returns the size it ends at. An unloaded
+/// entry is rebuilt from its files by its next call (`ensure_entry` finds it missing from `checks`).
+fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, target: usize) -> usize {
+    let batch = (defaults::num("script.unload_batch") as usize).max(1);
+    let mut size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+    while size > target {
+        let mut cold: Vec<(u64, String)> =
+            pool.checks.keys().filter(|k| k.as_str() != keep).map(|k| (pool.used.get(k).copied().unwrap_or(0), k.clone())).collect();
+        if cold.is_empty() {
+            break;
+        }
+        cold.sort();
+        let names: Vec<String> = cold.into_iter().take(batch).map(|(_, k)| k).collect();
+        ctx.with(|c| {
+            if let Ok(reg) = c.globals().get::<_, rquickjs::Object>(defaults::text("script.registry_global")) {
+                for n in &names {
+                    // a failed removal leaves the entry registered but unlisted in `checks`: it is rebuilt (replaced) on its next call
+                    crate::discard::logged("script_unload", reg.remove(n.as_str()));
+                }
+            }
+        });
+        for n in &names {
+            pool.checks.remove(n);
+            pool.used.remove(n);
+        }
+        pool.rt.run_gc();
+        size = pool.rt.memory_usage().malloc_size.max(0) as usize;
+    }
+    size
 }
 
 /// Ask the plugin script `name` (`engine/logic/<name>.js`, owner override first) to apply one of its rules: call its top-level
@@ -376,6 +811,9 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     let st = Settings::from_env(&env);
     let (libs, own) = resolve(name, &st.home)?;
     let key = format!("{name}#{func}");
+    let event = args.get("event").or_else(|| args.get("hookEventName")).or_else(|| args.pointer("/subject/event")).and_then(Value::as_str).unwrap_or("");
+    let check = args.get("checkId").or_else(|| args.get("check")).or_else(|| args.pointer("/check/id")).and_then(Value::as_str).unwrap_or(name);
+    let _boundary = crate::crash::enter("check", "", event, check, "");
     let r = POOL.with(|cell| -> Result<Value, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -399,7 +837,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         };
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit);
+            pool.arm(limit, false);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
@@ -408,6 +846,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
                 let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
+            pool.note_soft(name, func, limit);
             pool.disarm();
             host::set_deadline(None);
             reset_heap(pool);
@@ -417,13 +856,51 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     match r {
         Ok(v) => Some(v),
         Err(e) => {
-            crate::discard::note("script_error", &format!("{name}.{func}: {e}"));
+            let args: [(&str, &dyn std::fmt::Display); 5] = [("name", &name), ("func", &func), ("check", &check), ("event", &event), ("error", &e)];
+            crate::discard::note("script_error", &defaults::render("script.msg_call_error", &args));
             None
         }
     }
 }
 
+/// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
+/// ends as [`unanswered`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its
+/// failure blocks, so that one keeps only its own limit.
+pub fn cut_at_deadline(name: &str, event: &str) -> bool {
+    defaults::num("script.cut_at_request_deadline") == 1
+        && !(failure_mode(name) == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event))
+}
+
+/// A call cut at its request's client deadline: no failure of the script (nothing is counted as an error); the check gave no answer
+/// and the dispatcher resolves it with the check's failure policy ([`unanswered`]).
+pub fn cut(name: &str, event: &str) -> Verdict {
+    crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
+    crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
+    Verdict::Defer
+}
+
+/// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the
+/// request first, then the actual defaults snapshot (including its cached install root), never the daemon's environment.
+/// Keep an explicit nonempty option and every other option intact.
+fn script_options(opts: &Value, st: &Settings) -> Value {
+    if opts.get("plugin_root").and_then(Value::as_str).is_some_and(|r| !r.is_empty()) {
+        return opts.clone();
+    }
+    let root =
+        st.env.get(defaults::env_name("plugin_root")).filter(|r| !r.is_empty()).cloned().or_else(|| defaults::root().map(|r| r.to_string_lossy().into_owned()));
+    let Some(root) = root else { return opts.clone() };
+    let mut resolved = match opts {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(o) => o.clone(),
+        _ => return opts.clone(),
+    };
+    resolved.insert("plugin_root".into(), Value::String(root));
+    Value::Object(resolved)
+}
+
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
+    let mut was_cut = false;
+    let mut timed_out = false;
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -432,16 +909,19 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let pool = slot.as_mut().ok_or("runtime")?;
         let ctx = ensure_entry(pool, name, libs, own, defaults::text("script.entry"))?;
         let raw = serde_json::to_string(payload).map_err(|e| e.to_string())?;
-        let opts_raw = serde_json::to_string(opts).map_err(|e| e.to_string())?;
+        let opts_raw = serde_json::to_string(&script_options(opts, &st)).map_err(|e| e.to_string())?;
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit);
+            pool.arm(limit, cut_at_deadline(name, event));
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
                 let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
                 let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
+                let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
+                api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
                 let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
                 if v.is_undefined() || v.is_null() {
                     return Ok("null".into());
@@ -449,6 +929,10 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
                 let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
                 Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
             });
+            was_cut = out.is_err() && pool.past_request();
+            timed_out = out.is_err() && matches!(Trip::of(pool.deadline.trip.load(Ordering::Relaxed)), Some(Trip::Cpu | Trip::Wall)); // a limit of its own, not the client's deadline
+            pool.note_soft(name, event, limit);
+            let out = out.map_err(|e| pool.deadline.explain(&e, limit));
             pool.disarm();
             host::set_deadline(None);
             let text = out?;
@@ -458,6 +942,11 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
     });
     match r {
         Ok(v) => v,
+        Err(_) if was_cut => Some(cut(name, event)),
+        Err(e) if timed_out => {
+            crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
+            Some(failed(name, event, &e))
+        }
         Err(e) => Some(failed(name, event, &e)),
     }
 }
@@ -491,7 +980,7 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
             match (kind, delta) {
                 ("NOW", Some(d)) => Some((close, format!("{}", (now_ms + d) as i64))),
                 ("ISO", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d))),
-                ("DATE", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d)[..10].to_string())),
+                ("DATE", Some(d)) => Some((close, crate::checks::agent_scan::iso_utc(now_ms + d).get(..10).unwrap_or("").to_string())),
                 _ => None,
             }
         });
@@ -523,6 +1012,9 @@ mod tests_golden_e;
 #[cfg(test)]
 #[path = "golden_f/tests.rs"]
 mod tests_golden_f;
+#[cfg(test)]
+#[path = "home_unset_tests/tests.rs"]
+mod tests_home_unset;
 #[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;

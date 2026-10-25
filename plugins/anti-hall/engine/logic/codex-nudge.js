@@ -2,8 +2,12 @@
 // the session: it reads the end of the transcript, counts the code-file edits (outside the session's scratchpad and, when the working
 // directory is in a git work tree, inside that tree), notes a Codex review (a Codex agent or skill call), and blocks the stop once per
 // distinct set of files, at most `nudge_max` times a session. A live Codex outage, a switch off and a skip say nothing; Jev (integration
-// codexNudgeSubstantial) can judge the edits trivial. This script builds on codex-availability.js (script.includes). Mirrors
-// hooks/codex-nudge.js. Keys and texts: codex_handover.toml (codex_handover.*).
+// codexNudgeSubstantial) can judge the edits trivial. This script builds on codex-availability.js (script.includes). Every Stop is
+// decided here: the home is Node's os.homedir() (hookProc.adoptHome: HOME unset adopts the passwd home; a relative one resolves against
+// the stand-in directory), a relative transcript or edited path resolves against the payload cwd or that directory. What the engine
+// cannot read exactly is decided natively, counted (native_unable) and logged under codex_handover.nudge_unsure_log_kind: no home or the
+// real home under a test marker says nothing, a transcript line, quota record or nudge state only V8 reads counts as absent, a checkout the
+// resolver cannot classify adds no work-tree restriction, a stale linked state file is not swept. Mirrors hooks/codex-nudge.js. Keys and texts: codex_handover.toml (codex_handover.*).
 'use strict';
 
 // `realpath` of the longest existing ancestor with the rest appended.
@@ -47,50 +51,65 @@ function cxScratch(p) {
   return roots.map(function (r) { return posix.normalize(r + '/' + cxT('scratch_prefix') + uid + '/' + seg + '/' + sid + '/' + cxT('scratch_leaf')); });
 }
 
-// {base, scratch, worktree}, or null when the answer depends on Node's own working directory.
+// A case only V8 or the Node process decides exactly is decided natively, counted (native_unable) and logged.
+function cxUnsure(why) { ah.unable('codex-nudge:' + why); ah.log(cxT('nudge_unsure_log_kind'), why); }
+
+// {base, scratch, worktree}. A relative cwd resolves against the stand-in directory; a checkout the resolver cannot classify exactly
+// adds no work-tree restriction (counted).
 function cxExclusion(p) {
   var cwd = typeof p.cwd === 'string' && p.cwd !== '' ? p.cwd : null, worktree = null;
   if (cwd !== null) {
+    if (cwd.charAt(0) !== '/') { cxUnsure('relative_cwd'); cwd = hookProc.cwd(p); }
     var ctx = ah.repo.context(cwd);
-    if (ctx.unsure) return null;
-    worktree = ctx.root;
+    if (ctx.unsure) cxUnsure('repo_root');
+    else worktree = ctx.root;
   }
   return { base: cwd, scratch: cxScratch(p), worktree: worktree };
 }
 
-// true / false, or null when the path is relative to the hook's own working directory.
+// true / false; a relative path with no cwd resolves against the stand-in directory (counted).
 function cxExcluded(fp, ex) {
   var abs;
   if (fp.charAt(0) === '/') abs = posix.resolveIn('/', [fp]);
-  else if (ex.base !== null && ex.base.charAt(0) === '/') abs = posix.resolveIn('/', [ex.base, fp]);
-  else return null;
+  else if (ex.base !== null) abs = posix.resolveIn('/', [ex.base, fp]);
+  else { cxUnsure('relative_path'); abs = posix.resolveIn('/', [hookProc.base(), fp]); }
   if (ex.scratch.some(function (d) { return cxInsideDir(abs, d); })) return true;
   return ex.worktree !== null && !cxInsideDir(abs, ex.worktree);
 }
 
-function cxCollect(node, out) {
-  if (node === null || typeof node !== 'object' || Array.isArray(node)) return;
-  if (node.type === 'tool_use' && node.name) out.push(node);
-  cxT('nudge_child_keys').forEach(function (k) {
-    var v = node[k];
-    if (Array.isArray(v)) v.forEach(function (it) { cxCollect(it, out); });
-    else if (v !== null && typeof v === 'object') cxCollect(v, out);
-  });
+// An explicit stack, not recursion: the host's script stack is small and a deeply wrapped entry must not overflow it. The visit order is
+// the Node twin's recursive collectTU: pre-order, the child keys in order, an array's items in index order.
+function cxCollect(root, out) {
+  var keys = cxT('nudge_child_keys');
+  var stack = [root];
+  while (stack.length > 0) {
+    var node = stack.pop();
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) continue;
+    if (node.type === 'tool_use' && node.name) out.push(node);
+    var kids = [];
+    for (var i = 0; i < keys.length; i++) {
+      var v = node[keys[i]];
+      if (Array.isArray(v)) { for (var j = 0; j < v.length; j++) kids.push(v[j]); }
+      else if (v !== null && typeof v === 'object') kids.push(v);
+    }
+    for (var m = kids.length - 1; m >= 0; m--) stack.push(kids[m]);
+  }
 }
 
 function cxFirstStr(inp, keys) { for (var i = 0; i < keys.length; i++) { var v = jx.isObj(inp) ? inp[keys[i]] : undefined; if (typeof v === 'string' && v !== '') return v; } return ''; }
 
-// The scan of the transcript tail: {files, edits, review}; null when there is nothing to read, 'defer'.
+// The scan of the transcript tail: {files, edits, review}; null when there is nothing to read. A line only V8 reads exactly is skipped (counted).
 function cxScanTranscript(path, p) {
-  var tail = ah.fs.readTail(path, cxN('nudge_tail_bytes'));
-  if (tail === null) return null;
-  var lines = tail.split('\n'), scan = { files: [], edits: 0, review: false }, ex = null, seen = {};
+  // an entry can name a tool use only by holding "tool_use" or an escape that could spell it: the host hands over only those lines
+  var lines = ah.fs.tailLines(path, cxN('nudge_tail_bytes'), false, ['tool_use', '\\u']);
+  if (lines === null) return null;
+  var scan = { files: [], edits: 0, review: false }, ex = null, seen = {};
   var codeExt = new RegExp(cxT('nudge_code_ext_re'), 'i'), agentRe = new RegExp(cxT('nudge_agent_re'), 'i');
   for (var li = 0; li < lines.length; li++) {
     var t = lines[li].trim();
     if (t === '') continue;
     var r = jx.parse(t);
-    if (r.unsure) return 'defer';
+    if (r.unsure) { cxUnsure('transcript_line'); continue; }
     if (r.invalid) continue;
     var tus = [];
     cxCollect(r.v, tus);
@@ -98,9 +117,8 @@ function cxScanTranscript(path, p) {
       var tu = tus[i], name = typeof tu.name === 'string' ? tu.name : '', inp = tu.input !== null && typeof tu.input === 'object' ? tu.input : null;
       var fp = inp !== null && !Array.isArray(inp) ? inp.file_path : undefined;
       if (cxT('nudge_edit_tools').indexOf(name) >= 0 && typeof fp === 'string' && fp !== '' && codeExt.test(fp)) {
-        if (ex === null) { ex = cxExclusion(p); if (ex === null) return 'defer'; }
+        if (ex === null) ex = cxExclusion(p);
         var e = cxExcluded(fp, ex);
-        if (e === null) return 'defer';
         if (!e) {
           scan.edits++;
           var b = posix.basename(fp);
@@ -142,26 +160,33 @@ function cxMin() {
 
 function decide(p) {
   if (cxJudgeChild()) return 'allow';
+  var noHome = hookProc.adoptHome();
+  if (noHome === 'relative_home') {
+    cxUnsure(noHome); // resolved against the stand-in directory
+    var rh = hookProc.home(p);
+    if (rh !== null) { ah.useHome(rh); noHome = null; }
+  }
+  if (noHome === null && hookProc.testGuarded(ah.home())) noHome = 'test_guard'; // the real home under a test is never touched
+  if (noHome !== null) { cxUnsure(noHome); return 'allow'; }
   if (!ah.settings.bool('codex_handover.setting_nudge') || ah.settings.skipped(cxT('nudge_guard'))) return 'allow';
   var tp = jx.isObj(p) ? p.transcript_path : undefined;
   if (typeof tp !== 'string' || tp === '') return 'allow';
-  if (tp.charAt(0) !== '/') return 'defer'; // relative to the hook's own working directory, which is not known here
-  var scan = cxScanTranscript(tp, p);
-  if (scan === 'defer') return 'defer';
+  if (hookProc.openKnown(p, tp) === null) cxUnsure('relative_transcript'); // opened against the stand-in directory; the session hash keeps the payload's
+  var tpOpen = hookProc.open(p, tp);
+  var scan = cxScanTranscript(tpOpen, p);
   if (scan === null) return 'allow';
   var min = cxMin();
   if (scan.edits < min || scan.review) return 'allow';
-  var home = cxHome();
-  if (home === null) return 'defer';
-  if (ah.settings.bool('codex_handover.setting_quota_detect') && !cxScanJobLogs(home, ah.clock.now())) return 'defer';
+  var home = ah.home(); // the home adopted above; the test-home guard has already refused the real one under a test marker
+  if (ah.settings.bool('codex_handover.setting_quota_detect') && !cxScanJobLogs(home, ah.clock.now())) cxUnsure('job_logs');
   var q = cxReadQuota(home, ah.clock.now());
-  if (q === null) return 'defer';
+  if (q === null) { cxUnsure('quota'); q = false; } // an unreadable outage record: no outage assumed
   if (q !== false) return 'allow';
   var session = p.session_id ? String(p.session_id) : '';
   if (session === '') session = ah.sha1(tp).slice(0, cxN('nudge_session_hash_len'));
   // JEV (`codexNudgeSubstantial`, `consultRelax`): a confident "trivial" answer skips the nudge; shadow and off fire a detached ask.
   var spec = {
-    id: cxT('nudge_jev_id'), relax: true, trust: 'relax_block', baseline: true, sessionId: session, turnRefFrom: tp,
+    id: cxT('nudge_jev_id'), relax: true, trust: 'relax_block', baseline: true, sessionId: session, turnRefFrom: tpOpen,
     question: { type: 'noul', instructions: cxT('nudge_jev_instructions'), criteria: [['true', cxT('nudge_jev_true')], ['false', cxT('nudge_jev_false')]] },
     state: cxT('nudge_jev_files_label') + scan.files.slice(0, cxN('nudge_jev_files')).join(', ') + '\n' + cxT('nudge_jev_edits_label') + scan.edits,
   };
@@ -173,24 +198,26 @@ function decide(p) {
   var sorted = scan.files.slice().sort(), sig = ah.sha1(sorted.join(cxT('nudge_sig_sep')));
   var lastSig = '', nudges = 0;
   var f = jx.read(home + '/' + dirRel + '/' + stateName);
-  if (f.big) return 'defer';
+  if (f.big) cxUnsure('state_big'); // a state file over the read cap counts as no state
   if (f.text !== undefined) {
     var t = f.text.trim();
     if (t !== '') {
       var r = jx.parse(t);
-      if (r.unsure) return 'defer';
-      if (!r.invalid && r.v !== null && typeof r.v === 'object') {
+      if (r.unsure) cxUnsure('state_parse');
+      else if (!r.invalid && r.v !== null && typeof r.v === 'object') {
         if (typeof r.v.sig === 'string') lastSig = r.v.sig;
         if (typeof r.v.nudges === 'number' && isFinite(r.v.nudges)) nudges = r.v.nudges;
       }
     }
   }
   if (sig === lastSig || nudges >= cxN('nudge_max')) return 'allow';
-  if (gk.pruneMeetsLink(dirRel, cxT('nudge_state_prefix'))) return 'defer'; // Node unlinks a stale linked state file; the host does not
+  // Node's sweep unlinks a stale state file that is a symbolic link; the host never removes a link
+  var linked = gk.pruneMeetsLink(dirRel, cxT('nudge_state_prefix'));
+  if (linked) cxUnsure('stale_link'); // the host never removes a link: the sweep is skipped
   var ok = false;
   try { ok = ah.state.writeAtomic(dirRel + '/' + stateName, JSON.stringify({ sig: sig, nudges: nudges + 1 })); } catch (e) { ok = false; }
   if (!ok) return 'allow';
-  gk.pruneStale(dirRel, cxT('nudge_state_prefix'));
+  if (!linked) gk.pruneStale(dirRel, cxT('nudge_state_prefix'));
   var shownMax = cxN('nudge_shown_files'), shown = scan.files.slice(0, shownMax).join(cxT('nudge_names_sep'));
   var what = text.render(cxT('nudge_what'), { edits: scan.edits, files: scan.files.length, names: shown, more: scan.files.length > shownMax ? cxT('nudge_more') : '' });
   var reason = text.message('tip', cxT('nudge_guard'), { what: what, why: cxT('nudge_why'), instead: cxT('nudge_instead'), allowed: cxT('nudge_allowed'), override: cxT('nudge_override') });

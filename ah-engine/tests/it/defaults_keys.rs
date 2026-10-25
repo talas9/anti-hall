@@ -124,6 +124,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         ("codex-quota-detect.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("codex-nudge.js", r"\bcx[TN]\('([a-z][a-z0-9_]*)'\)", "codex_handover"),
         ("command.js", r"\bcm(?:C|Set|ReAny)\('([a-z][a-z0-9_]*)'", "command"),
+        ("api-guard.js", r"\bagCfg\('([a-z][a-z0-9_]*)'\)", "api_guard_v1"),
     ] {
         let re = regex::Regex::new(helper).unwrap();
         for f in js_files.iter().filter(|f| f.file_name().is_some_and(|n| n == script)) {
@@ -143,9 +144,77 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             }
         }
     }
+    // Optional startup optimizations are enumerated by prefix, including when absent in pristine.
+    literals.extend(shipped.iter().filter(|k| k.starts_with("script.prewarm_")).cloned());
+    // Retired fields from the immutable pristine schema remain required by defaults::load's
+    // repair path. Keep this list explicit: newly unused fields must still fail the audit.
+    let compatibility: BTreeSet<&str> = [
+        "act.msg_no_session",
+        "devswarm_prompt.escape_marker",
+        "devswarm_role.pg_frame_head",
+        "devswarm_role.pg_frame_indent",
+        "devswarm_role.pg_frame_instead",
+        "devswarm_role.pg_frame_override",
+        "devswarm_role.pg_frame_why",
+        "devswarm_role.pg_why",
+        "git.block_emoji",
+        "git.block_mark",
+        "git.label_allowed",
+        "git.label_instead",
+        "git.label_override",
+        "git.label_why",
+        "guardkit.brief_why",
+        "mesh_write.cause_not_registered",
+        "mesh_write.heal_cooldown_flag",
+        "mesh_write.heal_disabled_key",
+        "mesh_write.heal_disabled_label_key",
+        "mesh_write.heal_engine_owned_note",
+        "mesh_write.heal_retry_after",
+        "mesh_write.ingest_owner_name",
+        "mesh_write.launchd_label_prefix",
+        "mesh_write.log_op_inbox_ack_primary",
+        "mesh_write.ms_per_hour",
+        "mesh_write.msg_ack_primary_not_owner",
+        "mesh_write.msg_pull_replay_failed",
+        "mesh_write.msg_receipt_owner",
+        "mesh_write.msg_store_not_opened",
+        "mesh_write.reason_receipt_owner_mismatch",
+        "mesh_write.tick_roster_env",
+        "mesh_write.tick_roster_setting",
+        "mesh_write.tick_settings_files",
+        "messages.style_guide",
+        "msg.err_mesh_read_id",
+        "msg.log_budget_skipped",
+        "nested_spawn.summary",
+        "routine.sweep_step_files",
+        "routine.sweep_step_units",
+        "tasklist_guard.details_label",
+        "update.zero_version",
+    ]
+    .into_iter()
+    .collect();
+    let pristine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults.pristine");
+    let pristine_text: String = fs::read_dir(pristine)
+        .unwrap()
+        .flatten()
+        .filter(|f| f.path().extension().is_some_and(|x| x == "toml"))
+        .map(|f| fs::read_to_string(f.path()).unwrap())
+        .collect();
+    for key in &compatibility {
+        assert!(pristine_text.contains(&format!("[{key}]")), "compatibility field {key} must belong to the immutable repair schema");
+    }
     let indirect = |k: &str| {
-        k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
+        k.starts_with("routine.flag_") // routine::flag constructs these CLI names from its argument
+            || k.starts_with("webapi.source_") // web::query enumerates this registry with defaults::with_prefix
+            || k.starts_with("jevrep.t_") // the texts and thresholds of the report, handed whole to the plugin script rules/jev-report (`jev_report::cfg`)
             || k.starts_with("jevrep.thr_")
+            || k.starts_with("opcli.ahc_") // the words and numbers of the L03 verbs, handed whole to the plugin scripts rules/operator-cli and rules/coordinator-work-baseline (`ops::opcli_cfg`)
+            || k.starts_with("opcli.dr_")
+            || k.starts_with("opcli.fd_")
+            || k.starts_with("opcli.cwb_")
+            || k.starts_with("flag.") // the documented flags, read whole by the reference generator (`docs::documented_flags`)
+            || k == "docs.external_flags" // read by the flag drift test (tests/it/reference.rs)
+            || ["env.auto_update", "env.install_lock_token", "env.release_base", "env.wrapper_diag"].contains(&k) // read by the shell wrappers, named here so the reference lists them
             || k.starts_with("cmd.") // handlers are checked against the registry by cli::tests; planned commands have no handler
             || k.starts_with("protocol.") // documents the wire format; the request words are parsed in daemon.rs
             || k.starts_with("job.") // scheduled jobs are read by prefix in schedule.rs
@@ -153,6 +222,28 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
             || k.starts_with("git.msg_") // block messages are rendered by block(name); the name is a literal there
             || k.starts_with("coordinator_work.lock_") // the lock timings of the coordinator-work-guard script, read as a group (`Params::from_group("coordinator_work")`)
             || k.starts_with("ctxbudget.ca_advice_") // regex sources named by the ctxbudget.ca_advice list
+            || k.starts_with("web.") // the Command Center server (ah-web) reads its own file; the engine reads only the start-up keys
+            || k.starts_with("launcher.") // the hook launcher (ah-launcher, binary ah-hook) reads these; the engine does not
+            || k.starts_with("files.launcher_") // the launcher's own log, drop counter, spawn lock and spawn log
+            || k.starts_with("msg.launcher_") // the launcher's texts
+            || k.starts_with("client.wrapper_") // the shell wrapper (`hooks/ah-hook.sh`) reads these before Rust starts
+            || k == "client.slow_fallback_max_ms" // the shell wrapper's watchdog extension for a call waiting on a slow daemon
+            || k.starts_with("client.cold_guard_") // the shell wrapper's cold-start wait for a guard event (the engine reads only the kick event's name)
+            || k == "files.cold_guard_notice" // the wrapper's once-per-session notice stamp
+            || k == "msg.cold_guard_notice" // the wrapper's notice text
+            || k == "files.unreachable_notice" // the wrapper's and the launcher's once-per-session stamp of the engine-unreachable notice
+            || k == "msg.engine_unreachable_notice" // that notice's text (read by hooks/ah-hook.sh and by the launcher)
+            || k == "msg.run_engine_missing" // the text the thin client (`ah-hook <verb>`) prints when no engine can run its command
+            || k.starts_with("doctor_l.") // the thin client's built-in doctor (`ah-hook doctor`, ah-launcher/src/doctor.rs) reads these; the engine does not
+            || k.starts_with("hooks_form.") // the direct form of a hook command: read by `ah-hook doctor --repair` (the engine's hooks generator follows it)
+            || k.starts_with("updater.") // the thin client's updater (`ah-hook update`, ah-launcher/src/update.rs) reads these; the engine does not
+            || k.starts_with("msg.updater_") // the updater's texts
+            || k == "env.live_kit" // the live-kit directory override, read by the updater
+            || k.starts_with("msg.install_") // the installer's texts (hooks/install.sh and the thin client)
+            || k.starts_with("install.") // the thin client's installer (`ah-hook install`, ah-launcher/src/install.rs) and hooks/install.sh read these; the engine does not
+            || k.starts_with("rollback.") // the thin client (`ah-hook integrity`, ah-launcher) reads its names and thresholds itself; the engine reads only the client name
+            || k == "files.integrity_log" // written by the thin client (`ah-hook integrity`)
+            || k == "files.wrapper_fail_log" // written by the thin client, from its failure reports
             || k.starts_with("dispatch.hooks_") // the dispatch table, read by host and event (dispatch::table::key)
             || k == "script.p95_budget_by_check" // read by tests/script_latency.rs, the go/no-go gate of the scripted checks
             || k.starts_with("procwatch.mode_") // each orphan class names its mode setting by key (procwatch.classes mode_key)
@@ -163,7 +254,7 @@ fn every_key_the_source_reads_is_shipped_and_every_shipped_key_is_read() {
         let (section, name) = k.split_once('.').unwrap_or(("", k));
         literals.contains(k) || (["git", "env", "files", "store", "metric", "impact", "cmd", "tasklist_guard"].contains(&section) && literals.contains(name))
     };
-    let unread: Vec<&String> = shipped.iter().filter(|k| !read(k) && !indirect(k)).collect();
+    let unread: Vec<&String> = shipped.iter().filter(|k| !read(k) && !indirect(k) && !compatibility.contains(k.as_str())).collect();
     assert!(unread.is_empty(), "shipped settings nothing reads (delete them or use them): {unread:?}");
 }
 

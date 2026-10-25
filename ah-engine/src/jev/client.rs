@@ -250,6 +250,11 @@ impl JevClient {
         self.breakers.is_open(vendor)
     }
 
+    /// True while `vendor`'s breaker is open for calls made for `integration`.
+    pub fn breaker_open_for(&self, vendor: Vendor, integration: Option<&str>) -> bool {
+        self.breakers.is_open_for(vendor, integration)
+    }
+
     /// The model name sent to `vendor`.
     pub(crate) fn model_for(vendor: Vendor) -> &'static str {
         match vendor {
@@ -276,7 +281,7 @@ impl JevClient {
     }
 
     /// Run a call through the primary and, when eligible, the backup, inside `total_ms` (Node: `runWithFallback`).
-    fn run_with_fallback(&self, s: &JevSettings, total_ms: u64, body_for: &dyn Fn(&str) -> String, parse: Parse<'_>) -> CallResult {
+    fn run_with_fallback(&self, s: &JevSettings, scope: Option<&str>, total_ms: u64, body_for: &dyn Fn(&str) -> String, parse: Parse<'_>) -> CallResult {
         let total_ms = total_ms.min(defaults::num("jev.max_timeout_ms")); // belt and braces: no caller can lift the ceiling
         let primary_key = resolve_key(s, s.transport).key;
         let Some(primary_key) = primary_key else {
@@ -288,8 +293,8 @@ impl JevClient {
         let Some((fb_vendor, fb_key)) = fallback else {
             return self.attempt(s, &Target { vendor: s.transport, primary: true, key: &primary_key }, body_for, parse, total_ms);
         };
-        let primary_open = self.breakers.is_open(s.transport);
-        let fallback_open = self.breakers.is_open(fb_vendor);
+        let primary_open = self.breakers.is_open_for(s.transport, scope);
+        let fallback_open = self.breakers.is_open_for(fb_vendor, scope);
         if primary_open && fallback_open {
             let mut r = CallResult::failed(Reason::CircuitOpen);
             r.transport = Some(s.transport);
@@ -305,7 +310,7 @@ impl JevClient {
             };
             let r = self.attempt(s, &Target { vendor: s.transport, primary: true, key: &primary_key }, body_for, parse, total_ms.saturating_sub(reserve));
             if r.ok() {
-                self.breakers.record(s.transport, true);
+                self.breakers.record_for(s.transport, scope, true);
                 return r;
             }
             if !is_eligible(&r) {
@@ -314,7 +319,7 @@ impl JevClient {
             // A timeout under the SHORTENED primary budget proves nothing about the vendor: still fall back for this call, but
             // do not count it, or a merely slow primary would trip the breaker and divert text to the second vendor.
             if !(r.reason == Some(Reason::Timeout) && reserve > 0) {
-                self.breakers.record(s.transport, false);
+                self.breakers.record_for(s.transport, scope, false);
             }
             if fallback_open {
                 return r;
@@ -331,12 +336,12 @@ impl JevClient {
         }
         let mut fb = self.attempt(s, &Target { vendor: fb_vendor, primary: false, key: &fb_key }, body_for, parse, remaining);
         if fb.ok() {
-            self.breakers.record(fb_vendor, true);
+            self.breakers.record_for(fb_vendor, scope, true);
             fb.fell_back = true;
             return fb;
         }
         if is_eligible(&fb) {
-            self.breakers.record(fb_vendor, false);
+            self.breakers.record_for(fb_vendor, scope, false);
         }
         match primary_res {
             None => fb,
@@ -349,6 +354,11 @@ impl JevClient {
 
     /// Ask one question (Node: `jevDecide`). `timeout_ms` overrides the configured budget, capped at the ceiling.
     pub fn decide(&self, s: &JevSettings, question: &Question, state: &str, timeout_ms: Option<u64>) -> CallResult {
+        self.decide_for(s, None, question, state, timeout_ms)
+    }
+
+    /// [`JevClient::decide`] for `integration`: its failures count only against that integration's own breaker.
+    pub fn decide_for(&self, s: &JevSettings, integration: Option<&str>, question: &Question, state: &str, timeout_ms: Option<u64>) -> CallResult {
         if super::js_trim(state).is_empty() {
             return CallResult::failed(Reason::BadState);
         }
@@ -378,7 +388,7 @@ impl JevClient {
                 }
             }
         };
-        self.run_with_fallback(s, budget, &body_for, &parse)
+        self.run_with_fallback(s, integration, budget, &body_for, &parse)
     }
 
     /// Ask several questions about the same text in one round trip (Node: `jevDecideMulti`).
@@ -414,7 +424,7 @@ impl JevClient {
                 .collect::<Vec<_>>();
             CallResult { ms, ..CallResult::blank() }
         };
-        let call = self.run_with_fallback(s, budget, &body_for, &parse);
+        let call = self.run_with_fallback(s, None, budget, &body_for, &parse);
         let answers = if call.reason.is_none() { answers.into_inner() } else { Vec::new() };
         MultiResult { call, answers }
     }

@@ -3,15 +3,15 @@
 //! `retention-dry-run.json` and the retention log, and once every store is reported the phase flips to `armed` (the state the
 //! tombstoning of [`super::sweep`] needs).
 //!
-//! Nothing here removes or changes a message: it writes the report, the state's phase and one log line. Because the flip to
-//! `armed` is what later permits tombstoning, each store's summary is still agreed with Node's own planner first (the same
-//! read-only witness as the armed sweep); a disagreement leaves the whole sweep to Node's own function, as before this port.
+//! Nothing here removes or changes a message: it writes the report, the state's phase and one log line. The report is the
+//! engine's own plan; the journal fold it names is owner-gated (`devswarm_sup.rt_fold_alone`), so a store with a journal reports it
+//! as not eligible while that switch is off.
 use super::apply::{Settings, log_event, obj_mut};
-use super::{Witness, ask_node, choose, disagreement, witness_log};
+use super::{choose, witness_log};
 use crate::checks::guardkit::ojson::OVal;
 use crate::defaults;
 use crate::dsact::runner::Runner;
-use crate::dssup::tick::{Ctx, node};
+use crate::dssup::tick::Ctx;
 use crate::meshw::ident::Defer;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -30,44 +30,36 @@ fn n(x: f64) -> OVal {
     OVal::Num(x)
 }
 
-/// Node's answer to a dry run of the journal fold of one store, or the engine's own "no journal".
-pub(super) fn legacy_of(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Result<Value, Defer> {
-    if !super::fold::any(ctx.home, hash) {
-        return Ok(json!({"eligible": false, "reason": "no-journal", "files": []}));
+/// What the journal fold of a store would do: no journal, a journal the owner-gated fold (`rt_fold_alone`) would fold, or a journal
+/// that is not folded while the switch is off.
+pub(super) fn legacy_of(ctx: &Ctx, hash: &str) -> Value {
+    let mine = super::fold::items(ctx.home, hash);
+    if mine.is_empty() {
+        return json!({"eligible": false, "reason": "no-journal", "files": []});
     }
-    node_fold_dry(ctx, runner, hash).map_err(Defer)
+    if crate::dssup::setting(ctx.st, "devswarm_sup.set_rt_fold_alone").as_bool().unwrap_or(false) {
+        // the armed fold holds a store whose merge into sqlite is not proven complete: the report says the same
+        if let Some(reason) = super::fold::ineligible(ctx.home, hash) {
+            return json!({"eligible": false, "reason": reason, "files": []});
+        }
+        return json!({"eligible": true, "reason": null, "files": super::fold::files_json(&mine)});
+    }
+    json!({"eligible": false, "reason": defaults::text("devswarm_sup.rt_why_fold_off"), "files": []})
 }
 
 /// `summarize(r)` of a dry `pruneStore`, for one store.
-pub(super) fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) -> Result<OVal, Defer> {
+pub(super) fn summary(ctx: &Ctx, _runner: &dyn Runner, st: &OVal, s: &Settings, hash: &str) -> OVal {
     let now = ctx.now as f64;
     let holds = super::plan::holds_of(st, hash, now);
     let bytes_before = super::apply::store_bytes(ctx.home, hash);
-    let plan = super::plan::plan_store(ctx.home, hash, s.rules(), now, &holds)?;
+    let plan = match super::plan::plan_store(ctx.home, hash, s.rules(), now, &holds) {
+        Ok(p) => p,
+        // Node's `catch` in `pruneStore`: a failed result, nothing else
+        Err(Defer(why)) => return failed_summary(ctx, hash, bytes_before, why),
+    };
     let (_chosen, choice) = choose(&plan, s, bytes_before);
-    let require = crate::dssup::setting(ctx.st, "devswarm_sup.set_rt_require_witness").as_bool().unwrap_or(true);
-    match ask_node(ctx, runner, hash, s, st) {
-        Witness::Said(v) => {
-            let mut why = disagreement(&plan, &choice, &v);
-            let all_bytes: i64 = plan.cands.iter().map(|c| c.blen).sum();
-            let protected = choice.over && (bytes_before as f64 - all_bytes as f64) > s.max_bytes();
-            if why.is_none() && v["dry"]["overLimitProtected"].as_bool() != Some(protected) {
-                why = Some(defaults::text("devswarm_sup.rt_msg_dry_differ").to_string());
-            }
-            if let Some(w) = why {
-                witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": false, "detail": w}));
-                return Err(Defer(w));
-            }
-            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": true, "phase": "dry-run"}));
-        }
-        Witness::Unavailable(why) => {
-            witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "match": Value::Null, "error": why}));
-            if require {
-                return Err(Defer(format!("{}: {why}", defaults::text("devswarm_sup.rt_msg_no_witness"))));
-            }
-        }
-    }
-    let legacy = legacy_of(ctx, runner, hash)?;
+    witness_log(ctx, &json!({"ts": ctx.now, "duty": "retention", "store": hash, "native": true, "phase": "dry-run"}));
+    let legacy = legacy_of(ctx, hash);
     let all_bytes: i64 = plan.cands.iter().map(|c| c.blen).sum();
     let over_protected = choice.over && (bytes_before as f64 - all_bytes as f64) > s.max_bytes();
     let mut prot = [0i64; 7];
@@ -83,7 +75,7 @@ pub(super) fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, h
         ("reason".into(), legacy["reason"].as_str().map_or(OVal::Null, |r| OVal::Str(r.into()))),
         ("files".into(), n(legacy_files as f64)),
     ]);
-    Ok(OVal::Obj(vec![
+    OVal::Obj(vec![
         ("ok".into(), OVal::Bool(true)),
         ("hash".into(), OVal::Str(hash.into())),
         ("skipped".into(), OVal::Null),
@@ -103,7 +95,60 @@ pub(super) fn summary(ctx: &Ctx, runner: &dyn Runner, st: &OVal, s: &Settings, h
         ("budgetExhausted".into(), OVal::Bool(false)),
         ("protected".into(), protected),
         ("legacy".into(), legacy_o),
-    ]))
+    ])
+}
+
+/// The summary of a dry store whose plan failed: `ok: false` with the error text, the counts at zero, the log line Node writes.
+fn failed_summary(ctx: &Ctx, hash: &str, bytes_before: u64, why: String) -> OVal {
+    log_event(
+        ctx.home,
+        &[("event", OVal::Str(defaults::text("devswarm_sup.rt_ev_prune_error").into())), ("store", OVal::Str(hash.into())), ("error", OVal::Str(why.clone()))],
+    );
+    let mut o = skipped_summary(hash, bytes_before, true, None, legacy_of(ctx, hash));
+    if let OVal::Obj(v) = &mut o {
+        for (k, x) in v.iter_mut() {
+            match k.as_str() {
+                "ok" => *x = OVal::Bool(false),
+                "error" => *x = OVal::Str(why.clone()),
+                "mbAfter" => *x = n(mb1(bytes_before as f64)),
+                _ => {}
+            }
+        }
+    }
+    o
+}
+
+/// `summarize(r)` for a store `pruneStore` returns untouched (`skipped`: disabled, not a sqlite store, no store) or whose plan failed:
+/// no rows, no candidates, nothing protected, `mbAfter` null (Node leaves `bytesAfter` unset on an early return).
+pub(super) fn skipped_summary(hash: &str, bytes_before: u64, dry_run: bool, skipped: Option<&str>, legacy: Value) -> OVal {
+    let protected = OVal::Obj(defaults::list("devswarm_sup.rt_protected_names").into_iter().map(|k| (k.to_string(), n(0.0))).collect());
+    let legacy_files = legacy["files"].as_array().map_or(0, Vec::len);
+    let legacy_o = OVal::Obj(vec![
+        ("eligible".into(), OVal::Bool(legacy["eligible"].as_bool().unwrap_or(false))),
+        ("reason".into(), legacy["reason"].as_str().map_or(OVal::Null, |r| OVal::Str(r.into()))),
+        ("files".into(), n(legacy_files as f64)),
+    ]);
+    OVal::Obj(vec![
+        ("ok".into(), OVal::Bool(true)),
+        ("hash".into(), OVal::Str(hash.into())),
+        ("skipped".into(), skipped.map_or(OVal::Null, |x| OVal::Str(x.into()))),
+        ("error".into(), OVal::Null),
+        ("dryRun".into(), OVal::Bool(dry_run)),
+        ("mbBefore".into(), n(mb1(bytes_before as f64))),
+        ("mbAfter".into(), OVal::Null),
+        ("rows".into(), n(0.0)),
+        ("alreadyTombstoned".into(), n(0.0)),
+        ("ageCandidates".into(), n(0.0)),
+        ("sizeCandidates".into(), n(0.0)),
+        ("candidateMB".into(), n(0.0)),
+        ("tombstoned".into(), n(0.0)),
+        ("overLimit".into(), OVal::Bool(false)),
+        ("overLimitProtected".into(), OVal::Bool(false)),
+        ("vacuum".into(), OVal::Null),
+        ("budgetExhausted".into(), OVal::Bool(false)),
+        ("protected".into(), protected),
+        ("legacy".into(), legacy_o),
+    ])
 }
 
 pub(super) fn settings_json(s: &Settings) -> OVal {
@@ -125,16 +170,17 @@ fn num_of(v: Option<&OVal>) -> f64 {
 }
 
 /// One sweep of the first-run phase. `dry` (the engine's own dry-run switch) computes and writes nothing.
-pub fn phase(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, dry: bool, budget_ms: f64) -> Result<Value, Defer> {
+pub fn phase(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, dry: bool, budget_ms: f64) -> Value {
     let t0 = std::time::Instant::now();
     let rpath = report_path(ctx.home);
     let mut report = match std::fs::read(&rpath).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) {
         Some(o @ OVal::Obj(_)) => o,
-        Some(o) if o.truthy() => return Err(Defer(defaults::text("devswarm_sup.rt_msg_report_shape").into())),
+        // a truthy scalar: Node's `report.stores = {}` throws on it and the sweep answers `{ran: false, error}`
+        Some(o) if o.truthy() && !matches!(o, OVal::Arr(_)) => return json!({"ran": false, "error": defaults::text("devswarm_sup.rt_msg_report_shape")}),
+        // an array (or nothing readable) keeps no entry by hash: a fresh report
         _ => OVal::Obj(vec![("startedAt".into(), n(ctx.now as f64)), ("stores".into(), OVal::Obj(Vec::new()))]),
     };
     match report.get("stores") {
-        Some(OVal::Arr(_)) => return Err(Defer(defaults::text("devswarm_sup.rt_msg_report_shape").into())),
         Some(OVal::Obj(_)) => {}
         _ => report.set("stores", OVal::Obj(Vec::new())),
     }
@@ -147,15 +193,17 @@ pub fn phase(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, dry: b
         if t0.elapsed().as_millis() as f64 > budget_ms {
             break;
         }
-        let sum = summary(ctx, runner, st, s, &x.hash)?;
-        obj_mut(&mut report, "stores").set(&x.hash, sum);
+        let sum = summary(ctx, runner, st, s, &x.hash);
+        if let Some(stores) = obj_mut(&mut report, "stores") {
+            stores.set(&x.hash, sum);
+        }
         done += 1;
     }
     let remaining = stores.iter().filter(|x| !report.get("stores").and_then(|r| r.get(&x.hash)).is_some_and(OVal::truthy)).count();
     report.set("archiveCap", super::cap::plan(ctx.home, s).oval(true));
     report.set("settings", settings_json(s));
     if dry {
-        return Ok(json!({"ran": true, "phase": "dry-run", "reported": done, "remaining": remaining, "dryRun": true}));
+        return json!({"ran": true, "phase": "dry-run", "reported": done, "remaining": remaining, "dryRun": true});
     }
     if let Some(d) = rpath.parent() {
         crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
@@ -187,19 +235,5 @@ pub fn phase(ctx: &Ctx, runner: &dyn Runner, st: &mut OVal, s: &Settings, dry: b
         );
     }
     super::write_state(ctx.home, st);
-    Ok(json!({"ran": true, "phase": "dry-run", "reported": done, "remaining": remaining, "ms": t0.elapsed().as_millis() as u64}))
-}
-
-/// Node's own dry-run fold answer for `hash`.
-pub(super) fn node_fold_dry(ctx: &Ctx, runner: &dyn Runner, hash: &str) -> Result<Value, String> {
-    let d = defaults::raw("devswarm_sup.duty.retention");
-    let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let r = node(runner, ctx, d.str_field("fold_dry_snippet"), &[hash], timeout);
-    if !r.ok {
-        return Err(r
-            .error
-            .clone()
-            .unwrap_or_else(|| if r.missing { defaults::text("devswarm_sup.msg_no_node").into() } else { crate::dssup::tick::cut(&r.stderr) }));
-    }
-    serde_json::from_str::<Value>(r.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default()).map_err(|e| e.to_string())
+    json!({"ran": true, "phase": "dry-run", "reported": done, "remaining": remaining, "ms": t0.elapsed().as_millis() as u64})
 }

@@ -44,7 +44,13 @@ pub fn rules(body: &Value) -> Value {
 pub fn status(cfg: &Cfg, repo: &Value, now: u64) -> Option<Value> {
     call(
         "ghStatus",
-        json!({"repo": repo, "now": now, "pushWatchMs": cfg.int("github_rt.push_watch_ms"), "conflictStates": cfg.list_field("github_rt.statuses", "conflict_states")}),
+        json!({
+            "repo": repo, "now": now, "pushWatchMs": cfg.int("github_rt.push_watch_ms"), "conflictStates": cfg.list_field("github_rt.statuses", "conflict_states"),
+            "ready": {
+                "enabled": cfg.flag("github_rt.ready_enabled"), "requireApproval": cfg.flag("github_rt.ready_require_approval"), "requireUpToDate": cfg.flag("github_rt.ready_require_up_to_date"),
+                "okStates": cfg.strs("github_rt.ready_ok_states"), "behindStates": cfg.strs("github_rt.ready_behind_states"),
+            },
+        }),
     )
 }
 
@@ -81,4 +87,14 @@ pub fn segment(cfg: &Cfg, status: &Value) -> String {
 /// The name of the `github_rt` setting that holds the polling interval a repo's status calls for.
 pub fn cadence(status: &Value) -> Option<String> {
     call("ghCadence", json!({"status": status})).and_then(|v| v.as_str().map(String::from))
+}
+
+/// The merge commit of a pull request read after a merge: `{merged, merge_commit_sha, base}`.
+pub fn merge_info(body: &Value) -> Value {
+    call("ghMergeInfo", json!({"body": body})).unwrap_or(Value::Null)
+}
+
+/// Whether the commit list of a base branch holds a revert of the merged pull request: `{reverted, by}`.
+pub fn revert_check(commits: &Value, merge_sha: &str, title: &str) -> Value {
+    call("ghRevertCheck", json!({"body": commits, "mergeSha": merge_sha, "title": title})).unwrap_or(Value::Null)
 }

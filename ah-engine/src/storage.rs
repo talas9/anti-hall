@@ -31,6 +31,31 @@ pub struct ImpactEvent {
     pub project: String,
 }
 
+/// One guard block, for asking about it afterwards. `reason` is the first line of the guard's own message, capped.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlockRow {
+    /// When it happened, milliseconds since the Unix epoch.
+    pub ts_ms: u64,
+    /// The check (guard) that blocked.
+    pub guard: String,
+    /// The id of the rule that named the check.
+    pub rule: String,
+    /// The hook event being served.
+    pub event: String,
+    /// The session whose call was blocked.
+    pub session: String,
+    /// The subagent whose call was blocked (empty for the main thread).
+    pub agent: String,
+    /// The tool the call used.
+    pub tool: String,
+    /// Hashed project key.
+    pub project: String,
+    /// The first line of the block message.
+    pub reason: String,
+    /// 0, or how many blocks this guard gave this session inside the repeat window when this one was the repeat (`session_switches.toml`).
+    pub repeat: u64,
+}
+
 /// Which events a query wants; an empty field matches everything.
 #[derive(Debug, Clone, Default)]
 pub struct ImpactFilter {
@@ -60,6 +85,8 @@ pub struct ImpactCount {
 pub trait Store: Send + Sync {
     /// Remember one impact event.
     fn record_impact(&self, event: ImpactEvent);
+    /// Remember one guard block (stores that keep nothing ignore it).
+    fn record_block(&self, _row: BlockRow) {}
     /// Exact counts per combination, filtered.
     fn impact_counts(&self, filter: &ImpactFilter) -> Vec<ImpactCount>;
     /// The most recent events, newest last, filtered, at most `limit`.
@@ -208,6 +235,12 @@ impl SqliteStore {
 }
 
 impl Store for SqliteStore {
+    fn record_block(&self, row: BlockRow) {
+        if self.db.submit(Op::Block(row)).is_err() {
+            self.dropped.fetch_add(1, SeqCst);
+        }
+    }
+
     fn record_impact(&self, e: ImpactEvent) {
         if self.db.submit(Op::Impact(e)).is_err() {
             self.dropped.fetch_add(1, SeqCst);
@@ -277,7 +310,8 @@ impl Store for SqliteStore {
     }
 
     fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
-        let (ts, body): (i64, String) = self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok()?;
+        let (ts, body): (i64, String) =
+            self.db.read(|c| c.query_row(sql::METRICS_LOAD, [], |r| Ok((r.get(0)?, r.get(1)?)))).ok_logged("storage_metrics_load")?;
         Some((ts.max(0) as u64, serde_json::from_str(&body).ok()?))
     }
 

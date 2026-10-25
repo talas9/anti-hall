@@ -1,0 +1,94 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "reader-cursors import: dry run, would import 2 of 3 partition(s) across 2 store(s)",
+    "errors": 0,
+    "imported": 0,
+    "partitions": 3,
+    "stores": 2
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/cursors/": "755",
+    ".anti-hall/devswarm/cursors/w1#inst-{SHORT}.json": "644 1",
+    ".anti-hall/devswarm/cursors/w1#nd-{SHORT}.json": "644 0",
+    ".anti-hall/devswarm/cursors/w1.json": "644 2",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/w1.json": "644 {\"id\":\"w1\",\"cursorPath\":\"{ROOT}/nd-w1.cursor\"}"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "a1",
+          "workspace_id": "w1"
+        },
+        {
+          "hash": "a2",
+          "workspace_id": "w1"
+        },
+        {
+          "hash": "a3",
+          "workspace_id": "w1"
+        },
+        {
+          "hash": "b1",
+          "workspace_id": "w2"
+        },
+        {
+          "hash": "b2",
+          "workspace_id": "w2"
+        }
+      ],
+      "reader_cursors": [
+        {
+          "ns": "nd",
+          "partition": "w2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "nd",
+          "partition": "w2",
+          "reader": "h:999999:1000000000001",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        },
+        {
+          "ns": "store",
+          "partition": "w2",
+          "reader": "#floor",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 1
+        },
+        {
+          "ns": "store",
+          "partition": "w2",
+          "reader": "h:999999:1000000000001",
+          "retired_line": null,
+          "updated_at": 1000,
+          "value": 0
+        }
+      ],
+      "registry": []
+    },
+    "proj-d4e5f6": {
+      "cursors": [],
+      "messages": [],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "w9",
+          "session_id": null,
+          "worktree_path": null
+        }
+      ]
+    }
+  }
+}

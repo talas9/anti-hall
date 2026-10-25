@@ -13,7 +13,7 @@ why some features are built the way they are.
     These notes are not updated with every release, and model, pricing or product details
     in them may be out of date. For how anti-hall works today, use
     [Getting started](start/install.md), [Features](features/guards.md) and the
-    [Settings reference](../plugins/anti-hall/hooks/lib/settings-schema.js).
+    [Settings reference](../plugins/anti-hall/engine/defaults/settings_cli.toml).
 
 The index of every doc, with its status and date, is the
 [knowledge-base index](KB.md).

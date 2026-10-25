@@ -1,11 +1,8 @@
 {
   "name": "anti-hall-tests",
-  "version": "0.300.2",
+  "version": "0.301.1",
   "private": true,
-  "description": "Test harness for the anti-hall plugin. The plugin version is in plugins/anti-hall/.claude-plugin/plugin.json.",
-  "scripts": {
-    "test": "node --test"
-  },
+  "description": "Repository metadata for the anti-hall plugin. The plugin version is in plugins/anti-hall/.claude-plugin/plugin.json; the tests are the engine's (ah-engine/).",
   "engines": {
     "node": ">=22"
   },

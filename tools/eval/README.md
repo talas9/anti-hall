@@ -19,7 +19,7 @@ exist** (ground truth: fake), the harness asks the model twice:
 | **BASELINE** | a minimal generic coding-assistant system prompt + the same trap prompt |
 
 The protocol text is **not hardcoded** — `run.js` runs the shipped
-`plugins/anti-hall/hooks/verify-first-full.js` SessionStart hook and extracts
+`plugins/anti-hall-node/hooks/verify-first-full.js` SessionStart hook and extracts
 `hookSpecificOutput.additionalContext`, exactly as Claude Code injects it. This
 keeps the eval honest: it always tests the protocol that actually ships.
 

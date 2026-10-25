@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Full-outcome parity for the built-in `git` check: the Node git-guard (authority) vs the engine, comparing
 // exit code, stdout and stderr exactly (trailing whitespace trimmed).
-//   node run-git.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall/hooks --corpus c.jsonl
+//   node run-git.js --engine ../target/release/ah-engine --hooks <repo>/plugins/anti-hall-node/hooks --corpus c.jsonl
 //        [--mode oneshot|daemon|both] [--limit N] [--conc 8] [--show 15] [--out mismatches.json]
 // Corpus lines: {"command": "...", "cwd": "/optional/dir", "source": "..."}.
 // Node side runs `git-guard.js`; engine side runs `ah-engine check git` (oneshot: the logic in-process) and/or
@@ -36,7 +36,7 @@ async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ le
   // daemon setup
   const dir = path.join(tmp, 'e'), rf = path.join(tmp, 'rules.json');
   fs.writeFileSync(rf, JSON.stringify({ version: 1, rules: [{ id: 'git-guard', events: ['PreToolUse'], tools: ['Bash'], check: 'git', action: 'deny', options: { plugin_root: PLUGIN_ROOT } }] }));
-  const denv = { ...baseEnv, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: 'false', AH_ENGINE_BREAKER_N: '1000000' };
+  const denv = { ...baseEnv, AH_ENGINE_DIR: dir, AH_ENGINE_RULES: rf, AH_ENGINE_SESSION_RPS: '0', AH_ENGINE_PROJECT_RPS: '0', AH_ENGINE_VERSION: 'parity', AH_ENGINE_EVAL_BUDGET_US: '0', AH_ENGINE_SCRIPT_CUT_AT_DEADLINE: '0', AH_ENGINE_DEADLINE_MS: '30000', AH_ENGINE_NODE: 'false', AH_ENGINE_BREAKER_N: '1000000' };
   const oenv = { ...baseEnv, AH_ENGINE_PLUGIN_ROOT: PLUGIN_ROOT };
   if (MODE !== 'oneshot') {
     await run(ENGINE, ['hook'], payload('echo warm', '/tmp'), denv, '/tmp');

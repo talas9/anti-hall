@@ -3,19 +3,21 @@
 //! truth for archive state: a builder is archived when `isActive = 0` and `isHidden = 1`.
 //!
 //! The reader opens the file read-only and never waits for a lock (Node's `node:sqlite` does not either): a missing,
-//! unreadable, locked or unexpected database is `Ok(None)`, "no opinion", exactly as Node's `null`. Everything the
-//! engine cannot read like Node (a relative worktree path, a value of a type JavaScript converts in ways the engine does
-//! not reproduce, a cache file of the wrong shape) defers before anything is written.
+//! unreadable, locked or unexpected database is `Ok(None)`, "no opinion", exactly as Node's `null`. Values are converted
+//! the way JavaScript converts them (`Number(v)` / `String(v)` of text, blobs and floats), a relative worktree path
+//! resolves against the working directory, and a cache file of any shape is read key by key as `Object.keys` does.
 //!
 //! The one write is Node's cross-invocation cache (`<devswarm root>/cache/app-archived.json`, 30 s, keyed by the database's
 //! mtime and size and its `-wal` file's). It is returned to the caller as a [`CacheWrite`] so the verb can perform it after
 //! its own commit point, never before.
 // Discard triage (E3): every `.ok()` / `harmless` in this file is a deliberate keep: Node's reader is fail-open (a throw is
 // `null`) and its cache write is best effort (`try { ... } catch (_) {}`).
+use crate::checks::guardkit::jsval::to_number;
 use crate::checks::guardkit::ojson::OVal;
+use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::meshw::common::{Obj, n, s};
-use crate::meshw::ident::{self, Env, R, defer};
+use crate::meshw::ident::{self, Env, R};
 use crate::meshw::idlock::devswarm_root;
 use rusqlite::types::ValueRef;
 use std::collections::HashMap;
@@ -35,6 +37,10 @@ pub struct State {
     pub worktree: Option<String>,
     /// `builderType`.
     pub builder_type: Option<String>,
+    /// `branchName` (read from the database only; a cache file does not hold it).
+    pub branch: Option<String>,
+    /// `label`, the workspace title (read from the database only; a cache file does not hold it).
+    pub label: Option<String>,
 }
 
 /// The cache file the verb writes after its own commit point.
@@ -96,45 +102,62 @@ pub(crate) fn select_for(table: &str, schema: &[&str], have: &[String]) -> Optio
     (!list.is_empty()).then(|| format!("{}{}{}{table}", crate::sql::MESHW_APP_SELECT, list.join(crate::sql::MESHW_APP_LIST_SEP), crate::sql::MESHW_APP_FROM))
 }
 
-/// Read one cell the way a snapshot does, so a damaged page fails here as it would in Node; `Err` = Node throws.
+/// Read one cell the way a snapshot does, so a damaged page fails here as it would in Node; `Err` = Node throws. `node:sqlite`
+/// also throws (`ERR_OUT_OF_RANGE`) on an integer beyond `mesh_write.app_max_exact_int`, which makes the whole snapshot null.
 fn touch_row(r: &rusqlite::Row<'_>, cols: usize) -> Result<(), ()> {
+    let max = defaults::num("mesh_write.app_max_exact_int");
     for i in 0..cols {
-        r.get_ref(i).map_err(|_| ())?;
+        if let ValueRef::Integer(v) = r.get_ref(i).map_err(|_| ())?
+            && v.unsigned_abs() > max
+        {
+            return Err(());
+        }
     }
     Ok(())
 }
 
-/// `Number(v)` for the flag columns: null is 0, a number is itself; text and blobs (JavaScript converts them in ways the
-/// engine does not reproduce) defer.
-fn flag(v: ValueRef<'_>) -> R<f64> {
+/// `String(new Uint8Array(bytes))`: the bytes as decimal numbers joined by commas (what JavaScript prints for a blob).
+fn blob_string(b: &[u8]) -> String {
+    b.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// `Number(v)` for the flag columns: null is 0, a number is itself, text goes through `Number(string)` and a blob through the
+/// string of its bytes (`NaN` when that is not a number).
+fn flag(v: ValueRef<'_>) -> f64 {
     match v {
-        ValueRef::Null => Ok(0.0),
-        ValueRef::Integer(i) if (i as f64).abs() <= defaults::num("mesh_write.app_max_exact_int") as f64 => Ok(i as f64),
-        ValueRef::Real(f) => Ok(f),
-        _ => defer("app-db-flag-type"),
+        ValueRef::Null => 0.0,
+        ValueRef::Integer(i) => i as f64,
+        ValueRef::Real(f) => f,
+        ValueRef::Text(t) => to_number(js_trim(&String::from_utf8_lossy(t))),
+        ValueRef::Blob(b) => to_number(&blob_string(b)),
     }
 }
 
-/// `String(v)` for the text columns (`id`, `builderType`): null is absent; a blob defers (JavaScript prints its bytes).
-fn text_of(v: ValueRef<'_>) -> R<Option<String>> {
+/// `String(v)` for the text columns (`id`, `builderType`): null is absent; a blob prints as its bytes joined by commas.
+fn text_of(v: ValueRef<'_>) -> Option<String> {
     match v {
-        ValueRef::Null => Ok(None),
-        ValueRef::Integer(i) if (i as f64).abs() <= defaults::num("mesh_write.app_max_exact_int") as f64 => Ok(Some(i.to_string())),
-        ValueRef::Integer(_) | ValueRef::Blob(_) => defer("app-db-column-type"),
-        ValueRef::Real(f) => Ok(Some(crate::checks::jsport::num::to_js_string(f))),
-        ValueRef::Text(t) => Ok(Some(String::from_utf8_lossy(t).into_owned())),
+        ValueRef::Null => None,
+        ValueRef::Integer(i) => Some(i.to_string()),
+        ValueRef::Real(f) => Some(crate::checks::jsport::num::to_js_string(f)),
+        ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => Some(blob_string(b)),
     }
 }
 
-/// `normPath(p)`: a relative path resolves against the cwd, which the engine does not reproduce.
+/// `normPath(p)`: a relative path resolves against the working directory (`path.resolve`); a working directory that cannot be read
+/// leaves the path as it was (Node's `catch (_) { return p; }`).
 pub(crate) fn norm_path(p: &str) -> R<Option<String>> {
     if p.is_empty() {
         return Ok(None);
     }
-    if !p.starts_with('/') {
-        return defer("relative-path");
-    }
-    let r = ident::resolve_abs(p);
+    let r = if p.starts_with('/') {
+        ident::resolve_abs(p)
+    } else {
+        match std::env::current_dir().ok().and_then(|d| d.to_str().map(str::to_string)) {
+            Some(cwd) => ident::resolve(&cwd, p),
+            None => return Ok(Some(p.to_string())),
+        }
+    };
     Ok(Some(ident::realpath(&r).unwrap_or(r)))
 }
 
@@ -192,6 +215,8 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         idx(defaults::text("mesh_write.app_col_worktree")),
         idx(defaults::text("mesh_write.app_col_builder_type")),
     );
+    let i_branch = idx(defaults::text("mesh_write.app_col_branch"));
+    let i_label = idx(defaults::text("mesh_write.app_col_label"));
     let (Some(i_id), Some(i_active)) = (i_id, i_active) else { return Ok(None) };
     let Ok(mut st) = conn.prepare(&q) else { return Ok(None) };
     let Ok(mut rows) = st.query([]) else { return Ok(None) };
@@ -207,25 +232,22 @@ pub fn read_states(file: &str) -> R<Option<Vec<State>>> {
         if touch_row(r, present.len()).is_err() {
             return Ok(None);
         }
-        let get = |i: usize| r.get_ref(i).map_err(|_| ident::Defer("app-db-read".into()));
-        let Some(id) = text_of(get(i_id)?)? else { continue };
-        let active_n = flag(get(i_active)?)?;
-        let hidden_n = match i_hidden {
-            Some(i) => Some(flag(get(i)?)?),
-            None => None,
-        };
+        // `touch_row` above read every one of these cells, so a read that fails here cannot happen: the null stands for it
+        let get = |i: usize| r.get_ref(i).unwrap_or(ValueRef::Null);
+        let Some(id) = text_of(get(i_id)) else { continue };
+        let active_n = flag(get(i_active));
+        let hidden_n = i_hidden.map(|i| flag(get(i)));
         // `Number(b.isActive) === 0 && (!hasHidden || Number(b.isHidden) === 1)`
         let archived = active_n == 0.0 && hidden_n.is_none_or(|h| h == 1.0);
-        let worktree = match i_wt.map(get).transpose()? {
+        // `normPath(b.worktreePath)` is null for anything that is not a string (a number, a blob)
+        let worktree = match i_wt.map(get) {
             Some(ValueRef::Text(t)) => norm_path(&String::from_utf8_lossy(t))?,
-            Some(ValueRef::Blob(_)) => return defer("app-db-column-type"),
             _ => None,
         };
-        let builder_type = match i_bt {
-            Some(i) => text_of(get(i)?)?,
-            None => None,
-        };
-        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type };
+        let builder_type = i_bt.and_then(|i| text_of(get(i)));
+        let branch = i_branch.and_then(|i| text_of(get(i)));
+        let label = i_label.and_then(|i| text_of(get(i)));
+        let st = State { id: id.clone(), active: active_n == 1.0, archived: Some(archived), worktree, builder_type, branch, label };
         match at.get(&id) {
             Some(&p) => out[p] = st,
             None => {
@@ -293,34 +315,42 @@ fn read_cache(home: &Path, file: &str, sig: &Sig, now: i64) -> R<Option<Vec<Stat
     if !at.is_finite() || age < 0.0 || age >= defaults::num("mesh_write.app_cache_ttl_ms") as f64 {
         return Ok(None);
     }
-    let Some(OVal::Obj(states)) = j.get("states") else {
-        // an array or another non-object `states` is read key by key by JavaScript; not reproduced
-        return if matches!(j.get("states"), Some(OVal::Arr(_))) { defer("app-cache-shape") } else { Ok(None) };
+    // `!j.states || typeof j.states !== 'object'` is the miss; an array is an object whose keys are its indices
+    let entries: Vec<(String, &OVal)> = match j.get("states") {
+        Some(OVal::Obj(kv)) => crate::meshw::appverbs::js_entries(kv).into_iter().map(|(k, v)| (k.clone(), v)).collect(),
+        Some(OVal::Arr(items)) => items.iter().enumerate().map(|(i, v)| (i.to_string(), v)).collect(),
+        _ => return Ok(None),
     };
     let mut out: Vec<State> = Vec::new();
     let mut at_ix: HashMap<String, usize> = HashMap::new();
-    for (id, v) in states {
-        let (active, archived, worktree, builder_type) = match v {
-            OVal::Obj(_) => {
-                let str_or_null = |k: &str| match v.get(k) {
-                    None | Some(OVal::Null) => Ok(None),
-                    Some(OVal::Str(x)) => Ok(Some(x.clone())),
-                    Some(_) => defer("app-cache-shape"),
-                };
-                let archived = match v.get("archived") {
-                    Some(OVal::Bool(b)) => Some(*b),
-                    _ => None,
-                };
-                (matches!(v.get("active"), Some(OVal::Bool(true))), archived, str_or_null("worktreePath")?, str_or_null("builderType")?)
-            }
-            OVal::Arr(_) => return defer("app-cache-shape"),
-            _ => continue, // `!v || typeof v !== 'object'`
+    for (id, v) in entries {
+        // `!v || typeof v !== 'object'` is skipped; an array has none of the fields, so every one reads as absent
+        if !matches!(v, OVal::Obj(_) | OVal::Arr(_)) {
+            continue;
+        }
+        let archived = match v.get("archived") {
+            Some(OVal::Bool(b)) => Some(*b),
+            _ => None,
         };
-        let st = State { id: id.clone(), active, archived, worktree, builder_type };
-        match at_ix.get(id) {
+        // `v.x == null ? null : String(v.x)`
+        let string_or_null = |k: &str| match v.get(k) {
+            None | Some(OVal::Null) => None,
+            Some(x) => Some(crate::meshw::appverbs::js_string(x)),
+        };
+        let active = matches!(v.get("active"), Some(OVal::Bool(true)));
+        let st = State {
+            id: id.clone(),
+            active,
+            archived,
+            worktree: string_or_null("worktreePath"),
+            builder_type: string_or_null("builderType"),
+            branch: None,
+            label: None,
+        };
+        match at_ix.get(&id) {
             Some(&p) => out[p] = st,
             None => {
-                at_ix.insert(id.clone(), out.len());
+                at_ix.insert(id, out.len());
                 out.push(st);
             }
         }
@@ -363,18 +393,113 @@ pub fn builder_states(home: &Path, env: &Env, now: i64, xcache: bool) -> R<Optio
 pub fn archived_verdict(home: &Path, env: &Env, now: i64, id: &str, worktree: Option<&str>, xcache: bool) -> R<(Option<bool>, Option<CacheWrite>)> {
     let Some(found) = builder_states(home, env, now, xcache)? else { return Ok((None, None)) };
     let cache = found.cache;
+    Ok((verdict_in(&found.states, id, worktree)?, cache))
+}
+
+/// The verdict of [`archived_verdict`] for states already read: a caller that asks about many workspaces reads them once.
+pub fn verdict_in(states: &[State], id: &str, worktree: Option<&str>) -> R<Option<bool>> {
     if !id.is_empty()
-        && let Some(st) = found.states.iter().find(|s| s.id == id)
+        && let Some(st) = states.iter().find(|s| s.id == id)
     {
-        return Ok((st.archived, cache));
+        return Ok(st.archived);
     }
-    let Some(wt) = worktree.map(norm_path).transpose()?.flatten() else { return Ok((None, cache)) };
+    let Some(wt) = worktree.map(norm_path).transpose()?.flatten() else { return Ok(None) };
     let mut saw_archived = false;
-    for b in found.states.iter().filter(|b| b.worktree.as_deref() == Some(wt.as_str())) {
+    for b in states.iter().filter(|b| b.worktree.as_deref() == Some(wt.as_str())) {
         if b.active || b.archived != Some(true) {
-            return Ok((Some(false), cache));
+            return Ok(Some(false));
         }
         saw_archived = true;
     }
-    Ok((saw_archived.then_some(true), cache))
+    Ok(saw_archived.then_some(true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ah-appdb-{tag}-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn db(dir: &Path, sql: &str) -> String {
+        let file = dir.join("devswarm.db");
+        Connection::open(&file).unwrap().execute_batch(sql).unwrap();
+        file.to_string_lossy().into_owned()
+    }
+
+    /// The values `node:sqlite` hands JavaScript that the engine used to give up on: a text flag is `Number(string)`, a blob flag and a
+    /// blob or real id print as JavaScript prints them, a worktree that is not text is no path.
+    #[test]
+    fn a_value_of_another_type_is_read_the_way_javascript_reads_it() {
+        let dir = scratch("types");
+        let file = db(
+            &dir,
+            "CREATE TABLE builders (id, isActive, isHidden, worktreePath, builderType);
+             INSERT INTO builders VALUES ('a', '0', ' 1 ', NULL, NULL), ('b', x'00', 1, x'2f78', 5), (1.5, 1, 0, 7, NULL), (x'0102', '0x1', 0, NULL, NULL), (NULL, 0, 1, NULL, NULL), ('nan', 'abc', 1, NULL, NULL)",
+        );
+        let states = read_states(&file).unwrap().unwrap();
+        let by = |id: &str| states.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no state for {id}: {states:?}"));
+        assert_eq!(by("a").archived, Some(true), "Number('0') is 0 and Number(' 1 ') is 1");
+        assert_eq!(by("b").archived, Some(true), "a blob of one zero byte prints as 0");
+        assert_eq!((by("b").worktree.clone(), by("b").builder_type.clone()), (None, Some("5".to_string())), "a blob path is no path");
+        assert!(by("1.5").active && by("1.5").worktree.is_none(), "a real id has no trailing zero and a numeric path is no path");
+        assert!(by("1,2").active, "a blob id prints as its bytes, and Number('0x1') is 1");
+        assert_eq!(states.len(), 5, "a null id is no builder");
+        assert_eq!(by("nan").archived, Some(false), "Number('abc') is NaN, which is neither 0 nor 1");
+    }
+
+    /// `node:sqlite` throws on an integer it cannot hold exactly, in any column it selects: the whole snapshot is null.
+    #[test]
+    fn an_integer_beyond_two_to_the_53_anywhere_makes_the_snapshot_null() {
+        let dir = scratch("bigint");
+        let file = db(&dir, "CREATE TABLE builders (id TEXT, isActive INTEGER, rank INTEGER); INSERT INTO builders VALUES ('a', 0, 9007199254740993)");
+        assert_eq!(read_states(&file).unwrap().map(|s| s.len()), None);
+        let ok = db(
+            &scratch("bigint-ok"),
+            "CREATE TABLE builders (id TEXT, isActive INTEGER, rank INTEGER); INSERT INTO builders VALUES ('a', 0, 9007199254740991)",
+        );
+        assert_eq!(read_states(&ok).unwrap().map(|s| s.len()), Some(1));
+    }
+
+    /// `path.resolve(p)` against the working directory, then the real path.
+    #[test]
+    fn a_relative_worktree_path_resolves_against_the_working_directory() {
+        let cwd = std::env::current_dir().unwrap();
+        let got = norm_path("rel/x").unwrap().unwrap();
+        assert_eq!(got, ident::realpath(&ident::resolve(cwd.to_str().unwrap(), "rel/x")).unwrap_or_else(|| ident::resolve(cwd.to_str().unwrap(), "rel/x")));
+        assert_eq!(norm_path("").unwrap(), None);
+    }
+
+    /// The cross-invocation cache is read key by key like a JavaScript object: an array holds the keys `0`, `1`, ..., the integer-like
+    /// keys of an object come first, a value that is no object is skipped, any field is printed with `String(v)`.
+    #[test]
+    fn a_cache_of_any_shape_is_read_like_object_keys() {
+        let home = scratch("cache");
+        let file = "/db/devswarm.db";
+        let sig = Sig { mtime: 1.0, size: 2.0, wal_mtime: None, wal_size: None };
+        let write = |states: &str| {
+            let path = cache_target(&home);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let text = format!(r#"{{"file":"{file}","sig":{{"mtimeMs":1,"size":2,"walMtimeMs":null,"walSize":null}},"at":1000,"states":{states}}}"#);
+            std::fs::write(path, text).unwrap();
+        };
+        write(r#"[null,5,{"active":true,"archived":false,"worktreePath":7,"builderType":["a",null,"b"]},[]]"#);
+        let got = read_cache(&home, file, &sig, 1500).unwrap().unwrap();
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["2", "3"], "the indices are the ids");
+        assert_eq!(
+            (got[0].active, got[0].archived, got[0].worktree.clone(), got[0].builder_type.clone()),
+            (true, Some(false), Some("7".into()), Some("a,,b".into()))
+        );
+        assert_eq!((got[1].active, got[1].archived, got[1].worktree.clone()), (false, None, None), "an array has none of the fields");
+        write(r#"{"b":{"active":true},"10":{"active":false},"9":{"active":true}}"#);
+        let got = read_cache(&home, file, &sig, 1500).unwrap().unwrap();
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["9", "10", "b"], "integer-like keys first, ascending");
+        write(r#""text""#);
+        assert!(read_cache(&home, file, &sig, 1500).unwrap().is_none(), "a string is not an object: a miss");
+    }
 }

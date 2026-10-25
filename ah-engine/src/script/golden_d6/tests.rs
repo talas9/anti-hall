@@ -4,8 +4,10 @@ use super::*;
 
 /// Every case of a golden corpus through the script; mismatches are listed (up to `limit`) before the test fails.
 fn golden_report(check: &str, limit: usize) {
+    golden::regen_defers_local(check);
     let cases = golden::load(check);
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
+    let limit = if std::env::var("AH_GOLDEN_ALL").is_ok() { usize::MAX } else { limit };
     let (mut bad, mut shown) = (0, 0);
     for c in &cases {
         let l = golden::lay(c);

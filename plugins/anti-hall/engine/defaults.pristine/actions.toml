@@ -1,0 +1,61 @@
+# ah-engine shipped defaults for the action log and its report (src/actlog): every ACTING feature (the stall nudges and
+# escalations, the merge-readiness notice and the optional auto-merge) records each action it takes or refuses, and the mistake
+# signals that show later it was wrong, so a mistake is measurable. Format: see the header of engine.toml.
+
+[actions.file]
+doc = "The action log (one JSON line per action, refusal, mistake signal or follow-up result), relative to the engine state directory."
+value = "actions.ndjson"
+
+[actions.followups_file]
+doc = "The pending follow-ups of one feature ({feature} is filled in), relative to the engine state directory: checks made some time after an action to see whether it was a mistake."
+value = "actions-followups-{feature}.json"
+
+[actions.rotate_bytes]
+doc = "The action log is renamed to actions.<epoch ms>.ndjson (never deleted) and a new one started once it is larger than this."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[actions.read_bytes]
+doc = "The most bytes of the newest action log the report reads."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[actions.window_ms]
+doc = "The default window of `ah-engine telemetry actions`; records older than this are not counted. 0 counts everything in the log."
+value = 604800000
+min = 0
+unit = "ms"
+
+[actions.followup_cap]
+doc = "The most pending follow-ups kept per feature (the oldest are dropped first, each with a logged follow-up record that says it expired)."
+value = 500
+min = 10
+
+[actions.features]
+doc = "The acting features that record into the log, with the actions and the mistake kinds each can have. The report lists exactly these; a record of another feature is still counted, under its own name."
+value = { stall = { actions = ["poke", "escalate"], mistakes = ["nudge_no_change", "escalation_then_active", "escalation_dismissed"] }, merge_ready = { actions = ["notify", "merge"], mistakes = ["merged_then_reverted", "base_ci_red_after_merge"] } }
+
+[actions.report_digits]
+doc = "Decimal places of the success and mistake rates in the report."
+value = 3
+min = 0
+max = 6
+
+[actions.msg_mistake_usage]
+doc = "Printed when `telemetry actions --mistake` lacks its arguments."
+value = "usage: ah-engine telemetry actions --mistake <feature> <action> <target> <kind> [detail]"
+
+[actions.stall]
+doc = "How the stall feature (pokes and escalations of silent workspaces) names itself in the action log and its two mistake signals: a poke after which the workspace showed no new activity, an escalation after which it did."
+value = { feature = "stall", nudge_mistake = "nudge_no_change", nudge_detail = "no new activity after the poke", escalate_mistake = "escalation_then_active", escalate_detail = "new activity after the escalation" }
+
+[actions.token_chars]
+doc = "The characters besides letters and digits that a target, reason or feature keeps when it goes into a telemetry field (everything else is dropped, so a field never carries free text)."
+value = "-_:#@./"
+
+[actions.token_max]
+doc = "The most characters of one telemetry field of an action or mistake event."
+value = 120
+min = 8

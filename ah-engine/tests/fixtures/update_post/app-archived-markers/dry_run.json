@@ -1,0 +1,24 @@
+{
+  "answer": {
+    "attempted": true,
+    "detail": "app-archived markers: dry run, would mark 3 of 7 descriptor(s)",
+    "errors": 0,
+    "marked": 0,
+    "scanned": 7
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/archived/": "755",
+    ".anti-hall/devswarm/archived/44444444-4444-4444-8444-444444444444.json": "644 {\"id\":\"mine\",\"archivedBy\":\"owner\",\"archivedAt\":0}",
+    ".anti-hall/devswarm/workspaces/": "755",
+    ".anti-hall/devswarm/workspaces/11111111-1111-4111-8111-111111111111.json": "644 {\"id\":\"11111111-1111-4111-8111-111111111111\",\"worktreePath\":\"/code/wts/archived\",\"sessionId\":\"s-11111111-1111-4111-8111-111111111111\"}",
+    ".anti-hall/devswarm/workspaces/22222222-2222-4222-8222-222222222222.json": "644 {\"id\":\"22222222-2222-4222-8222-222222222222\",\"worktreePath\":\"/code/wts/deleted\",\"sessionId\":\"s-22222222-2222-4222-8222-222222222222\"}",
+    ".anti-hall/devswarm/workspaces/33333333-3333-4333-8333-333333333333.json": "644 {\"id\":\"33333333-3333-4333-8333-333333333333\",\"worktreePath\":\"/code/wts/open\",\"sessionId\":\"s-33333333-3333-4333-8333-333333333333\"}",
+    ".anti-hall/devswarm/workspaces/44444444-4444-4444-8444-444444444444.json": "644 {\"id\":\"44444444-4444-4444-8444-444444444444\",\"worktreePath\":\"/code/wts/gone-already-marked\",\"sessionId\":\"s-44444444-4444-4444-8444-444444444444\"}",
+    ".anti-hall/devswarm/workspaces/junk.json": "644 [1,2",
+    ".anti-hall/devswarm/workspaces/nowt.json": "644 {\"id\":\"nowt\"}",
+    ".anti-hall/devswarm/workspaces/twin-ws.json": "644 {\"id\":\"twin-ws\",\"worktreePath\":\"/code/wts/twin\",\"sessionId\":\"s-twin-ws\"}"
+  },
+  "stores": {}
+}

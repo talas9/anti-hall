@@ -3,6 +3,7 @@
 //! process's resource usage and any other test running in the same process would be counted too. Run it alone and look at
 //! the `BENCH` line: `cargo test --release --test watch_bench -- --nocapture`.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+#![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
 use ah_engine::defaults;
 use ah_engine::watch::poll::Filter;
@@ -127,4 +128,56 @@ fn bench_events_and_poll_latency_p95_and_idle_cpu_against_the_targets() {
     // The shipped choice (events) meets both targets on the realistic set ...
     assert!(p95 <= target, "events p95 {p95:?} over target {target:?}");
     assert!(cpu_pm <= budget as f64, "events idle cpu {cpu_pm:.3} permille over budget {budget}");
+}
+
+/// No change is missed: thousands of file creations and appends in a non-recursively watched directory, written fast, are all
+/// reported (a file may be reported more than once, never zero times), and the last append of a file is reported after it was written.
+#[test]
+fn bench_events_miss_nothing_over_thousands_of_writes() {
+    defaults::init().expect("defaults load in a test");
+    let t = Tmp::new("miss");
+    let dir = t.0.join("d");
+    fs::create_dir_all(&dir).unwrap();
+    let w = Watcher::start(Config::load());
+    w.add(&dir, Filter::All);
+    drain(&w, ms(300));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<PathBuf>::new()));
+    let (s, stop) = (seen.clone(), std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let st = stop.clone();
+    let reader = std::thread::scope(|sc| {
+        let h = sc.spawn(|| {
+            let mut rescans = 0u64;
+            while !st.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Some(b) = w.next(ms(50)) {
+                    rescans += u64::from(b.rescan);
+                    s.lock().unwrap().extend(b.paths);
+                }
+            }
+            while let Some(b) = w.next(ms(1500)) {
+                rescans += u64::from(b.rescan);
+                s.lock().unwrap().extend(b.paths);
+            }
+            rescans
+        });
+        let t0 = Instant::now();
+        for i in 0..3000u32 {
+            let p = dir.join(format!("f{i}.json"));
+            fs::write(&p, "{}").unwrap();
+            if i % 3 == 0 {
+                fs::OpenOptions::new().append(true).open(&p).unwrap().write_all(b"x").unwrap();
+            }
+            if i % 100 == 0 {
+                std::thread::sleep(ms(5));
+            }
+        }
+        eprintln!("BENCH miss: wrote 3000 files in {:?}", t0.elapsed());
+        std::thread::sleep(ms(300));
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        h.join().unwrap()
+    });
+    let got = seen.lock().unwrap();
+    let missing = (0..3000u32).filter(|i| !got.contains(&dir.join(format!("f{i}.json")))).count();
+    eprintln!("BENCH miss: missing={missing} of 3000, rescans={reader}");
+    // a rescan signal covers whatever it replaced (the consumer reconciles everything), so a miss only counts when none was sent
+    assert!(missing == 0 || reader > 0, "{missing} of 3000 files were never reported and no rescan was requested");
 }

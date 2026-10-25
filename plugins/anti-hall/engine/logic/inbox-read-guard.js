@@ -1,7 +1,8 @@
 // check = "inbox-read-guard" (PreToolUse on Read). Blocks a Read-tool read of the raw DevSwarm inbox, which must only be read
-// through the wrapper; dormant unless DevSwarm is active. A path inside the raw store defers to Node (it blocks only when the
-// wrapper's store-read command exists, which only Node can load). Mirrors hooks/inbox-read-guard.js `main` and
-// hooks/lib/devswarm-inbox-paths.js `classifyDevswarmPath`. Everything configurable is in spawn_context.toml (inbox_read.*).
+// through the wrapper; dormant unless DevSwarm is active. A path inside the raw store is blocked too while the store-read
+// command exists (inbox_read_v1.store_cli_present: the shipped plugin has it). Home and a relative path resolve as the Node hook
+// process resolves them (lib/78-hook-proc.js). Mirrors hooks/inbox-read-guard.js `main` and hooks/lib/devswarm-inbox-paths.js
+// `classifyDevswarmPath`. Keys: spawn_context.toml (inbox_read.*) and guards_v1.toml (inbox_read_v1.*).
 'use strict';
 
 function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -11,15 +12,16 @@ function isStoreTarget(rest) {
   return ah.cfg('inbox_read.store_patterns').some(function (src) { return ah.re.test(src, '', rest); });
 }
 
-// 'allow' | 'inbox' | 'store', or null when Node would resolve a relative path against its own working directory.
-function classify(raw, home, cwd) {
+// 'allow' | 'inbox' | 'store'.
+function classify(p, raw, home) {
   if (raw === '') return 'allow';
   var abs;
   if (ah.path.isAbsolute(raw)) {
     abs = raw;
   } else {
-    var base = cwd !== null && cwd !== '' ? cwd : home;
-    if (!ah.path.isAbsolute(base)) return null;
+    var cwd = p.cwd, base = cwd && typeof cwd === 'string' ? cwd : home;
+    // path.resolve(base, raw): a relative base resolves against the hook process's own directory
+    if (!ah.path.isAbsolute(base)) base = hookProc.base() + '/' + base;
     abs = ah.path.resolveAbs(base + '/' + raw);
   }
   var nAbs = slashes(abs), nRoot = slashes(ah.path.join(home, ah.cfg('inbox_read.devswarm_root')));
@@ -32,8 +34,11 @@ function classify(raw, home, cwd) {
   return 'allow';
 }
 
-function block() {
-  var reason = text.message('block', ah.cfg('inbox_read.guard_inbox'), {
+function block(store) {
+  var reason = store ? text.message('block', ah.cfg('inbox_read_v1.guard_store'), {
+    what: ah.cfg('inbox_read_v1.msg_store_what'), why: ah.cfg('inbox_read_v1.msg_store_why'),
+    instead: ah.cfg('inbox_read_v1.msg_store_instead'), override: ah.cfg('inbox_read.msg_override'),
+  }) : text.message('block', ah.cfg('inbox_read.guard_inbox'), {
     what: ah.cfg('inbox_read.msg_inbox_what'), why: ah.cfg('inbox_read.msg_inbox_why'),
     instead: ah.cfg('inbox_read.msg_inbox_instead'), override: ah.cfg('inbox_read.msg_override'),
   });
@@ -41,13 +46,13 @@ function block() {
 }
 
 function decide(p) {
-  var home = spawn.osHome();
-  if (home === null) return 'defer';
   if (!ah.settings.bool('inbox_read.setting') || ah.settings.skipped(ah.cfg('inbox_read.skip_name')) || !spawn.devswarmActive()) return 'allow';
   if (!isObj(p) || p.tool_name !== ah.cfg('inbox_read.tool')) return 'allow';
   var ti = p.tool_input;
   if (!isObj(ti) || typeof ti.file_path !== 'string') return 'allow';
-  var verdict = classify(ti.file_path, home, typeof p.cwd === 'string' ? p.cwd : null);
-  if (verdict === null || verdict === 'store') return 'defer';
-  return verdict === 'inbox' ? block() : 'allow';
+  var home = hookProc.home(p);
+  if (home === null) return 'allow';
+  var verdict = classify(p, ti.file_path, home);
+  if (verdict === 'store') return ah.cfg('inbox_read_v1.store_cli_present') ? block(true) : 'allow';
+  return verdict === 'inbox' ? block(false) : 'allow';
 }

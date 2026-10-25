@@ -39,11 +39,7 @@ find .omc ~/.omc -maxdepth 3 -type f 2>/dev/null | head -80
 grep -RIn "oh-my-claudecode@omc\\|enabledPlugins" .omc ~/.codex ~/.agents 2>/dev/null | head -80
 ```
 
-Check anti-hall's OMC helper:
-
-```bash
-node --check "$ANTI_HALL_ROOT/hooks/omc-detect.js"
-```
+anti-hall's own OMC detection is built into the engine; there is no separate helper script to check.
 
 Do not install OMC automatically from anti-hall activation. It changes separate global/project state and should be explicit.
 

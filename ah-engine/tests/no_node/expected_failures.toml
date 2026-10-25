@@ -1,0 +1,11 @@
+# The backlog of Node paths. It is EMPTY and must stay empty: expected.rs refuses a non-empty [[node]] list, and every recorded
+# Node launch list must be empty. Read by tests/no_node (expected.rs).
+#
+# [[node]] one remaining Node path: `surface` (hook/<host>/<Event>, doc, run/<verb>, unit/<file>, hooks-json/<host>,
+#          statusline/<step>, monitor/<name>, daemon) + `script` (the plugin-relative script node was started with; a hook call the engine
+#          did not answer in time is counted by harness.toml hooks.max_fallback_cases, not listed), the `lane` that
+#          removes it and the `reason` it is still Node. `optional = true` only for a timing-dependent path.
+# [[decision]] a payload whose expected decision (payloads.ndjson `expect`) is not met without Node: `case`, `lane`, `reason`.
+#
+# A path reached fails the test (a Node dependency). The report of each test (which cases reach which path) is written to
+# $CARGO_TARGET_TMPDIR/no_node/<test>.json.

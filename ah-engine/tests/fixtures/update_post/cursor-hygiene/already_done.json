@@ -1,0 +1,28 @@
+{
+  "answer": {
+    "attempted": true,
+    "deleted": 0,
+    "detail": "cursor hygiene: already completed for 0.1.0 — skipped (one-time per-version migration)",
+    "errors": 0,
+    "evicted": 0,
+    "kept": 0,
+    "scanned": 0,
+    "skippedAlreadyDone": true
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755",
+    ".anti-hall/devswarm/cursors/": "755",
+    ".anti-hall/devswarm/cursors/junk#inst-ZZZZZZ.json": "644 1",
+    ".anti-hall/devswarm/cursors/w1#base.json": "644 2",
+    ".anti-hall/devswarm/cursors/w1#inst-aaaaaa.json": "644 3",
+    ".anti-hall/devswarm/cursors/w1#inst-bbbbbb.json": "644 7",
+    ".anti-hall/devswarm/cursors/w1#inst-cccccc.json": "644 9",
+    ".anti-hall/devswarm/cursors/w1.json": "644 5",
+    ".anti-hall/devswarm/cursors/w2#nd-dddddd.json": "644 1",
+    ".anti-hall/devswarm/cursors/w3#inst-eeeeee.json": "644 {\"line\":4}",
+    ".anti-hall/devswarm/cursors/w3.json": "644 4",
+    ".anti-hall/update-sweep-state.json": "644 {\"cursorHygiene\":{\"completedVersion\":\"0.1.0\"}}"
+  },
+  "stores": {}
+}

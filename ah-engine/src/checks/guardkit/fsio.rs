@@ -1,5 +1,5 @@
 //! The file-system side of the guards' per-session state: the same files the Node guards keep under
-//! `~/.anti-hall/`, written atomically, and the bounded self-pruning of old ones (`hooks/lib/state-prune.js`).
+//! `~/.anti-hall/`, written atomically, and the bounded self-pruning of old ones.
 //!
 //! Why files and not memory: a Node hook and the engine can answer for the same session in turn (the engine defers a
 //! command it cannot decide exactly, Node then runs), so both must read and write one record. The files are also what

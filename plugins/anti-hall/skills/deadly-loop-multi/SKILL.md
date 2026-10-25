@@ -124,7 +124,7 @@ audit spawns — state this explicitly when you dispatch.
    them raw — the deliverable is ONE reconciled report, not 3N dumps.
 5. **Reconcile + validate (the core value).** Before you dedup by hand, write the collected
    3N findings to a scratch JSON array (`{id, severity, file, line, text, round, seat}`) and
-   run `node "${CLAUDE_PLUGIN_ROOT}/scripts/finding-dedup.js" --file <scratch findings.json>`
+   run `~/.anti-hall/ah-engine/bin/ah-engine finding-dedup --file <scratch findings.json>`
    — the opt-in Jev `findingDedup` integration (default `on`; see the base deadly-loop's
    Phase B3 and CHANGELOG 0.108.4). It prints advisory "possible duplicates: A ~ B (conf
    0.93)" lines; treat them as a hint, never an auto-collapse — you still validate against

@@ -1,7 +1,7 @@
 // check = "failure-root-cause-nudge" (PostToolUseFailure on Bash; advisory only, never blocks). When a Bash call fails, one short
 // line points at the root-cause skill. The noise filter (guards.failureNudgeFilter, default on) stays silent for an interrupt, a
 // harness refusal, an expected exit 1 from a predicate command, and for every nudge after the first in one turn (the state is the
-// file the Node hook keeps). A request without a home directory defers; a payload whose answer the script cannot give defers.
+// file the Node hook keeps). A request without a home directory shows the nudge (the gate cannot persist).
 // Mirrors hooks/failure-root-cause-nudge.js, hooks/lib/expected-failure.js and hooks/lib/turn-gate.js (lib/70-guardkit.js).
 // Tables, patterns and texts: small_guards.toml (failure_nudge.*, expected_failure.*, turn_gate.*).
 'use strict';
@@ -116,8 +116,7 @@ function decide(p) {
   if (ah.settings.bool('failure_nudge.filter_setting')) {
     var errorText = typeof p.error === 'string' ? p.error : '';
     if (p.is_interrupt === true || fnIsHarnessRefusal(errorText) || fnIsExpectedNonzero(cmd, errorText)) return 'allow';
-    var home = ah.env.get(ah.cfg('env.home'));
-    if ((home === null || home === '') && p.session_id) return 'defer';
+    // with no home for the gate's state the gate cannot persist and shows the nudge, as the Node gate does
     if (!turnGate.firstThisTurn({
       sessionId: p.session_id, agentId: typeof p.agent_id === 'string' ? p.agent_id : '', transcriptPath: p.transcript_path,
       key: ah.cfg('failure_nudge.gate_key'),

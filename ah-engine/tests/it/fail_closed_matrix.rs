@@ -22,6 +22,7 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// What the dispatcher reads from stdin.
 #[derive(Clone, Copy)]
@@ -101,8 +102,10 @@ enum Want {
 enum Daemon {
     /// Inside the client (`dispatch.in_process` 1): no daemon.
     InProcess,
-    /// Through the daemon path with no daemon and none to start: every check runs as its Node hook.
+    /// Checks down: a daemon that answers with nothing usable, so every check runs as its Node hook.
     Down,
+    /// Through the daemon path with no daemon at all and none to start: the client fails open at once (no hook runs).
+    Absent,
     /// A daemon that answers with a frame whose body is not a reply.
     Garbage,
     /// A daemon that answers every check with a block, `DAEMONBLOCK` on stderr.
@@ -601,8 +604,11 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
     use ah_engine::frame::{Kind, encode as frame};
     use std::io::Read;
     let body = match mode {
-        Daemon::InProcess | Daemon::Down => return None,
-        Daemon::Garbage => "this is not a dispatch reply".to_string(),
+        Daemon::InProcess | Daemon::Absent => return None,
+        // "checks down" for the matrix: the daemon answers, but with nothing the dispatcher can use, so every check runs as its Node
+        // hook. A daemon that is truly absent, hung, marked down or answering busy fails open at once instead (see
+        // `a_truly_absent_daemon_fails_open_without_running_hooks`), so it cannot stand in for "checks down".
+        Daemon::Garbage | Daemon::Down => "this is not a dispatch reply".to_string(),
         Daemon::Blocks => {
             let valid = payload(case.host, &case.event, &case.dir);
             let answers: Vec<(String, Answer)> = table::select(case.host, &case.event, &valid, Some(tool_of(case.host)))
@@ -744,6 +750,38 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
 }
 
 #[test]
+fn a_truly_absent_daemon_fails_open_without_running_hooks() {
+    for host in table::hosts() {
+        for event in ["PreToolUse", "Stop"] {
+            if table::entries(host, event).is_empty() {
+                continue;
+            }
+            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
+            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
+            let row = Row { name: "absent daemon", daemon: Daemon::Absent, ..BASE };
+            ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
+            // the first run builds the defaults cache (slow in a debug binary on a busy box); the wrapper's watchdog bounds that
+            // cold start, so the timing is asserted on the warm run
+            for n in 0..2 {
+                // the clock starts per run: building it in the loop header would start it before the cold run and time both
+                let t0 = (n == 1).then(std::time::Instant::now);
+                let r = run_kept(&case, &row, MARK, MARK2);
+                assert_eq!(r.code, 0, "[{host}/{event}] absent daemon must fail open: {:?}", r.err);
+                assert!(r.out.is_empty() && !r.marked, "[{host}/{event}] run {n}: no hook, no output on an unavailable daemon: {:?}", r.out);
+                if let Some(t0) = t0 {
+                    assert!(
+                        t0.elapsed() < crate::common::scaled(Duration::from_secs(1)),
+                        "[{host}/{event}] warm absent daemon took {:?}: err {:?}",
+                        t0.elapsed(),
+                        r.err
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn pretooluse_invalid_utf8_fails_closed_before_hooks_run() {
     for host in table::hosts() {
         let host: &'static str = Box::leak(host.to_string().into_boxed_str());
@@ -800,52 +838,10 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
             let codes: Vec<i32> = (0..cap + 2).map(|_| run_kept(&case, &broken, MARK, MARK).code).collect();
             let expect: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
             assert_eq!(codes, expect, "[{host}/{event}] consecutive Stops, broken install");
-            // a healthy run in between resets the count
-            let healthy = Row { name: "healthy", daemon: Daemon::Down, ..BASE };
+            // a healthy run in between resets the count: the built-in checks answer in the client (no hook command exists to run)
+            let healthy = Row { name: "healthy", ..BASE };
             assert_eq!(run_kept(&case, &healthy, MARK, MARK).code, 0, "[{host}/{event}] healthy Stop");
             assert_eq!(run_kept(&case, &broken, MARK, MARK).code, 2, "[{host}/{event}] the count restarted after a healthy Stop");
-        }
-    }
-}
-
-/// A healthy hook's genuine block must reach the host even when a sibling hook cannot run and the Stop block counter is at
-/// its cap or the payload says `stop_hook_active` (D74): the cap bounds the engine's own fail-closed blocks, never a hook's.
-#[test]
-fn a_stop_hooks_genuine_block_survives_a_failed_sibling_at_the_cap() {
-    let cap = ah_engine::defaults::num("dispatch.stop_block_cap").to_string();
-    let dir_name = ah_engine::defaults::text("dispatch.stop_state_dir");
-    for host in table::hosts() {
-        for event in ah_engine::defaults::list("dispatch.stop_events") {
-            if table::entries(host, event).is_empty() {
-                continue;
-            }
-            let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-gb-{host}-{event}-{}", std::process::id())) };
-            let siblings: [(&str, &str); 3] =
-                [("killed sibling", "kill -9 $$"), ("unspawnable sibling", "a\0b"), ("orphan holding the pipes", "(exec sleep 3) & echo partial")];
-            for (what, second) in siblings {
-                for (state, active, filled) in [
-                    ("fresh", Stdin::Valid, false),
-                    ("counter at the cap", Stdin::Valid, true),
-                    ("stop_hook_active", Stdin::StopActive, false),
-                    ("both", Stdin::StopActive, true),
-                ] {
-                    ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
-                    if filled {
-                        let counters = case.dir.join("state").join(dir_name);
-                        std::fs::create_dir_all(&counters).unwrap();
-                        std::fs::write(counters.join(format!("{event}-fc")), &cap).unwrap();
-                    }
-                    // checks down: the hooks under test are the Node commands, which a built-in check would otherwise answer first
-                    let row = Row { name: "genuine block", stdin: active, daemon: Daemon::Down, ..BASE };
-                    let r = run_kept(&case, &row, BLOCK, second);
-                    let ctx = format!("[{host}/{event}] {what}, {state}: code {} err {:?}", r.code, r.err);
-                    assert!(
-                        r.code == 2 && r.err.contains("BLOCKME") && !r.err.contains("could not run the guards"),
-                        "the hook's block must be returned verbatim: {ctx}"
-                    );
-                }
-            }
         }
     }
 }

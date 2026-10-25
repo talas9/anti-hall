@@ -19,6 +19,7 @@ pub mod capability;
 pub mod harvest;
 pub mod jev_setup;
 pub mod jsfmt;
+pub mod units;
 
 use crate::cli::Parsed;
 use crate::defaults;
@@ -215,7 +216,7 @@ pub(crate) fn take_root(args: &[String], env: &Env) -> (Option<String>, Vec<Stri
 
 /// `jev-setup <verb> ...`
 pub fn cmd_jev_setup(p: &Parsed) -> i32 {
-    finish(jev_setup::run(&p.rest))
+    finish(jev_setup::run(&p.raw))
 }
 
 /// `capability-scan [--root <plugin>] [--json]`

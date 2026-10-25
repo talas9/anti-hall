@@ -11,7 +11,7 @@ Show or change any anti-hall setting. Use when the user says "anti-hall settings
 
 anti-hall keeps every user-facing setting in ONE place: `~/.anti-hall/settings.json`,
 organized into sections (autoHandover, guards, safety, context, maintenance, jev,
-jevIntegrations, limitConserve, devswarm, statusline, ...). `scripts/settings.js` is the
+jevIntegrations, limitConserve, devswarm, statusline, ...). `ah-engine settings` is the
 only thing that reads or writes it. Every hook anti-hall registers has an on/off switch
 (default = on, the old behaviour); `show` ends with the short list of parts that have no
 switch on purpose, and why. `jevIntegrations` (v0.108.4) is a dedicated section holding
@@ -26,10 +26,13 @@ the API keys. Every other setting lives in `~/.anti-hall/settings.json`, grouped
 (section). When the user says "anti-hall settings" / "change my settings":
 
 1. Run the grouped overview, one table per category, and tell them which categories exist:
-   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show`
+   `"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show`
 2. Then show only the category they care about:
-   `sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section <category> [--all]`
+   `"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --section <category> [--all]`
 3. Change with `set <section.key> <value>`, undo with `reset <section.key>` (below).
+4. The engine's own keys (polling cadences, audit and stall limits, statusline widgets, script deadlines, ...) live in the plugin's
+   `engine/defaults/*.toml`, not in the schema above; list them with their defaults, env variables and descriptions:
+   `"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings tunables [<category|key prefix>] [--all]` (read-only: edit the file to change one).
 
 A non-default value set in Claude Code's plugin options in earlier versions is copied into
 `~/.anti-hall/settings.json` by the update or `doctor --repair` run of the first release that
@@ -43,7 +46,7 @@ When the user names a setting and a value ("turn off the merge gate", "set auto-
 to 80%", "disable Jev", "hide the statusline email"), resolve it to a `section.key` and
 value and apply it:
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings set <section.key> <value>
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings set <section.key> <value>
 ```
 then confirm with the single-key line from `get <section.key>`. Never print the full
 table for a direct change. A validation failure (out-of-range number, unknown enum value)
@@ -88,7 +91,7 @@ agent from writing that file directly; the owner chose consent over an extra gua
 the rule is the same as above — never hand-edit a safety key in settings.json to get
 around the confirmation.
 
-A one-off pause is still the per-guard `skip.json` escape hatch, only on the user's
+A one-off pause is still the per-guard, per-session `skip.json` escape hatch (key `<guard>@<session-id>`), only on the user's
 explicit request.
 
 ## Trusting a project command allowlist
@@ -99,8 +102,8 @@ thread run inline. Because that file lives in the working tree, a cloned repo co
 ship one — so it applies ONLY after the user trusts that exact file content with `trust-command-allow`:
 
 ```
-sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>]              # print patterns, record nothing
-sh <plugin-root>/scripts/ah-run.sh settings trust-command-allow [<repo>] --confirmed  # record the trust
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-command-allow [<repo>]              # print patterns, record nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-command-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust is a sha256 of the file bytes stored OUTSIDE the repo in
@@ -121,8 +124,8 @@ delegating them. It uses the same trust model as the command allowlist and appli
 only after the user trusts that exact file content with `trust-edit-allow`:
 
 ```
-sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>]              # print paths, record nothing
-sh <plugin-root>/scripts/ah-run.sh settings trust-edit-allow [<repo>] --confirmed  # record the trust
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-edit-allow [<repo>]              # print paths, record nothing
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings trust-edit-allow [<repo>] --confirmed  # record the trust
 ```
 
 Trust lives in `~/.anti-hall/trusted-edit-allow.json`, and any edit to the file revokes
@@ -137,14 +140,14 @@ Kill-switch: `guards.projectEditAllow=false`.
 The opt-in speculation-judge (`jev.semanticJudge`, off by default) has a one-line switch:
 
 ```bash
-sh <plugin-root>/scripts/ah-run.sh settings judge on|off|status
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings judge on|off|status
 ```
 
 `on` sets the flag, then says whether an Anthropic key is visible to the CLI (never the key
 itself; a key stored as a plugin option is visible to hooks only, so "not visible" means
 unverified from the CLI) and how to add one, and prints the cost: about $0.0001–0.001 and
 1–3 s per turn end, estimated, not measured; precision 0.78–0.81 and recall 1.0 measured on
-`tools/eval/inference-bench.js` (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
+the inference benchmark (84 synthetic cases). With `jev.judgeBackend` `cli` it uses the local
 `claude -p` CLI on the user's Claude login instead of a key (about 5–6 s per turn end, measured). `status` shows on/off, key
 visibility and the model (`jev.judgeModel`). Relay that output; do not add claims about accuracy.
 
@@ -168,6 +171,8 @@ task, task-list, scan throttle; `guards.modelRouting` takes `strict|advisory|off
 agents are in flight, independent of that mode;
 `guards.sharedTreeAgentNote` (default on) adds one advisory sentence when a write-capable agent is
 spawned without `isolation:"worktree"` while another write-capable agent runs in the same working tree;
+`guards.spawnCeiling` (default on) blocks an agent spawn when the session already runs too many agents (default 12, shrinking in steps as the 5-hour or weekly limit nears; skip entry `spawn-ceiling`);
+`guards.usageAwareDispatch` (default on) advises cheaper models and fewer agents at the soft usage threshold and blocks new spawns at the hard one (skip entry `spawn-usage`);
 `guards.mergeSidePickAdvisory` (default on) adds one advisory to a push when a conflict was resolved by
 taking one side wholesale (`--ours`/`--theirs`, `-X ours|theirs`) and no test run followed;
 `guards.idleAgentSweep` (default on) lists, once per prompt, agents that finished but were never stopped
@@ -195,7 +200,7 @@ Settings are read when each hook runs, so a change applies from the next hook ca
 Only when the user explicitly asks to see settings ("show my anti-hall settings", "what
 are my settings"), run:
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show            # or: show --section <key> [--all]
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show            # or: show --section <key> [--all]
 ```
 and present the output as-is (per-section markdown tables; the Source column says
 which tier answered — `plugin-option` (a stored plugin option), `file`, `env`, `legacy`, `default`).
@@ -204,9 +209,9 @@ A question about ONE value ("what's the auto-handover threshold") is a single
 
 ## Auto-handover (`autoHandover` section)
 
-The auto-handover trigger (`hooks/auto-handover.js` + the Stop-time
-`hooks/auto-handover-pause-nag.js`) is **on by default at 85%** of this session's actual context window (an optional absolute `maxTokens`
-ceiling is available but off by default — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
+The auto-handover trigger (`auto-handover` + the Stop-time
+`auto-handover-pause-nag`) is **on by default at 93%** of this session's actual context window (plus an absolute `maxTokens` ceiling of 500000 that
+only bites on 1M windows — see below). When the main agent first crosses it, it self-writes a handover, tells the user,
 and suggests `/compact` or `/clear`. Follow-up reminders fire every `nagStepPct`
 further points and at a quiet pause (at most once per `nagQuietMin` minutes, and
 never the same percentage twice within one step) unless `nag` is off.
@@ -225,7 +230,7 @@ handover was saved: refresh the handover and offer to park the rest.
 
 **Decisive compact/clear prompt (v0.109.5, `decisivePrompt`, on by default).** At a
 turn-ending Stop point (the fire-once or the natural-pause nag in
-`hooks/auto-handover-pause-nag.js`), once this session's `HANDOVER*.md` exists and
+`auto-handover-pause-nag`), once this session's `HANDOVER*.md` exists and
 is fresh (no counted file-changing action — including subagent edits and Bash
 writes — happened after it was written; the same shared detector
 `tasklist-guard.js` uses), the directive tells the agent to END its
@@ -245,8 +250,8 @@ wording.
 | Key | Default | Meaning |
 |---|---|---|
 | `autoHandover.enabled` | `true` | the whole trigger |
-| `autoHandover.pct` | `85` | threshold, 1-99 (env `ANTIHALL_AUTO_HANDOVER_PCT`; env `0` = off for that process) |
-| `autoHandover.maxTokens` | `0` | opt-in absolute token ceiling (env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; `0` = off, the default); when set, a real token count, so it fires the full directive even when the window is unknown |
+| `autoHandover.pct` | `93` | threshold, 1-99 (env `ANTIHALL_AUTO_HANDOVER_PCT`; env `0` = off for that process) |
+| `autoHandover.maxTokens` | `500000` | absolute token ceiling (env `ANTIHALL_AUTO_HANDOVER_MAX_TOKENS`; `0` = off); only bites on 1M windows at the default; when set, a real token count, so it fires the full directive even when the window is unknown |
 | `autoHandover.nag` | `true` | follow-up reminders |
 | `autoHandover.nagStepPct` | `5` | milestone step, in points |
 | `autoHandover.nagQuietMin` | `15` | minutes between pause reminders |
@@ -257,7 +262,29 @@ wording.
 "Turn off auto-handover" = `set autoHandover.enabled false`; "set auto-handover to
 80%" = `set autoHandover.pct 80`. The older one-purpose CLI still works as an alias
 over the same keys:
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/auto-handover-config.js" get [--json] | set <1-99> | off | on | max-tokens <n> | nag on|off | nag-step <n> | nag-quiet <n>`.
+`~/.anti-hall/ah-engine/bin/ah-engine auto-handover-config get [--json] | set <1-99> | off | on | max-tokens <n> | nag on|off | nag-step <n> | nag-quiet <n>`.
+
+### Recommended setup: hand over 5% before auto-compact
+
+The shipped defaults are `autoHandover.pct` = 93 and `autoHandover.maxTokens` = 500000. They are set to pair with the Claude Code auto-compact settings below.
+
+The rule: the handover fires about 5% of the context window before that model's auto-compact, so the agent writes it while it still has room.
+
+| Model window | Auto-compact | Recommended anti-hall setting |
+|---|---|---|
+| 200k | Claude auto-compact at 98% (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=98`) | `autoHandover.pct` = 93 (shipped default) |
+| 1M | `CLAUDE_CODE_AUTO_COMPACT_WINDOW=550000`. Claude Code clamps it to the model window, so 200k models are unaffected and 1M models compact at about 55%. | `autoHandover.maxTokens` = 500000 (shipped default) |
+
+`pct` and `maxTokens` fire on whichever comes first, so a `maxTokens` of 500000 only bites on 1M sessions. To change them:
+
+```
+ah-engine auto-handover-config set 93
+ah-engine auto-handover-config max-tokens 500000
+```
+
+Why cap a 1M window: on one machine, over 7 days and about 4.3k transcripts, turns above 550k context were 41% of input tokens, and a 55% cap simulated about 32% less input. This is a measured example from one machine, not a guarantee.
+
+Codex: leave `model_auto_compact_token_limit` alone. If you do set it, the same rule applies: hand over 5% of the window before it.
 
 Context % comes from the best source available: the statusline's real
 `context_window` figure (Claude), the rollout's `model_context_window` (Codex), else
@@ -266,7 +293,7 @@ estimate with an unknown window gets only a soft advisory from the percent path 
 token ceiling still fires the directive). If a long autonomous turn never reaches a
 new prompt, the Stop hook delivers the directive once instead. Before every compaction
 `precompact-snapshot.js` writes a mechanical `PRECOMPACT-<n>.md` safety-net snapshot
-next to the handovers (it never blocks compaction).
+next to the handovers (it never blocks compaction). Planned, not shipped yet: the PreCompact snapshot will also write a "since the last handover" delta (all user messages since the handover, commits and files, task changes, agent final reports), built mechanically with no model call. Today it writes only what is described here.
 
 ## Engine settings (`ah-engine`)
 
@@ -275,12 +302,37 @@ The per-hook switches above (`guards.*`, `safety.*`, `context.*`, ...) are honou
 `telemetry.retention_days`, per-entry `mode` on/shadow/off) are NOT `settings.js` keys: they are plain files in the plugin's
 `engine/` directory plus the engine's `config.toml`. Show them with `ah-engine config --json` (each value with its source),
 validate an edit with `ah-engine config validate <file>`, restore a missing key with `ah-engine config heal`. A bad edit falls back
-to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. Skipping the engine
-download is the setting `engine.bootstrap` (boolean, default true; `settings.js set engine.bootstrap false`), or the env var `AH_ENGINE_BOOTSTRAP=0`, which overrides the setting.
+to the last-known-good copy, then the pristine copy, then Node. Never edit `engine/defaults.pristine/`. The automatic
+engine download is opt-in: the setting `engine.bootstrap` (boolean, default false; `ah-engine settings set engine.bootstrap true`), or the env var `AH_ENGINE_BOOTSTRAP=1` (0 forces it off), which overrides the setting; without it the plugin's one shell file, `hooks/install.sh`, only prints one notice per session until you run `sh hooks/install.sh --download`. The crash-loop and roll-back switches are engine tunables too: `client.spawn_n` / `client.spawn_window_s` (daemon starts that stop respawning), `daemon.healthy_after_s` (uptime that makes a binary "known good") and `rollback.*` (`rollback.on_mismatch=0` turns the checksum roll-back off; `rollback.fail_n` / `rollback.fail_window_s` set how many wrapper failures count; the install lock has four more: `rollback.install_lock` (the directory of the one lock every writer of the engine binary shares), `rollback.lock_wait_s` (how long an install, ah-update roll-back or sha recording waits for it), `rollback.lock_hook_wait_s` (how long the hook wrapper's integrity check waits before skipping; a held lock never holds a session) and `rollback.lock_stale_s` (a lock held longer is broken; one whose holder is gone is broken at once); list them with `settings tunables rollback`. The start-up probe warm-up is `host_spawn.prewarm` (on by default), `host_spawn.prewarm_programs` (the interpreters whose version probe it runs) and `host_spawn.prewarm_timeout_ms`.
+
+## Allow or block remote commands
+
+Two plain lists in the engine config decide which remote commands (any binary: `gh`, `kubectl`, `firebase`, ...) the main thread may run:
+
+- `command.remote_allow`: always runs in the main thread (shipped: gh issue/label/pr create, comment, edit, close, reopen).
+- `command.remote_block`: always blocked, with an "irreversible or sensitive" reason (shipped: gh pr merge, release, repo edit/delete, secret, `gh api -X POST|PUT|PATCH|DELETE`).
+- Block wins over allow. A command in neither list keeps the default rule (reads pass, mutations block).
+- An entry is a command prefix: binary, then leading subcommand words (global flags like `-R owner/repo` are skipped), then optionally an option and its value (`gh api -X POST`).
+
+Ask the user first: **this project or the whole machine?** The lists live in the engine's `config.toml` in the engine state directory (`ah-engine config --json` shows the effective value of every key and which file set it), which is machine-wide (user level); there is no per-project layer for these keys, so say so if they ask for project scope. Do not edit the plugin's `engine/defaults/` files.
+
+Add and remove with four more lists in `config.toml`; the effective list is the shipped one, minus `*_remove`, plus `*_add`:
+
+```toml
+[command]
+remote_allow_add = ["firebase hosting:channel:deploy"]
+remote_allow_remove = ["gh pr create"]
+remote_block_add = ["kubectl delete"]
+remote_block_remove = ["gh secret"]
+```
+
+(Setting `remote_allow` / `remote_block` themselves replaces the shipped list outright; prefer add/remove.)
+
+Check the result with `ah-engine config --json` and `ah-engine config validate <file>`.
 
 ## Resetting a setting
 
-`sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings reset <section.key>` removes the
+`"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings reset <section.key>` removes the
 settings.json override for that one key, so the stored plugin option (if the key has a
 `pluginOption`), the legacy source, or the schema default takes over again.
 
@@ -288,10 +340,10 @@ settings.json override for that one key, so the stored plugin option (if the key
 
 Every subcommand takes `--json` for machine-readable output:
 ```
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --json
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings show --section jev --json
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings get jev.enabled --json
-sh "${CLAUDE_PLUGIN_ROOT}/scripts/ah-run.sh" settings set limitConserve.threshold 90 --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --section jev --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings get jev.enabled --json
+"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings set limitConserve.threshold 90 --json
 ```
 
 `show --section jev` (and `--section jevIntegrations`) also prints **Jev integrations —
@@ -304,10 +356,10 @@ schema default `on`.
 ## What this skill never does
 
 - Never edits `~/.anti-hall/settings.json` (or any legacy config file) by hand —
-  always through `scripts/settings.js`, so validation and the atomic write always
+  always through `ah-engine settings`, so validation and the atomic write always
   run.
 - Never deletes a legacy config file (e.g. `~/.anti-hall/jev.json`) — anti-hall
   forward-migrates its values into `settings.json` once (see
-  `companion/lib/migrations.js`) but always leaves the legacy file in place.
-- Never invents a setting or value not in the schema — `scripts/settings.js show`
+  `migrations`) but always leaves the legacy file in place.
+- Never invents a setting or value not in the schema — `ah-engine settings show`
   is the source of truth for what exists and what it currently is.

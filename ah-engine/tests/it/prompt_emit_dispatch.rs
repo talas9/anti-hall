@@ -71,12 +71,13 @@ impl Env {
         (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
     }
 
-    /// Keep asking until the daemon (not the Node fallback) answers: the first daemon call starts it and answers through Node.
+    /// Keep asking until the daemon (not the Node fallback) answers: the first daemon call starts it and answers through Node, or,
+    /// since the fail-fast client, prints nothing (exit 0) while the daemon is not up or has not answered within the client deadline.
     fn until_daemon_answers(&self, args: &[&str], payload: &str, extra: &[(&str, &str)]) -> (i32, String, String) {
         let mut last = (0, String::new(), String::new());
         for _ in 0..80 {
             last = self.run(args, false, payload, extra);
-            if !last.1.contains("NODE-RAN") {
+            if !last.1.contains("NODE-RAN") && !(last.0 == 0 && last.1.is_empty()) {
                 return last;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -153,6 +154,9 @@ fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_byte
 #[test]
 fn verify_first_answers_a_devswarm_primary_itself_and_defers_only_without_a_working_directory() {
     let e = Env::new("vf-primary");
+    // the Primary's own prompt hook (it says its override reminder once per session) is switched off: this test is about the other line
+    std::fs::create_dir_all(e.home().join(".anti-hall")).unwrap();
+    std::fs::write(e.home().join(".anti-hall/settings.json"), r#"{"devswarm":{"parentInbox":false}}"#).unwrap();
     let map = e.map("UserPromptSubmit", "verify-first");
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let p = ups("sp", "x", None);
@@ -162,7 +166,9 @@ fn verify_first_answers_a_devswarm_primary_itself_and_defers_only_without_a_work
     let nocwd = serde_json::json!({"session_id": "sq", "hook_event_name": "UserPromptSubmit", "prompt": "x"}).to_string();
     let (code, out, _) = e.run(&args, true, &nocwd, &[("DEVSWARM_REPO_ID", "r1")]);
     assert_eq!(code, 0);
-    assert_eq!(ctx(&out), "NODE-RAN", "without a working directory the tier gate is the Node hook's");
+    // no Node hook is launched any more: the engine answers a prompt without a working directory itself (the Primary's text may
+    // be shorter than Node's; it is context, never a block)
+    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "without a working directory the engine answers itself: {out}");
     let (_, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
     assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "a child workspace is answered by the engine: {out}");
     assert!(e.home().join(".anti-hall/emit-dedupe/dedupe-sp.json").exists());
@@ -173,12 +179,12 @@ fn a_deferred_verify_first_wrote_no_state_before_deferring() {
     let e = Env::new("vf-nostate");
     let map = e.map("UserPromptSubmit", "verify-first");
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    // a relative transcript path is something only Node resolves
+    // a relative transcript path was something only Node resolved; the engine answers it itself now
     let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"})
         .to_string();
-    let (_, out, _) = e.run(&args, true, &p, &[]);
-    assert_eq!(ctx(&out), "NODE-RAN");
-    assert!(!e.home().join(".anti-hall/emit-dedupe").exists(), "the deferral must come before any write");
+    let (code, out, _) = e.run(&args, true, &p, &[]);
+    assert_eq!(code, 0);
+    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "the engine answers a relative transcript path itself: {out}");
 }
 
 #[test]
@@ -189,12 +195,16 @@ fn session_start_marks_the_context_loss_through_the_dispatcher() {
         let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
         let p = serde_json::json!({"session_id": "rs", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": "compact"}).to_string();
         let file = e.home().join(".anti-hall/emit-dedupe/dedupe-rs.json");
-        // through the daemon the first call is the Node fallback (the shell map: nothing written), later ones are the check's
+        // through the daemon the first calls can find no daemon yet (nothing written), later ones are the check's
         for _ in 0..80 {
             let (code, out, err) = e.run(&args, in_process, &p, &[]);
             // the other SessionStart checks (verify-first-full, verify-first-orch, ...) answer with their own context: only the exit
             // and stderr are asserted here, the reset is proven by the state file below
-            assert_eq!((code, err.as_str()), (0, ""), "{out}");
+            // through the daemon the first call can reach no daemon yet: the engine says so on stderr and lets the call through
+            assert!(
+                code == 0 && (err.is_empty() || (!in_process && err.starts_with("anti-hall: the engine did not answer this SessionStart call"))),
+                "{code} {err} {out}"
+            );
             if file.exists() {
                 break;
             }
@@ -243,4 +253,9 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     // the same prompt again is the same block, still undelivered: both are suppressed
     let (_, again, _) = e.run(&args, true, &p, &extra);
     assert_eq!(ctx(&again), "", "the dedupe state of the first call must hold");
+    // two days on, the same agent is stale (long gone), not idle: it drops out of the advisory
+    let later = (t0 + 2 * 86_400_000).to_string();
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", later.as_str())];
+    let (_, stale, _) = e.run(&args, true, &ups("is-stale", "go on", Some(&transcript)), &extra);
+    assert!(!ctx(&stale).contains("finished agent"), "a stale agent must not be listed: {stale}");
 }

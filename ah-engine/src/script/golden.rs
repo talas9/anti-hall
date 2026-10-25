@@ -376,7 +376,50 @@ pub fn repeat_of(case: &Value) -> usize {
 }
 
 /// Every case's answer from the script, against its stored `expect`. Returns the number of cases and of each kind.
+pub fn regen_defers_local(check: &str) {
+    // Explicit authoring mode refreshes current golden answers, then the comparison still runs.
+    let all = std::env::var_os("AH_REGEN_GOLDENS").is_some();
+    if std::env::var("AH_REGEN_DEFERS").is_err() && !all {
+        return;
+    }
+    let mut out = String::new();
+    for c in load(check) {
+        let mut c = c;
+        if c["expect"]["v"] == "defer" || all {
+            let l = lay(&c);
+            if check == "task-tracker" {
+                // the corpus's dispatch cap was recorded on a 16-core machine (see `golden_report`): pin it the same way here
+                let dir = format!("{}/.anti-hall", l.home);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(format!("{dir}/settings.json"), r#"{"guards":{"maxParallelDispatch":14}}"#).unwrap();
+            }
+            let got = run_case(check, &l, repeat_of(&c)).unwrap();
+            c["expect"] = verdict_json(&got, &l);
+            if c.get("watch").is_some() {
+                c["writes"] = watched_all(&c, &l);
+            }
+            crate::discard::harmless(std::fs::remove_dir_all(&l.home));
+            crate::discard::harmless(std::fs::remove_dir_all(&l.real));
+        }
+        out.push_str(&serde_json::to_string(&c).unwrap());
+        out.push('\n');
+    }
+    std::fs::write(dir().join(format!("{check}.jsonl")), out).unwrap();
+}
+
+/// Both sides of a golden comparison with the one declared intended difference neutralised (a1cc0db2, and the skip hint): Node tells
+/// agents to run `node <plugin>/scripts/devswarm.js ...`, the engine names the executable shim under the home, which needs no Node.
+/// Applied to the frozen answer and to the script's, so the home a case runs in does not matter.
+pub fn intended(v: &serde_json::Value) -> serde_json::Value {
+    static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = R.get_or_init(|| regex::Regex::new(r"node '[^']*/devswarm\.js'|'\{HOMEREAL\}[^']*/\.anti-hall/bin/devswarm\.js'").unwrap());
+    let t = v.to_string();
+    let t = re.replace_all(&t, "'{SHIM}'").replace("node scripts/devswarm.js", "~/.anti-hall/bin/devswarm.js");
+    serde_json::from_str(&t).unwrap_or_else(|_| v.clone())
+}
+
 pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
+    regen_defers_local(check);
     let mut kinds = BTreeMap::new();
     let cases = load(check);
     assert!(cases.len() >= 20, "{check}: a golden corpus of real size");
@@ -385,8 +428,8 @@ pub fn assert_script_matches(check: &str) -> BTreeMap<String, usize> {
         let got = run_case(check, &l, repeat_of(c)).unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = verdict_json(&got, &l);
         assert_eq!(
-            got,
-            c["expect"],
+            intended(&got),
+            intended(&c["expect"]),
             "{check}: script differs from the compiled port on case {}: {} (script errors: {:?})",
             c["n"],
             c["payload"],

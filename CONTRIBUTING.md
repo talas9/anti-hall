@@ -1,57 +1,51 @@
 # Contributing to anti-hall
 
-Thanks for helping. anti-hall is pure Node (built-ins only, no dependencies) and runs on macOS and Linux. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
+Thanks for helping. anti-hall is a Rust engine (`ah-engine`) behind a Rust thin client (`ah-hook`), with its rules as plugin JS run inside the engine and every value and text in plugin TOML; it runs on macOS and Linux. The original Node hooks are a backup outside the published plugin (`plugins/anti-hall-node`) and get bug fixes only: no new Node code. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first.
 
 ## Project layout
 
 | Path | What lives there |
 |---|---|
-| `plugins/anti-hall/hooks/` | The Claude hooks, `hooks.json` (registration), `doctor.js`, and `lib/` (including `settings-schema.js`) |
+| `plugins/anti-hall/hooks/` | `hooks.json` (one thin trigger per event, generated from `engine/defaults/dispatch.toml`) and `install.sh`, the plugin's one shell file (first install only) |
+| `plugins/anti-hall/engine/` | The engine's plugin files: `logic/*.js` (rule logic run by the engine's script host, not Node) and `defaults/*.toml` (every setting, table and text; `defaults.pristine/` is the byte-identical read-only copy) |
+| `ah-engine/`, `ah-launcher/` | The Rust engine and the thin client `ah-hook` |
+| `plugins/anti-hall-node/` | The Node backup (not published): the original hooks, `doctor.js`, `lib/` |
 | `plugins/anti-hall/codex/` | The Codex port: `hooks/hooks.json`, `skills/`, `scripts/`, `install-codex.js` |
-| `plugins/anti-hall/skills/`, `agents/`, `scripts/`, `companion/`, `monitors/`, `statusline/` | Claude skills, agents, CLIs, opt-in companions, monitors, statusline |
-| `plugins/anti-hall/scripts/devswarm.js`, `scripts/devswarm-lib/` | `devswarm.js` is only the CLI dispatcher (`run`, `runArmed`'s verb switch, `main`, help text, the export object). The verb and helper implementations live in `scripts/devswarm-lib/*.js` (core, identity, cursors, fold, register, send, repair, archive, misc-verbs, roster-diag, spawn, reconcile, inbox-read, inbox-cmd, heartbeat-plan). Every lib file must stay at or below 256 KiB (262,144 bytes); `tests/hygiene/devswarm-lib-size.test.js` enforces it. Tests that assert on the source text read the whole unit through `tests/scripts/lib/devswarm-source.js`. |
-| `tests/` | The suite: `hooks/`, `hygiene/`, `codex/`, `companion/`, `scripts/`, `skills/`, `statusline/`, `e2e/`, `helpers/`, `fixtures/` |
+| `plugins/anti-hall/skills/`, `monitors/`, `statusline/` | Claude skills, monitors, statusline docs |
 | `docs/` | `GUIDE.md` (extended guide, hook and settings tables) and the knowledge-base files |
 | `README.md`, `llms.txt`, `AGENTS.md` | Public docs, the LLM-readable index, and the cross-tool agent protocol |
 
-## Set up and run the tests
+## Verify a change
 
-Building the Rust engine, running every suite and the porting workflow are in the [Development guide](docs/DEVELOPMENT.md).
-
-Node.js **22 or newer** (CI runs ubuntu on Node 22 and 24; macOS runs Node 24 on pull requests and on `main`, and Node 22 as well only on `rc-v*` release-candidate tags). There is no install step; run from the repo root.
+Building the Rust engine and the porting workflow are in the [Development guide](docs/DEVELOPMENT.md). There is no Node test suite: a change is verified with `cargo check` on the touched crate, one release build, a deploy to a live root with `scripts/engine-deploy.sh` and a live check.
 
 ```bash
-node --test                                         # the whole suite
-node --test tests/hygiene/docs-links.test.js        # one file
-node --test tests/hooks/git-guard.test.js tests/hygiene/docs-coverage.test.js   # a few files
-node plugins/anti-hall/hooks/doctor.js --check      # health check of a working copy
+cargo check --manifest-path ah-engine/Cargo.toml     # the touched crate
+ah-hook doctor --check                               # health check of a working copy
 ```
 
-A green local run is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI, so run the full `node --test` locally before every push.
+A green local build is not a green CI run: check the GitHub Actions result on your pull request before calling work done. Pushes to `dev` run no CI.
 
-## Test isolation
+## Isolation
 
-Tests must never touch the real home directory or the real `~/.anti-hall`. Anything that spawns a hook or script runs with `HOME` and `USERPROFILE` pointed at a temp dir.
+Anything you run by hand must never touch the real home directory or the real `~/.anti-hall`. Point `HOME` and `USERPROFILE` at a temp dir, and set `AH_ENGINE_PLUGIN_ROOT` to the plugin tree you mean to try.
 
-- Pattern: `tests/hooks/git-guard.test.js` gives every invocation a fresh fake home via `makeHome()` from `tests/helpers/fixtures.js`; `tests/helpers/spawn-hook.js` builds a controlled child environment.
-- Two hygiene tests enforce it: `tests/hygiene/no-real-home-spawn.test.js` fails on a spawn that inherits the real `HOME`, and `tests/hygiene/no-real-home-entrypoints.test.js` proves that `runUpdate`, `runRepairs` and `runMigrations` refuse to run against the real home under `node --test`.
 
 ## Adding or changing a guard
 
-1. Implement the hook in `plugins/anti-hall/hooks/<name>.js`, pure Node, and register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
-2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply. `tests/codex/codex-hook-parity.test.js` checks the two stay in step.
-3. Add the user-facing setting to `plugins/anti-hall/hooks/lib/settings-schema.js`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys, and `tests/hooks/settings-schema.test.js` pins exactly those 14.
+1. Implement the check in the engine: its logic in `plugins/anti-hall/engine/logic/<name>.js` (run by the engine's script host) or a Rust built-in under `ah-engine/src/checks/`, with every value and text in `plugins/anti-hall/engine/defaults/*.toml` (both defaults directories). Do not add a Node hook. Register it as a row of the dispatch table in `plugins/anti-hall/engine/defaults/dispatch.toml` (`dispatch.hooks_claude_<Event>`: id, matcher, command, timeout, check). `hooks.json` is one thin trigger per event, generated from that table: run `cargo run --manifest-path ah-engine/Cargo.toml --bin ah-gen-fallback-list -- --repo .` to regenerate it, the per-hook registry (`hooks/hooks.registry.json`, which the Node readers and tests read) and the fallback lists.
+2. Add the Codex twin as a row of `dispatch.hooks_codex_<Event>` in the same table (and `plugins/anti-hall-node/codex/install-codex.js` where it lists hooks), or state in the PR why Codex does not apply.
+3. Add the user-facing setting to `plugins/anti-hall/engine/defaults/settings_cli.toml`. Give it a `section`, a key and a default, nothing else: it is reachable through `/anti-hall:settings`, grouped by category. Do NOT add a `userConfig` row to `plugins/anti-hall/.claude-plugin/plugin.json`: it declares only the 10 headline switches (`headline: true` in the schema) and the 4 sensitive keys.
 4. Document it: a row in the hook table and the settings table of `docs/GUIDE.md`, the hook in `llms.txt`, and the operator guide `plugins/anti-hall/skills/system-briefing/SKILL.md` (plus its Codex mirror).
-5. `tests/hygiene/docs-coverage.test.js` derives these lists from the code and fails, naming what is undocumented and where it belongs. `tests/hygiene/docs-links.test.js` and `tests/hygiene/readme-doc-links.test.js` check links.
-6. Add a regression test in `tests/hooks/`. For a guard that blocks, include the dangerous forms that must stay blocked, not only the allowed one.
+6. Prove it live: for a guard that blocks, try the dangerous forms that must stay blocked, not only the allowed one, on a deployed build.
 
 ### Fail-open
 
-Hooks are pure Node and fail-open: a parse, read or state error exits 0 without blocking or wedging a turn ([AGENTS.md](AGENTS.md), `docs/GUIDE.md`). The docs define no separate fail-closed mode, so a guard should block only on a positive match of the dangerous form; if you think one needs different behaviour, discuss it in an issue first. Never widen a guard's allow path without tests showing the dangerous forms stay blocked.
+Hooks fail open: a parse, read or state error exits 0 without blocking or wedging a turn ([AGENTS.md](AGENTS.md), `docs/GUIDE.md`). The docs define no separate fail-closed mode, so a guard should block only on a positive match of the dangerous form; if you think one needs different behaviour, discuss it in an issue first. Never widen a guard's allow path without tests showing the dangerous forms stay blocked.
 
 ### Settings
 
-Settings live in `~/.anti-hall/settings.json` and change only through `/anti-hall:settings` or `plugins/anti-hall/scripts/settings.js` (`show`, `get`, `set`, `reset`), never by hand ([AGENTS.md](AGENTS.md)). Resolution order: env, file, stored plugin option, legacy, default. Settings readers must honour an injected `HOME` and never fall back to `os.homedir()`; `tests/hygiene/settings-home-injection.test.js` enforces that.
+Settings live in `~/.anti-hall/settings.json` and change only through `/anti-hall:settings` or `ah-hook settings` (`show`, `get`, `set`, `reset`), never by hand ([AGENTS.md](AGENTS.md)). Resolution order: env, file, stored plugin option, legacy, default. Settings readers must honour an injected `HOME` and never fall back to `os.homedir()`; `tests/hygiene/settings-home-injection.test.js` enforces that.
 
 ## Both ports, always (dual-platform parity)
 
@@ -87,8 +81,8 @@ Every piece of work has an issue. Feature requests and bugs go through the [issu
 
 ### Builds and CI
 
-- **Local gate first.** Run `node --test` (and, for engine changes, the engine's own test suite) before you push. Pushes to `dev` and to short-lived branches run no CI.
-- **CI gates pull requests to `main` and releases.** A pull request runs the test workflow (a reduced matrix); `rc-v*` tags run the full matrix; `ah-engine-v*` tags run the engine publish workflow. Check the Actions result before calling a release done: a green local run is not a green CI run.
+- **Local gate first.** Run `cargo check` and a release build of what you touched before you push. Pushes to `dev` and to short-lived branches run no CI.
+- **CI gates pull requests to `main` and releases.** A pull request runs the engine workflow (`ah-engine.yml`); `ah-engine-v*` tags run the engine publish workflow. Check the Actions result before calling a release done: a green local run is not a green CI run.
 
 ### Releases
 
@@ -102,12 +96,12 @@ Maintainers follow [RELEASING.md](RELEASING.md); this section does not repeat it
 
 ### Version authority
 
-The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex manifest (`plugins/anti-hall/.codex-plugin/plugin.json`), root `package.json` and `package-lock.json` track it and must match (`tests/hygiene/manifest-drift.test.js`). The marketplace entry carries no version. `CHANGELOG.md` gets a section per release.
+The version lives in `plugins/anti-hall/.claude-plugin/plugin.json`. The Codex manifest (`plugins/anti-hall/.codex-plugin/plugin.json`), root `package.json` and `package-lock.json` track it and must match. The marketplace entry carries no version. `CHANGELOG.md` gets a section per release.
 
 ## Before you open a pull request
 
-1. Run the files you touched, then `node --test` once.
-2. Run `node plugins/anti-hall/hooks/doctor.js --check`.
+1. `cargo check` and a release build of what you touched.
+2. Run `ah-hook doctor --check`.
 3. Fill in the pull request template honestly; "N/A, because ..." is a fine answer.
 
 ## Questions and problems

@@ -1,9 +1,9 @@
 # ah-engine shipped mesh-writer defaults (D45, stage 2): the mesh CLI verbs that WRITE the per-repo DevSwarm store
-# (`ah-engine mesh <devswarm.js argv>`), with Node's schema, statements, locking and output. Format: see the header of
-# engine.toml. Every name, path, text and limit the port of scripts/devswarm.js and companion/lib/devswarm-store.js
-# uses lives here; the values are Node's own (cited per key).
+# (`ah-engine mesh <mesh verb argv>`), with Node's schema, statements, locking and output. Format: see the header of
+# engine.toml. Every name, path, text and limit the mesh write verbs
+# use lives here; the values are Node's own (cited per key).
 
-# ---- store and statements (companion/lib/devswarm-store.js) -------------------------------------------------------
+# ---- store and statements -------------------------------------------------------
 
 [mesh_write.store_file]
 doc = "File name of a per-repo store (`devswarm.db`)."
@@ -63,7 +63,7 @@ value = "journal"
 doc = "The variable that forces Node's store backend (ANTIHALL_DEVSWARM_STORE_BACKEND)."
 value = "ANTIHALL_DEVSWARM_STORE_BACKEND"
 
-# ---- the per-workspace lock (scripts/devswarm-lib/core.js acquireIdLock, companion/lib/recovery.js acquireLock) ----
+# ---- the per-workspace lock ----
 
 [mesh_write.id_lock_budget_ms]
 doc = "How long one acquire keeps retrying a lock held by a live, fresh holder before the verb reports lockBusy (Node: 2000)."
@@ -84,25 +84,25 @@ min = 1000
 max = 86400000
 
 [mesh_write.id_lock_reclaim_stale_ms]
-doc = "A takeover marker (`<lock>.reclaim`) older than this is abandoned (lock.js RECLAIM_STALE_MS)."
+doc = "A takeover marker (`<lock>.reclaim`) older than this is abandoned."
 value = 5000
 min = 100
 max = 600000
 
 [mesh_write.id_lock_release_tries]
-doc = "Attempts a release makes to take the takeover marker (lock.js RELEASE_SIDECAR_TRIES)."
+doc = "Attempts a release makes to take the takeover marker."
 value = 5
 min = 1
 max = 100
 
 [mesh_write.id_lock_release_step_ms]
-doc = "Pause between those attempts (lock.js RELEASE_SIDECAR_STEP_MS)."
+doc = "Pause between those attempts."
 value = 10
 min = 1
 max = 10000
 
 [mesh_write.id_lock_boot_slop_s]
-doc = "Two boot times this close are one boot (lock.js BOOT_SLOP_S)."
+doc = "Two boot times this close are one boot."
 value = 5
 min = 0
 max = 3600
@@ -156,7 +156,7 @@ doc = "The heartbeats directory under the DevSwarm state directory."
 value = "heartbeats"
 
 [mesh_write.dir_plans]
-doc = "The plans directory under the DevSwarm state directory (devswarm-plan.js)."
+doc = "The plans directory under the DevSwarm state directory."
 value = "plans"
 
 [mesh_write.dir_send_receipts]
@@ -168,7 +168,7 @@ doc = "anti-hall's state directory under its home directory."
 value = "state"
 
 [mesh_write.alias_file]
-doc = "The sender alias map under the DevSwarm state directory (devswarm-sender-alias.js)."
+doc = "The sender alias map under the DevSwarm state directory."
 value = "sender-aliases.json"
 
 [mesh_write.alias_key]
@@ -184,11 +184,11 @@ doc = "Suffix of a staged file before its rename."
 value = ".tmp"
 
 [mesh_write.ingest_beat_prefix]
-doc = "File-name prefix of a project's ingest-daemon heartbeat (ingest-health.js ingestHeartbeatPath)."
+doc = "File-name prefix of a project's ingest-daemon heartbeat."
 value = "ingest-"
 
 [mesh_write.ingest_lock_prefix]
-doc = "File-name prefix of a project's ingest-daemon lock (ingest-health.js ingestProjectLockPath)."
+doc = "File-name prefix of a project's ingest-daemon lock."
 value = "ingest-project-"
 
 [mesh_write.ingest_beat_stale_ms]
@@ -198,7 +198,7 @@ min = 1000
 max = 86400000
 
 [mesh_write.monitor_failure_threshold]
-doc = "Consecutive monitor failures that make a live ingest daemon FAILING (doctor-repair.js MONITOR_FAILURE_FAIL_THRESHOLD)."
+doc = "Consecutive monitor failures that make a live ingest daemon FAILING."
 value = 3
 min = 1
 max = 1000
@@ -220,7 +220,7 @@ doc = "The harness's per-process session records under it (`<pid>.json`)."
 value = "sessions"
 
 [mesh_write.max_ppid_hops]
-doc = "Parent hops the reader-nonce walk takes looking for a harness session record (reader-identity.js MAX_PPID_HOPS)."
+doc = "Parent hops the reader-nonce walk takes looking for a harness session record."
 value = 6
 min = 0
 max = 64
@@ -234,11 +234,11 @@ doc = "The process-table tool the nonce walk runs, as Node does."
 value = "ps"
 
 [mesh_write.ps_ppid_args]
-doc = "Its arguments for the pid/parent table (reader-identity.js defaultPpidTable)."
+doc = "Its arguments for the pid/parent table."
 value = ["-A", "-o", "pid=,ppid="]
 
 [mesh_write.ps_lstart_args]
-doc = "Its arguments for one process's start time, followed by the pid (liveness.js processStartMs)."
+doc = "Its arguments for one process's start time, followed by the pid."
 value = ["-o", "lstart=", "-p"]
 
 [mesh_write.month_names]
@@ -246,7 +246,7 @@ doc = "Month abbreviations of that start time, January first (what Date.parse re
 value = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 [mesh_write.jev_file]
-doc = "Jev's own config file under anti-hall's directory (jev-triage.js jevConfigPath)."
+doc = "Jev's own config file under anti-hall's directory."
 value = "jev.json"
 
 [mesh_write.settings_file]
@@ -262,7 +262,7 @@ doc = "Jev's on/off field."
 value = "enabled"
 
 [mesh_write.jev_pending_file]
-doc = "Jev triage's pending labeled messages under anti-hall's state directory (jev-triage.js pendingPath)."
+doc = "Jev triage's pending labeled messages under anti-hall's state directory."
 value = "jev-triage-pending.json"
 
 [mesh_write.env_jev]
@@ -277,7 +277,7 @@ value = "1"
 doc = "Its off value."
 value = "0"
 
-# ---- identity (companion/lib/identity.js, scripts/devswarm-lib/identity.js) -----------------------------------------
+# ---- identity -----------------------------------------
 
 [mesh_write.dot_git]
 doc = "A checkout's git entry."
@@ -308,13 +308,13 @@ doc = "Where a superproject keeps absorbed submodule git directories."
 value = "modules"
 
 [mesh_write.max_submodule_hops]
-doc = "Superproject hops a resolution takes (identity.js MAX_SUBMODULE_HOPS)."
+doc = "Superproject hops a resolution takes."
 value = 32
 min = 1
 max = 1024
 
 [mesh_write.repo_name_max]
-doc = "Length cap of a repo name in a repoKey (identity.js MAX_NAME_LEN)."
+doc = "Length cap of a repo name in a repoKey."
 value = 40
 min = 1
 max = 255
@@ -451,7 +451,7 @@ value = "builderType"
 doc = "The builder type of a Primary checkout."
 value = "primary"
 
-# ---- argv (scripts/devswarm-lib/core.js parseArgs) and verbs -------------------------------------------------------
+# ---- argv and verbs -------------------------------------------------------
 
 [mesh_write.value_required_flags]
 doc = "Flags that always take the next word as their value (Node's VALUE_REQUIRED_FLAGS)."
@@ -459,7 +459,7 @@ value = ["message", "message-file"]
 
 [mesh_write.boolean_only_flags]
 doc = "Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS)."
-value = ["force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
+value = ["global", "force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
 
 [mesh_write.verb_send]
 doc = "The send verb."
@@ -607,6 +607,10 @@ value = "send-not-verified"
 doc = "`error` of that send. Placeholders: {hash}, {partition} (JSON-quoted)."
 value = "send appended a row (hash {hash}) but the readback against partition {partition} did not find it — the message is NOT confirmed delivered"
 
+[mesh_write.msg_send_label_no_reader]
+doc = "`warning` of a send whose recipient is a worktree label row that no session reads yet (a spawn pre-registers the label; the child registers under its own id). Placeholder: {to}."
+value = "stored in {to}, but no session reads that partition yet: it is a worktree label, not a registered live reader. The child receives it when reconcile folds the label into its own registration; send to the child's id, or wait for it to register, if it needs this now"
+
 [mesh_write.msg_mesh_read_hint]
 doc = "`hint` of a consuming mesh read."
 value = "consumed broadcasts stay re-readable without moving any cursor: `mesh history [--last N]`, or `inbox messages <id> --with-broadcasts`"
@@ -661,69 +665,33 @@ value = "stale"
 
 # ---- the front door and the shadow ---------------------------------------------------------------------------------
 
-[mesh_write.node_bin]
-doc = "The Node binary the engine hands a verb to."
-value = "node"
+[mesh_write.msg_detail]
+doc = "The reason text of an abandoned mesh call (event log + counters): which verb, its first words and why. Placeholders: {verb}, {argv}, {reason}."
+value = "verb={verb} argv=[{argv}] reason={reason}"
 
-[mesh_write.node_cli]
-doc = "Node's mesh CLI, relative to the plugin root."
-value = "scripts/devswarm.js"
+[mesh_write.detail_positionals]
+doc = "How many leading positional words (the verb and subcommand, never a message body) an abandoned mesh call's log line names."
+value = 2
 
-[mesh_write.exit_signal_base]
-doc = "A Node child killed by signal N exits as this plus N (the shell convention)."
-value = 128
-min = 0
-max = 255
+[mesh_write.reroute_incoherent]
+doc = "Why a send was rerouted: the addressed row is live but its session runs in another checkout (`rerouteReason`)."
+value = "session-worktree-incoherent"
 
-[mesh_write.msg_no_node_cli]
-doc = "stderr line when the plugin root (and so Node's CLI) is unknown."
-value = "ah-engine mesh: cannot find scripts/devswarm.js (no plugin root); run the verb with node directly"
+[mesh_write.reroute_not_live]
+doc = "Why a send was rerouted: the addressed row is not live and a live row of the same session exists (`rerouteReason`)."
+value = "addressed-row-not-live"
 
-[mesh_write.msg_node_exec_failed]
-doc = "stderr line when starting Node failed. Placeholder: {err}."
-value = "ah-engine mesh: could not start node: {err}"
+[mesh_write.msg_unable]
+doc = "stderr line when the engine cannot answer a mesh verb (an unported verb, a case it cannot do, no plugin context). Nothing was written; the exit code is mesh_write.exit_unable. Placeholders: {site}, where it gave up; {detail}, which call and why."
+value = "ah-engine mesh: ERROR: this verb or case cannot be done by the engine ({site}: {detail}); nothing was done. Report this site (it is logged, with the call, in the engine log)."
 
-[mesh_write.shadow_dir]
-doc = "Scratch directory (under the engine state directory) of one shadow replay; removed when it ends."
-value = "mesh-shadow"
-
-[mesh_write.shadow_home]
-doc = "The scratch home the replay writes its side files into (receipts), under that directory."
-value = "home"
+[mesh_write.msg_disabled]
+doc = "stderr line when the mesh write verbs are switched off (mesh.engine_writes = off). Nothing was done; the exit code is mesh_write.exit_unable. Placeholder: {site}."
+value = "ah-engine mesh: ERROR: the mesh write verbs are switched off (mesh.engine_writes = off, {site}); nothing was done. Turn the setting on to run mesh verbs."
 
 [mesh_write.shadow_log]
 doc = "The shadow log, one JSON line per replayed call, under the engine state directory."
 value = "mesh-shadow.jsonl"
-
-[mesh_write.shadow_log_cap]
-doc = "Most characters of each side's stdout a mismatch record keeps."
-value = 2000
-min = 0
-max = 1048576
-
-[mesh_write.shadow_backup_pages]
-doc = "Pages per step of the store snapshot (SQLite online backup); large means one step."
-value = 1000000
-min = 1
-max = 2147483647
-
-[mesh_write.shadow_backup_pause_ms]
-doc = "Pause between snapshot steps, in milliseconds."
-value = 0
-min = 0
-max = 10000
-
-[mesh_write.shadow_match]
-doc = "Shadow result: stdout, exit code and the written row all equal Node's."
-value = "match"
-
-[mesh_write.shadow_mismatch]
-doc = "Shadow result: something differs and no other writer touched the store meanwhile."
-value = "mismatch"
-
-[mesh_write.shadow_concurrent]
-doc = "Shadow result: something differs, but another writer added rows between the snapshot and Node's write (the seq can differ)."
-value = "concurrent"
 
 [mesh_write.shadow_defer]
 doc = "Shadow result: the engine would have handed this call to Node (the reason says why)."
@@ -733,10 +701,6 @@ value = "defer"
 doc = "Shadow result: the engine path panicked (caught; Node's result was unaffected)."
 value = "panic"
 
-[mesh_write.shadow_no_store]
-doc = "Defer reason when the project has no store file yet."
-value = "no-store"
-
 [env.mesh_now]
 doc = "Pins `Date.now()` of an `ah-engine mesh` verb, in epoch milliseconds (the parity tests pin Node's `ctx.now` the same way). Never set in production."
 value = "AH_ENGINE_MESH_NOW_MS"
@@ -744,10 +708,6 @@ value = "AH_ENGINE_MESH_NOW_MS"
 [mesh_write.mode_on]
 doc = "The `mode` of an on-mode record in the shadow log."
 value = "on"
-
-[mesh_write.mode_shadow]
-doc = "The `mode` of a shadow record in the shadow log."
-value = "shadow"
 
 [mesh_write.on_native]
 doc = "On-mode result: the engine answered the call itself."
@@ -760,11 +720,11 @@ doc = "The per-project summary projections directory under the DevSwarm state di
 value = "summaries"
 
 [mesh_write.dir_archived]
-doc = "The archived workspace descriptors directory under the DevSwarm state directory (row-state.js archiveCompleteIds)."
+doc = "The archived workspace descriptors directory under the DevSwarm state directory."
 value = "archived"
 
 [mesh_write.dir_cursors]
-doc = "The legacy cursor files directory under the DevSwarm state directory (reader-cursors.js cursorsDir)."
+doc = "The legacy cursor files directory under the DevSwarm state directory."
 value = "cursors"
 
 [mesh_write.dir_cache]
@@ -772,11 +732,11 @@ doc = "anti-hall's cache directory under its home directory (Jev's triage label 
 value = "cache"
 
 [mesh_write.cursor_line_field]
-doc = "Field of a JSON cursor file that holds its position (devswarm-inbox-cursor.js readCursor)."
+doc = "Field of a JSON cursor file that holds its position."
 value = "line"
 
 [mesh_write.cursor_floor_reader]
-doc = "The reader key of a partition's floor row in reader_cursors (reader-cursors.js FLOOR)."
+doc = "The reader key of a partition's floor row in reader_cursors."
 value = "#floor"
 
 [mesh_write.cursor_ns_store]
@@ -796,13 +756,13 @@ doc = "Separator of a legacy per-instance store cursor file name (cursors/<id>#i
 value = "#inst-"
 
 [mesh_write.legacy_cursor_short_len]
-doc = "Length of the hex instance tag in a legacy cursor file name (reader-cursors.js listLegacy)."
+doc = "Length of the hex instance tag in a legacy cursor file name."
 value = 6
 min = 1
 max = 64
 
 [mesh_write.legacy_cursor_forbidden]
-doc = "Texts a partition id must not contain to have legacy cursor files (reader-cursors.js legacySafeId)."
+doc = "Texts a partition id must not contain to have legacy cursor files."
 value = ["#", ".seen-"]
 
 [mesh_write.field_cursor_path]
@@ -810,23 +770,23 @@ doc = "Descriptor field naming the durable inbox's cursor file."
 value = "cursorPath"
 
 [mesh_write.urgency_rank]
-doc = "Urgency words from lowest to highest (devswarm-store.js URGENCY_RANK); any other word is ignored."
+doc = "Urgency words from lowest to highest; any other word is ignored."
 value = ["low", "normal", "high", "urgent"]
 
 [mesh_write.summary_recent_cap]
-doc = "Most broadcast runs a summary keeps in recent[] (devswarm-store.js DEFAULT_RECENT_CAP)."
+doc = "Most broadcast runs a summary keeps in recent[]."
 value = 50
 min = 1
 max = 100000
 
 [mesh_write.summary_pending_questions_cap]
-doc = "Most per-sender pending questions a summary keeps per workspace (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP)."
+doc = "Most per-sender pending questions a summary keeps per workspace."
 value = 200
 min = 1
 max = 100000
 
 [mesh_write.archive_request_marker]
-doc = "Body marker of an archive-request send (devswarm-store.js ARCHIVE_REQUEST_MARKER)."
+doc = "Body marker of an archive-request send."
 value = "[[ANTIHALL_ARCHIVE_REQUEST]]"
 
 [mesh_write.gate_done]
@@ -834,7 +794,7 @@ doc = "The gate a child's `done` verb sets."
 value = "done"
 
 [mesh_write.done_setby_prefix]
-doc = "Setter prefix of a done gate that carries the HEAD sha (devswarm-store.js DONE_GATE_SETBY_PREFIX)."
+doc = "Setter prefix of a done gate that carries the HEAD sha."
 value = "devswarm-done@"
 
 [mesh_write.gate_merged_verified]
@@ -842,19 +802,15 @@ doc = "The report-only gate recording the merged ancestry check."
 value = "merged_verified"
 
 [mesh_write.merged_setby_prefix]
-doc = "Setter prefix of a merged_verified gate that carries the HEAD sha (devswarm-store.js MERGED_VERIFIED_SETBY_PREFIX)."
+doc = "Setter prefix of a merged_verified gate that carries the HEAD sha."
 value = "devswarm-merged@"
-
-[mesh_write.settings_devswarm_section]
-doc = "The settings.json section of the DevSwarm settings."
-value = "devswarm"
 
 [mesh_write.csv_separator]
 doc = "Separator of a comma-separated setting."
 value = ","
 
 [mesh_write.required_gates_env]
-doc = "Environment variable of devswarm.requiredGates (settings-schema.js)."
+doc = "Environment variable of devswarm.requiredGates."
 value = "ANTIHALL_DEVSWARM_REQUIRED_GATES"
 
 [mesh_write.required_gates_key]
@@ -866,7 +822,7 @@ doc = "Plugin option (/config) of devswarm.requiredGates."
 value = "devswarm_required_gates"
 
 [mesh_write.required_gates_option_default]
-doc = "The plugin option's manifest default; a plugin option equal to it does not override (settings.js readPluginOption)."
+doc = "The plugin option's manifest default; a plugin option equal to it does not override."
 value = "done,merged,tests_passed"
 
 [mesh_write.required_gates_default]
@@ -874,7 +830,7 @@ doc = "Schema default of devswarm.requiredGates."
 value = "done,merged,tests_passed"
 
 [mesh_write.required_gates_fallback]
-doc = "The gates used when the setting lists none (devswarm-store.js DEFAULT_REQUIRED_GATES)."
+doc = "The gates used when the setting lists none."
 value = ["done", "merged", "tests_passed"]
 
 [mesh_write.held_partitions_env]
@@ -898,11 +854,11 @@ doc = "Schema default of devswarm.heldPartitions (none held)."
 value = ""
 
 [mesh_write.jev_cache_file]
-doc = "Jev triage's label cache file under anti-hall's cache directory (jev-triage.js cachePath)."
+doc = "Jev triage's label cache file under anti-hall's cache directory."
 value = "jev-triage.json"
 
 [mesh_write.jev_question_kind]
-doc = "The triage label kind of a message that asks a question (jev-triage.js)."
+doc = "The triage label kind of a message that asks a question."
 value = "question-needs-answer"
 
 [mesh_write.field_kind]
@@ -921,9 +877,9 @@ value = 70
 min = 1
 max = 255
 
-[mesh_write.exit_defer]
-doc = "Exit code meaning: the engine did not act and wrote nothing, so the caller should run the verb in Node (sysexits EX_TEMPFAIL, 75). `ah-engine mesh` runs a deferred verb in Node itself, so it exits with this only when it cannot start Node (it replaces the former 127 for that case). Never used after a write: see exit_committed_failure."
-value = 75
+[mesh_write.exit_unable]
+doc = "Exit code of a mesh verb the engine could not do or that is switched off: nothing was written, and the failure is a visible error (sysexits EX_UNAVAILABLE, 69), not the former silent deferral code 75. Never used after a write: see exit_committed_failure."
+value = 69
 min = 1
 max = 255
 
@@ -935,7 +891,7 @@ value = "ah-engine mesh: the write was committed but the engine failed before pr
 doc = "Log result of a summary refresh the engine could not do after its write (Node's next derive refreshes the file)."
 value = "summary-failed"
 
-# ---- inbox ack-primary (scripts/devswarm-lib/inbox-cmd.js cmdInboxAckPrimary, cursors.js, companion/lib/reader-cursors.js) ----
+# ---- inbox ack-primary ----
 
 [mesh_write.verb_inbox]
 doc = "The inbox verb."
@@ -957,20 +913,16 @@ value = "receipt"
 doc = "The flag that skips the ownership check of ack-primary."
 value = "ack-as-owner"
 
-[mesh_write.flag_tail]
-doc = "A window flag the acking inbox verbs refuse (INBOX_WINDOW_FLAGS); with --since it sends the call to Node."
-value = "tail"
-
 [mesh_write.dir_read_receipts]
 doc = "Directory of read receipts under the DevSwarm root (readReceiptDir)."
 value = "read-receipts"
 
 [mesh_write.dir_drain]
-doc = "Directory of the drain markers under the DevSwarm root (devswarm-drain-marker.js)."
+doc = "Directory of the drain markers under the DevSwarm root."
 value = "drain"
 
 [mesh_write.dir_cursor_log]
-doc = "Directory of the cursor-write journals under the DevSwarm root (cursors.js cursorLogPath)."
+doc = "Directory of the cursor-write journals under the DevSwarm root."
 value = "cursor-log"
 
 [mesh_write.receipt_id_prefix]
@@ -1069,6 +1021,60 @@ value = "repoKey"
 doc = "The `k` of a read-receipt op that moves the caller's own partition cursor."
 value = "own"
 
+[mesh_write.gate_sibling]
+doc = "The journal `gate` of a cursor move of a sibling partition of the caller's mesh group."
+value = "sibling"
+
+[mesh_write.never_read_sibling_cap]
+doc = "How many rows of one sibling partition a read delivers at most (`NEVER_READ_SIBLING_CAP`); the rest are withheld and named in the answer."
+value = 200
+min = 1
+
+[mesh_write.consumed_hash_seed_cap]
+doc = "How many of the newest already-read rows of the caller's own partition seed the duplicate check of a mesh-group read (`CONSUMED_HASH_SEED_CAP`)."
+value = 2000
+min = 1
+
+[mesh_write.channel_sibling_seen]
+doc = "The `channel` of a cursor-write failure of the caller-scoped seen watermark of a sibling partition."
+value = "sibling-seen-watermark"
+
+[mesh_write.channel_sibling_store]
+doc = "The `channel` of a cursor-write failure of a sibling partition's store cursor."
+value = "sibling-store-cursor"
+
+[mesh_write.msg_seen_watermark_failed]
+doc = "The error of a seen watermark that could not be written."
+value = "could not write caller-scoped seen watermark"
+
+[mesh_write.log_op_sibling_dup]
+doc = "The central-log operation of a sibling row suppressed as a logical duplicate."
+value = "sibling-fold-logical-dup"
+
+[mesh_write.msg_sibling_dup]
+doc = "The central-log message of a sibling row suppressed as a logical duplicate."
+value = "suppressed a logically-duplicate sibling row (weak key match)"
+
+[mesh_write.reason_logical_dup]
+doc = "The log reason of a sibling row suppressed as a logical duplicate."
+value = "logical-dup"
+
+[mesh_write.mesh_never_read_hint]
+doc = "The hint of a read that withheld rows of sibling partitions over the cap. Placeholders: {withheld}, {n} (partitions), {cap}, {reads} (the commands)."
+value = "withheld {withheld} row(s) from {n} sibling partition(s) (cap {cap}); read them directly with: {reads}"
+
+[mesh_write.mesh_never_read_read_cmd]
+doc = "The command that reads one sibling partition directly. Placeholder: {pid}."
+value = "inbox messages {pid}"
+
+[mesh_write.mesh_never_read_read_sep]
+doc = "The separator of the direct-read commands in the never-read hint."
+value = " ; "
+
+[mesh_write.truncated_hint]
+doc = "The hint of a read that withheld rows over the limit. Placeholders: {count}, {limit}."
+value = "not all unread messages were returned ({count} withheld) — the read cursor was NOT advanced past withheld messages, so re-reading (optionally with a higher --limit than {limit}) returns them"
+
 [mesh_write.op_sibling]
 doc = "The `k` of a read-receipt op that moves a sibling partition's cursor (Node's)."
 value = "sibling"
@@ -1076,10 +1082,6 @@ value = "sibling"
 [mesh_write.op_nd]
 doc = "The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's)."
 value = "nd"
-
-[mesh_write.shadow_skipped]
-doc = "Log result of a shadow-mode call for a verb that cannot be replayed on a store copy: Node ran it, the engine only counted it."
-value = "skipped"
 
 [mesh_write.ps_poll_ms]
 doc = "How often the process snapshot checks whether `ps` has finished."
@@ -1093,7 +1095,7 @@ value = 6
 min = 1
 max = 40
 
-# ---- heartbeat and the NDJSON + store unread union (scripts/devswarm-lib/heartbeat-plan.js cmdHeartbeat, companion/lib/liveness.js, devswarm-unread.js, reader-cursors.js) ----
+# ---- heartbeat and the NDJSON + store unread union ----
 
 [mesh_write.verb_heartbeat]
 doc = "The heartbeat verb."
@@ -1136,7 +1138,7 @@ doc = "The repeatable heartbeat flag for blockers."
 value = "blockers"
 
 [mesh_write.dir_liveness]
-doc = "Directory of the persisted liveness verdicts under the DevSwarm root (liveness.js livenessPathFor)."
+doc = "Directory of the persisted liveness verdicts under the DevSwarm root."
 value = "liveness"
 
 [mesh_write.liveness_alive]
@@ -1150,10 +1152,8 @@ min = 1
 max = 31536000000
 
 [mesh_write.env_source_branch]
-doc = "The environment variable that marks a DevSwarm child workspace (devswarm-role.js isChildWorkspace)."
+doc = "The environment variable that marks a DevSwarm child workspace."
 value = "DEVSWARM_SOURCE_BRANCH"
-
-
 
 [mesh_write.plugin_manifest_dir]
 doc = "Directory of the plugin manifest under the plugin root."
@@ -1172,7 +1172,7 @@ doc = "The descriptor field holding the workspace id."
 value = "id"
 
 [mesh_write.legacy_hash_prefix]
-doc = "Prefix of the dedupe hash of one physical legacy inbox line (devswarm-unread.js legacyLineHash)."
+doc = "Prefix of the dedupe hash of one physical legacy inbox line."
 value = "legacy:"
 
 [mesh_write.ndjson_hash_field]
@@ -1189,55 +1189,11 @@ value = "createdAt"
 
 # ---- the Node shadow of an answered writing verb (owner rule: Node stays as a background check until the port is proven) ----
 
-[mesh_write.verify_flag]
-doc = "The word after `mesh` that makes the engine run as the background verifier of an answered heartbeat (never a devswarm.js verb)."
-value = "--shadow-verify"
-
 [mesh_write.verify_log]
 doc = "File in the state directory that receives one JSON line per background verification (`verb`, `result` match or mismatch, `ms`; on a mismatch both outputs, capped)."
 value = "mesh-verify.jsonl"
 
-[mesh_write.verify_dir]
-doc = "Directory in the state directory that holds the scratch homes of pending verifications."
-value = "mesh-verify"
-
-[mesh_write.verify_copy_dirs]
-doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes (what Node reads or writes for a heartbeat)."
-value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans"]
-
-[mesh_write.verify_link_dirs]
-doc = "Directories of the DevSwarm root linked, not copied, into the scratch home (read only for a heartbeat)."
-value = ["store"]
-
-[mesh_write.verify_node_snippet]
-doc = "The Node program of the verifier: runs the real devswarm.js `run()` with the engine's clock, prints the result object the CLI would print. Arguments: the CLI path, the clock, then the verb's argv."
-value = "const c=require(process.argv[1]);const r=c.run(process.argv.slice(3),{now:Number(process.argv[2])});process.stdout.write(JSON.stringify(r.result)+'\\n');"
-
-[mesh_write.verify_match]
-doc = "Log result of a verification whose Node output and written files equal the engine's."
-value = "match"
-
-[mesh_write.verify_mismatch]
-doc = "Log result of a verification that found a difference."
-value = "mismatch"
-
-[mesh_write.verify_error]
-doc = "Log result of a verification that could not run Node."
-value = "error"
-
-[mesh_write.verify_cap]
-doc = "Characters of each output kept in a mismatch record."
-value = 600
-min = 50
-max = 100000
-
-[mesh_write.cursor_max_digits]
-doc = "Longest all-digit NDJSON cursor file the engine reads (parseInt of a longer digit string is only approximated by the specification, so such a file goes to Node)."
-value = 15
-min = 1
-max = 308
-
-# ---- the DevSwarm app database reader (companion/lib/devswarm-app-db.js): read only, bounded, fail-open ----
+# ---- the DevSwarm app database reader: read only, bounded, fail-open ----
 
 [mesh_write.app_col_id]
 doc = "The `builders` id column."
@@ -1308,12 +1264,12 @@ doc = "How long a locked app database is waited for: Node's node:sqlite waits no
 value = 0
 
 [mesh_write.app_max_exact_int]
-doc = "Integers beyond this magnitude are not exact JavaScript numbers; a database holding one in a column the verdict reads defers."
+doc = "Integers beyond this magnitude are not exact JavaScript numbers; node:sqlite throws on one in any column it selects, so a database holding one reads as no snapshot."
 value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
 doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
-value = "no step plan for {id} — run `devswarm.js plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
 
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
@@ -1332,8 +1288,14 @@ doc = "The supervision event log (one JSON line per plan step event), under the 
 value = "devswarm-supervision.ndjson"
 
 [mesh_write.supervision_max_bytes]
-doc = "Size above which Node rotates the supervision log before appending; the engine defers a plan write while the log is above it (rotation stays Node's)."
+doc = "Size above which the supervision log is rotated before an event is appended (the daily roll-ups are written first). A plan write that cannot rotate it defers while the log is above it."
 value = 1048576
+
+[mesh_write.supervision_rotated_files]
+doc = "How many numbered generations of the supervision log are kept (`.1` to `.N`); the oldest is replaced by a rotation, after its days are rolled up."
+value = 5
+min = 1
+max = 50
 
 [mesh_write.plan_statuses]
 doc = "The step statuses `heartbeat --status` accepts (STEP_STATUSES)."
@@ -1447,6 +1409,26 @@ value = "no progress yet"
 doc = "The done count of a finish label."
 value = "{done}/{total} done"
 
+[mesh_write.lbl_live]
+doc = "Appended to a plan's finish label when the workspace's tracked work is ahead of its plan. `{parts}` is the list of live facts."
+value = " (plan behind, live: {parts})"
+
+[mesh_write.lbl_live_tasks]
+doc = "A live fact: task-list items the workspace completed; `{n}` is the count."
+value = "{n} task(s) done"
+
+[mesh_write.lbl_live_commits]
+doc = "A live fact: commits; `{n}` is the count."
+value = "{n} commit(s)"
+
+[mesh_write.lbl_live_shipped]
+doc = "A live fact: merges and deploys; `{n}` is the count."
+value = "{n} merge/deploy(s)"
+
+[mesh_write.lbl_live_last]
+doc = "A live fact: when the workspace last committed, pushed, merged or deployed; `{dur}` is the time since."
+value = "last ship {dur} ago"
+
 [mesh_write.lbl_plan_changed]
 doc = "Appended to the done count after the plan was replaced or a done step re-opened."
 value = " (plan changed)"
@@ -1487,21 +1469,9 @@ value = "correction-followed"
 doc = "Supervision event type: first step progress in a respawned workspace."
 value = "respawn-progress"
 
-[mesh_write.step_stall_env]
-doc = "The environment variable of the devswarm.stepStallMin setting."
-value = "ANTIHALL_DEVSWARM_STEP_STALL_MIN"
-
 [mesh_write.step_stall_key]
 doc = "The settings.json key (in the devswarm section) of the step stall window."
 value = "stepStallMin"
-
-[mesh_write.step_stall_option]
-doc = "The plugin option name of the step stall window."
-value = "devswarm_step_stall_min"
-
-[mesh_write.step_stall_default_min]
-doc = "Minutes of the step stall window when no setting is given (devswarm.stepStallMin)."
-value = 30
 
 [mesh_write.plan_status_doing]
 doc = "The step status word for a step in progress."
@@ -1519,24 +1489,6 @@ value = "blocked"
 doc = "The heartbeat flag that names a step's status."
 value = "status"
 
-[mesh_write.verify_nonce_col]
-doc = "Index of the instance_nonce column in the row query of the background check (left out of the comparison)."
-value = 11
-
-[mesh_write.verify_row_name]
-doc = "The name the background check gives the appended mesh row when it differs."
-value = "row"
-
-[mesh_write.verify_window_before]
-doc = "Bytes before the first difference that the background check logs from a differing file."
-value = 60
-
-[mesh_write.verify_window_after]
-doc = "Bytes from the first difference on that the background check logs from a differing file."
-value = 100
-
-# ---- inbox tick --quiet (scripts/devswarm-lib/inbox-cmd.js cmdInboxTick, inboxTickQuietLine) ----
-
 [mesh_write.verb_tick]
 doc = "The tick subverb of `inbox`."
 value = "tick"
@@ -1546,15 +1498,15 @@ doc = "The one line `inbox tick --quiet` prints (inboxTickQuietLine); `{id}`, `{
 value = "tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed {armed}"
 
 [mesh_write.dir_wake_tick]
-doc = "The wake-tick marker directory under the DevSwarm state directory (core.js wakeTickDir)."
+doc = "The wake-tick marker directory under the DevSwarm state directory."
 value = "wake-tick"
 
 [mesh_write.file_cron_found_mail]
-doc = "The cron-found-mail measurement file under the DevSwarm state directory (core.js cronFoundMailPath)."
+doc = "The cron-found-mail measurement file under the DevSwarm state directory."
 value = "cron-found-mail.jsonl"
 
 [mesh_write.cron_found_mail_cap]
-doc = "How many lines the cron-found-mail file keeps (core.js CRON_FOUND_MAIL_CAP)."
+doc = "How many lines the cron-found-mail file keeps."
 value = 1000
 
 [mesh_write.tick_tmp_suffix]
@@ -1566,7 +1518,7 @@ doc = "The `source` a tick stamps on a heartbeat record it has to create (cmdInb
 value = "inbox-tick"
 
 [mesh_write.wake_lock_prefix]
-doc = "File-name prefix of the wake-watch lock of a workspace in the locks directory (devswarm-wake-watch.js lockPathFor)."
+doc = "File-name prefix of the wake-watch lock of a workspace in the locks directory."
 value = "wake-watch-"
 
 [mesh_write.wake_lock_suffix]
@@ -1574,11 +1526,11 @@ doc = "File-name suffix of the wake-watch lock."
 value = ".lock"
 
 [mesh_write.wake_lock_stale_ms]
-doc = "A wake-watch lock older than this is not a live watcher (devswarm-wake-watch.js WATCH_LOCK_STALE_MS)."
+doc = "A wake-watch lock older than this is not a live watcher."
 value = 120000
 
 [mesh_write.dir_wal]
-doc = "The delivery write-ahead-log directory under the DevSwarm state directory (devswarm-read-wal.js)."
+doc = "The delivery write-ahead-log directory under the DevSwarm state directory."
 value = "wal"
 
 [mesh_write.dir_wal_spill]
@@ -1613,18 +1565,6 @@ value = "ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY"
 doc = "The settings files, relative to the home directory, in which a trace of the roster setting sends a tick to Node."
 value = [".anti-hall/settings.json", ".claude/settings.json"]
 
-[mesh_write.verify_tick_node_snippet]
-doc = "The Node program of the tick verifier: runs the real devswarm.js `run()` with the engine's clock and prints what `main()` prints for the tick (the line under `--quiet` without `--json`, else the JSON). Arguments: the CLI path, the clock, then the verb's argv."
-value = "const c=require(process.argv[1]);const a=process.argv.slice(3);const r=c.run(a,{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});const q=a.includes('--quiet')&&!a.includes('--json');process.stdout.write((q?c.inboxTickQuietLine(r.result):JSON.stringify(r.result))+'\\n');"
-
-[mesh_write.verify_tick_copy_dirs]
-doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes for a tick (what Node reads or writes for it)."
-value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans", "wake-tick", "locks", "wal", "wal-spill"]
-
-[mesh_write.verify_tick_copy_files]
-doc = "Files of the DevSwarm root copied into the scratch home before the engine writes for a tick."
-value = ["cron-found-mail.jsonl"]
-
 [mesh_write.js_true]
 doc = "JavaScript's text for true, as a tick line prints a boolean."
 value = "true"
@@ -1632,20 +1572,6 @@ value = "true"
 [mesh_write.js_false]
 doc = "JavaScript's text for false, as a tick line prints a boolean."
 value = "false"
-
-[mesh_write.env_verify_nonce]
-doc = "The environment variable that hands the engine's reader nonce to the tick verifier (the detached verifier does not share the caller's process ancestry, which Node derives the reader from); it is the name the verify_tick_node_snippet reads."
-value = "AH_ENGINE_VERIFY_NONCE"
-
-[mesh_write.verify_names_heartbeat]
-doc = "The names under which a heartbeat verification mismatch reports whether the heartbeat record, the liveness verdict and the app-state cache are equal."
-value = ["sameHeartbeat", "sameVerdict", "sameCache"]
-
-[mesh_write.verify_names_tick]
-doc = "The names under which a tick verification mismatch reports whether the heartbeat record, the wake-tick marker and the cron-found-mail file are equal."
-value = ["sameHeartbeat", "sameMarker", "sameCronFound"]
-
-# ---- inbox read-primary (scripts/devswarm-lib/inbox-read.js cmdInboxMessagesInner, inbox-cmd.js, cursors.js writeReadReceipt) ----
 
 [mesh_write.verb_read_primary]
 doc = "The read-primary subverb of `inbox`."
@@ -1663,10 +1589,6 @@ value = "format"
 doc = "The value of `--format` that selects the plain-text rendering."
 value = "text"
 
-[mesh_write.read_primary_flags]
-doc = "The flags `inbox read-primary` may carry for the engine to answer it; any other flag (an ownership override, `--legacy-ack-now`, `--unread`, `--with-broadcasts`) is Node's."
-value = ["format", "json", "session", "limit", "ack-after-print"]
-
 [mesh_write.flag_limit]
 doc = "The read-primary flag that overrides the per-call row cap (`--limit N`; a value that is not a finite positive number is ignored, a fractional one is floored to at least 1)."
 value = "limit"
@@ -1683,17 +1605,9 @@ value = 604800000
 doc = "The `v` of a read receipt record."
 value = 1
 
-[mesh_write.launcher_dir]
-doc = "Directory of the stable launchers under the home's `.anti-hall`."
-value = "bin"
-
-[mesh_write.launcher_devswarm]
-doc = "File name of the stable devswarm launcher (`stable-launcher.js` TARGETS.devswarm.name)."
-value = "devswarm.js"
-
 [mesh_write.ack_command]
 doc = "The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id."
-value = "node {cli} inbox ack-primary {id} --receipt {rid}"
+value = "{cli} inbox ack-primary {id} --receipt {rid}"
 
 [mesh_write.ack_hint]
 doc = "The `ackHint` of a read-primary result."
@@ -1727,6 +1641,10 @@ value = "store"
 doc = "The NDJSON line's sender field."
 value = "fromBranch"
 
+[mesh_write.ndjson_sender_field]
+doc = "The NDJSON line's resolved-sender field (the workspace id `pull` wrote: the registry row of the line's branch, else the Primary)."
+value = "sender"
+
 [mesh_write.ndjson_message_field]
 doc = "The NDJSON line's body field."
 value = "message"
@@ -1739,18 +1657,6 @@ value = "status"
 doc = "ARCHIVED_FORWARD_PREFIX_RE's literal start: a row whose body begins so is a forward whose original hash Node derives; the engine leaves such a row to Node."
 value = "[forwarded from archived "
 
-[mesh_write.verify_read_primary_node_snippet]
-doc = "The Node program of the read-primary verifier: runs the real devswarm.js `run()` with the engine's clock and reader nonce and prints what `main()` prints for the verb (the JSON, or the text rendering under `--format text` without `--json`). Arguments: the CLI path, the clock, then the verb's argv."
-value = "const c=require(process.argv[1]);const a=process.argv.slice(3);Date.now=()=>Number(process.argv[2]);const r=c.run(a,{now:Number(process.argv[2]),instanceNonce:process.env.AH_ENGINE_VERIFY_NONCE||undefined});const t=(a.includes('--format=text')||(a.includes('--format')&&a[a.indexOf('--format')+1]==='text'))&&!a.includes('--json');process.stdout.write((t?c.inboxReadPrimaryTextLines(r.result):JSON.stringify(r.result))+'\\n');"
-
-[mesh_write.verify_read_primary_copy_dirs]
-doc = "Directories of the DevSwarm root copied into the scratch home before the engine writes a read receipt (what Node reads or writes for a read-primary)."
-value = ["workspaces", "heartbeats", "liveness", "cursors", "archived", "cache", "plans", "read-receipts", "locks"]
-
-[mesh_write.verify_names_read_primary]
-doc = "The names under which a read-primary verification mismatch reports whether the receipt file is equal."
-value = ["sameReceipt"]
-
 [mesh_write.known_warning]
 doc = "The stderr line `emitKnownWarning` prints for an inbox result that reports `known: false`: `{label}` is `inbox <subverb> <JSON-quoted id>`, `{reasons}` the reason list."
 value = "⚠️ anti-hall · devswarm: {label} reported known:false ({reasons}) — totals may be incomplete or stale"
@@ -1759,11 +1665,7 @@ value = "⚠️ anti-hall · devswarm: {label} reported known:false ({reasons}) 
 doc = "The reason `emitKnownWarning` names when the result carries no more specific one."
 value = "unknown"
 
-# ---- plain roster (scripts/devswarm-lib/roster-diag.js cmdRoster, rosterHumanText; companion/lib/devswarm-pull.js defaultRun) ----
-
-[mesh_write.roster_flags]
-doc = "The flags plain `roster` may carry for the engine to answer it; any other flag is Node's."
-value = ["all", "json"]
+# ---- plain roster ----
 
 [mesh_write.roster_flag_all]
 doc = "The roster flag that includes archived rows in the text rendering."
@@ -1801,26 +1703,6 @@ value = 500
 doc = "spawnSync's default maxBuffer: a call that prints more fails."
 value = 1048576
 
-[mesh_write.verify_roster_node_snippet]
-doc = "The Node program of the roster verifier: runs the real devswarm.js `run()` and prints what `main()` prints for a plain roster (the text table unless `--json`). Arguments: the CLI path, the clock, then the verb's argv."
-value = "const p=require('path');const c=require(process.argv[1]);const a=process.argv.slice(3);const r=c.run(a,{now:Number(process.argv[2])});const t=!a.includes('--json')&&!!r.result&&r.result.ok===true&&r.result.action==='roster';const R=require(p.join(p.dirname(process.argv[1]),'devswarm-lib','roster-diag.js'));process.stdout.write((t?R.rosterHumanText(r.result,{all:a.includes('--all')||process.env.ANTIHALL_ROSTER_HIDE_ARCHIVED==='0',home:process.env.HOME,now:Number(process.argv[2])}):JSON.stringify(r.result))+'\\n');"
-
-[mesh_write.verify_roster_copy_dirs]
-doc = "Directories of the DevSwarm root copied into the scratch home for the roster verifier (what Node reads for a roster)."
-value = ["workspaces", "heartbeats", "liveness", "archived", "cache", "plans", "summaries", "names", "retired"]
-
-[mesh_write.verify_roster_copy_files]
-doc = "Files of the DevSwarm root copied into the scratch home for the roster verifier: the supervisor's active-list cache and what the capability gate of hivecontrol reads."
-value = ["hivecontrol-active.json", "capabilities.json", "hivecontrol-path.json"]
-
-[mesh_write.verify_roster_home_links]
-doc = "Paths under the home linked, not copied, into the scratch home for the roster verifier (read only): Claude's transcripts and session records, and the DevSwarm app's database directory on macOS and on Linux."
-value = [".claude/projects", ".claude/sessions", "Library/Application Support/DevSwarm", ".config/DevSwarm"]
-
-[mesh_write.verify_names_roster]
-doc = "The names under which a roster verification mismatch reports further equalities (a roster writes nothing, so none)."
-value = []
-
 [mesh_write.env_hivecontrol]
 doc = "The environment variable that names the hivecontrol binary explicitly (an absolute path to a file)."
 value = "ANTIHALL_DEVSWARM_HIVECONTROL"
@@ -1849,14 +1731,6 @@ value = "workspace.list"
 doc = "The line Node records for `workspace list` when the build's --help does not list the verb."
 value = "feature workspace.list is dormant: `hivecontrol workspace list` not in this build's --help"
 
-[mesh_write.verify_node_timeout_ms]
-doc = "How long the background Node check of a verb may run before its whole process group is killed (a hung hivecontrol would otherwise hold it for ever); the check is then logged as an error."
-value = 60000
-
-[mesh_write.verify_node_poll_ms]
-doc = "How often the background Node check looks at the running Node."
-value = 20
-
 [mesh_write.hivecontrol_read_chunk]
 doc = "How many bytes the engine reads from a hivecontrol pipe at a time."
 value = 8192
@@ -1872,11 +1746,11 @@ doc = "The `inbox tick` flag that first imports the child's native message queue
 value = "child"
 
 [mesh_write.dir_inbox]
-doc = "The directory of the default NDJSON inboxes under the DevSwarm state directory (devswarm-pull.js inboxDefaultPath)."
+doc = "The directory of the default NDJSON inboxes under the DevSwarm state directory."
 value = "inbox"
 
 [mesh_write.cursor_file_suffix]
-doc = "The suffix of a default cursor file under `cursors/` (devswarm-pull.js cursorDefaultPath)."
+doc = "The suffix of a default cursor file under `cursors/`."
 value = ".cursor"
 
 [mesh_write.cursor_initial]
@@ -1892,19 +1766,19 @@ doc = "The delivery-log kind of the child pull (the file is `wal/<kind>-<id>.ndj
 value = "pull"
 
 [mesh_write.pull_lock_stale_ms]
-doc = "A pull lock older than this, whose holder is not a live process, is taken over (devswarm-pull.js PULL_LOCK_STALE_MS). A live holder is never taken over."
+doc = "A pull lock older than this, whose holder is not a live process, is taken over. A live holder is never taken over."
 value = 60000
 min = 1000
 max = 3600000
 
 [mesh_write.pull_lock_step_ms]
-doc = "The pause between the two create attempts of a pull lock acquire (lock.js stepMs)."
+doc = "The pause between the two create attempts of a pull lock acquire."
 value = 5
 min = 1
 max = 1000
 
 [mesh_write.pull_read_timeout_ms]
-doc = "How long the ONE bounded `hivecontrol workspace read-messages` of a pull may run (devswarm-pull.js READ_TIMEOUT_MS)."
+doc = "How long the ONE bounded `hivecontrol workspace read-messages` of a pull may run."
 value = 10000
 min = 1000
 max = 600000
@@ -1962,15 +1836,15 @@ doc = "What a pull prints to stderr when the batch held fewer messages than the 
 value = "devswarm-pull: reception shortfall for {id} — message-count={count} recovered={recovered} lost={lost} (marked-read natively but not parsed; raw batch kept in {wal} entry {entry})\n"
 
 [mesh_write.reserved_id_tokens]
-doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files (cursors.js RESERVED_ID_TOKENS)."
+doc = "A fresh registration whose id contains one of these is refused: they are the namespace separators of the cursor files."
 value = ["#", ".seen-", ".inst-", ".nd-"]
 
 [mesh_write.reserved_id_suffix]
-doc = "A fresh registration whose id ends with this is refused (cursors.js reservedIdToken)."
+doc = "A fresh registration whose id ends with this is refused."
 value = ".base"
 
 [mesh_write.reserved_exact_id]
-doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones (cursors.js RESERVED_EXACT_IDS)."
+doc = "The one id no workspace may register itself as: its rows would pass for system-authored ones."
 value = "system"
 
 [mesh_write.field_repo_id]
@@ -1980,3 +1854,1235 @@ value = "repoId"
 [mesh_write.legacy_cursor_seps]
 doc = "What follows the workspace id in the name of a legacy per-instance cursor file under `cursors/` (`<id>#inst-<short>.json`, `<id>#nd-<short>.json`)."
 value = ["#inst-", "#nd-"]
+
+[mesh_write.app_col_label]
+doc = "The `builders` title column (the workspace title a Primary sees; the script that matches a task owner against a live workspace reads it)."
+value = "label"
+
+[mesh_write.app_col_branch]
+doc = "The `builders` branch column (the archive verb's branch fallback and its side-effect report)."
+value = "branchName"
+
+[mesh_write.env_commit_mark]
+doc = "The environment variable by which the stable launcher names a marker file; the engine creates it at its commit point, so a launcher that has to stop the engine (time limit) can tell that the verb already acted and must not be run again in Node."
+value = "AH_ENGINE_COMMIT_MARK"
+
+[mesh_write.setting_send_multi]
+doc = "Where devswarm.sendMultiRecipient is read from (send accepts several recipients when it is not false)."
+value = { section = "devswarm", key = "sendMultiRecipient", env = "ANTIHALL_DEVSWARM_SEND_MULTI_RECIPIENT", option = "devswarm_send_multi_recipient", default = true }
+
+[mesh_write.quiet_fail_to]
+doc = "`send --quiet` line of one failed recipient of a multi-recipient send. Placeholders: {to}, {why}."
+value = "ok:false -> {to}: {why}"
+
+[mesh_write.super_cache_ttl_ms]
+doc = "How long a superproject answer git gave for a nested checkout is reused."
+value = 300000
+unit = "ms"
+min = 1000
+max = 86400000
+
+[mesh_write.super_cache_max]
+doc = "Most nested checkouts whose superproject answer is kept at once (expired entries go first, then all)."
+value = 256
+min = 1
+max = 65536
+
+[mesh_write.file_read_max_bytes]
+doc = "Soft limit on a mesh file read through a path from a descriptor or a session record (a durable inbox, a cursor file, a harness session record). A larger regular file is still read, but counted and logged (`mesh_descriptor_read_skipped`, reason `read_why_over_soft`); see `file_read_hard_max_bytes` for the hard limit."
+value = 16777216
+min = 1024
+
+[metric.mesh_own_sends_excluded]
+doc = "Counts that left out unread rows the recipient's own identity family sent (an own send is not inbound mail)."
+value = { kind = "counter", unit = "counts", labels = [] }
+
+[mesh_write.sender_fallback_ingest]
+doc = "The `where` label and log word of a sender taken from the Primary because the message's branch named no registered workspace (ingest)."
+value = "ingest"
+
+[mesh_write.sender_fallback_read]
+doc = "The `where` label and log word of a sender taken from a fallback at read time (the NDJSON line's own sender, or the Primary for a NULL store row)."
+value = "read"
+
+[mesh_write.msg_sender_fallback]
+doc = "The log line when a message got its sender from a fallback instead of its own branch. {where} {id} (the partition) {n} (messages)."
+value = "mesh sender fallback: where={where}, partition={id}, messages={n}"
+
+[metric.mesh_sender_fallback]
+doc = "Messages whose sender came from a fallback instead of the message's own branch, by where: ingest (a child's queue: the Primary), read (the NDJSON line's own sender, or the Primary for a NULL store row)."
+value = { kind = "counter", unit = "messages", labels = ["where"] }
+
+[mesh_write.ref_outcome_exact]
+doc = "The `outcome` label of a workspace reference that was a full id."
+value = "exact"
+
+[mesh_write.ref_outcome_mesh]
+doc = "The `outcome` label of a workspace reference that was a mesh label (`primary-<hash>`)."
+value = "mesh"
+
+[mesh_write.ref_outcome_prefix]
+doc = "The `outcome` label of a workspace reference that was the unique prefix of one workspace id (the short id the roster prints)."
+value = "prefix"
+
+[mesh_write.ref_outcome_ambiguous]
+doc = "The `outcome` label of a workspace reference that matched several workspaces and was refused with the candidate list."
+value = "ambiguous"
+
+[mesh_write.ref_outcome_none]
+doc = "The `outcome` label of a workspace reference nothing resolved (the verb's own not-registered answer follows)."
+value = "none"
+
+[metric.mesh_ref_resolved]
+doc = "How a workspace reference given to a verb (send --to, archive, nudge, gate, ...) resolved, by outcome: exact, mesh, prefix, ambiguous, none."
+value = { kind = "counter", unit = "references", labels = ["outcome"] }
+
+[metric.mesh_watcher_matched_by_checkout]
+doc = "Watcher-live checks answered by another row's lock on the same checkout because the workspace's own id had no live lock."
+value = { kind = "counter", unit = "checks", labels = [] }
+
+[mesh_write.gitmodules_file]
+doc = "The file of a checkout declaring its submodule paths."
+value = ".gitmodules"
+
+[mesh_write.gitmodules_path_key]
+doc = "The key of a submodule's path in .gitmodules."
+value = "path"
+
+[mesh_write.msg_descriptor_read_skipped]
+doc = "The log line when a file named by a descriptor (or a receipt) was not read because it is no regular file or is over the read cap. {site} {reason} {path}."
+value = "mesh read skipped: site={site}, reason={reason}, path={path}"
+
+[mesh_write.site_read_cursor]
+doc = "The `site` label of a skipped read of a cursor file (the NDJSON read position)."
+value = "read-cursor"
+
+[mesh_write.site_pull_inbox]
+doc = "The `site` label of a skipped read of a durable inbox that a pull was about to append to."
+value = "pull-inbox"
+
+[mesh_write.site_pull_descriptor]
+doc = "The `site` label of a skipped read of a workspace descriptor by a pull."
+value = "pull-descriptor"
+
+[mesh_write.site_receipt]
+doc = "The `site` label of a skipped read of a read receipt."
+value = "read-receipt"
+
+[metric.mesh_descriptor_read_skipped]
+doc = "Reads of a file named by a descriptor that were skipped because it is no regular file (a FIFO, socket or device) or is over the read cap, by site and reason."
+value = { kind = "counter", unit = "reads", labels = ["site", "reason"] }
+
+[metric.mesh_pull_ts_fallback]
+doc = "Pulled batches holding a message whose time is a form Date.parse accepts but the engine does not reproduce: its store row carries the import time instead (the message and its hash are intact)."
+value = { kind = "counter", unit = "batches", labels = [] }
+
+[metric.mesh_summary_owner_fallback]
+doc = "Roster/summary rows counted from the shared floor because the workspace's partition has no live reader row (the base is the least-advanced live reader otherwise)."
+value = { kind = "counter", unit = "rows", labels = [] }
+
+[mesh_write.fifo_test_bound_ms]
+doc = "How long a test waits for a read of a FIFO before it calls the read blocked."
+value = 10000
+unit = "ms"
+min = 100
+max = 600000
+
+[mesh_write.shadow_backup_pages]
+doc = "Pages per step of the store snapshot (SQLite online backup); large means one step."
+value = 1000000
+min = 1
+max = 2147483647
+
+[mesh_write.shadow_backup_pause_ms]
+doc = "Pause between snapshot steps, in milliseconds."
+value = 0
+min = 0
+max = 10000
+
+[mesh_write.cursor_log_older_soft_bytes]
+doc = "Soft limit on a cursor journal's older file (`.1`): past it the rotation notes the size (warn and count); nothing is ever deleted or replaced for it."
+value = 8388608
+min = 1024
+
+[mesh_write.msg_cursor_log_older_soft]
+doc = "The note when a cursor journal's older file passes its soft limit. {path} {bytes}."
+value = "{path}: the older cursor journal is {bytes} bytes, past its soft limit; nothing is deleted (move it aside by hand when it is no longer needed)"
+
+[mesh_write.unread_reason_cursors]
+doc = "The reason a child's unread count is UNKNOWN when its store's reader cursors cannot be read."
+value = "reader-cursors-unreadable"
+
+[mesh_write.unread_reason_union]
+doc = "The reason a child's unread count is UNKNOWN when the union of inbox lines and store rows cannot be computed."
+value = "union-threw"
+
+[mesh_write.heartbeat_callers_log]
+doc = "The file (under the DevSwarm directory) that records the process of every heartbeat sent without --session (instrumentation: which caller refreshes a row without naming its session)."
+value = "heartbeat-callers.log"
+
+[mesh_write.heartbeat_callers_cap]
+doc = "How many of the newest lines that file keeps."
+value = 200
+min = 1
+max = 100000
+
+[mesh_write.heartbeat_callers_argv]
+doc = "How many of the caller's leading arguments a line records."
+value = 4
+min = 1
+max = 64
+
+[mesh_write.verb_count]
+doc = "The count subverb of `inbox`, and the `action` of its result."
+value = "count"
+
+[mesh_write.verb_peek_primary]
+doc = "The peek-primary subverb of `inbox`."
+value = "peek-primary"
+
+[mesh_write.verb_ack]
+doc = "The ack subverb of `inbox`."
+value = "ack"
+
+[mesh_write.verb_pull]
+doc = "The pull subverb of `inbox`."
+value = "pull"
+
+[mesh_write.read_ack_hint]
+doc = "The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}."
+value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
+
+[mesh_write.action_read]
+doc = "The `action` of an `inbox read` result."
+value = "read"
+
+[mesh_write.action_peek_primary]
+doc = "The `action` of an `inbox peek-primary` result."
+value = "peek-primary"
+
+[mesh_write.log_ns_nd]
+doc = "The journal `ns` of an NDJSON-namespace reader cursor move."
+value = "reader_cursors:nd"
+
+[mesh_write.gate_min_floor]
+doc = "The journal `gate` of a cursor move that names no door (the floor recompute)."
+value = "min-floor"
+
+[mesh_write.verb_log_ack_all]
+doc = "The journal `verb` of an `inbox ack` NDJSON move."
+value = "inbox-ack-all"
+
+[mesh_write.verb_log_ack]
+doc = "The journal `verb` of an `inbox ack` store move."
+value = "inbox-ack"
+
+[mesh_write.msg_pull_lock_held]
+doc = "What `inbox pull` reports when another pull holds the workspace's pull lock."
+value = "another pull holds the lock"
+
+[mesh_write.msg_pull_ensure_failed]
+doc = "What `inbox pull` reports when the ensure's writes failed and the pull was skipped."
+value = "the workspace registration could not be written"
+
+[mesh_write.msg_pull_no_descriptor]
+doc = "What `inbox pull` reports when the descriptor is gone once the lock is held. Placeholder: {id} (JSON-quoted)."
+value = "no descriptor for workspace {id}"
+
+[mesh_write.msg_pull_replay_failed]
+doc = "What `inbox pull` reports when a pending delivery-log batch could not be replayed (nothing further is read)."
+value = "WAL replay failed (batch kept pending, no new native read)"
+
+[mesh_write.msg_pull_wal_unwritable]
+doc = "What `inbox pull` reports when the delivery log cannot be appended and fsynced (the destructive read is refused). Placeholders: {why} and {wal}."
+value = "delivery WAL not writable ({why}): {wal} — destructive native read refused"
+
+[mesh_write.msg_pull_count_failed]
+doc = "What `inbox pull` reports when the message count failed without saying why."
+value = "message-count failed"
+
+[mesh_write.msg_pull_read_failed]
+doc = "What `inbox pull` reports when the native read failed without saying why."
+value = "read-messages failed"
+
+[mesh_write.pull_timeout_re]
+doc = "Case-insensitive regular expression: a failed message-count whose error matches it is a native timeout (the app did not answer), reported as `nativeTimeout`."
+value = "(?i)request timeout|timed out|ETIMEDOUT"
+
+[mesh_write.msg_verb_not_ok]
+doc = "The central-log message of a verb that returned `ok: false` without an error or a reason."
+value = "verb returned ok:false"
+
+[mesh_write.log_op_inbox_pull]
+doc = "The central-log operation of an `inbox pull` that did not succeed."
+value = "inbox-pull"
+
+[mesh_write.channel_ndjson_cursor]
+doc = "The `channel` of a cursor-write failure of the NDJSON position."
+value = "ndjson-cursor"
+
+[mesh_write.err_nd_ack_failed]
+doc = "The error text of an NDJSON position move that failed without saying why."
+value = "reader-cursors nd ack failed"
+
+[mesh_write.msg_ack_to_not_number]
+doc = "What `inbox ack --to` reports when its value is not a number."
+value = "--to must be a number"
+
+[mesh_write.cause_unresolvable]
+doc = "The reason of an `inbox ack` refused to a caller whose identity could not be resolved."
+value = "unresolvable-caller-identity"
+
+[mesh_write.cause_mismatch]
+doc = "The reason of an `inbox ack` refused to a caller registered as a different workspace."
+value = "ownership-mismatch"
+
+[mesh_write.msg_ack_refused]
+doc = "The refusal of an `inbox ack` by a caller that does not own the workspace. Placeholders: {cause}, {caller} and {id} (JSON-quoted), {rawid} (as typed)."
+value = "inbox ack refused ({cause}): caller {caller} does not own workspace {id} (pass --ack-as-owner to override, or use `inbox read {rawid}` to view without acking)"
+
+[mesh_write.verb_log_ack_to]
+doc = "The journal `verb` of an `inbox ack --to` NDJSON move."
+value = "inbox-ack-to"
+
+[mesh_write.truncated_hint_ack]
+doc = "The `truncatedHint` of an ack cut short by the per-call cap. Placeholders: {count} (rows withheld) and {limit}."
+value = "not all unread messages were acked this call ({count} withheld) — sibling cursors were NOT advanced past withheld messages, so acking again (optionally with a higher --limit than {limit}) consumes them"
+
+[mesh_write.act_inbox_prefix]
+doc = "What the `action` of an id-resolution refusal of an inbox verb starts with (the action is `inbox-<sub>`)."
+value = "inbox-"
+
+[mesh_write.reason_unregistered]
+doc = "The reason of an inbox read of an id with no descriptor, no registry row and no messages."
+value = "unregistered-workspace"
+
+[mesh_write.reason_no_inbox_path]
+doc = "The reason of an inbox read of an id that is registered (or has messages) but never got an inbox path."
+value = "no-inbox-path"
+
+[mesh_write.msg_unregistered]
+doc = "The refusal text for an unregistered id. Placeholder: {id} (JSON-quoted)."
+value = "workspace {id} is not registered and has no messages (no descriptor, no registry row, no store history) — register it first (or check the id for a typo)"
+
+[mesh_write.msg_no_inbox_path]
+doc = "The refusal text for a registered id that never got an inbox path. Placeholder: {id} (JSON-quoted)."
+value = "no inboxPath for workspace {id} (registered, but never given an --inbox path — register it first)"
+
+[mesh_write.log_ns_plain_store]
+doc = "The journal `ns` of a refused move recorded outside the reader cursors."
+value = "store"
+
+[mesh_write.gate_redirect_live]
+doc = "The journal `gate` of an `inbox ack` refused because the fold-retired id redirects to a live owner."
+value = "redirect-to-live"
+
+[mesh_write.msg_redirect_live_log]
+doc = "The journal error of an `inbox ack` refused for a live survivor. Placeholders: {id} (the retired id) and {survivor}."
+value = "refused: retired id {id} redirects to LIVE owner {survivor}"
+
+[mesh_write.reason_redirect_live]
+doc = "The reason of an `inbox ack --ack-as-owner` on a retired id whose survivor is live."
+value = "redirect-to-live-owner"
+
+[mesh_write.msg_redirect_live]
+doc = "The refusal of an `inbox ack` on a retired id whose survivor is live. Placeholders: {id} and {survivor} (JSON-quoted)."
+value = "refusing to ack retired id {id} — it redirects to {survivor}, whose owner is LIVE. Acking here would consume that live agent's mail. Ack the survivor from its own session, or read without --ack."
+
+[mesh_write.reason_redirect_unresolvable]
+doc = "The reason of an `inbox ack` on a retired id by a caller not verifiable as the survivor."
+value = "retired-redirect-unresolvable-caller"
+
+[mesh_write.msg_redirect_unresolvable]
+doc = "The refusal of an `inbox ack` on a retired id by a caller not verifiable as the survivor. Placeholders: {id} and {survivor} (JSON-quoted)."
+value = "inbox ack {id} was redirected to survivor {survivor} after a fold, but the caller could not be verified as that survivor — refusing so an unrelated/unresolvable caller cannot advance the survivor's NDJSON cursor (pass --ack-as-owner to override)"
+
+[mesh_write.receipt_error_hint]
+doc = "The `ackHint` of a read-primary result whose read receipt could not be written. Placeholders: {error} (the filesystem error) and {id}."
+value = "read-only: nothing was acked, and the read receipt could not be written ({error}) — re-run read-primary, or use `inbox drain-primary-legacy {id}` to read-and-ack in one call."
+
+[mesh_write.msg_promote_owner_key]
+doc = "The registry write error of a promotion whose descriptor names an `ownerKey` that is not a string (no store can be opened under it)."
+value = "invalid store key in the descriptor (ownerKey is not a string)"
+
+[mesh_write.msg_promote_store]
+doc = "The registry write error of a promotion whose store could not be opened. Placeholder: {reason}."
+value = "store unavailable: {reason}"
+
+[mesh_write.msg_promote_registry_stderr]
+doc = "The stderr line of a promotion whose registry write failed after the descriptor was promoted. Placeholders: {id} and {error}."
+value = "[devswarm] registry write failed for {id}: {error}"
+
+[mesh_write.msg_no_random]
+doc = "The receipt error of a read that could not draw random bytes for the receipt id."
+value = "random bytes unavailable"
+
+[mesh_write.msg_store_failure]
+doc = "The error a verb reports (exit 2) when the store itself fails (an unreadable or corrupt database); Node reports the thrown exception the same way. Placeholder: {reason}."
+value = "store failure: {reason}"
+
+[mesh_write.store_failure_prefixes]
+doc = "The prefixes of the internal reasons that mean the store itself failed (a read, open, registry or cursor error of the database): such a call is answered with the verb's failure, never handed to Node."
+value = ["store-unreadable:", "store-create", "store-read:", "store-open:", "registry:", "cursor-rows:", "cursor-import:", "cursor:", "broadcasts:", "advance:"]
+
+[mesh_write.flag_with_broadcasts]
+doc = "The flag that merges the project's broadcasts into a non-acking read."
+value = "with-broadcasts"
+
+[mesh_write.broadcast_merge_cap]
+doc = "How many of the newest broadcasts `--with-broadcasts` merges into a read."
+value = 50
+
+[mesh_write.with_broadcasts_ignored]
+doc = "The `withBroadcastsIgnored` note of an acking read that was given `--with-broadcasts`."
+value = "acking verb; use `inbox messages <id> --with-broadcasts` (non-acking)"
+
+[mesh_write.reason_no_project]
+doc = "The `reason` of a mesh read from a directory that is in no project."
+value = "no-project"
+
+[mesh_write.reason_bad_seq]
+doc = "The `reason` of a mesh read whose `--seq` is bare or not a non-negative number."
+value = "bad-seq"
+
+[mesh_write.msg_seq_bare]
+doc = "The refusal of a mesh read given `--seq` with no value."
+value = "--seq requires a value (got a bare flag, which would otherwise silently fall back to the default MUTATING read)"
+
+[mesh_write.msg_seq_invalid]
+doc = "The refusal of a mesh read whose `--seq` is not a non-negative number. Placeholder: {got} (JSON-quoted)."
+value = "--seq must be a non-negative integer (got {got})"
+
+[mesh_write.reason_filter_requires_peek]
+doc = "The `reason` of a consuming mesh read given `--last` or `--since`."
+value = "filter-requires-peek"
+
+[mesh_write.msg_filter_requires_peek]
+doc = "The refusal of a consuming mesh read given `--last` or `--since`."
+value = "--last/--since would consume unread broadcasts they do not show; use --peek, then a plain `mesh read` to consume"
+
+[mesh_write.hint_filter_requires_peek]
+doc = "The `hint` of that refusal."
+value = "use --peek, then a plain `mesh read` to consume"
+
+[mesh_write.reason_bad_last]
+doc = "The `reason` of a mesh read whose `--last` is not a positive number."
+value = "bad-last"
+
+[mesh_write.msg_last_invalid]
+doc = "The refusal of a mesh read whose `--last` is not a positive number. Placeholder: {got} (JSON-quoted)."
+value = "--last must be a positive integer (got {got})"
+
+[mesh_write.reason_bad_since]
+doc = "The `reason` of a mesh read whose `--since` is neither a duration nor a date."
+value = "bad-since"
+
+[mesh_write.msg_since_invalid]
+doc = "The refusal of a mesh read whose `--since` is neither a duration nor a date. Placeholder: {got} (JSON-quoted)."
+value = "--since must be an ISO 8601 timestamp or a duration like 30m/2h/1d (got {got})"
+
+[mesh_write.msg_receipt_corrupt]
+doc = "The error of an ack whose receipt holds a move no cursor can take (a {what} that is not usable, in the field {key}); Node throws there and prints the exception."
+value = "read receipt is corrupt: its {key} is not a usable {what}"
+
+[mesh_write.msg_context_different]
+doc = "The tail of the project-context-mismatch error when the current context resolves to another project. Placeholder: {caller} (JSON-quoted)."
+value = ", but the current context resolves to a DIFFERENT project {caller}"
+
+[mesh_write.msg_context_unresolved]
+doc = "The tail of the project-context-mismatch error when the current context resolves to no project."
+value = ", but the current context could not resolve a project (non-git cwd?)"
+
+[mesh_write.msg_project_mismatch]
+doc = "The project-context-mismatch error of a read or ack. Placeholders: {id}, {registered} (JSON-quoted) and {context} (one of the two tails above)."
+value = "workspace {id} is registered under project {registered}{context} — run this from within that project's worktree to read its inbox"
+
+[mesh_write.reason_project_mismatch]
+doc = "The `reason` of a read or ack from another project than the id's own."
+value = "project-context-mismatch"
+
+[mesh_write.reason_missing_receipt]
+doc = "The `reason` of an ack-primary without `--receipt`."
+value = "missing-receipt"
+
+[mesh_write.msg_missing_receipt]
+doc = "The refusal of an ack-primary without `--receipt`."
+value = "--receipt <readReceiptId> (from `inbox read-primary`) is required"
+
+[mesh_write.reason_unknown_receipt]
+doc = "The `reason` of an ack-primary for a receipt that does not exist."
+value = "unknown-receipt"
+
+[mesh_write.msg_unknown_receipt]
+doc = "The refusal of an ack-primary for a receipt that does not exist. Placeholders: {rid} and {id} (JSON-quoted), {bare} (the id as is)."
+value = "no read receipt {rid} for {id} — re-run `inbox read-primary {bare}`, then run the ackCommand it returns"
+
+[mesh_write.reason_receipt_owner]
+doc = "The `reason` of an ack-primary for a receipt issued to another id or another reader."
+value = "receipt-owner-mismatch"
+
+[mesh_write.msg_receipt_belongs]
+doc = "The refusal of an ack-primary for a receipt issued to another id. Placeholder: {owner} (the receipt's id, JSON)."
+value = "receipt belongs to {owner}"
+
+[mesh_write.msg_receipt_other_reader]
+doc = "The refusal of an ack-primary for a receipt issued to another reader. Placeholder: {id}."
+value = "receipt was issued to a different reader — a receipt acks only for the reader that read it; re-run `inbox read-primary {id}` and then its `ackCommand`"
+
+[mesh_write.reason_receipt_expired]
+doc = "The `reason` of an ack-primary for a receipt past its lifetime."
+value = "receipt-expired"
+
+[mesh_write.msg_receipt_expired]
+doc = "The refusal of an ack-primary for an expired receipt. Placeholders: {hours} and {id}."
+value = "receipt is older than {hours}h — re-run `inbox read-primary {id}` and then its `ackCommand` (nothing was acked; the mail is still unread)"
+
+[mesh_write.msg_ack_not_owner]
+doc = "The refusal of an ack-primary by a caller that does not own the id. Placeholder: {id} (JSON-quoted)."
+value = "ack-primary refused: this caller does not own {id} (use --ack-as-owner to override)"
+
+[mesh_write.flag_legacy_ack_now]
+doc = "The flag that makes `inbox read-primary` ack in the same call (the old read-and-ack, kept for one release)."
+value = "legacy-ack-now"
+
+[mesh_write.inbox_positionals]
+doc = "The words of `inbox <sub> <id>` that mean something (the command, the subcommand, the id); any further word is ignored, as Node ignores it."
+value = 3
+
+[mesh_write.io_errors]
+doc = "Node's error code and description of each filesystem failure a receipt write can report: [code, description]."
+value = { not_found = ["ENOENT", "no such file or directory"], permission_denied = ["EACCES", "permission denied"], already_exists = ["EEXIST", "file already exists"], not_a_directory = ["ENOTDIR", "not a directory"], is_a_directory = ["EISDIR", "illegal operation on a directory"], read_only_filesystem = ["EROFS", "read-only file system"], storage_full = ["ENOSPC", "no space left on device"] }
+
+[mesh_write.msg_io_error]
+doc = "Node's message of a failed filesystem call. Placeholders: {code}, {what}, {syscall}, {path}."
+value = "{code}: {what}, {syscall} '{path}'"
+
+[mesh_write.msg_io_error_other]
+doc = "The message of a filesystem failure that has no Node code in `io_errors`. Placeholders: {error}, {syscall}, {path}."
+value = "{error}, {syscall} '{path}'"
+
+[mesh_write.store_error_prefix]
+doc = "The words the engine's store error puts before SQLite's own message (stripped to get that message)."
+value = "store read failed: "
+
+[mesh_write.store_unavailable_code]
+doc = "The `storeUnavailableReason` of a store that could not be opened (the error code `node:sqlite` gives every database failure)."
+value = "ERR_SQLITE_ERROR"
+
+[mesh_write.reason_store_unavailable]
+doc = "The `reason` of a read or ack whose store could not be opened."
+value = "store-unavailable"
+
+[mesh_write.msg_store_unopened]
+doc = "The error of a read or ack whose store could not be opened. Placeholders: {id} (JSON-quoted), {dir} (the project's store directory) and {error} (SQLite's message)."
+value = "store for workspace {id} could not be opened: devswarm store unavailable (ERR_SQLITE_ERROR) opening {dir}: {error}"
+
+[mesh_write.store_cantopen_message]
+doc = "SQLite's message when a database file cannot be opened at all (Node wraps it with the store directory; any other message surfaces as is)."
+value = "unable to open database file"
+
+[mesh_write.msg_store_unreadable]
+doc = "The error of a read or ack whose store opened but failed on its first statement (a file that is no database). Placeholders: {id} (JSON-quoted), {error}."
+value = "store for workspace {id} could not be opened: {error}"
+
+# ---- inbox tick: the parts around the count (cmdInboxTick) -------------------------------------------------------------------
+
+[mesh_write.tick_refused_line]
+doc = "The line `inbox tick --quiet` prints for a refused tick (inboxTickQuietLine of an ok:false result); `{error}` is the reason."
+value = "ok:false {error}"
+
+[mesh_write.id_mismatch_warning]
+doc = "The stderr warning of warnIdMismatch: a child workspace addressing an id other than its own builder id; `{id}` is the addressed id, `{env_id}` its builder id."
+value = "⚠️ anti-hall · devswarm: addressing id \"{id}\" but this workspace's real DEVSWARM_BUILDER_ID is \"{env_id}\" — addressing the meshId row counts the wrong partition; use \"{env_id}\" unless you deliberately mean a different workspace"
+
+[mesh_write.child_repos_dir]
+doc = "The DevSwarm worktree layout under the home directory: a cwd below it corroborates a child workspace."
+value = ".devswarm/repos"
+
+[mesh_write.anchor_reason_unknown]
+doc = "The reason a refused anchor refresh reports when the registration named none."
+value = "unknown"
+
+[mesh_write.armed_archived_skip]
+doc = "The watcherArmed word of a child whose own workspace is archived (its watcher stays silent on purpose)."
+value = "archived-skip"
+
+[mesh_write.armed_idle_skip]
+doc = "The watcherArmed word of a Primary with no live child workspace (devswarm.wakeWatchIdleSkip)."
+value = "idle-skip"
+
+[mesh_write.armed_limit_skip]
+doc = "The watcherArmed word while limit conservation is active."
+value = "limit-skip"
+
+[mesh_write.file_rearm_cues]
+doc = "The re-arm cue measurement under the DevSwarm state directory."
+value = "rearm-cues.jsonl"
+
+[mesh_write.rearm_cues_cap]
+doc = "How many lines the re-arm cue measurement keeps."
+value = 1000
+min = 1
+
+[mesh_write.rearm_trigger_tick]
+doc = "The re-arm cue bucket of a tick that found no live watcher."
+value = "tick"
+
+[mesh_write.rearm_trigger_archived]
+doc = "The re-arm cue bucket of an archived child's tick."
+value = "archived-skip"
+
+[mesh_write.rearm_trigger_idle]
+doc = "The re-arm cue bucket of a Primary's idle skip."
+value = "idle-skip"
+
+[mesh_write.rearm_trigger_limit]
+doc = "The re-arm cue bucket of a limit skip."
+value = "limit-skip"
+
+[mesh_write.wal_alert_ms]
+doc = "A pending delivery batch older than this many milliseconds is an alert."
+value = 3600000
+min = 1
+
+[mesh_write.wal_alert_bytes]
+doc = "Pending delivery batches over this many bytes are an alert."
+value = 1048576
+min = 1
+
+[mesh_write.wal_unknown_code]
+doc = "The error code the delivery-log health names for an I/O error without a well-known code."
+value = "EUNKNOWN"
+
+[mesh_write.wal_reason_unreadable]
+doc = "The health reason of a delivery log that cannot be read; `{code}` is the error code."
+value = "unreadable ({code})"
+
+[mesh_write.wal_reason_spilled]
+doc = "The health reason of spilled batches; `{n}` is how many."
+value = "{n} spilled batch(es) — WAL was not writable; destructive reads blocked"
+
+[mesh_write.wal_reason_old]
+doc = "The health reason of an old pending batch; `{minutes}` is its age."
+value = "oldest pending batch {minutes}m old"
+
+[mesh_write.wal_reason_bytes]
+doc = "The health reason of too many pending bytes; `{bytes}` is the size."
+value = "{bytes} pending bytes"
+
+[mesh_write.wal_reason_last_resort]
+doc = "The health reason of a last-resort batch; `{dir}` is the temp directory that holds it."
+value = "LAST-RESORT batch in {dir} — WAL and spill both failed; destructive reads blocked"
+
+[mesh_write.set_tick_roster]
+doc = "The setting devswarm.tickRosterEvery: every Nth quiet tick of a Primary appends the compact roster after the first line."
+value = { section = "devswarm", key = "tickRosterEvery", type = "number", min = 0, env = "ANTIHALL_DEVSWARM_TICK_ROSTER_EVERY", default = 0 }
+
+[mesh_write.tick_failed]
+doc = "The reason the quiet tick line names for a failed result that carries none."
+value = "inbox tick failed"
+
+[mesh_write.js_object_string]
+doc = "String(object) in JavaScript: what Number() converts an object (or an array holding one) from."
+value = "[object Object]"
+
+[mesh_write.store_unknown_code]
+doc = "The code a store failure reports when the error carries none (Node: EUNKNOWN)."
+value = "EUNKNOWN"
+
+[mesh_write.store_backend_code]
+doc = "The code reported for a store whose backend (the journal) this engine does not read."
+value = "EBACKEND"
+
+[mesh_write.reason_store_open_failed]
+doc = "The refusal reason of a store whose open failed outright."
+value = "store-open-failed"
+
+[mesh_write.reason_store_read_error]
+doc = "The reason of a store whose rows could not be read."
+value = "store-read-error"
+
+[mesh_write.reason_ctx_mismatch]
+doc = "The refusal reason of an id registered under another project than the caller's."
+value = "project-context-mismatch"
+
+[mesh_write.msg_ctx_mismatch_head]
+doc = "The first part of the project-context-mismatch text; `{id}` and `{registered}` are JSON-quoted."
+value = "workspace {id} is registered under project {registered}"
+
+[mesh_write.msg_ctx_mismatch_other]
+doc = "The project-context-mismatch text when the caller's directory resolves to another project; `{caller}` is JSON-quoted."
+value = ", but the current context resolves to a DIFFERENT project {caller}"
+
+[mesh_write.msg_ctx_mismatch_none]
+doc = "The project-context-mismatch text when the caller's directory resolves to no project."
+value = ", but the current context could not resolve a project (non-git cwd?)"
+
+[mesh_write.msg_ctx_mismatch_tail]
+doc = "The end of the project-context-mismatch text."
+value = " — run this from within that project's worktree to read its inbox"
+
+[mesh_write.msg_store_read_error]
+doc = "The text of a store read that failed; `{id}` is JSON-quoted, `{why}` the reason."
+value = "store for workspace {id} could not be read: {why}"
+
+[mesh_write.msg_mesh_unresolved]
+doc = "The meshGroupError of a mesh group that could not be resolved or read; `{id}` is JSON-quoted, `{why}` the reason."
+value = "mesh group of {id} could not be read: {why}"
+
+[mesh_write.known_reason_store]
+doc = "The known:false reason of a store that could not be used; `{code}` is the error code."
+value = "store-unavailable ({code})"
+
+[mesh_write.known_reason_flag]
+doc = "The known:false reason word of a store flagged unavailable."
+value = "storeUnavailable"
+
+[mesh_write.known_reason_kind]
+doc = "The kind appended to that word; `{kind}` is the refusal reason."
+value = " ({kind})"
+
+[mesh_write.known_reason_mesh]
+doc = "The known:false reason word of a mesh group that could not be resolved."
+value = "meshGroupUnresolved"
+
+[mesh_write.known_reason_colon]
+doc = "What joins that word to its error text."
+value = ": "
+
+[mesh_write.known_reason_partial]
+doc = "The known:false reason word of totals that are partial."
+value = "totalsPartial"
+
+# ---- inbox pull: the ensure's refusals (cmdInboxPull / cmdRegister) -----------------------------------------------------------
+
+[mesh_write.action_pull]
+doc = "The action word an `inbox pull` result carries (every refusal of the ensure is reported under it)."
+value = "pull"
+
+[mesh_write.msg_pull_app_archived]
+doc = "The refusal of an ensure for a workspace the DevSwarm app has archived; `{id}` is the plain id."
+value = "workspace {id} is archived in the DevSwarm app (isActive=0, isHidden=1); registration is refused regardless of any local marker or heartbeat — the app DB is ground truth over anti-hall's own markers (owner rule). A live session is still running in this archived workspace: close its DevSwarm tab, or run `hivecontrol workspace archive <full id>`, to stop it retrying."
+
+[mesh_write.reason_reserved_id_token]
+doc = "The reason of an ensure refused for an id that carries a reserved token."
+value = "reserved-id-token"
+
+[mesh_write.msg_reserved_id]
+doc = "The refusal text for such an id; `{id}` and `{token}` are JSON-quoted."
+value = "refusing to register workspace id {id} — it contains the reserved token {token}, which anti-hall uses for its own cursor namespaces under cursors/. Choose an id without it."
+
+[mesh_write.reserved_suffix_token]
+doc = "The reserved token reported for an id that ends with the reserved suffix."
+value = ".base"
+
+[mesh_write.msg_pull_archived_skip]
+doc = "The refusal of a routine auto-ensure for an id whose archived record is the same workspace; `{id}` is the plain id."
+value = "workspace {id} is archived; routine auto-ensure does not revive it (run `devswarm register {id} ...` to explicitly re-register)"
+
+[mesh_write.msg_ensure_not_ours]
+doc = "The refusal of an ensure over a descriptor that belongs to another project."
+value = "existing descriptor does not belong to the current project"
+
+[mesh_write.msg_ctx_mismatch_ensure_tail]
+doc = "The end of the project-context-mismatch text of an ensure."
+value = "run this from within that project's worktree to ensure it"
+
+[mesh_write.msg_cross_project_register]
+doc = "The refusal of an ensure that would register a worktree of another project; `{worktree}` is JSON-quoted, `{worktree_key}` and `{current}` are the two project keys."
+value = "register --worktree {worktree} belongs to a different project ({worktree_key}) than the current cwd ({current}) — cross-project registration is refused"
+
+[mesh_write.msg_id_lock_busy]
+doc = "The refusal of a mutation whose workspace lock stays busy; `{id}` is JSON-quoted."
+value = "workspace {id} is locked by another operation in progress; retry shortly"
+
+[mesh_write.msg_descriptor_malformed]
+doc = "The refusal for a descriptor whose field has a type the registry cannot take; `{id}` is JSON-quoted, `{field}` the field name."
+value = "descriptor for {id} has a field of the wrong type: {field}"
+
+[mesh_write.reason_child_label]
+doc = "The reason of a pull refused for the worktree label of a child workspace."
+value = "child-label-id"
+
+[mesh_write.msg_child_label_retired]
+doc = "The refusal text for a retired worktree label; `{id}` and `{to}` are JSON-quoted."
+value = "{id} is a retired worktree label (folded into {to}), not an identity. Nothing was written."
+
+[mesh_write.msg_child_label]
+doc = "The refusal text for the worktree label of a child; `{id}` is JSON-quoted, `{worktree}` the child's checkout, `{hint}` what to use instead."
+value = "{id} is the worktree label of a CHILD workspace ({worktree}), not an identity — {hint}. Nothing was written. A child heartbeats its own DEVSWARM_BUILDER_ID; the Primary never heartbeats a child."
+
+[mesh_write.msg_child_label_use]
+doc = "The hint when the child has a workspace id; `{child}` is JSON-quoted."
+value = "use its workspace id {child}"
+
+[mesh_write.msg_child_label_unregistered]
+doc = "The hint when the child has not registered a workspace id yet."
+value = "the child has not registered its workspace id yet"
+
+[mesh_write.msg_wal_unreadable]
+doc = "The text of a pull whose delivery log cannot be read; `{code}` is the error code and `{wal}` the log."
+value = "delivery WAL unreadable ({code}): {wal}"
+
+[mesh_write.msg_wal_spill_blocked]
+doc = "The text of a pull whose spilled batches cannot go back into a writable log; `{why}` is the reason and `{dir}` the spill directory."
+value = "delivery WAL not writable ({why}) — spilled batch(es) kept in {dir}; no destructive native read until the WAL is writable"
+
+[mesh_write.msg_wal_replay_failed]
+doc = "The text of a pull whose replay of an open batch failed; `{why}` is the reason."
+value = "WAL replay failed (batch kept pending, no new native read): {why}"
+
+[mesh_write.heal_engine_owned_note]
+doc = "The note under which a stale ingest daemon the engine owns is not healed by this pull (no installer runs)."
+value = "engine owns ingest"
+
+[mesh_write.self_heal_dir]
+doc = "The directory under the DevSwarm state directory that holds the self-heal cooldown files."
+value = "self-heal"
+
+[mesh_write.self_heal_file_prefix]
+doc = "The file-name prefix of a self-heal cooldown file (followed by the repository key)."
+value = "ingest-"
+
+[mesh_write.self_heal_cooldown_ms]
+doc = "How long after one self-heal attempt another may be made."
+value = 60000
+min = 1000
+
+[mesh_write.ingest_owner_file]
+doc = "The file under the DevSwarm state directory that says which process owns the ingest of the projects."
+value = "ingest-owner.json"
+
+[mesh_write.ingest_owner_engine]
+doc = "The owner word of that file when the engine owns the ingest."
+value = "engine"
+
+[mesh_write.heal_cooldown_key]
+doc = "The result key a self-heal cooldown adds."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_attempted_key]
+doc = "The result key a self-heal attempt adds."
+value = "daemonHealAttempted"
+
+[mesh_write.heal_retry_key]
+doc = "The result key carrying the remaining cooldown."
+value = "retryAfterMs"
+
+[mesh_write.heal_disabled_key]
+doc = "The result key of an ingest unit the owner disabled in launchd."
+value = "daemonDisabled"
+
+[mesh_write.heal_disabled_label_key]
+doc = "The result key naming that unit."
+value = "daemonDisabledLabel"
+
+[mesh_write.launchd_label_prefix]
+doc = "The label prefix of a project's ingest unit in launchd (followed by the repository key)."
+value = "com.anti-hall.devswarm-ingest."
+
+# ---- inbox ack-primary: the refusals of cmdInboxAckPrimary --------------------------------------------------------------------
+
+[mesh_write.msg_store_not_opened]
+doc = "The refusal text of an ack whose store could not be opened and that named no reason."
+value = "store could not be opened"
+
+[mesh_write.reason_receipt_owner_mismatch]
+doc = "The reason of an ack for a receipt another identity or another reader was issued."
+value = "receipt-owner-mismatch"
+
+[mesh_write.msg_receipt_owner]
+doc = "The refusal text of an ack for a receipt issued to another identity; `{owner}` is JSON-quoted."
+value = "receipt belongs to {owner}"
+
+[mesh_write.cause_not_registered]
+doc = "The reason of an ack by a caller that resolves fine but has no registry entry of its own."
+value = "caller-not-registered"
+
+[mesh_write.msg_ack_primary_not_owner]
+doc = "The refusal text of an `inbox ack-primary` by a caller that does not own the id; `{id}` is JSON-quoted."
+value = "ack-primary refused: this caller does not own {id} (use --ack-as-owner to override)"
+
+[mesh_write.ms_per_hour]
+doc = "Milliseconds in an hour."
+value = 3600000
+min = 1
+
+[mesh_write.log_op_inbox_ack_primary]
+doc = "The central-log operation of an `inbox ack-primary` that did not succeed."
+value = "inbox-ack-primary"
+
+[mesh_write.msg_ctx_mismatch_ack_tail]
+doc = "The end of the project-context-mismatch text of an `inbox ack`; `{id}` is the plain id."
+value = "run this from within that project's worktree to ack it (`inbox read {id}` is read-only and works from anywhere)"
+
+[mesh_write.msg_no_cursor_path]
+doc = "The refusal text of an `inbox ack` for a descriptor without a cursor file; `{id}` is JSON-quoted."
+value = "no cursorPath for workspace {id}"
+
+# ---- JavaScript values and errors a plan verb reproduces (no hand-off to Node) ------------------------------------------
+
+[mesh_write.js_err_null_read]
+doc = "The TypeError text JavaScript raises when code reads a property of null (a plan step that is null). Placeholder: {prop}."
+value = "Cannot read properties of null (reading '{prop}')"
+
+[mesh_write.js_err_create_prop]
+doc = "The TypeError text strict-mode JavaScript raises when code assigns a property to a primitive (a plan step that is a string, number or boolean). Placeholders: {prop}, {kind} (the typeof word) and {value}."
+value = "Cannot create property '{prop}' on {kind} '{value}'"
+
+[mesh_write.js_kind_string]
+doc = "The typeof word of a string, in the TypeError text of an assignment to a primitive."
+value = "string"
+
+[mesh_write.js_kind_number]
+doc = "The typeof word of a number, in the TypeError text of an assignment to a primitive."
+value = "number"
+
+[mesh_write.js_kind_boolean]
+doc = "The typeof word of a boolean, in the TypeError text of an assignment to a primitive."
+value = "boolean"
+
+[mesh_write.js_prop_status]
+doc = "The step property whose read or assignment fails in the TypeError text (the step's status)."
+value = "status"
+
+[mesh_write.js_prop_text]
+doc = "The step property whose read fails in the TypeError text when a plan is replaced (the step's text)."
+value = "text"
+
+[mesh_write.js_prop_glob]
+doc = "The extra property whose read fails in the TypeError text when an extra is added (the extra's glob)."
+value = "glob"
+
+[mesh_write.js_array_sep]
+doc = "The separator JavaScript's String(array) joins elements with."
+value = ","
+
+[mesh_write.plan_reason_corrupt]
+doc = "The reason word of a heartbeat's plan field when the plan file holds a shape Node's code throws on (a null step)."
+value = "plan-corrupt"
+
+[mesh_write.msg_plan_refused]
+doc = "The log line of a plan the engine refused because Node's code throws on it. Placeholders: {key} (the plan key) and {error} (the TypeError text)."
+value = "plan {key} refused, Node throws on it: {error}"
+
+[mesh_write.msg_settings_unreadable]
+doc = "The log line of a settings file the engine's parser cannot read while JavaScript can; the setting is read from the tiers below the file. Placeholder: {setting}."
+value = "settings file not readable by the engine's parser, {setting} read from the tiers below it"
+
+[mesh_write.json_unicode_escape]
+doc = "The two characters that open a JSON unicode escape."
+value = "\\u"
+
+[mesh_write.lone_mark]
+doc = "The noncharacter that marks a lone surrogate inside an engine string (a Rust string cannot hold one): the mark is followed by one private-use character that names the code unit. JavaScript keeps lone surrogates (a string cut inside an emoji); the plan file carries them as a unicode escape."
+value = "\uFDD0"
+
+[mesh_write.lone_base]
+doc = "The first private-use character (plane 15) that names a lone surrogate after the mark; the code unit minus surrogate_first is added to it."
+value = 983040
+
+[mesh_write.lone_range]
+doc = "How many code units are surrogates (high and low halves together)."
+value = 2048
+
+[mesh_write.surrogate_first]
+doc = "The first UTF-16 surrogate code unit (the first high half)."
+value = 55296
+
+[mesh_write.astral_base]
+doc = "The first code point outside the Basic Multilingual Plane, subtracted before the surrogate halves are cut."
+value = 65536
+
+[mesh_write.surrogate_shift]
+doc = "How many bits the high half of a surrogate pair holds below its prefix (the code point minus astral_base is shifted right by this)."
+value = 10
+
+[mesh_write.lone_escape]
+doc = "The JSON text of a lone surrogate. Placeholder: {unit} (four lowercase hex digits)."
+value = "\\u{unit}"
+
+[mesh_write.jev_triage_log_file]
+doc = "Jev triage's own log under anti-hall's logs directory: one row per answered labeled message."
+value = "jev-triage.ndjson"
+
+[mesh_write.jev_triage_log_max_bytes]
+doc = "Size past which the Jev triage log is rotated before a row is appended."
+value = 1048576
+min = 1
+
+[mesh_write.jev_answered_type]
+doc = "The `type` of the Jev triage log row written when a labeled message is answered."
+value = "answered"
+
+[mesh_write.jev_outcome_id]
+doc = "The integration id of the Jev outcome row an answered labeled message records."
+value = "triage"
+
+[mesh_write.jev_outcome_value]
+doc = "The outcome of that row."
+value = "answered"
+
+[mesh_write.jev_outcome_source]
+doc = "The source of that row."
+value = "triage-answer-latency"
+
+[mesh_write.file_read_hard_max_bytes]
+doc = "Hard limit on a mesh file read through a path from a descriptor or a session record: Node's own string limit for `readFileSync(.., 'utf8')`, where its read fails too. A larger file is read as absent, counted and logged (reason `read_why_over_hard`). A FIFO, socket or device (whose read could block a worker for good) is read as absent the same way (reason `read_why_not_regular`)."
+value = 536870888
+min = 1024
+
+[mesh_write.site_read_bounded]
+doc = "The site named in the count and log of a bounded mesh file read made without a more specific site."
+value = "read_bounded"
+
+[mesh_write.read_why_not_regular]
+doc = "The reason a mesh file read was skipped: the path is no regular file (a FIFO, socket or device)."
+value = "not-a-regular-file"
+
+[mesh_write.read_why_over_hard]
+doc = "The reason a mesh file read was skipped: the file is past `file_read_hard_max_bytes`."
+value = "file-over-hard-cap"
+
+[mesh_write.read_why_over_soft]
+doc = "The reason a mesh file read was counted and logged: the file is past `file_read_max_bytes` but was read."
+value = "file-over-soft-cap"
+
+[mesh_write.refusal_prefix]
+doc = "What starts the reason of a deferral that is really the verb's own refusal (Node's `{ ok: false, ... }` result, exit `exit_refused`): the rest of the reason is the refusal's JSON body. Such a reason is printed, never handed on."
+value = "refusal:"
+
+[mesh_write.exit_refused]
+doc = "Exit code of a verb's own refusal (Node's `{ ok: false }` result)."
+value = 2
+min = 1
+max = 255
+
+[mesh_write.result_refused]
+doc = "Log result of a call the verb refused itself."
+value = "refused"
+
+[mesh_write.reason_seat_conflict]
+doc = "The reason of a send, ack, spawn, merge or correct refused because another live session holds the Primary seat."
+value = "primary-seat-conflict"
+
+[mesh_write.reason_legacy_journal_store]
+doc = "The reason a verb refuses a project whose mesh store is pinned to (or forced onto) the legacy journal backend, which only a Node older than 22.5 wrote and which no longer has a reader."
+value = "legacy-journal-store"
+
+[mesh_write.msg_legacy_journal_store]
+doc = "The refusal text of that case: {repo_key} is the project's store."
+value = "the mesh store of project {repo_key} uses the legacy journal backend (written by a Node older than 22.5), which this version cannot read or write; nothing was done. Move its data into the sqlite store with `doctor --repair`, or remove the BACKEND marker and the journal directory if the store holds nothing you need"
+
+[mesh_write.heal_cooldown_flag]
+doc = "The self-heal result field set while the cooldown of an earlier installer attempt has not elapsed (`daemonHealCooldown`)."
+value = "daemonHealCooldown"
+
+[mesh_write.heal_retry_after]
+doc = "The self-heal result field naming the remaining cooldown in milliseconds (`retryAfterMs`)."
+value = "retryAfterMs"
+
+[mesh_write.msg_registry_unreadable]
+doc = "The refusal text of a verb whose workspace registry could not be read; `{why}` is the reason."
+value = "the workspace registry could not be read: {why}"
+
+[mesh_write.msg_descriptor_field_shape]
+doc = "The refusal text of a workspace descriptor whose field is not text; `{field}` is the field."
+value = "workspace descriptor field {field} is not text"
+
+[mesh_write.held_wal_unreadable]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log cannot be read."
+value = "wal-unreadable"
+
+[mesh_write.held_wal_spilled]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: its delivery log holds spilled batches (the pull itself absorbs them under its lock)."
+value = "wal-spilled"
+
+[mesh_write.ingest_owner_name]
+doc = "The `owner` word of that marker while the engine drains ingest."
+value = "engine"
+
+[mesh_write.forward_prefix_end]
+doc = "The text that closes the provenance marker a forwarded archived row's body starts with, after the archived id."
+value = "] "
+
+[mesh_write.settings_devswarm_section]
+doc = "The settings.json section of the DevSwarm settings."
+value = "devswarm"
+
+[mesh_write.jev_outcome_hash_len]
+doc = "How many hex characters of the SHA-256 name an answered-label outcome row."
+value = 32
+min = 1
+
+[mesh_write.msg_store_unavailable]
+doc = "The refusal text of that case: {what} names the thing, {detail} is the operating system's or database's own message."
+value = "{what} is unavailable ({detail}); nothing was done"
+
+[mesh_write.what_store_dir]
+doc = "What the refusal names when a project's store directory cannot be created."
+value = "the mesh store directory"
+
+[mesh_write.what_store]
+doc = "What the refusal names when a project's store cannot be opened."
+value = "the mesh store"
+
+[mesh_write.what_registry]
+doc = "What the refusal names when a project's registry cannot be read."
+value = "the workspace registry"
+
+[mesh_write.what_append]
+doc = "What the refusal names when a message cannot be appended to the store."
+value = "the message table"
+
+[mesh_write.what_messages]
+doc = "What the refusal names when the broadcast messages cannot be read."
+value = "the broadcast messages"
+
+[mesh_write.msg_not_regular]
+doc = "The refusal text of a mesh file that is a FIFO, socket or device: {path}."
+value = "{path} is not a regular file (a FIFO, socket or device); it was not read and nothing was done"
+
+[mesh_write.held_wal_foreign]
+doc = "The reason the reconcile sweep leaves a workspace's pull undone: another reader holds open batches in the delivery log."
+value = "wal-foreign"
+
+[mesh_write.loud_json]
+doc = "Stdout object printed next to every mesh failure line on stderr when the verb ran with --json (so a caller reading stdout never sees a silent no-op). Placeholders: {error} (a JSON string, the site), {reason} (a JSON string, the stderr text), {exit} (the exit code)."
+value = '{"ok":false,"error":{error},"reason":{reason},"exit":{exit}}'
+
+[mesh_write.loud_text]
+doc = "Stdout line printed next to every mesh failure line on stderr when the verb did not run with --json. Placeholders: {error}, {reason}, {exit}."
+value = "ERROR {error} (exit {exit}): {reason}"
+
+[mesh_write.msg_empty_failure]
+doc = "Reason when a mesh verb exits non-zero having printed nothing. Placeholder: {exit}."
+value = "ah-engine mesh: the verb refused (exit {exit}) and printed no answer; nothing was done."
+
+[mesh_write.site_empty_failure]
+doc = "Error code (site) for a non-zero mesh exit that printed nothing."
+value = "meshw:refused"
+
+[mesh_write.site_committed_failure]
+doc = "Error code (site) for a mesh write that was committed and then failed before printing."
+value = "meshw:committed_failure"
+
+[mesh_write.msg_store_unopened_code]
+doc = "The text of a mesh partition's store that could not be opened. Placeholders: {id} (JSON-quoted) and {code} (the error code)."
+value = "store for workspace {id} could not be opened: {code}"
+
+[mesh_write.msg_store_unreadable_code]
+doc = "The text of a mesh partition's store that could not be read. Placeholders: {id} (JSON-quoted) and {code} (the reason)."
+value = "store for workspace {id} could not be fully read ({code})"
+
+# ---- inbox messages / drain-primary-legacy / reconcile / unsupported forms (lane mesh-verbs) ----------------------------------
+
+[mesh_write.verb_messages]
+doc = "The messages subverb of `inbox` (the non-acking history read; with --ack it is `read-primary`)."
+value = "messages"
+
+[mesh_write.verb_drain_primary_legacy]
+doc = "The drain-primary-legacy subverb of `inbox`: `read-primary --legacy-ack-now` under its own name (read and ack in one call)."
+value = "drain-primary-legacy"
+
+[mesh_write.verb_reconcile]
+doc = "The reconcile verb: drain every worktree registered in this project's store once."
+value = "reconcile"
+
+[mesh_write.flag_tail]
+doc = "`inbox messages --tail N`: keep only the newest N rows."
+value = "tail"
+
+[mesh_write.flag_unread]
+doc = "`inbox messages --unread`: scope the history view to the rows after the read position."
+value = "unread"
+
+[mesh_write.since_kind_ts]
+doc = "The `kind` of a --since window given as a time."
+value = "ts"
+
+[mesh_write.since_kind_index]
+doc = "The `kind` of a --since window given as a per-partition message index."
+value = "index"
+
+[mesh_write.reason_bad_tail]
+doc = "The `reason` of an `inbox messages --tail` that is not a positive integer."
+value = "bad-tail"
+
+[mesh_write.msg_bad_tail]
+doc = "The error of an `inbox messages --tail` that is not a positive integer. Placeholder: {got} (JSON-quoted)."
+value = "--tail must be a positive integer (got {got})"
+
+[mesh_write.msg_bad_since]
+doc = "The error of an `inbox messages --since` that is neither an index nor a date. Placeholder: {got} (JSON-quoted)."
+value = "--since must be a non-negative integer (a per-partition message index, the same space `cursor` counts in) or an ISO 8601 date or timestamp such as 2026-10-23 or 2026-10-23T09:30:00Z (got {got})"
+
+[mesh_write.reason_tail_under_truncation]
+doc = "The `reason` of an `inbox messages --tail` refused because the per-source cap withheld rows."
+value = "tail-under-truncation"
+
+[mesh_write.msg_tail_under_truncation]
+doc = "The error of that refusal. Placeholders: {tail}, {limit}, {count}."
+value = "--tail {tail} cannot be honoured: this read was truncated by the {limit}-row per-source cap ({count} row(s) withheld)."
+
+[mesh_write.msg_tail_under_truncation_hint]
+doc = "The hint of that refusal. Placeholder: {limit}."
+value = "use `--since <index|ISO date>` to bound the read to recent mail before the cap applies (or raise --limit above {limit} so nothing is truncated). Nothing was acked; no mail was lost."
+
+[mesh_write.msg_messages_ack_warning]
+doc = "stderr line of `inbox messages <id> --ack` (it returns a read receipt, it does not ack). Placeholder: {id}."
+value = "[devswarm] inbox messages --ack no longer acks: it returns a read receipt — run the returned ackCommand (inbox ack-primary {id} --receipt <id>) after consuming the mail."
+
+[mesh_write.msg_messages_ack_as_owner_warning]
+doc = "stderr line of `inbox messages <id> --ack-as-owner` without --ack (a read does not ack). Placeholders: {idq} (JSON-quoted id), {id}."
+value = "[devswarm] inbox messages {idq} --ack-as-owner did NOT ack — `messages` is read-only. To ack on the owner's behalf run `inbox read-primary {id} --ack-as-owner`, then the `ackCommand` it returns (`inbox ack-primary {id} --receipt <rid> --ack-as-owner`)."
+
+[mesh_write.msg_unknown_inbox_sub]
+doc = "The error of an `inbox` subcommand the engine does not know. Placeholder: {sub} (JSON-quoted)."
+value = "unknown inbox subcommand: {sub} (read|ack|count|pull|messages|read-primary|ack-primary|peek-primary|drain-primary-legacy)"
+
+[mesh_write.reason_no_plugin_root]
+doc = "The `reason` of a reconcile run where the plugin root cannot be found."
+value = "no-plugin-root"
+
+[mesh_write.msg_reconcile_no_plugin_root]
+doc = "The error of that refusal."
+value = "reconcile cannot find the anti-hall plugin root (set AH_ENGINE_PLUGIN_ROOT or run it through the installed ah-hook)"
+
+[mesh_write.reason_reconcile_held]
+doc = "The `reason` of a reconcile whose project could not be answered now (an identity read was refused): nothing was drained."
+value = "reconcile-held"
+
+[mesh_write.retired_verbs]
+doc = "Verbs of the old Node CLI that moved, by verb word, with what to run instead. A verb word in this table is refused with `retired-verb` and the text naming its replacement; a word that is in neither this table nor the CLI is refused with `unsupported-verb`."
+value = { "prune-archived" = "`~/.anti-hall/ah-engine/bin/ah-engine devswarm plan-prune --older-than <days>` for the dry run (it lists the archived workspaces that qualify and returns a plan nonce), then, only on the owner's approval of that exact list, `~/.anti-hall/ah-engine/bin/ah-engine devswarm prune --confirm-ids <id,id,...> --plan <nonce>`" }
+
+[mesh_write.msg_retired_verb]
+doc = "Printed (stderr and stdout) for a retired verb. Nothing was done. Placeholders: {verb}, {use} (what to run instead)."
+value = "`{verb}` is not a mesh verb any more. Use {use}."
+
+[mesh_write.reason_retired_verb]
+doc = "The `reason` of a retired verb's refusal."
+value = "retired-verb"
+
+[mesh_write.msg_unsupported_verb]
+doc = "Printed for a verb form this CLI does not have. Nothing was done. Placeholder: {argv} (the leading words)."
+value = "`{argv}` is not a form of this CLI; `help --short` lists the verbs and `help <verb>` shows one verb's forms."
+
+[mesh_write.reason_unsupported_verb]
+doc = "The `reason` of that refusal."
+value = "unsupported-verb"
+
+[mesh_write.exit_unsupported]
+doc = "Exit code of a retired or unsupported verb form (a refusal, like the old CLI's unknown-command answer): nothing was done."
+value = 2
+min = 1
+max = 125
+
+[mesh_write.inbox_self_id_subs]
+doc = "The `inbox` subcommands that take a workspace id and read the calling session's own when none is given."
+value = ["count", "read", "ack", "pull", "tick", "messages", "read-primary", "ack-primary", "peek-primary", "drain-primary-legacy"]
+
+[mesh_write.msg_inbox_needs_id]
+doc = "The error of an `inbox` subcommand given no workspace id by a caller that has none of its own. Placeholder: {sub}."
+value = "inbox {sub} needs a workspace id: `inbox {sub} <id>`. Run from a DevSwarm workspace session it reads the session's own id (DEVSWARM_BUILDER_ID), or the id of the checkout it is run in; this caller has neither."

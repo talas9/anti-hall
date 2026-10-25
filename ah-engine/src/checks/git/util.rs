@@ -126,7 +126,12 @@ pub struct Settings {
 impl Settings {
     /// The environment of one request (D76): never the daemon's own.
     pub fn from_env(request_env: &crate::reqenv::RequestEnv) -> Settings {
-        let env: HashMap<String, String> = request_env.to_map();
+        let mut env: HashMap<String, String> = request_env.to_map();
+        // the request's sender, under a name the allowlist never forwards (a client cannot set it); host functions that
+        // walk the process ancestry start there
+        if let Some(pid) = request_env.peer_pid() {
+            env.insert(crate::defaults::text("request_env.peer_pid_key").to_string(), pid.to_string());
+        }
         let home = env.get(crate::defaults::env_name("home")).cloned().or_else(|| env.get(crate::defaults::env_name("home_alt")).cloned()).unwrap_or_default();
         Settings { home, env }
     }

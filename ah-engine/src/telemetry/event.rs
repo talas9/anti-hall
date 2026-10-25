@@ -83,6 +83,10 @@ pub enum Kind {
     Model,
     /// The agent tracker: a per-agent series sample, a raised signal, a reminder (sent or held back) or an outcome.
     Agent,
+    /// One acting-feature action (the DevSwarm action layer and the expansion features): h = feature, e = action.
+    Act,
+    /// A mistake signal: a later observation that an earlier action (`action_id`) should not have been taken.
+    Mistake,
 }
 
 impl Kind {
@@ -101,6 +105,8 @@ impl Kind {
             Kind::Daemon => "daemon",
             Kind::Model => "model",
             Kind::Agent => "agent",
+            Kind::Act => "act",
+            Kind::Mistake => "mistake",
         }
     }
 
@@ -119,6 +125,8 @@ impl Kind {
             "daemon" => Kind::Daemon,
             "model" => Kind::Model,
             "agent" => Kind::Agent,
+            "act" => Kind::Act,
+            "mistake" => Kind::Mistake,
             _ => return None,
         })
     }
@@ -266,7 +274,7 @@ impl fmt::Display for Token {
 /// replaced by `_`. `None` for empty input.
 pub fn sanitize_name(b: &[u8]) -> Option<String> {
     let cap = defaults::num("telemetry.token_max_len") as usize;
-    let b = &b[..b.len().min(cap)];
+    let b = b.get(..b.len().min(cap)).unwrap_or_default();
     if b.is_empty() {
         return None;
     }
@@ -308,6 +316,10 @@ pub struct Route {
 /// The result of a spawn: the model it actually ran on and what it used (D77).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spawn {
+    /// Observed background launch timestamp, retained when the completion repairs the row.
+    pub started_ms: Option<u64>,
+    /// Hashed session and child identity, when the host exposes one.
+    pub agent_key: Option<Token>,
     /// The key of the route event this spawn belongs to.
     pub spawn_key: Token,
     /// The model the agent ran on.
@@ -478,11 +490,11 @@ const FIXED: &[&str] = &["ts", "k", "h", "e", "o", "ms", "ib"];
 fn extra_fields(kind: Kind) -> Vec<&'static str> {
     let fixed: &[&'static str] = match kind {
         Kind::Route => &["requested_model", "parent_model", "task_class", "recommended_tier", "selected_model", "outcome", "spawn_key"],
-        Kind::Spawn => &["spawn_key", "actual_model", "in", "out", "cr", "cw"],
+        Kind::Spawn => &["started_ms", "agent_key", "spawn_key", "actual_model", "in", "out", "cr", "cw"],
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
-        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent => &[],
+        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => &[],
     };
     // the schema-driven kinds (and the detail of a Jev call) take their field names from the shipped `telemetry.fields`
     fixed.iter().copied().chain(schema(kind).into_iter().map(|(n, _)| n)).collect()
@@ -521,6 +533,12 @@ impl Event {
                 m.insert("spawn_key".into(), json!(r.spawn_key.as_str()));
             }
             Extras::Spawn(s) => {
+                if let Some(start) = s.started_ms {
+                    m.insert("started_ms".into(), json!(start));
+                }
+                if let Some(key) = &s.agent_key {
+                    m.insert("agent_key".into(), json!(key.as_str()));
+                }
                 m.insert("spawn_key".into(), json!(s.spawn_key.as_str()));
                 m.insert("actual_model".into(), json!(s.actual_model.as_str()));
                 m.insert("in".into(), json!(s.usage.input));
@@ -588,6 +606,8 @@ impl Event {
                 Extras::Route(Route { requested_model, parent_model, task_class, recommended_tier, selected_model, outcome, spawn_key: tok("spawn_key")? })
             }
             Kind::Spawn => Extras::Spawn(Spawn {
+                started_ms: m.get("started_ms").map(|v| v.as_u64().ok_or(TelemetryError::Field("started_ms"))).transpose()?,
+                agent_key: m.get("agent_key").map(|_| tok("agent_key")).transpose()?,
                 spawn_key: tok("spawn_key")?,
                 actual_model: tok("actual_model")?,
                 usage: Usage { input: num("in")?, output: num("out")?, cache_read: num("cr")?, cache_write: num("cw")? },
@@ -606,7 +626,7 @@ impl Event {
                 selected_model: tok("selected_model")?,
                 task_class: tok("task_class")?,
             }),
-            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent => Extras::Fields(Fields::read(kind, m)?),
+            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => Extras::Fields(Fields::read(kind, m)?),
             Kind::Hook | Kind::Check => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })
@@ -679,7 +699,16 @@ mod tests {
         assert_eq!(Event::from_json(&e.to_json()).unwrap(), e);
         let usage = Usage { input: 1, output: 2, cache_read: 3, cache_write: 4 };
         for (kind, ex) in [
-            (Kind::Spawn, Extras::Spawn(Spawn { spawn_key: Token::new("k1").unwrap(), actual_model: Token::new("haiku").unwrap(), usage })),
+            (
+                Kind::Spawn,
+                Extras::Spawn(Spawn {
+                    started_ms: None,
+                    agent_key: None,
+                    spawn_key: Token::new("k1").unwrap(),
+                    actual_model: Token::new("haiku").unwrap(),
+                    usage,
+                }),
+            ),
             (
                 Kind::Jev,
                 Extras::Jev(Jev {

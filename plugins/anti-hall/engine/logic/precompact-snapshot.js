@@ -1,8 +1,11 @@
 // check = "precompact-snapshot" (PreCompact). Right before a compaction, write a mechanical snapshot of the session's continuation
 // state to <repo>/.anti-hall/handovers/<date>/<session>/PRECOMPACT-<n>.md: git state, the task list read back from the transcript, the
 // last user messages verbatim, and the newest handover. It never blocks the compaction and prints nothing; on any error it just
-// writes no snapshot. A request that names its own time zone (TZ), a relative working directory or transcript path, a checkout the
-// host cannot read exactly or a sequence number too long to be exact defers to Node, before anything is written.
+// writes no snapshot. The home is Node's os.homedir() (hookProc.nodeHome: HOME unset adopts the passwd home); a relative transcript
+// path is opened from the absolute payload cwd. What the engine cannot reproduce exactly writes no
+// snapshot (counted, native_unable): no home, the real home under a test marker, no local date, a sequence number too long to be exact;
+// a relative HOME or working directory resolves against the stand-in directory and a checkout the resolver cannot classify is read as
+// the directory itself (counted).
 // Mirrors hooks/precompact-snapshot.js and hooks/lib/handover-find.js (lib/73-handover.js). Keys and texts: codex_handover.toml.
 'use strict';
 
@@ -123,20 +126,38 @@ function psBuild(c) {
   return L.join('\n');
 }
 
+// Node's os.homedir() for this call: false when there is none or it is the real home under a test marker (Node's own guard then writes nothing);
+// a relative HOME is resolved against the stand-in directory (counted).
+function psAdopt(p) {
+  var why = hookProc.adoptHome();
+  if (why === null) return true;
+  ah.unable('precompact-snapshot:' + why);
+  ah.log(ah.cfg('codex_handover.precompact_unsure_log_kind'), why);
+  if (why !== 'relative_home') return false;
+  var h = hookProc.home(p);
+  if (h === null) return false;
+  ah.useHome(h);
+  return true;
+}
+
 function decide(p) {
+  if (!psAdopt(p)) return 'allow';
   if (!ah.settings.bool('codex_handover.setting_precompact')) return 'allow';
   if (!psIsObj(p)) return 'allow';
   var present = function (k) { return p[k] !== undefined && p[k] !== null; };
   if (present('agent_id') || present('agent_type') || ah.settings.skipped(ah.cfg('codex_handover.precompact_guard'))) return 'allow';
   var cwd = typeof p.cwd === 'string' && p.cwd ? p.cwd : null;
   if (cwd === null) return 'allow';
-  if (spawn.osHome() === null || !ah.path.isAbsolute(cwd)) return 'defer';
+  if (!ah.path.isAbsolute(cwd)) { ah.unable('precompact-snapshot:relative_cwd'); cwd = hookProc.cwd(p); } // resolved against the stand-in directory
   var sessionId = ho.sanitize(p.session_id === undefined || p.session_id === null ? '' : p.session_id);
-  var repoRoot = ho.repoRoot(cwd), today = ho.localDate();
-  if (repoRoot === null || today === null) return 'defer';
+  // handover-find repoRoot(cwd) against the call's home (ah.home(): HOME, or the passwd home adopted above), as Node's realHome()
+  var ctx = ho.context(cwd), h = ah.home(), rh = ah.fs.realpath(h) || h;
+  if (ctx.unsure) { ah.unable('precompact-snapshot:repo_root'); ctx = { unsure: false, toplevel: null, root: null }; } // a checkout the host cannot classify is read as the directory itself
+  var repoRoot = ctx.toplevel && ctx.toplevel !== rh ? ctx.toplevel : cwd, today = ho.localDate();
+  if (today === null) { ah.unable('precompact-snapshot:local_date', 'abandoned'); return 'allow'; } // no local date, no snapshot path
   var root = ah.path.join(repoRoot, ah.cfg('codex_handover.handovers_dir'));
   var tp = typeof p.transcript_path === 'string' ? p.transcript_path : null;
-  if (tp !== null && tp !== '' && !ah.path.isAbsolute(tp)) return 'defer';
+  if (tp) tp = hookProc.open(p, tp);
   var lines = null;
   if (tp) {
     var size = ah.fs.size(tp), tail = size === null || size === 0 ? null : ah.fs.readTail(tp, ah.cfgNum('codex_handover.transcript_tail_bytes'));
@@ -146,7 +167,7 @@ function decide(p) {
   for (var i = 0; i < names.length; i++) {
     var m = ho.precompactRe.exec(names[i]);
     if (m) {
-      if (m[1].length > ah.cfgNum('codex_handover.seq_max_digits')) return 'defer';
+      if (m[1].length > ah.cfgNum('codex_handover.seq_max_digits')) { ah.unable('precompact-snapshot:seq_digits', 'abandoned'); return 'allow'; } // parseInt past 20 digits is implementation-defined: no new snapshot name
       n = Math.max(n, parseInt(m[1], 10) + 1);
     }
   }

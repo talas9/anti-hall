@@ -6,8 +6,12 @@ function ahNull(v) { return v === undefined ? null : v; }
 // Node turns a lone surrogate into U+FFFD when it encodes a string to UTF-8 (a hash, a file write); the host cannot take one.
 var ahWfRe = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 function ahWf(t) { return typeof t === 'string' ? t.replace(ahWfRe, '\ufffd') : t; }
+// Count a case this script could not model exactly (at `site`, a short stable name such as `task-tracker.state_unsure`): a stand-in (stand_in: the script went on with a stand-in value) or, with `kind` 'abandoned', a dropped decision (abandoned). The caller applies the native decision.
+function ahUnableCount(site, kind) { try { if (kind === undefined) ahHost.unable(site); else ahHost.unable(site, kind); } catch (e) { /* a lost count never changes a decision */ } }
 var ahCfgMemo = { gen: -1, map: new Map() };
 var ah = {
+  // Replaced before EVERY check call: authoritative dispatcher options, including --host. Never daemon-global state.
+  request: {},
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
   cfg: function (key) {
     var g = ahHost.cfgGen();
@@ -17,6 +21,9 @@ var ah = {
     return v;
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
+  unable: function (site, kind) { ahUnableCount(site, kind); },
+  // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
+  advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
     get: function (name) { return ahNull(ahHost.env(name)); },
@@ -69,6 +76,11 @@ var ah = {
   // change would defer the call, and the Node hook would apply the change again).
   commit: function () { ahHost.commit(); },
   home: function () { return ahHost.home(); },
+  // Mark a file under the write root (a stable launcher) executable; false when it is not a plain file there.
+  markExecutable: function (rel) { return ahHost.fileExec(rel) === true; },
+  // Make absolute directory `h` the home of the rest of this call (settings, skips and the scoped state reads and writes), as a Node
+  // hook whose os.homedir() falls back to the passwd home sees it. false (nothing changed) for a path that is not absolute.
+  useHome: function (h) { return ahHost.useHome(h); },
   pid: function () { return ahHost.pid(); },
   fnv: function (t) { return ahHost.fnv(t); },
   contentHash: function (parts) { return ahHost.contentHash(parts); },
@@ -144,7 +156,18 @@ var ah = {
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },
   // Milliseconds left of the request being answered (null outside a daemon). The Jev ask itself is in lib/60-b3.js.
-  jev: { deadlineLeftMs: function () { return ahNull(ahHost.deadlineLeftMs()); } },
+  jev: {
+    deadlineLeftMs: function () { return ahNull(ahHost.deadlineLeftMs()); },
+    // The shadow reviews due: [[id, wholeDays, decisions]] (the review state is updated as Node updates it), or null when the state cannot be worked on.
+    reviewDue: function (afterDays, minDecisions) { var r = ahHost.jevReviewDue(afterDays, minDecisions); return r === null || r === undefined ? null : JSON.parse(r); },
+    // Record that the review reminder named these integration ids.
+    reviewShown: function (ids) { ahHost.jevReviewShown(JSON.stringify(ids)); },
+    // The one-time legacy-key notice: {notice: string|null}, or {unsure: true} when only Node can say.
+    // The 7-day verdict scorecard {generatedAt, integrations: [{id, calls, suggestion, reason, mode}], transports} (the jev-report data), or null
+    // when it could not be built. Read-only.
+    weeklyScorecard: function () { var r = ahHost.jevWeeklyScorecard(); return r === null || r === undefined ? null : JSON.parse(r); },
+    keyNotice: function (jevOn, judgeOn, allowAnthropic) { return JSON.parse(ahHost.jevKeyNotice(!!jevOn, !!judgeOn, !!allowAnthropic)); },
+  },
   sys: {
     // {available: bytes|null, total: bytes} of this machine; available counts reclaimable cache.
     memory: function () { return JSON.parse(ahHost.memory()); },
@@ -174,12 +197,29 @@ var ah = {
     // The text evidence of the last windowBytes of a transcript: null (unreadable), {unsure: true}, or {truncated, items: [[kind, text, id?]]}
     // with kind p (a user prompt), r (a tool result), a (an attachment), i (a tool call's input), t (assistant text, with the message id).
     evidence: function (p, windowBytes) { var r = ahHost.transcriptEvidence(p, windowBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
+    // The engine walks the evidence of the last windowBytes (what `evidence` lists, merged and joined as a reply check needs) and keeps
+    // the two big texts: null (unreadable), {unsure: true}, {truncated, walked: false} (no reply and no payloadText), or
+    // {truncated, walked: true, lastText, toolsThisTurn, toolsAtEnd, evidenceChars, withLastChars} (lengths in UTF-16 units).
+    // payloadText (a string or null): replies it already holds (NFC, white space collapsed) are left out of the evidence, and a window
+    // with no reply still walks. The next two questions are about the walk this call made.
+    evidenceWalk: function (p, windowBytes, payloadText) { var r = ahHost.transcriptEvidenceWalk(p, windowBytes || 0, payloadText === undefined ? null : payloadText); return r === null || r === undefined ? null : JSON.parse(r); },
+    // `which` is 'evidence' or 'withLast' (the evidence and the last reply): is `needle` in that text (indexOf >= 0)?
+    walkHas: function (which, needle) { return ahHost.transcriptWalkHas(which, needle); },
+    // The same sorted array `ah.re.numbers(src, flags, text, strip)` gives on that text.
+    walkNumbers: function (which, src, flags, strip) { return JSON.parse(ahHost.transcriptWalkNumbers(which, src, flags || '', strip || '')); },
+    // The tool uses of the lines of the last windowBytes that hold one of `needles`, read in the engine (the tasklist guard's work count):
+    // null (unreadable) or, in order, ['u'] (a line only JavaScript reads exactly: stop, defer), ['n'] (a line that is JSON null: stop) and
+    // [timestamp (a string, else null), [[name, file_path|null, command|null]]] per entry with a string timestamp or a tool use
+    // (found through the `keys` of nested objects; a non-string name is ''). Blank and invalid lines are left out.
+    toolUseScan: function (p, windowBytes, needles, keys) { var r = ahHost.toolUseScan(p, windowBytes || 0, needles, keys); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
     teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
+    // Like `agents`, but only the default window (the Node `runningAgents`): no widening, and an empty window is an empty list.
+    agentsWindow: function (p) { return JSON.parse(ahHost.agentsWindow(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.
     tailLines: function (p, windowBytes, lineMax) { var r = ahHost.tailLines(p, windowBytes || 0, lineMax || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The newest maxLines lines parsed by the engine and cut down to the `keep` paths (lists of keys, '*' = every array element):

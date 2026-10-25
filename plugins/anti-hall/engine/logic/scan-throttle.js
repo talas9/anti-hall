@@ -1,87 +1,26 @@
 // check = "scan-throttle" (PreToolUse on Bash; advisory only). Recommends the background-throttled form of a user-configured
 // heavy scan command (the patterns come from the environment; with none set it matches nothing). It never rewrites the
-// command. A user pattern is a JavaScript regex; only a plain subset is matched here, any other construct defers to Node.
+// command. A user pattern is a JavaScript regex, compiled and matched by the script interpreter as Node does.
 // Mirrors hooks/scan-throttle.js. Every list, pattern, text and tool name is in engine/defaults/small_guards.toml
 // (scan_throttle.*).
 'use strict';
 
-function isAlnum(c) { return c !== undefined && /^[A-Za-z0-9]$/.test(c); }
-
-// The end index of a plain character class starting at `i` (just after the `[`), or -1.
-function plainClass(cs, i, lits, escapes) {
-  var start = i;
-  if (cs[i] === '^') i++;
-  var first = i, prevEsc = false;
-  while (i < cs.length) {
-    var c = cs[i];
-    if (c === ']') return i > first ? i : -1;
-    if (c === '\\') {
-      var e = cs[i + 1];
-      if (e === undefined || escapes.indexOf(e) < 0 || 'SDWbB'.indexOf(e) >= 0) return -1;
-      prevEsc = 'sdw'.indexOf(e) >= 0;
-      i += 2;
-      continue;
-    }
-    if (c === '-') {
-      var last = cs[i + 1] === ']';
-      var range = i > first && i > start && isAlnum(cs[i - 1]) && isAlnum(cs[i + 1]) && cs[i - 1] <= cs[i + 1];
-      if (prevEsc || !(i === first || last || range)) return -1;
-      if (range) { i += 2; prevEsc = false; continue; }
-    } else if (c === '&' || c === '~' || c === '[') return -1;
-    else if (!(lits.indexOf(c) >= 0 || '.$*+?()|'.indexOf(c) >= 0)) return -1;
-    prevEsc = false;
-    i++;
-  }
-  return -1;
-}
-
-// Whether a user pattern uses only constructs the engine matches itself.
-function patternIsPlain(src) {
-  var lits = ah.cfg('scan_throttle.pattern_literal_chars'), escapes = ah.cfg('scan_throttle.pattern_escapes');
-  var cs = Array.from(src), i = 0, depth = 0, atom = false, quant = false, lazyUsed = false;
-  while (i < cs.length) {
-    var c = cs[i];
-    if (quant && c === '?' && !lazyUsed) { lazyUsed = true; i++; continue; }
-    var wasQuant = quant;
-    quant = false; lazyUsed = false;
-    if (c === '*' || c === '+' || c === '?') {
-      if (!atom || wasQuant) return false;
-      quant = true; atom = false;
-    } else if (c === '.') atom = true;
-    else if (c === '|' || c === '^' || c === '$') atom = false;
-    else if (c === '(') {
-      if (cs[i + 1] === '?') { if (cs[i + 2] !== ':') return false; i += 2; }
-      depth++; atom = false;
-    } else if (c === ')') {
-      if (depth === 0) return false;
-      depth--; atom = true;
-    } else if (c === '\\') {
-      var e = cs[i + 1];
-      if (e === undefined || escapes.indexOf(e) < 0) return false;
-      atom = !(e === 'b' || e === 'B');
-      i++;
-    } else if (c === '[') {
-      var end = plainClass(cs, i + 1, lits, escapes);
-      if (end < 0) return false;
-      i = end; atom = true;
-    } else if (lits.indexOf(c) >= 0) atom = true;
-    else return false;
-    i++;
-  }
-  return depth === 0;
-}
-
-// The user patterns, or null when one is not plain.
+// The user patterns as JavaScript regular expressions, compiled by this interpreter exactly as the Node hook compiles them
+// (`new RegExp(src)`, no flags); an invalid one is skipped, as Node skips it.
 function userPatterns(envVal) {
-  var out = [], parts = (envVal === null ? '' : envVal).split(',');
-  for (var i = 0; i < parts.length; i++) {
-    var src = parts[i].trim();
-    if (src === '') continue;
-    if (!patternIsPlain(src)) return null;
-    try { ah.re.test(src, '', ''); } catch (e) { return null; }
-    out.push(src);
-  }
+  var out = [];
+  if (!envVal) return out;
+  envVal.split(',').map(function (x) { return x.trim(); }).filter(Boolean).forEach(function (src) {
+    try { out.push(new RegExp(src)); } catch (e) { /* skip invalid pattern */ }
+  });
   return out;
+}
+
+function segmentMatches(segment, patterns) {
+  for (var i = 0; i < patterns.length; i++) {
+    if (patterns[i].test(segment)) return true; // only a stack or time limit can throw here: that reaches the engine
+  }
+  return false;
 }
 
 // The command split into simple-command segments (quotes and heredoc bodies skipped).
@@ -157,7 +96,6 @@ function decide(p) {
   var command = ti !== null && typeof ti === 'object' && !Array.isArray(ti) && typeof ti.command === 'string' ? ti.command : '';
   if (command.trim() === '') return 'allow';
   var patterns = userPatterns(ah.env.get(ah.cfg('scan_throttle.patterns_env')));
-  if (patterns === null) return 'defer';
   if (patterns.length === 0) return 'allow';
   var pathVar = ah.env.get(ah.cfg('scan_throttle.path_var'));
   var prefix = throttlePrefix(pathVar === null ? '' : pathVar);
@@ -166,7 +104,7 @@ function decide(p) {
   if (ah.cfg('scan_throttle.known_prefixes').some(function (k) { return trimmed.indexOf(k) === 0; })) return 'allow';
   var segs = splitSegments(command), matchIndex = -1;
   for (var i = 0; i < segs.length && matchIndex < 0; i++) {
-    if (patterns.some(function (src) { return ah.re.test(src, '', segs[i]); })) matchIndex = i;
+    if (segmentMatches(segs[i], patterns)) matchIndex = i;
   }
   if (matchIndex < 0) return 'allow';
   var at = leadingAssignments(command), leading = command.slice(0, at), rest = command.slice(at);

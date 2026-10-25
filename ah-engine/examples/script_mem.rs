@@ -6,6 +6,9 @@ use ah_engine::reqenv::RequestEnv;
 use serde_json::json;
 use std::time::Instant;
 
+#[global_allocator]
+static ALLOC: ah_engine::memstat::Counting = ah_engine::memstat::Counting;
+
 fn main() {
     ah_engine::defaults::init().expect("defaults");
     let home = std::env::temp_dir().join(format!("ah-script-mem-{}", std::process::id()));
@@ -67,5 +70,39 @@ fn main() {
         let _ = ah_engine::script::run_forced(n, &json!({"hook_event_name": "Notification", "cwd": h}), &json!({}), "Notification", &env);
     }
     println!("{{\"warm_all_us\":{}}}", t.elapsed().as_micros());
+    // every check under the events it serves, on 4 worker threads (as the daemon runs), so the regexes a real session reaches are compiled
+    // and every worker holds its own interpreter and per-thread regex scratch
+    let base_live = ah_engine::memstat::heap().live;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(5));
+    let sizes: Vec<_> = (0..4)
+        .map(|_| {
+            let (names, h, barrier) = (names.clone(), h.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let env = RequestEnv::from_pairs([("HOME", h.as_str())]);
+                for ev in ["UserPromptSubmit", "Stop", "PostToolUse", "SessionStart", "SubagentStop", "PreToolUse"] {
+                    for n in &names {
+                        let p = json!({"hook_event_name": ev, "cwd": h, "session_id": "s1", "prompt": "please fix the bug and push", "last_assistant_message": "I think this probably works. Done.", "tool_name": "Bash", "tool_input": {"command": "git push --force origin main && rm -rf /tmp/x"}});
+                        let _ = ah_engine::script::run_forced(n, &p, &json!({}), ev, &env);
+                    }
+                }
+                let (_, qjs, ..) = ah_engine::script::pool_usage().unwrap();
+                barrier.wait(); // all four pools alive while the heap is read
+                barrier.wait();
+                qjs
+            })
+        })
+        .collect();
+    barrier.wait();
+    let live_growth = ah_engine::memstat::heap().live as i64 - base_live as i64;
+    barrier.wait();
+    let qjs_total: i64 = sizes.into_iter().map(|t| t.join().unwrap()).sum();
+    println!(
+        "{{\"heap_live_growth_kb\":{},\"quickjs_total_kb\":{},\"regex_real_kb\":{}}}",
+        live_growth / 1024,
+        qjs_total / 1024,
+        (live_growth - qjs_total) / 1024
+    );
+    let (patterns, est_bytes) = ah_engine::script::recache::usage();
+    println!("{{\"regex_patterns\":{patterns},\"regex_est_bytes\":{est_bytes}}}");
     std::fs::remove_dir_all(&home).ok();
 }

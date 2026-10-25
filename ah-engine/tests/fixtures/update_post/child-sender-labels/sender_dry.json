@@ -1,0 +1,34 @@
+{
+  "answer": {
+    "aliased": 0,
+    "attempted": true,
+    "detail": "child-sender-labels: dry run, would repair 1 of 1 child label(s)",
+    "errors": 0,
+    "forwarded": 0,
+    "labels": 1,
+    "retired": 0
+  },
+  "files": {
+    ".anti-hall/": "755",
+    ".anti-hall/devswarm/": "755"
+  },
+  "stores": {
+    "proj-a1b2c3": {
+      "cursors": [],
+      "messages": [
+        {
+          "hash": "c1",
+          "workspace_id": "kid-2"
+        }
+      ],
+      "reader_cursors": [],
+      "registry": [
+        {
+          "id": "kid-2",
+          "session_id": null,
+          "worktree_path": "{REPO}-child"
+        }
+      ]
+    }
+  }
+}

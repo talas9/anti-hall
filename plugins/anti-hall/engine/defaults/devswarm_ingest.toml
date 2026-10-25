@@ -1,23 +1,22 @@
-# ah-engine shipped defaults for the native ingest drain (lane l7b, `src/dssup/ingest`): what the Node ingest daemon
-# (companion/devswarm-ingest.js, one launchd / systemd unit per project) does - the single-consumer drain of `hivecontrol workspace
+# ah-engine shipped defaults for the native ingest drain (lane l7b, `src/dssup/ingest`): what the old Node ingest daemon
+# (one launchd / systemd unit per project) did - the single-consumer drain of `hivecontrol workspace
 # monitor` into the per-repo store - taken over by the engine so those units can be uninstalled. Format: see the header of
 # engine.toml. Every key can be overridden in the `devswarm_ingest` section of settings.json. Nothing here is compiled into the binary.
 #
-# THE SWITCH: `devswarm_ingest.mode`. `witness` (the default) leaves the drain to the Node daemons and the engine starts nothing.
-# `engine` makes the engine's daemon run one drain per project. While a Node daemon still holds a project's lock the engine waits for
+# THE SWITCH: `devswarm_ingest.mode`. `engine` (the default) makes the engine's daemon run one drain per project. While a Node daemon still holds a project's lock the engine waits for
 # it (a live holder's lock is never taken over, so a destructive queue is never read by two consumers) and takes over as soon as the
 # holder is gone. The go-live steps are in docs/AH-ENGINE.md, "DevSwarm supervisor and ingest cutover".
 
 [devswarm_ingest.mode]
-doc = "Who drains the DevSwarm native queue: witness (the Node ingest daemons do; the engine starts nothing) | engine (the engine's daemon runs one drain per project). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit."
-value = "witness"
+doc = "Who drains the DevSwarm native queue: engine (the default: the engine's daemon runs one drain per project; a live Node daemon holding a project's lock is waited for, never taken over) | witness (the Node ingest daemons do; the engine starts nothing). Anything else reads as witness, so a typo never starts a second consumer. The engine never edits any settings file or any launchd / systemd unit."
+value = "engine"
 
 [devswarm_ingest.mode_words]
 doc = "The words of devswarm_ingest.mode, in the order witness, engine."
 value = ["witness", "engine"]
 
 [devswarm_ingest.projects]
-doc = "Extra projects to drain, as paths of a git repository separated by the character in projects_separator (any worktree of it will do). Projects with a fresh Node ingest heartbeat and the ones an earlier run remembered are drained too."
+doc = "Extra projects to drain, as paths of a git repository separated by the character in projects_separator (any worktree of it will do). Projects of registered DevSwarm workspaces, projects with a fresh Node ingest heartbeat and the ones an earlier run remembered are drained too (those three only when they qualify, see require_registered)."
 value = ""
 
 [devswarm_ingest.projects_separator]
@@ -27,6 +26,28 @@ value = ":"
 [devswarm_ingest.remembered]
 doc = "The projects the engine has drained or found, a JSON list of paths, in the engine state directory. Nothing is ever removed from it."
 value = "devswarm-ingest-projects.json"
+
+[devswarm_ingest.require_registered]
+doc = "Drain only projects that DevSwarm registered: a project qualifies when a workspace descriptor (devswarm/workspaces/*.json) carries its repo key. A scratch clone, a plugin checkout or any other git directory an agent happened to work in never qualifies. Paths in devswarm_ingest.projects always qualify. The registered workspaces' worktrees are also a discovery source, so a new project is drained by the engine without a Node ingest unit."
+value = true
+
+[devswarm_ingest.owner_file]
+doc = "The ownership marker the engine writes in the DevSwarm state directory (devswarm/<this>): {owner, pid, ts, validForMs}. owner is a word of devswarm_ingest.mode_words. The Node ingest installer, the ah-engine mesh self-heal, doctor --repair and the update heal read it and install or heal no Node ingest unit while owner is engine and ts is younger than validForMs."
+value = "ingest-owner.json"
+
+[devswarm_ingest.owner_refresh_ms]
+doc = "How often the engine rewrites the ownership marker while it owns the drain."
+value = 60000
+min = 1000
+max = 86400000
+unit = "ms"
+
+[devswarm_ingest.owner_valid_ms]
+doc = "How long the ownership marker stays valid after its last write (written into the marker as validForMs). It spans engine restarts, so a restart window never lets Node reinstall a retired unit; an engine that is gone for longer hands installs back to Node."
+value = 3600000
+min = 60000
+max = 604800000
+unit = "ms"
 
 [devswarm_ingest.discover_ms]
 doc = "How often the engine looks for projects it does not drain yet."
@@ -49,8 +70,8 @@ doc = "The -t of every monitor call: it long-polls at most this long, then exits
 value = { type = "number", section = "devswarm", key = "monitorTimeoutSec", env = "ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC", default = 30 }
 
 [devswarm_ingest.interval_sec]
-doc = "The -i of every monitor call, and the least time between two calls after a successful one (Node: DEFAULT_MONITOR_INTERVAL_SEC)."
-value = 3
+doc = "The -i of every monitor call, and the least time between two calls after a successful one (Node: DEFAULT_MONITOR_INTERVAL_SEC was 3). Each call is a Node process of the DevSwarm CLI whose CPU (about 70 ms) is its start-up, not its polling, so the pause is what bounds the cost: 30 s halves the calls per minute, and a native message waits at most this long longer (the native queue is the discouraged channel; the mesh is not affected)."
+value = 30
 min = 1
 max = 3600
 unit = "s"
@@ -226,11 +247,29 @@ max = 600000
 unit = "ms"
 
 [devswarm_ingest.stop_poll_ms]
-doc = "How often a waiting drain checks whether it must stop."
+doc = "How often the manager checks whether a worker it asked to stop has finished (the joins of a lowered cap and of a shutdown). The naps of an ingest thread that only waits are devswarm_ingest.idle_poll_ms."
 value = 200
 min = 10
 max = 10000
 unit = "ms"
+
+[devswarm_ingest.worker_idle_wait_ms]
+doc = "How long an idle drain worker blocks on the job queue before it looks at its own stop flag again. A job, a stop message or the queue closing wakes it at once; but a stop message goes to whichever idle worker takes it first, so the worker that was told to retire (a lowered cap) can only learn it by this timeout. Longer means fewer idle wake-ups and a slower retirement."
+value = 1000
+min = 100
+max = 600000
+unit = "ms"
+
+[devswarm_ingest.idle_poll_ms]
+doc = "How often an ingest thread that is only waiting (the manager between two discoveries, a drain between two monitor calls, a drain waiting for a Node holder's lock) looks at its stop flag: its sleep is split into naps this long. Every nap is a wake-up of an otherwise idle thread, so a shorter value costs idle CPU for every project; it is also the longest a waiting drain takes to notice a stop. A drain that is working checks the flag between steps (devswarm_ingest.stop_poll_ms is the poll of the stop-side joins)."
+value = 1000
+min = 10
+max = 10000
+unit = "ms"
+
+[devswarm_ingest.worker_thread_name]
+doc = "The name of a drain worker thread (what `status --threads` and a stack sample call it)."
+value = "ah-ingest-worker"
 
 [devswarm_ingest.beat_every_ms]
 doc = "While the drain waits, how often it re-stamps its lock and heartbeat (consumers judge a daemon dead after 3 minutes)."
@@ -253,10 +292,6 @@ value = "ingest-"
 [devswarm_ingest.json_suffix]
 doc = "The suffix of a JSON file."
 value = ".json"
-
-[devswarm_ingest.ndjson_suffix]
-doc = "The suffix of an NDJSON file."
-value = ".ndjson"
 
 [devswarm_ingest.log_file]
 doc = "The ingest log, relative to the home directory (the file the Node daemon's unit writes its output to); one `[ISO time] line` each."
@@ -394,6 +429,22 @@ value = ["fromBranch", "toBranch", "message", "status", "createdAt"]
 doc = "The start of a native message's dedupe hash."
 value = "native:"
 
+[devswarm_ingest.from_branch_key]
+doc = "The message field that names the branch it was sent from."
+value = "fromBranch"
+
+[devswarm_ingest.branch_dir_from]
+doc = "The character of a native message's branch name that DevSwarm turns into `branch_dir_to` in the workspace's checkout directory name (`fix/foo` is checked out as `fix-foo`)."
+value = "/"
+
+[devswarm_ingest.branch_dir_to]
+doc = "What `branch_dir_from` becomes in a checkout directory name."
+value = "-"
+
+[devswarm_ingest.done_body_prefix]
+doc = "The start of an auto done notice body (`DONE: <branch> ...`); the word after it names the sender's branch, for rows written before the ingest stamped a sender."
+value = "DONE:"
+
 [devswarm_ingest.created_key]
 doc = "The message field that holds its creation time."
 value = "createdAt"
@@ -412,48 +463,9 @@ value = "[object Object]"
 # the live store.
 
 
-[devswarm_ingest.witness_every_ms]
-doc = "Least time between two witness comparisons of one project."
-value = 21600000
-min = 1000
-max = 31536000000
-unit = "ms"
-
-[devswarm_ingest.witness_max_bytes]
-doc = "The mirror of one project stops growing at this size until a comparison consumes it."
-value = 8388608
-min = 1024
-max = 1073741824
-
-[devswarm_ingest.witness_timeout_ms]
-doc = "Bound of one witness run. The drain of that project waits while it runs (messages queue up natively, nothing is lost), so it stays far under the three minutes after which a daemon's heartbeat reads stale."
-value = 60000
-min = 1000
-max = 900000
-unit = "ms"
-
-[devswarm_ingest.witness_prefix]
-doc = "The start of a project's mirror file name, under the witness directory (devswarm_sup.witness_dir)."
-value = "ingest-"
-
-[devswarm_ingest.witness_scratch]
-doc = "The start of the scratch HOME's name for one comparison."
-value = "ingest-scratch-"
-
-[devswarm_ingest.witness_file]
-doc = "The witness log, one JSON line per comparison, relative to the home directory."
-value = ".anti-hall/logs/devswarm-ingest-witness.ndjson"
-
 [devswarm_ingest.status_scratch]
 doc = "The start of the temporary directory the read-only status verb uses so it remembers nothing."
 value = "ah-ingest-status-"
-
-[devswarm_ingest.witness_snippet]
-doc = "What Node runs for the witness: ingestPayload over each mirrored batch against a scratch store, printing per batch {total, lossy, rows: [{hash, ts, body}]}. Arguments: the plugin root, the scratch HOME, the Primary's id, the repo key, the mirror file, the worktree."
-value = 'const fs=require("fs");process.env.HOME=process.argv[2];const root=process.argv[1],h=process.argv[2],ws=process.argv[3],key=process.argv[4],mp=process.argv[5],wt=process.argv[6];const I=require(root+"/companion/devswarm-ingest.js");const store=require(root+"/companion/lib/devswarm-store.js");const s=store.openStore({home:h,workspaceId:ws,hash:key,backend:"sqlite"});s.upsertRegistry({id:ws,worktreePath:wt,sessionId:ws,inboxPath:null,cursorPath:null,nudgeCommand:null});const out=[];for(const line of fs.readFileSync(mp,"utf8").split("\n")){if(!line)continue;let l;try{l=JSON.parse(line)}catch(e){continue}const rows=I.normalizeMonitorPayload(l.raw).map((m)=>{const t=Date.parse(m.createdAt);return{hash:I.messageHash(ws,m),ts:Number.isFinite(t)?t:l.now,body:m.message!=null?String(m.message):I.stableJson(m)}});const r=I.ingestPayload(s,l.raw,{workspaceId:ws,home:h,now:l.now});out.push({total:r.total,lossy:r.lossy,rows})}console.log(JSON.stringify(out))'
-
-# ---- log lines -------------------------------------------------------------------------------------------------------------
-
 
 [devswarm_ingest.msg_refused_prefix]
 doc = "The start of the log line when a drain does not start."
@@ -482,6 +494,38 @@ value = "WARN: configured hivecontrol binary is not a readable file: {bin} (sour
 [devswarm_ingest.msg_lock_lost]
 doc = "The log line when the project's lock was found taken by another consumer."
 value = "ingest drain stopping: the lock was reclaimed by another consumer (lost heartbeat)"
+
+[devswarm_ingest.msg_stopped]
+doc = "The log line when a drain that held its project's lock ends. {worktree} {why} {n} (monitor calls of this run)."
+value = "ingest drain stopped (engine), worktree={worktree}, reason={why}, iterations={n}"
+
+[devswarm_ingest.reason_lock_lost]
+doc = "The reason of msg_stopped when the project's lock was lost."
+value = "lock lost"
+
+[devswarm_ingest.reason_stop_requested]
+doc = "The reason of msg_stopped when the manager or the daemon asked the drain to stop (the manager logs why in msg_stop_requested)."
+value = "stop requested"
+
+[devswarm_ingest.msg_stop_requested]
+doc = "The log line when the manager stops a drain that holds its project's lock. {key} (repo key) {why}."
+value = "ingest drain stop requested (engine), project={key}, reason={why}"
+
+[devswarm_ingest.reason_idle]
+doc = "The reason of msg_stop_requested when no fresh heartbeat or setting has named the project for mem.devswarm_ingest_idle_ttl_ms."
+value = "idle (no fresh heartbeat or setting names the project)"
+
+[devswarm_ingest.reason_over_cap]
+doc = "The reason of msg_stop_requested when mem.devswarm_ingest_max_threads was lowered below the drains running."
+value = "over the drain thread cap (mem.devswarm_ingest_max_threads was lowered)"
+
+[devswarm_ingest.reason_shutdown]
+doc = "The reason of msg_stop_requested when the daemon stops."
+value = "daemon shutdown"
+
+[devswarm_ingest.msg_slots_short]
+doc = "Logged when the set changes: projects no other consumer holds wait for a drain slot because every slot is draining (a draining project is never stopped to make room). {n} {slots} {projects}."
+value = "WARN: {n} project(s) wait for an ingest drain slot, all {slots} slots are draining: {projects}; raise mem.devswarm_ingest_max_threads"
 
 [devswarm_ingest.msg_hb_transient]
 doc = "Logged once when re-stamping the lock failed for a reason that is not loss."
@@ -582,3 +626,40 @@ value = "monitor spawn failing with a CONFIGURATION error ({code}): {error} - {n
 [devswarm_ingest.msg_log_recovered]
 doc = "The log line when the monitor works again after configuration failures. {n}."
 value = "monitor spawn recovered after {n} consecutive configuration failure(s)"
+
+[devswarm_ingest.drop_reason_defer]
+doc = "The drop reason when the identity resolver cannot tell the project's repository without git (detail: the deferral code, e.g. git-superproject)."
+value = "identity-deferred"
+
+[devswarm_ingest.drop_reason_non_git]
+doc = "The drop reason for a path that is not in a git repository or no longer exists (detail: the kind the resolver reported)."
+value = "not-a-repository"
+
+[devswarm_ingest.drop_reason_no_main]
+doc = "The drop reason when the repository's main worktree is not an existing directory (detail: that path)."
+value = "main-worktree-missing"
+
+[devswarm_ingest.drop_reason_no_key]
+doc = "The drop reason when the resolver gave no repo key."
+value = "no-repo-key"
+
+[devswarm_ingest.drop_reason_primary_id]
+doc = "The drop reason when the Primary's workspace id could not be derived (detail: the resolver's code)."
+value = "primary-id-error"
+
+[devswarm_ingest.drop_reason_unregistered]
+doc = "The drop reason for a project no workspace descriptor names while devswarm_ingest.require_registered is on (detail: its repo key)."
+value = "not-registered"
+
+[devswarm_ingest.msg_project_dropped]
+doc = "The log line when a path found as a project is not drained, written once per (path, reason). {path} {reason} {detail}."
+value = "ingest project skipped: path={path}, reason={reason}, detail={detail}"
+
+[devswarm_ingest.drop_log_max_paths]
+doc = "Most paths whose last drop reason is remembered (the once-per-reason memory); past it the memory starts over, which can repeat a line."
+value = 1024
+min = 1
+
+[metric.ingest_drops]
+doc = "Paths found as ingest projects that were not drained, counted when the reason is first seen or changes, by reason."
+value = { kind = "counter", unit = "paths", labels = ["reason"] }

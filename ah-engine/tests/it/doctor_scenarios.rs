@@ -1,7 +1,7 @@
 //! `ah-engine doctor` against every documented failure scenario, each simulated in a scratch HOME:
 //! stub and fixture binaries (a wrong-OS or wrong-architecture header, a quarantined file), fake sockets and lock holders,
 //! read-only and unowned directories, a scratch copy of the plugin with its files broken, stub `node`/`git` programs on a
-//! restricted PATH. The shell doctor (`ah-hook.sh --doctor`) runs on the same fixtures and must say the same thing for every
+//! restricted PATH. The thin client's built-in doctor (`ah-hook doctor --builtin`) runs on the same fixtures and must say the same thing for every
 //! check both make. Nothing here touches the real HOME.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 use std::fs;
@@ -131,10 +131,12 @@ impl Sc {
         copy_dir(&real.join(".claude-plugin"), &p.join(".claude-plugin"));
         copy_dir(&real.join("statusline"), &p.join("statusline"));
         // the libraries the DevSwarm hook self-tests run through: read-only links to the real ones (a test that edits one copies it first)
-        for dir in ["companion", "scripts", "skills", "agents", "assets", "monitors", "docs"] {
+        for dir in ["scripts", "skills", "agents", "assets", "monitors", "docs"] {
             symlink(real.join(dir), p.join(dir)).unwrap();
         }
         copy_dir(&real.join("codex/hooks"), &p.join("codex/hooks"));
+        // the Node tree sits beside the plugin (`nodeback.node_dir`); a copy, because tests remove and rewrite files in it
+        copy_dir(&real.join("../anti-hall-node"), &self.root.join("anti-hall-node"));
         self.plugin = p;
         self.write_lock("0.1.0", &self.triples());
         // the real `claude doctor` is not run from a test: the PATH has only the tools the doctor needs
@@ -250,14 +252,29 @@ impl Sc {
         Out { code: o.status.code().unwrap_or(-1), text: String::from_utf8_lossy(&o.stdout).into_owned(), err: String::from_utf8_lossy(&o.stderr).into_owned() }
     }
 
-    /// The shell doctor of the same plugin.
+    /// The built-in doctor of the thin client, on the same plugin.
     fn shell(&self) -> Out {
-        let mut c = Command::new("sh");
-        c.arg(self.plugin.join("hooks/ah-hook.sh")).arg("--doctor");
+        let mut c = builtin_doctor(&self.plugin);
         self.env(&mut c);
         c.env("AH_WRAPPER_TEST", "1");
         self.finish(c)
     }
+}
+
+/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): AH_HOOK_BIN, else the release or debug
+/// build of `ah-launcher` in this checkout.
+fn builtin_doctor(plugin: &Path) -> Command {
+    let bin = std::env::var_os("AH_HOOK_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+            ["release", "debug"].iter().map(|b| root.join(b).join("ah-hook")).find(|p| p.is_file())
+        })
+        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN");
+    let mut c = Command::new(bin);
+    c.arg("--plugin-root").arg(plugin).arg("doctor").arg("--builtin").env("AH_WRAPPER_TEST", "1");
+    c
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -315,8 +332,9 @@ fn bin_01_missing() {
     let mut sc = Sc::new();
     sc.own_plugin();
     let d = sc.doctor(&[]);
-    d.has("warn", &["engine binary not installed at", "bin/ah-engine", "- Fix: sh", "ah-engine-bootstrap.sh -v"]);
-    assert_eq!(d.code, 0, "a missing installed engine is a warning, the Node hooks still work\n{}", d.text);
+    d.has("warn", &["engine binary not installed at", "bin/ah-engine", "- Fix: sh", "install.sh --download -v"]);
+    d.has("bad", &["no working engine: the anti-hall hooks do not run"]);
+    assert_eq!(d.code, 1, "Node is no fallback: a missing installed engine is a failure\n{}", d.text);
 }
 
 #[test]
@@ -575,6 +593,44 @@ fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
 }
 
+fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only probes whether the pid exists and is visible to this user.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+}
+
+fn wait_for<F: FnMut() -> bool>(label: &str, timeout: std::time::Duration, mut f: F) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if f() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("timed out waiting for {label}");
+}
+
+fn fast_orphan_checks(sc: &Sc) {
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = sc.plugin.join(dir).join("engine.toml");
+        let mut text = fs::read_to_string(&f).unwrap();
+        let at = text.find("[daemon.orphan_check_ms]").unwrap();
+        let rel = text[at..].find("value = 2000").unwrap();
+        text.replace_range(at + rel..at + rel + "value = 2000".len(), "value = 100");
+        fs::write(&f, text).unwrap();
+    }
+}
+
+fn spawn_scratch_serve(sc: &Sc) -> std::process::Child {
+    let mut c = Command::new(BIN);
+    c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    sc.env(&mut c);
+    c.spawn().unwrap()
+}
+
+fn wait_ping(sock: &Path) {
+    wait_for("daemon ping", std::time::Duration::from_secs(10), || ah_engine::client::ping(sock).is_some());
+}
+
 #[test]
 fn dmn_02_down_and_dmn_01_up() {
     let mut sc = Sc::new();
@@ -605,6 +661,49 @@ fn dmn_02_down_and_dmn_01_up() {
 }
 
 #[test]
+fn dmn_11_scratch_daemon_exits_when_parent_dies() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    fast_orphan_checks(&sc);
+    let pidfile = sc.root.join("serve.pid");
+    let mut parent = Command::new("sh");
+    parent
+        .arg("-c")
+        .arg(format!("{} serve >/dev/null 2>&1 & echo $! > {}; wait", BIN, pidfile.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    sc.env(&mut parent);
+    let mut parent = parent.spawn().unwrap();
+    wait_for("serve pid file", std::time::Duration::from_secs(5), || pidfile.is_file());
+    let pid: u32 = fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+    let sock = ah_engine::paths::socket_in(&sc.state());
+    wait_ping(&sock);
+    parent.kill().unwrap();
+    parent.wait().ok();
+    wait_for("daemon to exit after parent death", std::time::Duration::from_secs(6), || !pid_alive(pid));
+    if pid_alive(pid) {
+        // SAFETY: the pid came from the scratch daemon this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+}
+
+#[test]
+fn dmn_12_scratch_daemon_exits_when_socket_is_removed_and_doctor_lists_it() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    fast_orphan_checks(&sc);
+    let sock = ah_engine::paths::socket_in(&sc.state());
+    let mut child = spawn_scratch_serve(&sc);
+    wait_ping(&sock);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["non-live ah-engine serve process", &child.id().to_string(), &sock.display().to_string()]);
+    fs::remove_file(&sock).unwrap();
+    wait_for("daemon to exit after socket removal", std::time::Duration::from_secs(6), || child.try_wait().unwrap().is_some());
+    crate::common::stop_child(&sock, &mut child);
+}
+
+#[test]
 fn dmn_03_hung_daemon_holds_the_lock_and_never_answers() {
     let mut sc = Sc::new();
     sc.own_plugin();
@@ -618,6 +717,7 @@ fn dmn_03_hung_daemon_holds_the_lock_and_never_answers() {
 fn dmn_04_stale_socket_and_dmn_05_not_a_socket() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let state = sc.state();
     fs::create_dir_all(&state).unwrap();
     let sock = ah_engine::paths::socket_in(&state);
@@ -664,6 +764,7 @@ fn dmn_06_07_stale_pid_files() {
 fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let state = sc.state();
     fs::create_dir_all(&state).unwrap();
     fs::write(state.join("crashloop.until"), (now_ms() + 60_000).to_string()).unwrap();
@@ -688,6 +789,16 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     // an expired cooldown is not reported
     fs::write(state.join("breaker.until"), (now_ms() - 1000).to_string()).unwrap();
     sc.doctor(&[]).lacks("circuit breaker");
+}
+
+#[test]
+fn dmn_12_doctor_reports_last_crash_breadcrumb() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let state = sc.state();
+    fs::create_dir_all(&state).unwrap();
+    fs::write(state.join("last-crash.json"), r#"{"kind":"crash","code":"unknown","breadcrumb":{"request":"D","event":"Stop","check":"task-guard"}}"#).unwrap();
+    sc.doctor(&[]).has("warn", &["last crash:", "\"request\":\"D\"", "\"event\":\"Stop\"", "\"check\":\"task-guard\""]);
 }
 
 /// A process that looks like an engine daemon to the pid check (`<name> serve` on its command line).
@@ -733,7 +844,7 @@ fn st_01_missing_is_created_by_the_repair_and_a_second_run_finds_nothing() {
     sc.shell().has("info", &["does not exist yet; it is created on first use"]);
     let d = sc.doctor(&[]);
     d.has("info", &["does not exist yet; it is created on first use"]);
-    assert_eq!(d.code, 0);
+    assert_eq!(d.code, 1, "no installed engine (a stub would create the state directory): the one failure is no working engine");
 
     let dry = sc.doctor_raw(&["--dry-run"]);
     dry.has("info", &["state-dir-create", "would have created the private state directory"]);
@@ -803,6 +914,7 @@ fn st_03_read_only_state_directory() {
 fn st_04_disk_nearly_full_by_the_plugins_threshold() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     fs::create_dir_all(sc.state()).unwrap();
     fs::set_permissions(sc.state(), fs::Permissions::from_mode(0o700)).unwrap();
     // the limit is a plugin setting: raise it above any disk and the volume counts as nearly full
@@ -875,6 +987,7 @@ fn cf_01_healthy_configuration() {
 fn cf_02_a_broken_edit_falls_back_to_the_pristine_copy() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let f = sc.plugin.join("engine/defaults/limits.toml");
     let mut text = fs::read_to_string(&f).unwrap();
     text.push_str("\n[[[ this is not toml\n");
@@ -916,9 +1029,10 @@ fn cf_04_pristine_copy_missing() {
 fn cf_05_unknown_settings_are_reported_not_failed() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     let f = sc.plugin.join("engine/defaults/doctor.toml");
     let mut text = fs::read_to_string(&f).unwrap();
-    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo\"\nvalue = 1\n");
+    text.push_str("\n[doctor.not_a_real_key]\ndoc = \"a typo.\"\nvalue = 1\n");
     fs::write(&f, text).unwrap();
     let d = sc.doctor(&[]);
     d.has("info", &["doctor.toml: unknown setting(s) doctor.not_a_real_key", "a typo?"]);
@@ -929,6 +1043,7 @@ fn cf_05_unknown_settings_are_reported_not_failed() {
 fn cf_06_07_the_users_own_config_and_settings_files() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     fs::create_dir_all(sc.state()).unwrap();
     fs::set_permissions(sc.state(), fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(sc.state().join("config.toml"), "[daemon\nworkers = ").unwrap();
@@ -940,9 +1055,13 @@ fn cf_06_07_the_users_own_config_and_settings_files() {
 }
 
 #[test]
-fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_shell_doctor() {
+fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_thin_clients_builtin_doctor() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    // the installed thin client is what the engine hands over to
+    let client = sc.home.join(ah_engine::bootstrap::CLIENT_REL);
+    fs::create_dir_all(client.parent().unwrap()).unwrap();
+    fs::copy(crate::common::launcher_bin(), &client).unwrap();
     fs::remove_dir_all(sc.plugin.join("engine/defaults.pristine")).unwrap();
     fs::write(sc.plugin.join("engine/defaults/index.toml"), "[[[ garbage").unwrap();
     let mut c = Command::new(BIN);
@@ -951,7 +1070,9 @@ fn cf_08_defaults_cannot_load_at_all_hands_over_to_the_shell_doctor() {
     let d = sc.finish(c);
     assert_eq!(d.code, 1, "{}\n{}", d.text, d.err);
     assert!(d.err.contains("defaults unavailable"), "the engine says why on stderr: {}", d.err);
-    d.has("bad", &["engine defaults cannot be loaded:", "hooks use the Node fallback"]);
+    // the thin client's built-in diagnosis answered (it needs neither the engine nor its defaults)
+    d.has("bad", &["no working engine"]);
+    assert!(d.text.contains("Hooks wiring"), "{}", d.text);
     assert!(d.text.contains("anti-hall doctor v"), "{}", d.text);
     assert!(!sc.state().join("defaults.error").exists(), "the doctor wrote nothing");
     // with no plugin root at all there is nobody to hand over to: a plain failure
@@ -1064,6 +1185,7 @@ fn pl_06_registry_and_session_versions_differ() {
 fn pl_09_registry_or_settings_not_json() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     sc.put(".claude/plugins/installed_plugins.json", b"{ nope");
     sc.put(".claude/settings.json", b"also nope");
     let d = sc.doctor(&[]);
@@ -1080,7 +1202,7 @@ fn hk_01_hooks_json_not_the_thin_form() {
     sc.own_plugin();
     sc.doctor(&[]).has("ok", &["hooks/hooks.json is the thin form"]);
     let f = sc.plugin.join("hooks/hooks.json");
-    let text = fs::read_to_string(&f).unwrap().replace("ah-hook.sh\\\" PreToolUse", "git-guard.js\\\" PreToolUse");
+    let text = fs::read_to_string(&f).unwrap().replace("hooks/install.sh\\\" PreToolUse", "hooks/git-guard.js\\\" PreToolUse");
     fs::write(&f, text).unwrap();
     let d = sc.doctor(&[]);
     d.has("bad", &["hooks/hooks.json is not the thin form: 1 event(s) differ", "PreToolUse", "ah-engine gen-hooks --host claude"]);
@@ -1094,46 +1216,105 @@ fn hk_01_hooks_json_not_the_thin_form() {
 }
 
 #[test]
-fn hk_02_03_hooks_json_missing_or_broken_and_wrapper_missing() {
+fn hk_02_03_hooks_json_missing_or_broken_and_installer_missing() {
     let mut sc = Sc::new();
     sc.own_plugin();
     fs::write(sc.plugin.join("hooks/hooks.json"), "{ nope").unwrap();
     sc.doctor(&[]).has("bad", &["hooks.json"]);
     fs::remove_file(sc.plugin.join("hooks/hooks.json")).unwrap();
     sc.doctor(&[]).has("bad", &["hooks/hooks.json is missing", "reinstall the plugin"]);
-    fs::remove_file(sc.plugin.join("hooks/ah-hook.sh")).unwrap();
-    sc.doctor(&[]).has("bad", &["ah-hook.sh is missing; every hook command fails"]);
+    fs::remove_file(sc.plugin.join("hooks/install.sh")).unwrap();
+    sc.doctor(&[]).has("bad", &["install.sh is missing; the hook commands cannot install the thin client"]);
 }
 
 // ---- ND / EV: Node, tools, HOME, PATH -------------------------------------------------------------------------------------------
 
 #[test]
-fn nd_node_missing_old_broken_and_fine() {
+fn nd_node_is_never_probed_and_no_engine_is_the_failure() {
     let mut sc = Sc::new();
     sc.own_plugin();
     sc.programs(&[], &["node"]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["node is not on PATH", "guards fail closed", "install Node >= 22"]);
-    d.has("bad", &["neither a working engine nor node is available"]);
+    d.has("bad", &["no working engine: the anti-hall hooks do not run"]);
+    d.lacks("Node is not needed");
     assert_eq!(d.code, 1);
-    // the engine works: no node is only a warning
+    // the engine works: no node is no finding at all
     sc.stub_engine("0.1.0");
     let d = sc.doctor(&[]);
-    d.has("warn", &["node is not on PATH"]);
-    d.lacks("neither a working engine nor node");
+    d.lacks("no working engine");
+    d.lacks("node is not on PATH");
     assert_eq!(d.code, 0);
     let shell = sc.shell();
-    shell.has("warn", &["node is not on PATH"]);
-    // too old, broken, fine
-    sc.programs(&[("node", "echo v18.19.0")], &[]);
+    shell.lacks("no working engine");
+    shell.lacks("node is not on PATH");
+}
+
+#[test]
+fn nd_an_engine_on_path_is_a_working_engine_when_the_home_install_is_not_executable() {
+    // the hook wrapper runs ah-engine from PATH when the home install is not executable (the thin client): both doctors count it
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.programs(&[("ah-engine", "[ \"$1\" = version ] && echo 0.1.0\nexit 0")], &[]);
     let d = sc.doctor(&[]);
-    d.has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22."]);
-    sc.shell().has("bad", &["Node v18.19.0 is < 22 — plugin.json requires Node.js >= 22"]);
-    sc.programs(&[("node", "echo oops >&2; exit 4")], &[]);
-    sc.doctor(&[]).has("bad", &["node does not run: exit 4 oops"]);
-    sc.programs(&[("node", "echo v22.3.0")], &[]);
-    sc.doctor(&[]).has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
-    sc.shell().has("ok", &["Node v22.3.0 (>= 22) — hooks can run"]);
+    d.lacks("no working engine");
+    d.has("info", &["the hooks run ah-engine from PATH (", "bin/ah-engine) because the home install is not executable"]);
+    let shell = sc.shell();
+    shell.lacks("no working engine");
+    shell.has("info", &["the hooks run ah-engine from PATH (", "bin/ah-engine) because the home install is not executable"]);
+    // an executable home install that does not run is what the wrapper runs: the PATH engine is never tried
+    sc.install_bin(b"#!/bin/sh\nexit 3\n", 0o755);
+    let d = sc.doctor(&[]);
+    d.lacks("from PATH");
+    d.has("bad", &["no working engine: the anti-hall hooks do not run"]);
+}
+
+#[test]
+fn nd_the_doctor_never_starts_node() {
+    // a node on PATH that records every start: the engine doctor (live self-tests, statusline render, the DevSwarm hook tests)
+    // must not run it at all, not even for a version probe
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.1.0");
+    let log = sc.root.join("node-starts.log");
+    sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
+    let d = sc.doctor(&[]);
+    let starts = fs::read_to_string(&log).unwrap_or_default();
+    assert!(starts.trim().is_empty(), "the doctor started node: {starts:?}\n{}", d.text);
+    d.lacks("Node v22");
+}
+
+#[test]
+fn lg_logs_flag_lists_the_recent_warn_and_error_entries() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let logs = sc.root.join("central-logs");
+    fs::create_dir_all(&logs).unwrap();
+    let run = |sc: &Sc| {
+        let mut c = Command::new(BIN);
+        c.arg("doctor").arg("--check").arg("--logs").arg("--plugin-root").arg(&sc.plugin);
+        sc.env(&mut c);
+        c.env("ANTI_HALL_LOG_DIR", &logs);
+        sc.finish(c)
+    };
+    let d = run(&sc);
+    d.has("info", &["no warn/error entries in the central anti-hall log", &logs.display().to_string()]);
+    d.lacks("--logs is not handled");
+    let mut body = String::from("{\"ts\":\"t0\",\"level\":\"info\",\"component\":\"x\",\"op\":\"y\",\"msg\":\"quiet\"}\n{torn\n");
+    for i in 0..12 {
+        body.push_str(&format!("{{\"ts\":\"t{i}\",\"level\":\"warn\",\"component\":\"ingest\",\"op\":\"tick\",\"msg\":\"m{i}\\nsecond\"}}\n"));
+    }
+    body.push_str("{\"ts\":\"tz\",\"level\":\"error\",\"component\":\"cli\",\"op\":\"send\",\"repoKey\":\"r1\",\"err\":{\"message\":\"boom\"}}\n");
+    fs::write(logs.join("devswarm.jsonl"), body).unwrap();
+    let d = run(&sc);
+    d.has("warn", &["13 warn/error entries in the central anti-hall log across 2 component(s) — cli:1, ingest:12"]);
+    d.has("info", &["showing the most recent 10 of 13"]);
+    d.has("warn", &["[t11] warn ingest/tick: m11"]);
+    d.has("warn", &["[tz] error cli/send repoKey=r1: boom"]);
+    d.lacks("quiet");
+    d.lacks("[t2] warn");
+    d.lacks("second");
+    // report-only: the entries are warnings, not failures
+    assert_eq!(d.code, run(&sc).code);
 }
 
 #[test]
@@ -1146,16 +1327,16 @@ fn ev_01_02_03_home_unset_relative_or_not_a_directory() {
     let d = sc.finish(c);
     d.has("bad", &["HOME is not set; the engine cannot find its state", "export HOME="]);
     assert_eq!(d.code, 1);
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor").env_clear().env("PATH", &sc.path).current_dir(&sc.cwd);
+    let mut s = builtin_doctor(&sc.plugin);
+    s.env_clear().env("PATH", &sc.path).current_dir(&sc.cwd);
     sc.finish(s).has("bad", &["HOME is not set; the engine cannot find its state"]);
     // relative
     let mut c = Command::new(BIN);
     c.arg("doctor").arg("--check").arg("--plugin-root").arg(&sc.plugin).env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
     let d = sc.finish(c);
     d.has("bad", &["HOME is \"rel/home\", a relative path"]);
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor").env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
+    let mut s = builtin_doctor(&sc.plugin);
+    s.env_clear().env("PATH", &sc.path).env("HOME", "rel/home").current_dir(&sc.cwd);
     sc.finish(s).has("bad", &["HOME is \"rel/home\", a relative path"]);
     // not a directory
     let missing = sc.root.join("no-such-home");
@@ -1197,8 +1378,7 @@ fn ev_08_path_oddities() {
     run(&format!("{sys}::/tmp")).has("warn", &["PATH has an empty entry"]);
     run("/nonexistent").has("warn", &["PATH lacks /usr/bin, /bin"]);
     // the shell doctor says the same
-    let mut s = Command::new("sh");
-    s.arg(sc.plugin.join("hooks/ah-hook.sh")).arg("--doctor");
+    let mut s = builtin_doctor(&sc.plugin);
     sc.env(&mut s);
     s.env("PATH", format!("{sys}:."));
     sc.finish(s).has("warn", &["PATH has . entry, resolved against the current directory"]);
@@ -1336,41 +1516,13 @@ fn json_output_carries_the_new_sections() {
     }
 }
 
-// ---- the Node doctor as the shadow: the checks both make give the same answer ---------------------------------------------------
-
-#[test]
-fn shadow_the_node_doctor_agrees_on_a_missing_hook_script_and_on_node_itself() {
-    let mut sc = Sc::new();
-    sc.own_plugin();
-    fs::remove_file(sc.plugin.join("hooks/git-guard.js")).unwrap();
-    let mut n = Command::new("node");
-    // the Node doctor runs read-only (--dry-run previews the repairs) from the scratch copy, in the scratch home
-    n.arg(sc.plugin.join("hooks/doctor.js")).arg("--dry-run");
-    n.env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", &sc.home)
-        .env("USERPROFILE", &sc.home)
-        .env("ANTIHALL_INGEST_DRY_RUN", "1")
-        .current_dir(&sc.cwd);
-    let node = sc.finish(n);
-    let engine = sc.doctor(&[]);
-    // both call the missing script a failure, in the same words, and both exit non-zero
-    let bad = |o: &Out| o.text.lines().any(|l| l.contains("git-guard.js") && l.contains("REGISTERED BUT MISSING"));
-    assert!(bad(&node), "node: {}", node.text);
-    assert!(bad(&engine), "engine: {}", engine.text);
-    assert_ne!(node.code, 0);
-    assert_ne!(engine.code, 0);
-    // and both accept this Node
-    node.has("ok", &["Node v", "hooks can run"]);
-    engine.has("ok", &["Node v", "hooks can run"]);
-}
-
 // ---- the optional `claude doctor` sub-check ---------------------------------------------------------------------------------------
 
 #[test]
 fn claude_doctor_missing_clean_problems_unsupported_and_hung() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0"); // Node is no fallback: without a working engine the doctor fails
     sc.doctor(&[]).has("info", &["the claude CLI is not on PATH", "skipped"]);
     let script = |body: &str| format!("if [ \"$1\" = --version ]; then echo '9.9.9 (Claude Code)'; exit 0; fi\n{body}");
     sc.programs(&[("claude", &script("echo 'Claude Code doctor'; echo; echo 'No installation issues found.'"))], &[]);
@@ -1428,7 +1580,7 @@ fn doctor_check_leaves_the_state_directory_alone() {
     let mut sc = Sc::new();
     sc.own_plugin();
     let d = sc.doctor(&[]);
-    assert_eq!(d.code, 0, "{}", d.text);
+    assert_eq!(d.code, 1, "no installed engine (a stub would create the state directory): the one failure is no working engine\n{}", d.text);
     assert!(!sc.home.join(".anti-hall").exists(), "a check created {}", sc.home.join(".anti-hall").display());
     // the repair, which does write, still may
     sc.doctor_raw(&["--repair"]);
@@ -1436,21 +1588,15 @@ fn doctor_check_leaves_the_state_directory_alone() {
 }
 
 #[test]
-fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
+fn ds_the_hook_tests_must_pass_and_no_syntax_check_starts_node() {
     let mut sc = Sc::new();
     sc.own_plugin();
+    sc.stub_engine("0.1.0");
     sc.programs(&[], &[]);
-    // the hooks the self-tests run need the companion libraries and the scripts beside them
-    fs::remove_file(sc.plugin.join("companion")).unwrap();
-    copy_dir(&real_plugin().join("companion"), &sc.plugin.join("companion"));
-    // a supervisor script that does not parse is a failure, even with DevSwarm dormant
-    let live = sc.plugin.join("companion/lib/liveness.js");
-    let good = fs::read(&live).unwrap();
+    // the hooks the self-tests run need the companion libraries and the scripts beside them: the staged Node tree has them
+    // the engine doctor starts no Node, so it does not syntax-check the supervisor scripts
+    let live = sc.plugin.join("../anti-hall-node/companion/lib/liveness.js");
     fs::write(&live, "function (((\n").unwrap();
-    let d = sc.doctor(&[]);
-    d.has("bad", &["supervisor lib SYNTAX ERROR: liveness.js"]);
-    assert_eq!(d.code, 1);
-    fs::write(&live, good).unwrap();
     let d = sc.doctor(&[]);
     d.lacks("DevSwarm liveness supervisor");
     assert_eq!(d.code, 0);
@@ -1464,4 +1610,92 @@ fn ds_the_supervisor_files_must_parse_and_the_hook_tests_must_pass() {
     let d = sc.doctor(&[]);
     d.has("ok", &["supervisor companion INSTALLED (", "background sweep)"]);
     assert_eq!(d.code, 0);
+}
+
+// ---- UN: the units heal inside the repair --------------------------------------------------------------------------------------
+
+/// The unit files the heal wrote under a scratch home (launchd plists or systemd user units).
+fn unit_files(home: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in ["Library/LaunchAgents", ".config/systemd/user"] {
+        if let Ok(rd) = fs::read_dir(home.join(dir)) {
+            found.extend(rd.flatten().map(|e| e.path()));
+        }
+    }
+    found.sort();
+    found
+}
+
+#[test]
+fn un_01_the_repair_heals_the_units_once_never_in_a_check_and_obeys_the_switch() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.0.0");
+    // a check and a dry run write nothing
+    assert!(!sc.doctor(&[]).text.contains("units-heal"));
+    let dry = sc.doctor_raw(&["--dry-run"]);
+    assert!(dry.text.contains("units-heal"), "{}", dry.text);
+    assert!(unit_files(&sc.home).is_empty(), "a dry run wrote units");
+    // the switch off: the repair leaves the units alone
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--plugin-root").arg(&sc.plugin).arg("--repair");
+    sc.env(&mut c);
+    c.env("ANTIHALL_UNITS_HEAL", "off");
+    let off = sc.finish(c);
+    assert!(!off.text.contains("units-heal") && unit_files(&sc.home).is_empty(), "{}", off.text);
+    // the repair writes the engine unit and says so
+    let first = sc.doctor_raw(&["--repair"]);
+    first.has("ok", &["units-heal"]);
+    let written = unit_files(&sc.home);
+    assert!(!written.is_empty(), "the repair wrote no unit: {}", first.text);
+    let bytes: Vec<Vec<u8>> = written.iter().map(|p| fs::read(p).unwrap()).collect();
+    // a second repair changes nothing and reports nothing
+    let again = sc.doctor_raw(&["--repair"]);
+    assert!(!again.text.contains("units-heal"), "not idempotent: {}", again.text);
+    assert_eq!(unit_files(&sc.home), written);
+    assert_eq!(written.iter().map(|p| fs::read(p).unwrap()).collect::<Vec<_>>(), bytes);
+}
+
+// ---- STO: legacy DevSwarm stores (journal backend, split store) -----------------------------------------------------------------
+
+#[test]
+fn sto_01_journal_and_split_stores_are_reported_as_unsupported_legacy() {
+    let sc = Sc::new();
+    let stores = sc.home.join(".anti-hall/devswarm/store");
+    // a pure journal store (pinned), a journal store found by its segments, a split store, a healthy sqlite store, an empty journal dir
+    for (hash, marker, db, seg) in [
+        ("aaaa1111", Some("journal"), false, true),
+        ("bbbb2222", None, false, true),
+        ("cccc3333", Some("sqlite"), true, true),
+        ("dddd4444", Some("sqlite"), true, false),
+        ("eeee5555", None, false, false),
+    ] {
+        let d = stores.join(hash);
+        fs::create_dir_all(d.join("journal")).unwrap();
+        if let Some(m) = marker {
+            fs::write(d.join("BACKEND"), m).unwrap();
+        }
+        if db {
+            fs::write(d.join("devswarm.db"), b"x").unwrap();
+        }
+        if seg {
+            fs::write(d.join("journal/messages.ndjson"), b"{}\n").unwrap();
+        }
+        fs::write(d.join("journal/.lock"), b"").unwrap();
+    }
+    let r = sc.doctor(&[]);
+    r.has("warn", &["2 DevSwarm store(s) use the legacy journal backend", "aaaa1111, bbbb2222", "No anti-hall command converts a journal store to SQLite"]);
+    r.has("warn", &["1 DevSwarm store(s) are split", "cccc3333", "merge-split-backend-stores", "folds the journal side into SQLite"]);
+    r.lacks("dddd4444");
+    r.lacks("eeee5555");
+    // read-only: nothing moved or written
+    assert!(stores.join("aaaa1111/journal/messages.ndjson").exists() && stores.join("cccc3333/devswarm.db").exists());
+    // the report is switchable off
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--check").arg("--plugin-root").arg(&sc.plugin);
+    sc.env(&mut c);
+    // the key has no env override: the owner's settings.json switches it off
+    sc.put(".anti-hall/settings.json", br#"{"doctor":{"legacy_stores_report":0}}"#);
+    let off = sc.finish(c);
+    off.lacks("legacy journal backend");
 }

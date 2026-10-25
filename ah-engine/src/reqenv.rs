@@ -11,14 +11,20 @@ use crate::defaults;
 
 /// Whether `name` is on the forwarding allowlist (`request_env.allow`; a trailing `*` matches a prefix).
 pub fn allowed(name: &str) -> bool {
-    defaults::list("request_env.allow").into_iter().any(|a| a.strip_suffix('*').map_or(a == name, |prefix| name.starts_with(prefix)))
+    presence_only(name) || defaults::list("request_env.allow").into_iter().any(|a| a.strip_suffix('*').map_or(a == name, |prefix| name.starts_with(prefix)))
+}
+
+/// Whether `name` is forwarded as a presence flag only (`request_env.presence_only`): a secret the checks must be able to tell is set
+/// but must never see. A non-empty value travels as the presence text, an empty one is dropped.
+pub fn presence_only(name: &str) -> bool {
+    defaults::list("request_env.presence_only").contains(&name)
 }
 
 /// The allowlisted environment of one request.
 ///
 /// It is *incomplete* when the checks cannot trust it to say what the Node guards would read: the client's variables
 /// were dropped (over `request_env.max_bytes`), the request carried no environment line, or the client had no usable
-/// `HOME`. An incomplete environment makes every check that reads the environment defer to Node (see
+/// `HOME`. An incomplete environment makes every check that reads the environment take its failure policy instead (see
 /// [`crate::checks::run_env_guarded`]), because evaluating with no home and default switches would answer for a
 /// different session (a gate that is on would read as off, and the engine would allow what Node blocks).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -26,6 +32,8 @@ pub fn allowed(name: &str) -> bool {
 pub struct RequestEnv {
     vars: BTreeMap<String, String>,
     incomplete: bool,
+    /// The process that sent the request (the daemon's peer on the socket), never anything the client wrote.
+    peer_pid: Option<u32>,
 }
 
 impl Serialize for RequestEnv {
@@ -43,12 +51,21 @@ impl From<BTreeMap<String, String>> for RequestEnv {
     /// (flagged incomplete) when the rest would exceed `request_env.max_bytes`.
     fn from(m: BTreeMap<String, String>) -> Self {
         let flagged = m.contains_key(defaults::text("request_env.incomplete_key"));
-        let kept: BTreeMap<String, String> = m.into_iter().filter(|(k, _)| allowed(k)).collect();
+        let kept: BTreeMap<String, String> = m
+            .into_iter()
+            .filter(|(k, _)| allowed(k))
+            .filter_map(|(k, v)| {
+                if !presence_only(&k) {
+                    return Some((k, v));
+                }
+                (!v.is_empty()).then(|| (k, defaults::text("request_env.presence_text").to_string()))
+            })
+            .collect();
         let size: usize = kept.iter().map(|(k, v)| k.len() + v.len()).sum();
         if size as u64 > defaults::num("request_env.max_bytes") {
-            return RequestEnv { vars: BTreeMap::new(), incomplete: true };
+            return RequestEnv { vars: BTreeMap::new(), incomplete: true, peer_pid: None };
         }
-        RequestEnv { vars: kept, incomplete: flagged }
+        RequestEnv { vars: kept, incomplete: flagged, peer_pid: None }
     }
 }
 
@@ -68,12 +85,12 @@ impl RequestEnv {
         e
     }
 
-    /// An environment the checks must not evaluate with (see the type's docs): they defer to Node instead.
+    /// An environment the checks must not evaluate with (see the type's docs): each takes its failure policy instead.
     pub fn incomplete() -> RequestEnv {
-        RequestEnv { vars: BTreeMap::new(), incomplete: true }
+        RequestEnv { vars: BTreeMap::new(), incomplete: true, peer_pid: None }
     }
 
-    /// True when the checks that read the environment must defer to Node.
+    /// True when the checks that read the environment must take their failure policy.
     pub fn is_incomplete(&self) -> bool {
         self.incomplete
     }
@@ -81,6 +98,17 @@ impl RequestEnv {
     /// An environment from explicit pairs (tests, `ah-engine check`); filtered like any other.
     pub fn from_pairs<K: Into<String>, V: Into<String>>(pairs: impl IntoIterator<Item = (K, V)>) -> RequestEnv {
         RequestEnv::from(pairs.into_iter().map(|(k, v)| (k.into(), v.into())).collect::<BTreeMap<_, _>>())
+    }
+
+    /// This environment as sent by the process `pid` (the daemon's socket peer).
+    pub fn with_peer_pid(mut self, pid: Option<u32>) -> RequestEnv {
+        self.peer_pid = pid;
+        self
+    }
+
+    /// The process that sent the request, when the daemon could tell.
+    pub fn peer_pid(&self) -> Option<u32> {
+        self.peer_pid
     }
 
     /// The value of `name`.
@@ -101,7 +129,7 @@ impl RequestEnv {
 
 /// Split a hook request body into its environment and the payload. A body without the environment line (or with one
 /// that does not parse) has an incomplete, empty environment: the daemon never fills the gap from its own, and its
-/// checks defer.
+/// checks take their failure policy.
 pub fn split_request(body: &str) -> (RequestEnv, &str) {
     let Some(rest) = body.strip_prefix(defaults::text("request_env.line_prefix")) else { return (RequestEnv::incomplete(), body) };
     let (line, payload) = rest.split_once('\n').unwrap_or((rest, ""));
@@ -113,6 +141,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_sender_pid_comes_from_the_daemon_never_from_the_client() {
+        let key = defaults::text("request_env.peer_pid_key");
+        // a client that writes the name itself is dropped by the allowlist
+        let sent = RequestEnv::from_pairs([("HOME", "/h"), (key, "4242")]);
+        assert_eq!(sent.get(key), None);
+        assert!(!crate::checks::git::util::Settings::from_env(&sent).env.contains_key(key), "no sender: a one-shot check starts at itself");
+        // the daemon's socket peer reaches the checks under it
+        let st = crate::checks::git::util::Settings::from_env(&sent.with_peer_pid(Some(77)));
+        assert_eq!(st.env.get(key).map(String::as_str), Some("77"));
+    }
+
+    #[test]
     fn only_allowlisted_names_survive() {
         let e = RequestEnv::from_pairs([("HOME", "/h"), ("ANTIHALL_X", "1"), ("CLAUDE_PLUGIN_OPTION_A", "b"), ("SECRET_TOKEN", "no"), ("AWS_KEY", "no")]);
         assert_eq!(e.get("HOME"), Some("/h"));
@@ -120,6 +160,20 @@ mod tests {
         assert_eq!(e.get("CLAUDE_PLUGIN_OPTION_A"), Some("b"));
         assert_eq!(e.get("SECRET_TOKEN"), None);
         assert_eq!(e.get("AWS_KEY"), None);
+    }
+
+    #[test]
+    fn a_presence_only_secret_travels_as_a_flag_and_never_as_its_value() {
+        let secret = "sk-very-secret";
+        for name in defaults::list("request_env.presence_only") {
+            let e = RequestEnv::from_pairs([(name, secret)]);
+            assert_eq!(e.get(name), Some(defaults::text("request_env.presence_text")), "{name} must read as set");
+            assert!(!e.to_line().contains(secret), "{name}: the value must not reach the wire");
+            assert_eq!(RequestEnv::from_pairs([(name, "")]).get(name), None, "{name}: an empty value reads as unset");
+            // the daemon filters again whatever the wire carried: the flag survives, nothing is added
+            let (back, _) = split_request(&format!("{}\n{{}}", e.to_line()));
+            assert_eq!(back.get(name), Some(defaults::text("request_env.presence_text")));
+        }
     }
 
     #[test]
@@ -145,7 +199,7 @@ mod tests {
     fn an_oversized_environment_is_dropped_whole() {
         let big = "x".repeat(defaults::num("request_env.max_bytes") as usize);
         let e = RequestEnv::from_pairs([("HOME", big)]);
-        assert_eq!((e.get("HOME"), e.is_incomplete()), (None, true), "dropped whole, and flagged so the checks defer");
+        assert_eq!((e.get("HOME"), e.is_incomplete()), (None, true), "dropped whole, and flagged so the checks take their failure policy");
     }
 
     #[test]

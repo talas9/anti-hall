@@ -5,16 +5,13 @@
 //! `cleared` line of the recovery log when a sticky `escalated` workspace turns out to have a live session, and whether a
 //! parked escalation notice needs delivering.
 //!
-//! What stays Node's, per workspace, because it either writes through machinery the engine does not reproduce or cannot be
-//! proven identical:
-//! * a verdict that is `stale` (suppressors, poke or escalate, the forced parent notice for an urgent mesh unread): the engine
-//!   never produces a `stale` verdict, so it can never nominate a workspace for a poke Node would not; Node recomputes it;
-//! * a workspace Jev has a pending blocker or question for, or one with a step plan (straying signals, the Jev label);
-//! * anything the engine defers on (a store it will not read exactly like Node, a descriptor field of an unexpected type,
-//!   a partition whose `reader_cursors` floor rows are missing).
+//! The per-workspace tail ([`super::tail`]): the Jev blocker label and the straying signals of a workspace Jev holds a pending
+//! blocker or question for, or that has a step plan. A workspace the engine cannot compute (a store it will not read exactly like
+//! Node, a descriptor field of an unexpected type, a partition whose `reader_cursors` floor rows are missing) is held, counted and
+//! named in the record: its previous verdict stays and the next tick tries again.
 //!
-//! Those are handed to Node's own `sweepOnce` restricted to them, with the engine's verdict supplied for the first group so
-//! Node does not compute or write it twice.
+//! The engine never produces a `stale` verdict for a workspace nobody pokes: with both poke executors set to `node` the stale
+//! workspaces are only named in the record (`standDown`).
 // Discard triage (E3): every `.ok()` / `unwrap_or_default()` in this module is a deliberate keep, for these reasons:
 // - an unreadable or unparsable optional file is the absent one (Node's `try { JSON.parse(...) } catch (_) {}`)
 // - a verdict that cannot be written is lost, never the sweep (Node: the caller fails open per workspace)
@@ -25,7 +22,7 @@ use crate::defaults;
 use crate::dsact::runner::{RunSpec, Runner};
 use crate::mesh::MeshReader;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::union;
 use std::os::unix::fs::MetadataExt;
@@ -91,11 +88,10 @@ pub fn read_descriptors(home: &Path) -> Vec<Desc> {
     out
 }
 
-fn text_field(d: &Desc, key: &str) -> R<String> {
-    match d.raw.get(defaults::text(key)) {
-        Some(OVal::Str(s)) => Ok(s.clone()),
-        _ => defer("descriptor-field-type"),
-    }
+/// `String(d.field)`: the sweep only reads descriptors whose worktree and session are truthy, and Node joins them into paths as text
+/// whatever their JSON type (a number, an array, an object).
+fn text_field(d: &Desc, key: &str) -> String {
+    d.raw.get(defaults::text(key)).map(super::appsync::plan::js_str).unwrap_or_default()
 }
 
 fn finite(v: Option<&OVal>) -> Option<f64> {
@@ -141,11 +137,25 @@ pub(crate) fn transcript_mtime(home: &Path, wt: &str, session: &str) -> R<Option
     if session.is_empty() {
         return Ok(None);
     }
-    if session.contains('/') || session.contains('\\') || session.contains("..") {
-        return defer("session-path");
+    // `path.join(projectDir, sessionId + '.jsonl')` resolves `..` and `.` segments lexically, so a session text that climbs out of the
+    // project directory is stat'd where Node would stat it (a read of the mtime and nothing else)
+    let dir = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("devswarm_sup.lv_projects_dir")).join(encode_worktree(wt));
+    let joined = format!("{}/{session}{}", dir.to_string_lossy(), defaults::text("devswarm_sup.lv_transcript_ext"));
+    Ok(std::fs::metadata(crate::checks::git::util::posix_normalize(&joined)).ok().map(|m| mtime_ms(&m)))
+}
+
+/// The path of a session's transcript (`projectDirFor(wt)/<session>.jsonl`); `None` for a session name that could leave the directory.
+pub(crate) fn transcript_path(home: &Path, wt: &str, session: &str) -> Option<PathBuf> {
+    if session.is_empty() || session.contains('/') || session.contains('\\') || session.contains("..") {
+        return None;
     }
     let dir = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("devswarm_sup.lv_projects_dir")).join(encode_worktree(wt));
-    Ok(std::fs::metadata(dir.join(format!("{session}{}", defaults::text("devswarm_sup.lv_transcript_ext")))).ok().map(|m| mtime_ms(&m)))
+    Some(dir.join(format!("{session}{}", defaults::text("devswarm_sup.lv_transcript_ext"))))
+}
+
+/// `isSafeId(key)` for a plan key.
+pub(crate) fn safe_key(key: &str) -> bool {
+    is_safe_id(key)
 }
 
 /// `descriptorRegistrationTs(id)`: the modification time of `workspaces/<id>.json`.
@@ -154,7 +164,54 @@ pub(crate) fn registration_ts(home: &Path, id: &str) -> Option<f64> {
 }
 
 /// `worktreeActivityMtime(wt)`: the last commit time in ms (`git -C wt log -1 --format=%ct`), `None` when git cannot say.
-fn worktree_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
+///
+/// The answer is what `git log -1` prints for the worktree's HEAD, which changes only when HEAD moves; so it is remembered per worktree
+/// against the size and modification time of the files in `devswarm_sup.lv_git_sig_files` (for at most `lv_git_cache_max_ms`), and a
+/// worktree directory that is gone is answered without running git (git cannot say there either). The sweep visits every descriptor
+/// on every tick; one `git` process per descriptor per tick was most of its CPU (live19).
+pub fn worktree_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
+    if !Path::new(wt).is_dir() {
+        return None; // `git -C <missing dir>` fails: git cannot say
+    }
+    let Some(sig) = git_signature(wt) else { return run_git_activity(runner, wt) };
+    let now = crate::health::now_ms() as i64;
+    let max_age = defaults::num("devswarm_sup.lv_git_cache_max_ms") as i64;
+    if let Some(c) = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner()).get(wt)
+        && c.sig == sig
+        && now - c.at < max_age
+    {
+        return c.value;
+    }
+    let value = run_git_activity(runner, wt);
+    let mut cache = ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= defaults::num("devswarm_sup.lv_git_cache_max_entries") as usize {
+        cache.clear(); // bounded: the next sweep refills it
+    }
+    cache.insert(wt.to_string(), Cached { sig, value, at: now });
+    value
+}
+
+/// What was last read for a worktree.
+struct Cached {
+    sig: Vec<Option<(i64, u64)>>,
+    value: Option<f64>,
+    at: i64,
+}
+
+static ACTIVITY: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Cached>>> = std::sync::LazyLock::new(Default::default);
+
+/// Modification time (ns) and size of each file that moves when the worktree's HEAD does; `None` when its git directory is unknown.
+fn git_signature(wt: &str) -> Option<Vec<Option<(i64, u64)>>> {
+    let dir = crate::dswire::facts::git_dir(wt)?;
+    Some(
+        defaults::list("devswarm_sup.lv_git_sig_files")
+            .iter()
+            .map(|f| std::fs::metadata(dir.join(f)).ok().map(|m| (m.mtime() * 1_000_000_000 + m.mtime_nsec(), m.len())))
+            .collect(),
+    )
+}
+
+fn run_git_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
     let wt_owned = wt.to_string();
     let args: Vec<String> = defaults::list("devswarm_sup.lv_git_args").iter().map(|a| a.replace("{worktree}", &wt_owned)).collect();
     let r = runner.run(&RunSpec {
@@ -175,19 +232,21 @@ fn worktree_activity(runner: &dyn Runner, wt: &str) -> Option<f64> {
 }
 
 /// `Number(rec.pid)` for the JSON value of a session record.
-fn js_pid(v: Option<&OVal>) -> R<f64> {
+fn js_pid(v: Option<&OVal>) -> f64 {
     match v {
-        None => Ok(f64::NAN),
-        Some(OVal::Null) => Ok(0.0),
-        Some(OVal::Num(n)) => Ok(*n),
-        Some(OVal::Bool(b)) => Ok(f64::from(u8::from(*b))),
-        Some(OVal::Str(s)) => Ok(js_number_of_str(s)),
-        Some(_) => defer("session-pid-type"),
+        None => f64::NAN,
+        Some(OVal::Null) => 0.0,
+        Some(OVal::Num(n)) => *n,
+        Some(OVal::Bool(b)) => f64::from(u8::from(*b)),
+        Some(OVal::Str(s)) => js_number_of_str(s),
+        // an array reads as its joined text (`Number([5])` is 5, `Number([])` 0, `Number([1, 2])` NaN); an object is NaN
+        Some(a @ OVal::Arr(_)) => js_number_of_str(&super::appsync::plan::js_str(a)),
+        Some(OVal::Obj(_)) => f64::NAN,
     }
 }
 
 /// `pidIsAlive(pid, kill, { sinceMs })`: `Some(true)` alive, `Some(false)` gone or reused, `None` unknown.
-fn pid_is_alive(pid: f64, since_ms: Option<f64>) -> Option<bool> {
+pub(crate) fn pid_is_alive(pid: f64, since_ms: Option<f64>) -> Option<bool> {
     if !pid.is_finite() || pid.fract() != 0.0 || pid <= 0.0 || pid > f64::from(i32::MAX) {
         return None;
     }
@@ -211,11 +270,17 @@ fn pid_is_alive(pid: f64, since_ms: Option<f64>) -> Option<bool> {
 
 /// `isSessionAliveRow({ sessionId })`: a `~/.claude/sessions/*.json` record of this session names a live process.
 pub(crate) fn session_alive(home: &Path, session: &str) -> R<bool> {
+    Ok(session_state(home, session)? == Some(true))
+}
+
+/// `sessionPidAlive(sessionId, home)`: `Some(true)` a record names a live process, `Some(false)` records name it and all are dead,
+/// `None` no record (or no sessions directory) to go by.
+pub(crate) fn session_state(home: &Path, session: &str) -> R<Option<bool>> {
     if session.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     let dir = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
-    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(false) };
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(None) };
     let mut names: Vec<String> =
         rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.ends_with(defaults::text("mesh_write.json_suffix"))).collect();
     names.sort();
@@ -228,22 +293,62 @@ pub(crate) fn session_alive(home: &Path, session: &str) -> R<bool> {
         }
         let sid = match rec.get(defaults::text("mesh_write.field_session_id")) {
             None | Some(OVal::Null) => continue,
-            Some(OVal::Str(s)) => s.clone(),
-            Some(OVal::Num(x)) => crate::checks::jsport::num::to_js_string(*x),
-            Some(OVal::Bool(b)) => b.to_string(),
-            Some(_) => return defer("session-record-type"),
+            Some(v) => super::appsync::plan::js_str(v), // `String(rec.sessionId)`
         };
         if sid != session {
             continue;
         }
         let since = std::fs::metadata(&file).ok().map(|m| mtime_ms(&m)).filter(|t| t.is_finite());
-        match pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid")))?, since) {
-            Some(true) => return Ok(true),
+        match pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid"))), since) {
+            Some(true) => return Ok(Some(true)),
             Some(false) => verdict = Some(false),
             None => {}
         }
     }
-    Ok(verdict == Some(true))
+    Ok(verdict)
+}
+
+/// `sessionWorktreeCoherent(sid, worktreePath, { home })`: `Some(true)` a live session record of `sid` runs in the worktree's checkout,
+/// `Some(false)` live records exist and none does (the twin shape), `None` no live record (unknown). Detect-only.
+pub(crate) fn session_worktree_coherent(home: &Path, session: &str, worktree: &str) -> R<Option<bool>> {
+    if session.is_empty() {
+        return Ok(None);
+    }
+    let target = ident::resolve_context(worktree, true)?.worktree_root;
+    let dir = home.join(defaults::text("mesh_write.claude_dir")).join(defaults::text("mesh_write.sessions_dir"));
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(None) };
+    let mut names: Vec<String> =
+        rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| n.ends_with(defaults::text("mesh_write.json_suffix"))).collect();
+    names.sort();
+    let mut any_live = false;
+    let mut matched = false;
+    for n in names {
+        let file = dir.join(&n);
+        let Some(rec) = std::fs::read(&file).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else { continue };
+        if !matches!(rec, OVal::Obj(_)) {
+            continue;
+        }
+        let sid = match rec.get(defaults::text("mesh_write.field_session_id")) {
+            None | Some(OVal::Null) => continue,
+            Some(v) => super::appsync::plan::js_str(v), // `String(rec.sessionId)`
+        };
+        if sid != session {
+            continue;
+        }
+        let since = std::fs::metadata(&file).ok().map(|m| mtime_ms(&m)).filter(|t| t.is_finite());
+        if pid_is_alive(js_pid(rec.get(defaults::text("devswarm_sup.lv_field_pid"))), since) == Some(false) {
+            continue;
+        }
+        any_live = true;
+        let root = match rec.get("cwd") {
+            Some(OVal::Str(c)) if !c.is_empty() => ident::resolve_context(c, true)?.worktree_root,
+            _ => None,
+        };
+        if target.is_some() && root == target {
+            matched = true;
+        }
+    }
+    Ok(any_live.then_some(matched))
 }
 
 /// The mailbox facts `unionPendingFor` reports.
@@ -282,14 +387,19 @@ fn pending_for(inv: &Inv, d: &Desc, self_id: Option<&str>) -> R<Pending> {
     })?;
     let pending = u.unread > 0;
     let not_draining = pending && u.oldest_unread_age_ms.is_some_and(|a| a > defaults::num("mesh_write.not_draining_age_ms") as f64);
-    let mut inbound = u.nd_unread_lines.len();
+    let mut inbound = u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l)).count();
     for row in &u.store_only_unread {
         let own = self_id.is_some_and(|s| row["sender"].as_str() == Some(s));
-        if !own {
+        if !own && !union::is_wake_row(row) {
             inbound += 1;
         }
     }
     Ok(Pending { pending, inbound: inbound > 0, not_draining, oldest: u.oldest_unread_age_ms })
+}
+
+/// The parent (Primary) id of the workspace at `wt`: `primaryWorkspaceId(resolveMainWorktree(wt) || wt)`, `None` when it is not a safe id.
+pub fn parent_id(wt: &str) -> R<Option<String>> {
+    self_id(wt)
 }
 
 /// `resolveSelfId(worktreePath)`: the Primary partition id of the descriptor's project, when it is a safe id.
@@ -336,8 +446,8 @@ pub struct Env<'a> {
 pub fn compute(e: &Env, d: &Desc) -> R<Computed> {
     let home = e.inv.home.as_path();
     let now = e.inv.now as f64;
-    let wt = text_field(d, "mesh_write.field_worktree_path")?;
-    let session = text_field(d, "mesh_write.field_session_id")?;
+    let wt = text_field(d, "mesh_write.field_worktree_path");
+    let session = text_field(d, "mesh_write.field_session_id");
     let prev = std::fs::read(path_of(home, "devswarm_sup.liveness_dir", &d.id)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b)));
     let pf = |k: &str| prev.as_ref().and_then(|p| p.get(k));
     let k = |i: usize| defaults::list("devswarm_sup.lv_keys")[i];
@@ -442,8 +552,9 @@ pub fn compute(e: &Env, d: &Desc) -> R<Computed> {
     let reg = if t_mtime.is_none() { registration_ts(home, &d.id) } else { None };
     let never_launched_dead = reg.is_some_and(|r| r > 0.0 && r <= now && now - r > e.t.never_launched_ms);
     if (both_idle || never_launched_dead) && u.inbound {
-        // Node decides a stale workspace: suppressors, poke, escalate, the forced parent notice
-        return defer("stale");
+        // `staleSince: priorStaleSince || now` (a zero carries no start time in JavaScript either)
+        let since = prior_stale.filter(|x| *x != 0.0).unwrap_or(now);
+        return alive(last_outbound, Some(since), nudge_attempts, nudged_at, defaults::text("devswarm_sup.lv_status_stale"), &u);
     }
     alive(last_outbound, None, 0.0, None, defaults::text("devswarm_sup.lv_status_alive"), &u)
 }
@@ -497,10 +608,14 @@ pub struct Outcome {
     pub full: Vec<(String, String)>,
     /// A parked escalation notice needs delivering.
     pub drain: bool,
+    /// Each native workspace the tail has work for: its descriptor and the verdict computed for it.
+    pub tail_work: Vec<(Desc, OVal)>,
     /// The verdicts the engine wrote (id, bytes), for the witness.
     pub written: Vec<(String, String)>,
     /// The previous verdict text of each native workspace (what Node's own compute would have read), for the witness.
     pub prev: Vec<(String, Option<String>)>,
+    /// The workspaces whose new verdict is `stale`, with their `staleSince` (the forced parent notice looks at these).
+    pub stale: Vec<(String, Option<f64>)>,
 }
 
 /// The native part of one sweep. `dry` computes and reports without writing anything.
@@ -513,6 +628,11 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
             Ok(c) => {
                 if !dry {
                     if c.cleared {
+                        // the escalation was premature: its notice is a mistake signal
+                        let acts = [defaults::text("devswarm_sup.esc_action"), defaults::text("devswarm_sup.esc_action_forced")];
+                        if let Some((action, id)) = super::tick::last_action(&inv.home, &acts, &d.id) {
+                            super::tick::record_mistake(&inv.home, &action, &id, defaults::text("devswarm_sup.lv_log_cleared_reason"), inv.now);
+                        }
                         super::verdict::append_log(
                             &inv.home,
                             inv.now,
@@ -523,12 +643,20 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
                             ],
                         );
                     }
-                    write_verdict(&inv.home, &d.id, &c);
+                    // an identical verdict is not written again: each write is a temporary file, an fsync and a rename, and the sweep
+                    // visits every descriptor on every tick (700 fsyncs a tick was the supervisor's CPU in live19)
+                    if prev_text.as_deref() != Some(c.verdict.stringify().as_str()) {
+                        write_verdict(&inv.home, &d.id, &c);
+                    }
                 }
                 out.prev.push((d.id.clone(), prev_text));
                 out.written.push((d.id.clone(), c.verdict.stringify()));
+                if c.status == defaults::text("devswarm_sup.lv_status_stale") {
+                    out.stale.push((d.id.clone(), finite(c.verdict.get(defaults::list("devswarm_sup.lv_keys")[2]))));
+                }
                 if needs_tail(inv, &d.id) {
                     out.tail.push(d.id.clone());
+                    out.tail_work.push((d.clone(), c.verdict.clone()));
                 }
                 out.native.push(d.id);
             }
@@ -536,6 +664,107 @@ pub fn sweep(inv: &Inv, t: Thresholds, runner: &dyn Runner, dry: bool) -> Outcom
         }
     }
     out.drain = parked_notices(&inv.home);
+    out
+}
+
+// ---- the forced parent notice (sweepOnce: an urgent mesh unread on a stale workspace) -----------------------------------------
+
+/// `withinPostSpawnGrace(id)`: the descriptor was written less than `grace_ms` ago (a small negative age is clock jitter).
+fn within_grace(home: &Path, id: &str, now: f64, grace_ms: f64) -> bool {
+    if grace_ms.is_nan() || grace_ms <= 0.0 {
+        return false;
+    }
+    let Some(ts) = registration_ts(home, id) else { return false };
+    let age = now - ts;
+    if age < 0.0 {
+        return age >= -(defaults::num("devswarm_sup.lv_grace_skew_ms") as f64);
+    }
+    age < grace_ms
+}
+
+/// The project summary's entry for workspace `id` (`summaries/<repoKey>.json` `.workspaces[id]`), `None` when absent or unreadable.
+fn summary_entry(home: &Path, wt: &str, id: &str) -> Option<OVal> {
+    let key = ident::repo_key_for_worktree(wt).ok().flatten()?;
+    let p = devswarm_root(home).join(defaults::text("mesh_write.dir_summaries")).join(format!("{key}{}", defaults::text("mesh_write.json_suffix")));
+    let raw = String::from_utf8_lossy(&std::fs::read(p).ok()?).trim().to_string();
+    let sum = OVal::parse(&raw)?;
+    match sum.get(defaults::text("devswarm_sup.lv_summary_workspaces")) {
+        Some(w @ OVal::Obj(_)) => w.get(id).cloned(),
+        _ => None,
+    }
+}
+
+/// `isUrgentMesh(readMeshUrgency(d))`: the workspace's direct or broadcast unread tier is one of the urgent ones.
+fn urgent_mesh(entry: Option<&OVal>) -> bool {
+    let Some(w) = entry.filter(|w| w.truthy()) else { return false };
+    let tiers = defaults::list("devswarm_sup.lv_urgent_tiers");
+    defaults::list("devswarm_sup.lv_urgency_fields").iter().any(|f| match w.get(f) {
+        None | Some(OVal::Null) => false,
+        Some(v) => tiers.contains(&crate::dssup::ingest::import::js_string(v).as_str()),
+    })
+}
+
+/// Why the forced notice is suppressed for a stale workspace (Node's order: grace, archive-ready, idle-alive, the Primary's own
+/// row), or `None` when it is not.
+fn suppressed(inv: &Inv, d: &Desc, wt: &str, session: &str, entry: Option<&OVal>, grace_ms: f64) -> Option<&'static str> {
+    let now = inv.now as f64;
+    let words = defaults::list("devswarm_sup.lv_suppress_reasons");
+    if within_grace(&inv.home, &d.id, now, grace_ms) {
+        return Some(words[0]);
+    }
+    if entry.and_then(|w| w.get(defaults::text("devswarm_sup.lv_field_archive_ready"))) == Some(&OVal::Bool(true)) {
+        return Some(words[1]);
+    }
+    if session_alive(&inv.home, session).unwrap_or(false) {
+        return Some(words[2]);
+    }
+    if ident::primary_workspace_id(wt).is_ok_and(|p| p == d.id) {
+        return Some(words[3]);
+    }
+    None
+}
+
+/// One forced notice decision for a stale workspace: `(id, outcome)` where the outcome is a status word of the delivery, a
+/// suppression reason, `not-urgent`, or why no notice could be built.
+pub fn forced_notices(inv: &Inv, stale: &[(String, Option<f64>)], grace_ms: f64) -> Vec<(String, String)> {
+    let descs: Vec<Desc> = read_descriptors(&inv.home);
+    let mut out = Vec::new();
+    for (id, since) in stale {
+        let Some(d) = descs.iter().find(|d| &d.id == id) else { continue };
+        let (wt, session) = (text_field(d, "mesh_write.field_worktree_path"), text_field(d, "mesh_write.field_session_id"));
+        let entry = summary_entry(&inv.home, &wt, id);
+        if let Some(why) = suppressed(inv, d, &wt, &session, entry.as_ref(), grace_ms) {
+            out.push((id.clone(), why.to_string()));
+            continue;
+        }
+        if !urgent_mesh(entry.as_ref()) {
+            out.push((id.clone(), defaults::text("devswarm_sup.lv_not_urgent").to_string()));
+            continue;
+        }
+        let t0 = std::time::Instant::now();
+        let outcome = match super::verdict::notify_parent(&inv.home, &inv.env, &wt, id, *since, inv.now) {
+            Ok(dl) => {
+                // a duplicate or a retry of an already parked notice repeats every tick: only a new action is recorded
+                if super::verdict::is_new_action(&dl) {
+                    super::tick::record_action(
+                        &inv.home,
+                        &super::tick::Action {
+                            action: defaults::text("devswarm_sup.esc_action_forced"),
+                            target: id,
+                            inputs: serde_json::json!({"staleSince": since, "urgent": true}),
+                            outcome: dl.status,
+                            reason: "",
+                            latency_ms: t0.elapsed().as_millis() as u64,
+                            now: inv.now,
+                        },
+                    );
+                }
+                dl.status.to_string()
+            }
+            Err(why) => format!("{}: {why}", defaults::text("devswarm_sup.esc_skipped")),
+        };
+        out.push((id.clone(), outcome));
+    }
     out
 }
 
@@ -555,31 +784,48 @@ fn inv_of(ctx: &Ctx) -> Inv {
     }
 }
 
-/// The record of the `verdicts` duty and, when a comparison is due, the witness job (finished after the sweep lock is released).
-pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> (Value, Option<super::witness::Job>) {
-    let d = defaults::raw("devswarm_sup.duty.verdicts");
+/// The record of the `verdicts` duty.
+pub fn duty(ctx: &Ctx, runner: &dyn Runner) -> Value {
     let dry = super::setting(ctx.st, "devswarm_sup.set_dry_run_verdicts").as_bool().unwrap_or(false);
     let t = Thresholds::read(ctx);
     let inv = inv_of(ctx);
     let out = sweep(&inv, t, runner, dry);
+    // Who acts on a stale workspace: with the engine owning poke and escalate, the engine also sends the forced parent notice. When
+    // the owner set both executors to `node` (the engine stands down) nobody here acts on it: the record names those workspaces.
+    let mut forced: Vec<(String, String)> = Vec::new();
+    let mut stood_down: Vec<String> = Vec::new();
+    if !dry && !out.stale.is_empty() {
+        if ctx.engine_pokes {
+            let grace =
+                super::setting(ctx.st, "devswarm_sup.set_post_spawn_grace_sec").as_f64().unwrap_or(0.0) * defaults::num("devswarm_sup.lv_ms_per_sec") as f64;
+            forced = forced_notices(&inv, &out.stale, grace);
+        } else {
+            stood_down = out.stale.iter().map(|(id, _)| id.clone()).collect();
+        }
+    }
+    // parked notices are retried on every sweep, whatever any workspace's verdict
+    let drained = if dry || !out.drain { super::verdict::Drained::default() } else { super::verdict::drain_notices(&inv.home, &inv.env, inv.now) };
     let mut detail = json!({
         "native": out.native.len(),
+        "stale": out.stale.len(),
+        "forced": forced.iter().map(|(id, o)| json!({"id": id, "outcome": o})).collect::<Vec<_>>(),
+        "drained": {"attempted": drained.attempted, "delivered": drained.delivered, "pending": drained.pending},
         "tail": out.tail,
         "full": out.full.iter().map(|(id, why)| json!({"id": id, "why": why})).collect::<Vec<_>>(),
         "drain": out.drain,
         "dryRun": dry,
     });
-    if !dry && (!out.tail.is_empty() || !out.full.is_empty() || out.drain) {
-        let spec = json!({"tail": out.tail, "full": out.full.iter().map(|(id, _)| id).collect::<Vec<_>>()}).to_string();
-        let owner = if ctx.engine_pokes { defaults::text("devswarm_sup.owner_engine") } else { defaults::text("devswarm_sup.owner_node") };
-        let timeout = d.get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-        let r = super::tick::node(runner, ctx, d.str_field("tail_snippet"), &[owner, &spec], timeout);
-        detail["node"] = if r.ok {
-            super::tick::parse(&r.stdout)
-        } else {
-            json!({"error": r.error.clone().unwrap_or_else(|| super::tick::cut(&r.stderr)), "status": r.status, "timedOut": r.timed_out})
-        };
+    // the per-workspace tail: the Jev blocker label and the straying signals of the workspaces that have either
+    if !dry && !out.tail_work.is_empty() {
+        detail["tailWork"] = super::tail::run(ctx, runner, &out.tail_work);
     }
-    let job = if dry || out.written.is_empty() { None } else { super::witness::prepare_verdicts(ctx, &out, t) };
-    (json!({"duty": "verdicts", "outcome": if dry { "dry-run" } else { "ran" }, "detail": detail}), job)
+    if !stood_down.is_empty() {
+        detail["standDown"] = json!(stood_down);
+    }
+    // the workspaces whose verdict could not be computed (a read that failed) are held, counted, and named in the record
+    if !dry && !out.full.is_empty() {
+        detail["fullHeld"] =
+            json!({"count": out.full.len(), "held": super::tick::held("dssup:verdicts:full", defaults::text("devswarm_sup.lv_why_full"))["held"]});
+    }
+    json!({"duty": "verdicts", "outcome": if dry { "dry-run" } else { "ran" }, "detail": detail})
 }

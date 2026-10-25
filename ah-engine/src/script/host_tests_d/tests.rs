@@ -66,7 +66,10 @@ fn transcript_tasks_rebuilds_the_task_list_in_map_order_for_each_variant() {
     assert_eq!(gone, json!({"tasks": [], "unreadable": true}));
     let quiet = format!("{h}/q.jsonl");
     std::fs::write(&quiet, "null\n").unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&host_d::transcript_tasks(&quiet, "scan", 1000.0, 1000.0)).unwrap(), json!({"quiet": true}));
+    assert_eq!(
+        serde_json::from_str::<Value>(&host_d::transcript_tasks(&quiet, "scan", 1000.0, 1000.0)).unwrap(),
+        json!({"inProgressCount": 0, "openTaskIds": [], "sawTaskActivity": false, "taskStoreReset": false, "unsure": true})
+    );
     // through the script API
     put_override(
         &h,
@@ -127,7 +130,11 @@ fn a_routed_verdict_carries_its_route_telemetry_and_a_malformed_one_defers() {
         other => panic!("{other:?}"),
     }
     put_override(&h, "zz-routed2", "function decide(p){ return {routed: {verdict: {exact: {code: 2, out: 'o', err: ''}}, meta: [{outcome: 'deny'}]}}; }");
-    assert_eq!(run("zz-routed2", &json!({}), &env(&h)), Some(Some(Verdict::Defer)), "a meta missing fields is a script failure");
+    assert_eq!(
+        run("zz-routed2", &json!({}), &env(&h)),
+        Some(Some(Verdict::Allow)),
+        "a meta missing fields is a script failure: the failure policy decides (open)"
+    );
 }
 
 #[test]

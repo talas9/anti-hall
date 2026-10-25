@@ -1,5 +1,5 @@
 //! Slice S4: `cmdReconcile` (one project's reconcile), `distinctRepoKeys` and the reconcile sweep's duty
-//! (`reconcileSweepIfDue` of `companion/devswarm-supervisor.js`), over the slices below it.
+//!, over the slices below it.
 //!
 //! * **[`cmd_reconcile`]** drains every workspace registered in one project's store once, in Node's order: re-home stranded
 //!   descriptors (handed to Node when there is any), heal the registry ([`super::heal`]), list the rows, put the ids a prior
@@ -29,13 +29,15 @@ use crate::checks::guardkit::text::js_trim;
 use crate::defaults;
 use crate::dsact::runner::Runner;
 use crate::dssup::appsync::{plan, snap, state};
-use crate::dssup::tick::{Ctx, node, parse};
+use crate::dssup::tick::Ctx;
 use crate::meshw::common::Inv;
-use crate::meshw::ident::{self, Defer, R, defer};
+use crate::meshw::ident::{self, Defer, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use regex::RegexBuilder;
 use serde_json::{Map, Value, json};
 use std::path::Path;
+
+mod probe;
 
 /// The clock and the limits of one reconcile (Node's `ctx.reconcileNow`, `ctx.reconcileBudgetMs`, the retry backoff), injectable so
 /// a test can make a budget exact.
@@ -60,7 +62,8 @@ impl Opts<'static> {
 pub enum ProjectEnd {
     /// Node's `cmdReconcile` result object.
     Result(Value),
-    /// The engine did not answer this project; the text says why. Node's `cmdReconcile` does.
+    /// The project could not be answered now (a read the identity layer refused); the text says why. Held and tried again next pass:
+    /// nothing is handed to any other implementation.
     Node(String),
 }
 
@@ -119,7 +122,8 @@ pub struct Descriptor {
 }
 
 /// `readDescriptors(home)` of the supervisor: every `workspaces/*.json` that parses and names a worktree, a session and a
-/// path-safe id, in directory order. A truthy value of a type the engine does not model is a deferral.
+/// path-safe id, in directory order. A session is any truthy value; a worktree that is not text names no directory (Node resolves no
+/// project for it and every path read of it fails), so such a descriptor yields no project and is left out.
 pub fn read_descriptors(home: &Path) -> R<Vec<Descriptor>> {
     let dir = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces"));
     let Some(mut names) = crate::checks::jsport::fsx::read_dir_names(&dir.to_string_lossy()) else { return Ok(Vec::new()) };
@@ -132,13 +136,11 @@ pub fn read_descriptors(home: &Path) -> R<Vec<Descriptor>> {
         }
         let Some(d) = std::fs::read(dir.join(&name)).ok().and_then(|b| OVal::parse(&String::from_utf8_lossy(&b))) else { continue };
         let OVal::Obj(_) = d else { continue };
-        let field = |k: &str| match d.get(k) {
-            None | Some(OVal::Null) => Ok(None),
-            Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-            Some(v) if !v.truthy() => Ok(None),
-            Some(_) => defer("descriptor-field-type"),
+        let wt = match d.get(defaults::text("mesh_write.field_worktree_path")) {
+            Some(OVal::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
         };
-        let (wt, sid) = (field(defaults::text("mesh_write.field_worktree_path"))?, field(defaults::text("mesh_write.field_session_id"))?);
+        let sid = d.get(defaults::text("mesh_write.field_session_id")).filter(|v| v.truthy());
         let id = match d.get(defaults::text("mesh_write.field_id")) {
             Some(OVal::Str(s)) if is_safe_id(s) => s.clone(),
             _ => continue,
@@ -182,10 +184,10 @@ pub fn distinct_repo_keys(descs: &[Descriptor]) -> R<Vec<Project>> {
 
 /// A registry row of the project being reconciled.
 #[derive(Debug, Clone)]
-struct Target {
-    id: String,
-    worktree: String,
-    session: Option<String>,
+pub(crate) struct Target {
+    pub(crate) id: String,
+    pub(crate) worktree: String,
+    pub(crate) session: Option<String>,
 }
 
 fn has_archived_counterpart(home: &Path, id: &str) -> bool {
@@ -197,10 +199,7 @@ fn has_archived_counterpart(home: &Path, id: &str) -> bool {
 fn real_sid(v: Option<&OVal>) -> R<Option<String>> {
     match v {
         None | Some(OVal::Null) => Ok(None),
-        Some(OVal::Str(s)) => Ok((!s.is_empty()).then(|| s.clone())),
-        Some(OVal::Num(n)) => Ok(Some(crate::checks::jsport::num::to_js_string(*n))),
-        Some(OVal::Bool(b)) => Ok(Some(b.to_string())),
-        Some(_) => defer("session-field-type"),
+        Some(other) => Ok(Some(crate::dssup::appsync::plan::js_str(other)).filter(|s| !s.is_empty())),
     }
 }
 
@@ -211,7 +210,7 @@ fn same_path(a: &str, b: &str) -> bool {
 
 /// `isArchivedWorkspace(home, id, worktreePath, {sessionId})`: anti-hall's own archived marker, matched to this worktree and not
 /// superseded by a live descriptor of another session.
-fn marker_archived(home: &Path, t: &Target) -> R<bool> {
+pub(crate) fn marker_archived(home: &Path, t: &Target) -> R<bool> {
     if !is_safe_id(&t.id) {
         return Ok(false);
     }
@@ -271,14 +270,10 @@ fn row_terminal(inv: &Inv, t: &Target, held: &std::collections::HashSet<String>)
 fn git_root(path: &str) -> Option<String> {
     use std::io::Read;
     let args: Vec<String> = defaults::list("devswarm_recon.git_root_args").iter().map(|a| a.replace("{path}", path)).collect();
-    let mut child = std::process::Command::new(defaults::text("devswarm_recon.git_bin"))
-        .args(&args)
-        .current_dir(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut cmd = std::process::Command::new(defaults::text("devswarm_recon.git_bin"));
+    cmd.args(&args).current_dir(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    crate::proc::apply_git_env(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
     let end = std::time::Instant::now() + defaults::millis("devswarm_recon.git_timeout_ms");
     let status = loop {
         match child.try_wait() {
@@ -297,11 +292,12 @@ fn git_root(path: &str) -> Option<String> {
     (status.success() && !t.is_empty()).then(|| t.to_string())
 }
 
-/// `rehomeStrandedProjectDescriptors` would move something: a descriptor stranded in the legacy hash bucket whose own worktree
-/// belongs to this project. Detection only.
-fn stranded_exists(home: &Path, repo_key: &str) -> R<bool> {
+/// The ids `rehomeStrandedProjectDescriptors` moves: descriptors stranded in the legacy hash bucket whose own worktree belongs to
+/// this project. Detection only.
+fn stranded_ids(home: &Path, repo_key: &str) -> R<Vec<String>> {
+    let mut found = Vec::new();
     let dir = devswarm_root(home).join(defaults::text("mesh_write.dir_workspaces"));
-    let Some(names) = crate::checks::jsport::fsx::read_dir_names(&dir.to_string_lossy()) else { return Ok(false) };
+    let Some(names) = crate::checks::jsport::fsx::read_dir_names(&dir.to_string_lossy()) else { return Ok(found) };
     let suffix = defaults::text("mesh_write.json_suffix");
     for (name, _) in names {
         let Some(id) = name.strip_suffix(suffix) else { continue };
@@ -309,16 +305,14 @@ fn stranded_exists(home: &Path, repo_key: &str) -> R<bool> {
             continue;
         }
         let Some(d) = ident::read_descriptor(home, id) else { continue };
+        // `!desc.worktreePath` skips a falsy path; a path that is not text exists nowhere and resolves to no key, so the descriptor is
+        // never the project's (`descriptorFreshRepoKey` is null for it)
         let wt = match d.get(defaults::text("mesh_write.field_worktree_path")) {
             Some(OVal::Str(w)) if !w.is_empty() => w.clone(),
-            None | Some(OVal::Null) => continue,
-            Some(v) if !v.truthy() => continue,
-            Some(_) => return defer("descriptor-field-type"),
+            _ => continue,
         };
-        if !matches!(d.get(defaults::text("mesh_write.field_id")), Some(OVal::Str(i)) if i == id) {
-            if d.get(defaults::text("mesh_write.field_id")).is_some_and(|v| !matches!(v, OVal::Str(_))) {
-                return defer("descriptor-field-type");
-            }
+        // `String(desc.id) !== String(id)`
+        if super::heal::js_string(d.get(defaults::text("mesh_write.field_id")))? != id {
             continue;
         }
         if !Path::new(&wt).exists() && has_archived_counterpart(home, id) {
@@ -333,58 +327,19 @@ fn stranded_exists(home: &Path, repo_key: &str) -> R<bool> {
             continue;
         }
         if ident::repo_key_for_worktree(&wt)?.as_deref() == Some(repo_key) {
-            return Ok(true);
+            found.push(id.to_string());
         }
     }
-    Ok(false)
+    Ok(found)
 }
 
-// ---- Node's `inbox pull` for a workspace the engine does not answer ------------------------------------------------------------
+// ---- a workspace the engine does not answer is held ------------------------------------------------------------------------------
 
-/// What Node's `defaultSpawnReconcile` returned.
-#[derive(Debug, Clone, Default)]
-struct NodeRun {
-    stdout: Option<String>,
-    stderr: String,
-    status: Option<i64>,
-    signal: Option<String>,
-    err_code: Option<String>,
-    err_msg: Option<String>,
-    worktree_missing: bool,
-}
-
-fn run_node_pull(ctx: &Ctx, runner: &dyn Runner, id: &str, worktree: &str) -> NodeRun {
-    let r = node(runner, ctx, defaults::text("devswarm_recon.node_pull_snippet"), &[id, worktree], defaults::num("devswarm_recon.node_pull_timeout_ms"));
-    if !r.ok {
-        return NodeRun { err_msg: Some(r.error.clone().unwrap_or_else(|| crate::dssup::tick::cut(&r.stderr))), ..NodeRun::default() };
-    }
-    let v = parse(&r.stdout);
-    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
-    NodeRun {
-        stdout: s("stdout"),
-        stderr: s("stderr").unwrap_or_default(),
-        status: v.get("status").and_then(Value::as_i64),
-        signal: s("signal"),
-        err_code: v.pointer("/error/code").and_then(Value::as_str).map(str::to_string),
-        err_msg: v.pointer("/error/message").and_then(Value::as_str).map(str::to_string),
-        worktree_missing: v.get("worktreeMissing").and_then(Value::as_bool).unwrap_or(false),
-    }
-}
-
-fn parsed_of(r: &NodeRun) -> Option<Value> {
-    if r.err_msg.is_some() || r.err_code.is_some() {
-        return None;
-    }
-    r.stdout.as_deref().and_then(|t| serde_json::from_str::<Value>(t).ok())
-}
-
-/// `isNativeTimeoutRun(r, parsed)`: the pull's own native-timeout marker with no loss and no import, or the spawn killed on its
-/// timeout with nothing parseable.
-fn is_native_timeout(parsed: Option<&Value>, r: Option<&NodeRun>) -> bool {
-    match parsed {
-        Some(p) => p.get("ok") == Some(&json!(false)) && p.get("nativeTimeout") == Some(&json!(true)) && !truthy(p.get("lost")) && !truthy(p.get("imported")),
-        None => r.is_some_and(|r| r.err_code.as_deref() == Some(defaults::text("devswarm_recon.code_timeout"))),
-    }
+/// `isNativeTimeoutRun(r, parsed)`: the pull's own native-timeout marker with no loss and no import.
+fn is_native_timeout(parsed: Option<&Value>) -> bool {
+    parsed.is_some_and(|p| {
+        p.get("ok") == Some(&json!(false)) && p.get("nativeTimeout") == Some(&json!(true)) && !truthy(p.get("lost")) && !truthy(p.get("imported"))
+    })
 }
 
 // ---- cmdReconcile -------------------------------------------------------------------------------------------------------------
@@ -392,8 +347,8 @@ fn is_native_timeout(parsed: Option<&Value>, r: Option<&NodeRun>) -> bool {
 enum Slot {
     /// A row decided without a pull: its result.
     Done(Value),
-    /// A row to drain: the engine's staged pull (an index into the staged list) or Node's.
-    Pull { t: Target, root: String, staged: Option<usize> },
+    /// A row to drain: the engine's staged pull (an index into the staged list), or none (held).
+    Pull { t: Target, root: String, staged: Option<usize>, why: Option<String> },
 }
 
 fn base_row(t: &Target) -> Map<String, Value> {
@@ -454,7 +409,7 @@ fn apply_side(ctx: &Ctx, runner: &dyn Runner, label: &str, p: side::Planned, ext
 }
 
 /// One line of the central log, written by the engine (not a state change the witness could compare).
-fn log_line(ctx: &Ctx, component: &str, op: &str, level: &str, msg: &str, context: &Value) {
+pub(crate) fn log_line(ctx: &Ctx, component: &str, op: &str, level: &str, msg: &str, context: &Value) {
     let env = Env { home: ctx.home, now: ctx.now, st: ctx.st, log_dir: None };
     let u = Unit {
         label: "log".into(),
@@ -477,16 +432,35 @@ pub fn cmd_reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks:
 
 fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks) -> R<ProjectEnd> {
     let home = ctx.home;
-    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else { return Ok(ProjectEnd::Result(json!({"ok": false, "reason": "no-project"}))) };
-    // GH1: a stranded child of this project is Node's to re-home before the listing
-    if stranded_exists(home, &repo_key)? {
-        return defer("rehome-stranded");
+    let Some(repo_key) = ident::repo_key_for_worktree(cwd)? else {
+        // `run()` logs a result that is not ok, a directory that is no project included
+        let inv = Inv {
+            home: home.to_path_buf(),
+            env: pull::sweep_env(&ctx.st.env, home),
+            cwd: cwd.to_string(),
+            now: ctx.now,
+            stdin: None,
+            write_home: home.to_path_buf(),
+            store_override: None,
+        };
+        let why = defaults::text("devswarm_recon.reason_no_project");
+        crate::meshw::clog::refusal(&inv, defaults::text("devswarm_recon.action_reconcile"), None, None, why, Some(why));
+        return Ok(ProjectEnd::Result(json!({"ok": false, "reason": why})));
+    };
+    // GH1: a child of this project stranded in the legacy hash bucket is re-homed before the listing (fail-open per id)
+    for id in stranded_ids(home, &repo_key)? {
+        super::rehome::core(ctx, &id, &repo_key);
     }
     // Claim 3 self-heal pre-pass
     let healed = heal::run(ctx, runner, &repo_key, hooks)?;
-    if !healed.deferred.is_empty() {
-        return defer("heal-deferred");
+    // Node goes on to the listing whatever the heal did; a row whose unit could not apply now (a busy lock, a drifted precondition)
+    // is tried again by the next pass, and is named in the witness log
+    for (id, why) in &healed.deferred {
+        let rec = json!({"ts": ctx.now, "job": defaults::text("devswarm_recon.job_heal"), "repoKey": repo_key, "id": id, "why": why});
+        crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_recon.witness_file")), &rec);
     }
+    // label-only rows (a spawn that could not find the app's id) get their app id; the ghost fold retires the label row into it
+    let id_filled = super::labelfill::fill(ctx, &repo_key);
     let rows = view::registry(home, &repo_key)?;
     let mut targets: Vec<Target> = rows
         .iter()
@@ -580,20 +554,19 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         match pull::stage(ctx, &t.id, &root, &at) {
             Stage::Ready(s) => {
                 staged.push(*s);
-                slots.push(Slot::Pull { t: t.clone(), root, staged: Some(staged.len() - 1) });
+                slots.push(Slot::Pull { t: t.clone(), root, staged: Some(staged.len() - 1), why: None });
             }
             Stage::Node(why) => {
                 pull::note_handback(ctx, &t.id, &why);
-                slots.push(Slot::Pull { t: t.clone(), root, staged: None });
+                slots.push(Slot::Pull { t: t.clone(), root, staged: None, why: Some(why) });
             }
         }
     }
     // the witnessed apply of every captured drain
     let mut drained: Vec<Option<Result<Value, String>>> = pull::drain(ctx, runner, &repo_key, staged, hooks).into_iter().map(Some).collect();
-    let backoff = o.backoff_ms.unwrap_or_else(|| defaults::num("devswarm_recon.timeout_retry_backoff_ms"));
     let mut results: Vec<Value> = Vec::new();
     let unknown_re = re("devswarm_recon.re_repo_unknown_line");
-    let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| Defer(e.to_string()))?;
+    let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).map_err(|e| crate::dssup::failure(e.to_string()))?;
     let is_unknown_text = |texts: &[Option<String>]| {
         texts
             .iter()
@@ -601,47 +574,48 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
             .any(|t| ansi.replace_all(t, "").split(['\n']).any(|l| unknown_re.as_ref().is_some_and(|r| r.is_match(js_trim(l.trim_end_matches('\r'))))))
     };
     for slot in slots {
-        let (t, root, staged_ix) = match slot {
+        let (t, _root, staged_ix, mut why) = match slot {
             Slot::Done(v) => {
                 results.push(v);
                 continue;
             }
-            Slot::Pull { t, root, staged } => (t, root, staged),
+            Slot::Pull { t, root, staged, why } => (t, root, staged, why),
         };
-        // the answer: the engine's recorded result, or Node's own pull
+        // the answer: the engine's recorded result; a workspace it did not answer is held (counted, nothing imported, a skipped row)
         let mut parsed: Option<Value> = None;
-        let mut run: Option<NodeRun> = None;
         if let Some(i) = staged_ix {
             match drained[i].take() {
                 Some(Ok(v)) => parsed = Some(v),
-                Some(Err(why)) => pull::note_handback(ctx, &t.id, &why),
+                Some(Err(e)) => {
+                    pull::note_handback(ctx, &t.id, &e);
+                    why = Some(e);
+                }
                 None => {}
             }
         }
         if parsed.is_none() {
-            let mut r = run_node_pull(ctx, runner, &t.id, &root);
-            let mut p = parsed_of(&r);
-            if is_native_timeout(p.as_ref(), Some(&r)) && !over() {
-                std::thread::sleep(std::time::Duration::from_millis(backoff));
-                r = run_node_pull(ctx, runner, &t.id, &root);
-                p = parsed_of(&r);
+            let why = why.unwrap_or_default();
+            // a workspace with no native queue is skipped by construction, not an abandoned decision
+            if pull::skipped_by_construction(&why) {
+                results.push(skip_row(&t, "devswarm_recon.msg_skip_no_queue", &[]));
+                continue;
             }
-            parsed = p;
-            run = Some(r);
+            let reason = defaults::render("devswarm_recon.msg_pull_held_why", &[("id", &t.id), ("why", &why)]);
+            crate::dssup::tick::held("dssup:recon:pull", &format!("{} ({reason})", defaults::text("devswarm_recon.why_pull_held")));
+            results.push(skip_row(&t, "devswarm_recon.msg_skip_held", &[("held", json!(true))]));
+            continue;
         }
         let pv = |k: &str| parsed.as_ref().and_then(|p| p.get(k));
-        let native_timeout = is_native_timeout(parsed.as_ref(), run.as_ref());
+        let native_timeout = is_native_timeout(parsed.as_ref());
         // repository-unknown bookkeeping
         let scope = scope_of(&t);
         // a success, or a different error, ends the streak of the repository-unknown error
-        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok")))
-            || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str), run.as_ref().map(|r| r.stderr.clone())])
-        {
+        if parsed.as_ref().is_some_and(|p| truthy(p.get("ok"))) || !is_unknown_text(&[pv("error").map(js_str), pv("reason").map(js_str)]) {
             apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), side::plan_repo_unknown_clear(home, &repo_key, &scope), &[]);
         } else if row_terminal(&inv, &t, &held)? {
             let reason = match pv("error").filter(|v| truthy(Some(v))).or_else(|| pv("reason").filter(|v| truthy(Some(v)))) {
                 Some(v) => js_str(v),
-                None => run.as_ref().map(|r| r.stderr.clone()).unwrap_or_default(),
+                None => String::new(),
             };
             let planned = side::plan_repo_unknown_record(home, &repo_key, &scope, &reason, ctx.now)?;
             let rec = apply_side(ctx, runner, defaults::text("devswarm_recon.job_repo_unknown"), planned, &[])
@@ -668,25 +642,11 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         let not_ok = parsed.as_ref().is_some_and(|p| p.get("ok") == Some(&json!(false)));
         let locked = not_ok && pv("locked") == Some(&json!(false)) && re_match("devswarm_recon.re_locked", &err_text);
         let hc_missing = not_ok && re_match("devswarm_recon.re_hc_missing", &err_text);
-        let wt_missing = run.as_ref().is_some_and(|r| r.worktree_missing);
+        let wt_missing = false;
         let error: Value = if truthy(pv("error")) {
             pv("error").cloned().unwrap_or(Value::Null)
         } else if truthy(pv("reason")) {
             pv("reason").cloned().unwrap_or(Value::Null)
-        } else if let Some(m) = run.as_ref().and_then(|r| r.err_msg.clone().or_else(|| r.err_code.clone())) {
-            json!(m)
-        } else if let Some(r) = run.as_ref().filter(|r| parsed.is_none() && (r.status.is_some() || r.signal.is_some() || !js_trim(&r.stderr).is_empty())) {
-            let mut text = defaults::text("devswarm_recon.msg_err_exited").to_string();
-            if let Some(c) = r.status {
-                text.push_str(&defaults::render("devswarm_recon.msg_err_code", &[("code", &c)]));
-            }
-            if let Some(s) = &r.signal {
-                text.push_str(&defaults::render("devswarm_recon.msg_err_signal", &[("signal", s)]));
-            }
-            if !js_trim(&r.stderr).is_empty() {
-                text.push_str(&defaults::render("devswarm_recon.msg_err_stderr", &[("stderr", &js_trim(&r.stderr))]));
-            }
-            json!(text)
         } else if parsed.is_some() {
             Value::Null
         } else {
@@ -730,21 +690,9 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
         },
         None => 0,
     };
-    let missing: Vec<&str> = targets.iter().filter(|t| state::read_name(home, &t.id).is_none()).map(|t| t.id.as_str()).collect();
-    let mut backfilled = 0u64;
-    if !missing.is_empty() {
-        let ids = json!(missing).to_string();
-        let r = node(
-            runner,
-            ctx,
-            defaults::text("devswarm_recon.node_names_snippet"),
-            &[cwd, &ids, &ctx.now.to_string()],
-            defaults::num("devswarm_recon.node_names_timeout_ms"),
-        );
-        if r.ok {
-            backfilled = parse(&r.stdout).get("backfilled").and_then(Value::as_u64).unwrap_or(0);
-        }
-    }
+    // a name still missing after the app's titles comes from ONE `hivecontrol workspace list all` call (best-effort: no binary, a
+    // failed or unparseable answer backfills nothing and never fails the sweep)
+    let backfilled = backfill_names(ctx, runner, cwd, &targets);
     // the resume marker: what is still deferred goes first next time, and a drained sweep leaves no marker
     let marker = view::exists(home, &side::resume_rel());
     if !deferred_ids.is_empty() || marker {
@@ -774,6 +722,9 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     if backfilled > 0 {
         out.insert("namesBackfilled".into(), json!(backfilled));
     }
+    if id_filled > 0 {
+        out.insert(defaults::text("devswarm_recon.lf_report_key").into(), json!(id_filled));
+    }
     let out = Value::Object(out);
     // `run()` logs a result that is not ok
     if !all_ok {
@@ -783,64 +734,187 @@ fn reconcile(ctx: &Ctx, runner: &dyn Runner, cwd: &str, o: &Opts, hooks: &Hooks)
     Ok(ProjectEnd::Result(out))
 }
 
+/// The task-6 name backfill of `cmdReconcile`: the labels hivecontrol lists for the targets that have no cached name.
+fn backfill_names(ctx: &Ctx, runner: &dyn Runner, cwd: &str, targets: &[Target]) -> u64 {
+    let missing: Vec<&Target> = targets.iter().filter(|t| state::read_name(ctx.home, &t.id).is_none()).collect();
+    if missing.is_empty() {
+        return 0;
+    }
+    let probe::Listing::Out(stdout) = probe::list_all(ctx, runner, cwd) else { return 0 };
+    let labels = state::parse_labels(&stdout);
+    missing
+        .iter()
+        .filter(|t| labels.iter().find(|(id, _)| *id == t.id).and_then(|(_, l)| l.as_deref()).is_some_and(|l| state::write_name(ctx.home, &t.id, l, ctx.now)))
+        .count() as u64
+}
+
 // ---- the sweep duty -------------------------------------------------------------------------------------------------------------
 
-/// Who runs the reconcile duty: `node` (the default, Node's `reconcileSweepIfDue` whole) or `engine` (the engine reconciles each
-/// project natively and Node does the rest of the sweep).
+/// Whether the reconcile duty is on (`devswarm_sup.reconcile_mode` is `engine`, the default); anything else is off.
 pub fn engine_mode() -> bool {
     mode_is_engine(&crate::dswire::effective_text("devswarm_sup.reconcile_mode"))
 }
 
-/// Whether the `devswarm_sup.reconcile_mode` word means the engine; anything but the engine word is Node.
+/// Whether the `devswarm_sup.reconcile_mode` word means the engine; anything but the engine word is off, so a typo never starts a second actor.
 pub fn mode_is_engine(word: &str) -> bool {
     defaults::list("devswarm_sup.reconcile_mode_words").get(1).is_some_and(|e| word.trim().eq_ignore_ascii_case(e))
 }
 
-/// The duty's record. `fallback` runs Node's whole `reconcileSweepIfDue` (the duty as Node has it) and is what the engine does
-/// whenever it cannot start the sweep itself.
-pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks, fallback: &dyn Fn() -> Value) -> Value {
+/// The duty's record. `ran`, `projects` (attempted), `skipped` (deferred to a later tick), `results` (per project: `repoKey`, `ok`,
+/// `count`, `imported`, `lost`, `skipped`, `repoUnknown`, `fold`, `active`), `activeProbe`, `activeScope` and `failures` are the fields
+/// Node's supervisor logged for its reconcile pass; `sampling` and the per-project `worktree` and `held` are the engine's own.
+/// A project whose reconcile the engine could not decide is a result with `held: true` and a failure naming the reason.
+pub fn duty(ctx: &Ctx, runner: &dyn Runner, hooks: &Hooks) -> Value {
     let (descs, projects) = match read_descriptors(ctx.home).and_then(|d| distinct_repo_keys(&d).map(|p| (d, p))) {
         Ok(x) => x,
-        Err(_) => return fallback(),
+        Err(Defer(why)) => return json!({"duty": "reconcile", "outcome": "held", "detail": crate::dssup::tick::held("dssup:reconcile:read", &why)}),
     };
     let cap = defaults::num("devswarm_recon.max_projects_per_tick") as usize;
-    let mut pre = Map::new();
-    if !descs.is_empty() && !projects.is_empty() {
-        // persisted BEFORE the work, so a slow or crashed sweep still honours the cool-down
-        if apply_side(ctx, runner, defaults::text("devswarm_recon.job_sweep_state"), side::plan_sweep_state(ctx.home, ctx.now), &[]).is_none() {
-            return fallback();
-        }
-        for p in projects.iter().take(cap) {
-            match cmd_reconcile(ctx, runner, &p.worktree, &Opts::real(), hooks) {
-                ProjectEnd::Result(v) => {
-                    pre.insert(p.worktree.clone(), v);
+    if descs.is_empty() || projects.is_empty() {
+        let why = defaults::text(if descs.is_empty() { "devswarm_recon.reason_no_descriptors" } else { "devswarm_recon.reason_no_projects" });
+        return json!({"duty": "reconcile", "outcome": "ran", "detail": {"ran": false, "reason": why, "projects": 0, "results": []}, "engineProjects": 0});
+    }
+    // persisted BEFORE the work, so a slow or crashed sweep still honours the cool-down
+    if apply_side(ctx, runner, defaults::text("devswarm_recon.job_sweep_state"), side::plan_sweep_state(ctx.home, ctx.now), &[]).is_none() {
+        return json!({"duty": "reconcile", "outcome": "held", "detail": crate::dssup::tick::held("dssup:reconcile:state", defaults::text("devswarm_recon.why_state_held"))});
+    }
+    let ansi = regex::Regex::new(defaults::text("devswarm_recon.ansi_re")).ok();
+    let clean = |t: &str| -> String {
+        crate::checks::jsport::text::slice16_lossy(
+            &ansi.as_ref().map_or_else(|| t.to_string(), |r| r.replace_all(t, "").into_owned()),
+            defaults::num("devswarm_recon.failure_text_max") as usize,
+        )
+    };
+    let mut acc = probe::Acc::default();
+    let mut results: Vec<Value> = Vec::new();
+    let mut failures: Vec<Value> = Vec::new();
+    let (mut any_lost, mut engine_projects) = (false, 0usize);
+    let targets: Vec<&Project> = projects.iter().take(cap).collect();
+    for p in &targets {
+        let mut rec = Map::new();
+        rec.insert("repoKey".into(), json!(p.repo_key));
+        rec.insert("worktree".into(), json!(p.worktree));
+        match cmd_reconcile(ctx, runner, &p.worktree, &Opts::real(), hooks) {
+            ProjectEnd::Result(v) => {
+                engine_projects += 1;
+                // Node folds each project's duplicate mesh rows right after its reconcile (the store is then current)
+                let fold = match super::fold::run(ctx, runner, &p.repo_key, hooks) {
+                    Ok(f) => {
+                        json!({"ok": true, "folded": f.result.folded, "retired": f.result.retired.len(), "forwarded": f.result.forwarded, "pending": f.result.pending.len(), "held": f.deferred.len()})
+                    }
+                    Err(Defer(why)) => {
+                        crate::dssup::tick::held("dssup:reconcile:fold", &why);
+                        json!({"ok": false, "error": why})
+                    }
+                };
+                let rows = v.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+                let flag = |r: &Value, k: &str| r.get(k).is_some_and(|x| truthy(Some(x)));
+                let mut skipped = 0u64;
+                for x in &rows {
+                    if flag(x, "skipped") {
+                        skipped += 1;
+                    } else if x.get("ok") == Some(&json!(false)) && !flag(x, "locked") && !flag(x, "hivecontrolMissing") && !flag(x, "nativeTimeout") {
+                        let err =
+                            x.get("error").filter(|e| truthy(Some(e))).map_or_else(|| defaults::text("devswarm_recon.word_unknown_error").to_string(), js_str);
+                        failures.push(json!({"repoKey": p.repo_key, "id": x.get("id"), "error": clean(&err)}));
+                    }
                 }
-                ProjectEnd::Node(why) => {
-                    let rec = json!({"ts": ctx.now, "job": defaults::text("devswarm_recon.job_project_handback"), "repoKey": p.repo_key, "why": why});
-                    crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_recon.witness_file")), &rec);
+                if v.get("ok") == Some(&json!(false)) && rows.is_empty() {
+                    let err = v
+                        .get("error")
+                        .filter(|e| truthy(Some(e)))
+                        .or_else(|| v.get("reason").filter(|e| truthy(Some(e))))
+                        .map_or_else(|| defaults::text("devswarm_recon.word_reconcile_failed").to_string(), js_str);
+                    failures.push(json!({"repoKey": p.repo_key, "error": clean(&err)}));
                 }
+                if fold.get("ok") == Some(&json!(false)) {
+                    let err = fold.get("error").map_or_else(|| defaults::text("devswarm_recon.word_failed").to_string(), js_str);
+                    failures.push(json!({"repoKey": p.repo_key, "error": format!("{}{}", defaults::text("devswarm_recon.prefix_fold"), clean(&err))}));
+                }
+                any_lost |= truthy(v.get("lost"));
+                rec.insert("ok".into(), json!(truthy(v.get("ok"))));
+                rec.insert("count".into(), or_zero(v.get("count")));
+                rec.insert("imported".into(), or_zero(v.get("imported")));
+                rec.insert("lost".into(), or_zero(v.get("lost")));
+                rec.insert("skipped".into(), json!(skipped));
+                rec.insert("repoUnknown".into(), or_zero(v.get("repoUnknown")));
+                rec.insert("fold".into(), fold);
+            }
+            // a project whose store is on the legacy journal backend: the engine does not read it (the doctor names it); counted
+            // `disabled`, not held, and no failure is raised for it
+            ProjectEnd::Node(why) if why == defaults::text("devswarm_recon.reason_store_backend") => {
+                crate::obs::counters::account("duty", defaults::text("devswarm_recon.legacy_site"), crate::obs::counters::Outcome::Disabled, 0, 0);
+                rec.insert("ok".into(), json!(false));
+                rec.insert("legacy".into(), json!(why));
+                rec.insert("fold".into(), Value::Null);
+            }
+            ProjectEnd::Node(why) => {
+                crate::dssup::tick::held("dssup:reconcile:project", &why);
+                let witness = json!({"ts": ctx.now, "job": defaults::text("devswarm_recon.job_project_handback"), "repoKey": p.repo_key, "why": why});
+                crate::dsact::exec::append_line(&ctx.home.join(defaults::text("devswarm_recon.witness_file")), &witness);
+                failures.push(json!({"repoKey": p.repo_key, "error": format!("{}{}", defaults::text("devswarm_recon.prefix_held"), clean(&why))}));
+                rec.insert("ok".into(), json!(false));
+                rec.insert("held".into(), json!(why));
+                rec.insert("fold".into(), Value::Null);
             }
         }
+        // the active-workspace probe runs for every project, whatever became of its reconcile
+        rec.insert("active".into(), probe::probe_project(ctx, runner, &descs, p, &mut acc));
+        results.push(Value::Object(rec));
     }
-    let scratch = ctx.home.join(defaults::text("devswarm_sup.witness_dir")).join(format!(
-        "{}{}-{}.json",
-        defaults::text("devswarm_recon.pre_file_prefix"),
-        ctx.now,
-        std::process::id()
-    ));
-    if let Some(d) = scratch.parent() {
-        crate::discard::harmless(std::fs::create_dir_all(d)); // keep: the write below reports the failure
+    // the start-up sampling (all descriptors), then the snapshot and the probe's own report
+    let sampled = probe::sampling(ctx, runner, &descs);
+    let (active_probe, active_scope) = probe::finish(ctx, runner, acc);
+    if let Some(pf) = active_probe.get("failure").filter(|f| f.is_object()) {
+        let err = pf.get("error").filter(|e| truthy(Some(e))).or_else(|| pf.get("reason")).map_or_else(String::new, js_str);
+        failures.push(json!({"repoKey": pf.get("repoKey"), "error": format!("{}{}", defaults::text("devswarm_recon.prefix_active_probe"), clean(&err))}));
     }
-    if std::fs::write(&scratch, Value::Object(pre.clone()).to_string()).is_err() {
-        return fallback();
+    // one log line for the pass, `warn` when some project reported a real shortfall
+    let deferred = projects.len() - targets.len();
+    let mut msg = defaults::render("devswarm_recon.msg_sweep_summary", &[("n", &targets.len())]);
+    if deferred > 0 {
+        msg.push_str(&defaults::render("devswarm_recon.msg_sweep_deferred", &[("n", &deferred)]));
     }
-    let timeout = defaults::raw("devswarm_sup.duty.reconcile").get("timeout_ms").and_then(crate::defaults::V::as_integer).unwrap_or(0).max(1) as u64;
-    let r = node(runner, ctx, defaults::text("devswarm_recon.node_tail_snippet"), &[&scratch.to_string_lossy()], timeout);
-    crate::discard::harmless(std::fs::remove_file(&scratch)); // keep: the engine's own scratch file
-    if r.ok {
-        json!({"duty": "reconcile", "outcome": "ran", "detail": parse(&r.stdout), "engineProjects": pre.len()})
+    let brief: Vec<Value> = results.iter().map(|r| json!({"repoKey": r["repoKey"], "ok": r["ok"], "imported": r.get("imported").cloned().unwrap_or(json!(0)), "lost": r.get("lost").cloned().unwrap_or(json!(0))})).collect();
+    log_line(
+        ctx,
+        defaults::text("devswarm_recon.log_component_supervisor"),
+        defaults::text("devswarm_recon.log_op_reconcile_sweep"),
+        defaults::text(if any_lost { "devswarm_recon.log_level_warn_word" } else { "devswarm_recon.log_level_info" }),
+        &msg,
+        &json!({"results": brief}),
+    );
+    // failures are listed in full once; an identical list on the next pass is only counted (Node: reconcile-log-sig.json)
+    let sig_file = devswarm_root(ctx.home).join(defaults::text("devswarm_recon.file_log_sig"));
+    let prev_sig = std::fs::read(&sig_file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v.get("sig").and_then(Value::as_str).map(str::to_string));
+    let mut lines: Vec<String> = failures
+        .iter()
+        .map(|f| {
+            [
+                f.get("repoKey").map_or_else(String::new, |v| if v.is_null() { String::new() } else { js_str(v) }),
+                f.get("id").filter(|v| truthy(Some(v))).map_or_else(String::new, js_str),
+                js_str(&f["error"]),
+            ]
+            .join("|")
+        })
+        .collect();
+    lines.sort();
+    let sig = lines.join("\n");
+    let failures_out = if failures.is_empty() {
+        json!(0)
+    } else if prev_sig.as_deref() == Some(sig.as_str()) {
+        json!({"unchanged": failures.len(), "note": defaults::render("devswarm_recon.msg_failures_unchanged", &[("n", &failures.len())])})
     } else {
-        let why = r.error.clone().unwrap_or_else(|| crate::dssup::tick::cut(&r.stderr));
-        json!({"duty": "reconcile", "outcome": "failed", "error": why, "status": r.status, "timedOut": r.timed_out})
+        Value::Array(failures.clone())
+    };
+    if prev_sig.as_deref() != Some(sig.as_str()) {
+        crate::discard::logged("reconcile_log_sig", crate::atomic::write(&sig_file, json!({"sig": sig}).to_string()));
     }
+    json!({"duty": "reconcile", "outcome": "ran", "detail": {
+        "ran": true, "projects": targets.len(), "skipped": deferred, "results": results,
+        "activeProbe": active_probe, "activeScope": active_scope, "failures": failures_out, "sampling": sampled,
+    }, "engineProjects": engine_projects})
 }
