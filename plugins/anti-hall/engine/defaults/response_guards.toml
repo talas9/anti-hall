@@ -233,8 +233,18 @@ doc = "The Jev integration id of the speculation question (add-block trust)."
 value = "speculation"
 
 [speculation_guard.jev_gate]
-doc = "When the Stop waits for Jev on the speculation question: `hit` (default) only when the hedge scan found a marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop. Any other value is read as `hit`. Ignored while jev.gate_enabled is 0."
-value = "hit"
+doc = "When the Stop waits for Jev on the speculation question: `claim` (default) when the hedge scan found a marker OR the reply makes an unhedged completion claim (speculation_guard.claim_markers) that neither acknowledges nor cites evidence, `hit` only on a hedge marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop (every Stop then costs a Jev round trip: not for the Stop latency bar). Any other value is read as `claim`. The wait is bounded by jev.stop_soft_ms / jev.stop_hard_ms and fails open. Ignored while jev.gate_enabled is 0."
+value = "claim"
+
+[speculation_guard.claim_markers]
+doc = "Regex sources (case-insensitive) of an unhedged completion claim: a reply that says the work is finished or working, with no hedge word. With speculation_guard.jev_gate = claim such a reply, when it holds no acknowledgment and cites no tool output, is asked about on the Jev lane; the rule layer never blocks it by itself."
+value = [
+  '\ball (done|set|good|fixed|green)\b',
+  '\b(it|that|this|everything|all of it) (now )?(works|is working|passes|is passing|is fixed|is done|is complete|is resolved)\b',
+  '\b(fixed|resolved|completed|finished|done|shipped|merged|pushed|deployed|verified)\s*[.!]',
+  '\b(fix|change|work|task|feature|migration|implementation) (is|are) (now )?(complete|done|fixed|working|merged|shipped|in place|deployed)\b',
+  '\b(tests|build|ci|checks) (are |is )?(now )?(all )?(green|passing|pass|passes)\b',
+]
 
 [speculation_guard.jev_framed_id]
 doc = "The Jev integration id of the framed-expectation question (relax-block trust)."

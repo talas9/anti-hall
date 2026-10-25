@@ -100,3 +100,7 @@ value = "tasklist_omc"
 [advisory.kind_tasklist_plan_mode]
 doc = "The advisory kind name of the task-list guard's plan-mode note."
 value = "tasklist_plan_mode"
+
+[advisory.kind_tasklist_budget]
+doc = "The advisory kind name of the task-list hygiene line (a subject over handover.taskSubjectMax or open tasks over handover.taskListBudget)."
+value = "tasklist_budget"

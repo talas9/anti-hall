@@ -154,8 +154,13 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
     } else if ty == tr("user") {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
+        let content = msg.and_then(|m| m.get(tr("content")));
+        if !super::is_child(a) && a.kind != super::kind_name("codex") && owner_turn(v, content) {
+            a.owner_ms = a.owner_ms.max(ts);
+        }
+        task_results(a, content);
         if !a.bg_ids.is_empty() {
-            task_ends(a, msg.and_then(|m| m.get(tr("content"))), ts);
+            task_ends(a, content, ts);
         }
         for b in blocks {
             if str_of(b, tr("type_key")) == tr("tool_result") {
@@ -263,6 +268,54 @@ pub(crate) fn lim_n(k: &str) -> u64 {
     defaults::raw("agent_nudge.limits").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }
 
+/// Whether a user line is the owner talking to this session: not a meta line, not a tool result, and either an origin kind the owner's
+/// messages carry (`agent_tracker.owner_origins`) or, with no origin recorded, text that does not start like a notice
+/// (`patterns.owner_skip`).
+fn owner_turn(v: &Value, content: Option<&Value>) -> bool {
+    let flag = |k: &str| v.get(tr(k)).and_then(Value::as_bool) == Some(true);
+    if flag("meta") || flag("sidechain") || v.get(tr("tool_result_top")).is_some() {
+        return false;
+    }
+    let text = match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(bs)) if !bs.is_empty() && !bs.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) => {
+            bs.iter().map(|b| str_of(b, tr("text"))).collect::<Vec<_>>().join(" ")
+        }
+        _ => return false,
+    };
+    match v.get(tr("origin")).and_then(|o| o.get(tr("origin_kind"))).and_then(Value::as_str) {
+        Some(kind) => defaults::raw("agent_tracker.owner_origins").strings().contains(&kind),
+        None => !text.trim().is_empty() && !pat("owner_skip").is_some_and(|r| r.is_match(&text)) || matches!(content, Some(Value::Array(_))),
+    }
+}
+
+/// Completed task notices in a user line for tasks that are not background shell commands the agent started: a subagent returned its
+/// result to this agent. Counted once per task id, as the `agent_result` weight.
+fn task_results(a: &mut Agent, content: Option<&Value>) {
+    let text = match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(c) => result_text(c),
+        None => return,
+    };
+    let (block, id_re, st_re) = (
+        crate::checks::lit_re(defaults::text("agent_scan.re_notification_block")),
+        crate::checks::lit_re(defaults::text("agent_scan.re_task_id")),
+        crate::checks::lit_re(defaults::text("agent_scan.re_status")),
+    );
+    let ok = defaults::raw("agent_tracker.result_statuses").strings();
+    for b in block.captures_iter(&text) {
+        let body = b.get(1).map_or("", |m| m.as_str());
+        let id = id_re.captures(body).and_then(|c| c.get(1)).map_or("", |m| m.as_str());
+        let st = st_re.captures(body).and_then(|c| c.get(1)).map_or("", |m| m.as_str());
+        if id.is_empty() || a.bg_ids.contains_key(id) || a.report_ids.iter().any(|r| r == id) || !ok.iter().any(|w| w.eq_ignore_ascii_case(st)) {
+            continue;
+        }
+        push_ring(&mut a.report_ids, id.to_string(), lim("files_max"));
+        a.reports += 1;
+        a.progress += weight("agent_result");
+    }
+}
+
 /// Terminal task notices in a user line that name a background shell task the agent started: the task ended.
 fn task_ends(a: &mut Agent, content: Option<&Value>, ts: u64) {
     let text = match content {
@@ -326,11 +379,17 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
         if !path.is_empty() && !a.files.iter().any(|f| f == path) {
-            a.progress += weight("file");
+            a.progress += if pat("report_path").is_some_and(|r| r.is_match(path)) { weight("report_file").max(weight("file")) } else { weight("file") };
             push_ring(&mut a.files, path.to_string(), lim("files_max"));
         }
         a.step_events += 1;
         for w in words(path) {
+            push_ring(&mut a.work, w, lim("work_words_max"));
+        }
+    } else if tools("read").contains(&name) {
+        // reading is work on the step too: its targets are the words the drift check compares with the step
+        a.step_events += 1;
+        for w in words(arg) {
             push_ring(&mut a.work, w, lim("work_words_max"));
         }
     } else if tools("shell").contains(&name) {
@@ -389,7 +448,8 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64) {
     wake(a, name, &input, ts);
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push });
+        let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
@@ -469,6 +529,11 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
         a.guard_fires += 1;
+    }
+    // a subagent launched in the foreground returned its result to this agent
+    if !failed && !p.ack && tools("agent").contains(&p.name.as_str()) {
+        a.reports += 1;
+        a.progress += weight("agent_result");
     }
     if p.bg
         && !failed

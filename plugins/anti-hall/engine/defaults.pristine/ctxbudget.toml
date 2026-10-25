@@ -276,6 +276,14 @@ value = { section = "handover", key = "taskListBudget", kind = "num", env = "", 
 doc = "Longest task subject (characters) allowed at a handover."
 value = { section = "handover", key = "taskSubjectMax", kind = "num", env = "", aliases = [], option = "", manifest_default = "60", default = 60, min = 1 }
 
+[ctxbudget.set_h_task_enforce]
+doc = "The handover.taskListEnforce setting: what happens when a created task subject is over handover.taskSubjectMax or the open-task count is over handover.taskListBudget. off = silent, advisory = one line with the numbers, block = the TaskCreate/TaskUpdate call is refused."
+value = { section = "handover", key = "taskListEnforce", kind = "enum", values = ["off", "advisory", "block"], env = "", aliases = [], option = "", manifest_default = "advisory", default = "advisory" }
+
+[ctxbudget.set_h_task_done_note]
+doc = "The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one line, to record the outcome in the history ledger and delete the task from the session list."
+value = { section = "handover", key = "taskDoneNote", kind = "bool", env = "", aliases = [], option = "", manifest_default = "true", default = true }
+
 [ctxbudget.set_h_mem_lines]
 doc = "Most lines the MEMORY.md index may hold at a handover."
 value = { section = "handover", key = "memoryIndexMaxLines", kind = "num", env = "", aliases = [], option = "", manifest_default = "100", default = 100, min = 1 }

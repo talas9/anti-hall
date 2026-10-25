@@ -83,6 +83,27 @@ function swgNamesOtherTree(t, tree) {
   return false;
 }
 
+// true when a rule in the owner's memory files (the project's memory folder, listed in swarm_guard.memory_sources) forbids worktrees.
+function swgMemoryNoWorktrees(cwd) {
+  var home = ah.home();
+  if (!home) return false;
+  var slug = ah.path.resolveAbs(cwd).replace(new RegExp(ah.cfg('swarm_guard.memory_slug_re'), 'g'), '-'), cap = ah.cfgNum('script.read_max_bytes');
+  var dirs = ah.cfg('swarm_guard.memory_sources').map(function (d) { return ah.path.join(home, d.split('{slug}').join(slug)); });
+  var re = ah.cfg('swarm_guard.re_no_worktrees');
+  for (var i = 0; i < dirs.length; i++) {
+    var names = ah.fs.readdir(dirs[i]);
+    if (names === null) continue;
+    for (var j = 0; j < names.length && j < ah.cfgNum('swarm_guard.memory_files_max'); j++) {
+      if (!/\.md$/.test(names[j])) continue;
+      var f = ah.path.join(dirs[i], names[j]), size = ah.fs.size(f);
+      if (size === null || size > cap) continue;
+      var t = ah.fs.readText(f, cap);
+      if (t !== null && ah.re.test(re, 'i', t)) return true;
+    }
+  }
+  return false;
+}
+
 function swgInScratch(inp, tree) {
   var i = swgIsObj(inp) ? inp : {};
   var t = String(i.prompt || '') + '\n' + String(i.description || '');
@@ -93,7 +114,10 @@ function swgInScratch(inp, tree) {
   var place = ah.cfg('swarm_guard.re_in_place');
   var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
   var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
-  return (ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
+  // an agent that only writes a report or results under the scratch location touches no checkout, unless it also says it edits repo files
+  var scratchOnly = ah.settings.bool('swarm_guard.scratch_only_setting') &&
+    ah.re.test(ah.cfg('swarm_guard.re_scratch_only').split('{path}').join(path), 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_repo_write'), 'i', t);
+  return (scratchOnly || ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
     !ah.re.test(place, 'i', affirmative);
 }
 
@@ -141,6 +165,9 @@ function swgSharedTreeNote(p) {
   if (!p.cwd) return null;
   var noWt = swgRepoDocsMatch(String(p.cwd), ah.cfg('swarm_guard.re_no_worktrees'));
   if (noWt === null) return null;
+  if (ah.settings.bool('swarm_guard.quiet_no_worktrees_setting')) { // a rule that says main-only / no worktrees makes the hint moot
+    if (noWt || swgMemoryNoWorktrees(String(p.cwd))) return '';
+  }
   return text.message('warn', ah.cfg('swarm_guard.shared_tree_label'), {
     what: ah.cfg('swarm_guard.msg_shared_what'), why: ah.cfg('swarm_guard.msg_shared_why'),
     instead: ah.cfg(noWt ? 'swarm_guard.msg_shared_instead_no_worktrees' : 'swarm_guard.msg_shared_instead'),

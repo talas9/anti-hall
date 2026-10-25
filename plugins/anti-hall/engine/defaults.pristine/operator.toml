@@ -1391,6 +1391,14 @@ value = "wk:"
 doc = "Before the 5-hour usage percentage."
 value = "5h:"
 
+[statusline.usage_ctx_gap]
+doc = "Between the usage segment and the context percentage that follows it."
+value = " "
+
+[statusline.version_key]
+doc = "The setting that shows the version chip."
+value = "version"
+
 [statusline.usage_sep]
 doc = "Between the weekly and the 5-hour usage percentages."
 value = " | "
@@ -1635,9 +1643,37 @@ value = "✉ "
 doc = "Marks an available update."
 value = "★ "
 
-[statusline.chip_label]
-doc = "The version chip label."
-value = "AH: V"
+[statusline.chip_fmt]
+doc = "The version chip: `{plugin}` is the plugin version, `{engine}` the engine version (no build suffix), each `?` when not known."
+value = "AH: V{plugin}/V{engine}"
+
+[statusline.chip_unknown]
+doc = "Shown in place of a version that is not known."
+value = "?"
+
+[statusline.chip_color_ok]
+doc = "The color of the version chip when nothing is wrong."
+value = "dim"
+
+[statusline.chip_color_warn]
+doc = "The color of the version chip when the engine is older than the plugin supports, or a minor update is available."
+value = "yellow"
+
+[statusline.chip_color_bad]
+doc = "The color of the version chip when the engine version cannot be read, or a major update is available."
+value = "red"
+
+[statusline.level_color_red]
+doc = "The color of a context or usage percentage at or above the red level."
+value = "brightRed"
+
+[statusline.level_color_yellow]
+doc = "The color of a context or usage percentage at or above the yellow level."
+value = "brightYellow"
+
+[statusline.level_color_ok]
+doc = "The color of a context or usage percentage below the yellow level."
+value = "brightGreen"
 
 [statusline.branch_head]
 doc = "The git status line that names the branch."
