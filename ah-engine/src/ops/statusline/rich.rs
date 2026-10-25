@@ -10,10 +10,10 @@ use crate::defaults;
 use crate::migrate::{j_number, str_number};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::SystemTime;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
+use std::time::SystemTime;
 
 /// What the renderer came to: a line, or "the JavaScript code throws here" (the dispatcher then tries the next renderer).
 pub enum Rich {
@@ -288,10 +288,8 @@ fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
         (c.c(defaults::text("statusline.chip_color_ok")), "")
     };
     let unknown = defaults::text("statusline.chip_unknown");
-    let label = defaults::render(
-        "statusline.chip_fmt",
-        &[("plugin", &version.as_deref().unwrap_or(unknown)), ("engine", &engine.as_deref().unwrap_or(unknown))],
-    );
+    let label =
+        defaults::render("statusline.chip_fmt", &[("plugin", &version.as_deref().unwrap_or(unknown)), ("engine", &engine.as_deref().unwrap_or(unknown))]);
     format!("  {}{}{}  {col}{prefix}{label}{}", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"), c.c("reset"))
 }
 
