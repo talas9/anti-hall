@@ -128,8 +128,8 @@ fn the_prune_advisory_reaches_the_model_on_the_prompt_once_per_list_change() {
     let first = prune_context(&home, &dir);
     let second = prune_context(&home, &dir);
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
-    assert!(first.contains("2 completed/cancelled tasks in the list (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
-    assert!(!second.contains("completed/cancelled tasks in the list"), "an unchanged list must not repeat it: {second}");
+    assert!(first.contains("2 completed/cancelled tasks (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
+    assert!(!second.contains("completed/cancelled tasks ("), "an unchanged list must not repeat it: {second}");
 }
 
 /// A long session: Claude Code's own task store (`~/.claude/tasks/session-<first 8 of the id>/N.json`) holds 11 completed tasks, one pending and one
@@ -177,6 +177,65 @@ fn a_long_session_whose_transcript_tail_lacks_the_creates_reads_its_list_from_th
     assert!(std::fs::metadata(&transcript).unwrap().len() > 1_572_864 + 100_000, "the creates must lie outside the tail window");
     let ctx = prompt_context(&home, &dir, sid, &transcript, "10");
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
-    assert!(ctx.contains("11 completed/cancelled tasks in the list (> 10)"), "the prune advisory must count the store's done tasks: {ctx}");
+    assert!(ctx.contains("11 completed/cancelled tasks (> 10)"), "the prune advisory must count the store's done tasks: {ctx}");
     assert!(ctx.contains("open tasks: 2"), "the open-task line must count the pending task the tail never mentions: {ctx}");
+}
+
+/// The prompt digest (#338 item 2, `inject_gate.digest_hooks`) keeps one headline per advisory inline and spills the rest to a file the
+/// model has to open. The prune advisory used to trail the tracker's generic reminder, so it was always in the spilled part: produced
+/// correctly, never seen. Through the real dispatcher, with the digest threshold at its minimum (the verify-first reminder speaks too), the INLINE
+/// part (before the spill pointer) must carry it.
+#[test]
+fn the_prune_advisory_survives_the_prompt_digest_inline() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("w6-digest-{}", std::process::id()));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::create_dir_all(home.join("proj")).unwrap();
+    let mut t = String::new();
+    for n in 1..=13 {
+        t += &format!(
+            "{}\n{}\n",
+            json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("task {n}")}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: task {n}")}]}})
+        );
+    }
+    for n in 1..=12 {
+        t += &format!(
+            "{}\n",
+            json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("u{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "completed"}}]}})
+        );
+    }
+    let transcript = home.join("t.jsonl");
+    std::fs::write(&transcript, t).unwrap();
+    let map = dir.join("map.json");
+    std::fs::write(&map, "{}").unwrap();
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "d1d1d1d1-0000-4000-8000-000000000001", "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", &home)
+        .env("ANTIHALL_INGEST_DRY_RUN", "1")
+        .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "10")
+        .env("ANTIHALL_PROMPT_DIGEST_MIN", "2") // the verify-first reminder and the tracker are two digestible advisories
+        .env("AH_ENGINE_DIR", dir.join("state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .env("CLAUDE_PLUGIN_ROOT", plugin())
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {out} / {}", String::from_utf8_lossy(&o.stderr)));
+    let ctx = v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).unwrap_or("").to_string();
+    assert!(ctx.contains("(full text: "), "the stand-ins must make the digest spill, else this test proves nothing: {ctx}");
+    let inline = ctx.split("(full text: ").next().unwrap_or("");
+    assert!(inline.contains("12 completed/cancelled tasks (> 10)"), "the prune advisory must be in the inline digest, not only the spill file: {ctx}");
 }
