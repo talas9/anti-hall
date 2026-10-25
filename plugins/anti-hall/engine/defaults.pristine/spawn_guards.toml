@@ -99,7 +99,7 @@ doc = "The switch safety.swarmGuard (on by default); off makes the guard a no-op
 value = { section = "safety", key = "swarmGuard", type = "boolean", env = "ANTIHALL_SWARM_GUARD", option = "safety_swarm_guard", default = true }
 
 [swarm_guard.shared_tree_setting]
-doc = "The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent."
+doc = "Shared-tree spawn advisory switch. The switch guards.sharedTreeAgentNote (on by default): the advisory for a write-capable spawn that shares a working tree with a running write-capable agent."
 value = { section = "guards", key = "sharedTreeAgentNote", type = "boolean", env = "ANTIHALL_SHARED_TREE_AGENT_NOTE", option = "", default = true }
 
 [swarm_guard.spawn_cap]
@@ -348,6 +348,35 @@ value = '''^(?:~|\$HOME)'''
 [swarm_guard.re_scratch_negated]
 doc = "JavaScript regex source (case-insensitive): a negated scratch statement, which cancels the scratch reading."
 value = '''\b(?:not|no|without|instead\s+of)\s+(?:in\s+|a\s+|the\s+|any\s+)?scratch\b'''
+
+[swarm_guard.quiet_no_worktrees_setting]
+doc = "Quiets the shared-tree note when worktrees are forbidden. Where the switch is read from that silences the shared-tree advisory when a CLAUDE.md, AGENTS.md or memory rule forbids worktrees (guards.sharedTreeQuietNoWorktrees, default on)."
+value = { section = "guards", key = "sharedTreeQuietNoWorktrees", env = "ANTIHALL_SHARED_TREE_QUIET_NO_WORKTREES", aliases = [], option = "", default = true }
+
+[swarm_guard.memory_sources]
+doc = "Folders under the home directory whose .md files are read for the no-worktrees rule; {slug} is the working directory with every re of memory_slug_re replaced by a dash (the host's project folder name)."
+value = [".claude/projects/{slug}/memory"]
+
+[swarm_guard.memory_slug_re]
+doc = "JavaScript regex source of the characters of a working directory path that the host's project folder name replaces with a dash."
+value = '[^A-Za-z0-9-]'
+
+[swarm_guard.memory_files_max]
+doc = "The most memory files read in one folder."
+value = 200
+min = 1
+
+[swarm_guard.scratch_only_setting]
+doc = "Report-only agents share no tree. Where the switch is read from that treats an agent whose brief only writes a report or results under the scratch location as sharing no tree (guards.sharedTreeScratchOnly, default on)."
+value = { section = "guards", key = "sharedTreeScratchOnly", env = "ANTIHALL_SHARED_TREE_SCRATCH_ONLY", aliases = [], option = "", default = true }
+
+[swarm_guard.re_scratch_only]
+doc = "JavaScript regex source (case-insensitive; {path} is the scratch path): a brief that writes, saves or puts a report, findings, results or output under the scratch location."
+value = '''\b(?:writ(?:e|es|ing)|sav(?:e|es|ing)|put|puts|output|outputs)\b[^\n]{0,80}?\b(?:to|into|under|in|at)\s+{path}'''
+
+[swarm_guard.re_repo_write]
+doc = "JavaScript regex source (case-insensitive): a brief that also edits, commits or pushes repo files, which cancels the scratch-only reading."
+value = '''\b(?:edit|modify|patch|refactor|fix|implement|commit|push)\b|\bwrit(?:e|es|ing)\s+(?:code|tests?|source)\b'''
 
 [swarm_guard.re_api_only]
 doc = "JavaScript regex source (case-insensitive): a statement that the spawn only calls the GitHub API or gh CLI and edits no checkout (gh-API-only, only calls the GitHub API, no checkout, do not touch the working tree). Such a spawn shares no working tree, so the shared-tree advisory does not apply; an in-place statement still cancels it."

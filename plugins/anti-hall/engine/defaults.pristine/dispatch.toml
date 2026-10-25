@@ -176,11 +176,42 @@ doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed 
 value = "anti-hall: the engine could not run the guards for {event} ({why}) and cannot count its blocks, so the agent is let finish rather than risk a loop. Repair the install (`doctor --repair`)."
 
 [dispatch.spill_over_cap]
-doc = "1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in hook order, the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands."
+doc = "1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in priority order (dispatch.context_priority), the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands."
 value = 1
 env = "AH_ENGINE_SPILL_OVER_CAP"
 min = 0
 max = 1
+
+[dispatch.priority_order]
+doc = "1 = the hooks of an event that cannot block are combined in priority order (dispatch.context_priority, highest first, hook order among equals): the context an over-cap join keeps inline is the most important, and what goes to the spill file is the least (#311). 0 = hook order, as before."
+value = 1
+env = "AH_ENGINE_PRIORITY_ORDER"
+min = 0
+max = 1
+
+[dispatch.context_priority_default]
+doc = "The priority of a hook entry that has no row in dispatch.context_priority."
+value = 50
+min = 0
+max = 1000
+
+[dispatch.context_pin_priority]
+doc = "A hook entry at or above this priority is pinned: it is placed first and is meant to stay inline. A pinned context that still had to spill (the pinned ones alone are over the cap) is counted in `status` delivery.pinned_spills and logged, so the cap or the priorities can be tuned."
+value = 80
+min = 0
+max = 1000
+
+[dispatch.context_priority]
+doc = "Per hook entry id (a variant suffix after ':' or '#' takes its base name's row), the priority of its additionalContext in the combined output of an event that cannot block: protocol and role text and the reminders an agent must act on are pinned (>= dispatch.context_pin_priority), housekeeping notices are lowest. Blocks and decisions are not contexts and are never spilled."
+value = { "verify-first" = 95, "verify-first-full" = 95, "verify-first-orch" = 90, "verify-first-orch-codex" = 90, "verify-first-subagent" = 95, "devswarm-child-role" = 90, "engine-role-note" = 85, "handover-resume" = 90, "auto-handover" = 90, "task-tracker" = 85, "devswarm-parent-inbox" = 85, "devswarm-child-turn" = 85, "devswarm-rt-advisory" = 80, "agent-reminders" = 80, "limit-conserve-inject" = 70, "version-alert" = 60, "switch-notice" = 60, "defect-nudge" = 40, "handover-hygiene" = 30, "procwatch-advisory" = 30, "gh-rt-advisory" = 30, "repo-self-drift" = 30, "fable-availability" = 25, "codex-availability" = 25, "devswarm-version" = 25, "claude-cli-version" = 25, "jev-review-reminder" = 20, "jev-weekly-scorecard" = 10 }
+
+[dispatch.spill_label]
+doc = "Telemetry label (kind spill, status delivery.spills_by_event) of an over-cap spill whose file holds only context below dispatch.context_pin_priority."
+value = "dispatcher"
+
+[dispatch.spill_pinned_label]
+doc = "Telemetry label of an over-cap spill whose file holds a context at or above dispatch.context_pin_priority (counted in status delivery.pinned_spills)."
+value = "dispatcher-pinned"
 
 [dispatch.spill_dir]
 doc = "The directory under the state dir that holds the over-cap context files (mode 0600, one per spilled event)."
@@ -500,6 +531,7 @@ value = [
   { id = "speculation-guard", matcher = "", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
+  { id = "claim-evidence-guard", matcher = "", timeout = 30, check = "claim-evidence-guard" },
   { id = "codex-nudge", matcher = "", timeout = 30, check = "codex-nudge" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },
@@ -532,6 +564,7 @@ value = [
   { id = "orch-on-spawn", matcher = "Agent|Task|Workflow", timeout = 10, check = "orch-on-spawn" },
   { id = "devswarm-comms-guard", matcher = "SendMessage", timeout = 10, check = "devswarm-comms-guard" },
   { id = "ask-guard", matcher = "AskUserQuestion", timeout = 10, check = "ask-guard" },
+  { id = "tasklist-hygiene", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "stale-agent-stop-note", matcher = "TaskStop", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", timeout = 10, check = "engine-role-guard" },
@@ -555,6 +588,7 @@ value = [
   { id = "coordinator-work-guard:post", matcher = "Bash", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", timeout = 10, check = "codex-quota-detect" },
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "dispatch-tier" },
+  { id = "tasklist-hygiene:post", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
 ]
 

@@ -285,7 +285,13 @@ pub fn daemon_section(doc: &mut Doc) {
     match (&reply, &sock_kind) {
         (Some(r), _) => {
             doc.ok(defaults::render("doctor_msg.daemon_up", &[("reply", &js_trim(r))]));
-            if let Some(fo) = crate::client::ctl_json("status").and_then(|st| st.get("fail_open").cloned()).filter(|f| f.is_object()) {
+            let status = crate::client::ctl_json("status");
+            // #312: an answer of an essential reminder (diagnostics.shed_never) that was shed is a delivery failure the owner should see
+            let essential_shed = status.as_ref().and_then(|st| st.pointer("/delivery/essential_shed").and_then(serde_json::Value::as_u64)).unwrap_or(0);
+            if essential_shed > 0 {
+                doc.warnl(defaults::render("doctor_msg.delivery_shed", &[("n", &essential_shed)]));
+            }
+            if let Some(fo) = status.and_then(|st| st.get("fail_open").cloned()).filter(|f| f.is_object()) {
                 let num = |k: &str| fo.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
                 let (n, window, top) = (num("in_window"), num("window_s"), fo.get("top_reason").and_then(serde_json::Value::as_str).unwrap_or(""));
                 let effect = crate::failopen::effect(top);

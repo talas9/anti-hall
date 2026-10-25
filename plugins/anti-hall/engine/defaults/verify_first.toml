@@ -74,7 +74,7 @@ doc = "Regexes (JavaScript syntax) over transcript_path that mark a Codex payloa
 value = ['(^|[\\/])rollout-[^\\/]*\.jsonl$', '[\\/]\.codex[\\/]']
 
 [verify_first.setting_subagent]
-doc = "Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on)."
+doc = "Verify-first-subagent switch. Where the on/off switch of verify-first-subagent is read from (context.verifyFirstSubagent, default on)."
 value = { section = "context", key = "verifyFirstSubagent", env = "", aliases = [], option = "context_verify_first_subagent", default = true }
 
 [verify_first.setting_session]
@@ -110,7 +110,7 @@ doc = "The one line sent when the session was already served the protocol and th
 value = "ANTI-HALL VERIFY-FIRST: already delivered earlier this session. No speculation, no fix without a proven root cause; full protocol: <abs>/PROTOCOL.md"
 
 [verify_first.setting_orchestration]
-doc = "Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself."
+doc = "Orchestration rules switch. Where the on/off switch of the orchestration hook is read from (context.verifyFirstOrchestration, default on); when off, the compact SessionStart text carries the model-routing line itself."
 value = { section = "context", key = "verifyFirstOrchestration", env = "", aliases = [], option = "context_verify_first_orchestration", default = true }
 
 [verify_first.setting_level]

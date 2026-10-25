@@ -308,7 +308,9 @@ function decide(p) {
   var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
     mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
-  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped) {
+  // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
+  var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' '));
+  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');
   }
   return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');

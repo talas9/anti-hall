@@ -491,8 +491,6 @@ pub const RT_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?
 pub const RT_ROWS: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
 /// The same, with the body (the broadcast partition's run detection reads it).
 pub const RT_ROWS_BODY: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt, body FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
-/// One row's body.
-pub const RT_BODY: &str = "SELECT body FROM messages WHERE id = ?1";
 /// Every workspace's broadcast cursor.
 pub const RT_BC_ALL: &str = "SELECT value FROM broadcast_cursors";
 /// One workspace's broadcast cursor.

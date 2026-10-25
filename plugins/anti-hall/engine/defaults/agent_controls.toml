@@ -225,7 +225,7 @@ doc = "The tool this check answers."
 value = "AskUserQuestion"
 
 [ask_guard.mode_setting]
-doc = "Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off)."
+doc = "Question mode: off, advise or block. Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off)."
 value = { section = "guards", key = "noBlockingQuestions", env = "ANTIHALL_NO_BLOCKING_QUESTIONS", aliases = [], option = "", default = "off", values = ["off", "advise", "block"] }
 
 [ask_guard.note_setting]
@@ -413,7 +413,7 @@ doc = "Where the on/off switch is read from (guards.silentAgentNudge, default on
 value = { section = "guards", key = "silentAgentNudge", env = "ANTIHALL_SILENT_AGENT_NUDGE", aliases = [], option = "guards_silent_agent_nudge", default = true }
 
 [silent_nudge.min_setting]
-doc = "Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1)."
+doc = "Silence threshold in minutes. Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1)."
 value = { section = "guards", key = "silentAgentNudgeMin", env = "ANTIHALL_SILENT_AGENT_NUDGE_MIN", aliases = [], option = "guards_silent_agent_nudge_min", default = 20, min = 1 }
 
 [silent_nudge.min_default]

@@ -111,6 +111,9 @@ pub static STALE_AGENT_STOP_NOTE: Scripted = Scripted::new("stale-agent-stop-not
 /// `claim-ledger`.
 pub static CLAIM_LEDGER: Scripted = Scripted::new("claim-ledger", "claim_ledger.summary");
 
+/// `claim-evidence-guard` (Stop; engine-only; GH #313): a claim needs a tool call of this turn, and pushed is not done.
+pub static CLAIM_EVIDENCE_GUARD: Scripted = Scripted::new("claim-evidence-guard", "claim_evidence.summary");
+
 /// `idle-agent-sweep`.
 pub static IDLE_AGENT_SWEEP: Scripted = Scripted::new("idle-agent-sweep", "idle_sweep.summary");
 
@@ -264,6 +267,9 @@ pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "que
 
 /// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
+
+/// `tasklist-hygiene` (PostToolUse and PreToolUse on TaskCreate and TaskUpdate; engine-only, Claude only): keeps the session task list small.
+pub static TASKLIST_HYGIENE: Scripted = Scripted::new("tasklist-hygiene", "tasklist_hygiene.summary");
 
 /// `switch-notice` (run by the dispatcher on UserPromptSubmit and PreToolUse, not a hook row; engine-only): the up-front line about the session-wide switches.
 pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.summary");

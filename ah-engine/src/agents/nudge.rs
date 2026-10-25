@@ -125,6 +125,31 @@ pub struct Nudge {
     pub out_mark: u64,
     /// When the stop action ran after an escalation (0 = not).
     pub acted_at: u64,
+    /// The text of the last nudge or reminder sent to the parent (the queue fallback of a wake-only delivery sends it again).
+    pub last_text: String,
+    /// When the last delivery row naming this nudge was recorded (0 = none yet).
+    pub last_delivered_at: u64,
+    /// When a wake-only delivery was repeated in the reminder queue because no delivery was recorded in time (0 = not).
+    pub fallback_at: u64,
+}
+
+/// A snooze kept per child and trigger, outside the nudge it was given to: it holds a re-raised condition until it runs out and its
+/// count carries over to the next nudge about the same condition.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Snooze {
+    /// No nudge about the condition before this time.
+    pub until: u64,
+    /// Snoozes taken for this child and trigger.
+    pub snoozes: u64,
+    /// Minutes of the last one.
+    pub min: u64,
+    /// Re-raises the snooze held back.
+    pub held: u64,
+}
+
+fn snooze_key(child: &str, trigger: &str) -> String {
+    format!("{child}|{trigger}")
 }
 
 fn lim(k: &str) -> u64 {
@@ -250,10 +275,13 @@ fn answer_line(n: &Nudge) -> String {
 fn send_to(env: &Env, to: &str, n: &Nudge, text: String) -> String {
     let r = Reminder { id: format!("{}-{}", n.id, n.reminders), ts: env.now_ms, signal: word("signal").into(), agent: n.child.clone(), text };
     let mut path = Vec::new();
-    if SessionQueue.deliver(env, to, &r).is_ok() {
+    // a session a wake-watch covers gets the nudge on its wake feed alone (it reaches an active session too), so it is seen once; the
+    // reminder queue is the fallback when no wake line was delivered in time (`follow`) and the road for a session nothing watches
+    let armed = wake_armed(env, to);
+    if (!armed || !env.switch("agent_nudge.once_setting")) && SessionQueue.deliver(env, to, &r).is_ok() {
         path.push(word("path_queue"));
     }
-    if wake_armed(env, to) && WakeFeed.deliver(env, to, &r).is_ok() {
+    if armed && WakeFeed.deliver(env, to, &r).is_ok() {
         path.push(word("path_wake"));
     }
     path.join(word("path_join"))
@@ -334,6 +362,14 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     (parts.join(ef.str_field("join")), idle_min, spent, step)
 }
 
+/// What the outcomes line says of the owner: when they last spoke to this session, empty when not within the window.
+fn owner_text(a: &Agent, now: u64) -> String {
+    if a.owner_ms == 0 || now.saturating_sub(a.owner_ms) >= crate::agents::lim("owner_active_ms") {
+        return String::new();
+    }
+    defaults::fill(defaults::raw("agent_nudge.evidence_fmt").str_field("owner"), &[("min", &(now.saturating_sub(a.owner_ms) / (super::fmtn("ms_per_s") * 60)))])
+}
+
 fn health_req(a: &Agent, now: u64) -> Value {
     let calls: Vec<String> = a.recent.iter().rev().take(lim("health_calls") as usize).rev().map(|r| super::cap(&r.1, lim("step_cap"))).collect();
     let goal: Vec<String> = [a.name.as_str(), a.step.as_str()].iter().filter(|s| !s.is_empty()).map(|s| super::cap(s, lim("step_cap"))).collect();
@@ -344,7 +380,7 @@ fn health_req(a: &Agent, now: u64) -> Value {
     json!({
         "id": defaults::text("agent_nudge.health_integration"), "child": a.id, "dur": age(now.saturating_sub(super::started_ms(a))),
         "facts": {"tool_calls": calls.len()},
-        "sections": {"goal": goal, "tool_calls": calls, "outcomes": [defaults::render("agent_nudge.outcomes_line", &[("commits", &a.commits), ("steps", &a.steps_done), ("checks", &a.tests_pass), ("files", &a.files.len())])], "signals": signals},
+        "sections": {"goal": goal, "tool_calls": calls, "outcomes": [defaults::render("agent_nudge.outcomes_line", &[("commits", &a.commits), ("steps", &a.steps_done), ("checks", &a.tests_pass), ("files", &a.files.len()), ("reports", &a.reports), ("owner", &owner_text(a, now))])], "signals": signals},
         "blocking": false,
     })
 }
@@ -353,17 +389,31 @@ fn health_req(a: &Agent, now: u64) -> Value {
 fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
     let now = env.now_ms;
     let mut ids: Vec<(String, &'static str)> = Vec::new();
+    let mut held: Vec<String> = Vec::new();
+    let hold_snooze = env.switch("agent_nudge.snooze_setting");
     for a in st.agents.values() {
-        if escalate::primary(a) || a.dead || st.nudges.contains_key(&a.id) || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now) {
+        if escalate::primary(a)
+            || a.dead
+            || st.nudges.contains_key(&a.id)
+            || st.nudge_hold.get(&a.id).is_some_and(|t| *t > now)
+            || super::signals::owner_active(env, a, now)
+        {
             continue;
         }
+        // a snooze still running for this child and trigger holds the re-raised condition: no new nudge (and no new ref) about it
+        let snoozed = |trig: &str| hold_snooze && st.nudge_snooze.get(&snooze_key(&a.id, trig)).is_some_and(|s| s.until > now);
         let codex_hung = a.kind == kind_name("codex")
             && a.codex_exec
             && !a.codex_terminal
             && escalate::num("codex_hung_ms") > 0
             && now.saturating_sub(a.last_output_ms) >= escalate::num("codex_hung_ms");
         if codex_hung {
-            ids.push((a.id.clone(), defaults::raw("agent_nudge.triggers").str_field("codex_hung")));
+            let t = defaults::raw("agent_nudge.triggers").str_field("codex_hung");
+            if snoozed(t) {
+                held.push(snooze_key(&a.id, t));
+            } else {
+                ids.push((a.id.clone(), t));
+            }
             continue;
         }
         if state_of(a) != state_name("running") {
@@ -371,7 +421,26 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
         }
         // the first trigger signal in the tracker's signal order (hung before waste)
         if let Some(t) = super::defaults_signals().iter().filter(|s| a.flags.contains_key(**s)).find_map(|s| trigger_of(s)) {
-            ids.push((a.id.clone(), t));
+            if snoozed(t) {
+                held.push(snooze_key(&a.id, t));
+            } else {
+                ids.push((a.id.clone(), t));
+            }
+        }
+    }
+    for k in held {
+        if let Some(s) = st.nudge_snooze.get_mut(&k) {
+            s.held += 1;
+            if s.held == 1 {
+                let (child, trig) = k.split_once('|').unwrap_or((&k, ""));
+                rec(
+                    env,
+                    word("class"),
+                    word("ev_snooze_held"),
+                    Outcome::Advise,
+                    Fields::new().tok("agent", child).tok("trigger", trig).num("snoozes", s.snoozes).num("snooze_min", s.min),
+                );
+            }
         }
     }
     for (id, trig) in ids {
@@ -435,6 +504,8 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             sent_at: now,
             last_sent: now,
             reminders: 1,
+            // a snooze already taken for this child and trigger counts toward the escalation limit
+            snoozes: st.nudge_snooze.get(&snooze_key(&a.id, trig)).filter(|_| hold_snooze).map_or(0, |s| s.snoozes),
             tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
             ..Nudge::default()
@@ -459,6 +530,7 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
                 ("answer", &answer_line(&n)),
             ],
         );
+        n.last_text.clone_from(&text);
         match to {
             Some(p) => n.path = send_to(env, &p, &n, text),
             None => escalate_now(env, st, &mut n, defaults::text("agent_nudge.why_no_parent")),
@@ -475,6 +547,10 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     n.outcome_at = now;
     n.tokens_after = st.agents.get(child).map_or(0, |a| super::signals::total_spent(a).saturating_sub(n.tokens_at_sent));
     emit(env, word("ev_resolved"), &n);
+    // the child is over (or was stopped): its snoozes go with it; one that only made progress keeps them for the next spell
+    if [out("finished"), out("child_died"), out("acted_stopped")].contains(&outcome) {
+        st.nudge_snooze.retain(|k, _| k.split_once('|').is_none_or(|(c, _)| c != child));
+    }
     st.nudge_log.push(n);
     let max = lim("log_max") as usize;
     if st.nudge_log.len() > max {
@@ -519,6 +595,27 @@ fn follow(env: &Env, st: &mut State) {
         } else if n.answer_class == ans("msg") && now.saturating_sub(n.answer_at) >= window {
             n.answer_class.clear();
         }
+        // a wake-only delivery that no wake line confirmed in time is put in the reminder queue too (never after a recorded delivery)
+        if env.switch("agent_nudge.once_setting")
+            && n.path == word("path_wake")
+            && n.last_delivered_at < n.last_sent
+            && n.fallback_at < n.last_sent
+            && !n.last_text.is_empty()
+            && now.saturating_sub(n.last_sent) >= lim("wake_fallback_ms")
+            && live(st, &n.parent)
+        {
+            let r = Reminder {
+                id: format!("{}-{}-q", n.id, n.reminders),
+                ts: now,
+                signal: word("signal").into(),
+                agent: n.child.clone(),
+                text: n.last_text.clone(),
+            };
+            if SessionQueue.deliver(env, &n.parent, &r).is_ok() {
+                n.fallback_at = now;
+                n.path = [n.path.as_str(), word("path_queue")].join(word("path_join"));
+            }
+        }
         let snoozed = n.snooze_until > now;
         if !snoozed && n.answer_class.is_empty() && now.saturating_sub(n.last_sent) >= lim("cadence_ms") {
             // a reminder after an expired snooze is not an ignored one
@@ -541,6 +638,7 @@ fn follow(env: &Env, st: &mut State) {
                 "msg.agent_nudge_repeat",
                 &[("n", &n.reminders), ("kind", &n.child_kind), ("name", &n.child_name), ("evidence", &n.ev_text), ("answer", &answer_line(&n))],
             );
+            n.last_text.clone_from(&text);
             if live(st, &n.parent) {
                 n.path = send_to(env, &n.parent.clone(), &n, text);
             } else {
@@ -719,6 +817,10 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
         n.snooze_min = min;
         n.snoozes += 1;
         n.snooze_until = now + min * super::fmtn("ms_per_s") * 60;
+        if env.switch("agent_nudge.snooze_setting") && !n.trigger.is_empty() {
+            let s = st.nudge_snooze.entry(snooze_key(&n.child, &n.trigger)).or_default();
+            (s.until, s.snoozes, s.min, s.held) = (n.snooze_until, n.snoozes, min, 0);
+        }
         n.last_sent = now;
         n.answer_class.clear(); // a snooze ends in a reminder, not a verification
         n.outcome = out("snoozed").into();
@@ -927,9 +1029,12 @@ pub(crate) fn delivered(st: &mut State, v: &Value, ts: u64) -> bool {
     if v["signal"].as_str() != Some(word("signal")) {
         return false;
     }
-    if let Some(n) = v["agent"].as_str().and_then(|c| st.nudges.get_mut(c)).filter(|n| n.delivered_at == 0) {
-        n.delivered_at = ts;
-        n.delivered_to = v["key"].as_str().unwrap_or("").to_string();
+    if let Some(n) = v["agent"].as_str().and_then(|c| st.nudges.get_mut(c)) {
+        n.last_delivered_at = n.last_delivered_at.max(ts);
+        if n.delivered_at == 0 {
+            n.delivered_at = ts;
+            n.delivered_to = v["key"].as_str().unwrap_or("").to_string();
+        }
     }
     true
 }
@@ -957,9 +1062,27 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
     watch_parents(st);
     let now = env.now_ms;
     st.nudge_hold.retain(|_, t| *t > now);
+    let forget = lim("snooze_forget_ms");
+    let agents = &st.agents;
+    st.nudge_snooze.retain(|k, s| now < s.until.saturating_add(forget) && k.split_once('|').is_some_and(|(c, _)| agents.contains_key(c)));
 }
 
 // ---- the answer verb and the data API -------------------------------------------------------------------------
+
+/// A snooze of `asked` minutes inside the configured range: the minutes given, and the message key that says it was changed (none
+/// when the value was in range).
+pub(super) fn clamp_snooze(asked: u64) -> (u64, Option<&'static str>) {
+    let (lo, hi) = (lim("snooze_min_min"), lim("snooze_max_min"));
+    let given = asked.clamp(lo, hi);
+    let key = if asked > hi {
+        Some("msg.agent_nudge_snooze_clamped")
+    } else if asked < lo {
+        Some("msg.agent_nudge_snooze_floor")
+    } else {
+        None
+    };
+    (given, key)
+}
 
 /// `ah-engine agents nudge <child> stop | msg "<text>" | snooze <min> ["reason"] | other "<reason>" | <prose>`.
 pub fn run_answer(p: &Parsed) -> i32 {
@@ -988,10 +1111,34 @@ pub fn run_answer(p: &Parsed) -> i32 {
         }
         _ => (ans("prose"), rest.join(" "), 0),
     };
-    let row = json!({"ts": env.now_ms, "child": child, "answer": answer, "text": super::cap(&text, lim("reason_cap")), "min": min});
+    // a snooze outside the configured range is clamped here, where the owner can be told; a value is never recorded silently
+    let (asked, mut note) = (min, String::new());
+    let mut min = min;
+    if answer == ans("snooze") && min > 0 {
+        let (given, key) = clamp_snooze(asked);
+        min = given;
+        if let Some(key) = key {
+            note = defaults::render(key, &[("child", child), ("min", &min), ("max", &lim("snooze_max_min")), ("asked", &asked)]);
+        }
+    }
+    let mut row = json!({"ts": env.now_ms, "child": child, "answer": answer, "text": super::cap(&text, lim("reason_cap")), "min": min});
+    if !note.is_empty() {
+        row["asked"] = json!(asked);
+        row["clamped"] = json!(true);
+    }
     match sinks::append(&env.dir().join(defaults::raw("agent_nudge.paths").str_field("answers")), &row) {
         Ok(()) => {
-            println!("{}", if p.json { row.to_string() } else { defaults::render("msg.agent_nudge_recorded", &[("child", child), ("answer", &answer)]) });
+            let said = defaults::render("msg.agent_nudge_recorded", &[("child", child), ("answer", &answer)]);
+            println!(
+                "{}",
+                if p.json {
+                    row.to_string()
+                } else if note.is_empty() {
+                    said
+                } else {
+                    format!("{said}\n{note}")
+                }
+            );
             0
         }
         Err(e) => {

@@ -61,6 +61,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUse",
             "timeout": 10,
             "id": "dispatch-tier"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PostToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PostToolUse",
+            "timeout": 10,
+            "id": "tasklist-hygiene:post"
           }
         ]
       },
@@ -268,6 +274,17 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PreToolUse",
             "timeout": 10,
             "id": "ask-guard"
+          }
+        ]
+      },
+      {
+        "matcher": "TaskCreate|TaskUpdate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" PreToolUse || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" PreToolUse",
+            "timeout": 10,
+            "id": "tasklist-hygiene"
           }
         ]
       },
@@ -524,6 +541,12 @@
             "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop",
             "timeout": 30,
             "id": "claim-ledger"
+          },
+          {
+            "type": "command",
+            "command": "[ -x \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" ] && exec \"$HOME/.anti-hall/ah-engine/bin/ah-hook\" Stop || exec sh \"${CLAUDE_PLUGIN_ROOT}/hooks/install.sh\" Stop",
+            "timeout": 30,
+            "id": "claim-evidence-guard"
           },
           {
             "type": "command",
