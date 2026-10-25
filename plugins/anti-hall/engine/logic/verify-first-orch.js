@@ -98,7 +98,7 @@ function vfoDecide(p, opts, claudeHost) {
   function emit(t) { return { advisory: text.advisoryJson(ah.cfg('verify_first_orch.event'), t) }; }
   if (ah.settings.enum('orch_state.protocol_setting') === ah.cfg('orch_state.full_level') || primary) { writeNone(); return emit(vfoFull(codex, primary)); }
   var mode = ah.settings.enum('orch_state.orch_full_on_setting');
-  if (mode === 'auto') mode = 'session';
+  if (mode === 'auto') mode = ah.cfg('orch_state.auto_mode');
   if (mode === 'spawn' && !confident) mode = 'session';
   if (codex && !confident && mode !== 'off') {
     mode = 'session';

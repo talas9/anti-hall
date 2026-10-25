@@ -407,7 +407,7 @@ mod tests {
             None
         }
         fn mem(&mut self) -> MemInfo {
-            MemInfo { swap_used: 0, pressure: Pressure::Unknown }
+            MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 }
         }
         fn space(&self, _: &Path) -> Option<Space> {
             None

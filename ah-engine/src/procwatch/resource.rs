@@ -28,6 +28,8 @@ pub struct Limits {
     pub mac_level: u32,
     /// Cooldown.
     pub cooldown_s: u64,
+    /// Free RAM percent at or above which swap in use is not an alarm (0 = swap alone decides).
+    pub free_ok_pct: f64,
 }
 
 impl Limits {
@@ -42,6 +44,7 @@ impl Limits {
             psi_pct: n("resource_watch.psi_pct"),
             mac_level: n("resource_watch.mac_pressure_level") as u32,
             cooldown_s: n("resource_watch.cooldown_s") as u64,
+            free_ok_pct: n("resource_watch.free_ram_ok_pct"),
         }
     }
 
@@ -66,6 +69,8 @@ pub struct Warn {
     pub usage: String,
     /// The threshold, ready to read.
     pub limit: String,
+    /// Free RAM, ready to read (empty for a process warning or when it is not known).
+    pub ram: String,
     /// When the warning was made (seconds).
     pub ts_s: u64,
 }
@@ -139,6 +144,7 @@ impl State {
                             name: base_name(&r.cmd),
                             usage: render("resource_watch.msg_cpu_usage", &[("pct", &pct), ("window", &win)]),
                             limit: render("resource_watch.msg_cpu_limit", &[("pct", &format!("{:.0}", lim.cpu_pct)), ("window", &win)]),
+                            ram: String::new(),
                             ts_s: now,
                         });
                     }
@@ -153,14 +159,28 @@ impl State {
                     name: base_name(&r.cmd),
                     usage: render("resource_watch.msg_mem_usage", &[("mb", &mb.to_string())]),
                     limit: render("resource_watch.msg_mem_limit", &[("mb", &lim.mem_mb.to_string())]),
+                    ram: String::new(),
                     ts_s: now,
                 });
             }
         }
-        // system warnings reach every session
+        // system warnings reach every session. Swap in use alone is not an alarm: the OS parks idle pages in swap long before it is
+        // short of memory, so it counts only when free RAM is low (or not known, when swap is all there is to go by).
         let swap_mb = mem.swap_used / defaults::num("resource_watch.bytes_per_mb");
-        if lim.swap_mb > 0 && swap_mb >= lim.swap_mb && self.due("swap".into(), now, lim.cooldown_s) {
-            out.push(Warn { kind: "swap", pid: 0, session_pid: 0, name: String::new(), usage: swap_mb.to_string(), limit: lim.swap_mb.to_string(), ts_s: now });
+        let ram = ram_text(mem);
+        let free_pct = (mem.ram_total > 0).then(|| mem.ram_free as f64 * defaults::num("resource_watch.percent_base") as f64 / mem.ram_total as f64);
+        let ram_healthy = free_pct.is_some_and(|p| lim.free_ok_pct > 0.0 && p >= lim.free_ok_pct);
+        if lim.swap_mb > 0 && swap_mb >= lim.swap_mb && !ram_healthy && self.due("swap".into(), now, lim.cooldown_s) {
+            out.push(Warn {
+                kind: "swap",
+                pid: 0,
+                session_pid: 0,
+                name: String::new(),
+                usage: swap_mb.to_string(),
+                limit: lim.swap_mb.to_string(),
+                ram: ram.clone(),
+                ts_s: now,
+            });
         }
         let pressure = match mem.pressure {
             Pressure::Psi(p) if lim.psi_pct > 0.0 && p >= lim.psi_pct => Some((format!("PSI {p:.0}%"), format!("{:.0}%", lim.psi_pct))),
@@ -170,10 +190,23 @@ impl State {
         if let Some((value, limit)) = pressure
             && self.due("pressure".into(), now, lim.cooldown_s)
         {
-            out.push(Warn { kind: "pressure", pid: 0, session_pid: 0, name: String::new(), usage: value, limit, ts_s: now });
+            out.push(Warn { kind: "pressure", pid: 0, session_pid: 0, name: String::new(), usage: value, limit, ram, ts_s: now });
         }
         out
     }
+}
+
+/// The free-RAM figure shown with a system warning (`resource_watch.msg_ram`); empty when RAM is not known.
+fn ram_text(mem: &MemInfo) -> String {
+    if mem.ram_total == 0 {
+        return String::new();
+    }
+    let mb = defaults::num("resource_watch.bytes_per_mb");
+    let pct = mem.ram_free * defaults::num("resource_watch.percent_base") / mem.ram_total;
+    render(
+        "resource_watch.msg_ram",
+        &[("free_mb", &(mem.ram_free / mb).to_string()), ("total_mb", &(mem.ram_total / mb).to_string()), ("free_pct", &pct.to_string())],
+    )
 }
 
 /// The nearest ancestor that is a live Claude session process.
@@ -193,8 +226,8 @@ fn session_of(cfg: &Cfg, table: &HashMap<u32, &ProcRow>, row: &ProcRow) -> Optio
 /// The one line a warning is shown as.
 pub fn line(w: &Warn) -> String {
     match w.kind {
-        "swap" => render("resource_watch.msg_swap", &[("used", &w.usage), ("limit", &w.limit)]),
-        "pressure" => render("resource_watch.msg_pressure", &[("value", &w.usage), ("limit", &w.limit)]),
+        "swap" => render("resource_watch.msg_swap", &[("used", &w.usage), ("limit", &w.limit), ("ram", &w.ram)]),
+        "pressure" => render("resource_watch.msg_pressure", &[("value", &w.usage), ("limit", &w.limit), ("ram", &w.ram)]),
         _ => render(
             "resource_watch.msg_proc_what",
             &[("name", &w.name), ("pid", &w.pid.to_string()), ("session", &w.session_pid.to_string()), ("usage", &w.usage), ("limit", &w.limit)],

@@ -179,6 +179,10 @@ value = { section = "context", key = "protocolLevel", env = "ANTIHALL_PROTOCOL_L
 doc = "Where the delivery mode of the full orchestration rules is read from (context.orchFullOn)."
 value = { section = "context", key = "orchFullOn", env = "ANTIHALL_ORCH_FULL_ON", aliases = [], option = "", default = "auto", values = ["auto", "spawn", "session", "off"] }
 
+[orch_state.auto_mode]
+doc = "What context.orchFullOn = auto means: `spawn` (the default) sends the compact orchestration text at the start and the full rules once, on the coordinator's first spawn, per context epoch; `session` sends the full rules (about 7.6k characters) at every start, resume and compaction. A session that cannot be proven to run under Claude Code (no spawn marker possible) always gets `session`."
+value = "spawn"
+
 [orch_state.codex_orch_full_on_setting]
 doc = "Codex delivery mode of the full rules. Where the Codex delivery mode of the full orchestration rules is read from (context.codexOrchFullOn)."
 value = { section = "context", key = "codexOrchFullOn", env = "ANTIHALL_CODEX_ORCH_FULL_ON", aliases = [], option = "", default = "session", values = ["session", "spawn"] }
