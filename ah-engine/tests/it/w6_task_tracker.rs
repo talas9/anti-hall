@@ -85,14 +85,19 @@ fn prune_context(home: &std::path::Path, dir: &std::path::Path) -> String {
     }
     let transcript = home.join("t.jsonl");
     std::fs::write(&transcript, t).unwrap();
-    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
+    prompt_context(home, dir, "s1", &transcript, "1")
+}
+
+/// One UserPromptSubmit of session `sid` over `transcript`, the prune threshold at `prune_after`; the additional context.
+fn prompt_context(home: &std::path::Path, dir: &std::path::Path, sid: &str, transcript: &std::path::Path, prune_after: &str) -> String {
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "next", "cwd": home.join("proj"), "transcript_path": transcript});
     let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
     c.args(["check", "task-tracker"])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
-        .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", "1")
+        .env("ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", prune_after)
         .env("AH_ENGINE_DIR", dir.join("state"))
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_PLUGIN_ROOT", plugin())
@@ -125,4 +130,53 @@ fn the_prune_advisory_reaches_the_model_on_the_prompt_once_per_list_change() {
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     assert!(first.contains("2 completed/cancelled tasks in the list (> 1)"), "the prune advisory must be model-visible context on the prompt: {first}");
     assert!(!second.contains("completed/cancelled tasks in the list"), "an unchanged list must not repeat it: {second}");
+}
+
+/// A long session: Claude Code's own task store (`~/.claude/tasks/session-<first 8 of the id>/N.json`) holds 11 completed tasks, one pending and one
+/// in progress, but the last `taskstate.tail_bytes` of the transcript hold no TaskCreate and one TaskUpdate. The transcript
+/// reconstruction cannot see the other tasks, so the prune advisory and the open-task line never fired; the store is the source.
+#[test]
+fn a_long_session_whose_transcript_tail_lacks_the_creates_reads_its_list_from_the_task_store() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("w6-long-{}", std::process::id()));
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
+    std::fs::create_dir_all(home.join("proj")).unwrap();
+    let sid = "0a1b2c3d-1111-2222-3333-444455556666";
+    let store = home.join(".claude/tasks/session-0a1b2c3d");
+    std::fs::create_dir_all(&store).unwrap();
+    for n in 1..=13 {
+        let status = match n {
+            13 => "in_progress",
+            12 => "pending",
+            _ => "completed",
+        };
+        let rec = json!({"id": n.to_string(), "subject": format!("long task {n}"), "description": "d", "status": status, "blocks": [], "blockedBy": []});
+        std::fs::write(store.join(format!("{n}.json")), rec.to_string()).unwrap();
+    }
+    let mut t = String::new();
+    for n in 1..=13 {
+        t += &format!(
+            "{}\n{}\n",
+            json!({"type": "assistant", "message": {"id": format!("c{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("long task {n}")}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: long task {n}")}]}})
+        );
+    }
+    // far more than the tail window of filler, then a single update of the last task
+    let filler = json!({"type": "assistant", "message": {"id": "f", "role": "assistant", "content": [{"type": "text", "text": "x".repeat(4096)}]}}).to_string();
+    for _ in 0..500 {
+        t += &filler;
+        t.push('\n');
+    }
+    t += &format!(
+        "{}\n",
+        json!({"type": "assistant", "message": {"id": "u13", "role": "assistant", "content": [{"type": "tool_use", "id": "u13", "name": "TaskUpdate", "input": {"taskId": "13", "status": "in_progress"}}]}})
+    );
+    let transcript = home.join("long.jsonl");
+    std::fs::write(&transcript, t).unwrap();
+    assert!(std::fs::metadata(&transcript).unwrap().len() > 1_572_864 + 100_000, "the creates must lie outside the tail window");
+    let ctx = prompt_context(&home, &dir, sid, &transcript, "10");
+    ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+    assert!(ctx.contains("11 completed/cancelled tasks in the list (> 10)"), "the prune advisory must count the store's done tasks: {ctx}");
+    assert!(ctx.contains("open tasks: 2"), "the open-task line must count the pending task the tail never mentions: {ctx}");
 }

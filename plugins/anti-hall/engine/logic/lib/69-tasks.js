@@ -14,6 +14,49 @@ var tk = {
     tasks.unsure = !!r.unsure;
     return tasks;
   },
+  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`), or null when there is none
+  // or it cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
+  // what is done and open; the transcript's tasks only add what the store does not carry.
+  storeTasks: function (home, sid) {
+    if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
+    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
+    for (var i = 0; i < names.length; i++) {
+      var dir = base + text.render(names[i], { sid: sid, sid8: sid.slice(0, 8) });
+      var files = ah.fs.readdir(dir);
+      if (files === null) continue;
+      files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); return null; }
+      var out = [];
+      for (var k = 0; k < files.length; k++) {
+        var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
+        if (raw === null) continue;
+        var rec;
+        try { rec = JSON.parse(raw); } catch (e) { continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') continue;
+        out.push({
+          id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
+          description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
+          owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+          blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
+        });
+      }
+      if (out.length > 0) return out;
+    }
+    return null;
+  },
+  // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
+  // gives subject, status, owner and blockers while the transcript keeps its other facts (blockedOn marker, time).
+  withStore: function (tasks, store) {
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+    return store.map(function (s) {
+      var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.blockedBy = s.blockedBy;
+      t.unknown = null; t.blockUnknown = false;
+      return t;
+    });
+  },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
   isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },
   isDone: function (t) { return ah.cfg('taskstate.done_statuses').indexOf(tk.statusLc(t)) >= 0; },

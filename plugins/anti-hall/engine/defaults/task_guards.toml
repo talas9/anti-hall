@@ -163,6 +163,28 @@ doc = "How much of the end of a transcript the task reconstruction reads (the No
 value = 1572864
 min = 1
 
+[taskstate.store_base]
+doc = "Path parts, under the home directory, of Claude Code's own task store: one directory per task list, one `<id>.json` per task. It is the authoritative list when it exists (the transcript tail of a long session no longer holds the creates). Codex has no such store, so it keeps the transcript reconstruction."
+value = [".claude", "tasks"]
+
+[taskstate.store_dir_names]
+doc = "Candidate directory names of a session's task list under the store, tried in order, the first that exists wins. `{sid}` is the session id, `{sid8}` its first 8 characters (the list id the `session-<8>` convention uses). A session id with a character outside `[A-Za-z0-9_-]` is not looked up."
+value = ["session-{sid8}", "{sid}"]
+
+[taskstate.store_file_suffix]
+doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
+value = ".json"
+
+[taskstate.store_max_files]
+doc = "Most task files read from one store directory; a larger directory is read as absent and the transcript reconstruction answers (fail-open, bounded hook latency)."
+value = 1000
+min = 1
+
+[taskstate.store_file_max_bytes]
+doc = "Largest task file read; a bigger one is skipped."
+value = 65536
+min = 1
+
 [taskstate.re_created]
 doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
 value = '^Task\s+#(\d+)\s+created\s+successfully'
