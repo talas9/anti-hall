@@ -304,7 +304,7 @@ fn heavy_spend_with_no_progress_is_token_waste_and_a_commit_clears_it() {
     let h = home("waste");
     let n = now0();
     let p = sess(&h, "s1");
-    write(&p, &[prompt(n - 2 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "thinking"}]), None)]);
+    write(&p, &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "thinking"}]), None)]);
     let mut st = State::default();
     ticks(&h, &mut st, &[n]);
     append(&p, &[asst(n + 19 * MIN, "m1", 700_000, 10, json!([{"type": "text", "text": "still thinking"}]), None)]);
@@ -1549,7 +1549,8 @@ fn answer_snooze(e: &Env, child: &str, min: u64) {
 /// The scripted session of the issue: a live, wake-armed parent, one subagent that spends 700k tokens per cycle with no outcome until
 /// a commit clears the flag, and an owner that snoozes every nudge that shows up. Returns (nudges opened, delivery rows written for the
 /// nudge signal over the queue and the wake feed, distinct reminder ids among them, snooze answers sent).
-fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u64) -> (usize, usize, usize, u64) {
+/// The parent session (live, wake-armed through `arm_wake`) and its subagent `abc`; returns (home, start time, the child's transcript).
+fn nudge_home(tag: &str) -> (PathBuf, u64, PathBuf) {
     let h = home(tag);
     let n = now0();
     register(&h, std::process::id(), "parent", "busy", n);
@@ -1557,6 +1558,20 @@ fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u
     let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
     write(&child, &[prompt(n - 5 * MIN, "/w"), asst(n - 4 * MIN, "c0", 1000, 10, json!([{"type": "text", "text": "start"}]), None)]);
     std::fs::write(child.with_file_name("agent-abc.meta.json"), r#"{"description":"Research the billing export"}"#).unwrap();
+    (h, n, child)
+}
+
+/// One cycle's first half at `b`: a commit (progress), then 700k tokens with no outcome.
+fn spend_cycle(child: &Path, k: u64, b: u64) -> (Vec<String>, Vec<String>) {
+    let _ = child;
+    (
+        vec![tool(b, &format!("k{k}"), 10, &format!("g{k}"), "Bash", json!({"command": "git commit -m step"})), result(b + 1000, &format!("g{k}"), "ok", false)],
+        vec![asst(b + 2 * MIN, &format!("w{k}"), 700_000, 10, json!([{"type": "text", "text": "reading"}]), None)],
+    )
+}
+
+fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u64) -> (usize, usize, usize, u64, u64) {
+    let (h, n, child) = nudge_home(tag);
     let mut st = State::default();
     let mut answers = 0;
     let tick_at = |st: &mut State, t: u64| {
@@ -1567,11 +1582,12 @@ fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u
     };
     for k in 0..cycles {
         let b = n + k * 45 * MIN;
-        append(&child, &[tool(b, &format!("k{k}"), 10, &format!("g{k}"), "Bash", json!({"command": "git commit -m step"})), result(b + 1000, &format!("g{k}"), "ok", false)]);
+        let (commit, spend) = spend_cycle(&child, k, b);
+        append(&child, &commit);
         tick_at(&mut st, b + MIN);
-        append(&child, &[asst(b + 2 * MIN, &format!("w{k}"), 700_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+        append(&child, &spend);
         let e = tick_at(&mut st, b + 18 * MIN);
-        if st.nudges.get("abc").is_some_and(|n| n.snoozes == 0 && n.answer_class.is_empty() && n.snooze_until <= e.now_ms) {
+        if st.nudges.get("abc").is_some_and(|n| n.first_answer_at == 0) {
             answer_snooze(&e, "abc", snooze_min);
             answers += 1;
         }
@@ -1581,12 +1597,178 @@ fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u
     let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig).collect();
     let ids: std::collections::BTreeSet<String> = rows.iter().map(|r| r["id"].as_str().unwrap_or("").to_string()).collect();
     let opened = st.nudges.len() + st.nudge_log.iter().filter(|n| n.trigger != "dead").count();
-    println!("MEASURE {tag}: nudges_opened={opened} delivery_rows={} distinct_reminders={} snooze_answers={answers}", rows.len(), ids.len());
-    (opened, rows.len(), ids.len(), answers)
+    let most = st.nudges.values().chain(st.nudge_log.iter()).map(|n| n.snoozes).max().unwrap_or(0);
+    println!("MEASURE {tag}: nudges_opened={opened} delivery_rows={} distinct_reminders={} snooze_answers={answers} snoozes_counted={most}", rows.len(), ids.len());
+    (opened, rows.len(), ids.len(), answers, most)
+}
+
+/// The legacy loop, as it was before #333: a snooze lives and dies with its nudge, and a nudge goes to both the queue and the wake feed.
+const LEGACY: [(&str, &str); 2] = [("ANTIHALL_AGENT_NUDGE_SNOOZE_HOLD", "false"), ("ANTIHALL_AGENT_NUDGE_DELIVER_ONCE", "false")];
+
+#[test]
+fn a_session_with_four_snoozes_gets_one_nudge_delivered_once_not_four_delivered_twice() {
+    // 4 cycles of "spend 700k with no outcome, then a commit clears it", 45 minutes apart, the owner snoozing every nudge that shows up
+    let (opened, rows, ids, answers, _) = snooze_scenario("nudge-after", &[], 4, 240);
+    let (l_opened, l_rows, l_ids, l_answers, _) = snooze_scenario("nudge-before", &LEGACY, 4, 240);
+    println!("MEASURE before (legacy): nudges={l_opened} deliveries={l_rows} answers={l_answers}; after: nudges={opened} deliveries={rows} answers={answers}");
+    assert_eq!((l_opened, l_rows, l_ids, l_answers), (4, 8, 4, 4), "the legacy loop: a new nudge per re-raise, each on two paths");
+    assert_eq!((opened, rows, ids, answers), (1, 1, 1, 1), "one nudge, held by its snooze, delivered once");
 }
 
 #[test]
-fn nudge_measure_four_snoozes() {
-    let (opened, rows, _, answers) = snooze_scenario("nudge-measure", &[], 4, 240);
-    assert!(opened >= 1 && rows >= 1 && answers >= 1, "the scenario raised nothing: opened={opened} rows={rows} answers={answers}");
+fn a_snooze_that_ran_out_lets_the_next_nudge_in_and_its_count_carries_over() {
+    // 60 minute snoozes: the re-raises at +18 and +63 min are held then the one at +108 min (snooze ended at +78) opens a new nudge
+    let (opened, _, _, answers, counted) = snooze_scenario("nudge-expiry", &[], 3, 60);
+    assert_eq!((opened, answers, counted), (2, 2, 2), "the second nudge started from the first one's snooze");
+}
+
+#[test]
+fn a_snooze_outside_the_configured_range_is_clamped_and_the_answer_names_the_limit() {
+    let (hi, lo) = (lim_n("snooze_max_min"), lim_n("snooze_min_min"));
+    assert_eq!(nudge::clamp_snooze(360), (hi, Some("msg.agent_nudge_snooze_clamped")));
+    assert_eq!(nudge::clamp_snooze(1), (lo, Some("msg.agent_nudge_snooze_floor")));
+    assert_eq!(nudge::clamp_snooze(60), (60, None));
+    let said = defaults::render("msg.agent_nudge_snooze_clamped", &[("child", &"abc"), ("min", &hi), ("max", &hi), ("asked", &360)]);
+    assert!(said.contains("240") && said.contains("maximum") && said.contains("360"), "{said}");
+}
+
+fn lim_n(k: &str) -> u64 {
+    defaults::raw("agent_nudge.limits").get(k).and_then(crate::defaults::V::as_integer).unwrap_or(0) as u64
+}
+
+/// A nudge that went to the wake feed alone is put in the reminder queue once when no wake delivery is recorded in time, and never
+/// when one was.
+fn wake_only_run(tag: &str, delivered: bool) -> (usize, usize) {
+    let (h, n, child) = nudge_home(tag);
+    let mut st = State::default();
+    let tick_at = |st: &mut State, t: u64| {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        tick(&e, st);
+    };
+    let (commit, spend) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    tick_at(&mut st, n + MIN);
+    append(&child, &spend);
+    tick_at(&mut st, n + 18 * MIN);
+    assert!(st.nudges.contains_key("abc"), "the waste nudge opened");
+    assert_eq!((queue(&h, "parent").len(), wake_rows(&h, "parent").len()), (0, 1), "the first delivery is the wake line alone");
+    if delivered {
+        let row = json!({"id": "x", "key": "parent", "signal": "nudge", "agent": "abc", "ts": n + 19 * MIN, "channel": "wake"});
+        sinks::append(&nudge_env(&h, n, &[]).dir().join(pth("delivered")), &row).unwrap();
+    }
+    for m in [19, 20, 22, 23, 24] {
+        tick_at(&mut st, n + m * MIN);
+    }
+    (queue(&h, "parent").len(), wake_rows(&h, "parent").len())
+}
+
+#[test]
+fn a_wake_only_nudge_reaches_the_queue_once_when_no_delivery_is_recorded_and_never_after_one() {
+    assert_eq!(wake_only_run("nudge-fb", false), (1, 1), "no wake line was seen: the queue gets it once");
+    assert_eq!(wake_only_run("nudge-fb-seen", true), (0, 1), "the wake line was delivered: the queue never gets it");
+}
+
+#[test]
+fn a_session_registered_on_the_primary_checkout_is_exempt_whatever_id_the_app_gave_it() {
+    let h = home("primary-id");
+    let n = now0();
+    devswarm(&h, n, None);
+    let checkout = h.join("checkout");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let checkout = checkout.canonicalize().unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&checkout).status().unwrap().success());
+    std::fs::write(h.join(".anti-hall/devswarm/workspaces/ws1.json"), json!({"id":"ws-main-7","sessionId":"sessW","worktreePath":checkout}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let a = agent(&st, "sessW");
+    let w = a.ws.as_ref().expect("a workspace");
+    assert!(!w.id.starts_with(defaults::text("agent_tracker.primary_prefix")), "its id does not say Primary");
+    assert!(w.primary && escalate::primary(a), "its checkout does: it is never nudged about or acted on");
+}
+
+#[test]
+fn subagent_results_report_files_and_owner_messages_are_outcomes_and_an_active_owner_means_healthy() {
+    let h = home("outcomes");
+    let n = now0();
+    let notice_line = |ts: u64, id: &str| {
+        let body = format!("<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n<result>done</result>\n</task-notification>");
+        json!({"type": "user", "timestamp": iso(ts), "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": body}}).to_string()
+    };
+    let owner = |ts: u64, kind: Option<&str>| {
+        let mut v = json!({"type": "user", "timestamp": iso(ts), "message": {"role": "user", "content": "how is the billing export going?"}});
+        if let Some(k) = kind {
+            v["origin"] = json!({"kind": k});
+        }
+        v.to_string()
+    };
+    let p = sess(&h, "s1");
+    write(
+        &p,
+        &[
+            prompt(n - 90 * MIN, "/w"),
+            tool(n - 80 * MIN, "m1", 5, "a1", "Agent", json!({"description": "research", "prompt": "go"})),
+            result(n - 70 * MIN, "a1", "the report", false),
+            tool(n - 69 * MIN, "m2", 5, "a2", "Agent", json!({"description": "bg research", "prompt": "go", "run_in_background": true})),
+            result(n - 68 * MIN, "a2", "Async agent launched successfully", false),
+            notice_line(n - 60 * MIN, "t9"),
+            notice_line(n - 59 * MIN, "t9"),
+            tool(n - 58 * MIN, "m3", 5, "w1", "Write", json!({"file_path": "/private/tmp/c/scratchpad/findings.md", "content": "x"})),
+            result(n - 57 * MIN, "w1", "ok", false),
+            owner(n - 56 * MIN, Some("task-notification")),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n - 50 * MIN]);
+    let a = agent(&st, "s1");
+    assert_eq!(a.reports, 2, "a foreground result and one completed task notice (counted once); the background launch's acknowledgement is not a result");
+    assert_eq!(a.progress, 2 * weight("agent_result") + weight("report_file"), "results and the report file are progress");
+    assert_eq!(a.owner_ms, n - 90 * MIN, "a task notice is not the owner talking");
+    append(&p, &[owner(n - 10 * MIN, Some("human"))]);
+    ticks(&h, &mut st, &[n - 9 * MIN]);
+    assert_eq!(agent(&st, "s1").owner_ms, n - 10 * MIN);
+    // heavy spend with no outcome since the last unit: a session whose owner spoke inside the window is healthy; one whose owner did not is wasting
+    for (tag, owner_line) in [("outcomes-owner", true), ("outcomes-quiet", false)] {
+        let h2 = home(tag);
+        let p2 = sess(&h2, "s1");
+        write(&p2, &[prompt(n - 90 * MIN, "/w"), asst(n - MIN, "m0", 1000, 10, json!([{"type": "text", "text": "thinking"}]), None)]);
+        let mut st2 = State::default();
+        ticks(&h2, &mut st2, &[n]);
+        let mut more = vec![asst(n + 19 * MIN, "m1", 700_000, 10, json!([{"type": "text", "text": "still thinking"}]), None)];
+        if owner_line {
+            more.insert(0, owner(n + 10 * MIN, Some("human")));
+        }
+        append(&p2, &more);
+        ticks(&h2, &mut st2, &[n + 20 * MIN]);
+        assert_eq!(agent(&st2, "s1").flags.contains_key("token_waste"), !owner_line, "{tag}");
+    }
+}
+
+#[test]
+fn drift_is_not_raised_while_the_work_matches_the_task_description_and_is_reminded_once_per_step() {
+    // a subagent whose step text is stale but whose edits belong to the task it was given
+    let h = home("drift-name");
+    let n = now0();
+    write(&sess(&h, "parent"), &[prompt(n - 60 * MIN, "/w")]);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    write(&dir.join("agent-ds.jsonl"), &drift_lines(n, "/w/src/billing/invoice_export_"));
+    std::fs::write(dir.join("agent-ds.meta.json"), r#"{"description":"Fix the billing invoice export totals"}"#).unwrap();
+    register(&h, std::process::id(), "parent", "busy", n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(!agent(&st, "ds").flags.contains_key("drift"), "the work belongs to the agent's own task");
+    // a session with no such description still drifts, is reminded once, and a re-raised flag on the same step is not reminded again
+    let h2 = home("drift-once");
+    write(&sess(&h2, "s1"), &drift_lines(n, "/w/src/billing/invoice_export_"));
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN]);
+    assert_eq!(queue(&h2, "s1").len(), 1);
+    if let Some(a) = st2.agents.get_mut("s1") {
+        a.flags.remove("drift");
+        a.last_sent.clear();
+        a.sent_log.clear();
+    }
+    ticks(&h2, &mut st2, &[n + 2 * MIN, n + 3 * MIN, n + 4 * MIN]);
+    assert!(agent(&st2, "s1").flags.contains_key("drift"), "raised again");
+    assert_eq!(queue(&h2, "s1").len(), 1, "but the same step is not reminded twice");
 }

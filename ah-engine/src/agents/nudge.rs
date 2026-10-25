@@ -1057,6 +1057,21 @@ pub(crate) fn tick(env: &Env, st: &mut State) {
 
 // ---- the answer verb and the data API -------------------------------------------------------------------------
 
+/// A snooze of `asked` minutes inside the configured range: the minutes given, and the message key that says it was changed (none
+/// when the value was in range).
+pub(super) fn clamp_snooze(asked: u64) -> (u64, Option<&'static str>) {
+    let (lo, hi) = (lim("snooze_min_min"), lim("snooze_max_min"));
+    let given = asked.clamp(lo, hi);
+    let key = if asked > hi {
+        Some("msg.agent_nudge_snooze_clamped")
+    } else if asked < lo {
+        Some("msg.agent_nudge_snooze_floor")
+    } else {
+        None
+    };
+    (given, key)
+}
+
 /// `ah-engine agents nudge <child> stop | msg "<text>" | snooze <min> ["reason"] | other "<reason>" | <prose>`.
 pub fn run_answer(p: &Parsed) -> i32 {
     let Some(env) = Env::current() else { return 64 };
@@ -1088,11 +1103,10 @@ pub fn run_answer(p: &Parsed) -> i32 {
     let (asked, mut note) = (min, String::new());
     let mut min = min;
     if answer == ans("snooze") && min > 0 {
-        let (lo, hi) = (lim("snooze_min_min"), lim("snooze_max_min"));
-        min = min.clamp(lo, hi);
-        if min != asked {
-            let key = if asked > hi { "msg.agent_nudge_snooze_clamped" } else { "msg.agent_nudge_snooze_floor" };
-            note = defaults::render(key, &[("child", child), ("min", &min), ("max", &hi), ("asked", &asked)]);
+        let (given, key) = clamp_snooze(asked);
+        min = given;
+        if let Some(key) = key {
+            note = defaults::render(key, &[("child", child), ("min", &min), ("max", &lim("snooze_max_min")), ("asked", &asked)]);
         }
     }
     let mut row = json!({"ts": env.now_ms, "child": child, "answer": answer, "text": super::cap(&text, lim("reason_cap")), "min": min});
