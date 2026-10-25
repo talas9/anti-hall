@@ -147,7 +147,7 @@ jobs:
           scratch="$(mktemp -d)"
           export HOME="$scratch" AH_ENGINE_DIR="$scratch/state" ANTIHALL_TEST_ISOLATION=1 ANTIHALL_INGEST_DRY_RUN=1 CLAUDE_PLUGIN_ROOT="$GITHUB_WORKSPACE/plugins/anti-hall"
           want="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          [ "$("$bin" version)" = "$want" ] || { echo "::error::version differs from Cargo.toml ($want)"; exit 1; }
+          got="$("$bin" version)"; [ "${got%%+*}" = "$want" ] || { echo "::error::version $got differs from Cargo.toml ($want)"; exit 1; }
           : > "$scratch/settings.toml"
           "$bin" config validate "$scratch/settings.toml"
           printf '{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"%s","tool_name":"Bash","tool_input":{"command":"ls"}}' "$scratch" | "$bin" check command
