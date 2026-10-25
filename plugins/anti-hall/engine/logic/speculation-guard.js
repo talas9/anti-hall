@@ -70,6 +70,13 @@ function sgObligation(text, start, end) {
   return sgT('speculation_guard.requirement_line_re', 'i', text.slice(ls, le < 0 ? text.length : le));
 }
 
+// An unhedged completion claim (speculation_guard.claim_markers): true when any pattern matches.
+function sgClaim(text) {
+  var cl = ah.cfg('speculation_guard.claim_markers');
+  for (var i = 0; i < cl.length; i++) if (ah.re.test(cl[i], 'i', text)) return true;
+  return false;
+}
+
 // The first hedge, in pattern order, that is not exempt: {text, at} or null.
 function sgHit(text) {
   var markers = ah.cfg('speculation_guard.markers'), modal = ah.cfg('speculation_guard.modal_markers');
@@ -255,7 +262,19 @@ function decide(p) {
   var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
   // the Stop gate: Jev is waited for only when the rule layer flagged a likely unverified claim (the predicate is speculation_guard.jev_gate)
   var gateMode = ah.cfg('speculation_guard.jev_gate');
-  var flagged = gateMode === 'always' ? true : gateMode === 'would_block' ? wouldBlock : hit !== null;
+  var flagged;
+  if (gateMode === 'always') flagged = true;
+  else if (gateMode === 'would_block') flagged = wouldBlock;
+  else if (gateMode === 'hit') flagged = hit !== null;
+  else {
+    // `claim` (default; any other value too): a hedge hit, or an UNHEDGED completion claim ("all done", "fixed") that neither
+    // acknowledges nor cites evidence (#310). Only the semantic judge can block the latter, so it is the one that must be asked.
+    flagged = hit !== null;
+    if (!flagged && !sgHasAck(lastText) && sgClaim(markerText)) {
+      if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
+      flagged = !sgCites(lastText, tailLines);
+    }
+  }
 
   // JEV: the speculation question (add-block). A confident "speculative" adds a block; any failure leaves the regex verdict.
   var entry = null, jevBlock = false, jevHash = '';
