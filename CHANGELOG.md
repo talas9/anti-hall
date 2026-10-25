@@ -10,7 +10,7 @@ the update.
 
 ### Summary
 
-- Components: this release ships the engine, the hook client and the dashboard at version 0.2.0 each (plugin 0.301.1). Each component carries its own version and a declared minimum for the others.
+- Components: this release ships engine 0.2.1, hook client 0.2.0 and dashboard 0.2.0 (plugin 0.301.1). Each component carries its own version and a declared minimum for the others.
 - Agent tracker: a nudge delivery now marks the child's flag as delivered, and a waste warning needs real token spend (a stalled agent that spent nothing is not waste).
 - Guards: the nested-spawn guard also covers Codex `spawn_agent`; a wide-search guard refuses `find`/`grep -r` rooted at `/` or `$HOME` (switch `guards.allowWideSearch`).
 - Versions: the header shows `<version> (<sha8>)`; the full build stamp stays in `version --json`, the tooltip and the Updates page. The install routine refuses a `-dirty` build or an engine/hook/dashboard set whose versions differ, unless `--force`.
