@@ -127,6 +127,13 @@ impl InstanceSum {
     }
 }
 
+impl InstanceSum {
+    /// How many instances are alive.
+    fn count(&self) -> usize {
+        self.lock().iter().filter(|w| w.strong_count() > 0).count()
+    }
+}
+
 impl Owner for InstanceSum {
     fn bytes(&self) -> usize {
         let mut s = self.lock();
@@ -366,7 +373,7 @@ impl Registry {
                     "ok"
                 };
                 Some(json!({"name": e.spec.name, "bytes": bytes, "soft_bytes": l.soft, "hard_bytes": l.hard, "low_water_bytes": l.low,
-                    "per_instance": e.sum.is_some(), "level": level,
+                    "per_instance": e.sum.is_some(), "instances": e.sum.as_ref().map_or(1, |x| x.count()), "level": level,
                     "soft_trips": e.n.soft.load(SeqCst), "hard_trips": e.n.hard.load(SeqCst), "refused": e.n.refused.load(SeqCst),
                     "recycles": e.n.recycles.load(SeqCst)}))
             })

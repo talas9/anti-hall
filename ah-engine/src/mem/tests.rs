@@ -267,3 +267,22 @@ fn leaked_bytes_accumulate() {
     note_leak(7);
     assert!(leaked_bytes() >= before + 7);
 }
+
+#[test]
+fn an_instance_holder_under_its_per_instance_soft_limit_is_not_flagged_by_the_leak_sentinel() {
+    let (reg, _) = registry(&[("t.soft", 100), ("t.hard", 300), ("t.low", 90)]);
+    let b = reg.register_instances(SPEC);
+    let mut four: Vec<_> = (0..4).map(|_| b.instance()).collect();
+    for i in &mut four {
+        assert_eq!(i.report(90), Action::None, "each instance is under its own soft limit");
+    }
+    let snap = reg.snapshot();
+    assert_eq!((snap["holders"][0]["bytes"].as_u64(), snap["holders"][0]["instances"].as_u64()), (Some(360), Some(4)));
+    let params = leak::Params::from_defaults();
+    let samples: Vec<leak::Sample> = (0..params.holder_over_samples.max(1) + 2)
+        .map(|i| leak::Sample { t_s: i as u64 * 60, footprint: 0, heap: 0, holders: leak::readings(&snap) })
+        .collect();
+    let ring: Vec<&leak::Sample> = samples.iter().collect();
+    let v = leak::evaluate(&ring, samples.len() as u64 * 60, &params).to_json();
+    assert!(v["holders"].as_array().is_none_or(Vec::is_empty), "summed bytes 360 vs per-instance soft 100 is not an excursion: {v}");
+}
