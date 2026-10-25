@@ -838,8 +838,8 @@ mod swarm {
         assert!(a.contains("shared tree: another agent is already writing in this working tree.") && a.contains("give the new agent its own worktree"), "{a}");
         assert_eq!(std::fs::read_to_string(format!("{h}/.anti-hall/swarm-spawns.log")).unwrap().lines().count(), 1, "an advisory spawn is recorded once");
         std::fs::write(format!("{h}/CLAUDE.md"), "Rules: no worktrees here.\n").unwrap();
-        let a = advisory(call(&h, &writer, T0 + 1, Some(8.0 * GB), 16.0 * GB)).expect("advisory");
-        assert!(a.contains("serialize them or give each its own scratch clone.") && !a.contains("isolation"), "{a}");
+        // a repo rule that forbids worktrees makes the hint moot (guards.sharedTreeQuietNoWorktrees, default on)
+        assert!(advisory(call(&h, &writer, T0 + 1, Some(8.0 * GB), 16.0 * GB)).is_none(), "silent under a no-worktrees rule");
     }
 
     #[test]
