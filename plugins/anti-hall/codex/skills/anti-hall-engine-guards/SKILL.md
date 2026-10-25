@@ -66,7 +66,7 @@ What the automatic guards check and how to read a block.
 - `guards.allowNestedSpawns` = false: On lets a subagent or teammate start agents (default off); off blocks Agent and Task calls from them
 - `guards.spawnCeiling` = true: The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op
 - `guards.usageAwareDispatch` = true: The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op
-- `guards.pruneCompletedTasksAfter` = 10: Completed or cancelled tasks kept before the Stop advisory suggests pruning
+- `guards.pruneCompletedTasksAfter` = 10: Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning
 - `guards.laneTestGuard` = true: Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands
 - `guards.allowTestSuites` = false: Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands...
 - `guards.testPolicy` = "targeted": Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY...

@@ -4427,8 +4427,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_guard.priority_rank_re` | `^p([0-9]+)$` |  |  | JavaScript regex source of a priority label with a rank (`p0`, `p1`, ...), matched on the trimmed lowercase label. |
 | `task_guard.prompt_id_key` | `prompt_id` |  |  | The Stop payload field that names the prompt. |
 | `task_guard.proven_only_setting` | `5 entries` |  |  | Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on). |
-| `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
-| `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the Stop advisory suggests pruning. |
+| `task_guard.prune_setting` | `6 entries` |  |  | Completed or cancelled tasks kept before the task tracker (UserPromptSubmit) suggests pruning. |
 | `task_guard.session_hash_len` | `16` |  |  | How many hex characters of the transcript path hash name a session that has no id. |
 | `task_guard.setting` | `6 entries` |  |  | Where the on/off switch is read from (guards.taskGuard, default on). |
 | `task_guard.state_blocks_key` | `blocks` |  |  | The loop state file's field for the number of blocks made in the current cap_scope window. |
@@ -7745,6 +7744,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_tracker.primary_instead` | `assign the feature, fix or deploy to a child workspace.` |  |  | The 'instead' line of the DevSwarm Primary dispatch-tier block. |
 | `task_tracker.primary_key` | `task-tracker-primary` |  |  | The emit-dedupe key of the Primary block, rationed apart from the reminder. |
 | `task_tracker.primary_what` | `workspace-sized work needs a child workspace.` |  |  | The 'what' line of the DevSwarm Primary dispatch-tier block. |
+| `task_tracker.prune_line` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. |
 | `task_tracker.prune_prefix` | `task-tracker` |  |  | The prefix the sweep of stale per-session state files is stamped under. |
 | `task_tracker.segment_joiner` | `\n\n` |  |  | What joins the short reminder and the open-tasks line in the output (a separate segment, so the dedupe store sees it consumed). |
 | `task_tracker.session_hash_len` | `16` |  |  | How many hexadecimal digits of the working directory's hash name a session that has no id. |
@@ -13400,6 +13400,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `upfront.msg_spawn_stop` | `Agent spawning is stopped ({reason}): do the work inline, in small bounded st...` |  |  | Line for spawning being unavailable; {reason} is rendered from standdown.reasons. |
 | `upfront.setting` | `6 entries` |  |  | Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes (spawn stop, limit conserve, a guard skip set or expired), at the next prompt or tool call. |
 | `upfront.summary` | `Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only disp...` |  |  | One-line description of the switch-notice check in the generated reference. |
+
+### task_guards.toml / task_guard
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `task_guard.prune_advisory` | `[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory...` |  |  | The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit. |
 
 ## Messages
 
