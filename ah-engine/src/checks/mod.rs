@@ -215,6 +215,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
         &scripted::CLAIM_LEDGER,
+        &scripted::CLAIM_EVIDENCE_GUARD,
         &scripted::OUTPUT_VERIFY_GUARD,
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,

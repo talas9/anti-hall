@@ -111,6 +111,9 @@ pub static STALE_AGENT_STOP_NOTE: Scripted = Scripted::new("stale-agent-stop-not
 /// `claim-ledger`.
 pub static CLAIM_LEDGER: Scripted = Scripted::new("claim-ledger", "claim_ledger.summary");
 
+/// `claim-evidence-guard` (Stop; engine-only; GH #313): a claim needs a tool call of this turn, and pushed is not done.
+pub static CLAIM_EVIDENCE_GUARD: Scripted = Scripted::new("claim-evidence-guard", "claim_evidence.summary");
+
 /// `idle-agent-sweep`.
 pub static IDLE_AGENT_SWEEP: Scripted = Scripted::new("idle-agent-sweep", "idle_sweep.summary");
 

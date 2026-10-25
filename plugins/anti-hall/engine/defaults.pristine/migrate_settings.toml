@@ -78,6 +78,8 @@ value = [
   "{\"section\":\"guards\",\"key\":\"apiGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_api_guard\"}",
   "{\"section\":\"guards\",\"key\":\"speculationGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_speculation_guard\"}",
   "{\"section\":\"guards\",\"key\":\"inferenceCheck\",\"type\":\"boolean\",\"default\":false,\"env\":\"ANTIHALL_INFERENCE_CHECK\"}",
+  "{\"section\":\"guards\",\"key\":\"claimEvidence\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_CLAIM_EVIDENCE\"}",
+  "{\"section\":\"guards\",\"key\":\"pushedNotDone\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_PUSHED_NOT_DONE\"}",
   "{\"section\":\"guards\",\"key\":\"claimLedger\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_claim_ledger\"}",
   "{\"section\":\"guards\",\"key\":\"taskGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_task_guard\"}",
   "{\"section\":\"guards\",\"key\":\"taskGuardOwnerBlockedMarker\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER\",\"pluginOption\":\"guards_task_guard_owner_blocked_marker\"}",
