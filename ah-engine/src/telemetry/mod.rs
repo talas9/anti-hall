@@ -209,7 +209,17 @@ impl Telemetry {
     /// Move the inbox's events into the recorder.
     fn ingest_inbox(&self) {
         let Some(path) = lk(&self.inbox).clone() else { return };
-        let r = emit::ingest_from(&path, |ev| self.rec.event(ev));
+        let r = emit::ingest_from(&path, |ev| {
+            if ev.kind == Kind::Spill {
+                // #311: spills per event (and the ones that held a pinned context) for `status delivery`
+                let pinned = ev.h.as_str() == defaults::text("dispatch.spill_pinned_label");
+                lk(&self.metrics).inc("context_spills", &[("event", ev.e.as_str())]);
+                if pinned {
+                    lk(&self.metrics).inc("context_spill_pinned", &[]);
+                }
+            }
+            self.rec.event(ev)
+        });
         self.inbox_bad.fetch_add(r.bad, std::sync::atomic::Ordering::Relaxed);
     }
 

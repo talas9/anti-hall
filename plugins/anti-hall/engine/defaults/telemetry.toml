@@ -271,6 +271,22 @@ value = { kind = "counter", unit = "evaluations", labels = [] }
 doc = "Check answers a request did not get, by the event, whether it was a guard event's (kind guard) or an optional one's (kind optional) and the reason (shed, client_gone, hard_deadline, cpu_budget, check_deferred). The check's failure policy decided in their place. Lifetime; status answers_dropped.this_daemon has the count since the daemon started."
 value = { kind = "counter", unit = "answers", labels = ["event", "kind", "reason"] }
 
+[metric.delivery_stage]
+doc = "Per check, how many of its answers reached each stage (#312): decided (it said something), delivered (the reply carrying it was written in time), complied (the agent made a reaction tool call within the window, `delivery.react`), ignored (the window ended without one). Lifetime; `status` delivery shows it with the lost and shed counts."
+value = { kind = "counter", unit = "answers", labels = ["check", "stage"] }
+
+[metric.delivery_lost]
+doc = "Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime."
+value = { kind = "counter", unit = "answers", labels = ["check", "reason"] }
+
+[metric.context_spills]
+doc = "Joined hook contexts that were over the host's inline cap and spilled to a file (#311), by event. Lifetime; `status` delivery.spills_by_event."
+value = { kind = "counter", unit = "spills", labels = ["event"] }
+
+[metric.context_spill_pinned]
+doc = "Spills whose file held a context at or above dispatch.context_pin_priority (the case the priorities exist to prevent). Lifetime; `status` delivery.pinned_spills."
+value = { kind = "counter", unit = "spills", labels = [] }
+
 [metric.budget_soft]
 doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
 value = { kind = "counter", unit = "requests", labels = [] }

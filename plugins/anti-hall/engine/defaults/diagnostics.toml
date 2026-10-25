@@ -164,8 +164,73 @@ min = 0
 max = 1
 
 [diagnostics.shed_never]
-doc = "Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed."
-value = { "merge-side-pick" = "PostToolUse recorder: the merge guard reads what it recorded.", "git-audit" = "PostToolUse audit of git calls (git-guard:audit); later git guards read it.", "output-verify-guard" = "PostToolUse recorder of tool output the verify guard checks later.", "devswarm-parent-reply-tracker" = "Records parent replies; the parent gate decides from them.", "devswarm-child-drain" = "Drains a child's mail; skipping it strands messages.", "coordinator-work-guard" = "PostToolUse half records coordinator work the PreToolUse half judges.", "agent-reminders" = "Delivers the stale-agent nudges and reminders the tracker queued.", "task-tracker" = "Keeps the task state the Stop guards read.", "task-lifecycle-log" = "Task create/complete log other guards read.", "devswarm-parent-inbox" = "Delivers a parent's inbox.", "devswarm-child-turn" = "Per-turn child bookkeeping.", "devswarm-child-role" = "Seats a child in its role.", "auto-handover" = "Triggers the handover at the context threshold.", "handover-resume" = "Restores a session from its handover.", "codex-quota-detect" = "Records the quota state later routing reads.", "dispatch-tier" = "Records the dispatch tier later guards read.", "precompact-snapshot" = "Takes the pre-compaction snapshot.", "session-end-mcp-reaper" = "Cleans up the session's MCP processes.", "emit-dedupe-reset" = "Resets the emit dedupe state of a session.", "progress-prune" = "Prunes progress files; state upkeep.", "repair-on-reload" = "Repairs state after a reload." }
+doc = "Checks that are never shed past the HARD CPU limit, with the reason for each: bookkeeping, recorders and deliveries that later guards or the user's agents depend on (shedding them loses state or messages). Any check of a non-guard event not listed here is pure advice and is shed. #312: the essential reminders (task tracker, task list, workspace inbox and child gate, verify-first) are listed; `status` delivery.essential_shed counts how many answers of the checks listed here were shed anyway (it must stay 0)."
+value = { "merge-side-pick" = "PostToolUse recorder: the merge guard reads what it recorded.", "git-audit" = "PostToolUse audit of git calls (git-guard:audit); later git guards read it.", "output-verify-guard" = "PostToolUse recorder of tool output the verify guard checks later.", "devswarm-parent-reply-tracker" = "Records parent replies; the parent gate decides from them.", "devswarm-child-drain" = "Drains a child's mail; skipping it strands messages.", "coordinator-work-guard" = "PostToolUse half records coordinator work the PreToolUse half judges.", "agent-reminders" = "Delivers the stale-agent nudges and reminders the tracker queued.", "task-tracker" = "Keeps the task state the Stop guards read.", "task-lifecycle-log" = "Task create/complete log other guards read.", "devswarm-parent-inbox" = "Delivers a parent's inbox.", "devswarm-child-turn" = "Per-turn child bookkeeping.", "devswarm-child-role" = "Seats a child in its role.", "auto-handover" = "Triggers the handover at the context threshold.", "handover-resume" = "Restores a session from its handover.", "codex-quota-detect" = "Records the quota state later routing reads.", "dispatch-tier" = "Records the dispatch tier later guards read.", "precompact-snapshot" = "Takes the pre-compaction snapshot.", "session-end-mcp-reaper" = "Cleans up the session's MCP processes.", "emit-dedupe-reset" = "Resets the emit dedupe state of a session.", "progress-prune" = "Prunes progress files; state upkeep.", "repair-on-reload" = "Repairs state after a reload.", "verify-first" = "Per-prompt verify-first reminder (#312: essential, shed 4x in the audit window).", "verify-first-full" = "Session-start verify-first protocol text.", "verify-first-orch" = "Session-start orchestration reminder.", "verify-first-orch-codex" = "Codex session-start orchestration reminder.", "verify-first-subagent" = "Verify-first text a subagent starts with.", "tasklist-guard" = "Task-list Stop guard (a guard event is never shed; listed so the audit counts it as essential).", "devswarm-child-gate" = "Workspace child gate (Stop guard; listed so the audit counts it as essential).", "devswarm-rt-advisory" = "Workspace runtime notice a Primary acts on." }
+
+[diagnostics.deadline_grace_ms]
+doc = "Per check, how many milliseconds PAST the hard request deadline (daemon.request_hard_ms) the check may still start, so a slow request does not drop an essential reminder that is cheap to run (#312: 56 non-guard and 16 guard answers were dropped to shedding or the deadline in the audit window). A check without a row has no grace. Capped by diagnostics.deadline_grace_cap_ms. A scripted check already running is still interrupted at the deadline (script.cut_at_request_deadline)."
+value = { "verify-first" = 400, "task-tracker" = 400, "tasklist-guard" = 400, "devswarm-parent-inbox" = 400, "devswarm-child-gate" = 400, "devswarm-child-turn" = 400, "agent-reminders" = 400 }
+
+[diagnostics.deadline_grace_cap_ms]
+doc = "Upper bound of any diagnostics.deadline_grace_ms row. The hard deadline plus this must stay inside what the client waits for a late reply (client.slow_fallback_max_ms less client.slow_wait_margin_ms), or the grace would only produce a reply nobody reads."
+value = 500
+unit = "ms"
+min = 0
+max = 600
+
+[delivery.stage_decided]
+doc = "Stage label (status delivery, metric delivery_stage): a check answered with a message or a block."
+value = "decided"
+
+[delivery.stage_delivered]
+doc = "Stage label: the reply carrying the answer was written to the hook client in time."
+value = "delivered"
+
+[delivery.stage_complied]
+doc = "Stage label: the agent made one of the check's `delivery.react` tool calls within the window after a delivered answer."
+value = "complied"
+
+[delivery.stage_ignored]
+doc = "Stage label: the window after a delivered answer ended without one of the check's `delivery.react` tool calls."
+value = "ignored"
+
+[delivery.reason_undelivered]
+doc = "Reason label (metric delivery_lost) of an answer the check made but the reply carrying it was not written in time or not at all."
+value = "undelivered"
+
+[delivery.reason_shed]
+doc = "The answers_dropped reason that status delivery reports as `shed` (the others are reported as `lost`). Must equal the reason budget::note_dropped is given when the CPU hard limit sheds a check."
+value = "shed"
+
+[delivery.react_event]
+doc = "The hook event whose tool calls are watched for an agent's reaction to a delivered answer (one call of it is one step of the window)."
+value = "PreToolUse"
+
+[delivery.react]
+doc = "Per check, the tool names whose use within the window counts as the agent reacting to the check's delivered answer (`complied`). Only a check with a row here has a compliance figure; a reaction that is not a tool call (answering in text, changing a plan) cannot be seen, so those checks show null. Tool names are the host's. verify-first: a verification lookup. task-tracker and tasklist-guard: a task-list change. devswarm-parent-inbox and devswarm-child-gate: a message or a mail read."
+value = { "verify-first" = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"], "task-tracker" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "tasklist-guard" = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"], "devswarm-parent-inbox" = ["SendMessage", "Read"], "devswarm-child-gate" = ["SendMessage", "Read"] }
+
+[delivery.react_window_calls]
+doc = "Tool calls of the session after a delivered answer within which a reaction counts. 0 turns compliance tracking off (decided, delivered and lost are still counted)."
+value = 8
+min = 0
+max = 1000
+
+[delivery.react_window_ms]
+doc = "Longest wait for a reaction after a delivered answer; a window older than this ends as `ignored` at the next tool call."
+value = 600000
+unit = "ms"
+min = 1000
+
+[delivery.pending_sessions_max]
+doc = "Sessions whose armed checks the compliance tracker holds; a new session past it makes room by dropping the one armed longest ago (its open windows are not counted)."
+value = 256
+min = 1
+
+[delivery.pending_per_session_max]
+doc = "Armed checks held per session."
+value = 16
+min = 1
 
 [answer_drop.kind_guard]
 doc = "Label of a dropped answer that belongs to a guard event (answers_dropped metric kind, status answers_dropped.this_daemon)."
