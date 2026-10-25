@@ -269,19 +269,19 @@ doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated h
 value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
 
 [ctxbudget.set_h_task_budget]
-doc = "The handover.taskListBudget setting: the most active tasks the consolidated session task list may hold at a handover."
+doc = "Most active tasks the session task list may hold at a handover."
 value = { section = "handover", key = "taskListBudget", kind = "num", env = "", aliases = [], option = "", manifest_default = "12", default = 12, min = 1 }
 
 [ctxbudget.set_h_task_subject]
-doc = "The handover.taskSubjectMax setting: the longest task subject (characters) in the consolidated task list."
+doc = "Longest task subject (characters) allowed at a handover."
 value = { section = "handover", key = "taskSubjectMax", kind = "num", env = "", aliases = [], option = "", manifest_default = "60", default = 60, min = 1 }
 
 [ctxbudget.set_h_mem_lines]
-doc = "The handover.memoryIndexMaxLines setting: the most lines the consolidated MEMORY.md index may hold at a handover."
+doc = "Most lines the MEMORY.md index may hold at a handover."
 value = { section = "handover", key = "memoryIndexMaxLines", kind = "num", env = "", aliases = [], option = "", manifest_default = "100", default = 100, min = 1 }
 
 [ctxbudget.set_h_mem_chars]
-doc = "The handover.memoryIndexMaxChars setting: the most characters the consolidated MEMORY.md index may hold at a handover."
+doc = "Most characters the MEMORY.md index may hold at a handover."
 value = { section = "handover", key = "memoryIndexMaxChars", kind = "num", env = "", aliases = [], option = "", manifest_default = "12000", default = 12000, min = 1 }
 
 [ctxbudget.ah_housekeeping]
@@ -652,6 +652,50 @@ value = "{pct}%"
 [ctxbudget.ca_ctx_low]
 doc = "The context clause of the instructions when the percent is unknown."
 value = "low"
+
+[ctxbudget.hb_done_statuses]
+doc = "Task statuses that count as finished: a finished task still in the session task list at a restart-ready declaration is over budget."
+value = ["completed", "deleted"]
+
+[ctxbudget.hb_mem_dir]
+doc = "The directory beside the session transcript that holds the project's memory files."
+value = "memory"
+
+[ctxbudget.hb_mem_file]
+doc = "The memory index file inside hb_mem_dir."
+value = "MEMORY.md"
+
+[ctxbudget.hb_tasks_over]
+doc = "Reason: the session task list holds {n} active tasks, more than the {max} budget (handover.taskListBudget)."
+value = "the task list holds {n} active tasks (budget {max})"
+
+[ctxbudget.hb_tasks_done]
+doc = "Reason: {n} finished tasks are still in the session task list."
+value = "{n} finished tasks are still in the task list"
+
+[ctxbudget.hb_subjects_over]
+doc = "Reason: {n} task subjects are longer than {max} characters (handover.taskSubjectMax)."
+value = "{n} task subjects exceed {max} characters"
+
+[ctxbudget.hb_mem_lines_over]
+doc = "Reason: the MEMORY.md index has {n} lines, more than {max} (handover.memoryIndexMaxLines)."
+value = "the MEMORY.md index has {n} lines (budget {max})"
+
+[ctxbudget.hb_mem_chars_over]
+doc = "Reason: the MEMORY.md index has {n} characters, more than {max} (handover.memoryIndexMaxChars)."
+value = "the MEMORY.md index has {n} characters (budget {max})"
+
+[ctxbudget.hb_what]
+doc = "The first line of the handover-budget block; {phrase} is the declaration, {why} the breaches."
+value = 'your reply declares ready to compact/restart ("{phrase}") but the handover is not consolidated: {why}.'
+
+[ctxbudget.hb_why]
+doc = "The Why line of the handover-budget block."
+value = "A restart-ready declaration needs a consolidated task list and memory index, or the next session inherits the clutter."
+
+[ctxbudget.hb_instead]
+doc = "The instructions of the handover-budget block."
+value = "consolidate the task list and the MEMORY.md index within the budgets (handover skill, step 3), then declare again."
 
 [ctxbudget.advice_needs_safe]
 doc = "Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation."
