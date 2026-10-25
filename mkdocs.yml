@@ -70,6 +70,8 @@ not_in_nav: |
   KB.md
   AH-ENGINE.md
   DEVELOPMENT.md
+  DEVSWARM-2.5.7-COMPAT-EVIDENCE.md
+  specs/2026-08-02-devswarm-parent-decide-gate.md
 
 validation:
   nav:

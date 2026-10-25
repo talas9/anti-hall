@@ -28,7 +28,7 @@ owner-approved prune and message retention. Per-component detail is in the
 - [DevSwarm (current state)](#devswarm-current-state)
 - [Contributing / testing (plugin)](#contributing--testing-plugin)
 - [Features table — every hook and component](#hook-reference--plugin-features-table-detailed-per-hook)
-- [Statusline](#statusline-opt-in-one-command)
+- [Statusline](#statusline-retired-cleanup)
 - [Settings (`/anti-hall:settings`)](#settings-anti-hallsettings)
 - [Configuration / tuning](#configuration--tuning)
 - [Troubleshooting / FAQ](#troubleshooting--faq)

@@ -6,7 +6,6 @@ area:engine:
 area:devswarm:
   - changed-files:
       - any-glob-to-any-file:
-          - 'plugins/anti-hall/scripts/devswarm*'
           - 'plugins/anti-hall-node/scripts/devswarm*'
           - 'plugins/anti-hall-node/scripts/devswarm-lib/**'
           - 'plugins/anti-hall/skills/devswarm/**'
