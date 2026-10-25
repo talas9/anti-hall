@@ -530,6 +530,34 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     }
 }
 
+/// `guards.failOpenNonSafety` (default on), read from the request's environment and the loaded settings.
+fn fail_open_enabled(env: &crate::reqenv::RequestEnv) -> bool {
+    let st = crate::checks::git::util::Settings::from_env(env);
+    crate::checks::guardkit::settings::get_bool(&st, defaults::raw("dispatch.fail_open_setting"))
+}
+
+/// True when the daemon explicitly deferred a check that this process runs itself (`judge.dispatch_blocking_checks`).
+fn defers_to_blocking(answers: &[(String, Answer)], e: &table::Entry, blocking_checks: &[&str]) -> bool {
+    matches!(answers.iter().find(|(id, _)| *id == e.id), Some((_, Answer::Defer))) && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c))
+}
+
+/// The decision for a NON-safety guard entry whose check gave no answer ([`resolve_unanswered`]: an allow), counted per check
+/// (`status.advisory.fail_open.<check>`), logged, and told to the user once per session. Never a block.
+fn fail_open_result(e: &table::Entry, event: &str, payload: &Value) -> combine::HookResult {
+    let check = e.check.as_deref().unwrap_or(&e.id);
+    crate::obs::counters::advisory(defaults::text("dispatch.fail_open_counter"), check);
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_fail_open", event, &defaults::render("dispatch.msg_fail_open_log", &[("check", &check), ("event", &event)]));
+    let mut r = resolve_unanswered(e, event);
+    let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
+    if r.out.is_empty() && !session.is_empty() && health::first_in_session(session, defaults::text("dispatch.fail_open_notice_tag")) {
+        let why = defaults::text("script.msg_unanswered");
+        let msg = defaults::render("script.msg_guard_down", &[("check", &check), ("why", &why)]);
+        r.out = format!("{}\n", serde_json::json!({ defaults::text("script.notice_key"): msg }));
+    }
+    r
+}
+
 /// [`start_node`] for a hook that runs for `event`, so its telemetry event says which.
 fn start_node_for(e: &table::Entry, event: &str, raw: &[u8], payload: Option<&File>) -> node::Running {
     start_node(e, raw, payload).for_event(event)
@@ -727,6 +755,11 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         },
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
+    let fail_open_on = std::cell::OnceCell::new();
+    let fails_open = |e: &table::Entry| {
+        *fail_open_on.get_or_init(|| fail_open_enabled(&req_env))
+            && e.check.as_deref().is_some_and(|c| crate::script::failure_mode(c) != defaults::text("script.failure_mode_closed"))
+    };
     let mut blocking: Vec<usize> = Vec::new();
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
@@ -735,6 +768,11 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Some((_, Answer::Decided(r, _))) if shadow[i] => shadow_results[i] = Some(r.clone()),
             Some((_, Answer::Decided(r, _))) => results[i] = Some(r.clone()),
             _ if sibling[i] => {} // the Node hook of the same id decides; the shadowed check just goes unmeasured
+            // a non-safety guard entry that gave no answer (a late or missing daemon reply, a spent budget) is let through, counted per
+            // check and told once per session (guards.failOpenNonSafety); a safety guard (script.failure_mode_by_check) keeps failing closed
+            _ if guard && fails_open(e) && (budget.exceeded() || (!table::runnable(&e.command) && !defers_to_blocking(&answers, e, &blocking_checks))) => {
+                results[i] = Some(fail_open_result(e, &args.event, &p));
+            }
             _ if budget.exceeded() => {
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
@@ -744,7 +782,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
             // a guard entry whose check gave no answer and that has no hook to fall back to fails closed
-            _ if guard && !table::runnable(&e.command) => {
+            _ if guard && !table::runnable(&e.command) && !fails_open(e) => {
                 // the hooks already started are finished first: one that ran and blocked still decides, as below
                 let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
                 let mut done = results.clone();

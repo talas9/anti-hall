@@ -531,6 +531,9 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         .env("HOME", case.dir.join("home"))
         .env("AH_ENGINE_DIR", case.dir.join("state"))
         .env("AH_ENGINE_VERSION", "fail-closed-matrix")
+        // this suite pins the fail-closed machinery (guards.failOpenNonSafety off: every unanswered guard entry blocks, a Stop is held up to
+        // the cap); the default (on) is measured in tests/it/dispatch_config.rs
+        .env("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")
         .env("AH_ENGINE_DISPATCH_IN_PROCESS", if row.daemon == Daemon::InProcess { "1" } else { "0" })
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_DISPATCH_MAX_TIMEOUT_S", "1")

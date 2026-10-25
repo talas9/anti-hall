@@ -144,16 +144,27 @@ pub(crate) fn pump(env: &Env, sid: &str, poll: Duration, out: &mut dyn FnMut(&st
     let mut offset = std::fs::metadata(&feed).map(|m| m.len()).unwrap_or(0);
     let every = setting_num("agent_tracker.wake_stamp_ms");
     let mut last_stamp = 0u64;
+    let mut window_ms = coalesce_ms(env);
+    // rows drained but not yet printed: (row, its line, when it was drained)
+    let mut held: Vec<(Value, String, u64)> = Vec::new();
     loop {
         let now = crate::health::now_ms();
         if now.saturating_sub(last_stamp) >= every {
             stamp(&armed, now);
             last_stamp = now;
+            window_ms = coalesce_ms(env); // re-read with the stamp: a changed setting applies without a restart
         }
         let (lines, next) = drain(&feed, offset);
-        for (v, l) in &lines {
-            out(l);
-            record(env, sid, v, now);
+        for (v, l) in lines {
+            if window_ms == 0 {
+                out(&l);
+                record(env, sid, &v, now);
+            } else {
+                held.push((v, l, now));
+            }
+        }
+        if held.first().is_some_and(|(_, _, first)| now.saturating_sub(*first) >= window_ms) {
+            flush(env, sid, &mut held, now, out);
         }
         if next != offset {
             offset = next;
@@ -166,11 +177,59 @@ pub(crate) fn pump(env: &Env, sid: &str, poll: Duration, out: &mut dyn FnMut(&st
             )); // keep: only delays the compaction of the feed
         }
         if stop() {
+            flush(env, sid, &mut held, now, out); // rows held for the window are not dropped with the watcher
             crate::discard::harmless(std::fs::remove_file(&armed)); // keep: a stale stamp expires on its own
             return;
         }
         std::thread::sleep(poll);
     }
+}
+
+/// The coalescing window in milliseconds (`agents.wakeCoalesceSeconds`; 0 = print every row at once).
+fn coalesce_ms(env: &Env) -> u64 {
+    let secs = crate::checks::guardkit::settings::get_num(&env.settings, defaults::raw("agent_tracker.wake_coalesce_setting"));
+    (secs.max(0.0) * 1000.0) as u64
+}
+
+/// Print what was held: one row as its own line, several as ONE coalesced line that counts rows per agent. Every row is recorded as
+/// delivered, as a row printed at once is.
+fn flush(env: &Env, sid: &str, held: &mut Vec<(Value, String, u64)>, now: u64, out: &mut dyn FnMut(&str)) {
+    let rows = std::mem::take(held);
+    if let [(v, l, _)] = rows.as_slice() {
+        out(l);
+        record(env, sid, v, now);
+        return;
+    }
+    let Some(first) = rows.first().map(|r| r.2) else { return };
+    let last = rows.last().map_or(first, |r| r.2);
+    out(&merged(&rows, last.saturating_sub(first)));
+    for (v, _, _) in &rows {
+        record(env, sid, v, now);
+    }
+}
+
+/// The one line for several wake rows: rows per agent, with each agent's distinct signals, in order of first appearance.
+fn merged(rows: &[(Value, String, u64)], span_ms: u64) -> String {
+    let mut per: Vec<(String, u64, Vec<String>)> = Vec::new();
+    for (v, _, _) in rows {
+        let (agent, signal) = (v["agent"].as_str().unwrap_or_default(), v["signal"].as_str().unwrap_or_default());
+        let i = per.iter().position(|(a, _, _)| a == agent).unwrap_or_else(|| {
+            per.push((agent.to_string(), 0, Vec::new()));
+            per.len() - 1
+        });
+        per[i].1 += 1;
+        if !per[i].2.iter().any(|x| x == signal) {
+            per[i].2.push(signal.to_string());
+        }
+    }
+    let cfg = defaults::raw("agent_tracker.wake_merge");
+    let items: Vec<String> = per
+        .iter()
+        .map(|(agent, n, signals)| {
+            defaults::render("msg.agent_wake_merged_item", &[("agent", agent), ("n", n), ("signals", &signals.join(cfg.str_field("signal_sep")))])
+        })
+        .collect();
+    defaults::render("msg.agent_wake_merged", &[("n", &rows.len()), ("secs", &span_ms.div_ceil(1000)), ("items", &items.join(cfg.str_field("item_sep")))])
 }
 
 /// Lines in the feed up to `offset` (the cursor file counts rows, like the reminder queue's).
