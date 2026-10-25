@@ -78,6 +78,13 @@ labelled with how it was measured in the README of `ah-engine/`.
   (`inject_gate.max_sessions`, `inject_gate.max_slots`) and shown in `status` and the `inject_gate_*` gauges; `ah-engine ctl gate` prints
   per-session injected and kept-out bytes. Each cut is a setting (`context.injectGate*`); off, the Node output passes unchanged
   (`dispatch/inject.rs`, `gate.rs`, `defaults/inject_gate.toml`).
+- **Per-hook inline caps (context size).** At the events in `context_size.events` (SessionStart) a hook's `additionalContext` over its
+  cap (`context.inlineHookChars`, per hook in `context_size.hook_caps`) or, once the event total passes `context.inlineEventChars`, the
+  largest shrinkable ones, become a one-line summary plus the path of one file with the full text (nothing is truncated; hooks in
+  `context_size.never` are exempt). The verify-first protocol is sent whole at a fresh start, as a short digest after a compaction or
+  resume and as one line on a repeated start (`context.protocolOnce`, `verify_first.*` texts), and `context.orchFullOn = auto` sends the
+  compact orchestration text with the full rules on the first spawn (`orch_state.auto_mode`). Switch: `context.shrinkInline`
+  (`dispatch/shrink.rs`, `context_size.toml`).
 - **Session maintenance ports.** `version-alert`, `devswarm-version`, `claude-cli-version`, `repo-self-drift`,
   `defect-nudge` and `progress-prune` are the six SessionStart hooks that keep a small cache or ledger under the home
   directory. They are not guards (D74: non-guard hooks fail open) and they share `checks/session`: an order-preserving JSON

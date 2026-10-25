@@ -1307,6 +1307,7 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `guards.outputVerifyOncePerTurn` | `true` | `ANTIHALL_OUTPUT_VERIFY_ONCE_PER_TURN` | Show the output-verify advisory once per turn per distinct pass/fail signal set instead of after every identical test re-run. false = every mixed result. |
 | `guards.failureRootCauseNudge` | `true` | `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE` | Nudge toward root-cause analysis after a failure. |
 | `guards.failureNudgeFilter` | `true` | `ANTIHALL_FAILURE_NUDGE_FILTER` | Cut root-cause-nudge noise: stay silent on expected exit-1 predicates (grep no-match, test, diff, git diff --quiet), on harness refusals, and after the first nudge in a turn. false = nudge on every failure again. |
+| `guards.failureNudgeHarmless` | `true` | `ANTIHALL_FAILURE_NUDGE_HARMLESS` | Stay silent on a failure whose only error text is a shell glob/echo artefact (zsh no matches found) beside output that printed fine. false = nudge anyway. |
 | `guards.repoSelfDrift` | `true` | `ANTIHALL_REPO_SELF_DRIFT` | anti-hall's own repo-drift self-check hook. |
 | `guards.stashGuard` safety | `false` | `ANTIHALL_STASH_GUARD` | SAFETY (confirm to change — see settings.js set/reset). Arm the git-stash guard in command-guard: block mutating `git stash` (also armed per-repo via .anti-hall/protected-stashes). |
 | `guards.broadKill` safety | `true` | `ANTIHALL_BROAD_KILL` | SAFETY (confirm to change — see settings.js set/reset). broad-kill-guard (PreToolUse Bash, every agent incl. subagents, Claude and Codex; engine-only): block pkill, killall, `kill -9 -1` and a kill fed by a name or port lookup (xargs kill, kill $(pgrep ...)); `kill <pid>` of an explicit PID stays allowed. |
@@ -1404,6 +1405,10 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `context.injectGateCommsEvery` adv | `30` [1..] | `ANTIHALL_INJECT_GATE_COMMS_EVERY` | Turns between keepalives of the unchanged comms-override line. |
 | `context.injectGateSwarm` | `true` | `ANTIHALL_INJECT_GATE_SWARM` | Cut 4: swarm-guard's shared-tree advisory when new or changed, and again only after N turns. |
 | `context.injectGateSwarmEvery` adv | `20` [1..] | `ANTIHALL_INJECT_GATE_SWARM_EVERY` | Turns between repeats of an unchanged shared-tree advisory. |
+| `context.shrinkInline` | `true` | `ANTIHALL_CONTEXT_SHRINK` | Per-hook inline caps at SessionStart: a hook context over its cap becomes a one-line summary plus the path of a file with the full text (nothing is cut). false = every context is sent whole. |
+| `context.inlineHookChars` adv | `1500` [0..] | `ANTIHALL_CONTEXT_INLINE_HOOK` | Characters one hook may inject inline at SessionStart before it becomes a summary plus a file; 0 = no per-hook cap. |
+| `context.inlineEventChars` adv | `6000` [0..] | `ANTIHALL_CONTEXT_INLINE_EVENT` | Characters all hooks of one SessionStart may inject inline together; the largest shrinkable contexts become a summary plus a file until it fits; 0 = no total. |
+| `context.protocolOnce` | `true` | `ANTIHALL_PROTOCOL_ONCE` | Send the verify-first protocol text once per session: the whole compact text at a fresh start, a short digest after a compaction or resume. false = the whole text at every start. |
 | `maintenance.repairOnReload` | `true` | `ANTIHALL_REPAIR_ON_RELOAD` | repair-on-reload (SessionStart/UserPromptSubmit): re-apply safe doctor repairs after a plugin update. |
 | `maintenance.progressPrune` | `true` | — | progress-prune (SessionStart): archive stale per-session progress files into the history ledger. |
 | `maintenance.precompactSnapshot` | `true` | — | precompact-snapshot (PreCompact): write a mechanical continuation snapshot before compaction. |
@@ -1614,6 +1619,7 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `resourceWatch.cpuWindowSeconds` adv | `120` | `ANTIHALL_RESOURCE_WATCH_CPU_WINDOW` | Seconds the CPU reading must hold. |
 | `resourceWatch.memoryMb` | `4096` | `ANTIHALL_RESOURCE_WATCH_MEM` | Memory in MB (resident set on Linux, physical footprint on macOS) at which a process of a live session is named. |
 | `resourceWatch.swapMb` adv | `8192` | `ANTIHALL_RESOURCE_WATCH_SWAP` | System swap in use, MB, that triggers a warning; 0 = off. |
+| `resourceWatch.freeRamOkPercent` adv | `20` | `ANTIHALL_RESOURCE_WATCH_FREE_RAM_OK` | Free RAM percent at or above which swap in use is not an alarm; 0 = swap alone decides. |
 | `resourceWatch.pressurePercent` adv | `25` | `ANTIHALL_RESOURCE_WATCH_PSI` | Linux memory pressure (PSI some avg10, percent) that triggers a warning; 0 = off. |
 | `resourceWatch.macPressureLevel` adv | `2` | `ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE` | macOS memory pressure level (2 warn, 4 critical) that triggers a warning; 0 = off. |
 | `resourceWatch.cooldownSeconds` adv | `900` | `ANTIHALL_RESOURCE_WATCH_COOLDOWN` | Least seconds before the same process (or system warning) is named again. |

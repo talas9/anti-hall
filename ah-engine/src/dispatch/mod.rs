@@ -29,6 +29,7 @@ pub mod inject;
 pub mod native;
 pub mod node;
 pub mod plan;
+pub mod shrink;
 pub mod spill;
 pub mod stoploop;
 pub mod table;
@@ -844,6 +845,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
+    shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
     if parsed.is_some() {
         digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
     }
