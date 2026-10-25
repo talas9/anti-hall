@@ -77,7 +77,7 @@ test(/^(no_hardcoded_tunables|no_compiled_config|compiled_logic_gate|process_env
 | test(=script::tests_golden_d6::tasklist_guard_script_matches_the_compiled_port)
 | test(=script::tests_golden_d6::speculation_guard_script_matches_the_compiled_port)
 | test(=script::tests_golden_f::ship_it_guard_script_matches_the_compiled_port)
-| test(=script::tests_golden_f::verify_first_script_matches_the_compiled_port)
+| test(=script::tests_golden_f::verify_first_orch_scripts_match_the_compiled_ports)
 | test(=dispatch_e2e::the_built_in_check_blocks_in_process_and_through_the_daemon)
 | test(=dispatch_e2e::a_guard_event_that_cannot_run_its_node_hooks_fails_closed)
 | test(=dispatch_e2e::a_guard_event_with_a_missing_node_script_fails_closed_before_spawning_node)
