@@ -268,6 +268,22 @@ value = { section = "autoHandover", key = "decisivePrompt", kind = "bool", env =
 doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text)."
 value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
 
+[ctxbudget.set_h_task_budget]
+doc = "The handover.taskListBudget setting: the most active tasks the consolidated session task list may hold at a handover."
+value = { section = "handover", key = "taskListBudget", kind = "num", env = "", aliases = [], option = "", manifest_default = "12", default = 12, min = 1 }
+
+[ctxbudget.set_h_task_subject]
+doc = "The handover.taskSubjectMax setting: the longest task subject (characters) in the consolidated task list."
+value = { section = "handover", key = "taskSubjectMax", kind = "num", env = "", aliases = [], option = "", manifest_default = "60", default = 60, min = 1 }
+
+[ctxbudget.set_h_mem_lines]
+doc = "The handover.memoryIndexMaxLines setting: the most lines the consolidated MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxLines", kind = "num", env = "", aliases = [], option = "", manifest_default = "100", default = 100, min = 1 }
+
+[ctxbudget.set_h_mem_chars]
+doc = "The handover.memoryIndexMaxChars setting: the most characters the consolidated MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxChars", kind = "num", env = "", aliases = [], option = "", manifest_default = "12000", default = 12000, min = 1 }
+
 [ctxbudget.ah_housekeeping]
 doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate."
 value = ["inbox tick", "peer check", "BROADCAST bug sweep"]
