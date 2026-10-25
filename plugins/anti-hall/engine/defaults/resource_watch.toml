@@ -5,6 +5,7 @@
 # Platform notes. CPU is the per-core percent: 100 is one core fully busy, a multi-threaded process can read several
 # hundred. The first reading of a process is always 0 (a rate needs two samples) and is ignored. On Apple Silicon the percent is of
 # one core's time whatever its kind (performance or efficiency core), so the same percent is less work on an efficiency core.
+# Swap in use alone is not an alarm: it only counts when free RAM is below resource_watch.free_ram_ok_pct (or RAM is not known).
 # Memory is the resident set on Linux and the physical footprint (which counts compressed pages) on macOS, where it matches Activity
 # Monitor; the resident set alone under-reports a process the system has compressed. System pressure is /proc/pressure/memory on
 # Linux (some avg10, percent of time stalled) and kern.memorystatus_vm_pressure_level on macOS (1 normal, 2 warn, 4 critical).
@@ -36,6 +37,10 @@ value = { section = "resourceWatch", key = "pressurePercent", env = "ANTIHALL_RE
 [resource_watch.mac_pressure_level]
 doc = "Warn when the macOS memory pressure level is at least this (2 warn, 4 critical; resourceWatch.macPressureLevel; 0 turns it off)."
 value = { section = "resourceWatch", key = "macPressureLevel", env = "ANTIHALL_RESOURCE_WATCH_MAC_PRESSURE", aliases = [], option = "", default = 2, min = 0 }
+
+[resource_watch.free_ram_ok_pct]
+doc = "Free RAM, in percent of physical memory, at or above which swap in use is NOT an alarm (resourceWatch.freeRamOkPercent; 0 = swap alone decides, the old behaviour). The OS parks idle pages in swap long before it is short of memory, so a large swap figure beside plenty of free RAM is normal. Free RAM is the macOS kernel's own free percentage (the figure `memory_pressure` prints) and Linux MemAvailable; where it is not known the swap threshold alone decides."
+value = { section = "resourceWatch", key = "freeRamOkPercent", env = "ANTIHALL_RESOURCE_WATCH_FREE_RAM_OK", aliases = [], option = "", default = 20, min = 0 }
 
 [resource_watch.cooldown_s]
 doc = "Least time before the same process (or the same system warning) is named again (resourceWatch.cooldownSeconds)."
@@ -71,6 +76,14 @@ value = "vm.swapusage"
 doc = "The macOS sysctl name of the memory pressure level."
 value = "kern.memorystatus_vm_pressure_level"
 
+[resource_watch.mac_ram_total_sysctl]
+doc = "The macOS sysctl name of the physical memory size, in bytes."
+value = "hw.memsize"
+
+[resource_watch.mac_free_pct_sysctl]
+doc = "The macOS sysctl name of the free memory percentage (the figure `memory_pressure` prints as the system-wide memory free percentage)."
+value = "kern.memorystatus_level"
+
 [resource_watch.msg_proc_what]
 doc = "Process warning line; {name} the command, {pid}, {session} the session pid, {usage} what it uses, {limit} the threshold."
 value = "pid {pid} ({name}, session {session}) is using {usage}; threshold {limit}"
@@ -92,12 +105,16 @@ doc = "Memory threshold text; {mb} MB."
 value = "{mb} MB"
 
 [resource_watch.msg_swap]
-doc = "System swap line; {used} MB in use, {limit} MB threshold."
-value = "system swap in use is {used} MB (threshold {limit} MB)"
+doc = "System swap line; {used} MB in use, {limit} MB threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known)."
+value = "system swap in use is {used} MB (threshold {limit} MB){ram}"
 
 [resource_watch.msg_pressure]
-doc = "System memory pressure line; {value} the reading, {limit} the threshold."
-value = "system memory pressure is {value} (threshold {limit})"
+doc = "System memory pressure line; {value} the reading, {limit} the threshold, {ram} the free-RAM text (resource_watch.msg_ram; empty when not known)."
+value = "system memory pressure is {value} (threshold {limit}){ram}"
+
+[resource_watch.msg_ram]
+doc = "The free-RAM figure appended to a system line; {free_mb} MB free of {total_mb} MB, {free_pct} percent."
+value = "; free RAM {free_mb} MB of {total_mb} MB ({free_pct}%)"
 
 [resource_watch.msg_what]
 doc = "Advisory first line; {list} the findings joined."

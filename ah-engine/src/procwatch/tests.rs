@@ -55,7 +55,7 @@ impl Host for Fake {
         self.cwds.get(&pid).cloned()
     }
     fn mem(&mut self) -> MemInfo {
-        self.mem.unwrap_or(MemInfo { swap_used: 0, pressure: Pressure::Unknown })
+        self.mem.unwrap_or(MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 })
     }
     fn space(&self, path: &Path) -> Option<Space> {
         self.spaces.get(path).copied().or(self.any_space)
@@ -330,7 +330,7 @@ fn run_samples(rows_for: impl Fn(u64) -> Vec<ProcRow>, steps: u64, st: &Settings
 }
 
 fn quiet() -> MemInfo {
-    MemInfo { swap_used: 0, pressure: Pressure::Unknown }
+    MemInfo { swap_used: 0, pressure: Pressure::Unknown, ram_total: 0, ram_free: 0 }
 }
 
 #[test]
@@ -391,15 +391,41 @@ fn processes_outside_a_live_session_are_not_measured() {
 fn swap_and_pressure_warn_for_both_platform_shapes() {
     let h = scratch("system-mem");
     let st = settings_for(&h);
-    let mac = MemInfo { swap_used: 10 << 30, pressure: Pressure::MacLevel(4) };
-    let linux = MemInfo { swap_used: 1 << 30, pressure: Pressure::Psi(55.0) };
+    let mac = MemInfo { swap_used: 10 << 30, pressure: Pressure::MacLevel(4), ram_total: 0, ram_free: 0 };
+    let linux = MemInfo { swap_used: 1 << 30, pressure: Pressure::Psi(55.0), ram_total: 0, ram_free: 0 };
     let m = run_samples(|_| session_tree(1.0, 20), 1, &st, mac);
     assert_eq!(m[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["swap", "pressure"]);
     let l = run_samples(|_| session_tree(1.0, 20), 1, &st, linux);
     assert_eq!(l[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["pressure"], "1 GB of swap is under the threshold");
     assert!(resource::line(&l[0].1[0]).contains("PSI 55%"));
-    let calm = MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1) };
+    let calm = MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1), ram_total: 0, ram_free: 0 };
     assert!(run_samples(|_| session_tree(1.0, 20), 1, &st, calm)[0].1.is_empty());
+}
+
+#[test]
+fn swap_alone_is_not_an_alarm_when_free_ram_is_healthy_and_the_figure_is_printed() {
+    let h = scratch("swap-free-ram");
+    let st = settings_for(&h);
+    let gb = 1u64 << 30;
+    // the field report: 64 GB machine, 9.5 GB swap, 75% of RAM free
+    let healthy = MemInfo { swap_used: 9 * gb + gb / 2, pressure: Pressure::MacLevel(1), ram_total: 64 * gb, ram_free: 48 * gb };
+    assert!(run_samples(|_| session_tree(1.0, 20), 1, &st, healthy)[0].1.is_empty(), "swap beside plenty of free RAM stays silent");
+    // the same swap with RAM nearly used up still warns, and the text carries the free-RAM figure
+    let short = MemInfo { ram_free: 3 * gb, ..healthy };
+    let w = run_samples(|_| session_tree(1.0, 20), 1, &st, short);
+    assert_eq!(w[0].1.iter().map(|w| w.kind).collect::<Vec<_>>(), vec!["swap"]);
+    assert!(resource::line(&w[0].1[0]).contains("free RAM 3072 MB of 65536 MB (4%)"), "{}", resource::line(&w[0].1[0]));
+    // RAM not known: swap alone decides, as before
+    let unknown = MemInfo { ram_total: 0, ram_free: 0, ..healthy };
+    assert_eq!(run_samples(|_| session_tree(1.0, 20), 1, &st, unknown)[0].1.len(), 1);
+    // the owner can turn the free-RAM test off (0 = swap alone decides)
+    write_settings(&h, json!({"resourceWatch": {"freeRamOkPercent": 0}}));
+    let st0 = settings_for(&h);
+    assert_eq!(run_samples(|_| session_tree(1.0, 20), 1, &st0, healthy)[0].1.len(), 1);
+    // the pressure line prints the figure too
+    let crit = MemInfo { pressure: Pressure::MacLevel(4), ..short };
+    let p = run_samples(|_| session_tree(1.0, 20), 1, &st, crit);
+    assert!(p[0].1.iter().any(|w| w.kind == "pressure" && resource::line(w).contains("free RAM 3072 MB")));
 }
 
 #[test]
@@ -725,7 +751,7 @@ fn macos_style_data_is_handled_where_linux_would_differ() {
     assert!(classify_with(&mut f, &h).iter().all(|x| x.pid != 960));
     // footprint, not resident size, is what a macOS row carries: a compressed process still counts
     let st = settings_for(&h);
-    let out = run_samples(|_| session_tree(1.0, 5000), 1, &st, MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1) });
+    let out = run_samples(|_| session_tree(1.0, 5000), 1, &st, MemInfo { swap_used: 0, pressure: Pressure::MacLevel(1), ram_total: 0, ram_free: 0 });
     assert_eq!(out[0].1[0].kind, "memory");
 }
 
