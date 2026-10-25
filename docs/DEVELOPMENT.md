@@ -69,6 +69,24 @@ cargo build --release --locked
 ah-engine/scripts/build.sh --checks
 ```
 
+### Faster local builds
+
+Measured on one Apple-silicon machine (16 cores, `-j4`, single runs, so read differences under about 5 s as noise). Build times of the `ah-engine` crate with its 36 test executables:
+
+| Build | Wall-clock |
+|---|---|
+| `cargo test --no-run`, dev profile, empty target dir | 57-68 s |
+| the same after a one-line edit | 26-30 s |
+| `cargo test --profile ci-test --no-run`, empty target dir | 104 s |
+| `cargo test --release --no-run`, empty target dir (what the ubuntu gate builds) | 388 s |
+
+- **Use the dev profile while you iterate.** It already sets `debug = "line-tables-only"`; setting `debug = false` or full debuginfo instead measured the same (57 s each, cold). Do not expect a gain from tuning it further.
+- **`CARGO_INCREMENTAL=0`** did not make the local dev build faster or slower here (53 s cold and 26 s after an edit, against 57 s and 26-30 s with incremental on). It matters for a compiler cache: the sccache documentation says incrementally compiled crates cannot be cached, so set it when you use sccache. I did not measure sccache.
+- **One target directory per clone.** Cargo locks the whole build directory: two builds in one `CARGO_TARGET_DIR` run one after the other (the second prints `Blocking waiting for file lock on build directory`), while two builds in separate target dirs ran in parallel (6.4 s each against 6.5 s plus 4.5 s of waiting, in a small test crate). So do not point several clones or agents at one shared `CARGO_TARGET_DIR`; keep the default `ah-engine/target` in each clone. Give it room: a dev test build is about 3 GB.
+- **`SCCACHE_BASEDIRS`** (sccache documentation, not measured here): sccache keys include absolute paths, so clones in different directories only share cache hits when `SCCACHE_BASEDIRS` names their common parent. Set `RUSTC_WRAPPER=sccache` and `SCCACHE_BASEDIRS=<parent of your clones>` in your shell, never in a committed `.cargo/config.toml`. The crate you are editing is rebuilt either way; the cache saves the dependencies.
+- **Release builds are the slow ones.** The `ci-test` profile builds the same test binaries 3.7 times faster than `--release`. Tests that need a release build (`mem_reload`, the latency budgets) still need `--release`.
+- **Regenerate the generated files with one command**, `cargo run -q --bin ah-regen` (from `ah-engine/`): it rewrites `REFERENCE.md`, the hook files and the engine skills, and lists what changed. `--check` only lists them and exits 1 when a file is stale.
+
 ## Run the tests
 
 | Suite | Command | Where |
