@@ -1307,3 +1307,48 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     slow_call(&e, &map, &n);
     assert_eq!(d.seen(), before);
 }
+
+// ---- the wait marker outlives the answer: it is released only after stdout and the done mark ----------------------------------
+
+/// Launcher RCA (wait-marker race): the marker was dropped when `run_core` returned, so the window between that and the
+/// stdout write + done mark had neither marker, and a launcher checking at that instant killed a finished answer. The invariant
+/// the wrapper relies on: at every instant after the marker first appears, the wait marker OR the done mark exists. A sampler
+/// thread checks it in a tight loop, reading the wait marker BEFORE the done mark (the engine writes the done mark before it
+/// releases the marker, so that order has no false alarm: a missing marker is always followed by an existing done mark). An
+/// earlier version made the done file a FIFO and read the marker once the engine opened it, but the engine does not wait after the
+/// open, so on a loaded runner the reader woke after the marker was already released (macOS CI, 1 in 2 under CPU load).
+#[test]
+fn the_wait_marker_is_still_there_when_the_done_mark_is_written() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let e = Env::new("wait-until-done");
+    let map = event_map(&e, "PreToolUse", "echo ANSWER", "true");
+    let daemon = scripted_daemon(&e, vec![FAST_OK]);
+    let (wait, done) = (e.dir.join("wait"), e.dir.join("done"));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (w, d, s) = (wait.clone(), done.clone(), Arc::clone(&stop));
+    // (the marker was seen, a sample found neither marker after it was seen)
+    let sampler = std::thread::spawn(move || {
+        let (mut seen, mut gap) = (false, false);
+        while !s.load(Ordering::Acquire) {
+            let has_wait = w.exists();
+            let has_done = d.exists();
+            seen |= has_wait;
+            if seen && !has_wait && !has_done {
+                gap = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        (seen, gap)
+    });
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let env = [("AH_ENGINE_WAIT_FILE", wait.to_str().unwrap()), ("AH_ENGINE_DONE_FILE", done.to_str().unwrap()), ("AH_ENGINE_NOSPAWN", "1")];
+    let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &env);
+    stop.store(true, Ordering::Release);
+    let (seen, gap) = sampler.join().unwrap();
+    let why = format!("scripted daemon contacted {} time(s), out={out:?} err={err:?} code={code}, engine log:\n{}", daemon.seen(), engine_log(&e));
+    assert!(seen, "the wait marker never appeared (the daemon was not asked, or the marker was released before the sampler saw it): {why}");
+    assert!(!gap, "a sample found neither the wait marker nor the done mark: {why}");
+    assert!(done.exists(), "the done mark is written: {why}");
+    assert!(!wait.exists(), "the marker is released at the end of the call: {why}");
+}
