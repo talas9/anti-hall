@@ -507,9 +507,9 @@ fn remind(env: &Env, st: &mut State, a: &mut Agent, sig: &str, queued: &mut u64)
     a.sent_log.retain(|(_, t)| now.saturating_sub(*t) < day);
     let once = cd.and_then(|c| c.get("once")).and_then(V::as_bool).unwrap_or(false);
     let step_hash = crate::health::fnv(&a.step);
-    let why = if once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0) {
-        Some("once")
-    } else if sig == "drift" && lim("drift_once_per_step") > 0 && a.drift_step == step_hash {
+    let already_once = once && a.flags.get(sig).is_some_and(|f| f.reminded_at > 0);
+    let drift_same_step = sig == "drift" && lim("drift_once_per_step") > 0 && a.drift_step == step_hash;
+    let why = if already_once || drift_same_step {
         Some("once")
     } else if a.last_sent.get(sig).is_some_and(|t| now.saturating_sub(*t) < cool) {
         Some("cooldown")
