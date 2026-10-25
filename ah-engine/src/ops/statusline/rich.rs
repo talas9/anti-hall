@@ -236,10 +236,14 @@ fn level(running: &str, latest: &str) -> &'static str {
     }
 }
 
+/// The one remembered manifest read: the manifest path, its modification time, and the version found in it (none when unreadable).
+/// A single slot, replaced whole when the path or the modification time changes, so it never grows.
+type ManifestVersion = (PathBuf, Option<SystemTime>, Option<String>);
+
 /// The plugin version from its manifest, cached in memory: the manifest is only read again when its modification time changes
 /// (the status line refreshes every second, so a steady state costs one `stat`).
 fn plugin_version(manifest: &Path) -> Option<String> {
-    static CACHE: Mutex<Option<(PathBuf, Option<SystemTime>, Option<String>)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<ManifestVersion>> = Mutex::new(None);
     let mtime = std::fs::metadata(manifest).and_then(|m| m.modified()).ok();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((path, at, version)) = cache.as_ref()
