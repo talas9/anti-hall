@@ -5281,7 +5281,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `351 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `352 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -7686,7 +7686,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `351 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `352 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `20 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -8168,6 +8168,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `statusline.tree_icon` | `🌳` |  |  | Before a linked worktree's branch. |
 | `statusline.up` | `↑` |  |  | Commits ahead. |
 | `statusline.update_star` | `★ ` |  |  | Marks an available update. |
+| `statusline.usage_5h_label` | `5h:` |  |  | Before the 5-hour usage percentage. |
+| `statusline.usage_5h_window` | `five_hour` |  |  | The rate_limits entry of the 5-hour window in the statusline input. |
+| `statusline.usage_key` | `usage` |  |  | The setting that shows the weekly and 5-hour usage segment. |
+| `statusline.usage_sep` | ` \| ` |  |  | Between the weekly and the 5-hour usage percentages. |
+| `statusline.usage_week_label` | `wk:` |  |  | Before the weekly usage percentage. |
+| `statusline.usage_week_window` | `seven_day` |  |  | The rate_limits entry of the weekly window in the statusline input. |
 | `statusline.used_keys` | `used_tokens, tokens` |  |  | The context_window fields that carry the used tokens. |
 | `statusline.user_mark` | `● ` |  |  | Before the git user. |
 | `statusline.version_check` | `version-check.json` |  |  | The version check cache, in the base directory. |

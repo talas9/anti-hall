@@ -1595,6 +1595,7 @@ Generated from `settings-schema` (a hygiene test keeps this table and the schema
 | `devswarm.pausedProbeMax` adv | `8` [1..20] | `ANTIHALL_DEVSWARM_PAUSED_PROBE_MAX` | Max `hivecontrol workspace info` probes per supervisor sweep tick for the startup-state sampler above. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Legacy renderer option: suppress the email segment. |
+| `statusline.usage` | `true` | `ANTIHALL_STATUSLINE_USAGE` | Legacy renderer option: show weekly and 5-hour usage (`wk:65% \| 5h:50%`) before the context percentage. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |
 | `codexNudge.min` adv | `3` [1..] | `ANTIHALL_CODEX_NUDGE_MIN` | Minimum substantial code-file edits before the nudge fires. |
 | `engine.bootstrap` | `false` | `AH_ENGINE_BOOTSTRAP` | Opt in to the automatic download: install the sha256-pinned ah-engine and ah-hook binaries from the GitHub Release on SessionStart (once per pinned release). Off (default): nothing is downloaded on its own; `hooks/install.sh` prints one notice per session and hooks pass through until you run `sh hooks/install.sh --download`. AH_ENGINE_BOOTSTRAP=0/1 overrides this key. |

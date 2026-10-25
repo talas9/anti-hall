@@ -316,6 +316,40 @@ fn devswarm_chip(cx: &Ctx, env: &BTreeMap<String, String>, c: &Colors, sep: &str
     if seg.is_empty() { seg } else { format!("{sep}{seg}") }
 }
 
+/// The subscription usage segment (`wk:65% | 5h:50%`): the weekly and 5-hour rate-limit percentages from the stdin `rate_limits`. Each half is
+/// left out when its window is absent (API-key users, before the first response); the whole segment when both are, or when the setting is off.
+/// The colors follow the same levels as the context percentage.
+fn usage_chip(data: &Option<J>, c: &Colors, sep: &str) -> String {
+    if !crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.usage_key")) {
+        return String::new();
+    }
+    let Some(limits) = data.as_ref().and_then(|d| d.get("rate_limits")) else { return String::new() };
+    let half = |window: &str, label: &str| -> Option<String> {
+        let J::Num(p) = limits.get(window)?.get("used_percentage")? else { return None };
+        let p = p.floor();
+        let col = if p >= defaults::num("statusline.level_red") as f64 {
+            c.c("brightRed")
+        } else if p >= defaults::num("statusline.level_yellow") as f64 {
+            c.c("brightYellow")
+        } else {
+            c.c("brightGreen")
+        };
+        Some(format!("{col}{label}{}%{}", n(p), c.c("reset")))
+    };
+    let parts: Vec<String> = [
+        half(defaults::text("statusline.usage_week_window"), defaults::text("statusline.usage_week_label")),
+        half(defaults::text("statusline.usage_5h_window"), defaults::text("statusline.usage_5h_label")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if parts.is_empty() {
+        return String::new();
+    }
+    let joiner = format!("{}{}{}", c.c("dim"), defaults::text("statusline.usage_sep"), c.c("reset"));
+    format!("{sep}{}", parts.join(&joiner))
+}
+
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
 pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, input_raw: &str) -> Rich {
     let c = Colors { on: env.get(defaults::text("statusline.no_color_env")).is_none_or(|v| v.is_empty()) };
@@ -439,6 +473,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     if !duration.is_empty() {
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }
+    h.push_str(&usage_chip(&data, &c, &sep));
     if let Some(p) = used_pct.filter(|p| *p > 0.0) {
         let col = if p >= defaults::num("statusline.level_red") as f64 {
             c.c("brightRed")

@@ -1371,6 +1371,30 @@ value = "base"
 doc = "The setting that hides the account email."
 value = "noEmail"
 
+[statusline.usage_key]
+doc = "The setting that shows the weekly and 5-hour usage segment."
+value = "usage"
+
+[statusline.usage_week_window]
+doc = "The rate_limits entry of the weekly window in the statusline input."
+value = "seven_day"
+
+[statusline.usage_5h_window]
+doc = "The rate_limits entry of the 5-hour window in the statusline input."
+value = "five_hour"
+
+[statusline.usage_week_label]
+doc = "Before the weekly usage percentage."
+value = "wk:"
+
+[statusline.usage_5h_label]
+doc = "Before the 5-hour usage percentage."
+value = "5h:"
+
+[statusline.usage_sep]
+doc = "Between the weekly and the 5-hour usage percentages."
+value = " | "
+
 [statusline.no_color_env]
 doc = "The variable that turns colors off."
 value = "NO_COLOR"
