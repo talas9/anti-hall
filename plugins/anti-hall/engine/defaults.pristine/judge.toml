@@ -165,8 +165,12 @@ doc = "Appended to the reply before hashing it, so the judge's hashes never coll
 value = ":judge"
 
 [speculation_judge.max_blocks]
-doc = "Blocks per session after which the judge stays quiet (Node: MAX_BLOCKS)."
+doc = "Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-text dedupe remains independent."
 value = 3
+
+[speculation_judge.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [speculation_judge.reply_window]
 doc = "Bytes of the transcript tail read for the reply when the payload does not carry it (Node: readTranscriptTail default 512 KB)."

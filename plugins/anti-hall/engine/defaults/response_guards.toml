@@ -82,10 +82,14 @@ unit = "bytes"
 min = 4096
 
 [speculation_guard.max_blocks]
-doc = "Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe)."
+doc = "Most blocks per cap_scope window; retries with changing text share this budget. A new real owner turn resets it in owner_turn scope; same-text dedupe remains independent."
 value = 3
 min = 1
 max = 100
+
+[speculation_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [speculation_guard.markers]
 doc = "Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried."

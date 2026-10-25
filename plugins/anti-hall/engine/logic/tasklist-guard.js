@@ -257,6 +257,7 @@ function tlReadState(path) {
   var r = jx.parse(raw);
   if (r.unsure) { ah.unable('tasklist-guard:state_unsure'); return out; }
   if (r.invalid || r.v === null || typeof r.v !== 'object') return out;
+  out = Object.assign({}, r.v, out);
   if (typeof r.v.hash === 'string') out.hash = r.v.hash;
   if (typeof r.v.blocks === 'number' && isFinite(r.v.blocks)) out.blocks = r.v.blocks;
   if (typeof r.v.started === 'string') {
@@ -443,6 +444,8 @@ function tlFire(f) {
   var signal = [String(bucket), bit(scan.sawTaskActivity), bit(stale), bit(f.progressFresh), openHash].join(tlT('signal_sep'));
   var hash = ah.sha1(signal);
   var prior = tlReadState(home + '/' + stateRel);
+  var cap = blockCap.open(prior, f.transcript, 'tasklist_guard.cap_scope', home, stateRel);
+  prior = cap.state;
   if (hash === prior.hash || prior.blocks >= tlN('max_blocks')) { tlJev(f, jevState); return 'allow'; }
 
   // everything below is read or computed before the first effect
@@ -536,6 +539,7 @@ function tlFire(f) {
   if (relaxed || versionStale || acked) return 'allow';
   // the advisories go to stderr: stdout stays empty or ONE JSON object, which the dispatcher can merge with another Stop hook's JSON
   if (omc) return { exact: { code: 0, out: '', err: adv.gate(ah.cfg('advisory.kind_tasklist_omc'), session) ? tlT('omc_text') : '' } };
+  if (!cap.backup()) return 'allow';
   if (advisory) { try { tlStamp(home, advisory.marker, advisory.body); } catch (e) { /* best-effort cap */ } }
   if (details && advisory) details.body += '\n' + advisory.reminder;
   if (details) { try { tlStamp(home, details.rel, details.body); } catch (e) { /* the message still stands without its details file */ } }
@@ -560,7 +564,7 @@ function tlFire(f) {
       if (!tlStamp(home, policy.rel, JSON.stringify(policy.buckets))) return 'allow';
     }
   }
-  if (!tlStamp(home, stateRel, JSON.stringify({ hash: hash, blocks: prior.blocks + 1, started: started }))) return 'allow';
+  if (!tlStamp(home, stateRel, JSON.stringify(Object.assign({}, cap.blocked(), { hash: hash, blocks: prior.blocks + 1, started: started })))) return 'allow';
   ah.state.prune(tlT('state_prefix'), stateRel.slice(stateRel.lastIndexOf('/') + 1));
   return { exact: { code: 0, out: out, err: '' } };
 }
