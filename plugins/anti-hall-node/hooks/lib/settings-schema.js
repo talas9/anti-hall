@@ -499,6 +499,7 @@ const SECTIONS = [
       { key: 'base', type: 'string', default: '', env: 'ANTIHALL_STATUSLINE_BASE', pluginOption: 'statusline_base', pluginOptionLegacy: true, description: 'Shell command run as the line-1 base in consolidated statusline mode.' },
       { key: 'noEmail', type: 'boolean', default: false, env: 'ANTIHALL_STATUSLINE_NO_EMAIL', pluginOption: 'statusline_no_email', pluginOptionLegacy: true, description: 'Suppress the email segment in the statusline.' },
       { key: 'usage', type: 'boolean', default: true, env: 'ANTIHALL_STATUSLINE_USAGE', description: 'Show the weekly and 5-hour usage percentages (wk:65% | 5h:50%) before the context percentage in the statusline.' },
+      { key: 'version', type: 'boolean', default: true, env: 'ANTIHALL_STATUSLINE_VERSION', description: 'Show the AH version chip (AH: V<plugin>/V<engine>) at the end of the statusline.' },
     ],
   },
   {

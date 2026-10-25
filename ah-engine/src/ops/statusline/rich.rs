@@ -9,7 +9,9 @@ use crate::checks::jsport::json::{self, J};
 use crate::defaults;
 use crate::migrate::{j_number, str_number};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 use std::process::Command;
 use std::time::Duration;
 
@@ -234,33 +236,63 @@ fn level(running: &str, latest: &str) -> &'static str {
     }
 }
 
-fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
-    let Some(version) = read_json(&Path::new(root).join(defaults::text("migrate.plugin_manifest"))).and_then(|o| match o.get("version") {
+/// The plugin version from its manifest, cached in memory: the manifest is only read again when its modification time changes
+/// (the status line refreshes every second, so a steady state costs one `stat`).
+fn plugin_version(manifest: &Path) -> Option<String> {
+    static CACHE: Mutex<Option<(PathBuf, Option<SystemTime>, Option<String>)>> = Mutex::new(None);
+    let mtime = std::fs::metadata(manifest).and_then(|m| m.modified()).ok();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, at, version)) = cache.as_ref()
+        && path == manifest
+        && *at == mtime
+    {
+        return version.clone();
+    }
+    let version = read_json(manifest).and_then(|o| match o.get("version") {
         Some(J::Str(s)) if !trim(s).is_empty() => Some(trim(s).to_string()),
         _ => None,
-    }) else {
+    });
+    *cache = Some((manifest.to_path_buf(), mtime, version.clone()));
+    version
+}
+
+/// This engine's version without the `+build` suffix; `None` when it does not start with a number.
+fn engine_version() -> Option<String> {
+    let v = crate::version();
+    let v = v.split('+').next().unwrap_or("").trim_start_matches('v').to_string();
+    v.chars().next().is_some_and(|ch| ch.is_ascii_digit()).then_some(v)
+}
+
+fn ah_chip(cx: &Ctx, root: &str, c: &Colors) -> String {
+    if !crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.version_key")) {
         return String::new();
-    };
+    }
+    let version = plugin_version(&Path::new(root).join(defaults::text("migrate.plugin_manifest")));
+    let engine = engine_version();
     let latest = read_json(&Path::new(&cx.home).join(defaults::text("paths.base_dir")).join(defaults::text("statusline.version_check"))).and_then(|o| match o
         .get("latest")
     {
         Some(J::Str(s)) => Some(s.clone()),
         _ => None,
     });
-    let lv = latest.map_or("none", |l| level(&version, &l));
-    let (col, prefix) = match lv {
-        "major" => (c.c("red"), defaults::text("statusline.update_star")),
-        "minor" => (c.c("yellow"), defaults::text("statusline.update_star")),
-        _ => (c.c("dim"), ""),
+    let lv = match (&version, latest) {
+        (Some(v), Some(l)) => level(v, &l),
+        _ => "none",
     };
-    format!(
-        "  {}{}{}  {col}{prefix}{}{version}{}",
-        c.c("dim"),
-        defaults::text("statusline.sep"),
-        c.c("reset"),
-        defaults::text("statusline.chip_label"),
-        c.c("reset")
-    )
+    let engine_old = engine.as_deref().is_some_and(|e| crate::component_cmp(e, defaults::text("compat.engine_min")) == std::cmp::Ordering::Less);
+    let (col, prefix) = if engine.is_none() || lv == "major" {
+        (c.c(defaults::text("statusline.chip_color_bad")), if lv == "none" { "" } else { defaults::text("statusline.update_star") })
+    } else if engine_old || lv == "minor" {
+        (c.c(defaults::text("statusline.chip_color_warn")), if lv == "none" { "" } else { defaults::text("statusline.update_star") })
+    } else {
+        (c.c(defaults::text("statusline.chip_color_ok")), "")
+    };
+    let unknown = defaults::text("statusline.chip_unknown");
+    let label = defaults::render(
+        "statusline.chip_fmt",
+        &[("plugin", &version.as_deref().unwrap_or(unknown)), ("engine", &engine.as_deref().unwrap_or(unknown))],
+    );
+    format!("  {}{}{}  {col}{prefix}{label}{}", c.c("dim"), defaults::text("statusline.sep"), c.c("reset"), c.c("reset"))
 }
 
 fn effort(data: &Option<J>) -> Option<String> {
@@ -319,7 +351,18 @@ fn devswarm_chip(cx: &Ctx, env: &BTreeMap<String, String>, c: &Colors, sep: &str
 /// The subscription usage segment (`wk:65% | 5h:50%`): the weekly and 5-hour rate-limit percentages from the stdin `rate_limits`. Each half is
 /// left out when its window is absent (API-key users, before the first response); the whole segment when both are, or when the setting is off.
 /// The colors follow the same levels as the context percentage.
-fn usage_chip(data: &Option<J>, c: &Colors, sep: &str) -> String {
+fn level_color(p: f64, c: &Colors) -> &'static str {
+    let key = if p >= defaults::num("statusline.level_red") as f64 {
+        "statusline.level_color_red"
+    } else if p >= defaults::num("statusline.level_yellow") as f64 {
+        "statusline.level_color_yellow"
+    } else {
+        "statusline.level_color_ok"
+    };
+    c.c(defaults::text(key))
+}
+
+fn usage_chip(data: &Option<J>, c: &Colors) -> String {
     if !crate::ops::settings::effective_bool(defaults::text("statusline.section"), defaults::text("statusline.usage_key")) {
         return String::new();
     }
@@ -327,13 +370,7 @@ fn usage_chip(data: &Option<J>, c: &Colors, sep: &str) -> String {
     let half = |window: &str, label: &str| -> Option<String> {
         let J::Num(p) = limits.get(window)?.get("used_percentage")? else { return None };
         let p = p.floor();
-        let col = if p >= defaults::num("statusline.level_red") as f64 {
-            c.c("brightRed")
-        } else if p >= defaults::num("statusline.level_yellow") as f64 {
-            c.c("brightYellow")
-        } else {
-            c.c("brightGreen")
-        };
+        let col = level_color(p, c);
         Some(format!("{col}{label}{}%{}", n(p), c.c("reset")))
     };
     let parts: Vec<String> = [
@@ -347,7 +384,7 @@ fn usage_chip(data: &Option<J>, c: &Colors, sep: &str) -> String {
         return String::new();
     }
     let joiner = format!("{}{}{}", c.c("dim"), defaults::text("statusline.usage_sep"), c.c("reset"));
-    format!("{sep}{}", parts.join(&joiner))
+    parts.join(&joiner)
 }
 
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
@@ -473,16 +510,15 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
     if !duration.is_empty() {
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }
-    h.push_str(&usage_chip(&data, &c, &sep));
-    if let Some(p) = used_pct.filter(|p| *p > 0.0) {
-        let col = if p >= defaults::num("statusline.level_red") as f64 {
-            c.c("brightRed")
-        } else if p >= defaults::num("statusline.level_yellow") as f64 {
-            c.c("brightYellow")
-        } else {
-            c.c("brightGreen")
-        };
-        h.push_str(&format!("{sep}{col}{}{}% ctx{}", defaults::text("statusline.ctx_mark"), n(p), c.c("reset")));
+    // the usage chip sits right before the context percentage (one segment, a gap between), each colored by its own level
+    let usage = usage_chip(&data, &c);
+    let ctx = used_pct
+        .filter(|p| *p > 0.0)
+        .map(|p| format!("{}{}{}% ctx{}", level_color(p, &c), defaults::text("statusline.ctx_mark"), n(p), c.c("reset")))
+        .unwrap_or_default();
+    if !usage.is_empty() || !ctx.is_empty() {
+        let gap = if usage.is_empty() || ctx.is_empty() { "" } else { defaults::text("statusline.usage_ctx_gap") };
+        h.push_str(&format!("{sep}{usage}{gap}{ctx}"));
     }
     if cost_usd > 0.0 {
         // from the limit on, `toFixed` returns `String(x)` (exponent form)
