@@ -279,6 +279,14 @@ value = { kind = "counter", unit = "answers", labels = ["check", "stage"] }
 doc = "Per check and reason, answers that did not reach the agent: shed (CPU hard limit), hard_deadline, cpu_budget, client_gone, check_deferred (the reasons of answers_dropped) and undelivered (the reply was not written in time). Lifetime."
 value = { kind = "counter", unit = "answers", labels = ["check", "reason"] }
 
+[metric.context_spills]
+doc = "Joined hook contexts that were over the host's inline cap and spilled to a file (#311), by event. Lifetime; `status` delivery.spills_by_event."
+value = { kind = "counter", unit = "spills", labels = ["event"] }
+
+[metric.context_spill_pinned]
+doc = "Spills whose file held a context at or above dispatch.context_pin_priority (the case the priorities exist to prevent). Lifetime; `status` delivery.pinned_spills."
+value = { kind = "counter", unit = "spills", labels = [] }
+
 [metric.budget_soft]
 doc = "Requests that used more thread CPU than the SOFT budget (daemon.eval_soft_us); only warned about, every check kept its answer."
 value = { kind = "counter", unit = "requests", labels = [] }
